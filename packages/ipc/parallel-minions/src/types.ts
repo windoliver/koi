@@ -7,6 +7,12 @@
 import type { AgentManifest } from "@koi/core/assembly";
 import type { ToolDescriptor } from "@koi/core/ecs";
 
+// Re-export L0 agent resolver types for convenience
+export type { AgentResolver, TaskableAgent } from "@koi/core/agent-resolver";
+
+// Import for local use
+import type { AgentResolver, TaskableAgent } from "@koi/core/agent-resolver";
+
 // ---------------------------------------------------------------------------
 // Spawn primitive (own copy — no peer L2 coupling)
 // ---------------------------------------------------------------------------
@@ -120,17 +126,18 @@ export interface ResolvedTask {
 // Config
 // ---------------------------------------------------------------------------
 
-/** A pre-registered agent type available for parallel task delegation. */
-export interface MinionableAgent {
-  readonly name: string;
-  readonly description: string;
-  readonly manifest: AgentManifest;
-}
+/**
+ * @deprecated Use TaskableAgent from @koi/core instead.
+ * Kept as alias for backward compatibility.
+ */
+export type MinionableAgent = TaskableAgent;
 
 /** Configuration for the parallel minions provider. */
 export interface ParallelMinionsConfig {
-  /** Pre-registered agent types available for task delegation. */
-  readonly agents: ReadonlyMap<string, MinionableAgent>;
+  /** Pre-registered agent types available for task delegation (optional when agentResolver is set). */
+  readonly agents?: ReadonlyMap<string, TaskableAgent> | undefined;
+  /** Dynamic agent resolver (alternative/complement to static `agents` map). */
+  readonly agentResolver?: AgentResolver | undefined;
   /** Spawn callback — consumer wires to spawnChildAgent() + runtime.run(). */
   readonly spawn: MinionSpawnFn;
   /** Optional default agent type used when agent_type is omitted. */

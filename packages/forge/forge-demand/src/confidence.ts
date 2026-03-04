@@ -65,6 +65,11 @@ function getBaseWeight(kind: ForgeTrigger["kind"], weights: ConfidenceWeights): 
     case "no_matching_tool":
       return weights.capabilityGap;
     case "performance_degradation":
+    case "agent_latency_degradation":
       return weights.performanceDegradation;
+    case "agent_capability_gap":
+      return weights.capabilityGap;
+    case "agent_repeated_failure":
+      return weights.repeatedFailure;
   }
 }

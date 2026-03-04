@@ -9,6 +9,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./agent-resolver": {
+      "types": "./dist/agent-resolver.d.ts",
+      "import": "./dist/agent-resolver.js"
+    },
     "./config": {
       "types": "./dist/config.d.ts",
       "import": "./dist/config.js"

@@ -6,43 +6,19 @@
 
 import type { AgentManifest } from "@koi/core/assembly";
 import type { AgentId, ToolDescriptor } from "@koi/core/ecs";
+import type { KoiError, Result } from "@koi/core/errors";
+import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 
-/** A pre-registered agent type available for task delegation. */
-export interface TaskableAgent {
-  readonly name: string;
-  readonly description: string;
-  readonly manifest: AgentManifest;
-}
+// Re-export L0 types for backward compatibility
+export type {
+  AgentResolver,
+  LiveAgentHandle,
+  TaskableAgent,
+  TaskableAgentSummary,
+} from "@koi/core/agent-resolver";
 
-/** Summary of an agent type for LLM-facing tool descriptors. */
-export interface TaskableAgentSummary {
-  readonly key: string;
-  readonly name: string;
-  readonly description: string;
-}
-
-/** Handle returned by findLive — includes agent state for routing decisions. */
-export interface LiveAgentHandle {
-  readonly agentId: AgentId;
-  readonly state: "idle" | "busy";
-}
-
-/**
- * Dynamic agent resolver — replaces static Map for agent lookup.
- * Enables registry-backed, catalog-backed, or file-system-backed discovery.
- */
-export interface AgentResolver {
-  /** Resolve a single agent type by key. */
-  readonly resolve: (
-    agentType: string,
-  ) => TaskableAgent | undefined | Promise<TaskableAgent | undefined>;
-  /** List all available agent summaries (for tool descriptor enum). */
-  readonly list: () => readonly TaskableAgentSummary[] | Promise<readonly TaskableAgentSummary[]>;
-  /** Find a live agent of the given type (copilot routing). Returns handle with state info. */
-  readonly findLive?:
-    | ((agentType: string) => LiveAgentHandle | undefined | Promise<LiveAgentHandle | undefined>)
-    | undefined;
-}
+// Import for local use
+import type { AgentResolver, TaskableAgent, TaskableAgentSummary } from "@koi/core/agent-resolver";
 
 /** Options passed to the spawn callback by the task tool. */
 export interface TaskSpawnRequest {
@@ -155,8 +131,19 @@ export function createMapAgentResolver(agents: ReadonlyMap<string, TaskableAgent
   }));
 
   return {
-    resolve(agentType: string): TaskableAgent | undefined {
-      return agents.get(agentType);
+    resolve(agentType: string): Result<TaskableAgent, KoiError> {
+      const agent = agents.get(agentType);
+      if (agent === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Unknown agent type '${agentType}'`,
+            retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
+          },
+        };
+      }
+      return { ok: true, value: agent };
     },
     list(): readonly TaskableAgentSummary[] {
       return summaries;

@@ -76,7 +76,7 @@ describe("validateParallelMinionsConfig", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("rejects missing agents", () => {
+  it("rejects config with neither agents nor agentResolver", () => {
     const config = validConfig();
     delete config.agents;
     const result = validateParallelMinionsConfig(config);
@@ -89,13 +89,43 @@ describe("validateParallelMinionsConfig", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("rejects empty agents map", () => {
+  it("rejects empty agents map when no agentResolver is set", () => {
     const result = validateParallelMinionsConfig({
       ...validConfig(),
       agents: new Map(),
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain("at least one agent");
+  });
+
+  it("accepts empty agents map when agentResolver is set", () => {
+    const result = validateParallelMinionsConfig({
+      spawn: async () => ({ ok: true, output: "ok" }),
+      agents: new Map(),
+      agentResolver: {
+        resolve: async () => ({
+          ok: false,
+          error: { code: "NOT_FOUND", message: "nope", retryable: false },
+        }),
+        list: async () => [],
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts config with only agentResolver (no agents)", () => {
+    const config = {
+      spawn: async () => ({ ok: true, output: "ok" }),
+      agentResolver: {
+        resolve: async () => ({
+          ok: false,
+          error: { code: "NOT_FOUND", message: "nope", retryable: false },
+        }),
+        list: async () => [],
+      },
+    };
+    const result = validateParallelMinionsConfig(config);
+    expect(result.ok).toBe(true);
   });
 
   it("rejects agent with empty name", () => {

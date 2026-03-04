@@ -1,6 +1,8 @@
 import { describe, expect, it, mock } from "bun:test";
+import type { TaskableAgent } from "@koi/core/agent-resolver";
 import type { AgentManifest } from "@koi/core/assembly";
 import { agentId } from "@koi/core/ecs";
+import type { KoiError, Result } from "@koi/core/errors";
 import { createTaskTool, DEFAULT_DESCRIPTOR_TTL_MS } from "./task-tool.js";
 import type {
   AgentResolver,
@@ -22,6 +24,32 @@ const RESEARCH_MANIFEST: AgentManifest = {
   version: "0.0.1",
   model: { name: "research-model" },
 };
+
+/** Helper: creates a Result-returning resolver from a lookup map. */
+function createTestResolver(
+  agents: ReadonlyMap<string, TaskableAgent>,
+  overrides?: Partial<AgentResolver>,
+): AgentResolver {
+  const summaries = [...agents.entries()].map(([key, a]) => ({
+    key,
+    name: a.name,
+    description: a.description,
+  }));
+  return {
+    resolve: async (type): Promise<Result<TaskableAgent, KoiError>> => {
+      const agent = agents.get(type);
+      if (agent === undefined) {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: `Unknown agent type '${type}'`, retryable: false },
+        };
+      }
+      return { ok: true, value: agent };
+    },
+    list: async () => summaries,
+    ...overrides,
+  };
+}
 
 function createConfig(
   overrides?: Partial<TaskSpawnConfig> & { readonly spawnFn?: SpawnFn },
@@ -268,17 +296,12 @@ describe("createTaskTool", () => {
   });
 
   it("resolves agent via agentResolver when provided", async () => {
-    const resolver: AgentResolver = {
-      resolve: async (type) =>
-        type === "custom"
-          ? {
-              name: "custom-agent",
-              description: "Custom",
-              manifest: MOCK_MANIFEST,
-            }
-          : undefined,
-      list: async () => [{ key: "custom", name: "custom-agent", description: "Custom agent" }],
+    const customAgent: TaskableAgent = {
+      name: "custom-agent",
+      description: "Custom",
+      manifest: MOCK_MANIFEST,
     };
+    const resolver = createTestResolver(new Map([["custom", customAgent]]));
     const spawnFn = mock(
       async (): Promise<TaskSpawnResult> => ({
         ok: true,
@@ -298,13 +321,11 @@ describe("createTaskTool", () => {
   });
 
   it("builds dynamic enum in descriptor from agent summaries", async () => {
-    const resolver: AgentResolver = {
-      resolve: async () => undefined,
-      list: async () => [
-        { key: "researcher", name: "Researcher", description: "Researches" },
-        { key: "coder", name: "Coder", description: "Codes" },
-      ],
-    };
+    const agents = new Map<string, TaskableAgent>([
+      ["researcher", { name: "Researcher", description: "Researches", manifest: MOCK_MANIFEST }],
+      ["coder", { name: "Coder", description: "Codes", manifest: MOCK_MANIFEST }],
+    ]);
+    const resolver = createTestResolver(agents);
     const tool = await createTaskTool({
       agentResolver: resolver,
       spawn: async () => ({ ok: true, output: "" }),
@@ -317,14 +338,14 @@ describe("createTaskTool", () => {
 
   it("routes to live copilot when findLive returns an idle handle", async () => {
     const liveAgentId = agentId("copilot-123");
-    const resolver: AgentResolver = {
-      resolve: async (type) =>
-        type === "test"
-          ? { name: "test-agent", description: "A test", manifest: MOCK_MANIFEST }
-          : undefined,
-      list: async () => [{ key: "test", name: "test-agent", description: "A test" }],
-      findLive: async () => ({ agentId: liveAgentId, state: "idle" as const }),
+    const testAgent: TaskableAgent = {
+      name: "test-agent",
+      description: "A test",
+      manifest: MOCK_MANIFEST,
     };
+    const resolver = createTestResolver(new Map([["test", testAgent]]), {
+      findLive: async () => ({ agentId: liveAgentId, state: "idle" as const }),
+    });
     const spawnFn = mock(async (): Promise<TaskSpawnResult> => ({ ok: true, output: "spawned" }));
     const messageFn = mock(
       async (request: TaskMessageRequest): Promise<TaskSpawnResult> => ({
@@ -351,14 +372,14 @@ describe("createTaskTool", () => {
   });
 
   it("falls through to spawn when findLive returns undefined", async () => {
-    const resolver: AgentResolver = {
-      resolve: async (type) =>
-        type === "test"
-          ? { name: "test-agent", description: "A test", manifest: MOCK_MANIFEST }
-          : undefined,
-      list: async () => [{ key: "test", name: "test-agent", description: "A test" }],
-      findLive: async () => undefined,
+    const testAgent: TaskableAgent = {
+      name: "test-agent",
+      description: "A test",
+      manifest: MOCK_MANIFEST,
     };
+    const resolver = createTestResolver(new Map([["test", testAgent]]), {
+      findLive: async () => undefined,
+    });
     const spawnFn = mock(async (): Promise<TaskSpawnResult> => ({ ok: true, output: "spawned" }));
     const messageFn = mock(
       async (): Promise<TaskSpawnResult> => ({ ok: true, output: "messaged" }),
@@ -378,14 +399,14 @@ describe("createTaskTool", () => {
   });
 
   it("falls through to spawn when message fn is absent", async () => {
-    const resolver: AgentResolver = {
-      resolve: async (type) =>
-        type === "test"
-          ? { name: "test-agent", description: "A test", manifest: MOCK_MANIFEST }
-          : undefined,
-      list: async () => [{ key: "test", name: "test-agent", description: "A test" }],
-      findLive: async () => ({ agentId: agentId("copilot-123"), state: "idle" as const }),
+    const testAgent: TaskableAgent = {
+      name: "test-agent",
+      description: "A test",
+      manifest: MOCK_MANIFEST,
     };
+    const resolver = createTestResolver(new Map([["test", testAgent]]), {
+      findLive: async () => ({ agentId: agentId("copilot-123"), state: "idle" as const }),
+    });
     const spawnFn = mock(async (): Promise<TaskSpawnResult> => ({ ok: true, output: "spawned" }));
 
     const tool = await createTaskTool({
@@ -401,14 +422,14 @@ describe("createTaskTool", () => {
   });
 
   it("clears timeout on message callback failure", async () => {
-    const resolver: AgentResolver = {
-      resolve: async (type) =>
-        type === "test"
-          ? { name: "test-agent", description: "A test", manifest: MOCK_MANIFEST }
-          : undefined,
-      list: async () => [{ key: "test", name: "test-agent", description: "A test" }],
-      findLive: async () => ({ agentId: agentId("copilot-456"), state: "idle" as const }),
+    const testAgent: TaskableAgent = {
+      name: "test-agent",
+      description: "A test",
+      manifest: MOCK_MANIFEST,
     };
+    const resolver = createTestResolver(new Map([["test", testAgent]]), {
+      findLive: async () => ({ agentId: agentId("copilot-456"), state: "idle" as const }),
+    });
     const spawnFn = mock(async (): Promise<TaskSpawnResult> => ({ ok: true, output: "spawned" }));
     const messageFn = mock(async (): Promise<TaskSpawnResult> => {
       throw new Error("message delivery failed");
@@ -428,14 +449,14 @@ describe("createTaskTool", () => {
   });
 
   it("falls through to spawn when findLive returns busy handle", async () => {
-    const resolver: AgentResolver = {
-      resolve: async (type) =>
-        type === "test"
-          ? { name: "test-agent", description: "A test", manifest: MOCK_MANIFEST }
-          : undefined,
-      list: async () => [{ key: "test", name: "test-agent", description: "A test" }],
-      findLive: async () => ({ agentId: agentId("busy-copilot"), state: "busy" as const }),
+    const testAgent: TaskableAgent = {
+      name: "test-agent",
+      description: "A test",
+      manifest: MOCK_MANIFEST,
     };
+    const resolver = createTestResolver(new Map([["test", testAgent]]), {
+      findLive: async () => ({ agentId: agentId("busy-copilot"), state: "busy" as const }),
+    });
     const spawnFn = mock(async (): Promise<TaskSpawnResult> => ({ ok: true, output: "spawned" }));
     const messageFn = mock(
       async (): Promise<TaskSpawnResult> => ({ ok: true, output: "messaged" }),
@@ -463,11 +484,31 @@ describe("createTaskTool", () => {
   it("refreshes descriptor after TTL expires", async () => {
     // let: track call count to vary list() results
     let listCallCount = 0;
+    const testAgent: TaskableAgent = {
+      name: "test-agent",
+      description: "Agent test",
+      manifest: MOCK_MANIFEST,
+    };
+    const newAgent: TaskableAgent = {
+      name: "new-agent",
+      description: "A new agent",
+      manifest: MOCK_MANIFEST,
+    };
     const resolver: AgentResolver = {
-      resolve: async (type) =>
-        type === "test" || type === "new-agent"
-          ? { name: type, description: `Agent ${type}`, manifest: MOCK_MANIFEST }
-          : undefined,
+      resolve: async (type): Promise<Result<TaskableAgent, KoiError>> => {
+        const agents = new Map([
+          ["test", testAgent],
+          ["new-agent", newAgent],
+        ]);
+        const agent = agents.get(type);
+        if (agent === undefined) {
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: "Not found", retryable: false },
+          };
+        }
+        return { ok: true, value: agent };
+      },
       list: async () => {
         listCallCount++;
         if (listCallCount <= 1) {
@@ -506,14 +547,14 @@ describe("createTaskTool", () => {
   });
 
   it("messageFn throw propagates to caller", async () => {
-    const resolver: AgentResolver = {
-      resolve: async (type) =>
-        type === "test"
-          ? { name: "test-agent", description: "A test", manifest: MOCK_MANIFEST }
-          : undefined,
-      list: async () => [{ key: "test", name: "test-agent", description: "A test" }],
-      findLive: async () => ({ agentId: agentId("copilot-err"), state: "idle" as const }),
+    const testAgent: TaskableAgent = {
+      name: "test-agent",
+      description: "A test",
+      manifest: MOCK_MANIFEST,
     };
+    const resolver = createTestResolver(new Map([["test", testAgent]]), {
+      findLive: async () => ({ agentId: agentId("copilot-err"), state: "idle" as const }),
+    });
     const messageFn = mock(async (): Promise<TaskSpawnResult> => {
       throw new Error("gateway unreachable");
     });

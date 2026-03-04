@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: [
     "src/index.ts",
+    "src/agent-resolver.ts",
     "src/assembly.ts",
     "src/config.ts",
     "src/channel.ts",

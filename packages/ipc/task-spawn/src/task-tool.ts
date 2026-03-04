@@ -86,11 +86,12 @@ export async function createTaskTool(config: TaskSpawnConfig): Promise<Tool> {
         return "Error: 'agent_type' is required when no default agent is configured";
       }
 
-      const agent = await Promise.resolve(resolver.resolve(agentType));
-      if (agent === undefined) {
+      const resolveResult = await Promise.resolve(resolver.resolve(agentType));
+      if (!resolveResult.ok) {
         const available = cachedSummaries.map((s) => s.key).join(", ");
         return `Error: unknown agent type '${agentType}'. Available: ${available}`;
       }
+      const agent = resolveResult.value;
 
       const controller = new AbortController();
       const timer = setTimeout(() => {

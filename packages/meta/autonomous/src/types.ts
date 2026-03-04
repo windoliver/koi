@@ -3,8 +3,10 @@
  */
 
 import type {
+  AgentResolver,
   CheckpointPolicy,
   ComponentProvider,
+  ForgeStore,
   InboxPolicy,
   KoiMiddleware,
   ThreadStore,
@@ -31,6 +33,12 @@ export interface AutonomousAgentParts {
   readonly checkpointPolicy?: CheckpointPolicy | undefined;
   /** Inbox policy override. Defaults to DEFAULT_INBOX_POLICY. */
   readonly inboxPolicy?: InboxPolicy | undefined;
+  /** Optional agent resolver for dynamic agent discovery (forge-backed). */
+  readonly agentResolver?: AgentResolver | undefined;
+  /** Optional forge store for creating catalog-backed resolvers. */
+  readonly forgeStore?: ForgeStore | undefined;
+  /** Optional health recorder for spawn fitness tracking. */
+  readonly healthRecorder?: import("./spawn-fitness-wrapper.js").SpawnHealthRecorder | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,4 +56,6 @@ export interface AutonomousAgent {
   readonly providers: () => readonly ComponentProvider[];
   /** Dispose all parts in correct order (scheduler first, then harness). */
   readonly dispose: () => Promise<void>;
+  /** Agent resolver -- auto-created from forgeStore if not provided explicitly. */
+  readonly agentResolver?: AgentResolver | undefined;
 }

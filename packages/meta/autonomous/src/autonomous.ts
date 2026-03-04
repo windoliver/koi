@@ -2,10 +2,40 @@
  * Autonomous agent factory — composes harness + scheduler + optional compactor
  * into a coordinated autonomous agent with checkpoint/inbox support.
  *
+ * ## Forge → Delegation Bridge (auto-enabled)
+ *
+ * Pass `forgeStore` to enable automatic agent discovery via the forge:
+ *
+ *   const agent = createAutonomousAgent({ harness, scheduler, forgeStore });
+ *
+ * This auto-creates a CatalogAgentResolver that:
+ *   - Discovers agent bricks from the forge matching requested type tags
+ *   - Selects the best brick by fitness score (weighted random)
+ *   - Parses and caches manifests (TTL-based)
+ *
+ * The resolver is exposed on the returned `agent.agentResolver` and can be
+ * passed directly to delegation tool configs:
+ *
+ *   const config: ParallelMinionsConfig = {
+ *     agentResolver: agent.agentResolver,
+ *     spawn: mySpawnFn,
+ *   };
+ *
+ * For spawn fitness tracking, also pass `healthRecorder` and wrap your
+ * spawn function with `createSpawnFitnessWrapper()`:
+ *
+ *   import { createSpawnFitnessWrapper, embedBrickId } from "@koi/autonomous";
+ *
+ *   const wrappedSpawn = createSpawnFitnessWrapper(rawSpawn, { healthRecorder });
+ *
+ * Spawn outcomes feed back into brick fitness scores, so higher-performing
+ * agent bricks are selected more often over time.
+ *
  * Disposal order: stop scheduler first (prevents new resumes), then dispose harness.
  */
 
-import type { ComponentProvider, InboxComponent, KoiMiddleware } from "@koi/core";
+import { createCatalogAgentResolver } from "@koi/catalog";
+import type { AgentResolver, ComponentProvider, InboxComponent, KoiMiddleware } from "@koi/core";
 import {
   createAutonomousProvider,
   createCheckpointMiddleware,
@@ -106,6 +136,13 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
 
   const cachedProviders: readonly ComponentProvider[] = providerList;
 
+  // --- Agent resolver: auto-create from forgeStore if not provided ---
+  const resolvedAgentResolver: AgentResolver | undefined =
+    parts.agentResolver ??
+    (parts.forgeStore !== undefined
+      ? createCatalogAgentResolver({ forgeStore: parts.forgeStore })
+      : undefined);
+
   // --- API ---
   const middleware = (): readonly KoiMiddleware[] => cachedMiddleware;
   const providers = (): readonly ComponentProvider[] => cachedProviders;
@@ -124,5 +161,6 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     middleware,
     providers,
     dispose,
+    ...(resolvedAgentResolver !== undefined ? { agentResolver: resolvedAgentResolver } : {}),
   };
 }

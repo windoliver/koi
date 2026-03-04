@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/validation": "workspace:*"
+    "@koi/manifest": "workspace:*",
+    "@koi/validation": "workspace:*",
+    "@koi/variant-selection": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",

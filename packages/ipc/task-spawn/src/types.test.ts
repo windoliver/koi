@@ -57,19 +57,25 @@ describe("TASK_TOOL_DESCRIPTOR", () => {
 });
 
 describe("createMapAgentResolver", () => {
-  it("resolves agent by key from map", () => {
+  it("resolves agent by key from map (returns Result ok)", () => {
     const agent: TaskableAgent = {
       name: "test",
       description: "Test",
       manifest: MOCK_MANIFEST,
     };
     const resolver = createMapAgentResolver(new Map([["test", agent]]));
-    expect(resolver.resolve("test")).toBe(agent);
+    const result = resolver.resolve("test");
+    expect(result).toEqual({ ok: true, value: agent });
   });
 
-  it("returns undefined for unknown key", () => {
+  it("returns NOT_FOUND error for unknown key", async () => {
     const resolver = createMapAgentResolver(new Map());
-    expect(resolver.resolve("unknown")).toBeUndefined();
+    const result = await resolver.resolve("unknown");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.message).toContain("unknown");
+    }
   });
 
   it("lists all agents as summaries", () => {

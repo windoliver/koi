@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import type { ToolHealthSnapshot } from "@koi/core";
+import type { BrickId, KoiError, Result, TaskableAgent, ToolHealthSnapshot } from "@koi/core";
 import {
   DEFAULT_CAPABILITY_GAP_PATTERNS,
+  detectAgentCapabilityGap,
+  detectAgentLatencyDegradation,
+  detectAgentRepeatedFailure,
   detectCapabilityGap,
   detectLatencyDegradation,
   detectRepeatedFailure,
@@ -184,5 +187,172 @@ describe("detectLatencyDegradation", () => {
       metrics: { ...healthySnapshot.metrics, avgLatencyMs: 5000 },
     };
     expect(detectLatencyDegradation("tool-a", snapshot, 5000)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent-level heuristics
+// ---------------------------------------------------------------------------
+
+describe("detectAgentCapabilityGap", () => {
+  const MOCK_AGENT: TaskableAgent = {
+    name: "test-agent",
+    description: "Test",
+    manifest: { name: "test", version: "0.0.1", model: { name: "mock" } },
+  };
+
+  it("returns trigger when resolve returns NOT_FOUND", () => {
+    const result: Result<TaskableAgent, KoiError> = {
+      ok: false,
+      error: { code: "NOT_FOUND", message: "no agent", retryable: false },
+    };
+    const trigger = detectAgentCapabilityGap("research", result);
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("agent_capability_gap");
+    if (trigger?.kind === "agent_capability_gap") {
+      expect(trigger.agentType).toBe("research");
+    }
+  });
+
+  it("returns undefined when resolve succeeds", () => {
+    const result: Result<TaskableAgent, KoiError> = { ok: true, value: MOCK_AGENT };
+    expect(detectAgentCapabilityGap("research", result)).toBeUndefined();
+  });
+
+  it("returns undefined for non-NOT_FOUND errors", () => {
+    const result: Result<TaskableAgent, KoiError> = {
+      ok: false,
+      error: { code: "EXTERNAL", message: "store down", retryable: true },
+    };
+    expect(detectAgentCapabilityGap("research", result)).toBeUndefined();
+  });
+});
+
+describe("detectAgentRepeatedFailure", () => {
+  const BRICK_ID = "sha256:abc123" as BrickId;
+
+  const healthySnapshot: ToolHealthSnapshot = {
+    brickId: BRICK_ID,
+    toolId: "agent:research",
+    metrics: { successRate: 0.9, errorRate: 0.1, usageCount: 20, avgLatencyMs: 200 },
+    state: "healthy",
+    recentFailures: [],
+    lastUpdatedAt: 1000,
+  };
+
+  const failingSnapshot: ToolHealthSnapshot = {
+    brickId: BRICK_ID,
+    toolId: "agent:research",
+    metrics: { successRate: 0.3, errorRate: 0.7, usageCount: 10, avgLatencyMs: 500 },
+    state: "degraded",
+    recentFailures: [],
+    lastUpdatedAt: 2000,
+  };
+
+  it("returns undefined when snapshot is undefined", () => {
+    expect(detectAgentRepeatedFailure("research", BRICK_ID, undefined, 0.5)).toBeUndefined();
+  });
+
+  it("returns undefined when usage count below minSamples", () => {
+    const lowUsage: ToolHealthSnapshot = {
+      ...failingSnapshot,
+      metrics: { ...failingSnapshot.metrics, usageCount: 3 },
+    };
+    expect(detectAgentRepeatedFailure("research", BRICK_ID, lowUsage, 0.5)).toBeUndefined();
+  });
+
+  it("returns undefined when error rate below threshold", () => {
+    expect(detectAgentRepeatedFailure("research", BRICK_ID, healthySnapshot, 0.5)).toBeUndefined();
+  });
+
+  it("returns trigger when error rate exceeds threshold", () => {
+    const trigger = detectAgentRepeatedFailure("research", BRICK_ID, failingSnapshot, 0.5);
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("agent_repeated_failure");
+    if (trigger?.kind === "agent_repeated_failure") {
+      expect(trigger.agentType).toBe("research");
+      expect(trigger.brickId).toBe(BRICK_ID);
+      expect(trigger.errorRate).toBe(0.7);
+    }
+  });
+
+  it("respects custom minSamples parameter", () => {
+    const trigger = detectAgentRepeatedFailure("research", BRICK_ID, failingSnapshot, 0.5, 15);
+    expect(trigger).toBeUndefined(); // usageCount=10 < minSamples=15
+  });
+
+  it("returns trigger at threshold boundary (error rate equals threshold)", () => {
+    const atThreshold: ToolHealthSnapshot = {
+      ...healthySnapshot,
+      metrics: { ...healthySnapshot.metrics, errorRate: 0.5 },
+    };
+    const trigger = detectAgentRepeatedFailure("research", BRICK_ID, atThreshold, 0.5);
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("agent_repeated_failure");
+  });
+
+  it("returns undefined just below threshold", () => {
+    const belowThreshold: ToolHealthSnapshot = {
+      ...healthySnapshot,
+      metrics: { ...healthySnapshot.metrics, errorRate: 0.49 },
+    };
+    expect(detectAgentRepeatedFailure("research", BRICK_ID, belowThreshold, 0.5)).toBeUndefined();
+  });
+});
+
+describe("detectAgentLatencyDegradation", () => {
+  const BRICK_ID = "sha256:def456" as BrickId;
+
+  const fastSnapshot: ToolHealthSnapshot = {
+    brickId: BRICK_ID,
+    toolId: "agent:code",
+    metrics: { successRate: 0.95, errorRate: 0.05, usageCount: 30, avgLatencyMs: 500 },
+    state: "healthy",
+    recentFailures: [],
+    lastUpdatedAt: 1000,
+  };
+
+  const slowSnapshot: ToolHealthSnapshot = {
+    brickId: BRICK_ID,
+    toolId: "agent:code",
+    metrics: { successRate: 0.8, errorRate: 0.2, usageCount: 15, avgLatencyMs: 12000 },
+    state: "degraded",
+    recentFailures: [],
+    lastUpdatedAt: 2000,
+  };
+
+  it("returns undefined when snapshot is undefined", () => {
+    expect(detectAgentLatencyDegradation("code", BRICK_ID, undefined, 10000)).toBeUndefined();
+  });
+
+  it("returns undefined when usage count is zero", () => {
+    const emptySnapshot: ToolHealthSnapshot = {
+      ...fastSnapshot,
+      metrics: { ...fastSnapshot.metrics, usageCount: 0 },
+    };
+    expect(detectAgentLatencyDegradation("code", BRICK_ID, emptySnapshot, 10000)).toBeUndefined();
+  });
+
+  it("returns undefined when latency below threshold", () => {
+    expect(detectAgentLatencyDegradation("code", BRICK_ID, fastSnapshot, 10000)).toBeUndefined();
+  });
+
+  it("returns trigger when latency exceeds threshold", () => {
+    const trigger = detectAgentLatencyDegradation("code", BRICK_ID, slowSnapshot, 10000);
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("agent_latency_degradation");
+    if (trigger?.kind === "agent_latency_degradation") {
+      expect(trigger.agentType).toBe("code");
+      expect(trigger.brickId).toBe(BRICK_ID);
+      expect(trigger.p95Ms).toBe(12000);
+    }
+  });
+
+  it("returns undefined at threshold boundary (latency equals threshold)", () => {
+    const atThreshold: ToolHealthSnapshot = {
+      ...fastSnapshot,
+      metrics: { ...fastSnapshot.metrics, avgLatencyMs: 10000 },
+    };
+    expect(detectAgentLatencyDegradation("code", BRICK_ID, atThreshold, 10000)).toBeUndefined();
   });
 });

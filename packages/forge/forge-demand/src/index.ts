@@ -18,6 +18,9 @@ export {
 export { createForgeDemandDetector } from "./demand-detector.js";
 export {
   DEFAULT_CAPABILITY_GAP_PATTERNS,
+  detectAgentCapabilityGap,
+  detectAgentLatencyDegradation,
+  detectAgentRepeatedFailure,
   detectCapabilityGap,
   detectLatencyDegradation,
   detectRepeatedFailure,
