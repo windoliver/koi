@@ -1,0 +1,30 @@
+{
+  "name": "@koi/workspace-stack",
+  "description": "Backend factory for Nexus-backed agent workspaces",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/nexus-client": "workspace:*",
+    "@koi/filesystem-nexus": "workspace:*",
+    "@koi/permissions-nexus": "workspace:*",
+    "@koi/search-nexus": "workspace:*",
+    "@koi/search-provider": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

@@ -53,6 +53,7 @@ export { createFactory } from "./factory.js";
 export type { FakeEngineAdapterConfig, FakeEngineAdapterResult } from "./fake-engine-adapter.js";
 export { createFakeEngineAdapter } from "./fake-engine-adapter.js";
 export { createFakeNexusFetch } from "./fake-nexus-fetch.js";
+export { runFileSystemBackendContractTests } from "./fs-backend-contract.js";
 export type {
   MockGovernanceBackendOverrides,
   MockGovernanceControllerOverrides,

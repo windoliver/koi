@@ -306,6 +306,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/fs/filesystem-nexus": {
+      "name": "@koi/filesystem-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/fs/lsp": {
       "name": "@koi/lsp",
       "version": "0.0.0",
@@ -1061,6 +1072,21 @@
         "@koi/scratchpad-local": "workspace:*",
         "@koi/soul": "workspace:*",
         "@koi/tool-browser": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/meta/workspace-stack": {
+      "name": "@koi/workspace-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/filesystem-nexus": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+        "@koi/permissions-nexus": "workspace:*",
+        "@koi/search-nexus": "workspace:*",
+        "@koi/search-provider": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -3011,6 +3037,8 @@
 
     "@koi/filesystem": ["@koi/filesystem@workspace:packages/fs/filesystem"],
 
+    "@koi/filesystem-nexus": ["@koi/filesystem-nexus@workspace:packages/fs/filesystem-nexus"],
+
     "@koi/forge": ["@koi/forge@workspace:packages/meta/forge"],
 
     "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/forge/forge-demand"],
@@ -3280,6 +3308,8 @@
     "@koi/workspace": ["@koi/workspace@workspace:packages/ipc/workspace"],
 
     "@koi/workspace-nexus": ["@koi/workspace-nexus@workspace:packages/ipc/workspace-nexus"],
+
+    "@koi/workspace-stack": ["@koi/workspace-stack@workspace:packages/meta/workspace-stack"],
 
     "@linear/sdk": ["@linear/sdk@37.0.0", "", { "dependencies": { "@graphql-typed-document-node/core": "^3.1.0", "graphql": "^15.4.0", "isomorphic-unfetch": "^3.1.0" } }, "sha512-EAZCXtV414Nwtvrwn7Ucu3E8BbYYKsc3HqZCGf1mHUE7FhZGtfISu295DOVv89WhhXlp2N344EMg3K0nnhLxtA=="],
 
