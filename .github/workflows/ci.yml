@@ -40,6 +40,9 @@ jobs:
       - name: Check layer boundaries
         run: bun run check:layers
 
+      - name: Check package descriptions
+        run: bun run check:descriptions
+
       - name: Check doc sync
         run: bun run check:doc-sync
 

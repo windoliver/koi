@@ -1,5 +1,6 @@
 {
   "name": "@koi/engine-loop",
+  "description": "Execute pure TypeScript ReAct loop with parallel tool calls and iterative Reason+Act cycles",
   "version": "0.0.0",
   "private": true,
   "type": "module",

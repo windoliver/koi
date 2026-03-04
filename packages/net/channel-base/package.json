@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-base",
+  "description": "Build ChannelAdapters with lifecycle, capability-aware rendering, and retry handling",
   "version": "0.0.0",
   "private": true,
   "type": "module",

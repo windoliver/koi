@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox-vercel",
+  "description": "Execute code in Vercel Firecracker microVMs for remote sandboxed execution",
   "version": "0.0.0",
   "private": true,
   "type": "module",

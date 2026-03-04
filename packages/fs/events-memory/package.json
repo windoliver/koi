@@ -1,5 +1,6 @@
 {
   "name": "@koi/events-memory",
+  "description": "Store events in memory with replay, named subscriptions, and dead letter queue capability",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/code-executor",
+  "description": "Execute scripts via Wasm sandbox for multi-tool orchestration in a single turn",
   "version": "0.0.0",
   "private": true,
   "type": "module",

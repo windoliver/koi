@@ -1,5 +1,6 @@
 {
   "name": "@koi/config",
+  "description": "Provide runtime policy configuration with hot-reload, validation, and engine integration",
   "version": "0.0.0",
   "private": true,
   "type": "module",

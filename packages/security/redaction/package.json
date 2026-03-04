@@ -1,5 +1,6 @@
 {
   "name": "@koi/redaction",
+  "description": "Mask secrets (API keys, credentials, tokens) in logs with 13 built-in pattern detectors",
   "version": "0.0.0",
   "private": true,
   "type": "module",

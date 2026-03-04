@@ -1,5 +1,6 @@
 {
   "name": "@koi/engine-external",
+  "description": "Wrap any external process as engine adapter with single-shot, long-lived, and PTY modes",
   "version": "0.0.0",
   "private": true,
   "type": "module",

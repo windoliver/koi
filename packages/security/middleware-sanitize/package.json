@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-sanitize",
+  "description": "Strip injection patterns, control characters, HTML tags, and zero-width chars from content",
   "version": "0.0.0",
   "private": true,
   "type": "module",

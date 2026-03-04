@@ -1,5 +1,6 @@
 {
   "name": "@koi/filesystem",
+  "description": "Expose filesystem backend operations as discoverable Tool components across all engines",
   "version": "0.0.0",
   "private": true,
   "type": "module",

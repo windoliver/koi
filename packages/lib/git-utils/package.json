@@ -1,5 +1,6 @@
 {
   "name": "@koi/git-utils",
+  "description": "Wrap git CLI commands and resolve worktree paths via Bun.spawn",
   "version": "0.0.0",
   "private": true,
   "type": "module",

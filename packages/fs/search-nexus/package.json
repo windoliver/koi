@@ -1,5 +1,6 @@
 {
   "name": "@koi/search-nexus",
+  "description": "Plug Nexus search API v2 as backend for @koi/search hybrid retrieval",
   "version": "0.0.0",
   "private": true,
   "type": "module",

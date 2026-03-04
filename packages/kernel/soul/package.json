@@ -1,5 +1,6 @@
 {
   "name": "@koi/soul",
+  "description": "Inject unified agent personality through system prompts across soul, identity, and user layers",
   "version": "0.0.0",
   "private": true,
   "type": "module",

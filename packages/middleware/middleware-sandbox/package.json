@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-sandbox",
+  "description": "Enforce timeout, output truncation, and error classification for sandboxed tools",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/capability-verifier",
+  "description": "Verify HMAC and Ed25519 capability tokens, track session revocation, validate delegation chains",
   "version": "0.0.0",
   "private": true,
   "type": "module",

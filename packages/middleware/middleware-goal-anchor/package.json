@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-goal-anchor",
+  "description": "Inject live todo list tracking objective completion into every model call",
   "version": "0.0.0",
   "private": true,
   "type": "module",

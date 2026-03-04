@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-call-limits",
+  "description": "Enforce per-session and per-tool call count limits with configurable exit behavior",
   "version": "0.0.0",
   "private": true,
   "type": "module",

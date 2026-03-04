@@ -1,5 +1,6 @@
 {
   "name": "@koi/snapshot-chain-store",
+  "description": "Store snapshot chains in memory with full DAG topology and ancestor walking",
   "version": "0.0.0",
   "private": true,
   "type": "module",

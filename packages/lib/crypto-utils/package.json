@@ -1,5 +1,6 @@
 {
   "name": "@koi/crypto-utils",
+  "description": "Generate Ed25519 keys, sign and verify messages, compute SHA-256 hashes",
   "version": "0.0.0",
   "private": true,
   "type": "module",

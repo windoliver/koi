@@ -1,5 +1,6 @@
 {
   "name": "@koi/token-estimator",
+  "description": "Estimate tokens using configurable heuristics (default: 4 chars per token)",
   "version": "0.0.0",
   "private": true,
   "type": "module",

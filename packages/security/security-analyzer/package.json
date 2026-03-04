@@ -1,5 +1,6 @@
 {
   "name": "@koi/security-analyzer",
+  "description": "Classify tool call risk via pattern matching and multi-analyzer aggregation with anomaly elevation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

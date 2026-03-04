@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox-daytona",
+  "description": "Execute code in Daytona cloud with native FUSE volume support",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-semantic-retry",
+  "description": "Analyze failure root causes and rewrite prompts with context-aware retry actions",
   "version": "0.0.0",
   "private": true,
   "type": "module",

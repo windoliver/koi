@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox",
+  "description": "Provide OS-level sandboxing with macOS Seatbelt and Linux bubblewrap isolation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

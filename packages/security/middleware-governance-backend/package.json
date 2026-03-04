@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-governance-backend",
+  "description": "Wrap model/tool calls with fail-closed policy evaluation gate",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/forge-tools",
+  "description": "Provide primordial tools, component provider, resolver, and store utilities",
   "version": "0.0.0",
   "private": true,
   "type": "module",

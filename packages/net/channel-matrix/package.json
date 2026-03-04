@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-matrix",
+  "description": "Connect Matrix homeservers with auto-join and debouncing",
   "version": "0.0.0",
   "private": true,
   "type": "module",

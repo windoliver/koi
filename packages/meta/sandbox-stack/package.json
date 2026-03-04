@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox-stack",
+  "description": "One-call factory for sandboxed code execution with timeout guards and pluggable backend adapters",
   "version": "0.0.0",
   "private": true,
   "type": "module",

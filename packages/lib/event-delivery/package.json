@@ -1,5 +1,6 @@
 {
   "name": "@koi/event-delivery",
+  "description": "Manage event subscriptions with serialized delivery, retry, dead letter queue, and replay",
   "version": "0.0.0",
   "private": true,
   "type": "module",

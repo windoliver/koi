@@ -1,5 +1,6 @@
 {
   "name": "@koi/engine-rlm",
+  "description": "Virtualize unbounded input outside context window with recursive chunking and sub-querying",
   "version": "0.0.0",
   "private": true,
   "type": "module",

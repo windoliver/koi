@@ -1,5 +1,6 @@
 {
   "name": "@koi/engine-claude",
+  "description": "Delegate to Claude Agent SDK query() with in-process MCP bridge for Koi tool execution",
   "version": "0.0.0",
   "private": true,
   "type": "module",

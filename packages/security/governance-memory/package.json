@@ -1,5 +1,6 @@
 {
   "name": "@koi/governance-memory",
+  "description": "Evaluate Cedar-inspired constraint DAGs with adaptive thresholds and anomaly integration",
   "version": "0.0.0",
   "private": true,
   "type": "module",

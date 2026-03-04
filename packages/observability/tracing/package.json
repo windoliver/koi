@@ -1,5 +1,6 @@
 {
   "name": "@koi/tracing",
+  "description": "Emit OpenTelemetry spans for session, turn, model, and tool lifecycle events",
   "version": "0.0.0",
   "private": true,
   "type": "module",

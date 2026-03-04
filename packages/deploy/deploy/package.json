@@ -1,5 +1,6 @@
 {
   "name": "@koi/deploy",
+  "description": "Generate OS-native service files and manage agent lifecycle (systemd/launchd, health checks)",
   "version": "0.0.0",
   "private": true,
   "type": "module",

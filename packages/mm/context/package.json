@@ -1,5 +1,6 @@
 {
   "name": "@koi/context",
+  "description": "Hydrate agent context from multiple sources at session start and inject as system message",
   "version": "0.0.0",
   "private": true,
   "type": "module",

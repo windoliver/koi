@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-audit",
+  "description": "Log structured audit entries for all model/tool calls with PII redaction support",
   "version": "0.0.0",
   "private": true,
   "type": "module",

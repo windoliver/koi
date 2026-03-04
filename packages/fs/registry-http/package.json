@@ -1,5 +1,6 @@
 {
   "name": "@koi/registry-http",
+  "description": "Read skill registry via REST with LRU + TTL cache; fail-open search",
   "version": "0.0.0",
   "private": true,
   "type": "module",

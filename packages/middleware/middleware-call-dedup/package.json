@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-call-dedup",
+  "description": "Cache identical tool call results per session to avoid redundant re-execution",
   "version": "0.0.0",
   "private": true,
   "type": "module",

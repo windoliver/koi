@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox-e2b",
+  "description": "Execute code in E2B Firecracker microVMs for remote sandboxed execution",
   "version": "0.0.0",
   "private": true,
   "type": "module",

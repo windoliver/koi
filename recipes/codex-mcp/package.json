@@ -1,5 +1,6 @@
 {
   "name": "@koi/recipe-codex-mcp",
+  "description": "Run OpenAI Codex as governed MCP tool server in Koi agents via zero-code YAML declaration",
   "version": "0.0.0",
   "private": true,
   "type": "module",

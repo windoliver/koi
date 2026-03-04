@@ -1,5 +1,6 @@
 {
   "name": "@koi/gateway",
+  "description": "Route messages, authenticate sessions, dispatch webhooks, and register nodes",
   "version": "0.0.0",
   "private": true,
   "type": "module",

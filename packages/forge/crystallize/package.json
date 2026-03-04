@@ -1,5 +1,6 @@
 {
   "name": "@koi/crystallize",
+  "description": "Detect repeating tool patterns and surface crystallization candidates for forging",
   "version": "0.0.0",
   "private": true,
   "type": "module",

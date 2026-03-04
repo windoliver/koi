@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-slack",
+  "description": "Connect Slack bots via Socket Mode or HTTP Events API",
   "version": "0.0.0",
   "private": true,
   "type": "module",

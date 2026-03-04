@@ -1,5 +1,6 @@
 {
   "name": "@koi/webhook-provider",
+  "description": "Expose read-only webhook health and configuration as agent tools",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/ipc-local",
+  "description": "Route messages between in-process agents using in-memory mailbox dispatch",
   "version": "0.0.0",
   "private": true,
   "type": "module",

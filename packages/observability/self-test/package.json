@@ -1,5 +1,6 @@
 {
   "name": "@koi/self-test",
+  "description": "Execute pre-deployment smoke tests validating manifests, middleware, and E2E flows",
   "version": "0.0.0",
   "private": true,
   "type": "module",

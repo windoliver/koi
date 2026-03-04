@@ -1,5 +1,6 @@
 {
   "name": "@koi/verified-loop",
+  "description": "Shift control from LLM self-assessment to external objective verification loops",
   "version": "0.0.0",
   "private": true,
   "type": "module",

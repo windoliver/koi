@@ -1,5 +1,6 @@
 {
   "name": "@koi/dashboard-types",
+  "description": "Define shared dashboard event discriminated unions and REST API types",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/starter",
+  "description": "Auto-wire manifest-declared middleware without manual factory calls, with callback customization",
   "version": "0.0.0",
   "private": true,
   "type": "module",

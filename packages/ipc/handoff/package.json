@@ -1,5 +1,6 @@
 {
   "name": "@koi/handoff",
+  "description": "Relay typed context between agents via structured handoff tools and middleware",
   "version": "0.0.0",
   "private": true,
   "type": "module",

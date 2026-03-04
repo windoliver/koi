@@ -1,5 +1,6 @@
 {
   "name": "@koi/test-utils",
+  "description": "Provide mock agents, contract test suites, and spy utilities for testing",
   "version": "0.0.0",
   "private": true,
   "type": "module",

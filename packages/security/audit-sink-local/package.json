@@ -1,5 +1,6 @@
 {
   "name": "@koi/audit-sink-local",
+  "description": "Persist audit events to SQLite or NDJSON files for offline operation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

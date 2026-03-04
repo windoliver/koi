@@ -1,5 +1,6 @@
 {
   "name": "@koi/bundle",
+  "description": "Serialize and import portable agent bundles with integrity verification and deduplication",
   "version": "0.0.0",
   "private": true,
   "type": "module",

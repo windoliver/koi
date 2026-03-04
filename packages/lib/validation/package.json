@@ -1,5 +1,6 @@
 {
   "name": "@koi/validation",
+  "description": "Validate brick artifacts, pipelines, fitness scores, and config schemas",
   "version": "0.0.0",
   "private": true,
   "type": "module",

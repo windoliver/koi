@@ -1,5 +1,6 @@
 {
   "name": "@koi/engine",
+  "description": "Manage kernel runtime including guards, lifecycle, middleware composition, and adapters",
   "version": "0.0.0",
   "private": true,
   "type": "module",

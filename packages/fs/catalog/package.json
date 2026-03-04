@@ -1,5 +1,6 @@
 {
   "name": "@koi/catalog",
+  "description": "Search bundled packages, forged bricks, MCP tools, and skill registry entries via unified discovery",
   "version": "0.0.0",
   "private": true,
   "type": "module",

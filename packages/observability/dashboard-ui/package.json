@@ -1,5 +1,6 @@
 {
   "name": "@koi/dashboard-ui",
+  "description": "Web dashboard for observing agents, channels, skills, and system metrics",
   "version": "0.0.0",
   "private": true,
   "type": "module",

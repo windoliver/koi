@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox-ipc",
+  "description": "Bridge OS-level sandboxing with forge verification via structured IPC",
   "version": "0.0.0",
   "private": true,
   "type": "module",

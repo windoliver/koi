@@ -1,5 +1,6 @@
 {
   "name": "@koi/doctor",
+  "description": "Static security analysis of agent manifests aligned with OWASP Agentic Top 10",
   "version": "0.0.0",
   "private": true,
   "type": "module",

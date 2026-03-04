@@ -1,5 +1,6 @@
 {
   "name": "@koi/ipc-nexus",
+  "description": "Enable agent messaging via Nexus REST API with subscriptions and inbox listing",
   "version": "0.0.0",
   "private": true,
   "type": "module",

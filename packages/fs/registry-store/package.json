@@ -1,5 +1,6 @@
 {
   "name": "@koi/registry-store",
+  "description": "Store bricks, skills, and versions in SQLite with FTS5 search and keyset pagination",
   "version": "0.0.0",
   "private": true,
   "type": "module",

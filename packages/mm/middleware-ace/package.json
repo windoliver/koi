@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-ace",
+  "description": "Record trajectories and consolidate learnings into persistent playbooks per session",
   "version": "0.0.0",
   "private": true,
   "type": "module",

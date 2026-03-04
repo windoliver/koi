@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-canvas-fallback",
+  "description": "Replace A2UI blocks with text links for text-only channels",
   "version": "0.0.0",
   "private": true,
   "type": "module",

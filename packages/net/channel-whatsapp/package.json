@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-whatsapp",
+  "description": "Connect WhatsApp bots via Baileys Web emulation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

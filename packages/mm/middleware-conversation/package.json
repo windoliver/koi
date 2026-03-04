@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-conversation",
+  "description": "Link stateless channel sessions by loading thread history and persisting new turns",
   "version": "0.0.0",
   "private": true,
   "type": "module",

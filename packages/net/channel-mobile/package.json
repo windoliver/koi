@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-mobile",
+  "description": "Serve native mobile apps via WebSocket with JSON frames",
   "version": "0.0.0",
   "private": true,
   "type": "module",

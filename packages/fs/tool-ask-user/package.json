@@ -1,5 +1,6 @@
 {
   "name": "@koi/tool-ask-user",
+  "description": "Elicit structured responses (multi-choice or free-text) mid-execution",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/task-spawn",
+  "description": "Inject task tool for zero-friction delegation to pre-registered subagent types",
   "version": "0.0.0",
   "private": true,
   "type": "module",

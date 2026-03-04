@@ -1,5 +1,6 @@
 {
   "name": "@koi/search",
+  "description": "Provide pluggable BM25 (keyword), vector (semantic), and hybrid search backends",
   "version": "0.0.0",
   "private": true,
   "type": "module",

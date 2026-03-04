@@ -1,5 +1,6 @@
 {
   "name": "@koi/store-sqlite",
+  "description": "Persist bricks to SQLite with WAL mode and parameterized STRICT table schema",
   "version": "0.0.0",
   "private": true,
   "type": "module",

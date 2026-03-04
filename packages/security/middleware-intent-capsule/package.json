@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-intent-capsule",
+  "description": "Sign and verify agent mandate (system prompt + objectives) to defend against goal hijacking",
   "version": "0.0.0",
   "private": true,
   "type": "module",

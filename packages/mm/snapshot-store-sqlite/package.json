@@ -1,5 +1,6 @@
 {
   "name": "@koi/snapshot-store-sqlite",
+  "description": "Persist snapshot chains durably with WAL-mode storage and content-hash dedup",
   "version": "0.0.0",
   "private": true,
   "type": "module",

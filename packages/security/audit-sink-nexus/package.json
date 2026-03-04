@@ -1,5 +1,6 @@
 {
   "name": "@koi/audit-sink-nexus",
+  "description": "Batch and forward audit entries to Nexus server via JSON-RPC with retry",
   "version": "0.0.0",
   "private": true,
   "type": "module",

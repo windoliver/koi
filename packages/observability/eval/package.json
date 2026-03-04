@@ -1,5 +1,6 @@
 {
   "name": "@koi/eval",
+  "description": "Run agent evaluation scenarios with graders, regression detection, and scoring",
   "version": "0.0.0",
   "private": true,
   "type": "module",

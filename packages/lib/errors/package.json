@@ -1,5 +1,6 @@
 {
   "name": "@koi/errors",
+  "description": "Provide KoiRuntimeError class, circuit breaker, retry logic, and filesystem error mapping",
   "version": "0.0.0",
   "private": true,
   "type": "module",

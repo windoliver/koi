@@ -1,5 +1,6 @@
 {
   "name": "@koi/forge-policy",
+  "description": "Enforce governance, track usage, detect drift, and re-verify brick changes",
   "version": "0.0.0",
   "private": true,
   "type": "module",

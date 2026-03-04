@@ -1,5 +1,6 @@
 {
   "name": "@koi/agent-monitor",
+  "description": "Detect anomalous agent behavior via adversarial middleware (excessive calls, errors)",
   "version": "0.0.0",
   "private": true,
   "type": "module",

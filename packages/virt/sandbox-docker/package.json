@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox-docker",
+  "description": "Execute code in Docker containers with offline support and iptables enforcement",
   "version": "0.0.0",
   "private": true,
   "type": "module",

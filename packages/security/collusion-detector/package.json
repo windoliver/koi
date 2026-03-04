@@ -1,5 +1,6 @@
 {
   "name": "@koi/collusion-detector",
+  "description": "Detect agent collusion via synchronous moves, variance collapse, concentration, specialization",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/debug",
+  "description": "Attach runtime debugger with breakpoints, step/pause, and component inspection",
   "version": "0.0.0",
   "private": true,
   "type": "module",

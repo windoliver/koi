@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-goal-reminder",
+  "description": "Periodically inject goal reminders with adaptive intervals based on drift detection",
   "version": "0.0.0",
   "private": true,
   "type": "module",

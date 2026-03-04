@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-teams",
+  "description": "Connect Microsoft Teams bots via Bot Framework HTTP webhooks",
   "version": "0.0.0",
   "private": true,
   "type": "module",

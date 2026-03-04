@@ -1,5 +1,6 @@
 {
   "name": "@koi/lsp",
+  "description": "Bridge any LSP server (TypeScript, Python, Go, Rust, etc.) into Koi's ECS tool system",
   "version": "0.0.0",
   "private": true,
   "type": "module",

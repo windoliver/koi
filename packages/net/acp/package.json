@@ -1,5 +1,6 @@
 {
   "name": "@koi/acp",
+  "description": "Serve agent via IDE Agent Client Protocol (ACP v0.10.x) over stdin/stdout",
   "version": "0.0.0",
   "private": true,
   "type": "module",

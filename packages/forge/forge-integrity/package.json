@@ -1,5 +1,6 @@
 {
   "name": "@koi/forge-integrity",
+  "description": "Verify provenance, sign attestations, and serialize SLSA v1.0 predicates",
   "version": "0.0.0",
   "private": true,
   "type": "module",

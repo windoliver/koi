@@ -1,5 +1,6 @@
 {
   "name": "@koi/acp-protocol",
+  "description": "Define ACP wire types, JSON-RPC parser, transport interface, and content/event mapping",
   "version": "0.0.0",
   "private": true,
   "type": "module",

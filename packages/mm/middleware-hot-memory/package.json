@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-hot-memory",
+  "description": "Inject hot-tier memories into model calls at configurable intervals",
   "version": "0.0.0",
   "private": true,
   "type": "module",

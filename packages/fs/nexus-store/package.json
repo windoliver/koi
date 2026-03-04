@@ -1,5 +1,6 @@
 {
   "name": "@koi/nexus-store",
+  "description": "Consolidate Nexus-backed persistence adapters for forge, events, snapshots, sessions, and memory",
   "version": "0.0.0",
   "private": true,
   "type": "module",

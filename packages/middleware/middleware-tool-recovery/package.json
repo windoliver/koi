@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-tool-recovery",
+  "description": "Recover structured tool calls from text patterns in model responses",
   "version": "0.0.0",
   "private": true,
   "type": "module",
