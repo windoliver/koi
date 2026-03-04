@@ -2,74 +2,22 @@
  * Node registration and health tracking for connected compute nodes.
  * Maintains an inverted tool index for O(1) tool-to-node lookups.
  *
- * Internal to @koi/gateway (L2) — not an L0 contract.
+ * Interfaces re-exported from @koi/gateway-types for backward compatibility.
  */
 
 import type { AdvertisedTool, CapacityReport, KoiError, Result } from "@koi/core";
 import { conflict, notFound, validation } from "@koi/core";
 
+// Re-export interfaces from @koi/gateway-types
 export type { AdvertisedTool, CapacityReport } from "@koi/core";
-
-export interface RegisteredNode {
-  readonly nodeId: string;
-  readonly mode: "full" | "thin";
-  readonly tools: readonly AdvertisedTool[];
-  readonly capacity: CapacityReport;
-  readonly connectedAt: number;
-  readonly lastHeartbeat: number;
-  readonly connId: string;
-}
-
-// ---------------------------------------------------------------------------
-// Events
-// ---------------------------------------------------------------------------
-
-export type NodeRegistryEvent =
-  | { readonly kind: "registered"; readonly node: RegisteredNode }
-  | { readonly kind: "deregistered"; readonly nodeId: string }
-  | { readonly kind: "heartbeat"; readonly nodeId: string }
-  | {
-      readonly kind: "capacity_updated";
-      readonly nodeId: string;
-      readonly capacity: CapacityReport;
-    }
-  | {
-      readonly kind: "tools_added";
-      readonly nodeId: string;
-      readonly tools: readonly AdvertisedTool[];
-    }
-  | {
-      readonly kind: "tools_removed";
-      readonly nodeId: string;
-      readonly toolNames: readonly string[];
-    };
-
-// ---------------------------------------------------------------------------
-// Interface
-// ---------------------------------------------------------------------------
-
-export interface NodeRegistry {
-  readonly register: (node: RegisteredNode) => Result<void, KoiError>;
-  readonly deregister: (nodeId: string) => Result<boolean, KoiError>;
-  readonly lookup: (nodeId: string) => RegisteredNode | undefined;
-  readonly findByTool: (toolName: string) => readonly RegisteredNode[];
-  readonly nodes: () => ReadonlyMap<string, RegisteredNode>;
-  readonly size: () => number;
-  readonly updateHeartbeat: (nodeId: string) => Result<void, KoiError>;
-  readonly updateCapacity: (nodeId: string, capacity: CapacityReport) => Result<void, KoiError>;
-  readonly updateTools: (
-    nodeId: string,
-    added: readonly AdvertisedTool[],
-    removed: readonly string[],
-  ) => Result<void, KoiError>;
-}
+export type { NodeRegistry, NodeRegistryEvent, RegisteredNode } from "@koi/gateway-types";
 
 // ---------------------------------------------------------------------------
 // In-memory implementation
 // ---------------------------------------------------------------------------
 
-export function createInMemoryNodeRegistry(): NodeRegistry {
-  const nodeMap = new Map<string, RegisteredNode>();
+export function createInMemoryNodeRegistry(): import("@koi/gateway-types").NodeRegistry {
+  const nodeMap = new Map<string, import("@koi/gateway-types").RegisteredNode>();
   /** Inverted index: tool name → set of nodeIds advertising that tool. */
   const toolIndex = new Map<string, Set<string>>();
 
@@ -97,7 +45,7 @@ export function createInMemoryNodeRegistry(): NodeRegistry {
   }
 
   return {
-    register(node: RegisteredNode): Result<void, KoiError> {
+    register(node: import("@koi/gateway-types").RegisteredNode): Result<void, KoiError> {
       if (node.nodeId.length === 0) {
         return { ok: false, error: validation("nodeId must not be empty") };
       }
@@ -122,14 +70,14 @@ export function createInMemoryNodeRegistry(): NodeRegistry {
       return { ok: true, value: true };
     },
 
-    lookup(nodeId: string): RegisteredNode | undefined {
+    lookup(nodeId: string): import("@koi/gateway-types").RegisteredNode | undefined {
       return nodeMap.get(nodeId);
     },
 
-    findByTool(toolName: string): readonly RegisteredNode[] {
+    findByTool(toolName: string): readonly import("@koi/gateway-types").RegisteredNode[] {
       const ids = toolIndex.get(toolName);
       if (ids === undefined) return [];
-      const result: RegisteredNode[] = [];
+      const result: import("@koi/gateway-types").RegisteredNode[] = [];
       for (const id of ids) {
         const node = nodeMap.get(id);
         if (node !== undefined) {
@@ -139,7 +87,7 @@ export function createInMemoryNodeRegistry(): NodeRegistry {
       return result;
     },
 
-    nodes(): ReadonlyMap<string, RegisteredNode> {
+    nodes(): ReadonlyMap<string, import("@koi/gateway-types").RegisteredNode> {
       return nodeMap;
     },
 

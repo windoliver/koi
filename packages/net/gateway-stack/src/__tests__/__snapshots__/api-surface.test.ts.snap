@@ -3,6 +3,7 @@
 exports[`@koi/gateway-stack API surface . has stable type surface 1`] = `
 "import { Gateway, GatewayDeps } from '@koi/gateway';
 import { CanvasWiring, CanvasConfig, CanvasAuthenticator } from '@koi/gateway-canvas';
+import { GatewayNexusConfig } from '@koi/gateway-nexus';
 import { GatewayConfig } from '@koi/gateway-types';
 import { WebhookServer, WebhookConfig, WebhookAuthenticator } from '@koi/gateway-webhook';
 
@@ -20,6 +21,8 @@ interface GatewayStackConfig {
     readonly canvas?: CanvasConfig;
     /** Webhook config. Omit to disable webhook. */
     readonly webhook?: WebhookConfig;
+    /** Nexus config for HA state stores. Omit to use in-memory stores. */
+    readonly nexus?: GatewayNexusConfig;
 }
 /**
  * Full gateway stack dependencies — core deps + optional subsystem authenticators.
@@ -44,6 +47,9 @@ interface GatewayStack {
 /**
  * Full gateway stack factory — wires core gateway, canvas, and webhook
  * into a single start/stop lifecycle.
+ *
+ * When \`config.nexus\` is provided, uses Nexus-backed session store
+ * for HA multi-instance deployment.
  */
 
 declare function createGatewayStack(config: GatewayStackConfig, deps: GatewayStackDeps): GatewayStack;

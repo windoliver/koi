@@ -19,7 +19,8 @@
     "@koi/engine": "workspace:*",
     "@koi/engine-pi": "workspace:*",
     "@koi/gateway-canvas": "workspace:*",
-    "@koi/gateway-webhook": "workspace:*"
+    "@koi/gateway-webhook": "workspace:*",
+    "@koi/test-utils": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

@@ -54,6 +54,9 @@ export type { FakeEngineAdapterConfig, FakeEngineAdapterResult } from "./fake-en
 export { createFakeEngineAdapter } from "./fake-engine-adapter.js";
 export { createFakeNexusFetch } from "./fake-nexus-fetch.js";
 export { runFileSystemBackendContractTests } from "./fs-backend-contract.js";
+export { runNodeRegistryContractTests } from "./gateway-node-registry-contract.js";
+export { runSessionStoreContractTests } from "./gateway-session-store-contract.js";
+export { runSurfaceStoreContractTests } from "./gateway-surface-store-contract.js";
 export type {
   MockGovernanceBackendOverrides,
   MockGovernanceControllerOverrides,

@@ -1,6 +1,6 @@
 {
-  "name": "@koi/gateway-canvas",
-  "description": "Canvas HTTP routes, SSE manager, and surface store for the Koi gateway.",
+  "name": "@koi/gateway-nexus",
+  "description": "Nexus-backed gateway state stores for multi-instance HA deployment.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/gateway-types": "workspace:*"
+    "@koi/gateway-types": "workspace:*",
+    "@koi/nexus-client": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"
@@ -21,7 +22,6 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test",
-    "test:api": "bun test src/__tests__/api-surface.test.ts"
+    "test": "bun test"
   }
 }

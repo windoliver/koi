@@ -270,3 +270,123 @@ export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
 // ---------------------------------------------------------------------------
 
 export type BackpressureState = "normal" | "warning" | "critical";
+
+// ---------------------------------------------------------------------------
+// Store interfaces (shared across L2 gateway packages)
+// ---------------------------------------------------------------------------
+
+import type { AdvertisedTool, CapacityReport, KoiError, Result } from "@koi/core";
+
+export type { AdvertisedTool, CapacityReport } from "@koi/core";
+
+/**
+ * SessionStore: pluggable session persistence.
+ *
+ * All mutating/querying methods return `Result<T, KoiError>` (or a Promise
+ * thereof) so implementations can be sync (in-memory) or async (network)
+ * without interface changes.
+ */
+export interface SessionStore {
+  readonly get: (id: string) => Result<Session, KoiError> | Promise<Result<Session, KoiError>>;
+  readonly set: (session: Session) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+  readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+  readonly size: () => number;
+  readonly entries: () => IterableIterator<readonly [string, Session]>;
+}
+
+// ---------------------------------------------------------------------------
+// Node registry
+// ---------------------------------------------------------------------------
+
+export interface RegisteredNode {
+  readonly nodeId: string;
+  readonly mode: "full" | "thin";
+  readonly tools: readonly AdvertisedTool[];
+  readonly capacity: CapacityReport;
+  readonly connectedAt: number;
+  readonly lastHeartbeat: number;
+  readonly connId: string;
+}
+
+export type NodeRegistryEvent =
+  | { readonly kind: "registered"; readonly node: RegisteredNode }
+  | { readonly kind: "deregistered"; readonly nodeId: string }
+  | { readonly kind: "heartbeat"; readonly nodeId: string }
+  | {
+      readonly kind: "capacity_updated";
+      readonly nodeId: string;
+      readonly capacity: CapacityReport;
+    }
+  | {
+      readonly kind: "tools_added";
+      readonly nodeId: string;
+      readonly tools: readonly AdvertisedTool[];
+    }
+  | {
+      readonly kind: "tools_removed";
+      readonly nodeId: string;
+      readonly toolNames: readonly string[];
+    };
+
+export interface NodeRegistry {
+  readonly register: (node: RegisteredNode) => Result<void, KoiError>;
+  readonly deregister: (nodeId: string) => Result<boolean, KoiError>;
+  readonly lookup: (nodeId: string) => RegisteredNode | undefined;
+  readonly findByTool: (toolName: string) => readonly RegisteredNode[];
+  readonly nodes: () => ReadonlyMap<string, RegisteredNode>;
+  readonly size: () => number;
+  readonly updateHeartbeat: (nodeId: string) => Result<void, KoiError>;
+  readonly updateCapacity: (nodeId: string, capacity: CapacityReport) => Result<void, KoiError>;
+  readonly updateTools: (
+    nodeId: string,
+    added: readonly AdvertisedTool[],
+    removed: readonly string[],
+  ) => Result<void, KoiError>;
+}
+
+// ---------------------------------------------------------------------------
+// Surface store
+// ---------------------------------------------------------------------------
+
+export interface SurfaceEntry {
+  readonly surfaceId: string;
+  /** Opaque serialized surface content. */
+  readonly content: string;
+  /** SHA-256 hex digest of content — used as ETag. */
+  readonly contentHash: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  /** Tracks access time for LRU eviction. */
+  readonly lastAccessedAt: number;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface SurfaceStore {
+  readonly get: (
+    id: string,
+  ) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
+  readonly create: (
+    id: string,
+    content: string,
+    metadata?: Readonly<Record<string, unknown>>,
+  ) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
+  /**
+   * Update surface content.
+   * If expectedHash is provided and doesn't match current hash → CONFLICT error (CAS).
+   * If expectedHash is undefined → unconditional update.
+   */
+  readonly update: (
+    id: string,
+    content: string,
+    expectedHash: string | undefined,
+  ) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
+  readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+  readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+  readonly size: () => number;
+}
+
+export interface SurfaceStoreConfig {
+  /** Maximum number of surfaces before LRU eviction. Default: 10_000. */
+  readonly maxSurfaces: number;
+}

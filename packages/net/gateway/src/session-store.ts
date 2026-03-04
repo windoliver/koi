@@ -2,33 +2,21 @@
  * SessionStore: pluggable session persistence.
  * Default in-memory implementation provided.
  *
- * All mutating/querying methods return `Result<T, KoiError>` (or a Promise
- * thereof) so implementations can be sync (in-memory) or async (network)
- * without interface changes.
+ * Interface re-exported from @koi/gateway-types for backward compatibility.
  */
 
 import type { KoiError, Result } from "@koi/core";
 import { notFound } from "@koi/core";
 import type { Session } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// Interface
-// ---------------------------------------------------------------------------
-
-export interface SessionStore {
-  readonly get: (id: string) => Result<Session, KoiError> | Promise<Result<Session, KoiError>>;
-  readonly set: (session: Session) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
-  readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-  readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-  readonly size: () => number;
-  readonly entries: () => IterableIterator<readonly [string, Session]>;
-}
+// Re-export interface from @koi/gateway-types
+export type { SessionStore } from "@koi/gateway-types";
 
 // ---------------------------------------------------------------------------
 // In-memory implementation
 // ---------------------------------------------------------------------------
 
-export function createInMemorySessionStore(): SessionStore {
+export function createInMemorySessionStore(): import("@koi/gateway-types").SessionStore {
   const map = new Map<string, Session>();
 
   return {

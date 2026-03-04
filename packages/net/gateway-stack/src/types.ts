@@ -4,6 +4,7 @@
 
 import type { Gateway, GatewayDeps } from "@koi/gateway";
 import type { CanvasAuthenticator, CanvasConfig, CanvasWiring } from "@koi/gateway-canvas";
+import type { GatewayNexusConfig } from "@koi/gateway-nexus";
 import type { GatewayConfig } from "@koi/gateway-types";
 import type { WebhookAuthenticator, WebhookConfig, WebhookServer } from "@koi/gateway-webhook";
 
@@ -17,6 +18,8 @@ export interface GatewayStackConfig {
   readonly canvas?: CanvasConfig;
   /** Webhook config. Omit to disable webhook. */
   readonly webhook?: WebhookConfig;
+  /** Nexus config for HA state stores. Omit to use in-memory stores. */
+  readonly nexus?: GatewayNexusConfig;
 }
 
 /**

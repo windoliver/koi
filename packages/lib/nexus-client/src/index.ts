@@ -6,6 +6,13 @@
 
 export { batchRead } from "./batch-read.js";
 export { mapHttpError, mapRpcError } from "./errors.js";
+export {
+  deleteJson,
+  readJson,
+  validatePathSegment,
+  wrapNexusError,
+  writeJson,
+} from "./helpers.js";
 export { createNexusClient } from "./nexus-client.js";
 export {
   agentBrickPath,
@@ -23,6 +30,12 @@ export {
   agentSnapshotGlob,
   agentSnapshotPath,
   agentSubscriptionPath,
+  gatewayNodePath,
+  gatewayNodesGlob,
+  gatewaySessionPath,
+  gatewaySessionsGlob,
+  gatewaySurfacePath,
+  gatewaySurfacesGlob,
   globalBrickPath,
   groupScratchGlob,
   groupScratchPath,
