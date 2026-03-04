@@ -153,6 +153,102 @@ export function createFakeNexusFetch(): typeof globalThis.fetch {
       }
 
       // -------------------------------------------------------------------
+      // Filesystem extended methods (for FileSystemBackend contract)
+      // -------------------------------------------------------------------
+
+      case "list": {
+        const basePath = params.path as string;
+        const glob = params.glob as string | undefined;
+        const recursive = params.recursive as boolean | undefined;
+
+        const baseWithSlash = basePath.endsWith("/") ? basePath : `${basePath}/`;
+        const entries = [...files.entries()]
+          .filter(([key]) => key.startsWith(baseWithSlash))
+          .filter(([key]) => recursive === true || !key.slice(baseWithSlash.length).includes("/"))
+          .filter(([key]) => {
+            if (glob === undefined) return true;
+            const filename = key.split("/").pop() ?? "";
+            return matchGlob(glob, filename) || matchGlob(`${basePath}/${glob}`, key);
+          })
+          .map(([key, content]) => ({
+            path: key,
+            kind: "file" as const,
+            size: new TextEncoder().encode(content).byteLength,
+          }))
+          .toSorted((a, b) => a.path.localeCompare(b.path));
+        result = { entries, truncated: false };
+        break;
+      }
+
+      case "search": {
+        const pattern = params.pattern as string;
+        const searchBasePath = params.basePath as string | undefined;
+        const maxResults = params.maxResults as number | undefined;
+        const caseSensitive = params.caseSensitive as boolean | undefined;
+
+        const flags = caseSensitive === false ? "i" : "";
+        const regex = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+
+        const allMatches = [...files.entries()]
+          .filter(([key]) => searchBasePath === undefined || key.startsWith(searchBasePath))
+          .flatMap(([key, content]) =>
+            content
+              .split("\n")
+              .map((lineText, idx) => ({ path: key, line: idx + 1, text: lineText }))
+              .filter((entry) => regex.test(entry.text)),
+          );
+
+        const limited = maxResults !== undefined ? allMatches.slice(0, maxResults) : allMatches;
+        result = {
+          matches: limited,
+          truncated: maxResults !== undefined && allMatches.length > maxResults,
+        };
+        break;
+      }
+
+      case "edit": {
+        const editPath = params.path as string;
+        const edits = params.edits as ReadonlyArray<{ oldText: string; newText: string }>;
+        const dryRun = params.dryRun as boolean | undefined;
+
+        const existing = files.get(editPath);
+        if (existing === undefined) {
+          return jsonRpcError(id, -32000, "Not found");
+        }
+
+        // let justified: content is mutated through edit replacements
+        let updated = existing;
+        // let justified: counter incremented per successful hunk
+        let hunksApplied = 0;
+        for (const edit of edits) {
+          if (updated.includes(edit.oldText)) {
+            updated = updated.replace(edit.oldText, edit.newText);
+            hunksApplied += 1;
+          }
+        }
+
+        if (dryRun !== true) {
+          files.set(editPath, updated);
+        }
+
+        result = { path: editPath, hunksApplied };
+        break;
+      }
+
+      case "rename": {
+        const from = params.from as string;
+        const to = params.to as string;
+        const content = files.get(from);
+        if (content === undefined) {
+          return jsonRpcError(id, -32000, "Not found");
+        }
+        files.set(to, content);
+        files.delete(from);
+        result = { from, to };
+        break;
+      }
+
+      // -------------------------------------------------------------------
       // Scratchpad RPC methods
       // -------------------------------------------------------------------
 
