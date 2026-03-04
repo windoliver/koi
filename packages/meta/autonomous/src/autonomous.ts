@@ -12,10 +12,7 @@ import {
   createInboxMiddleware,
   createPlanAutonomousProvider,
 } from "@koi/long-running";
-import { createHarnessHandoffBridge } from "./bridge.js";
-import type { BridgeAutoFireHandle } from "./bridge-auto-fire.js";
-import { createBridgeAutoFire } from "./bridge-auto-fire.js";
-import type { AutonomousAgent, AutonomousAgentParts, HarnessHandoffBridge } from "./types.js";
+import type { AutonomousAgent, AutonomousAgentParts } from "./types.js";
 
 export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent {
   // let justified: mutable disposal guard
@@ -105,18 +102,6 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
 
   const cachedProviders: readonly ComponentProvider[] = providerList;
 
-  // --- Optional bridge + auto-fire ---
-  const handoffBridge: HarnessHandoffBridge | undefined =
-    parts.handoffBridge !== undefined
-      ? createHarnessHandoffBridge(parts.harness, parts.handoffBridge)
-      : undefined;
-
-  // Auto-fire: when bridge exists and autoFireBridge is not explicitly false
-  const autoFireHandle: BridgeAutoFireHandle | undefined =
-    handoffBridge !== undefined && parts.autoFireBridge !== false
-      ? createBridgeAutoFire({ scheduler: parts.scheduler, bridge: handoffBridge })
-      : undefined;
-
   // --- API ---
   const middleware = (): readonly KoiMiddleware[] => cachedMiddleware;
   const providers = (): readonly ComponentProvider[] => cachedProviders;
@@ -124,10 +109,8 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   const dispose = async (): Promise<void> => {
     if (disposed) return;
     disposed = true;
-    // Order: cancel watcher → dispose scheduler → await watcher.done → dispose harness
-    autoFireHandle?.cancel();
+    // Order: dispose scheduler first (prevents new resumes), then dispose harness
     await parts.scheduler.dispose();
-    await autoFireHandle?.done;
     await parts.harness.dispose();
   };
 
@@ -137,6 +120,5 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     middleware,
     providers,
     dispose,
-    ...(handoffBridge !== undefined ? { handoffBridge } : {}),
   };
 }

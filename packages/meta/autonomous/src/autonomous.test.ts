@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { HarnessSnapshotStore, KoiMiddleware } from "@koi/core";
+import type { KoiMiddleware } from "@koi/core";
 import type { HarnessScheduler } from "@koi/harness-scheduler";
 import type { LongRunningHarness } from "@koi/long-running";
 import { createAutonomousAgent } from "./autonomous.js";
@@ -185,48 +185,5 @@ describe("createAutonomousAgent", () => {
     const mw1 = agent.middleware();
     const mw2 = agent.middleware();
     expect(mw1).toBe(mw2); // same cached reference
-  });
-
-  test("auto-fire does not wire when autoFireBridge is false", () => {
-    const harness = createMockHarness();
-    const scheduler = createMockScheduler();
-    const fakeHarnessStore: HarnessSnapshotStore = {
-      head: async () => ({ ok: true as const, value: undefined }),
-      put: async () => ({ ok: true as const, value: undefined }),
-      get: async () => ({ ok: true as const, value: undefined }) as never,
-      list: async () => ({ ok: true as const, value: [] as const }),
-      ancestors: async () => ({ ok: true as const, value: [] as const }),
-      fork: async () => ({ ok: true as const, value: {} as never }),
-      prune: async () => ({ ok: true as const, value: 0 }),
-      close: () => {},
-    };
-    const fakeHandoffStore = {
-      put: () => ({ ok: true as const, value: undefined }) as never,
-      get: () =>
-        ({ ok: false, error: { code: "NOT_FOUND", message: "n/a", retryable: false } }) as never,
-      transition: () => ({ ok: true as const, value: {} }) as never,
-      listByAgent: () => ({ ok: true as const, value: [] }) as never,
-      findPendingForAgent: () => ({ ok: true as const, value: undefined }) as never,
-      remove: () => ({ ok: true as const, value: true }) as never,
-      removeByAgent: () => ({ ok: true as const, value: undefined }) as never,
-      bindRegistry: () => {},
-      dispose: () => {},
-    };
-
-    // With autoFireBridge=false, bridge should exist but auto-fire should not engage.
-    // We verify by checking that dispose completes cleanly (no watcher to cancel).
-    const agent = createAutonomousAgent({
-      harness,
-      scheduler,
-      handoffBridge: {
-        harnessStore: fakeHarnessStore,
-        handoffStore: fakeHandoffStore,
-        targetAgentId: "agent-target" as never,
-      },
-      autoFireBridge: false,
-    });
-
-    expect(agent.handoffBridge).toBeDefined();
-    // Bridge exists but auto-fire watcher is not created — dispose should be fast
   });
 });
