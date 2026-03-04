@@ -12,25 +12,12 @@
 
 import type { KoiError, Result } from "@koi/core";
 import { isToolCallPayload } from "@koi/core";
+import type { ToolAffinity, ToolRoutingConfig } from "@koi/gateway-types";
 import type { NodeFrame } from "./node-handler.js";
 import type { NodeRegistry, RegisteredNode } from "./node-registry.js";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface ToolRoutingConfig {
-  readonly defaultTimeoutMs: number;
-  readonly maxPendingCalls: number;
-  readonly maxQueuedCalls: number;
-  readonly queueTimeoutMs: number;
-  readonly affinities?: readonly ToolAffinity[] | undefined;
-}
-
-export interface ToolAffinity {
-  readonly pattern: string;
-  readonly nodeId: string;
-}
+// Re-export types for backward compatibility
+export type { ToolAffinity, ToolRoutingConfig } from "@koi/gateway-types";
 
 export interface ToolRouter {
   readonly handleToolCall: (frame: NodeFrame) => void;
@@ -86,30 +73,17 @@ export type RouteResult =
   | { readonly kind: "not_available" };
 
 // ---------------------------------------------------------------------------
-// Constants
+// Constants (re-exported from @koi/gateway-types)
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_TOOL_ROUTING_CONFIG: ToolRoutingConfig = {
-  defaultTimeoutMs: 30_000,
-  maxPendingCalls: 10_000,
-  maxQueuedCalls: 1_000,
-  queueTimeoutMs: 60_000,
-} as const;
+export type { ToolRoutingErrorCode } from "@koi/gateway-types";
+export {
+  DEFAULT_TOOL_ROUTING_CONFIG,
+  TOOL_ROUTING_ERROR_CODES,
+} from "@koi/gateway-types";
 
-export const TOOL_ROUTING_ERROR_CODES: {
-  readonly NOT_FOUND: "not_found";
-  readonly TIMEOUT: "timeout";
-  readonly RATE_LIMIT: "rate_limit";
-  readonly VALIDATION: "validation";
-} = {
-  NOT_FOUND: "not_found",
-  TIMEOUT: "timeout",
-  RATE_LIMIT: "rate_limit",
-  VALIDATION: "validation",
-} as const satisfies Record<string, string>;
-
-export type ToolRoutingErrorCode =
-  (typeof TOOL_ROUTING_ERROR_CODES)[keyof typeof TOOL_ROUTING_ERROR_CODES];
+// Import for local use
+import { TOOL_ROUTING_ERROR_CODES } from "@koi/gateway-types";
 
 // ---------------------------------------------------------------------------
 // Glob pattern compilation

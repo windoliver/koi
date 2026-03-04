@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { CanvasSseManager, SseEvent, SseSubscriber } from "../canvas-sse.js";
-import { createCanvasSseManager, formatSseEvent } from "../canvas-sse.js";
+import type { CanvasSseManager, SseEvent, SseSubscriber } from "./canvas-sse.js";
+import { createCanvasSseManager, formatSseEvent } from "./canvas-sse.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers

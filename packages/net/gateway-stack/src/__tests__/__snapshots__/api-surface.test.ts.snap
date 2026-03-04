@@ -1,0 +1,53 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/gateway-stack API surface . has stable type surface 1`] = `
+"import { Gateway, GatewayDeps } from '@koi/gateway';
+import { CanvasWiring, CanvasConfig, CanvasAuthenticator } from '@koi/gateway-canvas';
+import { GatewayConfig } from '@koi/gateway-types';
+import { WebhookServer, WebhookConfig, WebhookAuthenticator } from '@koi/gateway-webhook';
+
+/**
+ * Gateway stack types — config and return types for the full gateway bundle.
+ */
+
+/**
+ * Full gateway stack configuration — core gateway + optional canvas and webhook.
+ */
+interface GatewayStackConfig {
+    /** Core gateway config overrides. */
+    readonly gateway?: Partial<GatewayConfig>;
+    /** Canvas config. Omit to disable canvas. */
+    readonly canvas?: CanvasConfig;
+    /** Webhook config. Omit to disable webhook. */
+    readonly webhook?: WebhookConfig;
+}
+/**
+ * Full gateway stack dependencies — core deps + optional subsystem authenticators.
+ */
+interface GatewayStackDeps extends GatewayDeps {
+    readonly webhookAuth?: WebhookAuthenticator;
+    readonly canvasAuth?: CanvasAuthenticator;
+}
+/**
+ * Full gateway stack — core gateway + optional canvas wiring + optional webhook server.
+ */
+interface GatewayStack {
+    readonly gateway: Gateway;
+    readonly canvas: CanvasWiring | undefined;
+    readonly webhook: WebhookServer | undefined;
+    /** Start all configured subsystems. */
+    readonly start: (port: number) => Promise<void>;
+    /** Stop all subsystems. */
+    readonly stop: () => Promise<void>;
+}
+
+/**
+ * Full gateway stack factory — wires core gateway, canvas, and webhook
+ * into a single start/stop lifecycle.
+ */
+
+declare function createGatewayStack(config: GatewayStackConfig, deps: GatewayStackDeps): GatewayStack;
+
+export { type GatewayStack, type GatewayStackConfig, type GatewayStackDeps, createGatewayStack };
+"
+`;

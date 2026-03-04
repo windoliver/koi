@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { GatewayFrame, Session } from "../types.js";
-import type { WebhookAuthenticator, WebhookServer } from "../webhook.js";
-import { createWebhookServer } from "../webhook.js";
+import type { GatewayFrame, Session } from "@koi/gateway-types";
+import type { WebhookAuthenticator, WebhookServer } from "./webhook.js";
+import { createWebhookServer } from "./webhook.js";
 
 describe("WebhookServer", () => {
   let server: WebhookServer;

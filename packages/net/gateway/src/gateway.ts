@@ -10,10 +10,6 @@ import { swallowError } from "@koi/errors";
 import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
-import type { CanvasAuthenticator, CanvasServer } from "./canvas-routes.js";
-import type { CanvasSseManager } from "./canvas-sse.js";
-import type { SurfaceStore } from "./canvas-store.js";
-import { createCanvasWiring } from "./canvas-wiring.js";
 import { createNodeConnectionHandler } from "./node-connection.js";
 import type { NodeFrame } from "./node-handler.js";
 import { peekFrameKind } from "./node-handler.js";
@@ -39,8 +35,6 @@ import { createToolRouter, DEFAULT_TOOL_ROUTING_CONFIG } from "./tool-router.js"
 import type { Transport, TransportConnection } from "./transport.js";
 import type { GatewayConfig, GatewayFrame, Session } from "./types.js";
 import { DEFAULT_GATEWAY_CONFIG } from "./types.js";
-import type { WebhookAuthenticator, WebhookServer } from "./webhook.js";
-import { createWebhookServer } from "./webhook.js";
 
 // ---------------------------------------------------------------------------
 // Session events
@@ -64,8 +58,6 @@ export interface Gateway {
   readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
   /** Inject a frame into the dispatch pipeline with route resolution. */
   readonly dispatch: (session: Session, frame: GatewayFrame) => void;
-  /** Returns the webhook server port, or undefined if webhook is not configured. */
-  readonly webhookPort: () => number | undefined;
   /** Access the node registry for tool/node management. */
   readonly nodeRegistry: () => NodeRegistry;
   /** Subscribe to node lifecycle events. Returns unsubscribe function. */
@@ -109,10 +101,6 @@ export interface Gateway {
     agentId: string,
     timeoutMs?: number,
   ) => Promise<{ readonly agentId: string; readonly exitCode: number }>;
-  /** Returns the canvas server port, or undefined if canvas is not configured. */
-  readonly canvasPort: () => number | undefined;
-  /** Access the surface store for external use. Undefined if canvas is not configured. */
-  readonly surfaceStore: () => SurfaceStore | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,8 +111,6 @@ export interface GatewayDeps {
   readonly transport: Transport;
   readonly auth: GatewayAuthenticator;
   readonly store?: SessionStore;
-  readonly webhookAuth?: WebhookAuthenticator;
-  readonly canvasAuth?: CanvasAuthenticator;
 }
 
 /** Maximum frames buffered per disconnected session to prevent memory exhaustion. */
@@ -170,11 +156,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
   // let: assigned in start(), cleared in stop()
   let stopSweep: (() => void) | undefined;
   let stopNodeSweep: (() => void) | undefined;
-  let webhookServer: WebhookServer | undefined;
   let scheduler: GatewayScheduler | undefined;
-  let canvasServer: CanvasServer | undefined;
-  let canvasSseManager: CanvasSseManager | undefined;
-  let canvasSurfaceStore: SurfaceStore | undefined;
 
   // Populate static channel bindings from config
   if (config.channelBindings !== undefined) {
@@ -609,25 +591,6 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
         },
       });
 
-      // Start webhook server if configured
-      if (config.webhookPort !== undefined) {
-        webhookServer = createWebhookServer(
-          { port: config.webhookPort, pathPrefix: config.webhookPath ?? "/webhook" },
-          resolveAndDispatch,
-          deps.webhookAuth,
-        );
-        await webhookServer.start();
-      }
-
-      // Start canvas server if configured
-      if (config.canvasPort !== undefined) {
-        const wiring = createCanvasWiring(config, deps.canvasAuth);
-        canvasSurfaceStore = wiring.store;
-        canvasSseManager = wiring.sse;
-        canvasServer = wiring.server;
-        await canvasServer.start();
-      }
-
       // Start schedulers if configured
       if (config.schedulers !== undefined && config.schedulers.length > 0) {
         scheduler = createScheduler(config.schedulers, resolveAndDispatch);
@@ -639,12 +602,6 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       toolRouter?.dispose();
       toolRouter = undefined;
       scheduler?.stop();
-      canvasSseManager?.dispose();
-      canvasSseManager = undefined;
-      canvasServer?.stop();
-      canvasServer = undefined;
-      canvasSurfaceStore = undefined;
-      webhookServer?.stop();
       stopSweep?.();
       stopNodeSweep?.();
       // Clean up TTL timers
@@ -733,10 +690,6 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
     dispatch(session: Session, frame: GatewayFrame): void {
       resolveAndDispatch(session, frame);
-    },
-
-    webhookPort(): number | undefined {
-      return webhookServer?.port();
     },
 
     nodeRegistry(): NodeRegistry {
@@ -889,14 +842,6 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
           reject(new Error(`waitForAgent timeout after ${String(timeoutMs)}ms: ${agentId}`));
         }, timeoutMs);
       });
-    },
-
-    canvasPort(): number | undefined {
-      return canvasServer?.port();
-    },
-
-    surfaceStore(): SurfaceStore | undefined {
-      return canvasSurfaceStore;
     },
   };
 }

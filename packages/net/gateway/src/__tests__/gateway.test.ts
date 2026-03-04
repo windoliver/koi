@@ -77,7 +77,6 @@ describe("createGateway", () => {
       expect(gateway.onFrame).toBeFunction();
       expect(gateway.send).toBeFunction();
       expect(gateway.dispatch).toBeFunction();
-      expect(gateway.webhookPort).toBeFunction();
     });
 
     test("creates with custom config overrides", async () => {
@@ -119,13 +118,6 @@ describe("createGateway", () => {
       gateway = createGateway({}, { transport, auth, store: customStore });
 
       expect(gateway.sessions()).toBe(customStore);
-    });
-
-    test("webhookPort() returns undefined when webhook is not configured", () => {
-      const auth = createTestAuthenticator();
-      gateway = createGateway({}, { transport, auth });
-
-      expect(gateway.webhookPort()).toBeUndefined();
     });
   });
 

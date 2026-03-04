@@ -1,9 +1,9 @@
 /**
- * Gateway types — re-exports from @koi/gateway-types for backward compatibility,
- * plus gateway-specific types not shared with peer L2 packages.
+ * @koi/gateway-types — Shared wire protocol, session, routing, and config types.
+ *
+ * L0u package: depends on @koi/core only. Importable by all L2 gateway packages.
  */
 
-// Re-export all shared types from @koi/gateway-types
 export type {
   AuthResult,
   BackpressureState,
@@ -26,10 +26,9 @@ export type {
   ToolAffinity,
   ToolRoutingConfig,
   ToolRoutingErrorCode,
-} from "@koi/gateway-types";
-
+} from "./types.js";
 export {
   DEFAULT_GATEWAY_CONFIG,
   DEFAULT_TOOL_ROUTING_CONFIG,
   TOOL_ROUTING_ERROR_CODES,
-} from "@koi/gateway-types";
+} from "./types.js";

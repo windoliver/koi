@@ -1,5 +1,6 @@
 /**
- * Shared HTTP utilities for gateway HTTP servers (webhook, canvas, etc.).
+ * HTTP utilities for webhook HTTP server.
+ * Inlined from @koi/gateway to avoid L2 peer dependency.
  */
 
 // ---------------------------------------------------------------------------

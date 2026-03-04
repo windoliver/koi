@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { computeContentHash, createInMemorySurfaceStore } from "../canvas-store.js";
+import { computeContentHash, createInMemorySurfaceStore } from "./canvas-store.js";
 
 describe("computeContentHash", () => {
   test("returns deterministic SHA-256 hex for same content", () => {

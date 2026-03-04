@@ -4,8 +4,8 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import type { GatewayFrame, RoutingContext, Session } from "@koi/gateway-types";
 import { jsonResponse, matchPath, parseJsonBody } from "./http-helpers.js";
-import type { GatewayFrame, RoutingContext, Session } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
