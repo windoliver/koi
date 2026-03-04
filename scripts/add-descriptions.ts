@@ -218,6 +218,8 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Record trajectories and consolidate learnings into persistent playbooks per session",
   "@koi/middleware-compactor":
     "Compact old conversation history into structured summaries at configurable thresholds",
+  "@koi/middleware-conversation":
+    "Link stateless channel sessions by loading thread history and persisting new turns",
   "@koi/middleware-context-editing":
     "Replace old tool results with placeholders when token count exceeds threshold",
   "@koi/middleware-hot-memory":
