@@ -147,6 +147,9 @@
       "path": "packages/virt/sandbox-cloud-base"
     },
     {
+      "path": "packages/meta/sandbox-cloud"
+    },
+    {
       "path": "packages/virt/sandbox-cloudflare"
     },
     {
