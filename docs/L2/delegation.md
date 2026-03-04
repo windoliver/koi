@@ -60,6 +60,7 @@ src/
 ├── capability-request-constants.ts  Message types, response statuses, defaults
 ├── wait-for-response.ts        Mailbox response waiter with timeout/abort
 ├── middleware.ts               KoiMiddleware for grant verification on tool calls
+├── map-grant-to-token.ts      Maps DelegationGrant → CapabilityToken for verifier dispatch
 ├── grant.ts                    Grant creation + monotonic attenuation
 ├── revoke.ts                   Cascading revocation
 ├── sign.ts                     HMAC-SHA256 signing/verification
@@ -167,7 +168,7 @@ The `requesterId` and `_originalCorrelationId` fields preserve the original requ
 
 ## Governance Integration
 
-Wire both push and pull models through `createGovernanceStack`:
+Wire both push and pull models through `createGovernanceStack`. When delegation is configured, a capability verifier is **auto-wired** — enabling HMAC + Ed25519 verification, session-scoped revocation, and resource pattern matching with zero extra config:
 
 ```typescript
 import { createGovernanceStack } from "@koi/governance";
@@ -179,7 +180,7 @@ const manager = createDelegationManager({
   onRevoke: async (id, cascade) => { /* revoke ReBAC tuple */ },
 });
 
-const { middlewares, providers } = createGovernanceStack({
+const { middlewares, providers, sessionStore } = createGovernanceStack({
   // Push model: grant/revoke/list tools + DELEGATION component
   delegationBridge: { manager },
   // Pull model: delegation_request tool + capability request bridge
@@ -188,6 +189,9 @@ const { middlewares, providers } = createGovernanceStack({
     maxForwardDepth: 5,
   },
 });
+
+// sessionStore is auto-created — use it to revoke sessions:
+sessionStore?.revoke(sessionId("compromised-session"));
 ```
 
 Priority order in the governance stack:
@@ -345,6 +349,8 @@ const { middlewares, providers, nexusHooks } = createGovernanceStack({
 ## References
 
 - `@koi/core` — L0 types: `DelegationComponent`, `MailboxComponent`, `ApprovalHandler`
+- `@koi/capability-verifier` — Pluggable token verification (auto-wired by governance)
+- `@koi/crypto-utils` — Canonicalization for HMAC signing
 - `@koi/governance` — L3 governance stack wiring
 - `@koi/permissions-nexus` — ReBAC bridge for Nexus permission grants
 - `@koi/middleware-delegation-escalation` — Human escalation when all delegatees fail

@@ -15,6 +15,7 @@ import type {
   CapabilityToken,
   CapabilityVerifier,
   CapabilityVerifyResult,
+  ScopeChecker,
   VerifierCache,
   VerifyContext,
 } from "@koi/core";
@@ -26,6 +27,8 @@ export interface CompositeVerifierConfig {
   readonly hmacSecret: string;
   /** Optional cache for verification results. */
   readonly cache?: VerifierCache | undefined;
+  /** Optional pluggable scope checker — when provided, verifiers delegate scope checking to it. */
+  readonly scopeChecker?: ScopeChecker | undefined;
 }
 
 /**
@@ -37,8 +40,8 @@ export interface CompositeVerifierConfig {
  * On revocation, the caller is responsible for calling cache.evict(tokenId).
  */
 export function createCompositeVerifier(config: CompositeVerifierConfig): CapabilityVerifier {
-  const hmacVerifier = createHmacVerifier(config.hmacSecret);
-  const ed25519Verifier = createEd25519Verifier();
+  const hmacVerifier = createHmacVerifier(config.hmacSecret, config.scopeChecker);
+  const ed25519Verifier = createEd25519Verifier(config.scopeChecker);
 
   function verify(token: CapabilityToken, context: VerifyContext): CapabilityVerifyResult {
     // Check cache first
@@ -93,7 +96,7 @@ export function createInMemoryVerifierCache(): VerifierCache {
   const store = new Map<string, CapabilityVerifyResult>();
 
   function makeKey(tokenId: CapabilityId, toolId: string): string {
-    return `${tokenId}:${toolId}`;
+    return `${tokenId}\0${toolId}`;
   }
 
   return {
@@ -104,7 +107,7 @@ export function createInMemoryVerifierCache(): VerifierCache {
       store.set(makeKey(tokenId, toolId), result);
     },
     evict(tokenId: CapabilityId): void {
-      const prefix = `${tokenId}:`;
+      const prefix = `${tokenId}\0`;
       for (const key of store.keys()) {
         if (key.startsWith(prefix)) {
           store.delete(key);

@@ -18,32 +18,13 @@ import type {
   CapabilityToken,
   CapabilityVerifier,
   CapabilityVerifyResult,
+  ScopeChecker,
   VerifyContext,
 } from "@koi/core";
+import { canonicalize } from "@koi/crypto-utils";
+import { checkScope } from "./scope-check.js";
 
 const EXPECTED_HEX_LENGTH = 64;
-
-/**
- * Recursively sorts object keys to produce deterministic JSON.
- * Must be consistent with how the HMAC was computed during token issuance.
- */
-function sortKeys(value: unknown): unknown {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(sortKeys);
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-    sorted[key] = sortKeys((value as Record<string, unknown>)[key]);
-  }
-  return sorted;
-}
-
-/**
- * Canonical JSON over a token with the proof field excluded.
- * Used to reproduce the HMAC input during verification.
- */
-function canonicalize(token: Omit<CapabilityToken, "proof">): string {
-  return JSON.stringify(sortKeys(token));
-}
 
 /**
  * Verifies the HMAC-SHA256 proof of a capability token using timing-safe comparison.
@@ -70,12 +51,19 @@ function verifyHmacProof(token: CapabilityToken, secret: string): boolean {
  * Creates a CapabilityVerifier for HMAC-SHA256 proofs.
  *
  * @param secret - The HMAC secret. Must be kept confidential.
- * @param allowedTools - Optional predicate for tool-based scope checking.
- *   When not provided, defaults to checking token.scope.permissions.allow.
+ * @param scopeChecker - Optional pluggable scope checker. When provided,
+ *   scope checking is delegated to it (enabling resource pattern matching).
+ *   Falls back to internal isToolAllowed when absent.
  */
-export function createHmacVerifier(secret: string): CapabilityVerifier {
+export function createHmacVerifier(
+  secret: string,
+  scopeChecker?: ScopeChecker,
+): CapabilityVerifier {
   return {
-    verify(token: CapabilityToken, context: VerifyContext): CapabilityVerifyResult {
+    verify(
+      token: CapabilityToken,
+      context: VerifyContext,
+    ): CapabilityVerifyResult | Promise<CapabilityVerifyResult> {
       // 1. Check proof type
       if (token.proof.kind !== "hmac-sha256") {
         return { ok: false, reason: "proof_type_unsupported" };
@@ -101,38 +89,8 @@ export function createHmacVerifier(secret: string): CapabilityVerifier {
         return { ok: false, reason: "chain_depth_exceeded" };
       }
 
-      // 6. Check scope (tool must be in allow list, not in deny list)
-      if (!isToolAllowed(context.toolId, token)) {
-        return { ok: false, reason: "scope_exceeded" };
-      }
-
-      return { ok: true, token };
+      // 6. Check scope — delegate to scopeChecker when provided, else built-in
+      return checkScope(context.toolId, token, scopeChecker);
     },
   };
-}
-
-/**
- * Checks if a toolId is permitted by the token's scope.
- *
- * Matching rules:
- * - "*" in allow list matches any tool
- * - Tool name is matched before ':' if resource path is present
- * - deny overrides allow
- */
-function isToolAllowed(toolId: string, token: CapabilityToken): boolean {
-  const { permissions } = token.scope;
-  const allowList = permissions.allow ?? [];
-  const denyList = permissions.deny ?? [];
-
-  // Extract tool name (before ':' if resource path present)
-  const colonIndex = toolId.indexOf(":");
-  const toolName = colonIndex >= 0 ? toolId.slice(0, colonIndex) : toolId;
-
-  // Deny overrides allow
-  if (denyList.includes(toolName) || denyList.includes(toolId)) {
-    return false;
-  }
-
-  // Must be in allow list
-  return allowList.includes(toolName) || allowList.includes("*");
 }

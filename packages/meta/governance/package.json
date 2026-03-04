@@ -11,6 +11,7 @@
     }
   },
   "dependencies": {
+    "@koi/capability-verifier": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/delegation": "workspace:*",
     "@koi/exec-approvals": "workspace:*",

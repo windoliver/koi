@@ -17,13 +17,23 @@
  *   375  koi:guardrails
  */
 
-import type { Agent, ComponentProvider, DelegationId, MailboxComponent } from "@koi/core";
+import type { SessionRevocationStore } from "@koi/capability-verifier";
+import { createCapabilityVerifier, createSessionRevocationStore } from "@koi/capability-verifier";
+import type {
+  Agent,
+  ComponentProvider,
+  DelegationId,
+  MailboxComponent,
+  SessionId,
+} from "@koi/core";
 import { MAILBOX } from "@koi/core";
 import type { KoiMiddleware } from "@koi/core/middleware";
+import type { DelegationMiddlewareConfig } from "@koi/delegation";
 import {
   createCapabilityRequestBridge,
   createDelegationMiddleware,
   createDelegationProvider,
+  defaultScopeChecker,
 } from "@koi/delegation";
 import type {
   ExecApprovalRequest,
@@ -171,6 +181,42 @@ function createApprovalRoutingProvider(
 }
 
 // ---------------------------------------------------------------------------
+// Capability verifier auto-wiring
+// ---------------------------------------------------------------------------
+
+interface AutoWireResult {
+  readonly delegation: DelegationMiddlewareConfig | undefined;
+  readonly sessionStore: SessionRevocationStore | undefined;
+}
+
+/**
+ * When delegation is configured without an explicit verifier, auto-creates
+ * a composite capability verifier backed by a session revocation store.
+ *
+ * This enables HMAC + Ed25519 verification, session-scoped revocation,
+ * and resource pattern matching by default for all governance presets.
+ * Callers can opt out by providing their own `verifier` in the delegation config.
+ */
+function autoWireVerifier(delegation: DelegationMiddlewareConfig | undefined): AutoWireResult {
+  if (delegation === undefined || delegation.verifier !== undefined) {
+    return { delegation, sessionStore: undefined };
+  }
+  const store = createSessionRevocationStore();
+  const verifier = createCapabilityVerifier({
+    hmacSecret: delegation.secret,
+    scopeChecker: defaultScopeChecker,
+  });
+  return {
+    delegation: {
+      ...delegation,
+      verifier,
+      activeSessionIds: (): ReadonlySet<SessionId> => store.snapshot(),
+    },
+    sessionStore: store,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main factory
 // ---------------------------------------------------------------------------
 
@@ -237,6 +283,10 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
       ? createApprovalRoutingProvider(resolved.execApprovals, disposables)
       : undefined;
 
+  // Auto-wire capability verifier when delegation is configured without explicit verifier
+  const preset = resolved.preset ?? "open";
+  const { delegation: effectiveDelegation, sessionStore } = autoWireVerifier(resolved.delegation);
+
   const candidates: ReadonlyArray<KoiMiddleware | undefined> = [
     resolved.permissions !== undefined
       ? createPermissionsMiddleware(resolved.permissions) // 100
@@ -244,8 +294,8 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     approvalRouting !== undefined
       ? { ...createExecApprovalsMiddleware(approvalRouting.effectiveConfig), priority: 110 }
       : undefined,
-    resolved.delegation !== undefined
-      ? { ...createDelegationMiddleware(resolved.delegation), priority: 120 } // override
+    effectiveDelegation !== undefined
+      ? { ...createDelegationMiddleware(effectiveDelegation), priority: 120 } // override
       : undefined,
     capabilityRequestBridge?.middleware, // 125
     resolved.governanceBackend !== undefined
@@ -301,8 +351,6 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     ...approvalRoutingProviders,
   ];
 
-  const preset = resolved.preset ?? "open";
-
   return {
     middlewares,
     providers,
@@ -315,5 +363,6 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
       scopeEnabled: resolved.scope !== undefined,
     },
     ...(nexusHooks !== undefined ? { nexusHooks } : {}),
+    ...(sessionStore !== undefined ? { sessionStore } : {}),
   };
 }

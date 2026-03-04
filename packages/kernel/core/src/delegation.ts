@@ -10,6 +10,47 @@ import type { PermissionConfig } from "./assembly.js";
 import type { AgentId } from "./ecs.js";
 
 // ---------------------------------------------------------------------------
+// Permission subset check (pure function — side-effect-free data inspector)
+// ---------------------------------------------------------------------------
+
+/**
+ * Checks that child permissions are a subset of parent permissions
+ * (monotonic attenuation).
+ *
+ * Rules:
+ * - If parent.allow contains "*", any child allow list is valid
+ * - Otherwise, every entry in child.allow must appear in parent.allow
+ * - Every entry in parent.deny must appear in child.deny (deny only grows)
+ *
+ * Pure function — permitted in L0.
+ */
+export function isPermissionSubset(child: PermissionConfig, parent: PermissionConfig): boolean {
+  const parentAllow = new Set(parent.allow ?? []);
+  const childAllow = child.allow ?? [];
+
+  // Wildcard in parent allows any child allow list
+  if (!parentAllow.has("*")) {
+    for (const perm of childAllow) {
+      if (!parentAllow.has(perm)) {
+        return false;
+      }
+    }
+  }
+
+  // Every parent deny must exist in child deny (deny only grows)
+  const parentDeny = parent.deny ?? [];
+  const childDeny = new Set(child.deny ?? []);
+
+  for (const perm of parentDeny) {
+    if (!childDeny.has(perm)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Capability proof — replaces opaque signature: string
 // ---------------------------------------------------------------------------
 
