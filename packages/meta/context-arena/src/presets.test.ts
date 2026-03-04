@@ -34,7 +34,17 @@ describe("PRESET_SPECS", () => {
       expect(spec.maxPendingSquashes).toBeGreaterThan(0);
       expect(spec.hotMemoryTokenFraction).toBeGreaterThan(0);
       expect(spec.hotMemoryRefreshInterval).toBeGreaterThan(0);
+      expect(spec.conversationHistoryFraction).toBeGreaterThan(0);
     }
+  });
+
+  test("conservative <= balanced <= aggressive conversation history fractions", () => {
+    expect(PRESET_SPECS.conservative.conversationHistoryFraction).toBeLessThanOrEqual(
+      PRESET_SPECS.balanced.conversationHistoryFraction,
+    );
+    expect(PRESET_SPECS.balanced.conversationHistoryFraction).toBeLessThanOrEqual(
+      PRESET_SPECS.aggressive.conversationHistoryFraction,
+    );
   });
 });
 
@@ -82,6 +92,7 @@ describe("computePresetBudget", () => {
         expect(budget.squashMaxPendingSquashes).toBeGreaterThan(0);
         expect(budget.hotMemoryMaxTokens).toBeGreaterThan(0);
         expect(budget.hotMemoryRefreshInterval).toBeGreaterThan(0);
+        expect(budget.conversationMaxHistoryTokens).toBeGreaterThan(0);
       }
     }
   });
@@ -106,6 +117,7 @@ describe("computePresetBudget", () => {
     expect(budget.squashMaxPendingSquashes).toBe(3);
     expect(budget.hotMemoryMaxTokens).toBe(4_000); // 200_000 * 0.02
     expect(budget.hotMemoryRefreshInterval).toBe(5);
+    expect(budget.conversationMaxHistoryTokens).toBe(6_000); // 200_000 * 0.03
   });
 
   test("hot memory budget scales with window size", () => {
@@ -113,6 +125,16 @@ describe("computePresetBudget", () => {
       const small = computePresetBudget(name, 50_000);
       const large = computePresetBudget(name, 1_000_000);
       expect(large.hotMemoryMaxTokens).toBeGreaterThan(small.hotMemoryMaxTokens);
+    }
+  });
+
+  test("conversation history budget scales with window size", () => {
+    for (const name of PRESET_NAMES) {
+      const small = computePresetBudget(name, 50_000);
+      const large = computePresetBudget(name, 1_000_000);
+      expect(large.conversationMaxHistoryTokens).toBeGreaterThan(
+        small.conversationMaxHistoryTokens,
+      );
     }
   });
 

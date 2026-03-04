@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import type { TokenEstimator } from "@koi/core";
+import type { ThreadStore, TokenEstimator } from "@koi/core";
 import type { SessionId } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelHandler } from "@koi/core/middleware";
@@ -98,4 +98,41 @@ describe("composition integration", () => {
       expect(typeof prov.attach).toBe("function");
     }
   });
+
+  test("middleware priority ordering with conversation (100 < 220 < 225 < 250)", async () => {
+    const bundle = await createContextArena(baseConfig({ threadStore: stubThreadStore() }));
+    const priorities = bundle.middleware.map((mw) => mw.priority);
+
+    expect(priorities).toHaveLength(4);
+    // Conversation < Squash < Compactor < Context-editing
+    expect(priorities[0]).toBe(100);
+    expect(priorities[1]).toBe(220);
+    expect(priorities[2]).toBe(225);
+    expect(priorities[3]).toBe(250);
+
+    // Verify strict ordering
+    for (let i = 1; i < priorities.length; i++) {
+      const prev = priorities[i - 1];
+      const curr = priorities[i];
+      if (prev !== undefined && curr !== undefined) {
+        expect(prev).toBeLessThan(curr);
+      }
+    }
+  });
 });
+
+/** Minimal stub ThreadStore — never called in composition tests. */
+function stubThreadStore(): ThreadStore {
+  return {
+    appendAndCheckpoint: () => {
+      throw new Error("stub");
+    },
+    loadThread: () => {
+      throw new Error("stub");
+    },
+    listMessages: () => {
+      throw new Error("stub");
+    },
+    close: () => {},
+  };
+}

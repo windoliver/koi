@@ -44,6 +44,7 @@ Without this package:
 │  @koi/memory-fs               (L2)   Filesystem memory    │
 │  @koi/middleware-compactor     (L2)   Compaction middleware│
 │  @koi/middleware-context-editing (L2) Context editing MW   │
+│  @koi/middleware-conversation  (L2)   Thread history MW    │
 │  @koi/snapshot-chain-store    (L0u)  Archive store        │
 │  @koi/token-estimator         (L2)   Heuristic estimator  │
 │  @koi/tool-squash             (L2)   Agent-initiated squash│
@@ -161,7 +162,8 @@ Three-layer merge: L2 defaults (internal to L2 factories) → preset budget → 
   ┌─────────────────────────────────────────────────────┐
   │ ContextArenaBundle                                   │
   │                                                      │
-  │ middleware: [squash(220), compactor(225), editing(250)]│
+  │ middleware: [conversation(100)?, squash(220),           │
+  │             compactor(225), editing(250)]              │
   │ providers:  [squash, memoryFs?]                       │
   │ config:     ResolvedContextArenaConfig                │
   │ createHydrator?: (agent) => ContextHydratorMiddleware │
@@ -175,13 +177,14 @@ All middleware receive the **same tokenEstimator instance**, ensuring consistent
 ```
 Priority  Middleware              Package                          Trigger
 ────────  ──────────              ───────                          ───────
+  100     conversation (opt-in)   @koi/middleware-conversation    Session start (loads thread history)
   220     squash                  @koi/tool-squash                Agent calls squash() tool
   225     compactor               @koi/middleware-compactor       tokenFraction threshold (LLM call)
   250     context-editing         @koi/middleware-context-editing triggerTokenCount threshold
   300     context-hydrator        @koi/context                   Session start (pre-loads context)
 ```
 
-Cascade behavior: squash (220) fires first → reduces context → compactor (225) may skip if below threshold → context-editing (250) clears remaining stale tool results. Self-limiting by design.
+Cascade behavior: conversation (100) loads thread history within token budget → squash (220) fires first → reduces context → compactor (225) may skip if below threshold → context-editing (250) clears remaining stale tool results. Self-limiting by design.
 
 Key invariant: **editing trigger < compactor trigger** — editing clears stale tool results (cheap, no LLM call) before compaction fires (expensive LLM summarization).
 
@@ -285,6 +288,7 @@ Three named budget profiles that allocate the context window:
 | Summary token fraction | 0.5% | 0.5% | 0.75% |
 | Editing recent to keep | 4 | 3 | 2 |
 | Max pending squashes | 2 | 3 | 4 |
+| Conversation history | 2% | 3% | 5% |
 
 ### At 200K Context Window
 
@@ -343,6 +347,8 @@ Main factory. Async because optional `FsMemory` initialization requires I/O.
 | `compactor` | `CompactorOverrides` | — | Override compactor settings |
 | `contextEditing` | `ContextEditingOverrides` | — | Override editing settings |
 | `squash` | `SquashOverrides` | — | Override squash settings |
+| `threadStore` | `ThreadStore` | `undefined` | Thread store for conversation history. Gates conversation middleware |
+| `conversation` | `ConversationOverrides` | — | Override conversation settings (maxHistoryTokens, maxMessages, etc.) |
 | `hydrator` | `{ config: ContextManifestConfig }` | — | Enable context hydrator |
 | `memoryFs` | `{ config, retriever?, indexer? }` | — | Enable filesystem memory with optional search DI |
 
@@ -364,7 +370,7 @@ Registry adapter for `@koi/starter`'s manifest-driven middleware resolution. Ret
 type ContextArenaPreset = "conservative" | "balanced" | "aggressive";
 
 interface ContextArenaBundle {
-  readonly middleware: readonly KoiMiddleware[];  // [squash, compactor, editing]
+  readonly middleware: readonly KoiMiddleware[];  // [conversation?, squash, compactor, editing]
   readonly providers: readonly ComponentProvider[];
   readonly config: ResolvedContextArenaConfig;
   readonly createHydrator?: (agent: Agent) => ContextHydratorMiddleware;
@@ -404,6 +410,24 @@ const bundle = await createContextArena({
   preset: "conservative",
   contextWindowSize: 128_000,
 });
+```
+
+### With conversation history (thread continuity)
+
+```typescript
+import { createContextArena } from "@koi/context-arena";
+
+const bundle = await createContextArena({
+  summarizer: modelCall,
+  sessionId,
+  getMessages: () => messages,
+  threadStore: myThreadStore,  // gates conversation middleware
+  conversation: {
+    maxHistoryTokens: 10_000, // override preset budget
+    maxMessages: 100,
+  },
+});
+// bundle.middleware now includes conversation (100) before squash (220)
 ```
 
 ### With per-package overrides
@@ -502,21 +526,28 @@ const { entries, getBundle } = createContextArenaEntries({
 | Shared token estimator instance | Ensures all 3 middleware count tokens identically. No drift between compactor and editing estimates |
 | `ContextArenaMiddlewareFactory` defined locally | Avoids L3→L3 dependency on `@koi/starter`. The type is trivial — one function signature |
 | Accept L2 priorities as-is | Arena doesn't re-assign priorities. L2 packages own their middleware ordering |
+| `threadStore` is a top-level config field | It gates the feature (like `memoryFs`). Conversation overrides go in a separate `conversation` section |
+| Conversation opt-in via `threadStore` | Only wired when `threadStore` is provided and `conversation.disabled !== true`. No threadStore → no conversation middleware, no overhead |
+| Conversation history budget is preset-driven | Token budget scales with context window size (2%/3%/5%) like hot-memory. `maxMessages` stays flat at 200 — it's a safety cap, not a budget |
+| TokenEstimator bridge falls back to chars/4 | Conversation middleware requires sync `(text) => number`. If arena's estimator is async, the fallback matches conversation's own default |
 
 ---
 
 ## Testing
 
 ```
-presets.test.ts — 9 tests
+presets.test.ts — 12 tests
   Property-based invariants across 5 window sizes × 3 presets:
   ● softTrigger < hardTrigger for all presets
   ● editingTrigger < compactorTrigger (token count)
   ● conservative.trigger ≤ balanced.trigger ≤ aggressive.trigger
-  ● All values positive
+  ● All values positive (including conversationMaxHistoryTokens)
   ● maxSummaryTokens scales with window size
+  ● Conversation history budget scales with window size
+  ● conservative ≤ balanced ≤ aggressive conversation history fractions
+  ● Balanced at 200K produces 6,000 conversation tokens
 
-config-resolution.test.ts — 9 tests
+config-resolution.test.ts — 15 tests
   ● Default preset is "balanced"
   ● Default context window is 200K
   ● Default heuristic estimator when none provided
@@ -526,9 +557,15 @@ config-resolution.test.ts — 9 tests
   ● Throws on NaN contextWindowSize
   ● Throws on Infinity contextWindowSize
   ● Feature flags (hydrator, memoryFs) derived correctly
+  ● conversationEnabled false by default (no threadStore)
+  ● conversationEnabled true when threadStore provided
+  ● conversationEnabled false when disabled even with threadStore
+  ● Conversation token budget uses preset when no override
+  ● Conversation user overrides take precedence
+  ● conversationMaxMessages defaults to 200
 
-arena-factory.test.ts — 16 tests
-  ● Bundle always has 3 middleware
+arena-factory.test.ts — 22 tests
+  ● Bundle always has 3 middleware (without threadStore)
   ● Bundle always has 1 provider (squash)
   ● Middleware in correct priority order (220 < 225 < 250)
   ● Memory provider included when memoryFs config provided
@@ -544,14 +581,21 @@ arena-factory.test.ts — 16 tests
   ● Wrapper retriever overrides config.retriever
   ● config.retriever used when wrapper retriever absent
   ● Wrapper indexer flows through independently
+  ● Conversation not added when no threadStore
+  ● Conversation added when threadStore provided (4 middleware)
+  ● Priority order includes conversation at 100 (100, 220, 225, 250)
+  ● Conversation not added when disabled even with threadStore
+  ● Conversation + memoryFs produces 6 middleware
+  ● Resolved config values flow through to conversation
 
 registry-adapter.test.ts — 3 tests
   ● Entries map contains "context-arena" key
   ● Factory returns valid compactor middleware
   ● getBundle() returns full bundle after factory invocation
 
-__tests__/composition.test.ts — 3 tests (integration)
-  ● Middleware priority ordering correct
+__tests__/composition.test.ts — 4 tests (integration)
+  ● Middleware priority ordering correct (without conversation)
+  ● Middleware priority ordering with conversation (100 < 220 < 225 < 250)
   ● All middleware share same tokenEstimator instance
   ● Full bundle round-trip: config → create → spread into mock runtime
 ```
@@ -572,6 +616,7 @@ L0  @koi/core ──────────────────────
                                                              │
 L2  @koi/middleware-compactor ─────────┐                     │
     @koi/middleware-context-editing ────┤                     │
+    @koi/middleware-conversation ───────┤                     │
     @koi/tool-squash ──────────────────┤                     │
     @koi/context ──────────────────────┤                     │
     @koi/memory-fs ────────────────────┤                     │

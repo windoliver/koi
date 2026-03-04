@@ -920,7 +920,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/handoff": "workspace:*",
         "@koi/harness-scheduler": "workspace:*",
         "@koi/long-running": "workspace:*",
       },
@@ -980,6 +979,7 @@
         "@koi/memory-fs": "workspace:*",
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
+        "@koi/middleware-conversation": "workspace:*",
         "@koi/middleware-hot-memory": "workspace:*",
         "@koi/middleware-personalization": "workspace:*",
         "@koi/middleware-preference": "workspace:*",

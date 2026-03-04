@@ -68,6 +68,12 @@ export function resolveContextArenaConfig(config: ContextArenaConfig): ResolvedC
     hotMemoryRefreshInterval: config.hotMemory?.refreshInterval ?? budget.hotMemoryRefreshInterval,
     hotMemoryEnabled: config.memoryFs !== undefined && config.hotMemory?.disabled !== true,
 
+    // Conversation — user overrides → preset
+    conversationMaxHistoryTokens:
+      config.conversation?.maxHistoryTokens ?? budget.conversationMaxHistoryTokens,
+    conversationMaxMessages: config.conversation?.maxMessages ?? 200,
+    conversationEnabled: config.threadStore !== undefined && config.conversation?.disabled !== true,
+
     // Conventions — map raw strings to CapabilityFragment[]
     conventions:
       config.conventions !== undefined && config.conventions.length > 0
