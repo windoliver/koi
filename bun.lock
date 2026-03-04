@@ -1736,10 +1736,46 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/gateway-canvas": "workspace:*",
+        "@koi/gateway-webhook": "workspace:*",
+      },
+    },
+    "packages/net/gateway-canvas": {
+      "name": "@koi/gateway-canvas",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/net/gateway-stack": {
+      "name": "@koi/gateway-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/gateway": "workspace:*",
+        "@koi/gateway-canvas": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
+        "@koi/gateway-webhook": "workspace:*",
+      },
+    },
+    "packages/net/gateway-types": {
+      "name": "@koi/gateway-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/net/gateway-webhook": {
+      "name": "@koi/gateway-webhook",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
       },
     },
     "packages/net/mcp": {
@@ -2994,6 +3030,14 @@
     "@koi/forge-verifier": ["@koi/forge-verifier@workspace:packages/forge/forge-verifier"],
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
+
+    "@koi/gateway-canvas": ["@koi/gateway-canvas@workspace:packages/net/gateway-canvas"],
+
+    "@koi/gateway-stack": ["@koi/gateway-stack@workspace:packages/net/gateway-stack"],
+
+    "@koi/gateway-types": ["@koi/gateway-types@workspace:packages/net/gateway-types"],
+
+    "@koi/gateway-webhook": ["@koi/gateway-webhook@workspace:packages/net/gateway-webhook"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 

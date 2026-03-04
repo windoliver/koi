@@ -1,6 +1,6 @@
 {
-  "name": "@koi/gateway",
-  "description": "Route messages, authenticate sessions, dispatch webhooks, and register nodes",
+  "name": "@koi/gateway-webhook",
+  "description": "Webhook HTTP server and ingestion for the Koi gateway.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,14 +12,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*",
     "@koi/gateway-types": "workspace:*"
-  },
-  "devDependencies": {
-    "@koi/engine": "workspace:*",
-    "@koi/engine-pi": "workspace:*",
-    "@koi/gateway-canvas": "workspace:*",
-    "@koi/gateway-webhook": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

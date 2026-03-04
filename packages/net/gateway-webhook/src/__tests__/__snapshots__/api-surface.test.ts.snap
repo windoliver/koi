@@ -1,0 +1,34 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/gateway-webhook API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core';
+import { RoutingContext, Session, GatewayFrame } from '@koi/gateway-types';
+
+/**
+ * Webhook ingestion: HTTP server that converts POST requests
+ * into GatewayFrames dispatched through the gateway pipeline.
+ */
+
+interface WebhookConfig {
+    readonly port: number;
+    readonly pathPrefix: string;
+    /** Maximum request body size in bytes. Default: 1 MB. */
+    readonly maxBodyBytes?: number;
+}
+interface WebhookServer {
+    readonly start: () => Promise<void>;
+    readonly stop: () => void;
+    readonly port: () => number;
+}
+type WebhookDispatcher = (session: Session, frame: GatewayFrame) => void;
+type WebhookAuthenticator = (request: Request, rawBody: string) => Promise<Result<WebhookAuthResult, KoiError>>;
+interface WebhookAuthResult {
+    readonly agentId: string;
+    readonly routing?: RoutingContext;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
+declare function createWebhookServer(config: WebhookConfig, dispatcher: WebhookDispatcher, authenticator?: WebhookAuthenticator): WebhookServer;
+
+export { type WebhookAuthResult, type WebhookAuthenticator, type WebhookConfig, type WebhookDispatcher, type WebhookServer, createWebhookServer };
+"
+`;

@@ -1,6 +1,8 @@
 # @koi/gateway — WebSocket Control Plane
 
-WebSocket gateway for Koi's multi-node architecture. Manages two distinct connection types through a single transport: **client sessions** (browsers, CLIs) exchanging `GatewayFrame` messages, and **compute nodes** (`@koi/node`) exchanging `NodeFrame` messages for tool routing, capacity reporting, and agent dispatch. Handles authentication, protocol negotiation, sequencing, backpressure, routing, webhook ingestion, scheduled dispatch, and cross-node tool execution.
+WebSocket gateway for Koi's multi-node architecture. Manages two distinct connection types through a single transport: **client sessions** (browsers, CLIs) exchanging `GatewayFrame` messages, and **compute nodes** (`@koi/node`) exchanging `NodeFrame` messages for tool routing, capacity reporting, and agent dispatch. Handles authentication, protocol negotiation, sequencing, backpressure, routing, scheduled dispatch, and cross-node tool execution.
+
+> **Package split (Issue #718)**: Canvas and webhook subsystems have been extracted into separate packages. See [`@koi/gateway-canvas`](./gateway-canvas.md), [`@koi/gateway-webhook`](./gateway-webhook.md), and [`@koi/gateway-stack`](../L3/gateway-stack.md) for the convenience bundle.
 
 ---
 
@@ -12,15 +14,15 @@ Koi agents run on distributed compute nodes — a laptop running a Pi agent, a c
 - **Manages sessions** — Clients connect, authenticate, resume after disconnects, and receive ordered, deduplicated frames.
 - **Tracks capacity** — Nodes report their load. The gateway selects the best target for each tool call (affinity > capacity > queue).
 - **Handles backpressure** — Per-connection and global buffer monitoring prevents slow consumers from overwhelming the system.
-- **Ingests webhooks** — External HTTP events (Slack, GitHub, Stripe) flow through the same routing pipeline as WebSocket frames.
-
 Without this package, every agent would need direct knowledge of every other agent's location, tools, and availability.
+
+> Webhook ingestion and canvas rendering are now in separate L2 packages — see [`@koi/gateway-webhook`](./gateway-webhook.md) and [`@koi/gateway-canvas`](./gateway-canvas.md).
 
 ---
 
 ## Architecture
 
-`@koi/gateway` is an **L2 feature package** — it depends only on L0 (`@koi/core`) and L0-utility (`@koi/errors`).
+`@koi/gateway` is an **L2 feature package** — it depends on L0 (`@koi/core`), L0u (`@koi/errors`, `@koi/gateway-types`).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -39,17 +41,20 @@ Without this package, every agent would need direct knowledge of every other age
 │  node-registry.ts    ← node registration + inverted index    │
 │  tool-router.ts      ← cross-node tool call routing          │
 │  scheduler.ts        ← periodic frame generation             │
-│  webhook.ts          ← HTTP POST ingestion                   │
-│  types.ts            ← config, frame, session types          │
+│  types.ts            ← re-exports from @koi/gateway-types    │
 │                                                              │
 ├──────────────────────────────────────────────────────────────┤
 │  Dependencies                                                │
 │                                                              │
-│  @koi/core    (L0)   Result, KoiError, AdvertisedTool,       │
-│                      CapacityReport, ToolCallPayload,         │
-│                      isToolCallPayload                        │
-│  @koi/errors  (L0u)  error factories                         │
-│  Bun.serve()  (rt)   built-in WebSocket server               │
+│  @koi/core          (L0)   Result, KoiError, AdvertisedTool  │
+│  @koi/errors        (L0u)  error factories                   │
+│  @koi/gateway-types (L0u)  wire protocol, session, config    │
+│  Bun.serve()        (rt)   built-in WebSocket server         │
+│                                                              │
+│  Related packages (separate L2, not dependencies):           │
+│  @koi/gateway-canvas   canvas HTTP + SSE                     │
+│  @koi/gateway-webhook  webhook HTTP ingestion                │
+│  @koi/gateway-stack    L3 bundle wiring all three            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -377,8 +382,6 @@ Returns `WebhookServer` for HTTP POST ingestion.
 | `SequenceTracker` | Ordering + deduplication |
 | `AcceptResult` | Frame accept outcome |
 | `GatewayScheduler` | Timer-based frame generator |
-| `WebhookServer` | HTTP POST ingestion server |
-
 ### Constants
 
 | Constant | Value |
@@ -532,13 +535,11 @@ const searchers = registry.findByTool("search");
 // searchers = [] (removed)
 ```
 
-### Webhook + Scheduler
+### Scheduler
 
 ```typescript
 const gateway = createGateway(
   {
-    webhookPort: 9090,
-    webhookPath: "/hook",
     schedulers: [
       {
         id: "health-check",
@@ -551,8 +552,26 @@ const gateway = createGateway(
   { transport: createBunTransport(), auth },
 );
 
-// Webhooks POST to http://localhost:9090/hook/{channel}/{account}
 // Scheduler ticks every 60s, dispatched as GatewayFrame events
+```
+
+### Full Stack (Gateway + Canvas + Webhook)
+
+```typescript
+import { createGatewayStack } from "@koi/gateway-stack";
+
+const stack = createGatewayStack(
+  {
+    gateway: { maxConnections: 5_000 },
+    canvas: { port: 8081 },
+    webhook: { port: 8082, pathPrefix: "/hook" },
+  },
+  { transport: createBunTransport(), auth },
+);
+
+await stack.start(8080);
+// Canvas: http://localhost:8081/gateway/canvas/:surfaceId
+// Webhook: http://localhost:8082/hook/:channel/:account
 ```
 
 ---

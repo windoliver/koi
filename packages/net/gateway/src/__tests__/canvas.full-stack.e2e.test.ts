@@ -22,12 +22,18 @@ import type { AgentManifest, EngineEvent, KoiMiddleware, Result } from "@koi/cor
 import type { KoiRuntime } from "@koi/engine";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
-import type { CanvasAuthenticator, CanvasAuthResult, CanvasServer } from "../canvas-routes.js";
-import { createCanvasServer } from "../canvas-routes.js";
-import type { CanvasSseManager } from "../canvas-sse.js";
-import { createCanvasSseManager } from "../canvas-sse.js";
-import type { SurfaceStore } from "../canvas-store.js";
-import { createInMemorySurfaceStore } from "../canvas-store.js";
+import type {
+  CanvasAuthenticator,
+  CanvasAuthResult,
+  CanvasServer,
+  CanvasSseManager,
+  SurfaceStore,
+} from "@koi/gateway-canvas";
+import {
+  createCanvasServer,
+  createCanvasSseManager,
+  createInMemorySurfaceStore,
+} from "@koi/gateway-canvas";
 
 // ---------------------------------------------------------------------------
 // Environment gate

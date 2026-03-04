@@ -1,348 +1,10 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/gateway API surface . has stable type surface 1`] = `
-"import { AdvertisedTool, CapacityReport, Result, KoiError } from '@koi/core';
+"import { Result, KoiError, AdvertisedTool, CapacityReport } from '@koi/core';
 export { AdvertisedTool, CapacityReport } from '@koi/core';
-
-/**
- * Node frame types, parsing, and encoding for compute-node connections.
- *
- * All types are local to @koi/gateway — no imports from @koi/node (L2 peer).
- * Nodes use a different wire format (NodeFrame) than clients (GatewayFrame).
- */
-
-type NodeFrameKind = "node:handshake" | "node:capabilities" | "node:registered" | "node:heartbeat" | "node:capacity" | "node:tools_updated" | "node:error" | "agent:dispatch" | "agent:message" | "agent:signal" | "agent:signal_group" | "agent:status" | "agent:terminate" | "tool_call" | "tool_result" | "tool_error";
-interface NodeFrame {
-    readonly nodeId: string;
-    readonly agentId: string;
-    readonly correlationId: string;
-    readonly ttl?: number | undefined;
-    readonly kind: NodeFrameKind;
-    readonly payload: unknown;
-}
-interface HandshakePayload {
-    readonly nodeId: string;
-    readonly version: string;
-    readonly capacity: CapacityReport;
-}
-interface CapabilitiesPayload {
-    readonly nodeType: "full" | "thin";
-    readonly tools: readonly AdvertisedTool[];
-}
-declare function peekFrameKind(data: string): string | undefined;
-declare function parseNodeFrame(data: string): Result<NodeFrame, KoiError>;
-declare function validateHandshakePayload(payload: unknown): Result<HandshakePayload, KoiError>;
-declare function validateCapabilitiesPayload(payload: unknown): Result<CapabilitiesPayload, KoiError>;
-declare function validateCapacityPayload(payload: unknown): Result<CapacityReport, KoiError>;
-/** Gateway → Node: signal a single agent. agentId is in the NodeFrame envelope. */
-interface AgentSignalPayload {
-    readonly signal: string;
-    readonly gracePeriodMs?: number | undefined;
-}
-/** Gateway → Node: signal all agents in a group. */
-interface AgentSignalGroupPayload {
-    readonly groupId: string;
-    readonly signal: string;
-    readonly deadlineMs?: number | undefined;
-}
-interface AgentStatusEntry {
-    readonly agentId: string;
-    readonly state: string;
-    readonly turnCount: number;
-    readonly lastActivityMs: number;
-    readonly exitCode?: number | undefined;
-    /** groupId is carried via ProcessId — nodes include it in status for gateway indexing. */
-    readonly groupId?: string | undefined;
-}
-interface AgentStatusBatchPayload {
-    readonly agents: readonly AgentStatusEntry[];
-}
-declare function validateAgentStatusBatch(payload: unknown): AgentStatusBatchPayload | undefined;
-declare function encodeNodeFrame(frame: NodeFrame): string;
-
-/**
- * Node registration and health tracking for connected compute nodes.
- * Maintains an inverted tool index for O(1) tool-to-node lookups.
- *
- * Internal to @koi/gateway (L2) — not an L0 contract.
- */
-
-interface RegisteredNode {
-    readonly nodeId: string;
-    readonly mode: "full" | "thin";
-    readonly tools: readonly AdvertisedTool[];
-    readonly capacity: CapacityReport;
-    readonly connectedAt: number;
-    readonly lastHeartbeat: number;
-    readonly connId: string;
-}
-type NodeRegistryEvent = {
-    readonly kind: "registered";
-    readonly node: RegisteredNode;
-} | {
-    readonly kind: "deregistered";
-    readonly nodeId: string;
-} | {
-    readonly kind: "heartbeat";
-    readonly nodeId: string;
-} | {
-    readonly kind: "capacity_updated";
-    readonly nodeId: string;
-    readonly capacity: CapacityReport;
-} | {
-    readonly kind: "tools_added";
-    readonly nodeId: string;
-    readonly tools: readonly AdvertisedTool[];
-} | {
-    readonly kind: "tools_removed";
-    readonly nodeId: string;
-    readonly toolNames: readonly string[];
-};
-interface NodeRegistry {
-    readonly register: (node: RegisteredNode) => Result<void, KoiError>;
-    readonly deregister: (nodeId: string) => Result<boolean, KoiError>;
-    readonly lookup: (nodeId: string) => RegisteredNode | undefined;
-    readonly findByTool: (toolName: string) => readonly RegisteredNode[];
-    readonly nodes: () => ReadonlyMap<string, RegisteredNode>;
-    readonly size: () => number;
-    readonly updateHeartbeat: (nodeId: string) => Result<void, KoiError>;
-    readonly updateCapacity: (nodeId: string, capacity: CapacityReport) => Result<void, KoiError>;
-    readonly updateTools: (nodeId: string, added: readonly AdvertisedTool[], removed: readonly string[]) => Result<void, KoiError>;
-}
-declare function createInMemoryNodeRegistry(): NodeRegistry;
-
-/**
- * Gateway tool routing — intercepts tool_call frames, resolves target nodes,
- * forwards calls, tracks pending responses, and routes results back.
- *
- * Routing priority:
- * 1. Exclude source node (if tool_call reached gateway, source can't execute it)
- * 2. Affinity match (glob patterns -> preferred node)
- * 3. Highest available capacity
- * 4. Queue with TTL (if no candidates online)
- * 5. Error (queue full or disabled)
- */
-
-interface ToolRoutingConfig {
-    readonly defaultTimeoutMs: number;
-    readonly maxPendingCalls: number;
-    readonly maxQueuedCalls: number;
-    readonly queueTimeoutMs: number;
-    readonly affinities?: readonly ToolAffinity[] | undefined;
-}
-interface ToolAffinity {
-    readonly pattern: string;
-    readonly nodeId: string;
-}
-interface ToolRouter {
-    readonly handleToolCall: (frame: NodeFrame) => void;
-    readonly handleToolResult: (frame: NodeFrame) => void;
-    readonly handleToolError: (frame: NodeFrame) => void;
-    readonly handleNodeDisconnect: (nodeId: string) => void;
-    readonly handleNodeRegistered: (nodeId: string) => void;
-    readonly handleToolsUpdated: (nodeId: string) => void;
-    readonly pendingCount: () => number;
-    readonly queuedCount: () => number;
-    readonly dispose: () => void;
-}
-interface ToolRouterDeps {
-    readonly registry: NodeRegistry;
-    readonly sendToNode: (nodeId: string, frame: NodeFrame) => Result<number, KoiError>;
-}
-interface CompiledAffinity {
-    readonly regex: RegExp;
-    readonly nodeId: string;
-}
-type RouteResult = {
-    readonly kind: "routed";
-    readonly targetNodeId: string;
-} | {
-    readonly kind: "not_available";
-};
-declare const DEFAULT_TOOL_ROUTING_CONFIG: ToolRoutingConfig;
-declare const TOOL_ROUTING_ERROR_CODES: {
-    readonly NOT_FOUND: "not_found";
-    readonly TIMEOUT: "timeout";
-    readonly RATE_LIMIT: "rate_limit";
-    readonly VALIDATION: "validation";
-};
-type ToolRoutingErrorCode = (typeof TOOL_ROUTING_ERROR_CODES)[keyof typeof TOOL_ROUTING_ERROR_CODES];
-declare function compileAffinities(affinities: readonly ToolAffinity[]): readonly CompiledAffinity[];
-declare function matchAffinity(toolName: string, compiled: readonly CompiledAffinity[]): string | undefined;
-declare function resolveTargetNode(toolName: string, sourceNodeId: string, registry: NodeRegistry, compiledAffinities: readonly CompiledAffinity[]): RouteResult;
-declare function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps): ToolRouter;
-
-/**
- * Gateway-specific types. No runtime code.
- */
-
-interface ConnectClient {
-    /** Client instance identifier. */
-    readonly id?: string;
-    /** Client version string (e.g. "1.2.0"). */
-    readonly version?: string;
-    /** Platform hint (e.g. "web", "ios", "cli", "node"). */
-    readonly platform?: string;
-}
-/** Session resume request embedded in a ConnectFrame. */
-interface ResumeRequest {
-    readonly sessionId: string;
-    readonly lastSeq: number;
-}
-interface ConnectFrame {
-    readonly kind: "connect";
-    /** Minimum protocol version the client supports (positive integer). */
-    readonly minProtocol: number;
-    /** Maximum protocol version the client supports (positive integer, >= minProtocol). */
-    readonly maxProtocol: number;
-    readonly auth: {
-        readonly token: string;
-    };
-    readonly client?: ConnectClient;
-    /** If present, the client is attempting to resume a previous session. */
-    readonly resume?: ResumeRequest;
-}
-type GatewayFrameKind = "request" | "response" | "event" | "ack" | "error";
-interface GatewayFrame {
-    readonly kind: GatewayFrameKind;
-    /** Unique message ID (dedup key). */
-    readonly id: string;
-    /** Monotonic sequence number. */
-    readonly seq: number;
-    /** Correlates a response to its originating request. */
-    readonly ref?: string;
-    readonly payload: unknown;
-    readonly timestamp: number;
-}
-interface RoutingContext {
-    readonly channel?: string;
-    readonly account?: string;
-    readonly peer?: string;
-}
-interface Session {
-    readonly id: string;
-    readonly agentId: string;
-    readonly connectedAt: number;
-    readonly lastHeartbeat: number;
-    /** Local outbound sequence counter. */
-    readonly seq: number;
-    /** Last accepted inbound sequence from remote. */
-    readonly remoteSeq: number;
-    readonly metadata: Readonly<Record<string, unknown>>;
-    readonly routing?: RoutingContext;
-}
-type AuthResult = {
-    readonly ok: true;
-    readonly sessionId: string;
-    readonly agentId: string;
-    readonly metadata: Readonly<Record<string, unknown>>;
-    readonly routing?: RoutingContext;
-} | {
-    readonly ok: false;
-    readonly code: "INVALID_TOKEN" | "EXPIRED" | "FORBIDDEN";
-    readonly message: string;
-};
-interface GatewayCapabilities {
-    /** Whether the server supports per-message compression. */
-    readonly compression: boolean;
-    /** Whether the server supports session resumption after disconnect. */
-    readonly resumption: boolean;
-    /** Maximum frame payload size in bytes the server will accept. */
-    readonly maxFrameBytes: number;
-}
-interface HandshakeSnapshot {
-    /** Server's current timestamp (ms). Enables client clock-skew detection. */
-    readonly serverTime: number;
-    /** Current number of active connections. Coarse load signal. */
-    readonly activeConnections: number;
-}
-interface HandshakeAckPayload {
-    readonly sessionId: string;
-    /** Negotiated protocol version (highest mutually supported). */
-    readonly protocol: number;
-    readonly capabilities: GatewayCapabilities;
-    readonly snapshot?: HandshakeSnapshot;
-}
-type ScopingMode = "main" | "per-peer" | "per-channel-peer" | "per-account-channel-peer";
-interface RouteBinding {
-    readonly pattern: string;
-    readonly agentId: string;
-}
-interface RoutingConfig {
-    readonly scopingMode: ScopingMode;
-    readonly bindings?: readonly RouteBinding[];
-}
-interface SchedulerDef {
-    readonly id: string;
-    readonly intervalMs: number;
-    readonly agentId: string;
-    readonly payload?: unknown;
-}
-/** Static channel-to-agent binding for routing. */
-interface ChannelBinding {
-    readonly channelName: string;
-    readonly agentId: string;
-}
-interface GatewayConfig {
-    /** Minimum protocol version the server supports. Default: 1. */
-    readonly minProtocolVersion: number;
-    /** Maximum protocol version the server supports. Default: 1. */
-    readonly maxProtocolVersion: number;
-    /** Capabilities advertised to clients during handshake. */
-    readonly capabilities: GatewayCapabilities;
-    /** Whether to include a runtime snapshot in the handshake ack. Default: true. */
-    readonly includeSnapshot: boolean;
-    /** Maximum concurrent connections. Default: 10_000. */
-    readonly maxConnections: number;
-    /** Buffer utilization ratio that triggers warning state. Default: 0.8. */
-    readonly backpressureHighWatermark: number;
-    /** Maximum buffered bytes per connection. Default: 1_048_576 (1MB). */
-    readonly maxBufferBytesPerConnection: number;
-    /** Global buffer limit in bytes across all connections. Default: 500MB. */
-    readonly globalBufferLimitBytes: number;
-    /** Sliding window size for dedup. Default: 128. */
-    readonly dedupWindowSize: number;
-    /** Heartbeat interval in ms. Default: 30_000. */
-    readonly heartbeatIntervalMs: number;
-    /** Auth handshake timeout in ms. Default: 5_000. */
-    readonly authTimeoutMs: number;
-    /** Time in ms before a connection in critical backpressure is force-closed. Default: 30_000. */
-    readonly backpressureCriticalTimeoutMs: number;
-    /** Timer sweep interval in ms. Default: 10_000. */
-    readonly sweepIntervalMs: number;
-    /** Optional routing configuration for session dispatch. */
-    readonly routing?: RoutingConfig;
-    /** Port for webhook HTTP server. Undefined = disabled. */
-    readonly webhookPort?: number;
-    /** URL path prefix for webhook endpoints. Default: "/webhook". */
-    readonly webhookPath?: string;
-    /** Scheduler definitions for periodic frame dispatch. */
-    readonly schedulers?: readonly SchedulerDef[];
-    /** Node heartbeat timeout in ms. Nodes not heartbeating within this window are evicted. Default: 90_000 (3x heartbeat interval). */
-    readonly nodeHeartbeatTimeoutMs: number;
-    /** Session time-to-live after disconnect (ms). 0 = immediate cleanup. Default: 0. */
-    readonly sessionTtlMs: number;
-    /** Static channel-to-agent bindings, loaded at startup. */
-    readonly channelBindings?: readonly ChannelBinding[];
-    /** Tool routing configuration. Undefined = tool routing disabled (backward compatible). Partial fields are merged with DEFAULT_TOOL_ROUTING_CONFIG. */
-    readonly toolRouting?: Partial<ToolRoutingConfig> | undefined;
-    /** Port for canvas HTTP server. Undefined = disabled. */
-    readonly canvasPort?: number;
-    /** URL path prefix for canvas endpoints. Default: "/gateway/canvas". */
-    readonly canvasPath?: string;
-    /** Maximum canvas request body size in bytes. Default: 1_048_576 (1MB). */
-    readonly canvasMaxBodyBytes?: number;
-    /** Maximum number of stored surfaces. Default: 10_000. */
-    readonly canvasMaxSurfaces?: number;
-    /** Maximum SSE subscribers per surface. Default: 100. */
-    readonly canvasMaxSsePerSurface?: number;
-    /** Maximum total SSE subscribers across all surfaces. Default: 10_000. */
-    readonly canvasMaxSseTotal?: number;
-    /** SSE keep-alive interval in ms. Default: 15_000. */
-    readonly canvasSseKeepAliveMs?: number;
-}
-declare const DEFAULT_GATEWAY_CONFIG: GatewayConfig;
-type BackpressureState = "normal" | "warning" | "critical";
+import { Session, ConnectFrame, AuthResult, GatewayCapabilities, HandshakeSnapshot, BackpressureState, GatewayConfig, GatewayFrame, ScopingMode, RoutingContext, RouteBinding, RoutingConfig, SchedulerDef, ToolAffinity, ToolRoutingConfig } from '@koi/gateway-types';
+export { AuthResult, BackpressureState, ChannelBinding, ConnectClient, ConnectFrame, DEFAULT_GATEWAY_CONFIG, DEFAULT_TOOL_ROUTING_CONFIG, GatewayCapabilities, GatewayConfig, GatewayFrame, GatewayFrameKind, HandshakeAckPayload, HandshakeSnapshot, ResumeRequest, RouteBinding, RoutingConfig, RoutingContext, SchedulerDef, ScopingMode, Session, TOOL_ROUTING_ERROR_CODES, ToolAffinity, ToolRoutingConfig, ToolRoutingErrorCode } from '@koi/gateway-types';
 
 /**
  * SessionStore: pluggable session persistence.
@@ -453,150 +115,111 @@ interface BackpressureMonitor {
 declare function createBackpressureMonitor(config: Pick<GatewayConfig, "maxBufferBytesPerConnection" | "backpressureHighWatermark" | "globalBufferLimitBytes">): BackpressureMonitor;
 
 /**
- * SSE (Server-Sent Events) subscriber registry for canvas surfaces.
+ * Node frame types, parsing, and encoding for compute-node connections.
  *
- * Manages per-surface fan-out, keep-alive pings, connection limits,
- * and automatic dead-subscriber cleanup.
+ * All types are local to @koi/gateway — no imports from @koi/node (L2 peer).
+ * Nodes use a different wire format (NodeFrame) than clients (GatewayFrame).
  */
 
-interface SseEvent {
-    /** Monotonic event ID for Last-Event-ID reconnection. */
-    readonly id: string;
-    /** Event type: "updated" | "deleted". */
-    readonly event: string;
-    /** JSON payload string. */
-    readonly data: string;
+type NodeFrameKind = "node:handshake" | "node:capabilities" | "node:registered" | "node:heartbeat" | "node:capacity" | "node:tools_updated" | "node:error" | "agent:dispatch" | "agent:message" | "agent:signal" | "agent:signal_group" | "agent:status" | "agent:terminate" | "tool_call" | "tool_result" | "tool_error";
+interface NodeFrame {
+    readonly nodeId: string;
+    readonly agentId: string;
+    readonly correlationId: string;
+    readonly ttl?: number | undefined;
+    readonly kind: NodeFrameKind;
+    readonly payload: unknown;
 }
-/**
- * Callback that receives raw SSE bytes.
- * Returns false if the subscriber is dead (connection closed).
- */
-type SseSubscriber = (data: Uint8Array) => boolean;
-interface CanvasSseManager {
-    /**
-     * Register a subscriber for a surface's event stream.
-     * Returns an unsubscribe function on success.
-     * Fails with RATE_LIMIT if per-surface or global limit reached.
-     */
-    readonly subscribe: (surfaceId: string, subscriber: SseSubscriber) => Result<() => void, KoiError>;
-    /** Fan out an event to all subscribers for a surface. */
-    readonly publish: (surfaceId: string, event: SseEvent) => void;
-    /** Send "deleted" event and remove all subscribers for a surface. */
-    readonly close: (surfaceId: string) => void;
-    /** Stop keep-alive timer and clear all subscribers. */
-    readonly dispose: () => void;
-    /** Get the next monotonic event ID for a surface. */
-    readonly nextEventId: (surfaceId: string) => string;
-    readonly subscriberCount: (surfaceId: string) => number;
-    readonly totalSubscribers: () => number;
+interface HandshakePayload {
+    readonly nodeId: string;
+    readonly version: string;
+    readonly capacity: CapacityReport;
 }
-interface CanvasSseConfig {
-    /** Max subscribers per surface. Default: 100. */
-    readonly maxSubscribersPerSurface: number;
-    /** Max total subscribers across all surfaces. Default: 10_000. */
-    readonly maxTotalSubscribers: number;
-    /** Keep-alive interval in ms. Default: 15_000. */
-    readonly keepAliveIntervalMs: number;
+interface CapabilitiesPayload {
+    readonly nodeType: "full" | "thin";
+    readonly tools: readonly AdvertisedTool[];
 }
-/** Format an SSE event to wire format bytes. */
-declare function formatSseEvent(event: SseEvent): Uint8Array;
-declare function createCanvasSseManager(configOverrides?: Partial<CanvasSseConfig>): CanvasSseManager;
+declare function peekFrameKind(data: string): string | undefined;
+declare function parseNodeFrame(data: string): Result<NodeFrame, KoiError>;
+declare function validateHandshakePayload(payload: unknown): Result<HandshakePayload, KoiError>;
+declare function validateCapabilitiesPayload(payload: unknown): Result<CapabilitiesPayload, KoiError>;
+declare function validateCapacityPayload(payload: unknown): Result<CapacityReport, KoiError>;
+/** Gateway → Node: signal a single agent. agentId is in the NodeFrame envelope. */
+interface AgentSignalPayload {
+    readonly signal: string;
+    readonly gracePeriodMs?: number | undefined;
+}
+/** Gateway → Node: signal all agents in a group. */
+interface AgentSignalGroupPayload {
+    readonly groupId: string;
+    readonly signal: string;
+    readonly deadlineMs?: number | undefined;
+}
+interface AgentStatusEntry {
+    readonly agentId: string;
+    readonly state: string;
+    readonly turnCount: number;
+    readonly lastActivityMs: number;
+    readonly exitCode?: number | undefined;
+    /** groupId is carried via ProcessId — nodes include it in status for gateway indexing. */
+    readonly groupId?: string | undefined;
+}
+interface AgentStatusBatchPayload {
+    readonly agents: readonly AgentStatusEntry[];
+}
+declare function validateAgentStatusBatch(payload: unknown): AgentStatusBatchPayload | undefined;
+declare function encodeNodeFrame(frame: NodeFrame): string;
 
 /**
- * SurfaceStore: pluggable surface persistence for canvas rendering.
+ * Node registration and health tracking for connected compute nodes.
+ * Maintains an inverted tool index for O(1) tool-to-node lookups.
  *
- * Surfaces are opaque blobs — the store does not understand A2UI structure.
- * Default in-memory implementation with LRU eviction provided.
+ * Internal to @koi/gateway (L2) — not an L0 contract.
  */
 
-interface SurfaceEntry {
-    readonly surfaceId: string;
-    /** Opaque serialized surface content. */
-    readonly content: string;
-    /** SHA-256 hex digest of content — used as ETag. */
-    readonly contentHash: string;
-    readonly createdAt: number;
-    readonly updatedAt: number;
-    /** Tracks access time for LRU eviction. */
-    readonly lastAccessedAt: number;
-    readonly metadata?: Readonly<Record<string, unknown>>;
+interface RegisteredNode {
+    readonly nodeId: string;
+    readonly mode: "full" | "thin";
+    readonly tools: readonly AdvertisedTool[];
+    readonly capacity: CapacityReport;
+    readonly connectedAt: number;
+    readonly lastHeartbeat: number;
+    readonly connId: string;
 }
-interface SurfaceStore {
-    readonly get: (id: string) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
-    readonly create: (id: string, content: string, metadata?: Readonly<Record<string, unknown>>) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
-    /**
-     * Update surface content.
-     * If expectedHash is provided and doesn't match current hash → CONFLICT error (CAS).
-     * If expectedHash is undefined → unconditional update.
-     */
-    readonly update: (id: string, content: string, expectedHash: string | undefined) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
-    readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-    readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+type NodeRegistryEvent = {
+    readonly kind: "registered";
+    readonly node: RegisteredNode;
+} | {
+    readonly kind: "deregistered";
+    readonly nodeId: string;
+} | {
+    readonly kind: "heartbeat";
+    readonly nodeId: string;
+} | {
+    readonly kind: "capacity_updated";
+    readonly nodeId: string;
+    readonly capacity: CapacityReport;
+} | {
+    readonly kind: "tools_added";
+    readonly nodeId: string;
+    readonly tools: readonly AdvertisedTool[];
+} | {
+    readonly kind: "tools_removed";
+    readonly nodeId: string;
+    readonly toolNames: readonly string[];
+};
+interface NodeRegistry {
+    readonly register: (node: RegisteredNode) => Result<void, KoiError>;
+    readonly deregister: (nodeId: string) => Result<boolean, KoiError>;
+    readonly lookup: (nodeId: string) => RegisteredNode | undefined;
+    readonly findByTool: (toolName: string) => readonly RegisteredNode[];
+    readonly nodes: () => ReadonlyMap<string, RegisteredNode>;
     readonly size: () => number;
+    readonly updateHeartbeat: (nodeId: string) => Result<void, KoiError>;
+    readonly updateCapacity: (nodeId: string, capacity: CapacityReport) => Result<void, KoiError>;
+    readonly updateTools: (nodeId: string, added: readonly AdvertisedTool[], removed: readonly string[]) => Result<void, KoiError>;
 }
-interface SurfaceStoreConfig {
-    /** Maximum number of surfaces before LRU eviction. Default: 10_000. */
-    readonly maxSurfaces: number;
-}
-/** Compute SHA-256 hex digest of content using Bun native crypto. */
-declare function computeContentHash(content: string): string;
-declare function createInMemorySurfaceStore(configOverrides?: Partial<SurfaceStoreConfig>): SurfaceStore;
-
-/**
- * HTTP route handler for canvas surface CRUD + SSE streaming.
- *
- * Routes:
- *   POST   {prefix}/{surfaceId}         Create surface (auth required)
- *   GET    {prefix}/{surfaceId}         Fetch surface (public)
- *   PATCH  {prefix}/{surfaceId}         Update surface (auth required)
- *   DELETE {prefix}/{surfaceId}         Delete surface (auth required)
- *   GET    {prefix}/{surfaceId}/events  SSE stream (public)
- */
-
-interface CanvasRouteConfig {
-    /** URL path prefix. Default: "/gateway/canvas". */
-    readonly pathPrefix: string;
-    /** Maximum request body size in bytes. Default: 1_048_576 (1MB). */
-    readonly maxBodyBytes: number;
-}
-interface CanvasServer {
-    readonly start: () => Promise<void>;
-    readonly stop: () => void;
-    readonly port: () => number;
-}
-type CanvasAuthenticator = (request: Request) => Promise<Result<CanvasAuthResult, KoiError>>;
-interface CanvasAuthResult {
-    readonly agentId: string;
-    readonly metadata?: Readonly<Record<string, unknown>>;
-}
-declare function createCanvasServer(config: Partial<CanvasRouteConfig> & {
-    readonly port: number;
-}, store: SurfaceStore, sse: CanvasSseManager, authenticator?: CanvasAuthenticator): CanvasServer;
-
-/**
- * Webhook ingestion: HTTP server that converts POST requests
- * into GatewayFrames dispatched through the gateway pipeline.
- */
-
-interface WebhookConfig {
-    readonly port: number;
-    readonly pathPrefix: string;
-    /** Maximum request body size in bytes. Default: 1 MB. */
-    readonly maxBodyBytes?: number;
-}
-interface WebhookServer {
-    readonly start: () => Promise<void>;
-    readonly stop: () => void;
-    readonly port: () => number;
-}
-type WebhookDispatcher = (session: Session, frame: GatewayFrame) => void;
-type WebhookAuthenticator = (request: Request, rawBody: string) => Promise<Result<WebhookAuthResult, KoiError>>;
-interface WebhookAuthResult {
-    readonly agentId: string;
-    readonly routing?: RoutingContext;
-    readonly metadata?: Readonly<Record<string, unknown>>;
-}
-declare function createWebhookServer(config: WebhookConfig, dispatcher: WebhookDispatcher, authenticator?: WebhookAuthenticator): WebhookServer;
+declare function createInMemoryNodeRegistry(): NodeRegistry;
 
 /**
  * Gateway factory: wires transport, auth, sessions, sequencing,
@@ -627,8 +250,6 @@ interface Gateway {
     readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
     /** Inject a frame into the dispatch pipeline with route resolution. */
     readonly dispatch: (session: Session, frame: GatewayFrame) => void;
-    /** Returns the webhook server port, or undefined if webhook is not configured. */
-    readonly webhookPort: () => number | undefined;
     /** Access the node registry for tool/node management. */
     readonly nodeRegistry: () => NodeRegistry;
     /** Subscribe to node lifecycle events. Returns unsubscribe function. */
@@ -666,59 +287,13 @@ interface Gateway {
         readonly agentId: string;
         readonly exitCode: number;
     }>;
-    /** Returns the canvas server port, or undefined if canvas is not configured. */
-    readonly canvasPort: () => number | undefined;
-    /** Access the surface store for external use. Undefined if canvas is not configured. */
-    readonly surfaceStore: () => SurfaceStore | undefined;
 }
 interface GatewayDeps {
     readonly transport: Transport;
     readonly auth: GatewayAuthenticator;
     readonly store?: SessionStore;
-    readonly webhookAuth?: WebhookAuthenticator;
-    readonly canvasAuth?: CanvasAuthenticator;
 }
 declare function createGateway(configOverrides: Partial<GatewayConfig>, deps: GatewayDeps): Gateway;
-
-/**
- * Shared HTTP utilities for gateway HTTP servers (webhook, canvas, etc.).
- */
-/** Create a JSON Response with the given status code and body. */
-declare function jsonResponse(status: number, body: Record<string, unknown>): Response;
-interface ParsedBody {
-    readonly ok: true;
-    readonly raw: string;
-    readonly parsed: unknown;
-}
-interface ParseBodyError {
-    readonly ok: false;
-    readonly status: number;
-    readonly message: string;
-}
-type ParseBodyResult = ParsedBody | ParseBodyError;
-/**
- * Read and parse a JSON request body with streaming size enforcement.
- *
- * Returns the raw string (useful for HMAC verification) and the parsed JSON.
- * Returns a typed error with HTTP status code on failure.
- */
-declare function parseJsonBody(request: Request, maxBytes: number): Promise<ParseBodyResult>;
-interface PathMatch {
-    readonly match: true;
-    readonly segments: readonly string[];
-}
-interface PathNoMatch {
-    readonly match: false;
-}
-type PathMatchResult = PathMatch | PathNoMatch;
-/**
- * Match a URL pathname against a prefix with boundary safety.
- *
- * Prevents "/webhook" from matching "/webhookadmin" by requiring
- * an exact match or a "/" boundary after the prefix.
- * Returns the path segments after the prefix.
- */
-declare function matchPath(pathname: string, prefix: string): PathMatchResult;
 
 /**
  * Node connection handler — manages compute-node lifecycle within the gateway.
@@ -868,6 +443,49 @@ interface SequenceTracker {
 }
 declare function createSequenceTracker(windowSize: number): SequenceTracker;
 
-export { type AcceptResult, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusBatchPayload, type AgentStatusEntry, type AuthResult, type BackpressureMonitor, type BackpressureState, type BunTransport, type CanvasAuthResult, type CanvasAuthenticator, type CanvasRouteConfig, type CanvasServer, type CanvasSseConfig, type CanvasSseManager, type CapabilitiesPayload, type ChannelBinding, type CompiledAffinity, type ConnectClient, type ConnectFrame, DEFAULT_GATEWAY_CONFIG, DEFAULT_TOOL_ROUTING_CONFIG, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayCapabilities, type GatewayConfig, type GatewayDeps, type GatewayFrame, type GatewayFrameKind, type GatewayScheduler, type HandshakeAckPayload, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type HandshakeSnapshot, type NodeConnectionHandler, type NodeFrame, type NodeFrameKind, type NodeRegistry, type NodeRegistryEvent, type RegisteredNode, type ResolvedRoute, type ResumeRequest, type RouteBinding, type RouteResult, type RoutingConfig, type RoutingContext, type SchedulerDef, type SchedulerDispatcher, type ScopingMode, type SequenceTracker, type Session, type SessionEvent, type SessionStore, type SseEvent, type SseSubscriber, type SurfaceEntry, type SurfaceStore, type SurfaceStoreConfig, type SweepError, TOOL_ROUTING_ERROR_CODES, type ToolAffinity, type ToolRouter, type ToolRouterDeps, type ToolRoutingConfig, type ToolRoutingErrorCode, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, type WebhookAuthResult, type WebhookAuthenticator, type WebhookConfig, type WebhookDispatcher, type WebhookServer, compileAffinities, computeContentHash, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createCanvasServer, createCanvasSseManager, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createInMemorySurfaceStore, createNodeConnectionHandler, createScheduler, createSequenceTracker, createToolRouter, createWebhookServer, encodeFrame, encodeNodeFrame, formatSseEvent, handleHandshake, jsonResponse, matchAffinity, matchPath, negotiateProtocol, parseConnectFrame, parseFrame, parseJsonBody, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateAgentStatusBatch, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
+/**
+ * Gateway tool routing — intercepts tool_call frames, resolves target nodes,
+ * forwards calls, tracks pending responses, and routes results back.
+ *
+ * Routing priority:
+ * 1. Exclude source node (if tool_call reached gateway, source can't execute it)
+ * 2. Affinity match (glob patterns -> preferred node)
+ * 3. Highest available capacity
+ * 4. Queue with TTL (if no candidates online)
+ * 5. Error (queue full or disabled)
+ */
+
+interface ToolRouter {
+    readonly handleToolCall: (frame: NodeFrame) => void;
+    readonly handleToolResult: (frame: NodeFrame) => void;
+    readonly handleToolError: (frame: NodeFrame) => void;
+    readonly handleNodeDisconnect: (nodeId: string) => void;
+    readonly handleNodeRegistered: (nodeId: string) => void;
+    readonly handleToolsUpdated: (nodeId: string) => void;
+    readonly pendingCount: () => number;
+    readonly queuedCount: () => number;
+    readonly dispose: () => void;
+}
+interface ToolRouterDeps {
+    readonly registry: NodeRegistry;
+    readonly sendToNode: (nodeId: string, frame: NodeFrame) => Result<number, KoiError>;
+}
+interface CompiledAffinity {
+    readonly regex: RegExp;
+    readonly nodeId: string;
+}
+type RouteResult = {
+    readonly kind: "routed";
+    readonly targetNodeId: string;
+} | {
+    readonly kind: "not_available";
+};
+
+declare function compileAffinities(affinities: readonly ToolAffinity[]): readonly CompiledAffinity[];
+declare function matchAffinity(toolName: string, compiled: readonly CompiledAffinity[]): string | undefined;
+declare function resolveTargetNode(toolName: string, sourceNodeId: string, registry: NodeRegistry, compiledAffinities: readonly CompiledAffinity[]): RouteResult;
+declare function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps): ToolRouter;
+
+export { type AcceptResult, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusBatchPayload, type AgentStatusEntry, type BackpressureMonitor, type BunTransport, type CapabilitiesPayload, type CompiledAffinity, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayDeps, type GatewayScheduler, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type NodeConnectionHandler, type NodeFrame, type NodeFrameKind, type NodeRegistry, type NodeRegistryEvent, type RegisteredNode, type ResolvedRoute, type RouteResult, type SchedulerDispatcher, type SequenceTracker, type SessionEvent, type SessionStore, type SweepError, type ToolRouter, type ToolRouterDeps, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, compileAffinities, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createNodeConnectionHandler, createScheduler, createSequenceTracker, createToolRouter, encodeFrame, encodeNodeFrame, handleHandshake, matchAffinity, negotiateProtocol, parseConnectFrame, parseFrame, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateAgentStatusBatch, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
 "
 `;
