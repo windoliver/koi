@@ -54,6 +54,7 @@
 "layer:L3":
   - changed-files:
     - any-glob-to-any-file:
+      - "packages/**/agent-spawner/**"
       - "packages/**/autonomous/**"
       - "packages/**/channels/**"
       - "packages/**/cli/**"
@@ -73,6 +74,7 @@
     - any-glob-to-any-file:
       - "packages/**"
       - "!packages/**/acp-protocol/**"
+      - "!packages/**/agent-spawner/**"
       - "!packages/**/autonomous/**"
       - "!packages/**/channel-base/**"
       - "!packages/**/channels/**"

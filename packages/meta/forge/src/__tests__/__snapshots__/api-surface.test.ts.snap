@@ -1,14 +1,53 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap } from '@koi/core';
+"import { SandboxAdapter, ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, CounterExample, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from '@koi/core';
 import { ForgePipeline, SandboxExecutor, DependencyConfig } from '@koi/forge-types';
 export { AutoPromotionConfig, BrickContentInput, CreateProvenanceOptions, DEFAULT_REVERIFICATION_CONFIG, DependencyConfig, DriftCheckResult, DriftChecker, ForgeAgentInput, ForgeAgentInputWithBricks, ForgeAgentInputWithManifest, ForgeChannelInput, ForgeConfig, ForgeContext, ForgeError, ForgeInput, ForgeInputBase, ForgeMiddlewareInput, ForgePipeline, ForgeResult, ForgeResultMetadata, ForgeSkillInput, ForgeToolInput, ForgeVerifier, FormatConfig, GovernanceResult, ManifestParseResult, ManifestParser, MutationPressureConfig, PromoteChange, PromoteResult, ResolveStageReport, ReverificationConfig, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, ScopePromotionConfig, SelfTestStageReport, StageReport, TestFailure, TrustStageReport, VerificationConfig, VerificationReport, VerificationStage, VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig } from '@koi/forge-types';
 export { AttestationCache, IntegrityAttestationFailed, IntegrityContentMismatch, IntegrityOk, IntegrityResult, SlsaBuildDefinition, SlsaBuildMetadata, SlsaBuilder, SlsaKoiExtensions, SlsaProvenanceV1, SlsaProvenanceV1WithExtensions, SlsaResourceDescriptor, SlsaRunDetails, canonicalJsonSerialize, createAttestationCache, createForgeProvenance, extractBrickContent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, signAttestation, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity } from '@koi/forge-integrity';
 export { DriftCheckerConfig, FORGE_GOVERNANCE, ForgeSessionCounterInstance, ForgeSessionCounterOptions, ForgeUsageMiddlewareConfig, ReverificationHandler, ReverificationQueue, UsagePromotedResult, UsageRecordedResult, UsageResult, checkGovernance, checkMutationPressure, checkScopePromotion, computeAutoPromotion, createDriftChecker, createForgeGovernanceContributor, createForgeSessionCounter, createForgeUsageMiddleware, createReverificationQueue, recordBrickUsage, validateTrustTransition } from '@koi/forge-policy';
 export { BrickModulePath, CodeSnippet, DiagnosticVerifierConfig, EnrichedSandboxError, FormatStageReport, GenerateTestCasesConfig, ScanFinding, ScanResult, WorkspaceResult, assignTrust, auditDependencies, auditTransitiveDependencies, cleanupOrphanedModules, cleanupStaleWorkspaces, compileBrickModule, computeDependencyHash, computeRemediation, createAdversarialVerifiers, createBrickWorkspace, createContentScanningVerifier, createDiagnosticVerifier, createExfiltrationVerifier, createInjectionVerifier, createResourceExhaustionVerifier, createStructuralHidingVerifier, enrichSandboxError, extractSnippet, generateTestCases, resolveWorkspacePath, sanitizeInput, scanWorkspaceCode, verify, verifyFormat, verifyInstallIntegrity, verifyResolve, verifySandbox, verifySelfTest, verifyStatic, writeBrickEntry } from '@koi/forge-verifier';
+import { ForgeDeps } from '@koi/forge-tools';
 export { AssembleManifestOptions, AssembleManifestResult, DelegateOptions, ForgeComponentProviderConfig, ForgeComponentProviderInstance, ForgeDeps, ForgeRegistrySyncConfig, ForgeResolverContext, ForgeSpawnData, ForgeToolConfig, NetworkPolicy, OnForgeAgentSpawn, RequiresCheckResult, SkillMdInput, assembleManifest, brickToTool, checkBrickRequires, createComposeForge, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createMemoryStoreChangeNotifier, createPromoteForgeTool, createSearchForgeTool, delegateImplementation, descriptor, generateDelegationPrompt, generateSkillMd, mapParsedBaseFields, mapParsedTestCases } from '@koi/forge-tools';
+import { DiscoverySource } from '@koi/agent-discovery';
+
+/**
+ * createForgeDelegation — wires @koi/agent-discovery and @koi/agent-spawner
+ * into the two optional ForgeDeps callbacks: discoverAgent + spawnCodingAgent.
+ *
+ * Lives in the L3 @koi/forge bundle because it imports from two L2 peers.
+ */
+
+interface ForgeDelegationConfig {
+    /** Sandbox adapter used to create isolated containers. */
+    readonly adapter: SandboxAdapter;
+    /** Working directory inside the sandbox. */
+    readonly cwd?: string | undefined;
+    /** Environment variables to inject into the sandbox. */
+    readonly env?: Readonly<Record<string, string>> | undefined;
+    /** Maximum concurrent agent delegations. Default: 2. */
+    readonly maxConcurrentDelegations?: number | undefined;
+    /** Maximum stdout bytes to capture before truncation. Default: 10 MB. */
+    readonly maxOutputBytes?: number | undefined;
+    /** Discovery cache TTL in milliseconds. Default: 60,000. */
+    readonly cacheTtlMs?: number | undefined;
+    /** Override discovery sources (defaults to PATH scanner). Useful for testing. */
+    readonly discoverySources?: readonly DiscoverySource[] | undefined;
+}
+interface ForgeDelegation {
+    /** Discovers an agent by name — compatible with ForgeDeps.discoverAgent. */
+    readonly discoverAgent: NonNullable<ForgeDeps["discoverAgent"]>;
+    /** Spawns a coding agent — compatible with ForgeDeps.spawnCodingAgent. */
+    readonly spawnCodingAgent: NonNullable<ForgeDeps["spawnCodingAgent"]>;
+    /** Release underlying sandbox resources. */
+    readonly dispose: () => Promise<void>;
+}
+/**
+ * Create a ForgeDelegation that bridges @koi/agent-discovery and
+ * @koi/agent-spawner into ForgeDeps-compatible callbacks.
+ */
+declare function createForgeDelegation(config: ForgeDelegationConfig): ForgeDelegation;
 
 /**
  * createForgePipeline — composition root that wires L2 sub-packages into a ForgePipeline.
@@ -64,6 +103,6 @@ interface ForgeRuntimeInstance {
  */
 declare function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRuntimeInstance;
 
-export { type CreateForgeRuntimeOptions, type ForgeRuntimeInstance, createForgePipeline, createForgeRuntime };
+export { type CreateForgeRuntimeOptions, type ForgeDelegation, type ForgeDelegationConfig, type ForgeRuntimeInstance, createForgeDelegation, createForgePipeline, createForgeRuntime };
 "
 `;
