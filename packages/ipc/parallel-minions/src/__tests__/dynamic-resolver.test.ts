@@ -84,9 +84,10 @@ describe("dynamic AgentResolver in parallel-minions", () => {
     ]);
 
     expect(result.summary.failed).toBe(1);
-    expect(result.outcomes[0]?.ok).toBe(false);
-    if (!result.outcomes[0]?.ok) {
-      expect(result.outcomes[0].error).toContain("unknown agent type");
+    const firstOutcome = result.outcomes[0];
+    expect(firstOutcome?.ok).toBe(false);
+    if (firstOutcome !== undefined && !firstOutcome.ok) {
+      expect(firstOutcome.error).toContain("unknown agent type");
     }
   });
 
