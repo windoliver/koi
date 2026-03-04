@@ -3,7 +3,7 @@ import { isProcessState, validateNonEmpty } from "./validation-utils.js";
 
 describe("isProcessState", () => {
   test("returns true for all valid process states", () => {
-    for (const state of ["created", "running", "waiting", "suspended", "terminated"]) {
+    for (const state of ["created", "running", "waiting", "suspended", "idle", "terminated"]) {
       expect(isProcessState(state)).toBe(true);
     }
   });

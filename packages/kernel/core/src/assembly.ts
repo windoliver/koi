@@ -154,4 +154,10 @@ export interface AgentManifest {
    * Capabilities are identified by `capability:<name>` tags on brick artifacts.
    */
   readonly degeneracy?: Readonly<Record<string, DegeneracyConfig>> | undefined;
+  /**
+   * When true, the agent transitions to "idle" after task completion instead
+   * of terminating, enabling reuse via the agent pool. Scheduler-triggered
+   * tasks always pool regardless of this flag.
+   */
+  readonly reuse?: boolean | undefined;
 }

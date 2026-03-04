@@ -205,6 +205,70 @@ export function runAgentRegistryContractTests(
           expect(result.error.code).toBe("VALIDATION");
         }
       });
+
+      test("running → idle transition succeeds", async () => {
+        await registry.register(entry("a1", "created", 0));
+        await registry.transition(agentId("a1"), "running", 0, { kind: "assembly_complete" });
+        const result = await registry.transition(agentId("a1"), "idle", 1, {
+          kind: "task_completed_idle",
+        });
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.value.status.phase).toBe("idle");
+          expect(result.value.status.generation).toBe(2);
+        }
+      });
+
+      test("idle → running transition succeeds", async () => {
+        await registry.register(entry("a1", "created", 0));
+        await registry.transition(agentId("a1"), "running", 0, { kind: "assembly_complete" });
+        await registry.transition(agentId("a1"), "idle", 1, { kind: "task_completed_idle" });
+        const result = await registry.transition(agentId("a1"), "running", 2, {
+          kind: "inbox_wake",
+        });
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.value.status.phase).toBe("running");
+          expect(result.value.status.generation).toBe(3);
+        }
+      });
+
+      test("idle → terminated transition succeeds", async () => {
+        await registry.register(entry("a1", "created", 0));
+        await registry.transition(agentId("a1"), "running", 0, { kind: "assembly_complete" });
+        await registry.transition(agentId("a1"), "idle", 1, { kind: "task_completed_idle" });
+        const result = await registry.transition(agentId("a1"), "terminated", 2, {
+          kind: "evicted",
+        });
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.value.status.phase).toBe("terminated");
+        }
+      });
+
+      test("idle → waiting is invalid", async () => {
+        await registry.register(entry("a1", "created", 0));
+        await registry.transition(agentId("a1"), "running", 0, { kind: "assembly_complete" });
+        await registry.transition(agentId("a1"), "idle", 1, { kind: "task_completed_idle" });
+        const result = await registry.transition(agentId("a1"), "waiting", 2, {
+          kind: "awaiting_response",
+        });
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.code).toBe("VALIDATION");
+        }
+      });
+
+      test("list filters by idle phase", async () => {
+        await registry.register(entry("a1", "created", 0));
+        await registry.register(entry("a2", "created", 0));
+        await registry.transition(agentId("a1"), "running", 0, { kind: "assembly_complete" });
+        await registry.transition(agentId("a1"), "idle", 1, { kind: "task_completed_idle" });
+
+        const idle = await registry.list({ phase: "idle" });
+        expect(idle).toHaveLength(1);
+        expect(idle[0]?.agentId).toBe(agentId("a1"));
+      });
     });
 
     // -----------------------------------------------------------------------

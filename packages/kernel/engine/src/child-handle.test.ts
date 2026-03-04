@@ -158,6 +158,38 @@ describe("createChildHandle", () => {
     expect(events).toHaveLength(2); // still 2, not 3
   });
 
+  test("fires idled event on running → idle", () => {
+    registry.register(entry("child-1", "running", 0));
+
+    const handle = createChildHandle(agentId("child-1"), "worker-1", registry);
+    const events: ChildLifecycleEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+
+    registry.transition(agentId("child-1"), "idle", 0, { kind: "task_completed_idle" });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe("idled");
+    expect(events[0]?.childId).toBe(agentId("child-1"));
+  });
+
+  test("fires woke event on idle → running", () => {
+    registry.register(entry("child-1", "running", 0));
+
+    const handle = createChildHandle(agentId("child-1"), "worker-1", registry);
+    const events: ChildLifecycleEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+
+    // running → idle
+    registry.transition(agentId("child-1"), "idle", 0, { kind: "task_completed_idle" });
+    // idle → running
+    registry.transition(agentId("child-1"), "running", 1, { kind: "inbox_wake" });
+
+    expect(events).toHaveLength(2);
+    expect(events[0]?.kind).toBe("idled");
+    expect(events[1]?.kind).toBe("woke");
+    expect(events[1]?.childId).toBe(agentId("child-1"));
+  });
+
   test("multiple listeners receive events", () => {
     registry.register(entry("child-1", "created", 0));
 

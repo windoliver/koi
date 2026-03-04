@@ -120,6 +120,8 @@ export function mapProcessStateToHarnessPhase(
       return "active";
     case "suspended":
       return "suspended";
+    case "idle":
+      return "idle";
     case "terminated":
       return reason?.kind === "completed" ? "completed" : "failed";
   }

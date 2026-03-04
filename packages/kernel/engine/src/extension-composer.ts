@@ -33,11 +33,14 @@ const SIGNIFICANT_TRANSITIONS: ReadonlySet<string> = new Set([
   "created→running",
   "created→terminated",
   "running→suspended",
+  "running→idle",
   "running→terminated",
   "waiting→suspended",
   "waiting→terminated",
   "suspended→running",
   "suspended→terminated",
+  "idle→running",
+  "idle→terminated",
 ]);
 
 /** Check if a transition is significant (should invoke validators). O(1) set lookup. */
