@@ -5,7 +5,7 @@
  * assignment, failure/retry handling, and checkpointing.
  */
 
-export { executeAssignWorker } from "./assign-worker-tool.js";
+export { createAssignWorkerExecutor } from "./assign-worker-tool.js";
 
 // board
 export { createTaskBoard } from "./board.js";
@@ -27,7 +27,7 @@ export {
   ORCHESTRATOR_SKILL_CONTENT,
   ORCHESTRATOR_SKILL_NAME,
 } from "./skill.js";
-export { mapSpawnToWorker } from "./spawn-adapter.js";
+export { formatUpstreamContext, mapSpawnToWorker } from "./spawn-adapter.js";
 export { executeSynthesize } from "./synthesize-tool.js";
 // types
 export type {

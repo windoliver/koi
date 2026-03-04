@@ -250,6 +250,10 @@ function createBoardFromState(
       return ok(createBoardFromState(newItems, results, config));
     },
 
+    result(taskId: TaskItemId): TaskResult | undefined {
+      return results.get(taskId);
+    },
+
     get(taskId: TaskItemId): TaskItem | undefined {
       return items.get(taskId);
     },

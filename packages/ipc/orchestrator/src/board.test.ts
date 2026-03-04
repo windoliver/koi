@@ -341,6 +341,40 @@ describe("createTaskBoard", () => {
     });
   });
 
+  describe("result", () => {
+    test("returns completed task result by ID", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const taskResult = result("a", "my-output");
+      const r3 = r2.value.complete(taskItemId("a"), taskResult);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+
+      const fetched = r3.value.result(taskItemId("a"));
+      expect(fetched).toBeDefined();
+      expect(fetched?.output).toBe("my-output");
+      expect(fetched?.taskId).toBe(taskItemId("a"));
+    });
+
+    test("returns undefined for non-completed task", () => {
+      const board = createTaskBoard();
+      const r = board.add(input("a"));
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.result(taskItemId("a"))).toBeUndefined();
+    });
+
+    test("returns undefined for unknown task ID", () => {
+      const board = createTaskBoard();
+      expect(board.result(taskItemId("nonexistent"))).toBeUndefined();
+    });
+  });
+
   describe("update", () => {
     test("updates priority on pending task", () => {
       const board = createTaskBoard();

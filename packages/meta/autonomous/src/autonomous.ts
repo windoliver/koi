@@ -12,8 +12,7 @@ import {
   createInboxMiddleware,
   createPlanAutonomousProvider,
 } from "@koi/long-running";
-import { createHarnessHandoffBridge } from "./bridge.js";
-import type { AutonomousAgent, AutonomousAgentParts, HarnessHandoffBridge } from "./types.js";
+import type { AutonomousAgent, AutonomousAgentParts } from "./types.js";
 
 export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent {
   // let justified: mutable disposal guard
@@ -103,12 +102,6 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
 
   const cachedProviders: readonly ComponentProvider[] = providerList;
 
-  // --- Optional bridge ---
-  const handoffBridge: HarnessHandoffBridge | undefined =
-    parts.handoffBridge !== undefined
-      ? createHarnessHandoffBridge(parts.harness, parts.handoffBridge)
-      : undefined;
-
   // --- API ---
   const middleware = (): readonly KoiMiddleware[] => cachedMiddleware;
   const providers = (): readonly ComponentProvider[] => cachedProviders;
@@ -116,7 +109,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   const dispose = async (): Promise<void> => {
     if (disposed) return;
     disposed = true;
-    // Order: stop scheduler first (prevents new resumes), then dispose harness
+    // Order: dispose scheduler first (prevents new resumes), then dispose harness
     await parts.scheduler.dispose();
     await parts.harness.dispose();
   };
@@ -127,6 +120,5 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     middleware,
     providers,
     dispose,
-    ...(handoffBridge !== undefined ? { handoffBridge } : {}),
   };
 }

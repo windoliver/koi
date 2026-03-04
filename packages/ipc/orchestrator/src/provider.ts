@@ -4,7 +4,7 @@
 
 import type { Agent, ComponentProvider, TaskBoard } from "@koi/core";
 import { skillToken } from "@koi/core";
-import { executeAssignWorker } from "./assign-worker-tool.js";
+import { createAssignWorkerExecutor } from "./assign-worker-tool.js";
 import { createTaskBoard } from "./board.js";
 import type { BoardHolder } from "./orchestrate-tool.js";
 import { executeOrchestrate } from "./orchestrate-tool.js";
@@ -57,6 +57,7 @@ export function createOrchestratorProvider(config: OrchestratorConfig): Componen
 
       const maxOutput = config.maxOutputPerTask ?? DEFAULT_ORCHESTRATOR_CONFIG.maxOutputPerTask;
 
+      const executeAssignWorker = createAssignWorkerExecutor();
       const components = new Map<string, unknown>();
 
       components.set("tool:orchestrate", {

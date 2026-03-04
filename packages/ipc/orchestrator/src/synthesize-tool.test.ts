@@ -80,4 +80,92 @@ describe("executeSynthesize", () => {
     const result = executeSynthesize({}, holder, 50);
     expect(result).toContain("truncated");
   });
+
+  test("renders artifacts section when present", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({ id: taskItemId("a"), description: "With artifacts" });
+    if (!r1.ok) throw new Error("setup failed");
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r2.ok) throw new Error("setup failed");
+    const r3 = r2.value.complete(taskItemId("a"), {
+      taskId: taskItemId("a"),
+      output: "done",
+      durationMs: 100,
+      artifacts: [
+        { id: "art-1", kind: "file", uri: "file:///report.json" },
+        { id: "art-2", kind: "data", uri: "data:text/plain,hello" },
+      ],
+    });
+    if (!r3.ok) throw new Error("setup failed");
+
+    const holder = createHolder(r3.value);
+    const result = executeSynthesize({}, holder);
+    expect(result).toContain("### Artifacts");
+    expect(result).toContain("file: file:///report.json");
+    expect(result).toContain("data: data:text/plain,hello");
+  });
+
+  test("renders warnings section when present", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({ id: taskItemId("a"), description: "With warnings" });
+    if (!r1.ok) throw new Error("setup failed");
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r2.ok) throw new Error("setup failed");
+    const r3 = r2.value.complete(taskItemId("a"), {
+      taskId: taskItemId("a"),
+      output: "done",
+      durationMs: 100,
+      warnings: ["disk almost full", "slow network"],
+    });
+    if (!r3.ok) throw new Error("setup failed");
+
+    const holder = createHolder(r3.value);
+    const result = executeSynthesize({}, holder);
+    expect(result).toContain("### Warnings");
+    expect(result).toContain("disk almost full");
+    expect(result).toContain("slow network");
+  });
+
+  test("renders decisions section when present", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({ id: taskItemId("a"), description: "With decisions" });
+    if (!r1.ok) throw new Error("setup failed");
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r2.ok) throw new Error("setup failed");
+    const r3 = r2.value.complete(taskItemId("a"), {
+      taskId: taskItemId("a"),
+      output: "done",
+      durationMs: 100,
+      decisions: [
+        { agentId: agentId("w1"), action: "chose X", reasoning: "best option", timestamp: 1 },
+      ],
+    });
+    if (!r3.ok) throw new Error("setup failed");
+
+    const holder = createHolder(r3.value);
+    const result = executeSynthesize({}, holder);
+    expect(result).toContain("### Decisions");
+    expect(result).toContain("chose X");
+    expect(result).toContain("best option");
+  });
+
+  test("omits structured sections when fields are empty or undefined", () => {
+    const board = createTaskBoard();
+    const r1 = board.add({ id: taskItemId("a"), description: "Plain" });
+    if (!r1.ok) throw new Error("setup failed");
+    const r2 = r1.value.assign(taskItemId("a"), agentId("w1"));
+    if (!r2.ok) throw new Error("setup failed");
+    const r3 = r2.value.complete(taskItemId("a"), {
+      taskId: taskItemId("a"),
+      output: "just output",
+      durationMs: 100,
+    });
+    if (!r3.ok) throw new Error("setup failed");
+
+    const holder = createHolder(r3.value);
+    const result = executeSynthesize({}, holder);
+    expect(result).not.toContain("### Artifacts");
+    expect(result).not.toContain("### Warnings");
+    expect(result).not.toContain("### Decisions");
+  });
 });

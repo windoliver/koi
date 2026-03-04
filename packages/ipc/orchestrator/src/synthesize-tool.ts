@@ -61,15 +61,37 @@ export function executeSynthesize(
   const sorted = topologicalSort(items);
   const orderedIds = sorted.filter((id) => resultMap.has(id));
 
+  // Build full result map for structured field rendering
+  const fullResultMap = new Map(results.map((r) => [r.taskId, r] as const));
+
   const sections: string[] = [];
   for (const id of orderedIds) {
     const item = board.get(id);
+    const taskResult = fullResultMap.get(id);
     const output = resultMap.get(id) ?? "";
     const truncated =
       output.length > maxOutput ? `${output.slice(0, maxOutput)}... (truncated)` : output;
 
     const header = item !== undefined ? `## ${id}: ${item.description}` : `## ${id}`;
-    sections.push(`${header}\n${truncated}`);
+    const parts: string[] = [`${header}\n${truncated}`];
+
+    if (taskResult?.artifacts !== undefined && taskResult.artifacts.length > 0) {
+      const artLines = taskResult.artifacts.map((a) => `- ${a.kind}: ${a.uri}`);
+      parts.push(`\n### Artifacts\n${artLines.join("\n")}`);
+    }
+
+    if (taskResult?.warnings !== undefined && taskResult.warnings.length > 0) {
+      parts.push(`\n### Warnings\n${taskResult.warnings.map((w) => `- ${w}`).join("\n")}`);
+    }
+
+    if (taskResult?.decisions !== undefined && taskResult.decisions.length > 0) {
+      const decLines = taskResult.decisions.map(
+        (d) => `- [${d.agentId}] ${d.action}: ${d.reasoning}`,
+      );
+      parts.push(`\n### Decisions\n${decLines.join("\n")}`);
+    }
+
+    sections.push(parts.join(""));
   }
 
   const formatLabel = input.format ?? "summary";
