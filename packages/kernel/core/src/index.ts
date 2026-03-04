@@ -272,7 +272,7 @@ export type {
   ScopeChecker,
 } from "./delegation.js";
 // delegation — runtime values
-export { DEFAULT_CIRCUIT_BREAKER_CONFIG, delegationId } from "./delegation.js";
+export { DEFAULT_CIRCUIT_BREAKER_CONFIG, delegationId, isPermissionSubset } from "./delegation.js";
 // diagnostic provider — vendor-neutral code diagnostics contract
 export type {
   DiagnosticItem,

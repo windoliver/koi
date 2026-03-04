@@ -21,31 +21,11 @@ import type {
   CapabilityToken,
   CapabilityVerifier,
   CapabilityVerifyResult,
+  ScopeChecker,
   VerifyContext,
 } from "@koi/core";
-import { verifyEd25519 } from "@koi/crypto-utils";
-
-/**
- * Recursively sorts object keys to produce deterministic JSON.
- * Must be consistent with how the signature was computed during token issuance.
- */
-function sortKeys(value: unknown): unknown {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(sortKeys);
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-    sorted[key] = sortKeys((value as Record<string, unknown>)[key]);
-  }
-  return sorted;
-}
-
-/**
- * Canonical JSON over a token with the proof field excluded.
- * This is the payload that was signed during token issuance.
- */
-function canonicalize(token: Omit<CapabilityToken, "proof">): string {
-  return JSON.stringify(sortKeys(token));
-}
+import { canonicalize, verifyEd25519 } from "@koi/crypto-utils";
+import { checkScope } from "./scope-check.js";
 
 /**
  * Verifies an Ed25519 signature on a capability token.
@@ -65,33 +45,21 @@ function verifyEd25519Proof(token: CapabilityToken): boolean {
 }
 
 /**
- * Checks if a toolId is permitted by the token's scope.
- */
-function isToolAllowed(toolId: string, token: CapabilityToken): boolean {
-  const { permissions } = token.scope;
-  const allowList = permissions.allow ?? [];
-  const denyList = permissions.deny ?? [];
-
-  const colonIndex = toolId.indexOf(":");
-  const toolName = colonIndex >= 0 ? toolId.slice(0, colonIndex) : toolId;
-
-  if (denyList.includes(toolName) || denyList.includes(toolId)) {
-    return false;
-  }
-
-  return allowList.includes(toolName) || allowList.includes("*");
-}
-
-/**
  * Creates a CapabilityVerifier for Ed25519-proof tokens.
  *
  * The public key is embedded in the token proof itself, so no external
  * key material is required for verification. The issuer's public key
  * is bound to the token at issuance time.
+ *
+ * @param scopeChecker - Optional pluggable scope checker. When provided,
+ *   scope checking is delegated to it. Falls back to internal isToolAllowed.
  */
-export function createEd25519Verifier(): CapabilityVerifier {
+export function createEd25519Verifier(scopeChecker?: ScopeChecker): CapabilityVerifier {
   return {
-    verify(token: CapabilityToken, context: VerifyContext): CapabilityVerifyResult {
+    verify(
+      token: CapabilityToken,
+      context: VerifyContext,
+    ): CapabilityVerifyResult | Promise<CapabilityVerifyResult> {
       // 1. Check proof type
       if (token.proof.kind !== "ed25519") {
         return { ok: false, reason: "proof_type_unsupported" };
@@ -117,12 +85,8 @@ export function createEd25519Verifier(): CapabilityVerifier {
         return { ok: false, reason: "chain_depth_exceeded" };
       }
 
-      // 6. Check scope
-      if (!isToolAllowed(context.toolId, token)) {
-        return { ok: false, reason: "scope_exceeded" };
-      }
-
-      return { ok: true, token };
+      // 6. Check scope — delegate to scopeChecker when provided, else built-in
+      return checkScope(context.toolId, token, scopeChecker);
     },
   };
 }

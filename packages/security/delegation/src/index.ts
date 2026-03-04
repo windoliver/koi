@@ -34,6 +34,8 @@ export { createDelegationProvider, type DelegationProviderConfig } from "./deleg
 export type { AttenuateParams, CreateGrantParams } from "./grant.js";
 // grant creation & attenuation
 export { attenuateGrant, createGrant } from "./grant.js";
+// grant→token mapping
+export { mapGrantToCapabilityToken } from "./map-grant-to-token.js";
 export type { DelegationMiddlewareConfig } from "./middleware.js";
 // middleware
 export { createDelegationMiddleware } from "./middleware.js";

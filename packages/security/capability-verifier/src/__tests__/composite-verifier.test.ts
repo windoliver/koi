@@ -243,4 +243,20 @@ describe("createInMemoryVerifierCache", () => {
     expect(cache.get(idA, "read_file")).toBeUndefined();
     expect(cache.get(idB, "read_file")).toBeDefined(); // B unaffected
   });
+
+  test("cache key collision: tokenId containing colon does not collide (Issue #700)", () => {
+    const cache = createInMemoryVerifierCache();
+    // These would collide with ":" separator: "a:b" + "c" vs "a" + "b:c"
+    // With null byte separator they are distinct
+    const id1 = capabilityId("a:b");
+    const id2 = capabilityId("a");
+    const r1 = { ok: true as const, token: makeHmacToken("a:b") };
+    const r2 = { ok: false as const, reason: "scope_exceeded" as const };
+
+    cache.set(id1, "c", r1); // key: "a:b\0c"
+    cache.set(id2, "b:c", r2); // key: "a\0b:c" — different from above
+
+    expect(cache.get(id1, "c")).toBe(r1);
+    expect(cache.get(id2, "b:c")).toBe(r2);
+  });
 });

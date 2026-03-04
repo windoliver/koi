@@ -286,3 +286,50 @@ describe("createHmacVerifier", () => {
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// ScopeChecker injection (Issue #700)
+// ─────────────────────────────────────────────────────────────
+
+describe("createHmacVerifier — scopeChecker injection", () => {
+  test("sync scopeChecker allows tool", async () => {
+    const scopeCheckerVerifier = createHmacVerifier(SECRET, {
+      isAllowed: () => true,
+    });
+    const token = makeToken();
+    const result = await scopeCheckerVerifier.verify(
+      token,
+      makeContext({ toolId: "unknown_tool" }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("sync scopeChecker denies tool", async () => {
+    const scopeCheckerVerifier = createHmacVerifier(SECRET, {
+      isAllowed: () => false,
+    });
+    const token = makeToken();
+    const result = await scopeCheckerVerifier.verify(token, makeContext());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("scope_exceeded");
+  });
+
+  test("async scopeChecker is awaited", async () => {
+    const scopeCheckerVerifier = createHmacVerifier(SECRET, {
+      isAllowed: () => Promise.resolve(true),
+    });
+    const token = makeToken();
+    const result = await scopeCheckerVerifier.verify(token, makeContext());
+    expect(result.ok).toBe(true);
+  });
+
+  test("async scopeChecker deny is awaited", async () => {
+    const scopeCheckerVerifier = createHmacVerifier(SECRET, {
+      isAllowed: () => Promise.resolve(false),
+    });
+    const token = makeToken();
+    const result = await scopeCheckerVerifier.verify(token, makeContext());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("scope_exceeded");
+  });
+});

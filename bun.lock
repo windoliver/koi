@@ -1009,6 +1009,7 @@
       "name": "@koi/governance",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/capability-verifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/delegation": "workspace:*",
         "@koi/exec-approvals": "workspace:*",
@@ -2066,6 +2067,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/crypto-utils": "workspace:*",
       },
     },
     "packages/security/doctor": {

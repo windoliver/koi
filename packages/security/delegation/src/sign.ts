@@ -11,37 +11,10 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { CapabilityProof, DelegationGrant } from "@koi/core";
+import { canonicalize } from "@koi/crypto-utils";
 
 /** All grant fields except `proof`, serialized in deterministic key order. */
 type UnsignedGrant = Omit<DelegationGrant, "proof">;
-
-/**
- * Recursively sorts object keys to produce deterministic JSON.
- * Handles nested objects and arrays correctly (unlike JSON.stringify
- * with a replacer array, which applies the same key filter to all levels).
- */
-function sortKeys(value: unknown): unknown {
-  if (value === null || typeof value !== "object") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map(sortKeys);
-  }
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-    sorted[key] = sortKeys((value as Record<string, unknown>)[key]);
-  }
-  return sorted;
-}
-
-/**
- * Produces a canonical JSON string from an unsigned grant.
- * Keys are recursively sorted to ensure deterministic output
- * regardless of property insertion order.
- */
-function canonicalize(grant: UnsignedGrant): string {
-  return JSON.stringify(sortKeys(grant));
-}
 
 /**
  * Signs an unsigned grant payload with HMAC-SHA256.

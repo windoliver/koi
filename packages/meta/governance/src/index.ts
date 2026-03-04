@@ -21,6 +21,8 @@
  * ```
  */
 
+// ── Types: capability verifier ──────────────────────────────────────────
+export type { SessionRevocationStore } from "@koi/capability-verifier";
 // ── Types: middleware sub-configs ────────────────────────────────────────
 export type { DelegationMiddlewareConfig, DelegationProviderConfig } from "@koi/delegation";
 export type { ExecApprovalsConfig } from "@koi/exec-approvals";

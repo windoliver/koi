@@ -5,6 +5,7 @@
  * deployment presets, scope configuration, and the GovernanceBundle return shape.
  */
 
+import type { SessionRevocationStore } from "@koi/capability-verifier";
 import type {
   AuditSink,
   ComponentProvider,
@@ -186,4 +187,6 @@ export interface GovernanceBundle {
   readonly disposables: readonly Disposable[];
   /** Nexus delegation hooks — present when `delegationBridge.nexusBackend` is configured. */
   readonly nexusHooks?: NexusDelegationHooks;
+  /** Session revocation store — present when strict preset auto-wires capability verifier. */
+  readonly sessionStore?: SessionRevocationStore;
 }

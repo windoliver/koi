@@ -12,9 +12,9 @@ import type {
   DelegationId,
   DelegationScope,
   KoiError,
-  PermissionConfig,
   Result,
 } from "@koi/core";
+import { isPermissionSubset } from "@koi/core";
 import { signGrant } from "./sign.js";
 
 // ---------------------------------------------------------------------------
@@ -168,8 +168,8 @@ function validateScopeAttenuation(
   parent: DelegationScope,
   child: DelegationScope,
 ): KoiError | undefined {
-  // Check permissions subset
-  if (!isSubsetPermissions(child.permissions, parent.permissions)) {
+  // Check permissions subset (using L0 isPermissionSubset)
+  if (!isPermissionSubset(child.permissions, parent.permissions)) {
     return {
       code: "PERMISSION",
       message:
@@ -179,36 +179,4 @@ function validateScopeAttenuation(
   }
 
   return undefined;
-}
-
-/**
- * Checks if child permissions are a subset of parent permissions:
- * - If parent.allow includes "*", any child allow list is a subset
- * - Otherwise, every allow in child must be present in parent.allow
- * - Every deny in parent must be present in child.deny (deny can only grow)
- */
-function isSubsetPermissions(child: PermissionConfig, parent: PermissionConfig): boolean {
-  const parentAllow = new Set(parent.allow ?? []);
-  const childAllow = child.allow ?? [];
-
-  // Wildcard in parent allows any child allow list
-  if (!parentAllow.has("*")) {
-    for (const perm of childAllow) {
-      if (!parentAllow.has(perm)) {
-        return false;
-      }
-    }
-  }
-
-  // Every parent deny must exist in child deny (deny only grows)
-  const parentDeny = parent.deny ?? [];
-  const childDeny = new Set(child.deny ?? []);
-
-  for (const perm of parentDeny) {
-    if (!childDeny.has(perm)) {
-      return false;
-    }
-  }
-
-  return true;
 }

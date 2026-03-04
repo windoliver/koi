@@ -8,6 +8,7 @@
  * - SHA-256 hashing (Bun.CryptoHasher)
  */
 
+export { canonicalize, sortKeys } from "./canonicalize.js";
 export type { Ed25519KeyPair } from "./ed25519.js";
 export { generateEd25519KeyPair, signEd25519, verifyEd25519 } from "./ed25519.js";
 export { sha256Hex } from "./sha256.js";

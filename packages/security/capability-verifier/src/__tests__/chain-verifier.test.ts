@@ -380,3 +380,95 @@ describe("verifyChain — async revocation registry", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// Fail-closed error handling (Issue #700)
+// ─────────────────────────────────────────────────────────────
+
+describe("verifyChain — fail-closed error handling", () => {
+  test("batch error falls back to sequential isRevoked", async () => {
+    let sequentialCalls = 0;
+    const failingBatchRegistry: RevocationRegistry = {
+      isRevoked: (_id: DelegationId): boolean => {
+        sequentialCalls++;
+        return false;
+      },
+      isRevokedBatch: (): never => {
+        throw new Error("batch lookup failed");
+      },
+      revoke: (_id: DelegationId, _cascade: boolean): void => {},
+    };
+    const chain = [makeToken("a", 0), makeToken("b", 1, "a")];
+    const result = await verifyChain(chain, failingBatchRegistry, DEFAULT_CONTEXT);
+
+    expect(result.ok).toBe(true);
+    expect(sequentialCalls).toBe(2); // fell back to sequential
+  });
+
+  test("sequential isRevoked error treats token as revoked (fail-closed)", async () => {
+    const failingRegistry: RevocationRegistry = {
+      isRevoked: (_id: DelegationId): never => {
+        throw new Error("registry unavailable");
+      },
+      revoke: (_id: DelegationId, _cascade: boolean): void => {},
+    };
+    const chain = [makeToken("a", 0)];
+    const result = await verifyChain(chain, failingRegistry, DEFAULT_CONTEXT);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("revoked");
+  });
+
+  test("batch error + sequential error fails closed", async () => {
+    const allFailRegistry: RevocationRegistry = {
+      isRevoked: (_id: DelegationId): never => {
+        throw new Error("sequential also failed");
+      },
+      isRevokedBatch: (): never => {
+        throw new Error("batch failed");
+      },
+      revoke: (_id: DelegationId, _cascade: boolean): void => {},
+    };
+    const chain = [makeToken("a", 0), makeToken("b", 1, "a")];
+    const result = await verifyChain(chain, allFailRegistry, DEFAULT_CONTEXT);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("revoked");
+  });
+
+  test("async batch rejection falls back to sequential", async () => {
+    let sequentialCalls = 0;
+    const asyncFailRegistry: RevocationRegistry = {
+      isRevoked: (_id: DelegationId): boolean => {
+        sequentialCalls++;
+        return false;
+      },
+      isRevokedBatch: async (): Promise<never> => {
+        throw new Error("async batch rejection");
+      },
+      revoke: (_id: DelegationId, _cascade: boolean): void => {},
+    };
+    const chain = [makeToken("a", 0)];
+    const result = await verifyChain(chain, asyncFailRegistry, DEFAULT_CONTEXT);
+
+    expect(result.ok).toBe(true);
+    expect(sequentialCalls).toBe(1);
+  });
+
+  test("partial sequential failure: first token ok, second fails closed", async () => {
+    let callCount = 0;
+    const partialFailRegistry: RevocationRegistry = {
+      isRevoked: (_id: DelegationId): boolean => {
+        callCount++;
+        if (callCount === 2) throw new Error("second lookup failed");
+        return false;
+      },
+      revoke: (_id: DelegationId, _cascade: boolean): void => {},
+    };
+    const chain = [makeToken("a", 0), makeToken("b", 1, "a")];
+    const result = await verifyChain(chain, partialFailRegistry, DEFAULT_CONTEXT);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("revoked");
+  });
+});

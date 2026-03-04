@@ -135,14 +135,24 @@ async function batchRevocationCheck(
   ids: readonly DelegationId[],
   registry: RevocationRegistry,
 ): Promise<ReadonlyMap<DelegationId, boolean>> {
+  // Try batch first, fall back to sequential, fail-closed on error
   if (registry.isRevokedBatch !== undefined) {
-    return registry.isRevokedBatch(ids);
+    try {
+      return await registry.isRevokedBatch(ids);
+    } catch {
+      // Batch failed — fall through to sequential
+    }
   }
 
-  // Fallback: sequential checks
+  // Sequential fallback — fail-closed on any error
   const results = new Map<DelegationId, boolean>();
   for (const id of ids) {
-    results.set(id, await registry.isRevoked(id));
+    try {
+      results.set(id, await registry.isRevoked(id));
+    } catch {
+      // Fail-closed: treat lookup error as revoked
+      results.set(id, true);
+    }
   }
   return results;
 }
