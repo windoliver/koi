@@ -46,6 +46,8 @@ export { createGrantIndex, createInMemoryRegistry } from "./registry.js";
 export { parseResourcePattern, type ResourcePattern } from "./resource-pattern.js";
 // revocation
 export { revokeGrant } from "./revoke.js";
+// send-and-wait (compose send + wait)
+export { type SendAndWaitConfig, type SendAndWaitResult, sendAndWait } from "./send-and-wait.js";
 // signing
 export { signGrant, verifySignature } from "./sign.js";
 // test helpers

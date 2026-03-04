@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ForgeBudget, ForgeDemandSignal, ModelResponse, ToolResponse } from "@koi/core";
 import { DEFAULT_FORGE_BUDGET } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import { createMockTurnContext } from "@koi/test-utils";
 import { createForgeDemandDetector } from "./demand-detector.js";
 import type { ForgeDemandConfig } from "./types.js";
@@ -30,6 +31,12 @@ function createSuccessToolResponse(): ToolResponse {
 const defaultBudget: ForgeBudget = {
   ...DEFAULT_FORGE_BUDGET,
   cooldownMs: 0, // disable cooldown for tests
+};
+
+/** Budget with low threshold — allows signals from low-confidence triggers like no_matching_tool. */
+const lowThresholdBudget: ForgeBudget = {
+  ...defaultBudget,
+  demandThreshold: 0.1,
 };
 
 function createConfig(overrides?: Partial<ForgeDemandConfig>): ForgeDemandConfig {
@@ -369,6 +376,193 @@ describe("createForgeDemandDetector", () => {
       expect(result).toBeDefined();
       expect(result?.label).toBe("forge-demand");
       expect(result?.description).toContain("1 capability gap");
+    });
+  });
+
+  describe("wrapToolCall — no_matching_tool detection", () => {
+    it("emits no_matching_tool when NOT_FOUND error thrown", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({ budget: lowThresholdBudget, onDemand: (s) => signals.push(s) }),
+      );
+
+      const ctx = createMockTurnContext();
+      const notFoundNext = async () => {
+        throw KoiRuntimeError.from("NOT_FOUND", 'Tool not found: "my-tool"');
+      };
+
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, createToolRequest("my-tool"), notFoundNext);
+      } catch {
+        // expected
+      }
+
+      expect(signals.length).toBe(1);
+      expect(signals[0]?.trigger.kind).toBe("no_matching_tool");
+    });
+
+    it("still emits repeated_failure for non-NOT_FOUND errors", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({
+          budget: lowThresholdBudget,
+          heuristics: { repeatedFailureCount: 1 },
+          onDemand: (s) => signals.push(s),
+        }),
+      );
+
+      const ctx = createMockTurnContext();
+      const genericFail = async () => {
+        throw new Error("connection refused");
+      };
+
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-a"), genericFail);
+      } catch {
+        // expected
+      }
+
+      expect(signals.length).toBe(1);
+      expect(signals[0]?.trigger.kind).toBe("repeated_failure");
+    });
+
+    it("no_matching_tool trigger has correct query and attempts fields", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({ budget: lowThresholdBudget, onDemand: (s) => signals.push(s) }),
+      );
+
+      const ctx = createMockTurnContext();
+      const notFoundNext = async () => {
+        throw KoiRuntimeError.from("NOT_FOUND", 'Tool not found: "special-tool"');
+      };
+
+      try {
+        await handle.middleware.wrapToolCall?.(
+          ctx,
+          createToolRequest("special-tool"),
+          notFoundNext,
+        );
+      } catch {
+        // expected
+      }
+
+      const trigger = signals[0]?.trigger;
+      expect(trigger?.kind).toBe("no_matching_tool");
+      if (trigger?.kind === "no_matching_tool") {
+        expect(trigger.query).toBe("special-tool");
+        expect(trigger.attempts).toBe(1);
+      }
+    });
+
+    it("no_matching_tool uses capabilityGap confidence weight (0.8)", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({ budget: lowThresholdBudget, onDemand: (s) => signals.push(s) }),
+      );
+
+      const ctx = createMockTurnContext();
+      const notFoundNext = async () => {
+        throw KoiRuntimeError.from("NOT_FOUND", "Tool not found");
+      };
+
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, createToolRequest("x"), notFoundNext);
+      } catch {
+        // expected
+      }
+
+      // capabilityGap base weight = 0.8, severity = min(1/3, 2) ≈ 0.333
+      // confidence = 0.8 * 0.333 ≈ 0.266 (above lowThresholdBudget.demandThreshold 0.1)
+      expect(signals.length).toBe(1);
+      expect(signals[0]?.confidence).toBeCloseTo(0.8 * (1 / 3), 2);
+    });
+
+    it("cooldown applies to no_matching_tool via nmt: key", async () => {
+      // let: mutable clock for test control
+      let now = 1000;
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({
+          budget: { ...lowThresholdBudget, cooldownMs: 5000 },
+          onDemand: (s) => signals.push(s),
+          clock: () => now,
+        }),
+      );
+
+      const ctx = createMockTurnContext();
+      const notFoundNext = async () => {
+        throw KoiRuntimeError.from("NOT_FOUND", "Tool not found");
+      };
+
+      // First call → signal emitted
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-x"), notFoundNext);
+      } catch {
+        // expected
+      }
+      expect(signals.length).toBe(1);
+
+      // Second call at same time → cooldown suppresses
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-x"), notFoundNext);
+      } catch {
+        // expected
+      }
+      expect(signals.length).toBe(1);
+
+      // Advance past cooldown
+      now = 7000;
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-x"), notFoundNext);
+      } catch {
+        // expected
+      }
+      expect(signals.length).toBe(2);
+    });
+
+    it("no_matching_tool does NOT increment consecutiveFailures counter", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({
+          budget: lowThresholdBudget,
+          heuristics: { repeatedFailureCount: 2 },
+          onDemand: (s) => signals.push(s),
+        }),
+      );
+
+      const ctx = createMockTurnContext();
+      const notFoundNext = async () => {
+        throw KoiRuntimeError.from("NOT_FOUND", "Tool not found");
+      };
+      const genericFail = async () => {
+        throw new Error("connection refused");
+      };
+
+      // NOT_FOUND × 3 → should emit no_matching_tool but NOT repeated_failure
+      for (let i = 0; i < 3; i++) {
+        try {
+          await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-a"), notFoundNext);
+        } catch {
+          // expected
+        }
+      }
+
+      const nmtSignals = signals.filter((s) => s.trigger.kind === "no_matching_tool");
+      const rfSignals = signals.filter((s) => s.trigger.kind === "repeated_failure");
+      expect(nmtSignals.length).toBeGreaterThanOrEqual(1);
+      expect(rfSignals.length).toBe(0);
+
+      // Now a generic failure for the same tool — should start counting from 0
+      // (one failure, below threshold of 2)
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-a"), genericFail);
+      } catch {
+        // expected
+      }
+
+      const rfSignalsAfter = signals.filter((s) => s.trigger.kind === "repeated_failure");
+      expect(rfSignalsAfter.length).toBe(0);
     });
   });
 

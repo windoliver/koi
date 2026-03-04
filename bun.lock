@@ -678,6 +678,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/delegation": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -920,7 +921,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/handoff": "workspace:*",
         "@koi/harness-scheduler": "workspace:*",
         "@koi/long-running": "workspace:*",
       },
@@ -2196,6 +2196,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/delegation": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",

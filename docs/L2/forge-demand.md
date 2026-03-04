@@ -41,6 +41,8 @@ L2  @koi/forge-demand        ─ this package (depends on L0 + L0u only)
 │                   Demand Detection Pipeline                   │
 │                                                               │
 │   wrapToolCall (priority 455):                                │
+│     ├── tool NOT_FOUND → emit no_matching_tool trigger        │
+│     │   └── immediate signal (no consecutive count needed)    │
 │     ├── tool fails → increment consecutive failure counter    │
 │     │   └── threshold reached → detectRepeatedFailure         │
 │     │       └── emit ForgeDemandSignal                        │
@@ -79,7 +81,20 @@ forge-demand/src/
 
 ## Heuristics
 
-Three independent, pure detection functions — each takes inputs and returns `ForgeTrigger | undefined`:
+Four independent, pure detection functions — each takes inputs and returns `ForgeTrigger | undefined`:
+
+### No matching tool
+
+Triggers immediately when a tool call targets a nonexistent tool (`NOT_FOUND` error from `KoiRuntimeError`). Unlike `repeated_failure`, this fires on the first attempt — the tool doesn't exist, so there's no point counting retries.
+
+```typescript
+// wrapToolCall catches KoiRuntimeError with code "NOT_FOUND"
+// → { kind: "no_matching_tool", query: toolId, attempts: 1 }
+```
+
+Uses `capability_gap` base weight (0.8). Cooldown key: `nmt:<toolId>`. Does **not** increment the `consecutiveFailures` counter (the tool never existed, it didn't "fail").
+
+This heuristic connects to the engine's `discovery:miss` event — when the engine can't find a tool, it yields `discovery:miss`, and when the demand detector's `wrapToolCall` catches the same `NOT_FOUND` error, it emits `no_matching_tool` to trigger auto-forge.
 
 ### Repeated failure
 
@@ -127,6 +142,7 @@ confidence = baseWeight × severity
 | Trigger kind | Base weight | Severity formula |
 |-------------|-------------|-----------------|
 | `repeated_failure` | 0.9 | `min(failureCount / threshold, 2.0)` |
+| `no_matching_tool` | 0.8 | `min(failureCount / threshold, 2.0)` |
 | `capability_gap` | 0.8 | `min(occurrences / threshold, 2.0)` |
 | `performance_degradation` | 0.6 | `min(latency / threshold, 2.0)` |
 

@@ -3190,3 +3190,178 @@ describe("createKoi error paths", () => {
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// discovery:miss emission
+// ---------------------------------------------------------------------------
+
+describe("discovery:miss emission", () => {
+  test("yields discovery:miss when tool not found", async () => {
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    const adapter: EngineAdapter = {
+      engineId: "miss-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => {
+        let done = false;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (!done) {
+              done = true;
+              // Try calling a tool that doesn't exist — catch the error
+              if (input.callHandlers) {
+                try {
+                  await input.callHandlers.toolCall({
+                    toolId: "nonexistent-tool",
+                    input: {},
+                  });
+                } catch {
+                  // Expected: NOT_FOUND
+                }
+              }
+              yield { kind: "done" as const, output: doneOutput() };
+            }
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    const missEvents = events.filter((e) => e.kind === "discovery:miss");
+    expect(missEvents).toHaveLength(1);
+  });
+
+  test("discovery:miss event has correct resolverSource (entity)", async () => {
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    const adapter: EngineAdapter = {
+      engineId: "miss-source-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => {
+        let done = false;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (!done) {
+              done = true;
+              if (input.callHandlers) {
+                try {
+                  await input.callHandlers.toolCall({ toolId: "missing", input: {} });
+                } catch {
+                  // expected
+                }
+              }
+              yield { kind: "done" as const, output: doneOutput() };
+            }
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    const miss = events.find((e) => e.kind === "discovery:miss");
+    expect(miss).toBeDefined();
+    if (miss?.kind === "discovery:miss") {
+      expect(miss.resolverSource).toBe("entity");
+      expect(typeof miss.timestamp).toBe("number");
+    }
+  });
+
+  test("discovery:miss includes forge+entity source when forge provided", async () => {
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+    const forgeRuntime: ForgeRuntime = {
+      resolveTool: async () => undefined,
+      toolDescriptors: async () => [],
+    };
+
+    const adapter: EngineAdapter = {
+      engineId: "forge-miss-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => {
+        let done = false;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (!done) {
+              done = true;
+              if (input.callHandlers) {
+                try {
+                  await input.callHandlers.toolCall({ toolId: "missing-forge", input: {} });
+                } catch {
+                  // expected
+                }
+              }
+              yield { kind: "done" as const, output: doneOutput() };
+            }
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge: forgeRuntime,
+      loopDetection: false,
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    const miss = events.find((e) => e.kind === "discovery:miss");
+    expect(miss).toBeDefined();
+    if (miss?.kind === "discovery:miss") {
+      expect(miss.resolverSource).toBe("forge+entity");
+    }
+  });
+
+  test("tool-not-found error still propagates after discovery:miss", async () => {
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+    // let justified: mutable flag to verify error was thrown
+    let errorCaught = false;
+
+    const adapter: EngineAdapter = {
+      engineId: "propagate-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => {
+        let done = false;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (!done) {
+              done = true;
+              if (input.callHandlers) {
+                try {
+                  await input.callHandlers.toolCall({ toolId: "nope", input: {} });
+                } catch {
+                  errorCaught = true;
+                }
+              }
+              yield { kind: "done" as const, output: doneOutput() };
+            }
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(errorCaught).toBe(true);
+  });
+});
