@@ -2,7 +2,7 @@
  * End-to-end tests: @koi/events-sqlite through the full Koi runtime.
  *
  * Validates that the SQLite-backed EventBackend works correctly when wired
- * through createKoi (L1) + createPiAdapter + createEventSourcedRegistry
+ * through createKoi (L1) + createPiAdapter + createMemoryRegistry
  * with real Anthropic API calls.
  *
  * Exercises:
@@ -35,7 +35,7 @@ import type {
 import { agentId, evolveRegistryEntry, isAgentStateEvent } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
-import { createEventSourcedRegistry, REGISTRY_INDEX_STREAM } from "@koi/registry-event-sourced";
+import { createMemoryRegistry, REGISTRY_INDEX_STREAM } from "@koi/registry-memory";
 import { createSqliteEventBackend } from "../sqlite-backend.js";
 
 // ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
     async () => {
       const dbPath = freshTmpDb();
       const backend = createSqliteEventBackend({ dbPath });
-      const registry = await createEventSourcedRegistry(backend);
+      const registry = await createMemoryRegistry(backend);
 
       // Register + transition to running
       await registry.register(makeEntry("sqlite-e2e-1"));
@@ -211,7 +211,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
       // --- Session 1: register, run LLM, transition, close ---
       {
         const backend = createSqliteEventBackend({ dbPath });
-        const registry = await createEventSourcedRegistry(backend);
+        const registry = await createMemoryRegistry(backend);
 
         await registry.register(makeEntry("sqlite-crash-1"));
         await registry.transition(agentId("sqlite-crash-1"), "running", 0, {
@@ -248,7 +248,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
       // --- Session 2: reopen SQLite, rebuild registry from events ---
       {
         const backend2 = createSqliteEventBackend({ dbPath });
-        const registry2 = await createEventSourcedRegistry(backend2);
+        const registry2 = await createMemoryRegistry(backend2);
 
         // Registry should have rebuilt state from persisted events
         const entry = registry2.lookup(agentId("sqlite-crash-1"));
@@ -278,7 +278,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
     async () => {
       const dbPath = freshTmpDb();
       const backend = createSqliteEventBackend({ dbPath });
-      const registry = await createEventSourcedRegistry(backend);
+      const registry = await createMemoryRegistry(backend);
 
       // Register two agents
       await registry.register(makeEntry("sqlite-multi-1"));
@@ -340,7 +340,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
       // Close and rebuild from SQLite
       await registry[Symbol.asyncDispose]();
 
-      const registry2 = await createEventSourcedRegistry(backend);
+      const registry2 = await createMemoryRegistry(backend);
       expect(registry2.list()).toHaveLength(2);
       expect(registry2.list().every((e) => e.status.phase === "terminated")).toBe(true);
 
@@ -359,7 +359,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
     async () => {
       const dbPath = freshTmpDb();
       const backend = createSqliteEventBackend({ dbPath });
-      const registry = await createEventSourcedRegistry(backend);
+      const registry = await createMemoryRegistry(backend);
 
       await registry.register(makeEntry("sqlite-mw"));
       await registry.transition(agentId("sqlite-mw"), "running", 0, {
@@ -500,7 +500,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
     async () => {
       const dbPath = freshTmpDb();
       const backend = createSqliteEventBackend({ dbPath });
-      const registry = await createEventSourcedRegistry(backend);
+      const registry = await createMemoryRegistry(backend);
 
       await registry.register(makeEntry("sqlite-cas"));
       await registry.transition(agentId("sqlite-cas"), "running", 0, {
@@ -547,7 +547,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
       // Close and rebuild — CAS state preserved
       await registry[Symbol.asyncDispose]();
 
-      const registry2 = await createEventSourcedRegistry(backend);
+      const registry2 = await createMemoryRegistry(backend);
       const rebuilt = registry2.lookup(agentId("sqlite-cas"));
       expect(rebuilt?.status.generation).toBe(final?.status.generation);
       expect(rebuilt?.status.phase).toBe(final?.status.phase);
@@ -566,7 +566,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
     async () => {
       const dbPath = freshTmpDb();
       const backend = createSqliteEventBackend({ dbPath });
-      const registry = await createEventSourcedRegistry(backend);
+      const registry = await createMemoryRegistry(backend);
 
       await registry.register(makeEntry("sqlite-metrics"));
       await registry.transition(agentId("sqlite-metrics"), "running", 0, {
@@ -633,7 +633,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
     async () => {
       const dbPath = freshTmpDb();
       const backend = createSqliteEventBackend({ dbPath });
-      const registry = await createEventSourcedRegistry(backend);
+      const registry = await createMemoryRegistry(backend);
 
       await registry.register(makeEntry("sqlite-dereg"));
       await registry.transition(agentId("sqlite-dereg"), "running", 0, {
@@ -662,7 +662,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
       backend.close();
 
       const backend2 = createSqliteEventBackend({ dbPath });
-      const registry2 = await createEventSourcedRegistry(backend2);
+      const registry2 = await createMemoryRegistry(backend2);
       expect(registry2.lookup(agentId("sqlite-dereg"))).toBeUndefined();
       expect(registry2.list()).toHaveLength(0);
 

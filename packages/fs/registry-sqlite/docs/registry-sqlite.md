@@ -1,4 +1,4 @@
-# @koi/registry-store
+# @koi/registry-sqlite
 
 SQLite-backed implementations of the three L0 registry contracts:
 BrickRegistry, SkillRegistry, and VersionIndex. Provides persistent
@@ -10,7 +10,7 @@ reactive onChange event dispatch.
 ## How It Works
 
 ```
-  Consumer                   registry-store                  SQLite
+  Consumer                   registry-sqlite                  SQLite
     |                             |                            |
     |  createSqlite*Registry()    |                            |
     |  { db | dbPath }            |                            |
@@ -429,7 +429,7 @@ testBrickRegistryContract({
 import { Database } from "bun:sqlite";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
-import { createSqliteBrickRegistry } from "@koi/registry-store";
+import { createSqliteBrickRegistry } from "@koi/registry-sqlite";
 
 const db = new Database(":memory:");
 db.run("PRAGMA foreign_keys = ON");
@@ -468,7 +468,7 @@ registry.close();
 
 ```typescript
 import { Database } from "bun:sqlite";
-import { createSqliteBrickRegistry, createSqliteSkillRegistry, createSqliteVersionIndex } from "@koi/registry-store";
+import { createSqliteBrickRegistry, createSqliteSkillRegistry, createSqliteVersionIndex } from "@koi/registry-sqlite";
 
 const db = new Database("./my-registry.db");
 db.run("PRAGMA foreign_keys = ON");
@@ -544,7 +544,7 @@ bun run typecheck
 ## Architecture
 
 ```
-packages/registry-store/src/
+packages/registry-sqlite/src/
 ├── index.ts              Public exports (3 factories + config types)
 ├── config.ts             Shared config: dbPath vs injected db
 ├── schema.ts             V1 DDL + migration runner

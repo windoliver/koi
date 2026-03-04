@@ -1,5 +1,5 @@
 /**
- * Event-sourced AgentRegistry implementation.
+ * In-memory AgentRegistry backed by an EventBackend.
  *
  * Events are the source of truth. Current state is a derived projection
  * maintained as an in-memory cache, updated synchronously after each append.
@@ -43,11 +43,11 @@ import { agentStreamId, REGISTRY_INDEX_STREAM } from "./stream-ids.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Event-sourced registry narrows async returns to sync for operations
+ * Memory registry narrows async returns to sync for operations
  * that only read the in-memory projection. transition and register
  * remain async because they append to the event backend.
  */
-export type EventSourcedRegistry = Omit<AgentRegistry, "lookup" | "list"> & {
+export type MemoryRegistry = Omit<AgentRegistry, "lookup" | "list"> & {
   readonly lookup: (agentId: AgentId) => RegistryEntry | undefined;
   readonly list: (
     filter?: RegistryFilter,
@@ -62,14 +62,12 @@ export type EventSourcedRegistry = Omit<AgentRegistry, "lookup" | "list"> & {
 // ---------------------------------------------------------------------------
 
 /**
- * Create an event-sourced AgentRegistry backed by an EventBackend.
+ * Create an in-memory AgentRegistry backed by an EventBackend.
  *
  * Returns a Promise because startup requires folding existing events
  * from the backend to rebuild the projection cache.
  */
-export async function createEventSourcedRegistry(
-  backend: EventBackend,
-): Promise<EventSourcedRegistry> {
+export async function createMemoryRegistry(backend: EventBackend): Promise<MemoryRegistry> {
   // Mutable internal state — projection cache
   const projection = new Map<string, RegistryEntry>();
   const sequenceMap = new Map<string, number>(); // agentId → last known stream sequence

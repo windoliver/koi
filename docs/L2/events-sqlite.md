@@ -164,8 +164,8 @@ caller                  SqliteEventBackend         event-delivery        SQLite
   append(events) ──► SQLite             reopen SQLite
   subscribe()                           │
   transition()                          ▼
-                                   createEventSourcedRegistry(backend)
-                                        (from @koi/registry-event-sourced — optional consumer)
+                                   createMemoryRegistry(backend)
+                                        (from @koi/registry-memory — optional consumer)
        ╔═══════════╗                    │
        ║  CRASH    ║                    │ rebuild() reads all streams
        ╚═══════════╝                    │ folds events → projection
@@ -322,7 +322,7 @@ const result = await backend2.read("stream-1");
 
 ```typescript
 import { createSqliteEventBackend } from "@koi/events-sqlite";
-import { createEventSourcedRegistry } from "@koi/registry-event-sourced";
+import { createMemoryRegistry } from "@koi/registry-memory";
 import { agentId } from "@koi/core";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -330,7 +330,7 @@ import { homedir } from "node:os";
 const backend = createSqliteEventBackend({
   dbPath: join(homedir(), ".koi", "events.db"),
 });
-const registry = await createEventSourcedRegistry(backend);
+const registry = await createMemoryRegistry(backend);
 
 await registry.register({
   agentId: agentId("worker-1"),
@@ -350,7 +350,7 @@ backend.close();
 const backend2 = createSqliteEventBackend({
   dbPath: join(homedir(), ".koi", "events.db"),
 });
-const recovered = await createEventSourcedRegistry(backend2);
+const recovered = await createMemoryRegistry(backend2);
 const entry = recovered.lookup(agentId("worker-1"));
 // entry.status.phase === "running" ✓
 ```
@@ -545,4 +545,4 @@ L2  @koi/events-sqlite ◄──────────────────
     ✗ never imports peer L2 packages
 ```
 
-**Dev-only dependencies** (`@koi/engine`, `@koi/engine-pi`, `@koi/registry-event-sourced`, `@koi/test-utils`) are used in E2E tests but are not runtime imports.
+**Dev-only dependencies** (`@koi/engine`, `@koi/engine-pi`, `@koi/registry-memory`, `@koi/test-utils`) are used in E2E tests but are not runtime imports.

@@ -1,5 +1,5 @@
 /**
- * Tests for the event-sourced registry implementation.
+ * Tests for the in-memory registry implementation.
  *
  * Runs the shared contract test suite plus implementation-specific tests
  * for index streams, factory rebuild, and stream-id helpers.
@@ -9,26 +9,23 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { EventBackend, RegistryEntry } from "@koi/core";
 import { agentId } from "@koi/core";
 import { createInMemoryEventBackend } from "@koi/events-memory";
-import {
-  runAgentRegistryContractTests,
-  runEventSourcedRegistryContractTests,
-} from "@koi/test-utils";
-import type { EventSourcedRegistry } from "./event-sourced-registry.js";
-import { createEventSourcedRegistry } from "./event-sourced-registry.js";
+import { runAgentRegistryContractTests, runMemoryRegistryContractTests } from "@koi/test-utils";
+import type { MemoryRegistry } from "./memory-registry.js";
+import { createMemoryRegistry } from "./memory-registry.js";
 import { agentStreamId, parseAgentStreamId, REGISTRY_INDEX_STREAM } from "./stream-ids.js";
 
 // ---------------------------------------------------------------------------
-// Run shared contract tests (generic AgentRegistry + event-sourced specific)
+// Run shared contract tests (generic AgentRegistry + memory-registry specific)
 // ---------------------------------------------------------------------------
 
 runAgentRegistryContractTests(async () => {
   const backend = createInMemoryEventBackend();
-  return createEventSourcedRegistry(backend);
+  return createMemoryRegistry(backend);
 });
 
-runEventSourcedRegistryContractTests(async () => {
+runMemoryRegistryContractTests(async () => {
   const backend = createInMemoryEventBackend();
-  const registry = await createEventSourcedRegistry(backend);
+  const registry = await createMemoryRegistry(backend);
   return { registry, backend };
 });
 
@@ -57,13 +54,13 @@ describe("stream-ids", () => {
 // Implementation-specific tests
 // ---------------------------------------------------------------------------
 
-describe("createEventSourcedRegistry — impl-specific", () => {
+describe("createMemoryRegistry — impl-specific", () => {
   let backend: EventBackend;
-  let registry: EventSourcedRegistry;
+  let registry: MemoryRegistry;
 
   beforeEach(async () => {
     backend = createInMemoryEventBackend();
-    registry = await createEventSourcedRegistry(backend);
+    registry = await createMemoryRegistry(backend);
   });
 
   // -------------------------------------------------------------------------
@@ -105,7 +102,7 @@ describe("createEventSourcedRegistry — impl-specific", () => {
     await registry.register(makeEntry("a2"));
 
     // Create a fresh registry from the same backend
-    const registry2 = await createEventSourcedRegistry(backend);
+    const registry2 = await createMemoryRegistry(backend);
 
     const a1 = registry2.lookup(agentId("a1"));
     const a2 = registry2.lookup(agentId("a2"));

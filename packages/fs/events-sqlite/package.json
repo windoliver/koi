@@ -19,7 +19,7 @@
   "devDependencies": {
     "@koi/engine": "workspace:*",
     "@koi/engine-pi": "workspace:*",
-    "@koi/registry-event-sourced": "workspace:*",
+    "@koi/registry-memory": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

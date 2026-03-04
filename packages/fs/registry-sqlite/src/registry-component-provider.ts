@@ -81,7 +81,7 @@ export function createRegistryProvider(config: RegistryProviderConfig): Componen
   const backend: RegistryComponent = { bricks, skills, versions };
 
   return createServiceProvider<RegistryComponent, RegistryOperation>({
-    name: "registry-store",
+    name: "registry-sqlite",
     singletonToken: REGISTRY,
     backend,
     operations: OPERATIONS,

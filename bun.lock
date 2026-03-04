@@ -289,7 +289,7 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
-        "@koi/registry-event-sourced": "workspace:*",
+        "@koi/registry-memory": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -356,8 +356,18 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/fs/registry-event-sourced": {
-      "name": "@koi/registry-event-sourced",
+    "packages/fs/registry-http": {
+      "name": "@koi/registry-http",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/registry-memory": {
+      "name": "@koi/registry-memory",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -366,16 +376,6 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/events-memory": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/fs/registry-http": {
-      "name": "@koi/registry-http",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -391,8 +391,8 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/fs/registry-store": {
-      "name": "@koi/registry-store",
+    "packages/fs/registry-sqlite": {
+      "name": "@koi/registry-sqlite",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -3117,13 +3117,13 @@
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
 
-    "@koi/registry-event-sourced": ["@koi/registry-event-sourced@workspace:packages/fs/registry-event-sourced"],
-
     "@koi/registry-http": ["@koi/registry-http@workspace:packages/fs/registry-http"],
+
+    "@koi/registry-memory": ["@koi/registry-memory@workspace:packages/fs/registry-memory"],
 
     "@koi/registry-nexus": ["@koi/registry-nexus@workspace:packages/fs/registry-nexus"],
 
-    "@koi/registry-store": ["@koi/registry-store@workspace:packages/fs/registry-store"],
+    "@koi/registry-sqlite": ["@koi/registry-sqlite@workspace:packages/fs/registry-sqlite"],
 
     "@koi/reputation": ["@koi/reputation@workspace:packages/security/reputation"],
 

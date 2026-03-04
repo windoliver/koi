@@ -78,7 +78,7 @@ The context hydrator calls `agent.query<SkillComponent>("skill:")`, finds the ma
 | `@koi/filesystem` | `filesystem` | `fs_read`, `fs_write`, `fs_edit`, + more |
 | `@koi/tools-github` | `github` | `github_*` tools |
 | `@koi/tool-browser` | `browser` | `browser_navigate`, `browser_click`, + more |
-| `@koi/registry-store` | `registry` | `registry_*` tools |
+| `@koi/registry-sqlite` | `registry` | `registry_*` tools |
 
 ## Skill Content Template
 

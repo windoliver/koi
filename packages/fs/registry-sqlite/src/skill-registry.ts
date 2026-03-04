@@ -23,7 +23,7 @@ import type {
 } from "@koi/core";
 import { brickId, conflict, DEFAULT_SKILL_SEARCH_LIMIT, notFound, validation } from "@koi/core";
 import { wrapSqlite } from "@koi/sqlite-utils";
-import type { RegistryStoreConfig } from "./config.js";
+import type { RegistrySqliteConfig } from "./config.js";
 import { resolveDb } from "./config.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
 import { sanitizeFtsQuery } from "./fts-sanitize.js";
@@ -64,7 +64,7 @@ interface CountRow {
 // ---------------------------------------------------------------------------
 
 const REGISTRY_PROVENANCE: ForgeProvenance = {
-  source: { origin: "external", registry: "koi-registry-store", packageRef: "local" },
+  source: { origin: "external", registry: "koi-registry-sqlite", packageRef: "local" },
   buildDefinition: {
     buildType: "koi.registry/skill/v1",
     externalParameters: {},
@@ -169,7 +169,7 @@ export interface SqliteSkillRegistry extends SkillRegistryBackend {
   readonly close: () => void;
 }
 
-export function createSqliteSkillRegistry(config: RegistryStoreConfig): SqliteSkillRegistry {
+export function createSqliteSkillRegistry(config: RegistrySqliteConfig): SqliteSkillRegistry {
   const { db, ownsDb } = resolveDb(config);
   applyRegistryMigrations(db);
 

@@ -1,5 +1,5 @@
 /**
- * @koi/registry-store — SQLite-backed BrickRegistry, SkillRegistry, and VersionIndex.
+ * @koi/registry-sqlite — SQLite-backed BrickRegistry, SkillRegistry, and VersionIndex.
  *
  * Provides persistent implementations of the three L0 registry contracts
  * using bun:sqlite with FTS5 full-text search, keyset cursor pagination,
@@ -9,9 +9,9 @@
 export type { SqliteBrickRegistry } from "./brick-registry.js";
 export { createSqliteBrickRegistry } from "./brick-registry.js";
 export type {
-  RegistryStoreConfig,
-  RegistryStoreDbConfig,
-  RegistryStorePathConfig,
+  RegistrySqliteConfig,
+  RegistrySqliteDbConfig,
+  RegistrySqlitePathConfig,
 } from "./config.js";
 export type { RegistryProviderConfig } from "./registry-component-provider.js";
 export { createRegistryProvider } from "./registry-component-provider.js";

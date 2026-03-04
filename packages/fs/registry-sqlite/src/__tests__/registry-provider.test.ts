@@ -38,10 +38,10 @@ function extractToolFromMap(components: ReadonlyMap<string, unknown>, toolName: 
 }
 
 describe("createRegistryProvider", () => {
-  test("provider name is 'registry-store'", () => {
+  test("provider name is 'registry-sqlite'", () => {
     const backends = createTestBackends();
     const provider = createRegistryProvider(backends);
-    expect(provider.name).toBe("registry-store");
+    expect(provider.name).toBe("registry-sqlite");
   });
 
   test("attaches 4 tools + skill + REGISTRY singleton", async () => {
