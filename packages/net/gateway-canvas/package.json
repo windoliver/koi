@@ -1,5 +1,6 @@
 {
   "name": "@koi/gateway-canvas",
+  "description": "Canvas HTTP routes, SSE manager, and surface store for the Koi gateway.",
   "version": "0.0.0",
   "private": true,
   "type": "module",

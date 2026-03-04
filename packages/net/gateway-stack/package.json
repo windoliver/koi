@@ -1,5 +1,6 @@
 {
   "name": "@koi/gateway-stack",
+  "description": "Convenience bundle that wires gateway, canvas, and webhook with unified lifecycle.",
   "version": "0.0.0",
   "private": true,
   "type": "module",

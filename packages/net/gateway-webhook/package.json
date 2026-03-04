@@ -1,5 +1,6 @@
 {
   "name": "@koi/gateway-webhook",
+  "description": "Webhook HTTP server and ingestion for the Koi gateway.",
   "version": "0.0.0",
   "private": true,
   "type": "module",

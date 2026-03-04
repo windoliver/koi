@@ -1,5 +1,6 @@
 {
   "name": "@koi/gateway-types",
+  "description": "Wire protocol types, session model, and config defaults for the Koi gateway.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
