@@ -6,7 +6,7 @@
  * Depends on @koi/core (L0) and @koi/validation (L0u).
  */
 
+export { validateName } from "@koi/name-resolution";
 export { createNameServiceProvider } from "./component-provider.js";
 export { createInMemoryNameService } from "./in-memory-backend.js";
-export { validateName } from "./name-validation.js";
 export { createRegistrySync } from "./registry-sync.js";

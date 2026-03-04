@@ -854,6 +854,17 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/name-resolution": {
+      "name": "@koi/name-resolution",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/lib/nexus-client": {
       "name": "@koi/nexus-client",
       "version": "0.0.0",
@@ -1853,6 +1864,19 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/name-resolution": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/name-service-nexus": {
+      "name": "@koi/name-service-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/name-resolution": "workspace:*",
         "@koi/validation": "workspace:*",
       },
       "devDependencies": {
@@ -3192,7 +3216,11 @@
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/drivers/model-router"],
 
+    "@koi/name-resolution": ["@koi/name-resolution@workspace:packages/lib/name-resolution"],
+
     "@koi/name-service": ["@koi/name-service@workspace:packages/net/name-service"],
+
+    "@koi/name-service-nexus": ["@koi/name-service-nexus@workspace:packages/net/name-service-nexus"],
 
     "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
 

@@ -1,0 +1,73 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/name-resolution API surface . has stable type surface 1`] = `
+"import { ForgeScope, NameRecord, AnsConfig, NameSuggestion, Result, KoiError, NameResolution } from '@koi/core';
+
+/**
+ * Composite key utilities for ANS records.
+ *
+ * Keys are \`\${scope}:\${name}\` — colons are forbidden in names,
+ * so the split is always unambiguous.
+ */
+
+/** Create a composite key from scope and name. */
+declare function compositeKey(scope: ForgeScope, name: string): string;
+/** Parse a composite key back into scope and name. Throws on malformed keys. */
+declare function parseCompositeKey(key: string): {
+    readonly scope: ForgeScope;
+    readonly name: string;
+};
+
+/**
+ * Fuzzy name matching for ANS "did you mean?" suggestions.
+ *
+ * Uses Levenshtein distance from @koi/validation to find near-miss names.
+ */
+
+/**
+ * Compute fuzzy suggestions for a name that didn't resolve.
+ *
+ * Collects all canonical names + aliases from records, computes Levenshtein
+ * distance, filters by maxSuggestionDistance, sorts ascending, and returns
+ * top maxSuggestions.
+ *
+ * @param name - The unresolved name to find suggestions for.
+ * @param scope - Optional scope to restrict suggestions to.
+ * @param records - All current name records.
+ * @param config - ANS configuration (distance threshold + max suggestions).
+ */
+declare function computeSuggestions(name: string, scope: ForgeScope | undefined, records: ReadonlyMap<string, NameRecord>, config: Pick<AnsConfig, "maxSuggestionDistance" | "maxSuggestions">): readonly NameSuggestion[];
+
+/**
+ * Name validation for ANS records.
+ *
+ * Names must start with a lowercase letter, followed by lowercase
+ * alphanumeric characters and hyphens. No colons (reserved for
+ * composite key separator).
+ */
+
+/** Validate an ANS name. Returns the validated name on success, VALIDATION error on failure. */
+declare function validateName(name: string): Result<string, KoiError>;
+
+/**
+ * Pure scope-based resolution logic for ANS.
+ *
+ * Resolves a name by checking scopes in priority order (agent -> zone -> global),
+ * looking up both canonical names and aliases.
+ */
+
+/**
+ * Resolve a name to a NameResolution by checking scopes in priority order.
+ *
+ * Pure function — takes the two lookup maps as arguments.
+ *
+ * @param name - The name to resolve (canonical or alias).
+ * @param scope - Optional scope to restrict resolution to.
+ * @param records - Map of composite key -> NameRecord.
+ * @param aliases - Map of alias composite key -> canonical composite key.
+ */
+declare function resolveByScope(name: string, scope: ForgeScope | undefined, records: ReadonlyMap<string, NameRecord>, aliases: ReadonlyMap<string, string>): Result<NameResolution, KoiError>;
+
+export { compositeKey, computeSuggestions, parseCompositeKey, resolveByScope, validateName };
+"
+`;

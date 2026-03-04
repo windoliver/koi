@@ -6,7 +6,7 @@
  */
 
 import type { ForgeScope } from "@koi/core";
-import { compositeKey } from "./composite-key.js";
+import { compositeKey } from "@koi/name-resolution";
 
 /** Callback invoked when a record expires. */
 export type ExpiryCallback = (name: string, scope: ForgeScope) => void;
