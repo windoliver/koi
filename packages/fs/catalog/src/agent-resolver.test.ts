@@ -3,7 +3,14 @@
  */
 
 import { describe, expect, it, mock } from "bun:test";
-import type { BrickArtifact, BrickFitnessMetrics, ForgeStore, KoiError, Result } from "@koi/core";
+import type {
+  AgentArtifact,
+  BrickArtifact,
+  BrickFitnessMetrics,
+  ForgeStore,
+  KoiError,
+  Result,
+} from "@koi/core";
 import { brickId } from "@koi/core";
 import { createTestAgentArtifact } from "@koi/test-utils";
 
@@ -36,9 +43,7 @@ function createMockForgeStore(
   };
 }
 
-function agentBrick(
-  overrides: Partial<BrickArtifact> & { readonly manifestYaml?: string } = {},
-): BrickArtifact {
+function agentBrick(overrides: Partial<AgentArtifact> = {}): BrickArtifact {
   return createTestAgentArtifact({
     manifestYaml: VALID_MANIFEST_YAML,
     tags: ["research"],
@@ -102,7 +107,12 @@ describe("createCatalogAgentResolver", () => {
         forgeStore: store,
         random: () => 0.99,
         clock: () => now,
-        degeneracyConfig: { explorationRate: 0, minExploration: 0, maxExploration: 0 },
+        degeneracyConfig: {
+          selectionStrategy: "fitness",
+          minVariants: 1,
+          maxVariants: 3,
+          failoverEnabled: false,
+        },
       });
 
       const result = await resolver.resolve("research");
@@ -161,7 +171,12 @@ describe("createCatalogAgentResolver", () => {
       const resolver = createCatalogAgentResolver({
         forgeStore: store,
         random: () => 0,
-        degeneracyConfig: { explorationRate: 0, minExploration: 0, maxExploration: 0 },
+        degeneracyConfig: {
+          selectionStrategy: "fitness",
+          minVariants: 1,
+          maxVariants: 3,
+          failoverEnabled: false,
+        },
       });
 
       const result = await resolver.resolve("research");

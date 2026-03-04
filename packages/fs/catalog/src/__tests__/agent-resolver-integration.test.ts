@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it, mock } from "bun:test";
-import type { BrickArtifact, BrickFitnessMetrics, ForgeStore, KoiError, Result } from "@koi/core";
+import type { AgentArtifact, BrickArtifact, ForgeStore, KoiError, Result } from "@koi/core";
 import { brickId } from "@koi/core";
 import { createTestAgentArtifact } from "@koi/test-utils";
 
@@ -64,10 +64,7 @@ function createInMemoryForgeStore(bricks: readonly BrickArtifact[]): ForgeStore 
 function agentBrick(
   name: string,
   tags: readonly string[],
-  overrides: Partial<BrickArtifact> & {
-    readonly manifestYaml?: string;
-    readonly fitness?: BrickFitnessMetrics;
-  } = {},
+  overrides: Partial<AgentArtifact> = {},
 ): BrickArtifact {
   return createTestAgentArtifact({
     id: brickId(`brick_${name}`),
