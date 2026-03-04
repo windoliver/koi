@@ -26,9 +26,9 @@ import { descriptor as toolSelectorDescriptor } from "@koi/middleware-tool-selec
 import { descriptor as turnAckDescriptor } from "@koi/middleware-turn-ack";
 import type { ProviderAdapter, ProviderAdapterConfig } from "@koi/model-router";
 import {
-  createAnthropicAdapter,
-  createOpenAIAdapter,
-  createOpenRouterAdapter,
+  descriptor as modelRouterDescriptor,
+  PROVIDER_ENV_KEYS,
+  PROVIDER_FACTORIES,
 } from "@koi/model-router";
 import type {
   BrickDescriptor,
@@ -45,22 +45,8 @@ import {
 import { descriptor as soulDescriptor } from "@koi/soul";
 
 // ---------------------------------------------------------------------------
-// Model provider descriptors — kept in CLI for Phase 1
+// Model provider descriptors — provider maps imported from @koi/model-router
 // ---------------------------------------------------------------------------
-
-const PROVIDER_ENV_KEYS: Readonly<Record<string, string>> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-} as const;
-
-const PROVIDER_FACTORIES: Readonly<
-  Record<string, (config: ProviderAdapterConfig) => ProviderAdapter>
-> = {
-  anthropic: createAnthropicAdapter,
-  openai: createOpenAIAdapter,
-  openrouter: createOpenRouterAdapter,
-} as const;
 
 function createModelDescriptor(
   providerName: string,
@@ -141,6 +127,8 @@ const ALL_DESCRIPTORS: readonly BrickDescriptor<unknown>[] = [
   turnAckDescriptor,
   // Model provider descriptors
   ...modelProviderDescriptors,
+  // Model router middleware
+  modelRouterDescriptor,
   // Engine descriptors
   externalEngineDescriptor,
 ];

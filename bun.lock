@@ -134,6 +134,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",

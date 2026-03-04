@@ -87,6 +87,7 @@ export type {
   ResolvedRouterConfig,
   RoutingStrategy,
 } from "./config.js";
+export { descriptor, PROVIDER_ENV_KEYS, PROVIDER_FACTORIES } from "./descriptor.js";
 export {
   type FallbackAttempt,
   type FallbackResult,

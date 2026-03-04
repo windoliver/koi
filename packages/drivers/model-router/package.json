@@ -21,6 +21,7 @@
     "@koi/core": "workspace:*",
     "@koi/token-estimator": "workspace:*",
     "@koi/errors": "workspace:*",
+    "@koi/resolve": "workspace:*",
     "@koi/validation": "workspace:*",
     "zod": "4.3.6"
   }
