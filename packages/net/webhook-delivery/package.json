@@ -1,5 +1,6 @@
 {
   "name": "@koi/webhook-delivery",
+  "description": "Deliver agent events as signed HTTP POSTs with retry and circuit breaking",
   "version": "0.0.0",
   "private": true,
   "type": "module",

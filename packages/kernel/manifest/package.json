@@ -1,5 +1,6 @@
 {
   "name": "@koi/manifest",
+  "description": "Load and validate YAML agent definitions with environment interpolation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

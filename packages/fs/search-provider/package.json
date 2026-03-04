@@ -1,5 +1,6 @@
 {
   "name": "@koi/search-provider",
+  "description": "Define contracts for web search, index search, embedders, indexers, and retrievers",
   "version": "0.0.0",
   "private": true,
   "type": "module",

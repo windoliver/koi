@@ -1,5 +1,6 @@
 {
   "name": "@koi/orchestrator",
+  "description": "Orchestrate DAG-based task boards with worker assignment and checkpointing",
   "version": "0.0.0",
   "private": true,
   "type": "module",

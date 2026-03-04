@@ -1,5 +1,6 @@
 {
   "name": "@koi/forge-types",
+  "description": "Define shared types, errors, config, and interfaces for the forge subsystem",
   "version": "0.0.0",
   "private": true,
   "type": "module",

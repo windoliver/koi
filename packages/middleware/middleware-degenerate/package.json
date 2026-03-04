@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-degenerate",
+  "description": "Select primary implementation for capabilities with multiple variants and handle failover",
   "version": "0.0.0",
   "private": true,
   "type": "module",

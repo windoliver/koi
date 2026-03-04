@@ -1,5 +1,6 @@
 {
   "name": "@koi/mcp-server",
+  "description": "Expose agent tools via Model Context Protocol",
   "version": "0.0.0",
   "private": true,
   "type": "module",

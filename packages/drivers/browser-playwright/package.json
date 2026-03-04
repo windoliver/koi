@@ -1,5 +1,6 @@
 {
   "name": "@koi/browser-playwright",
+  "description": "Implement Playwright-based browser driver with accessibility tree serialization and stealth initialization",
   "version": "0.0.0",
   "private": true,
   "type": "module",

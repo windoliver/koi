@@ -1,5 +1,6 @@
 {
   "name": "@koi/competitive-broadcast",
+  "description": "Run GWT-inspired agent competition with selection and winner broadcast",
   "version": "0.0.0",
   "private": true,
   "type": "module",

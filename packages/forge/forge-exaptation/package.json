@@ -1,5 +1,6 @@
 {
   "name": "@koi/forge-exaptation",
+  "description": "Monitor tool usage for purpose drift when bricks diverge from design",
   "version": "0.0.0",
   "private": true,
   "type": "module",

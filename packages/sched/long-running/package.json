@@ -1,5 +1,6 @@
 {
   "name": "@koi/long-running",
+  "description": "Manage agents over hours/days across sessions with checkpointing and context",
   "version": "0.0.0",
   "private": true,
   "type": "module",

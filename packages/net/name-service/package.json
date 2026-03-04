@@ -1,5 +1,6 @@
 {
   "name": "@koi/name-service",
+  "description": "Register and resolve agent names with TTL expiry and fuzzy suggestions",
   "version": "0.0.0",
   "private": true,
   "type": "module",

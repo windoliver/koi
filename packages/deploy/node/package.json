@@ -1,5 +1,6 @@
 {
   "name": "@koi/node",
+  "description": "Host multiplexed agents on local machines with WebSocket gateway, tool resolution, mDNS discovery",
   "version": "0.0.0",
   "private": true,
   "type": "module",

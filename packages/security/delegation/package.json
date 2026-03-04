@@ -1,5 +1,6 @@
 {
   "name": "@koi/delegation",
+  "description": "Create monotonically attenuated delegation tokens with scope checking and cascading revocation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

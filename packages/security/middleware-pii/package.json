@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-pii",
+  "description": "Detect and redact PII (email, SSN, card, IP, MAC, phone, URL) in agent I/O",
   "version": "0.0.0",
   "private": true,
   "type": "module",

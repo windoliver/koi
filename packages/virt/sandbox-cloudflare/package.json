@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox-cloudflare",
+  "description": "Execute code in Cloudflare Workers with optional R2 FUSE mount support",
   "version": "0.0.0",
   "private": true,
   "type": "module",

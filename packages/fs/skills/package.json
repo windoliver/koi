@@ -1,5 +1,6 @@
 {
   "name": "@koi/skills",
+  "description": "Parse SKILL.md files with 3-level progressive loading to minimize context usage",
   "version": "0.0.0",
   "private": true,
   "type": "module",

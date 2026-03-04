@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-delegation-escalation",
+  "description": "Escalate to humans when delegatee circuit breakers exhaust via bidirectional channel",
   "version": "0.0.0",
   "private": true,
   "type": "module",

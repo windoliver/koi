@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-tool-selector",
+  "description": "Pre-filter tools before model calls using profile or selector function",
   "version": "0.0.0",
   "private": true,
   "type": "module",

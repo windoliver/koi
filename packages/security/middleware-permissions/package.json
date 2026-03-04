@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-permissions",
+  "description": "Check tool access via pluggable backend with human-in-the-loop approval support",
   "version": "0.0.0",
   "private": true,
   "type": "module",

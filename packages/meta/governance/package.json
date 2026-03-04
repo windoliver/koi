@@ -1,5 +1,6 @@
 {
   "name": "@koi/governance",
+  "description": "Enterprise compliance stack composing 9 middleware for permissions, approvals, auditing, and guardrails",
   "version": "0.0.0",
   "private": true,
   "type": "module",

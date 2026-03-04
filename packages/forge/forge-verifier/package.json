@@ -1,5 +1,6 @@
 {
   "name": "@koi/forge-verifier",
+  "description": "Verify bricks with adversarial probes, dependency audits, and test generation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

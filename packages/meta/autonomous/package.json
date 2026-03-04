@@ -1,5 +1,6 @@
 {
   "name": "@koi/autonomous",
+  "description": "Compose long-running harness, scheduler, and checkpoint/inbox middleware into autonomous agents",
   "version": "0.0.0",
   "private": true,
   "type": "module",

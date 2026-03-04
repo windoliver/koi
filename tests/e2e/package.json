@@ -1,5 +1,6 @@
 {
   "name": "@koi/e2e-contracts",
+  "description": "End-to-end contract validation against real LLM APIs (Anthropic, OpenAI) with E2E opt-in",
   "version": "0.0.0",
   "private": true,
   "type": "module",

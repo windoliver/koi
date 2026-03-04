@@ -1,5 +1,6 @@
 {
   "name": "@koi/transcript",
+  "description": "Log messages durably as append-only JSONL or in-memory transcript for recovery",
   "version": "0.0.0",
   "private": true,
   "type": "module",

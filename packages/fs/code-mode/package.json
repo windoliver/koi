@@ -1,5 +1,6 @@
 {
   "name": "@koi/code-mode",
+  "description": "Propose and apply atomic code plans through a two-phase workflow with filesystem validation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

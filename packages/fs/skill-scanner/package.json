@@ -1,5 +1,6 @@
 {
   "name": "@koi/skill-scanner",
+  "description": "Detect malicious code in Koi forge via AST analysis with built-in rule library",
   "version": "0.0.0",
   "private": true,
   "type": "module",

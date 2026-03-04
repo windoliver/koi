@@ -1,5 +1,6 @@
 {
   "name": "@koi/scheduler-nexus",
+  "description": "Delegate priority dispatch to Nexus while retaining local cron and retry",
   "version": "0.0.0",
   "private": true,
   "type": "module",

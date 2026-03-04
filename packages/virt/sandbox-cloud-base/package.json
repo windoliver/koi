@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox-cloud-base",
+  "description": "Share cloud sandbox utilities: bridge caching, error classification, truncation, tests",
   "version": "0.0.0",
   "private": true,
   "type": "module",

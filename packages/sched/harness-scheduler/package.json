@@ -1,5 +1,6 @@
 {
   "name": "@koi/harness-scheduler",
+  "description": "Auto-resume suspended harness with poll-based scheduling and backoff",
   "version": "0.0.0",
   "private": true,
   "type": "module",

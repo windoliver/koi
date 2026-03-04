@@ -1,5 +1,6 @@
 {
   "name": "@koi/forge-demand",
+  "description": "Detect capability gaps and repeated failures that demand new tool creation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

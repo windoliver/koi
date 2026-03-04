@@ -1,5 +1,6 @@
 {
   "name": "@koi/pay-nexus",
+  "description": "Persist credits to Nexus via TigerBeetle + PostgreSQL payment ledger backend",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/workspace-nexus",
+  "description": "Sync workspace metadata across devices via Nexus Raft-replicated store",
   "version": "0.0.0",
   "private": true,
   "type": "module",

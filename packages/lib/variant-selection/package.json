@@ -1,5 +1,6 @@
 {
   "name": "@koi/variant-selection",
+  "description": "Select degenerate tool variants by context, fitness, round-robin, or failover",
   "version": "0.0.0",
   "private": true,
   "type": "module",

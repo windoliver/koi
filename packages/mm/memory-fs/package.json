@@ -1,5 +1,6 @@
 {
   "name": "@koi/memory-fs",
+  "description": "Store and retrieve memories using filesystem-backed categorized fact store with search",
   "version": "0.0.0",
   "private": true,
   "type": "module",

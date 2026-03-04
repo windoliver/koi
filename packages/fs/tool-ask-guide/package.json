@@ -1,5 +1,6 @@
 {
   "name": "@koi/tool-ask-guide",
+  "description": "Query knowledge sources within token budget and return results for guidance",
   "version": "0.0.0",
   "private": true,
   "type": "module",

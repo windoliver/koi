@@ -1,5 +1,6 @@
 {
   "name": "@koi/resolve",
+  "description": "Auto-resolve koi.yaml manifest to runtime instances via BrickDescriptor registry",
   "version": "0.0.0",
   "private": true,
   "type": "module",

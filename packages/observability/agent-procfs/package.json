@@ -1,5 +1,6 @@
 {
   "name": "@koi/agent-procfs",
+  "description": "Expose agent runtime state via virtual filesystem mounts with TTL microcache",
   "version": "0.0.0",
   "private": true,
   "type": "module",

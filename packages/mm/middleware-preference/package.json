@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-preference",
+  "description": "Detect preference drift with keyword, LLM, and cascaded classifiers for adaptation",
   "version": "0.0.0",
   "private": true,
   "type": "module",

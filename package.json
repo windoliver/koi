@@ -1,5 +1,6 @@
 {
   "name": "koi",
+  "description": "Koi monorepo: self-extending agent engine with layered architecture, middleware, and governance",
   "version": "0.0.0",
   "private": true,
   "packageManager": "bun@1.3.9",
@@ -18,6 +19,7 @@
     "format": "biome format --write .",
     "check": "biome check .",
     "check:layers": "bun scripts/check-layers.ts",
+    "check:descriptions": "bun scripts/check-descriptions.ts",
     "check:doc-sync": "bun scripts/check-doc-sync.ts",
     "generate:layer-docs": "bun scripts/generate-layer-docs.ts",
     "postinstall": "lefthook install"

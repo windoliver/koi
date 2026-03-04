@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-guided-retry",
+  "description": "Inject constraint hints into model calls after backtrack or fork events",
   "version": "0.0.0",
   "private": true,
   "type": "module",

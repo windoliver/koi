@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-compactor",
+  "description": "Compact old conversation history into structured summaries at configurable thresholds",
   "version": "0.0.0",
   "private": true,
   "type": "module",

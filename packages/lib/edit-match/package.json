@@ -1,5 +1,6 @@
 {
   "name": "@koi/edit-match",
+  "description": "Search and replace files using cascading match strategies from exact to fuzzy",
   "version": "0.0.0",
   "private": true,
   "type": "module",

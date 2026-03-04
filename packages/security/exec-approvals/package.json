@@ -1,5 +1,6 @@
 {
   "name": "@koi/exec-approvals",
+  "description": "Enforce progressive command allowlisting with user approval decisions across session",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/dashboard-api",
+  "description": "Serve REST endpoints + SSE events for agent/channel/skill dashboard metrics",
   "version": "0.0.0",
   "private": true,
   "type": "module",

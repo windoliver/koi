@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-email",
+  "description": "Receive email via IMAP IDLE and send via SMTP",
   "version": "0.0.0",
   "private": true,
   "type": "module",

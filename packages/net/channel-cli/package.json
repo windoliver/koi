@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-cli",
+  "description": "Read user input via readline, write output to stdout",
   "version": "0.0.0",
   "private": true,
   "type": "module",

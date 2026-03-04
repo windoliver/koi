@@ -1,5 +1,6 @@
 {
   "name": "@koi/mcp",
+  "description": "Bridge MCP tool servers and attach discovered tools as Koi components",
   "version": "0.0.0",
   "private": true,
   "type": "module",

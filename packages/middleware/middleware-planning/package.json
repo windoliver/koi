@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-planning",
+  "description": "Provide write_plan tool for agents to create and maintain structured task plans",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/shutdown",
+  "description": "Handle graceful shutdown signals and map exit codes for CLI and deploy",
   "version": "0.0.0",
   "private": true,
   "type": "module",

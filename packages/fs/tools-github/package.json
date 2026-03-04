@@ -1,5 +1,6 @@
 {
   "name": "@koi/tools-github",
+  "description": "Manage PR lifecycle (create, review, merge) and CI waits via GitHub CLI",
   "version": "0.0.0",
   "private": true,
   "type": "module",

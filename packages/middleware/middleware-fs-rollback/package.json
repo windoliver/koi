@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-fs-rollback",
+  "description": "Capture filesystem snapshots during tool calls and enable rollback to prior states",
   "version": "0.0.0",
   "private": true,
   "type": "module",

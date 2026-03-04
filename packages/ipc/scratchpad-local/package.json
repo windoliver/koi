@@ -1,5 +1,6 @@
 {
   "name": "@koi/scratchpad-local",
+  "description": "Store versioned files with CAS and TTL in in-memory scratchpad",
   "version": "0.0.0",
   "private": true,
   "type": "module",

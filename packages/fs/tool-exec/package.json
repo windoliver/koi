@@ -1,5 +1,6 @@
 {
   "name": "@koi/tool-exec",
+  "description": "Execute ephemeral code in sandbox with input validation and timeout enforcement",
   "version": "0.0.0",
   "private": true,
   "type": "module",

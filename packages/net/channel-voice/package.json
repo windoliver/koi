@@ -1,5 +1,6 @@
 {
   "name": "@koi/channel-voice",
+  "description": "Bridge real-time voice I/O via LiveKit with STT/TTS",
   "version": "0.0.0",
   "private": true,
   "type": "module",

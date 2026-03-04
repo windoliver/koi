@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-context-editing",
+  "description": "Replace old tool results with placeholders when token count exceeds threshold",
   "version": "0.0.0",
   "private": true,
   "type": "module",

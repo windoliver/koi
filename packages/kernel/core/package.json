@@ -1,5 +1,6 @@
 {
   "name": "@koi/core",
+  "description": "Define interfaces-only kernel with 7 core contracts and ECS compositional layer",
   "version": "0.0.0",
   "private": true,
   "type": "module",

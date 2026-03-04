@@ -1,5 +1,6 @@
 {
   "name": "@koi/sandbox-wasm",
+  "description": "Execute code in Wasm sandboxes with sync and async executor variants",
   "version": "0.0.0",
   "private": true,
   "type": "module",

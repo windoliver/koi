@@ -1,5 +1,6 @@
 {
   "name": "@koi/model-router",
+  "description": "Route model calls across multiple LLM providers with retry, fallback, cascade, and circuit breaker",
   "version": "0.0.0",
   "private": true,
   "type": "module",

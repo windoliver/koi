@@ -1,5 +1,6 @@
 {
   "name": "@koi/tool-browser",
+  "description": "Automate browser via accessibility tree snapshots (100x cheaper than screenshots)",
   "version": "0.0.0",
   "private": true,
   "type": "module",

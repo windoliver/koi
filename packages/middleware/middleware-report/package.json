@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-report",
+  "description": "Generate human-readable summaries of autonomous agent run activities and outcomes",
   "version": "0.0.0",
   "private": true,
   "type": "module",

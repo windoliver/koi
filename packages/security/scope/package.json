@@ -1,5 +1,6 @@
 {
   "name": "@koi/scope",
+  "description": "Wrap infrastructure tokens with capability-attenuation scopes (filesystem, browser, credentials, memory)",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/parallel-minions",
+  "description": "Delegate fan-out/fan-in tasks to subagents with concurrency strategies",
   "version": "0.0.0",
   "private": true,
   "type": "module",

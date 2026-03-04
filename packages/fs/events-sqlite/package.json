@@ -1,5 +1,6 @@
 {
   "name": "@koi/events-sqlite",
+  "description": "Persist durable events using SQLite with WAL mode, crash recovery, and TTL-based eviction",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-event-trace",
+  "description": "Trace individual LLM/tool calls for fine-grained mid-turn event replay",
   "version": "0.0.0",
   "private": true,
   "type": "module",

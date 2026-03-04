@@ -1,5 +1,6 @@
 {
   "name": "@koi/search-brave",
+  "description": "Query Brave Search API via SearchProvider contract for manifest auto-resolution",
   "version": "0.0.0",
   "private": true,
   "type": "module",

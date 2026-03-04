@@ -1,5 +1,6 @@
 {
   "name": "@koi/context-arena",
+  "description": "Allocate token budgets across context management middleware with preset-driven profiles",
   "version": "0.0.0",
   "private": true,
   "type": "module",

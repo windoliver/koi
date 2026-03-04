@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-guardrails",
+  "description": "Validate agent outputs against Zod schemas to prevent malformed responses and data leaks",
   "version": "0.0.0",
   "private": true,
   "type": "module",

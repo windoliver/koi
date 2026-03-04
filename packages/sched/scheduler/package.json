@@ -1,5 +1,6 @@
 {
   "name": "@koi/scheduler",
+  "description": "Schedule tasks with priority queue, cron, retry, dead-letter, and concurrency",
   "version": "0.0.0",
   "private": true,
   "type": "module",

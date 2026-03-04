@@ -1,5 +1,6 @@
 {
   "name": "@koi/forge",
+  "description": "Self-extending system for agent composition, verification, integrity attestation, and policy enforcement",
   "version": "0.0.0",
   "private": true,
   "type": "module",

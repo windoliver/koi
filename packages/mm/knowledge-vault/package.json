@@ -1,5 +1,6 @@
 {
   "name": "@koi/knowledge-vault",
+  "description": "Index markdown knowledge bases with BM25 ranking and token-budget-aware selection",
   "version": "0.0.0",
   "private": true,
   "type": "module",

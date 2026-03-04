@@ -1,5 +1,6 @@
 {
   "name": "@koi/permissions-nexus",
+  "description": "Forward permission queries to Nexus ReBAC server with typed contract implementations",
   "version": "0.0.0",
   "private": true,
   "type": "module",

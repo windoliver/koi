@@ -1,5 +1,6 @@
 {
   "name": "@koi/session-store",
+  "description": "Persist sessions durably to enable crash recovery and resume capabilities",
   "version": "0.0.0",
   "private": true,
   "type": "module",

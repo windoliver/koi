@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-feedback-loop",
+  "description": "Validate model and tool outputs, retry with error feedback, enforce quality gates",
   "version": "0.0.0",
   "private": true,
   "type": "module",

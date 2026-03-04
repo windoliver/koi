@@ -1,5 +1,6 @@
 {
   "name": "@koi/execution-context",
+  "description": "Store and retrieve session context via AsyncLocalStorage for tool execution",
   "version": "0.0.0",
   "private": true,
   "type": "module",

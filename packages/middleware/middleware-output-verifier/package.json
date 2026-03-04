@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-output-verifier",
+  "description": "Run deterministic and LLM-as-judge quality checks before delivering model outputs",
   "version": "0.0.0",
   "private": true,
   "type": "module",

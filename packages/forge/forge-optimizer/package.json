@@ -1,5 +1,6 @@
 {
   "name": "@koi/forge-optimizer",
+  "description": "Evaluate composite bricks against components and auto-deprecate underperforming ones",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@koi/workspace",
+  "description": "Isolate agent workspaces via pluggable backends (git worktrees, Docker, etc.)",
   "version": "0.0.0",
   "private": true,
   "type": "module",

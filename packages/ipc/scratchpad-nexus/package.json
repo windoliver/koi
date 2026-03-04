@@ -1,5 +1,6 @@
 {
   "name": "@koi/scratchpad-nexus",
+  "description": "Persist agent scratchpad state across zones via Nexus group-scoped storage",
   "version": "0.0.0",
   "private": true,
   "type": "module",
