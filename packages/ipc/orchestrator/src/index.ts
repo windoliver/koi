@@ -5,7 +5,7 @@
  * assignment, failure/retry handling, and checkpointing.
  */
 
-export { executeAssignWorker } from "./assign-worker-tool.js";
+export { createAssignWorkerExecutor } from "./assign-worker-tool.js";
 
 // board
 export { createTaskBoard } from "./board.js";

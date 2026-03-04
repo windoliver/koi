@@ -32,8 +32,8 @@ import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import type { BoardHolder, OrchestratorConfig } from "@koi/orchestrator";
 import {
+  createAssignWorkerExecutor,
   createTaskBoard,
-  executeAssignWorker,
   executeOrchestrate,
   executeSynthesize,
 } from "@koi/orchestrator";
@@ -84,6 +84,7 @@ function createOrchestratorTools(
   config: OrchestratorConfig,
   signal: AbortSignal,
 ): readonly Tool[] {
+  const executeAssignWorker = createAssignWorkerExecutor();
   return [
     {
       descriptor: {

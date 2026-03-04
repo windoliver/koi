@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test";
 import type { TaskBoard } from "@koi/core";
 import { taskItemId } from "@koi/core";
-import { executeAssignWorker, resetWorkerCounter } from "../assign-worker-tool.js";
+import { createAssignWorkerExecutor } from "../assign-worker-tool.js";
 import { createTaskBoard } from "../board.js";
 import type { BoardHolder } from "../orchestrate-tool.js";
 import { executeOrchestrate } from "../orchestrate-tool.js";
@@ -27,7 +27,7 @@ function createHolder(): BoardHolder {
 
 describe("progressive discovery integration", () => {
   test("tasks added mid-execution integrate correctly", async () => {
-    resetWorkerCounter();
+    const executeAssignWorker = createAssignWorkerExecutor();
     const holder = createHolder();
     const signal = new AbortController().signal;
 

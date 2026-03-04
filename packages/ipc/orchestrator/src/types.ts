@@ -2,7 +2,7 @@
  * L2 types for @koi/orchestrator — callback signatures, tool descriptors, config.
  */
 
-import type { KoiError, TaskBoardEvent, TaskItemId } from "@koi/core";
+import type { ArtifactRef, DecisionRecord, KoiError, TaskBoardEvent, TaskItemId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Callback types (L0-compatible signatures, no L2 imports)
@@ -16,7 +16,14 @@ export interface SpawnWorkerRequest {
 }
 
 export type SpawnWorkerResult =
-  | { readonly ok: true; readonly output: string }
+  | {
+      readonly ok: true;
+      readonly output: string;
+      readonly artifacts?: readonly ArtifactRef[] | undefined;
+      readonly decisions?: readonly DecisionRecord[] | undefined;
+      readonly warnings?: readonly string[] | undefined;
+      readonly durationMs?: number | undefined;
+    }
   | { readonly ok: false; readonly error: KoiError };
 
 /** Injected by consumer — spawns a worker agent for a task. */

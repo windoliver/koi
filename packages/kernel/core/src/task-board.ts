@@ -10,8 +10,11 @@
  * derived from L0 type definitions.
  */
 
+import type { JsonObject } from "./common.js";
+import type { DelegationGrant } from "./delegation.js";
 import type { AgentId } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
+import type { ArtifactRef, DecisionRecord } from "./handoff.js";
 
 // ---------------------------------------------------------------------------
 // Branded types
@@ -70,7 +73,12 @@ export interface TaskResult {
   readonly taskId: TaskItemId;
   readonly output: string;
   readonly durationMs: number;
-  readonly workerId?: string | undefined;
+  readonly results?: JsonObject | undefined;
+  readonly artifacts?: readonly ArtifactRef[] | undefined;
+  readonly decisions?: readonly DecisionRecord[] | undefined;
+  readonly warnings?: readonly string[] | undefined;
+  readonly delegation?: DelegationGrant | undefined;
+  readonly workerId?: AgentId | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
 }
 
@@ -128,6 +136,7 @@ export interface TaskBoard {
   readonly update: (taskId: TaskItemId, patch: TaskItemPatch) => Result<TaskBoard, KoiError>;
 
   // Queries
+  readonly result: (taskId: TaskItemId) => TaskResult | undefined;
   readonly get: (taskId: TaskItemId) => TaskItem | undefined;
   readonly ready: () => readonly TaskItem[];
   readonly pending: () => readonly TaskItem[];

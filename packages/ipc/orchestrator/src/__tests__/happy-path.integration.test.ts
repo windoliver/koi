@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { TaskBoard } from "@koi/core";
-import { executeAssignWorker, resetWorkerCounter } from "../assign-worker-tool.js";
+import { createAssignWorkerExecutor } from "../assign-worker-tool.js";
 import { createTaskBoard } from "../board.js";
 import type { BoardHolder } from "../orchestrate-tool.js";
 import { executeOrchestrate } from "../orchestrate-tool.js";
@@ -26,7 +26,7 @@ function createHolder(): BoardHolder {
 
 describe("happy path integration", () => {
   test("executes 5-task diamond DAG to completion", async () => {
-    resetWorkerCounter();
+    const executeAssignWorker = createAssignWorkerExecutor();
     const holder = createHolder();
     const signal = new AbortController().signal;
 
