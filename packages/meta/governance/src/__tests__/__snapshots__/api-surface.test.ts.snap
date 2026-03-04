@@ -1,7 +1,9 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/governance API surface . has stable type surface 1`] = `
-"import { DelegationMiddlewareConfig, DelegationManager } from '@koi/delegation';
+"import { SessionRevocationStore } from '@koi/capability-verifier';
+export { SessionRevocationStore } from '@koi/capability-verifier';
+import { DelegationMiddlewareConfig, DelegationManager } from '@koi/delegation';
 export { DelegationMiddlewareConfig, DelegationProviderConfig } from '@koi/delegation';
 import { ExecApprovalsConfig } from '@koi/exec-approvals';
 export { ExecApprovalsConfig } from '@koi/exec-approvals';
@@ -146,6 +148,8 @@ interface GovernanceBundle {
     readonly disposables: readonly Disposable[];
     /** Nexus delegation hooks — present when \`delegationBridge.nexusBackend\` is configured. */
     readonly nexusHooks?: NexusDelegationHooks;
+    /** Session revocation store — present when strict preset auto-wires capability verifier. */
+    readonly sessionStore?: SessionRevocationStore;
 }
 
 /**
