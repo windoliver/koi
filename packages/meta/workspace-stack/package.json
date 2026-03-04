@@ -1,5 +1,6 @@
 {
   "name": "@koi/workspace-stack",
+  "description": "Backend factory for Nexus-backed agent workspaces",
   "version": "0.0.0",
   "private": true,
   "type": "module",

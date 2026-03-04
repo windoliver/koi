@@ -1,5 +1,6 @@
 {
   "name": "@koi/filesystem-nexus",
+  "description": "Nexus-backed FileSystemBackend implementation via JSON-RPC",
   "version": "0.0.0",
   "private": true,
   "type": "module",

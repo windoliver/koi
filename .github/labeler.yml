@@ -58,6 +58,7 @@
       - "packages/**/governance/**"
       - "packages/**/sandbox-stack/**"
       - "packages/**/starter/**"
+      - "packages/**/workspace-stack/**"
 
 # L2 is the catch-all: any package change that is not L0, L1, L0u, or L3.
 # The negation patterns prevent L0/L1/L0u/L3 package changes from also triggering L2.
@@ -103,3 +104,4 @@
       - "!packages/**/token-estimator/**"
       - "!packages/**/validation/**"
       - "!packages/**/variant-selection/**"
+      - "!packages/**/workspace-stack/**"

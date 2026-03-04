@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
-"import { AgentRegistry, ProcessId, AgentManifest, ProcessState, TerminationOutcome, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, AuditSink, AuditEntry, ForgeProvenance, AgentArtifact, CompositeArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryRecallOptions, MemoryStoreOptions, MemoryComponent, KoiConfig, ConfigStore, EventBackend, FileSystemBackend, EventEnvelope, DeadLetterEntry, RegistryEntry, AgentId, VisibilityContext, TransitionReason, Result as Result$1, KoiError as KoiError$1, RegistryEvent, InboundMessage as InboundMessage$1, PolicyEvaluator, PolicyRequestKind, ConstraintChecker, ComplianceRecorder, ViolationStore, GovernanceCheck, GovernanceEvent, GovernanceSnapshot, GovernanceVariable, SensorReading, GovernanceBackend, GovernanceController, HarnessId, TaskBoardSnapshot, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware, ContextSummary, MailboxComponent, ScratchpadComponent, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore, ThreadStore, TranscriptEntry, SessionTranscript, VersionIndexBackend, WorkspaceBackend } from '@koi/core';
+"import { AgentRegistry, ProcessId, AgentManifest, ProcessState, TerminationOutcome, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, AuditSink, AuditEntry, ForgeProvenance, AgentArtifact, CompositeArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryRecallOptions, MemoryStoreOptions, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, InboundMessage as InboundMessage$1, FileSystemBackend, PolicyEvaluator, PolicyRequestKind, ConstraintChecker, ComplianceRecorder, ViolationStore, GovernanceCheck, GovernanceEvent, GovernanceSnapshot, GovernanceVariable, SensorReading, GovernanceBackend, GovernanceController, HarnessId, TaskBoardSnapshot, Result as Result$1, KoiError as KoiError$1, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware, ContextSummary, MailboxComponent, RegistryEntry, AgentId, VisibilityContext, TransitionReason, RegistryEvent, ScratchpadComponent, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore, ThreadStore, TranscriptEntry, SessionTranscript, VersionIndexBackend, WorkspaceBackend } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
 import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
@@ -354,23 +354,6 @@ declare function testEngineAdapter(options: EngineContractOptions): void;
 declare function runEventBackendContractTests(createBackend: () => EventBackend | Promise<EventBackend>): void;
 
 /**
- * Reusable contract test suite for FileSystemBackend implementations.
- *
- * Accepts a factory that returns a FileSystemBackend (sync or async).
- * Each test creates a fresh backend instance for isolation.
- *
- * Pattern: same shape as runForgeStoreContractTests in store-contract.ts.
- */
-
-/**
- * Run the FileSystemBackend contract test suite against any implementation.
- *
- * The factory can return sync or async — async factories are useful for
- * implementations that need setup (e.g., temp directory, Nexus connection).
- */
-declare function runFileSystemBackendContractTests(createBackend: () => FileSystemBackend | Promise<FileSystemBackend>): void;
-
-/**
  * Mock EventBackend for downstream testing.
  *
  * Records all operations for assertion. No real subscription delivery.
@@ -392,41 +375,6 @@ interface MockEventBackend extends EventBackend {
  * real subscription delivery.
  */
 declare function createMockEventBackend(): MockEventBackend;
-
-/**
- * Reusable contract test suite for event-sourced AgentRegistry implementations.
- *
- * Validates both standard AgentRegistry behavior and event-sourcing invariants:
- * - Events are persisted and readable from the backend
- * - rebuild() produces identical state to the original
- * - Concurrent transitions respect optimistic concurrency
- *
- * Accepts a factory that returns a registry + its underlying EventBackend.
- */
-
-/** Registry with a rebuild method for event-sourcing tests. */
-interface EventSourcedRegistryForTest {
-    readonly register: (entry: RegistryEntry) => RegistryEntry | Promise<RegistryEntry>;
-    readonly deregister: (agentId: AgentId) => boolean | Promise<boolean>;
-    readonly lookup: (agentId: AgentId) => RegistryEntry | undefined | Promise<RegistryEntry | undefined>;
-    readonly list: (filter?: {
-        readonly phase?: ProcessState;
-    }, visibility?: VisibilityContext) => readonly RegistryEntry[] | Promise<readonly RegistryEntry[]>;
-    readonly transition: (agentId: AgentId, targetPhase: ProcessState, expectedGeneration: number, reason: TransitionReason) => Result$1<RegistryEntry, KoiError$1> | Promise<Result$1<RegistryEntry, KoiError$1>>;
-    readonly watch: (listener: (event: RegistryEvent) => void) => () => void;
-    readonly rebuild: () => Promise<void>;
-    readonly [Symbol.asyncDispose]: () => PromiseLike<void>;
-}
-interface EventSourcedRegistryTestContext {
-    readonly registry: EventSourcedRegistryForTest;
-    readonly backend: EventBackend;
-}
-/**
- * Run the event-sourced AgentRegistry contract test suite.
- *
- * The factory should return a fresh registry + backend pair for each test.
- */
-declare function runEventSourcedRegistryContractTests(createContext: () => EventSourcedRegistryTestContext | Promise<EventSourcedRegistryTestContext>): void;
 
 /**
  * Generic factory helper for test fixtures.
@@ -482,6 +430,23 @@ declare function createFakeEngineAdapter(config: FakeEngineAdapterConfig): FakeE
  */
 /** Create a fake fetch that mimics a Nexus JSON-RPC server with in-memory storage. */
 declare function createFakeNexusFetch(): typeof globalThis.fetch;
+
+/**
+ * Reusable contract test suite for FileSystemBackend implementations.
+ *
+ * Accepts a factory that returns a FileSystemBackend (sync or async).
+ * Each test creates a fresh backend instance for isolation.
+ *
+ * Pattern: same shape as runForgeStoreContractTests in store-contract.ts.
+ */
+
+/**
+ * Run the FileSystemBackend contract test suite against any implementation.
+ *
+ * The factory can return sync or async — async factories are useful for
+ * implementations that need setup (e.g., temp directory, Nexus connection).
+ */
+declare function runFileSystemBackendContractTests(createBackend: () => FileSystemBackend | Promise<FileSystemBackend>): void;
 
 /**
  * Mock governance factories for tests.
@@ -638,6 +603,41 @@ declare function createInMemoryBrickRegistry(): BrickRegistryBackend;
 declare function runMailboxContractTests(createMailbox: () => MailboxComponent | Promise<MailboxComponent>): void;
 
 /**
+ * Reusable contract test suite for memory AgentRegistry implementations.
+ *
+ * Validates both standard AgentRegistry behavior and event-sourcing invariants:
+ * - Events are persisted and readable from the backend
+ * - rebuild() produces identical state to the original
+ * - Concurrent transitions respect optimistic concurrency
+ *
+ * Accepts a factory that returns a registry + its underlying EventBackend.
+ */
+
+/** Registry with a rebuild method for memory registry tests. */
+interface MemoryRegistryForTest {
+    readonly register: (entry: RegistryEntry) => RegistryEntry | Promise<RegistryEntry>;
+    readonly deregister: (agentId: AgentId) => boolean | Promise<boolean>;
+    readonly lookup: (agentId: AgentId) => RegistryEntry | undefined | Promise<RegistryEntry | undefined>;
+    readonly list: (filter?: {
+        readonly phase?: ProcessState;
+    }, visibility?: VisibilityContext) => readonly RegistryEntry[] | Promise<readonly RegistryEntry[]>;
+    readonly transition: (agentId: AgentId, targetPhase: ProcessState, expectedGeneration: number, reason: TransitionReason) => Result$1<RegistryEntry, KoiError$1> | Promise<Result$1<RegistryEntry, KoiError$1>>;
+    readonly watch: (listener: (event: RegistryEvent) => void) => () => void;
+    readonly rebuild: () => Promise<void>;
+    readonly [Symbol.asyncDispose]: () => PromiseLike<void>;
+}
+interface MemoryRegistryTestContext {
+    readonly registry: MemoryRegistryForTest;
+    readonly backend: EventBackend;
+}
+/**
+ * Run the memory AgentRegistry contract test suite.
+ *
+ * The factory should return a fresh registry + backend pair for each test.
+ */
+declare function runMemoryRegistryContractTests(createContext: () => MemoryRegistryTestContext | Promise<MemoryRegistryTestContext>): void;
+
+/**
  * Middleware contract test suite.
  *
  * Validates that any KoiMiddleware implementation satisfies the L0 contract.
@@ -660,6 +660,41 @@ interface MiddlewareContractOptions {
  * the middleware satisfies all L0 contract invariants.
  */
 declare function testMiddlewareContract(options: MiddlewareContractOptions): void;
+
+/**
+ * Reusable contract test suite for Nexus namespace store adapters.
+ *
+ * Tests unified namespace conventions: agent isolation, group sharing,
+ * glob boundaries, and path generation consistency.
+ *
+ * Accepts a factory that returns a NexusStoreAdapter (a minimal interface
+ * for read/write/delete/glob operations on a Nexus-like namespace).
+ */
+
+/**
+ * Minimal adapter interface that any Nexus-backed store must implement
+ * for namespace contract testing. Maps directly to Nexus filesystem ops.
+ */
+interface NexusStoreAdapter {
+    /** Write content to a path. */
+    readonly write: (path: string, content: string) => Promise<Result$1<void, KoiError$1>>;
+    /** Read content from a path. Returns NOT_FOUND error if missing. */
+    readonly read: (path: string) => Promise<Result$1<string, KoiError$1>>;
+    /** Delete a path. */
+    readonly remove: (path: string) => Promise<Result$1<void, KoiError$1>>;
+    /** Glob for paths matching a pattern. */
+    readonly glob: (pattern: string) => Promise<Result$1<readonly string[], KoiError$1>>;
+}
+/**
+ * Run the Nexus namespace contract test suite against any adapter.
+ *
+ * Tests namespace conventions from issue #750:
+ * - Agent isolation: writes to agent A don't appear in agent B's reads
+ * - Group sharing: writes to group path readable by group members
+ * - Glob boundary enforcement
+ * - Path structure consistency
+ */
+declare function runNexusStoreContractTests(createAdapter: () => NexusStoreAdapter | Promise<NexusStoreAdapter>): void;
 
 /**
  * Reusable contract test suite for PayLedger implementations.
@@ -943,6 +978,6 @@ declare function createInMemoryVersionIndex(): VersionIndexBackend;
  */
 declare function runWorkspaceBackendContractTests(createBackend: () => WorkspaceBackend | Promise<WorkspaceBackend>): void;
 
-export { type AuditSinkContractOptions, type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type FakeEngineAdapterConfig, type FakeEngineAdapterResult, type FakePermissionBackend, type FakePermissionBackendOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceBackendOverrides, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, type VersionIndexContractOptions, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createFakeEngineAdapter, createFakeNexusFetch, createFakePermissionBackend, createInMemoryBrickRegistry, createInMemorySkillRegistry, createInMemoryVersionIndex, createManifestFile, createMockAgent, createMockContextSummary, createMockEngineAdapter, createMockEventBackend, createMockGovernanceBackend, createMockGovernanceController, createMockHarness, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockTaskPlan, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestCompositeArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, makeTranscriptEntry, runAgentRegistryContractTests, runAuditSinkContractTests, runEventBackendContractTests, runEventSourcedRegistryContractTests, runFileSystemBackendContractTests, runForgeStoreContractTests, runHarnessContractTests, runMailboxContractTests, runPayLedgerContractTests, runScratchpadContractTests, runSessionPersistenceContractTests, runSessionTranscriptContractTests, runSnapshotChainStoreContractTests, runThreadStoreContractTests, runWorkspaceBackendContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, testVersionIndexContract, withTempDir };
+export { type AuditSinkContractOptions, type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type FakeEngineAdapterConfig, type FakeEngineAdapterResult, type FakePermissionBackend, type FakePermissionBackendOptions, type MemoryRegistryForTest, type MemoryRegistryTestContext, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceBackendOverrides, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type NexusStoreAdapter, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, type VersionIndexContractOptions, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createFakeEngineAdapter, createFakeNexusFetch, createFakePermissionBackend, createInMemoryBrickRegistry, createInMemorySkillRegistry, createInMemoryVersionIndex, createManifestFile, createMockAgent, createMockContextSummary, createMockEngineAdapter, createMockEventBackend, createMockGovernanceBackend, createMockGovernanceController, createMockHarness, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockTaskPlan, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestCompositeArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, makeTranscriptEntry, runAgentRegistryContractTests, runAuditSinkContractTests, runEventBackendContractTests, runFileSystemBackendContractTests, runForgeStoreContractTests, runHarnessContractTests, runMailboxContractTests, runMemoryRegistryContractTests, runNexusStoreContractTests, runPayLedgerContractTests, runScratchpadContractTests, runSessionPersistenceContractTests, runSessionTranscriptContractTests, runSnapshotChainStoreContractTests, runThreadStoreContractTests, runWorkspaceBackendContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, testVersionIndexContract, withTempDir };
 "
 `;
