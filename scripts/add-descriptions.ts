@@ -154,8 +154,6 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
   "@koi/webhook-provider": "Expose read-only webhook health and configuration as agent tools",
 
   // ── IPC (orchestration) ──────────────────────────────────────────────
-  "@koi/competitive-broadcast":
-    "Run GWT-inspired agent competition with selection and winner broadcast",
   "@koi/federation": "Coordinate multi-zone agents with vector clock sync and conflict resolution",
   "@koi/handoff": "Relay typed context between agents via structured handoff tools and middleware",
   "@koi/ipc-local": "Route messages between in-process agents using in-memory mailbox dispatch",

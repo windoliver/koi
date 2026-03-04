@@ -1,6 +1,6 @@
 # @koi/nexus-client — Shared JSON-RPC 2.0 Transport for Nexus
 
-Thin, typed JSON-RPC 2.0 client for communicating with the Nexus server. Extracted from `@koi/artifact-client` so every Nexus-backed package shares one transport layer instead of duplicating HTTP plumbing.
+Thin, typed JSON-RPC 2.0 client for communicating with the Nexus server. Every Nexus-backed package shares one transport layer instead of duplicating HTTP plumbing.
 
 ---
 
@@ -41,7 +41,6 @@ This package solves three problems:
 ```
 @koi/nexus-client (L0u)
         │
-        ├── @koi/artifact-client    (L2)  artifact storage
         ├── @koi/permissions-nexus  (L2)  ReBAC permissions
         ├── @koi/pay-nexus          (L2)  credits & ledger   (planned)
         ├── @koi/search-nexus       (L2)  retriever + indexer (planned)

@@ -180,7 +180,7 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 │  channel-*         middleware/*       gateway                 │
 │  skills            hooks             node                    │
 │  forge (tools)     self-test         model-router            │
-│  artifact-client                     mcp, sandbox            │
+│                                      mcp, sandbox            │
 │                                                              │
 │  ComponentProvider impls attach components during assembly.   │
 │  Forge creates new components AT RUNTIME.                    │
@@ -801,7 +801,7 @@ AgentConditions (flags, not states):  Initialized, Ready, Healthy,
 | **Spawn** | `fork(2)` + `exec(2)` | `SpawnFn` | `Node.dispatch()` via registry |
 | **Scratchpad** | `/dev/shm` / filesystem | `ScratchpadComponent` (CAS) | Nexus `/groups/{groupId}/scratch/` |
 
-Coordination patterns (orchestrator, parallel-minions, task-spawn, competitive-broadcast) **use** these primitives — they're not primitives themselves.
+Coordination patterns (orchestrator, parallel-minions, task-spawn) **use** these primitives — they're not primitives themselves.
 
 ### Communication Patterns
 
