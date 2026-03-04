@@ -1,10 +1,10 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/model-router API surface . has stable type surface 1`] = `
-"import { JsonObject, ModelRequest, ModelResponse, KoiMiddleware, KoiError, Result } from '@koi/core';
-import { BrickDescriptor } from '@koi/resolve';
+"import { JsonObject, ModelRequest, ModelResponse, KoiError, KoiMiddleware, Result } from '@koi/core';
 import { RetryConfig, CircuitBreakerConfig, CircuitBreaker, CircuitBreakerSnapshot } from '@koi/errors';
 export { CircuitBreaker, CircuitBreakerConfig, CircuitBreakerSnapshot, CircuitState, RetryConfig, computeBackoff, createCircuitBreaker, withRetry } from '@koi/errors';
+import { BrickDescriptor } from '@koi/resolve';
 
 /**
  * Provider adapter interface for multi-provider LLM routing.
@@ -58,36 +58,6 @@ interface ProviderAdapter {
  * Creates an Anthropic provider adapter.
  */
 declare function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderAdapter;
-
-/**
- * BrickDescriptor for @koi/model-router.
- *
- * Enables manifest auto-resolution: validates cascade/fallback/round-robin/weighted
- * routing options from koi.yaml, then creates the model-router middleware.
- *
- * Example koi.yaml:
- * \`\`\`yaml
- * middleware:
- *   - model-router:
- *       strategy: cascade
- *       confidenceThreshold: 0.7
- *       targets:
- *         - anthropic:claude-haiku-4-5
- *         - anthropic:claude-sonnet-4-5
- * \`\`\`
- */
-
-/** Maps provider names to their expected environment variable for the API key. */
-declare const PROVIDER_ENV_KEYS: Readonly<Record<string, string>>;
-/** Maps provider names to their adapter factory functions. */
-declare const PROVIDER_FACTORIES: Readonly<Record<string, (config: ProviderAdapterConfig) => ProviderAdapter>>;
-/**
- * Descriptor for model-router middleware.
- *
- * Wires cascade routing (or fallback/round-robin/weighted) from YAML config.
- * Auto-creates complexity classifier + evaluator for cascade strategy.
- */
-declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * Auto-discovery of local inference servers.
@@ -507,6 +477,36 @@ interface ResolvedTargetConfig {
     readonly costPerInputToken?: number | undefined;
     readonly costPerOutputToken?: number | undefined;
 }
+
+/**
+ * BrickDescriptor for @koi/model-router.
+ *
+ * Enables manifest auto-resolution: validates cascade/fallback/round-robin/weighted
+ * routing options from koi.yaml, then creates the model-router middleware.
+ *
+ * Example koi.yaml:
+ * \`\`\`yaml
+ * middleware:
+ *   - model-router:
+ *       strategy: cascade
+ *       confidenceThreshold: 0.7
+ *       targets:
+ *         - anthropic:claude-haiku-4-5
+ *         - anthropic:claude-sonnet-4-5
+ * \`\`\`
+ */
+
+/** Maps provider names to their expected environment variable for the API key. */
+declare const PROVIDER_ENV_KEYS: Readonly<Record<string, string>>;
+/** Maps provider names to their adapter factory functions. */
+declare const PROVIDER_FACTORIES: Readonly<Record<string, (config: ProviderAdapterConfig) => ProviderAdapter>>;
+/**
+ * Descriptor for model-router middleware.
+ *
+ * Wires cascade routing (or fallback/round-robin/weighted) from YAML config.
+ * Auto-creates complexity classifier + evaluator for cascade strategy.
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * Fallback chain orchestration.
