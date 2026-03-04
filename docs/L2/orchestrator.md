@@ -1,6 +1,6 @@
 # @koi/orchestrator — DAG-Based Task Board for Multi-Agent Swarms
 
-Persistent, immutable task board coordinator for Koi agents. Provides a DAG-based task board with dependency tracking, concurrent worker spawning, failure/retry handling, cascade detection, and synthesis — enabling a copilot agent to decompose complex work into parallel subtasks executed by worker agents.
+Persistent, immutable task board coordinator for Koi agents. Provides a DAG-based task board with dependency tracking, concurrent worker spawning, failure/retry handling, cascade detection, rich data propagation, and synthesis — enabling a copilot agent to decompose complex work into parallel subtasks executed by worker agents.
 
 ---
 
@@ -235,6 +235,7 @@ interface OrchestratorConfig {
   readonly maxRetries?: number              // Default: 3
   readonly maxOutputPerTask?: number        // Default: 5000 chars
   readonly maxDurationMs?: number           // Default: 1,800,000 (30 min)
+  readonly maxUpstreamContextPerTask?: number // Default: 2000 chars per upstream result
 }
 ```
 
@@ -245,17 +246,25 @@ The consumer provides this callback — it defines how workers are created:
 ```typescript
 type SpawnWorkerFn = (request: SpawnWorkerRequest) => Promise<SpawnWorkerResult>;
 
-// Request
+// Request — includes upstream results from completed dependencies
 interface SpawnWorkerRequest {
   readonly taskId: TaskItemId
   readonly description: string
   readonly agentId?: string
-  readonly signal: AbortSignal          // Abort when maxDurationMs exceeded
+  readonly signal: AbortSignal                                // Abort when maxDurationMs exceeded
+  readonly upstreamResults?: readonly TaskResult[] | undefined // Completed dependency results
 }
 
-// Result — discriminated union
+// Result — discriminated union with optional structured fields
 type SpawnWorkerResult =
-  | { readonly ok: true; readonly output: string }
+  | {
+      readonly ok: true;
+      readonly output: string;
+      readonly artifacts?: readonly ArtifactRef[] | undefined;
+      readonly decisions?: readonly DecisionRecord[] | undefined;
+      readonly warnings?: readonly string[] | undefined;
+      readonly durationMs?: number | undefined;
+    }
   | { readonly ok: false; readonly error: KoiError }
 ```
 
@@ -338,6 +347,153 @@ The orchestrator creates an `AbortController` that fires after `maxDurationMs`. 
 
 ---
 
+## Rich Data Propagation Through DAG Edges
+
+Workers don't just pass flat strings — the orchestrator propagates structured data (artifacts, decisions, warnings) through dependency edges automatically.
+
+### How It Works
+
+When a task completes, its full `TaskResult` (including optional structured fields) is stored on the board. When a downstream task is assigned, the orchestrator collects all completed upstream results from its dependencies and passes them to the worker via `upstreamResults`:
+
+```
+  Task A (analyze)                    Task B (report, depends on A)
+  ┌──────────────────┐                ┌──────────────────────────────┐
+  │ output: "3 bugs" │───────────────>│ upstreamResults: [{          │
+  │ artifacts: [...]  │  DAG edge     │   taskId: "analyze",         │
+  │ warnings: [...]   │  carries      │   output: "3 bugs",          │
+  │ decisions: [...]  │  full result  │   artifacts: [...],           │
+  └──────────────────┘                │   warnings: [...],           │
+                                      │   decisions: [...]           │
+                                      │ }]                           │
+                                      └──────────────────────────────┘
+```
+
+### TaskResult Structured Fields
+
+All fields are optional — backward compatible with plain `{ output, durationMs }` results:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `output` | `string` | Primary text output (required) |
+| `durationMs` | `number` | Wall-clock execution time (required) |
+| `artifacts` | `ArtifactRef[]` | Files, data URIs, or references produced |
+| `decisions` | `DecisionRecord[]` | Choices made with reasoning trail |
+| `warnings` | `string[]` | Non-fatal issues to surface |
+| `results` | `JsonObject` | Arbitrary structured data |
+| `delegation` | `DelegationGrant` | Authority delegated to downstream |
+| `workerId` | `AgentId` | Which worker executed this task |
+
+### SpawnWorkerRequest with Upstream Context
+
+```typescript
+interface SpawnWorkerRequest {
+  readonly taskId: TaskItemId;
+  readonly description: string;
+  readonly agentId?: string | undefined;
+  readonly signal: AbortSignal;
+  readonly upstreamResults?: readonly TaskResult[] | undefined;  // From dependencies
+}
+```
+
+### SpawnWorkerResult with Rich Fields
+
+Workers can return structured data that gets stored in `TaskResult`:
+
+```typescript
+type SpawnWorkerResult =
+  | {
+      readonly ok: true;
+      readonly output: string;
+      readonly artifacts?: readonly ArtifactRef[] | undefined;
+      readonly decisions?: readonly DecisionRecord[] | undefined;
+      readonly warnings?: readonly string[] | undefined;
+      readonly durationMs?: number | undefined;
+    }
+  | { readonly ok: false; readonly error: KoiError };
+```
+
+### Context Formatting for LLM Workers
+
+When using `mapSpawnToWorker` (spawn adapter), upstream results are formatted as a structured text block prepended to the task description:
+
+```
+--- Upstream Context ---
+[Upstream: analyze]
+Output: Found 3 critical bugs in auth module
+Artifacts: file:file:///analysis.json
+Warnings: low test coverage
+
+[Upstream: lint]
+Output: 12 style violations fixed
+--- End Upstream Context ---
+
+Generate a summary report combining all analysis results.
+```
+
+Output is truncated per-result to `maxUpstreamContextPerTask` (default: 2000 chars) to prevent context blow-up.
+
+### Example: Multi-Stage Pipeline
+
+```typescript
+// Define a 3-stage pipeline: analyze → test → deploy
+executeOrchestrate({
+  action: "add",
+  tasks: [
+    { id: "analyze", description: "Analyze codebase for issues" },
+    { id: "test", description: "Run test suite", dependencies: ["analyze"] },
+    { id: "deploy", description: "Deploy changes", dependencies: ["analyze", "test"] },
+  ],
+}, holder);
+
+// Worker for "analyze" returns rich data:
+const config: OrchestratorConfig = {
+  spawn: async (req) => ({
+    ok: true,
+    output: "Found 3 issues",
+    artifacts: [{ id: "a1", kind: "report", uri: "file:///analysis.json" }],
+    warnings: ["low coverage in auth module"],
+    decisions: [{
+      agentId: "worker-1" as AgentId,
+      action: "chose static analysis over dynamic",
+      reasoning: "faster for initial sweep",
+      timestamp: Date.now(),
+    }],
+  }),
+};
+
+// When "test" runs, it receives analyze's full result in upstreamResults.
+// When "deploy" runs, it receives BOTH analyze and test results.
+// The synthesize tool renders all structured fields in topological order.
+```
+
+### Synthesis with Structured Fields
+
+The `synthesize` tool renders artifacts, warnings, and decisions sections when present:
+
+```
+## Synthesis: 3 task(s) completed
+
+### analyze: Analyze codebase for issues
+Found 3 issues
+
+### Artifacts
+- report: file:///analysis.json
+
+### Warnings
+- low coverage in auth module
+
+### Decisions
+- [worker-1] chose static analysis over dynamic — faster for initial sweep
+
+### test: Run test suite
+All tests passing
+
+### deploy: Deploy changes
+Deployed to staging
+```
+
+---
+
 ## Wiring into createKoi()
 
 ### Option A: Use createOrchestratorProvider (production)
@@ -367,8 +523,8 @@ For E2E tests or custom input schemas, create proper `Tool` objects wrapping the
 ```typescript
 import {
   createTaskBoard,
+  createAssignWorkerExecutor,
   executeOrchestrate,
-  executeAssignWorker,
   executeSynthesize,
 } from "@koi/orchestrator";
 import type { BoardHolder, OrchestratorConfig } from "@koi/orchestrator";
@@ -384,6 +540,9 @@ const holder: BoardHolder = {
 
 const config: OrchestratorConfig = { spawn: mySpawnFn };
 const signal = new AbortController().signal;
+
+// Each executor has its own encapsulated worker counter
+const executeAssignWorker = createAssignWorkerExecutor();
 
 const tools: Tool[] = [
   {
@@ -471,7 +630,10 @@ The snapshot captures all task items and completed results — enough to reconst
 | Function | Returns | Description |
 |----------|---------|-------------|
 | `createTaskBoard(config?, snapshot?)` | `TaskBoard` | Creates an immutable task board |
+| `createAssignWorkerExecutor()` | `ExecuteAssignWorkerFn` | Creates an assign-worker executor with encapsulated worker counter |
 | `createOrchestratorProvider(config)` | `ComponentProvider` | Wires 4 tools into createKoi |
+| `formatUpstreamContext(results, maxChars)` | `string` | Formats upstream results into context block |
+| `mapSpawnToWorker(spawn, agentName, maxContext?)` | `SpawnWorkerFn` | Adapts unified SpawnFn to SpawnWorkerFn with upstream formatting |
 | `validateOrchestratorConfig(raw)` | `Result<OrchestratorConfig, KoiError>` | Schema validation |
 
 ### Tool Executors
@@ -501,10 +663,10 @@ The snapshot captures all task items and completed results — enough to reconst
 
 | Type | Description |
 |------|-------------|
-| `OrchestratorConfig` | Spawn fn, concurrency, retries, timeouts, events |
+| `OrchestratorConfig` | Spawn fn, concurrency, retries, timeouts, events, upstream context cap |
 | `SpawnWorkerFn` | `(SpawnWorkerRequest) → Promise<SpawnWorkerResult>` |
-| `SpawnWorkerRequest` | Task ID, description, agent ID, abort signal |
-| `SpawnWorkerResult` | `{ ok: true, output }` or `{ ok: false, error }` |
+| `SpawnWorkerRequest` | Task ID, description, agent ID, abort signal, upstream results |
+| `SpawnWorkerResult` | `{ ok: true, output, artifacts?, decisions?, warnings? }` or `{ ok: false, error }` |
 | `VerifyResultFn` | Optional gate: `(taskId, output) → { verdict, feedback? }` |
 | `BoardHolder` | Mutable reference to the current immutable board |
 
