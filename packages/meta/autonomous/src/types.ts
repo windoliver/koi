@@ -23,6 +23,8 @@ export interface AutonomousAgentParts {
   readonly scheduler: HarnessScheduler;
   /** Optional compactor middleware for context compaction. */
   readonly compactorMiddleware?: KoiMiddleware | undefined;
+  /** Optional collective memory middleware for cross-run learning persistence. */
+  readonly collectiveMemoryMiddleware?: KoiMiddleware | undefined;
   /** Optional thread store for persistent checkpoint support. */
   readonly threadStore?: ThreadStore | undefined;
   /** Checkpoint policy override. Defaults to DEFAULT_CHECKPOINT_POLICY. */

@@ -9,6 +9,13 @@
 export { applyBrickUpdate } from "./apply-brick-update.js";
 export { validateBrickArtifact } from "./brick-validation.js";
 export {
+  compactEntries,
+  computeMemoryPriority,
+  deduplicateEntries,
+  pruneStaleEntries,
+  selectEntriesWithinBudget,
+} from "./collective-memory.js";
+export {
   checkSchemaCompatibility,
   type PipelineValidation,
   type SchemaCompatibility,

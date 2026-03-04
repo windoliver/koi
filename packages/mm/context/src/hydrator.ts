@@ -20,6 +20,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { CHARS_PER_TOKEN, HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
+import { resolveCollectiveMemorySource } from "./sources/collective-memory.js";
 import { resolveFileSource } from "./sources/file.js";
 import { resolveMemorySource } from "./sources/memory.js";
 import { resolveSkillSource } from "./sources/skill.js";
@@ -52,11 +53,20 @@ function resolveBuiltIn(source: ContextSource, agent: Agent): SourceResult | Pro
       return resolveSkillSource(source, agent);
     case "tool_schema":
       return resolveToolSchemaSource(source, agent);
+    case "collective_memory":
+      return resolveCollectiveMemorySource(source, agent);
   }
 }
 
 /** Built-in source kinds handled by the discriminated union switch. */
-const BUILT_IN_KINDS = new Set(["text", "file", "memory", "skill", "tool_schema"]);
+const BUILT_IN_KINDS = new Set([
+  "text",
+  "file",
+  "memory",
+  "skill",
+  "tool_schema",
+  "collective_memory",
+]);
 
 export interface ContextHydratorOptions {
   readonly config: ContextManifestConfig;

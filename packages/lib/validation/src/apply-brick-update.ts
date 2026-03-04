@@ -30,5 +30,8 @@ export function applyBrickUpdate<T extends BrickArtifactBase>(
     ...(updates.lastDemotedAt !== undefined ? { lastDemotedAt: updates.lastDemotedAt } : {}),
     ...(updates.trailStrength !== undefined ? { trailStrength: updates.trailStrength } : {}),
     ...(updates.driftContext !== undefined ? { driftContext: updates.driftContext } : {}),
+    ...(updates.collectiveMemory !== undefined
+      ? { collectiveMemory: updates.collectiveMemory }
+      : {}),
   };
 }

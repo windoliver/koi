@@ -89,6 +89,11 @@ export type {
   BrickPort,
   BrickRequires,
   BrickUpdate,
+  CollectiveMemory,
+  CollectiveMemoryCategory,
+  CollectiveMemoryDefaults,
+  CollectiveMemoryEntry,
+  CollectiveMemorySource,
   CompositeArtifact,
   CounterExample,
   ForgeQuery,
@@ -108,7 +113,9 @@ export type {
   TrailConfig,
 } from "./brick-store.js";
 export {
+  COLLECTIVE_MEMORY_DEFAULTS,
   DEFAULT_BRICK_FITNESS,
+  DEFAULT_COLLECTIVE_MEMORY,
   DEFAULT_TRAIL_CONFIG,
   DEFAULT_TRAIL_STRENGTH,
 } from "./brick-store.js";
