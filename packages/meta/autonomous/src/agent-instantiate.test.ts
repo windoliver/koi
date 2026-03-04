@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it, mock } from "bun:test";
-import type { BrickArtifact, EngineAdapter } from "@koi/core";
+import type { BrickArtifact, ComponentProvider, EngineAdapter, KoiMiddleware } from "@koi/core";
 import { createTestAgentArtifact, createTestToolArtifact } from "@koi/test-utils";
 
 import { createAgentFromBrick } from "./agent-instantiate.js";
@@ -92,8 +92,10 @@ describe("createAgentFromBrick", () => {
 
   it("passes provided middleware and providers through", async () => {
     const brick = createTestAgentArtifact({ manifestYaml: VALID_YAML });
-    const middleware = [{ name: "test-mw", priority: 100 }];
-    const providers = [{ name: "test-provider", attach: mock(() => {}) }];
+    const middleware = [{ name: "test-mw", priority: 100 }] as unknown as readonly KoiMiddleware[];
+    const providers = [
+      { name: "test-provider", attach: mock(() => {}) },
+    ] as unknown as readonly ComponentProvider[];
 
     const result = await createAgentFromBrick(brick, {
       adapterFactory: async () => mockAdapter(),

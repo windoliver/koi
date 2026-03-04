@@ -26,13 +26,10 @@ export interface SpawnFitnessWrapperConfig {
 /** Generic spawn request — must have at least a manifest. */
 interface SpawnRequestLike {
   readonly manifest: AgentManifest;
-  readonly [key: string]: unknown;
 }
 
 /** Generic spawn result — discriminated ok/error union. */
-type SpawnResultLike =
-  | { readonly ok: true; readonly [key: string]: unknown }
-  | { readonly ok: false; readonly error: string; readonly [key: string]: unknown };
+type SpawnResultLike = { readonly ok: true } | { readonly ok: false; readonly error: string };
 
 // ---------------------------------------------------------------------------
 // Metadata key for brickId threading

@@ -74,7 +74,7 @@ describe("createSpawnFitnessWrapper", () => {
       return { ok: true, output: "done" };
     });
 
-    const wrapped = createSpawnFitnessWrapper(spawn, {
+    const wrapped = createSpawnFitnessWrapper<TestRequest, TestResult>(spawn, {
       healthRecorder: recorder,
       clock: () => now,
     });
@@ -100,7 +100,7 @@ describe("createSpawnFitnessWrapper", () => {
       return { ok: false, error: "agent crashed" };
     });
 
-    const wrapped = createSpawnFitnessWrapper(spawn, {
+    const wrapped = createSpawnFitnessWrapper<TestRequest, TestResult>(spawn, {
       healthRecorder: recorder,
       clock: () => now,
     });
@@ -127,7 +127,7 @@ describe("createSpawnFitnessWrapper", () => {
       throw new Error("network timeout");
     });
 
-    const wrapped = createSpawnFitnessWrapper(spawn, {
+    const wrapped = createSpawnFitnessWrapper<TestRequest, TestResult>(spawn, {
       healthRecorder: recorder,
       clock: () => now,
     });
@@ -148,7 +148,7 @@ describe("createSpawnFitnessWrapper", () => {
       return { ok: true, output: "done" };
     });
 
-    const wrapped = createSpawnFitnessWrapper(spawn, {
+    const wrapped = createSpawnFitnessWrapper<TestRequest, TestResult>(spawn, {
       healthRecorder: recorder,
     });
 
@@ -169,7 +169,9 @@ describe("createSpawnFitnessWrapper", () => {
       return { ok: true, output: req.description };
     });
 
-    const wrapped = createSpawnFitnessWrapper(spawn, { healthRecorder: recorder });
+    const wrapped = createSpawnFitnessWrapper<TestRequest, TestResult>(spawn, {
+      healthRecorder: recorder,
+    });
 
     const result = await wrapped({
       manifest: manifestWithBrickId("brick_pass"),

@@ -147,7 +147,7 @@ describe("forge → delegation bridge integration", () => {
       return { ok: true, output: "research complete" };
     });
 
-    const wrappedSpawn = createSpawnFitnessWrapper(rawSpawn, {
+    const wrappedSpawn = createSpawnFitnessWrapper<TestSpawnRequest, TestSpawnResult>(rawSpawn, {
       healthRecorder: recorder,
       clock: () => now,
     });
@@ -205,7 +205,7 @@ describe("forge → delegation bridge integration", () => {
       return { ok: false, error: "agent crashed" };
     });
 
-    const wrappedSpawn = createSpawnFitnessWrapper(rawSpawn, {
+    const wrappedSpawn = createSpawnFitnessWrapper<TestSpawnRequest, TestSpawnResult>(rawSpawn, {
       healthRecorder: recorder,
     });
 
