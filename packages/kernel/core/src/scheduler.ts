@@ -346,6 +346,10 @@ export interface ScheduleStore extends AsyncDisposable {
 /**
  * Pluggable priority-queue backend for task dispatch.
  * Local mode uses an in-memory heap; production delegates to Nexus Astraea.
+ *
+ * Optional distributed methods (claim/ack/nack/tick) enable cross-node
+ * scheduling with at-least-once delivery. Existing implementations are
+ * unaffected — these methods are feature-detected at runtime.
  */
 export interface TaskQueueBackend extends AsyncDisposable {
   /** Submit a task to the priority queue. Returns the queue-assigned task ID. */
@@ -354,4 +358,23 @@ export interface TaskQueueBackend extends AsyncDisposable {
   readonly cancel: (taskId: TaskId) => Promise<boolean>;
   /** Get the current status of a queued task. */
   readonly status: (taskId: TaskId) => Promise<TaskStatus | undefined>;
+
+  // -------------------------------------------------------------------------
+  // Optional distributed claim semantics
+  // -------------------------------------------------------------------------
+
+  /** Atomically claim tasks from the distributed queue (visibility timeout). */
+  readonly claim?: (
+    nodeId: string,
+    limit?: number | undefined,
+  ) => Promise<readonly ScheduledTask[]>;
+
+  /** Acknowledge successful task completion. Returns true if ack was accepted. */
+  readonly ack?: (taskId: TaskId, result?: unknown) => Promise<boolean>;
+
+  /** Return a task to the queue for retry. Returns true if nack was accepted. */
+  readonly nack?: (taskId: TaskId, reason?: string | undefined) => Promise<boolean>;
+
+  /** Claim a cron tick — prevents duplicate execution across nodes. */
+  readonly tick?: (scheduleId: ScheduleId, nodeId: string) => Promise<boolean>;
 }

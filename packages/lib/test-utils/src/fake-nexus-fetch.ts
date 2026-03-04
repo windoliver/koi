@@ -1,8 +1,9 @@
 /**
  * In-memory fake Nexus JSON-RPC server for testing.
  *
- * Implements the Nexus filesystem methods (read, write, exists, delete, glob)
- * and scratchpad RPC methods (scratchpad.write, scratchpad.read, etc.)
+ * Implements the Nexus filesystem methods (read, write, exists, delete, glob),
+ * scratchpad RPC methods (scratchpad.write, scratchpad.read, etc.),
+ * and scheduler RPC methods (scheduler.task.*, scheduler.schedule.*, scheduler.claim, etc.)
  * with glob matching that supports single-segment wildcard patterns.
  *
  * Extracted from @koi/events-nexus for reuse across store and event backends.
@@ -34,6 +35,45 @@ interface ScratchpadStoreEntry {
   readonly generation: number;
   readonly ttlSeconds?: number | undefined;
   readonly metadata?: Record<string, unknown> | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler store types (local to fake)
+// ---------------------------------------------------------------------------
+
+interface SchedulerTaskEntry {
+  readonly id: string;
+  readonly agent_id: string;
+  readonly input: unknown;
+  readonly mode: string;
+  readonly priority: number;
+  readonly status: string;
+  readonly created_at: number;
+  readonly scheduled_at?: number | undefined;
+  readonly started_at?: number | undefined;
+  readonly completed_at?: number | undefined;
+  readonly retries: number;
+  readonly max_retries: number;
+  readonly timeout_ms?: number | undefined;
+  readonly last_error?: unknown | undefined;
+  readonly metadata?: Record<string, unknown> | undefined;
+  /** Node that currently holds the claim, if any. */
+  readonly claimed_by?: string | undefined;
+  /** Timestamp when the claim was acquired. */
+  readonly claimed_at?: number | undefined;
+  /** How long the claim is valid. */
+  readonly visibility_timeout_ms?: number | undefined;
+}
+
+interface SchedulerScheduleEntry {
+  readonly id: string;
+  readonly expression: string;
+  readonly agent_id: string;
+  readonly input: unknown;
+  readonly mode: string;
+  readonly task_options?: unknown | undefined;
+  readonly timezone?: string | undefined;
+  readonly paused: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +143,9 @@ function scratchpadKey(groupId: string, path: string): string {
 export function createFakeNexusFetch(): typeof globalThis.fetch {
   const files = new Map<string, string>();
   const scratchpad = new Map<string, ScratchpadStoreEntry>();
+  const tasks = new Map<string, SchedulerTaskEntry>();
+  const schedules = new Map<string, SchedulerScheduleEntry>();
+  const tickClaims = new Set<string>(); // key: `${scheduleId}:${nodeId}:${Math.floor(now/60000)}`
 
   return (async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const body = JSON.parse(init?.body as string) as JsonRpcRequest;
@@ -369,6 +412,220 @@ export function createFakeNexusFetch(): typeof globalThis.fetch {
       case "scratchpad.provision": {
         // No-op success — provisioning is a no-op in the fake
         result = null;
+        break;
+      }
+
+      // -------------------------------------------------------------------
+      // Scheduler task RPC methods
+      // -------------------------------------------------------------------
+
+      case "scheduler.task.save": {
+        const entry: SchedulerTaskEntry = {
+          id: params.id as string,
+          agent_id: params.agent_id as string,
+          input: params.input,
+          mode: params.mode as string,
+          priority: params.priority as number,
+          status: params.status as string,
+          created_at: params.created_at as number,
+          scheduled_at: params.scheduled_at as number | undefined,
+          started_at: params.started_at as number | undefined,
+          completed_at: params.completed_at as number | undefined,
+          retries: params.retries as number,
+          max_retries: params.max_retries as number,
+          timeout_ms: params.timeout_ms as number | undefined,
+          last_error: params.last_error,
+          metadata: params.metadata as Record<string, unknown> | undefined,
+        };
+        tasks.set(entry.id, entry);
+        result = null;
+        break;
+      }
+
+      case "scheduler.task.load": {
+        const taskId = params.id as string;
+        const task = tasks.get(taskId);
+        result = { task: task ?? null };
+        break;
+      }
+
+      case "scheduler.task.remove": {
+        const taskId = params.id as string;
+        tasks.delete(taskId);
+        result = null;
+        break;
+      }
+
+      case "scheduler.task.updateStatus": {
+        const taskId = params.id as string;
+        const existing = tasks.get(taskId);
+        if (existing === undefined) {
+          return jsonRpcError(id, -32000, "NOT_FOUND");
+        }
+        const updated: SchedulerTaskEntry = {
+          ...existing,
+          status: params.status as string,
+          ...(params.started_at !== undefined ? { started_at: params.started_at as number } : {}),
+          ...(params.completed_at !== undefined
+            ? { completed_at: params.completed_at as number }
+            : {}),
+          ...(params.last_error !== undefined ? { last_error: params.last_error } : {}),
+          ...(params.retries !== undefined ? { retries: params.retries as number } : {}),
+        };
+        tasks.set(taskId, updated);
+        result = null;
+        break;
+      }
+
+      case "scheduler.task.query": {
+        const status = params.status as string | undefined;
+        const agentId = params.agent_id as string | undefined;
+        const priority = params.priority as number | undefined;
+        const limit = params.limit as number | undefined;
+
+        const matched: SchedulerTaskEntry[] = [];
+        for (const task of tasks.values()) {
+          if (status !== undefined && task.status !== status) continue;
+          if (agentId !== undefined && task.agent_id !== agentId) continue;
+          if (priority !== undefined && task.priority !== priority) continue;
+          matched.push(task);
+          if (limit !== undefined && matched.length >= limit) break;
+        }
+
+        // Sort by priority ASC, then created_at ASC
+        matched.sort((a, b) => {
+          const pd = a.priority - b.priority;
+          if (pd !== 0) return pd;
+          return a.created_at - b.created_at;
+        });
+
+        result = { tasks: matched };
+        break;
+      }
+
+      // -------------------------------------------------------------------
+      // Scheduler distributed claim/ack/nack/tick
+      // -------------------------------------------------------------------
+
+      case "scheduler.claim": {
+        const nodeId = params.node_id as string;
+        const claimLimit = (params.limit as number | undefined) ?? 10;
+        const visibilityMs = (params.visibility_timeout_ms as number | undefined) ?? 30_000;
+        const now = Date.now();
+
+        const claimed: SchedulerTaskEntry[] = [];
+        for (const [taskId, task] of tasks) {
+          if (claimed.length >= claimLimit) break;
+          if (task.status !== "pending") continue;
+
+          // Check if already claimed and not expired
+          if (
+            task.claimed_by !== undefined &&
+            task.claimed_at !== undefined &&
+            task.visibility_timeout_ms !== undefined &&
+            now - task.claimed_at < task.visibility_timeout_ms
+          ) {
+            continue;
+          }
+
+          // Claim the task
+          const claimedTask: SchedulerTaskEntry = {
+            ...task,
+            claimed_by: nodeId,
+            claimed_at: now,
+            visibility_timeout_ms: visibilityMs,
+          };
+          tasks.set(taskId, claimedTask);
+          claimed.push(claimedTask);
+        }
+
+        result = { tasks: claimed };
+        break;
+      }
+
+      case "scheduler.ack": {
+        const taskId = params.task_id as string;
+        const task = tasks.get(taskId);
+        if (task === undefined) {
+          result = { ok: false };
+          break;
+        }
+        // Mark as completed and remove claim
+        tasks.set(taskId, {
+          ...task,
+          status: "completed",
+          completed_at: Date.now(),
+          claimed_by: undefined,
+          claimed_at: undefined,
+          visibility_timeout_ms: undefined,
+        });
+        result = { ok: true };
+        break;
+      }
+
+      case "scheduler.nack": {
+        const taskId = params.task_id as string;
+        const task = tasks.get(taskId);
+        if (task === undefined) {
+          result = { ok: false };
+          break;
+        }
+        // Remove claim — task returns to claimable state
+        tasks.set(taskId, {
+          ...task,
+          claimed_by: undefined,
+          claimed_at: undefined,
+          visibility_timeout_ms: undefined,
+        });
+        result = { ok: true };
+        break;
+      }
+
+      case "scheduler.tick": {
+        const schedId = params.schedule_id as string;
+        const nodeId = params.node_id as string;
+        // Dedup key: scheduleId + nodeId-agnostic tick window (1-minute buckets)
+        const tickKey = `${schedId}:${String(Math.floor(Date.now() / 60_000))}`;
+        if (tickClaims.has(tickKey)) {
+          result = { claimed: false };
+        } else {
+          tickClaims.add(tickKey);
+          // Store which node won (for test assertions)
+          void nodeId;
+          result = { claimed: true };
+        }
+        break;
+      }
+
+      // -------------------------------------------------------------------
+      // Scheduler schedule RPC methods
+      // -------------------------------------------------------------------
+
+      case "scheduler.schedule.save": {
+        const entry: SchedulerScheduleEntry = {
+          id: params.id as string,
+          expression: params.expression as string,
+          agent_id: params.agent_id as string,
+          input: params.input,
+          mode: params.mode as string,
+          task_options: params.task_options,
+          timezone: params.timezone as string | undefined,
+          paused: params.paused as boolean,
+        };
+        schedules.set(entry.id, entry);
+        result = null;
+        break;
+      }
+
+      case "scheduler.schedule.remove": {
+        const schedId = params.id as string;
+        schedules.delete(schedId);
+        result = null;
+        break;
+      }
+
+      case "scheduler.schedule.list": {
+        result = { schedules: [...schedules.values()] };
         break;
       }
 

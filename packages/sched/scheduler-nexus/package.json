@@ -1,6 +1,6 @@
 {
   "name": "@koi/scheduler-nexus",
-  "description": "Delegate priority dispatch to Nexus while retaining local cron and retry",
+  "description": "Nexus-backed distributed task store, schedule store, and priority queue for cross-node scheduling",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,6 +18,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "@koi/nexus-client": "workspace:*",
     "@koi/resolve": "workspace:*"
   },
   "devDependencies": {

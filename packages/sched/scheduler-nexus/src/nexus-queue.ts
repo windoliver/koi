@@ -4,13 +4,28 @@
  * Thin HTTP client implementing TaskQueueBackend that delegates
  * priority dispatch to Nexus while Koi retains cron/timing/retry.
  *
+ * Supports optional distributed claim/ack/nack/tick semantics when
+ * configured with NexusSchedulerConfig (visibility timeout).
+ *
  * Follows the pay-nexus/store-nexus pattern: injectable fetch,
  * AbortSignal.timeout, error mapping for consistent KoiError codes.
  */
 
-import type { KoiError, ScheduledTask, TaskId, TaskQueueBackend, TaskStatus } from "@koi/core";
-import { RETRYABLE_DEFAULTS, taskId } from "@koi/core";
+import type {
+  KoiError,
+  ScheduledTask,
+  ScheduleId,
+  TaskId,
+  TaskQueueBackend,
+  TaskStatus,
+} from "@koi/core";
+import { taskId } from "@koi/core";
+import { isKoiError } from "@koi/errors";
+import type { NexusClient } from "@koi/nexus-client";
+import { createNexusClient, mapHttpError } from "@koi/nexus-client";
 import type { NexusTaskQueueConfig } from "./config.js";
+import type { NexusSchedulerConfig } from "./scheduler-config.js";
+import { DEFAULT_TIMEOUT_MS, DEFAULT_VISIBILITY_TIMEOUT_MS } from "./scheduler-config.js";
 
 // ---------------------------------------------------------------------------
 // Valid task statuses (for response validation)
@@ -41,36 +56,12 @@ interface ApiStatusResponse {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP error mapping (follows pay-nexus pattern)
-// ---------------------------------------------------------------------------
-
-function mapHttpError(status: number, message: string): KoiError {
-  if (status === 401 || status === 403) {
-    return { code: "PERMISSION", message, retryable: RETRYABLE_DEFAULTS.PERMISSION };
-  }
-  if (status === 404) {
-    return { code: "NOT_FOUND", message, retryable: RETRYABLE_DEFAULTS.NOT_FOUND };
-  }
-  if (status === 429) {
-    return {
-      code: "RATE_LIMIT",
-      message: message || "Rate limited",
-      retryable: RETRYABLE_DEFAULTS.RATE_LIMIT,
-    };
-  }
-  if (status >= 500) {
-    return { code: "EXTERNAL", message, retryable: true };
-  }
-  return { code: "EXTERNAL", message: message || `HTTP ${String(status)}`, retryable: false };
-}
-
-// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TIMEOUT_MS = 10_000;
-
-export function createNexusTaskQueue(config: NexusTaskQueueConfig): TaskQueueBackend {
+export function createNexusTaskQueue(
+  config: NexusTaskQueueConfig | NexusSchedulerConfig,
+): TaskQueueBackend {
   const fetchFn = config.fetch ?? globalThis.fetch;
   const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const base = config.baseUrl;
@@ -154,21 +145,161 @@ export function createNexusTaskQueue(config: NexusTaskQueueConfig): TaskQueueBac
         return result.status as TaskStatus;
       } catch (e: unknown) {
         // 404 → task not found, return undefined
-        if (
-          e instanceof Error &&
-          e.cause !== null &&
-          typeof e.cause === "object" &&
-          "code" in (e.cause as Record<string, unknown>) &&
-          (e.cause as { readonly code: string }).code === "NOT_FOUND"
-        ) {
+        if (e instanceof Error && isKoiError(e.cause) && e.cause.code === "NOT_FOUND") {
           return undefined;
         }
         throw e;
       }
     },
 
+    // -----------------------------------------------------------------------
+    // Distributed claim semantics (via JSON-RPC)
+    // -----------------------------------------------------------------------
+
+    ...createDistributedMethods(config),
+
     [Symbol.asyncDispose]: async (): Promise<void> => {
       // No persistent connections to clean up
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Distributed RPC wire types
+// ---------------------------------------------------------------------------
+
+interface ApiClaimResponse {
+  readonly tasks: readonly ApiClaimedTask[];
+}
+
+interface ApiClaimedTask {
+  readonly id: string;
+  readonly agent_id: string;
+  readonly input: unknown;
+  readonly mode: string;
+  readonly priority: number;
+  readonly status: string;
+  readonly created_at: number;
+  readonly scheduled_at?: number | undefined;
+  readonly started_at?: number | undefined;
+  readonly completed_at?: number | undefined;
+  readonly retries: number;
+  readonly max_retries: number;
+  readonly timeout_ms?: number | undefined;
+  readonly last_error?: KoiError | undefined;
+  readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+
+interface ApiAckResponse {
+  readonly ok: boolean;
+}
+
+interface ApiNackResponse {
+  readonly ok: boolean;
+}
+
+interface ApiTickResponse {
+  readonly claimed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Map wire task to domain ScheduledTask
+// ---------------------------------------------------------------------------
+
+function mapClaimedTask(wire: ApiClaimedTask): ScheduledTask {
+  return {
+    id: taskId(wire.id),
+    agentId: wire.agent_id as ScheduledTask["agentId"],
+    input: wire.input as ScheduledTask["input"],
+    mode: wire.mode as ScheduledTask["mode"],
+    priority: wire.priority,
+    status: wire.status as ScheduledTask["status"],
+    createdAt: wire.created_at,
+    scheduledAt: wire.scheduled_at,
+    startedAt: wire.started_at,
+    completedAt: wire.completed_at,
+    retries: wire.retries,
+    maxRetries: wire.max_retries,
+    timeoutMs: wire.timeout_ms,
+    lastError: wire.last_error,
+    metadata: wire.metadata,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// RPC result unwrapper
+// ---------------------------------------------------------------------------
+
+function unwrapRpc<T>(result: {
+  readonly ok: boolean;
+  readonly value?: T;
+  readonly error?: unknown;
+}): T {
+  if (!result.ok) {
+    const err = result.error as { readonly message?: string } | undefined;
+    throw new Error(err?.message ?? "Nexus RPC failed", { cause: result.error });
+  }
+  return (result as { readonly value: T }).value;
+}
+
+// ---------------------------------------------------------------------------
+// Create distributed methods (claim/ack/nack/tick) via JSON-RPC
+// ---------------------------------------------------------------------------
+
+function createDistributedMethods(
+  config: NexusTaskQueueConfig | NexusSchedulerConfig,
+): Pick<TaskQueueBackend, "claim" | "ack" | "nack" | "tick"> {
+  const visibilityTimeoutMs =
+    "visibilityTimeoutMs" in config
+      ? ((config as NexusSchedulerConfig).visibilityTimeoutMs ?? DEFAULT_VISIBILITY_TIMEOUT_MS)
+      : DEFAULT_VISIBILITY_TIMEOUT_MS;
+
+  const client: NexusClient = createNexusClient({
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    fetch: config.fetch,
+  });
+
+  return {
+    async claim(nodeId: string, limit?: number): Promise<readonly ScheduledTask[]> {
+      const result = unwrapRpc<ApiClaimResponse>(
+        await client.rpc("scheduler.claim", {
+          node_id: nodeId,
+          ...(limit !== undefined ? { limit } : {}),
+          visibility_timeout_ms: visibilityTimeoutMs,
+        }),
+      );
+      return result.tasks.map(mapClaimedTask);
+    },
+
+    async ack(id: TaskId, result?: unknown): Promise<boolean> {
+      const response = unwrapRpc<ApiAckResponse>(
+        await client.rpc("scheduler.ack", {
+          task_id: id,
+          ...(result !== undefined ? { result } : {}),
+        }),
+      );
+      return response.ok;
+    },
+
+    async nack(id: TaskId, reason?: string): Promise<boolean> {
+      const response = unwrapRpc<ApiNackResponse>(
+        await client.rpc("scheduler.nack", {
+          task_id: id,
+          ...(reason !== undefined ? { reason } : {}),
+        }),
+      );
+      return response.ok;
+    },
+
+    async tick(sid: ScheduleId, nodeId: string): Promise<boolean> {
+      const response = unwrapRpc<ApiTickResponse>(
+        await client.rpc("scheduler.tick", {
+          schedule_id: sid,
+          node_id: nodeId,
+        }),
+      );
+      return response.claimed;
     },
   };
 }

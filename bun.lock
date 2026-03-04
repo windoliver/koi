@@ -2092,12 +2092,19 @@
         "@koi/resolve": "workspace:*",
         "croner": "9.0.0",
       },
+      "devDependencies": {
+        "@koi/nexus-client": "workspace:*",
+        "@koi/scheduler-nexus": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
     },
     "packages/sched/scheduler-nexus": {
       "name": "@koi/scheduler-nexus",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
         "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
