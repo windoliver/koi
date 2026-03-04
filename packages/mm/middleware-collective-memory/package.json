@@ -1,5 +1,6 @@
 {
   "name": "@koi/middleware-collective-memory",
+  "description": "Middleware for cross-run learning persistence via brick collective memory.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
