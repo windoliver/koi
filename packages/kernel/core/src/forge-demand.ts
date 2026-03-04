@@ -6,6 +6,7 @@
  * environmental pressure demands new tool creation.
  */
 
+import type { BrickId } from "./brick-snapshot.js";
 import type { BrickKind } from "./forge-types.js";
 
 // ---------------------------------------------------------------------------
@@ -14,6 +15,7 @@ import type { BrickKind } from "./forge-types.js";
 
 /** Discriminated union of demand trigger kinds. */
 export type ForgeTrigger =
+  // Tool-level triggers
   | { readonly kind: "repeated_failure"; readonly toolName: string; readonly count: number }
   | { readonly kind: "no_matching_tool"; readonly query: string; readonly attempts: number }
   | { readonly kind: "capability_gap"; readonly requiredCapability: string }
@@ -21,6 +23,20 @@ export type ForgeTrigger =
       readonly kind: "performance_degradation";
       readonly toolName: string;
       readonly metric: string;
+    }
+  // Agent-level triggers
+  | { readonly kind: "agent_capability_gap"; readonly agentType: string }
+  | {
+      readonly kind: "agent_repeated_failure";
+      readonly agentType: string;
+      readonly brickId: BrickId;
+      readonly errorRate: number;
+    }
+  | {
+      readonly kind: "agent_latency_degradation";
+      readonly agentType: string;
+      readonly brickId: BrickId;
+      readonly p95Ms: number;
     };
 
 // ---------------------------------------------------------------------------

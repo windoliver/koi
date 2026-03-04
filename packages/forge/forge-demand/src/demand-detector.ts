@@ -60,6 +60,12 @@ function triggerKey(trigger: ForgeTrigger): string {
       return `cg:${trigger.requiredCapability}`;
     case "performance_degradation":
       return `pd:${trigger.toolName}`;
+    case "agent_capability_gap":
+      return `acg:${trigger.agentType}`;
+    case "agent_repeated_failure":
+      return `arf:${trigger.agentType}:${trigger.brickId}`;
+    case "agent_latency_degradation":
+      return `ald:${trigger.agentType}:${trigger.brickId}`;
   }
 }
 

@@ -62,12 +62,22 @@ describeE2E("Change 3: Copilot routing through full L1 runtime", () => {
         resolve(agentType) {
           if (agentType === "assistant") {
             return {
-              name: "assistant-copilot",
-              description: "A live copilot",
-              manifest: COPILOT_MANIFEST,
+              ok: true,
+              value: {
+                name: "assistant-copilot",
+                description: "A live copilot",
+                manifest: COPILOT_MANIFEST,
+              },
             };
           }
-          return undefined;
+          return {
+            ok: false,
+            error: {
+              code: "NOT_FOUND",
+              message: `Unknown agent type '${agentType}'`,
+              retryable: false,
+            },
+          };
         },
         list() {
           return [
@@ -147,12 +157,22 @@ describeE2E("Change 3: Copilot routing through full L1 runtime", () => {
         resolve(agentType) {
           if (agentType === "worker") {
             return {
-              name: "fallback-worker",
-              description: "A worker agent",
-              manifest: WORKER_MANIFEST,
+              ok: true,
+              value: {
+                name: "fallback-worker",
+                description: "A worker agent",
+                manifest: WORKER_MANIFEST,
+              },
             };
           }
-          return undefined;
+          return {
+            ok: false,
+            error: {
+              code: "NOT_FOUND",
+              message: `Unknown agent type '${agentType}'`,
+              retryable: false,
+            },
+          };
         },
         list() {
           return [
@@ -228,12 +248,22 @@ describeE2E("Change 3: Copilot routing through full L1 runtime", () => {
         resolve(agentType) {
           if (agentType === "worker") {
             return {
-              name: "no-message-worker",
-              description: "Worker without message",
-              manifest: WORKER_MANIFEST,
+              ok: true,
+              value: {
+                name: "no-message-worker",
+                description: "Worker without message",
+                manifest: WORKER_MANIFEST,
+              },
             };
           }
-          return undefined;
+          return {
+            ok: false,
+            error: {
+              code: "NOT_FOUND",
+              message: `Unknown agent type '${agentType}'`,
+              retryable: false,
+            },
+          };
         },
         list() {
           return [

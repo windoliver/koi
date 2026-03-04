@@ -114,10 +114,17 @@ interface AutonomousAgentParts {
   readonly harness: LongRunningHarness;         // Multi-session lifecycle manager
   readonly scheduler: HarnessScheduler;         // Auto-resume polling scheduler
   readonly compactorMiddleware?: KoiMiddleware;  // Optional context compaction
+  readonly threadStore?: ThreadStore;            // Enables checkpoint + inbox middleware
+  readonly checkpointPolicy?: CheckpointPolicy; // Override checkpoint frequency
+  readonly inboxPolicy?: InboxPolicy;           // Override inbox queue caps
+  readonly handoffBridge?: HarnessHandoffBridgeConfig; // Harness-to-handoff bridge
+  readonly agentResolver?: AgentResolver;       // Explicit resolver (skips auto-create)
+  readonly forgeStore?: ForgeStore;             // Auto-creates CatalogAgentResolver
+  readonly healthRecorder?: SpawnHealthRecorder; // Spawn outcome tracking
 }
 ```
 
-There is no separate config type. Callers construct each part with their own configuration, then pass them in.
+Pass `forgeStore` to auto-enable forge-backed agent discovery. Pass `agentResolver` directly to use a custom resolver instead.
 
 ---
 
@@ -245,6 +252,9 @@ snapshotStore.close();
 | Function | Returns | Description |
 |----------|---------|-------------|
 | `createAutonomousAgent(parts)` | `AutonomousAgent` | Composes parts into coordinated agent |
+| `createAgentFromBrick(brick, config)` | `Promise<Result<AgentInstantiateResult, KoiError>>` | Parse brick manifest + create adapter |
+| `createSpawnFitnessWrapper(spawn, config)` | Wrapped spawn fn | Records spawn outcomes per brickId |
+| `embedBrickId(manifest, brickId)` | `AgentManifest` | Immutably embeds brickId in manifest metadata |
 
 ### Agent Properties and Methods
 
@@ -252,15 +262,22 @@ snapshotStore.close();
 |----------------|------|-------------|
 | `harness` | `LongRunningHarness` | Direct reference to the harness |
 | `scheduler` | `HarnessScheduler` | Direct reference to the scheduler |
-| `middleware()` | `() → readonly KoiMiddleware[]` | Cached array: harness MW + optional compactor |
+| `middleware()` | `() → readonly KoiMiddleware[]` | Cached array: harness + checkpoint + inbox + compactor |
+| `providers()` | `() → readonly ComponentProvider[]` | Plan autonomous + inbox providers |
 | `dispose()` | `() → Promise<void>` | Idempotent: stop scheduler, then dispose harness |
+| `agentResolver?` | `AgentResolver` | Auto-created from forgeStore if provided |
+| `handoffBridge?` | `HarnessHandoffBridge` | Optional harness-to-handoff bridge |
 
 ### Types
 
 | Type | Description |
 |------|-------------|
-| `AutonomousAgentParts` | `{ harness, scheduler, compactorMiddleware? }` — factory input |
-| `AutonomousAgent` | `{ harness, scheduler, middleware, dispose }` — composed output |
+| `AutonomousAgentParts` | Factory input — harness, scheduler, forgeStore, etc. |
+| `AutonomousAgent` | Composed output — harness, scheduler, middleware, providers, dispose |
+| `SpawnHealthRecorder` | Interface for recording spawn success/failure |
+| `SpawnFitnessWrapperConfig` | Config for spawn outcome tracking |
+| `AgentInstantiateConfig` | Config for creating runtime from brick |
+| `AgentInstantiateResult` | Parsed manifest + adapter + brickId |
 
 ### Re-exported from Dependencies
 
@@ -269,6 +286,8 @@ snapshotStore.close();
 | `LongRunningHarness` | `@koi/long-running` | Multi-session lifecycle interface |
 | `HarnessScheduler` | `@koi/harness-scheduler` | Auto-resume scheduler interface |
 | `KoiMiddleware` | `@koi/core` | Middleware hook interface |
+| `AgentResolver` | `@koi/core` | Dynamic agent discovery interface |
+| `TaskableAgent` | `@koi/core` | Resolved agent with manifest + brickId |
 
 ---
 
@@ -281,7 +300,11 @@ snapshotStore.close();
 | Idempotent dispose | Safe to call from multiple cleanup paths (error handlers, shutdown hooks) |
 | Cached middleware array | Same reference every call — avoids re-creating harness middleware |
 | Optional compactor (not required) | Not all agents need context compaction; keep the minimal path simple |
-| No new logic (pure composition) | L3 meta-packages must not add behavior — only wire existing parts |
+| Auto-create resolver from forgeStore | Zero-config forge bridge — just pass `forgeStore` |
+| TTL cache for brick search (5s default) | Avoid hammering forge on every resolve call |
+| Re-select on every resolve (no selection cache) | Fresh fitness exploration each time |
+| Manifest cache by brickId (permanent) | Manifests are immutable per brick version |
+| Spawn fitness is opt-in (manual wrap) | Factory doesn't own spawn fn — caller wraps it |
 
 ---
 
@@ -306,25 +329,135 @@ If `dispose()` is called again, it returns immediately (idempotent guard).
 
 ---
 
+## Forge → Delegation Bridge
+
+When `forgeStore` is passed to `createAutonomousAgent`, the factory auto-creates
+a `CatalogAgentResolver` that bridges the forge (agent bricks) with delegation
+tools (`task-spawn`, `parallel-minions`). No static agent maps needed.
+
+### What It Enables
+
+**Without forge** — hardcode every agent type in a static map:
+
+```typescript
+const agents = new Map([
+  ["researcher", { name: "researcher", manifest: researcherManifest, ... }],
+  ["coder", { name: "coder", manifest: coderManifest, ... }],
+]);
+```
+
+**With forge** — agents discovered, selected by fitness, and tracked automatically:
+
+```typescript
+const agent = createAutonomousAgent({ harness, scheduler, forgeStore });
+
+// agent.agentResolver is auto-created — pass to delegation tools
+const koi = await createKoi({
+  manifest, adapter,
+  middleware: agent.middleware(),
+  providers: [
+    ...agent.providers(),
+    createTaskSpawnProvider({
+      agentResolver: agent.agentResolver,
+      spawn: mySpawnFn,
+    }),
+    createParallelMinionsProvider({
+      agentResolver: agent.agentResolver,
+      spawn: mySpawnFn,
+    }),
+  ],
+});
+```
+
+### How It Works
+
+```
+  createAutonomousAgent({ forgeStore })
+    │
+    ├── Auto-creates CatalogAgentResolver
+    │     │
+    │     ├── resolve("researcher")
+    │     │     1. ForgeStore.search({ kind:"agent", tags:["researcher"] })
+    │     │     2. Select best brick by fitness (weighted random)
+    │     │     3. Parse manifest YAML (cached by brickId)
+    │     │     4. Return TaskableAgent { name, manifest, brickId }
+    │     │
+    │     └── list()
+    │           Returns all active agent brick summaries
+    │
+    └── Exposes agent.agentResolver
+          │
+          ├── task-spawn tool calls resolver.resolve(type) on each delegation
+          └── parallel-minions tool calls resolver.resolve(type) for each task
+```
+
+### Spawn Fitness Tracking (Optional)
+
+Wrap your spawn function to record outcomes per brick. Higher-performing bricks
+get selected more often over time:
+
+```typescript
+import { createSpawnFitnessWrapper, embedBrickId } from "@koi/autonomous";
+
+const wrappedSpawn = createSpawnFitnessWrapper(rawSpawn, { healthRecorder });
+// Success → recordSuccess(brickId, latencyMs)
+// Failure → recordFailure(brickId, latencyMs, error)
+```
+
+### Agent Demand Detection
+
+When agent resolution fails (`NOT_FOUND`), the forge-demand system detects the
+gap and can signal the forge to create new agent bricks:
+
+| Trigger | Fires When |
+|---------|-----------|
+| `agent_capability_gap` | No agent bricks match requested type |
+| `agent_repeated_failure` | Brick error rate exceeds threshold |
+| `agent_latency_degradation` | Brick p95 latency exceeds threshold |
+
+### Agent Instantiation
+
+`createAgentFromBrick()` converts a raw `BrickArtifact` into a runtime-ready
+config (parsed manifest + adapter):
+
+```typescript
+import { createAgentFromBrick } from "@koi/autonomous";
+
+const result = await createAgentFromBrick(brick, {
+  adapterFactory: async (manifest) => createPiAdapter({ model: manifest.model.name }),
+});
+// result.value = { manifest, adapter, brickId, middleware, providers }
+```
+
+---
+
 ## Layer Compliance
 
 ```
 L0  @koi/core ──────────────────────────────────────────────────┐
-    KoiMiddleware                                                  │
+    KoiMiddleware, AgentResolver, TaskableAgent, ForgeTrigger      │
+                                                                   │
+L0u @koi/manifest, @koi/validation, @koi/variant-selection ─────│
+    loadManifestFromString, computeBrickFitness, selectByFitness   │
                                                                    │
 L2  @koi/long-running ──────────────────────────────────────────│
-    LongRunningHarness                                            │
+    LongRunningHarness, checkpoint/inbox middleware                 │
+                                                                   │
+L2  @koi/catalog ───────────────────────────────────────────────│
+    CatalogAgentResolver (forge-backed discovery + selection)      │
                                                                    │
 L2  @koi/harness-scheduler ─────────────────────────────────────│
     HarnessScheduler                                              │
                                                                    ▼
 L3  @koi/autonomous <────────────────────────────────────────────┘
-    imports from L0 + L2 (composition only)
+    imports from L0 + L0u + L2 (composition only)
     x never imports @koi/engine (L1)
-    x adds zero new logic — pure wiring
     ~ package.json: {
         "@koi/core": "workspace:*",
+        "@koi/catalog": "workspace:*",
         "@koi/long-running": "workspace:*",
-        "@koi/harness-scheduler": "workspace:*"
+        "@koi/harness-scheduler": "workspace:*",
+        "@koi/handoff": "workspace:*",
+        "@koi/manifest": "workspace:*"
       }
 ```

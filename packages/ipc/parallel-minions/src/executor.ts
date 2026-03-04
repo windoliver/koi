@@ -27,12 +27,17 @@ import {
 
 /**
  * Resolves the agent for a single task, returning a ResolvedTask or an error string.
+ *
+ * Resolution order:
+ * 1. Try agentResolver.resolve() (if configured)
+ * 2. Fall back to static agents map (if configured)
+ * 3. Return error with available types
  */
-function resolveTask(
+async function resolveTask(
   task: MinionTask,
   index: number,
   config: ParallelMinionsConfig,
-): ResolvedTask | string {
+): Promise<ResolvedTask | string> {
   const agentType =
     typeof task.agent_type === "string" && task.agent_type.length > 0
       ? task.agent_type
@@ -42,19 +47,56 @@ function resolveTask(
     return `Task ${index}: 'agent_type' is required when no default agent is configured`;
   }
 
-  const agent = config.agents.get(agentType);
-  if (agent === undefined) {
-    const available = [...config.agents.keys()].join(", ");
-    return `Task ${index}: unknown agent type '${agentType}'. Available: ${available}`;
+  // Try agentResolver first
+  if (config.agentResolver !== undefined) {
+    const result = await Promise.resolve(config.agentResolver.resolve(agentType));
+    if (result.ok) {
+      return {
+        index,
+        description: task.description,
+        agentName: result.value.name,
+        agentType,
+        manifest: result.value.manifest,
+      };
+    }
+    // Resolver returned NOT_FOUND — fall through to static map
   }
 
-  return {
-    index,
-    description: task.description,
-    agentName: agent.name,
-    agentType,
-    manifest: agent.manifest,
-  };
+  // Fall back to static agents map
+  if (config.agents !== undefined) {
+    const agent = config.agents.get(agentType);
+    if (agent !== undefined) {
+      return {
+        index,
+        description: task.description,
+        agentName: agent.name,
+        agentType,
+        manifest: agent.manifest,
+      };
+    }
+  }
+
+  // Both resolver and static map failed — build available types list
+  const available = await computeAvailableTypes(config);
+  return `Task ${index}: unknown agent type '${agentType}'. Available: ${available}`;
+}
+
+/** Collects available agent type keys from resolver list() or static agents map. */
+async function computeAvailableTypes(config: ParallelMinionsConfig): Promise<string> {
+  if (config.agentResolver !== undefined) {
+    const summaries = await Promise.resolve(config.agentResolver.list());
+    const resolverKeys = summaries.map((s) => s.key);
+    // Merge with static map keys if both are present
+    if (config.agents !== undefined) {
+      const allKeys = new Set([...resolverKeys, ...config.agents.keys()]);
+      return [...allKeys].join(", ");
+    }
+    return resolverKeys.join(", ");
+  }
+  if (config.agents !== undefined) {
+    return [...config.agents.keys()].join(", ");
+  }
+  return "(none)";
 }
 
 /**
@@ -79,31 +121,32 @@ function selectStrategy(config: ParallelMinionsConfig) {
 /**
  * Executes a batch of tasks in parallel with concurrency control.
  *
- * 1. Resolves agent types for each task
+ * 1. Resolves agent types for each task (async, supports agentResolver + static map fallback)
  * 2. Creates batch-level AbortController with timeout
  * 3. Creates semaphore for concurrency control
  * 4. Selects and invokes the configured strategy
  * 5. Returns BatchResult
  */
-export function executeBatch(
+export async function executeBatch(
   config: ParallelMinionsConfig,
   tasks: readonly MinionTask[],
 ): Promise<BatchResult> {
   const strategyKind = config.strategy ?? DEFAULT_STRATEGY;
 
   if (tasks.length === 0) {
-    return Promise.resolve({
+    return {
       outcomes: [],
       summary: { total: 0, succeeded: 0, failed: 0, strategy: strategyKind },
-    });
+    };
   }
 
-  // Resolve all tasks upfront — fail early on invalid agent references
+  // Resolve all tasks in parallel — fail early on invalid agent references
+  const resolutions = await Promise.all(tasks.map((task, i) => resolveTask(task, i, config)));
+
   const resolved: ResolvedTask[] = [];
   const errorsByIndex = new Map<number, string>();
 
-  for (const [i, task] of tasks.entries()) {
-    const result = resolveTask(task, i, config);
+  for (const [i, result] of resolutions.entries()) {
     if (typeof result === "string") {
       errorsByIndex.set(i, result);
     } else {
@@ -112,7 +155,7 @@ export function executeBatch(
   }
 
   if (errorsByIndex.size > 0) {
-    return Promise.resolve({
+    return {
       outcomes: tasks.map((_, i) => ({
         ok: false as const,
         taskIndex: i,
@@ -124,7 +167,7 @@ export function executeBatch(
         failed: tasks.length,
         strategy: strategyKind,
       },
-    });
+    };
   }
 
   const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;

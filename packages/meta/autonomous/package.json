@@ -18,9 +18,11 @@
     "test:api": "bun test src/__tests__/api-surface.test.ts"
   },
   "dependencies": {
+    "@koi/catalog": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/long-running": "workspace:*",
-    "@koi/harness-scheduler": "workspace:*"
+    "@koi/harness-scheduler": "workspace:*",
+    "@koi/manifest": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*",

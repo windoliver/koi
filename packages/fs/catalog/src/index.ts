@@ -25,6 +25,9 @@ export {
   createMcpAdapter,
   createSkillAdapter,
 } from "./adapters.js";
+// Agent resolver
+export type { CatalogAgentResolverConfig } from "./agent-resolver.js";
+export { createCatalogAgentResolver } from "./agent-resolver.js";
 // Bundled catalog data
 export { BUNDLED_ENTRIES } from "./bundled-entries.js";
 export type { TtlCache } from "./cache.js";

@@ -42,19 +42,32 @@ describeE2E("Change 2: Dynamic AgentResolver through full L1 runtime", () => {
           await Promise.resolve();
           if (agentType === "researcher") {
             return {
-              name: "research-worker",
-              description: "Researches topics thoroughly",
-              manifest: WORKER_MANIFEST,
+              ok: true,
+              value: {
+                name: "research-worker",
+                description: "Researches topics thoroughly",
+                manifest: WORKER_MANIFEST,
+              },
             };
           }
           if (agentType === "summarizer") {
             return {
-              name: "summary-worker",
-              description: "Summarizes text concisely",
-              manifest: WORKER_MANIFEST,
+              ok: true,
+              value: {
+                name: "summary-worker",
+                description: "Summarizes text concisely",
+                manifest: WORKER_MANIFEST,
+              },
             };
           }
-          return undefined;
+          return {
+            ok: false,
+            error: {
+              code: "NOT_FOUND",
+              message: `Unknown agent type '${agentType}'`,
+              retryable: false,
+            },
+          };
         },
         async list() {
           return [

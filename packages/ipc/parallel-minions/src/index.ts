@@ -8,6 +8,8 @@
  * Depends on @koi/core only.
  */
 
+// Re-export L0 types (backward compat — consumers can also import from @koi/core directly)
+export type { AgentResolver, TaskableAgent } from "@koi/core/agent-resolver";
 export { validateParallelMinionsConfig } from "./config.js";
 export { executeBatch } from "./executor.js";
 export { createLaneSemaphore } from "./lane-semaphore.js";

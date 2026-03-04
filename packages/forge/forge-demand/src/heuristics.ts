@@ -5,7 +5,14 @@
  * Follows the computeHealthAction pattern from tool-health.ts.
  */
 
-import type { ForgeTrigger, ToolHealthSnapshot } from "@koi/core";
+import type {
+  BrickId,
+  ForgeTrigger,
+  KoiError,
+  Result,
+  TaskableAgent,
+  ToolHealthSnapshot,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Default capability gap regex patterns
@@ -105,5 +112,81 @@ export function detectLatencyDegradation(
     kind: "performance_degradation",
     toolName: toolId,
     metric: `avgLatencyMs=${String(Math.round(healthSnapshot.metrics.avgLatencyMs))}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Agent-level heuristics
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect agent capability gap when resolver returns NOT_FOUND.
+ *
+ * @param agentType - The requested agent type that was not found.
+ * @param resolveResult - The result from AgentResolver.resolve().
+ * @returns ForgeTrigger if resolve returned NOT_FOUND, undefined otherwise.
+ */
+export function detectAgentCapabilityGap(
+  agentType: string,
+  resolveResult: Result<TaskableAgent, KoiError>,
+): ForgeTrigger | undefined {
+  if (resolveResult.ok) return undefined;
+  if (resolveResult.error.code !== "NOT_FOUND") return undefined;
+  return { kind: "agent_capability_gap", agentType };
+}
+
+/**
+ * Detect repeated failure for an agent brick when error rate exceeds threshold.
+ *
+ * @param agentType - The agent type being monitored.
+ * @param brickId - The specific brick being checked.
+ * @param healthSnapshot - Current health snapshot for the brick.
+ * @param threshold - Error rate threshold (0-1) to trigger demand.
+ * @param minSamples - Minimum usage count before checking (default: 5).
+ * @returns ForgeTrigger if error rate exceeds threshold, undefined otherwise.
+ */
+export function detectAgentRepeatedFailure(
+  agentType: string,
+  brickId: BrickId,
+  healthSnapshot: ToolHealthSnapshot | undefined,
+  threshold: number,
+  minSamples: number = 5,
+): ForgeTrigger | undefined {
+  if (healthSnapshot === undefined) return undefined;
+  if (healthSnapshot.metrics.usageCount < minSamples) return undefined;
+  if (healthSnapshot.metrics.errorRate < threshold) return undefined;
+
+  return {
+    kind: "agent_repeated_failure",
+    agentType,
+    brickId,
+    errorRate: healthSnapshot.metrics.errorRate,
+  };
+}
+
+/**
+ * Detect latency degradation for an agent brick when P95 exceeds threshold.
+ *
+ * @param agentType - The agent type being monitored.
+ * @param brickId - The specific brick being checked.
+ * @param healthSnapshot - Current health snapshot for the brick.
+ * @param p95ThresholdMs - Maximum acceptable average latency in ms.
+ * @returns ForgeTrigger if latency exceeds threshold, undefined otherwise.
+ */
+export function detectAgentLatencyDegradation(
+  agentType: string,
+  brickId: BrickId,
+  healthSnapshot: ToolHealthSnapshot | undefined,
+  p95ThresholdMs: number,
+): ForgeTrigger | undefined {
+  if (healthSnapshot === undefined) return undefined;
+  if (healthSnapshot.metrics.usageCount === 0) return undefined;
+  if (healthSnapshot.metrics.avgLatencyMs <= p95ThresholdMs) return undefined;
+
+  return {
+    kind: "agent_latency_degradation",
+    agentType,
+    brickId,
+    p95Ms: healthSnapshot.metrics.avgLatencyMs,
   };
 }

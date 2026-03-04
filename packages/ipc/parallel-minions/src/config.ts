@@ -41,9 +41,9 @@ function isFinitePositiveInteger(value: unknown): value is number {
  * Validates a ParallelMinionsConfig from an unknown input.
  *
  * Checks:
- * - `agents` is a Map with at least one entry (each with name, description, manifest)
+ * - Either `agents` (Map with >=1 entry) or `agentResolver` (with resolve + list) is provided
  * - `spawn` is a function
- * - `defaultAgent` (if provided) references a key in `agents`
+ * - `defaultAgent` (if provided) is a string
  * - `maxConcurrency` (if provided) is a finite positive integer
  * - `maxDurationMs` (if provided) is a finite positive integer
  * - `maxOutputPerTask` (if provided) is a finite positive integer
@@ -64,31 +64,44 @@ export function validateParallelMinionsConfig(
     );
   }
 
-  if (!(config.agents instanceof Map)) {
-    return validationError("Config requires 'agents' as a Map<string, MinionableAgent>");
+  const hasAgents = config.agents instanceof Map;
+  const hasResolver =
+    isRecord(config.agentResolver) &&
+    typeof config.agentResolver.resolve === "function" &&
+    typeof config.agentResolver.list === "function";
+
+  if (!hasAgents && !hasResolver) {
+    return validationError(
+      "Config requires either 'agents' (Map<string, TaskableAgent>) or 'agentResolver' (AgentResolver with resolve + list)",
+    );
   }
 
-  if (config.agents.size === 0) {
-    return validationError("Config requires at least one agent in the 'agents' map");
-  }
-
-  for (const [key, value] of config.agents as Map<unknown, unknown>) {
-    if (typeof key !== "string") {
-      return validationError(`Agent map key must be a string, got ${typeof key}`);
-    }
-    if (!isRecord(value)) {
+  if (hasAgents) {
+    const agents = config.agents as Map<unknown, unknown>;
+    if (agents.size === 0 && !hasResolver) {
       return validationError(
-        `Agent '${key}' must be a non-null object with name, description, and manifest`,
+        "Config requires at least one agent in 'agents' map or an 'agentResolver'",
       );
     }
-    if (typeof value.name !== "string" || value.name.length === 0) {
-      return validationError(`Agent '${key}' requires a non-empty 'name' string`);
-    }
-    if (typeof value.description !== "string" || value.description.length === 0) {
-      return validationError(`Agent '${key}' requires a non-empty 'description' string`);
-    }
-    if (!isRecord(value.manifest)) {
-      return validationError(`Agent '${key}' requires a 'manifest' object (AgentManifest)`);
+
+    for (const [key, value] of agents) {
+      if (typeof key !== "string") {
+        return validationError(`Agent map key must be a string, got ${typeof key}`);
+      }
+      if (!isRecord(value)) {
+        return validationError(
+          `Agent '${key}' must be a non-null object with name, description, and manifest`,
+        );
+      }
+      if (typeof value.name !== "string" || value.name.length === 0) {
+        return validationError(`Agent '${key}' requires a non-empty 'name' string`);
+      }
+      if (typeof value.description !== "string" || value.description.length === 0) {
+        return validationError(`Agent '${key}' requires a non-empty 'description' string`);
+      }
+      if (!isRecord(value.manifest)) {
+        return validationError(`Agent '${key}' requires a 'manifest' object (AgentManifest)`);
+      }
     }
   }
 
@@ -96,7 +109,12 @@ export function validateParallelMinionsConfig(
     if (typeof config.defaultAgent !== "string") {
       return validationError("'defaultAgent' must be a string");
     }
-    if (!(config.agents as Map<string, unknown>).has(config.defaultAgent)) {
+    // When using agentResolver, skip static map check since resolver may handle it dynamically
+    if (
+      hasAgents &&
+      !hasResolver &&
+      !(config.agents as Map<string, unknown>).has(config.defaultAgent)
+    ) {
       return validationError(
         `'defaultAgent' value '${config.defaultAgent}' must reference a key in 'agents'`,
       );
@@ -135,7 +153,7 @@ export function validateParallelMinionsConfig(
       if (typeof key !== "string") {
         return validationError(`laneConcurrency key must be a string, got ${typeof key}`);
       }
-      if (!(config.agents as Map<string, unknown>).has(key)) {
+      if (hasAgents && !(config.agents as Map<string, unknown>).has(key)) {
         return validationError(`laneConcurrency key '${key}' must reference a key in 'agents'`);
       }
       if (!isFinitePositiveInteger(value)) {

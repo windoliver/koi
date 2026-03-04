@@ -5,6 +5,13 @@
  * Only runtime code: branded type constructors for SubsystemToken.
  */
 
+// agent resolver — dynamic agent discovery for delegation tools
+export type {
+  AgentResolver,
+  LiveAgentHandle,
+  TaskableAgent,
+  TaskableAgentSummary,
+} from "./agent-resolver.js";
 // agent snapshot — per-agent state capture
 export type { AgentSnapshot, AgentSnapshotStore } from "./agent-snapshot.js";
 // agent state events — event-sourced registry domain events + fold function
