@@ -18,6 +18,7 @@ const VALID_PROCESS_STATES: ReadonlySet<string> = new Set<ProcessState>([
   "running",
   "waiting",
   "suspended",
+  "idle",
   "terminated",
 ]);
 

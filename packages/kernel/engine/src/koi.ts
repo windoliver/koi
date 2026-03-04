@@ -77,6 +77,13 @@ function generatePid(
   };
 }
 
+/** Call .unref() on a timer if available (Bun Timer). Prevents idle timer from keeping process alive. */
+function unrefTimer(timer: ReturnType<typeof setInterval>): void {
+  if (timer !== null && typeof timer === "object" && "unref" in timer) {
+    (timer as { readonly unref: () => void }).unref();
+  }
+}
+
 /** Sort middleware by priority (ascending). Guards get low numbers, L2 middleware gets higher. */
 function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddleware[] {
   return [...middleware].sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
@@ -451,139 +458,264 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         effectiveInput = { ...input, callHandlers, signal: runSignal };
       }
 
-      adapterIterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
+      // --- Reuse loop: wraps the main event loop for idle-wake cycling ---
+      // When manifest.reuse is true, the agent transitions to idle after task
+      // completion and waits for inbox messages before restarting.
+      // let justified: mutable flag for idle-wake flow control
+      let enterIdle = false;
 
-      // --- Main event loop ---
       while (true) {
-        // Turn-boundary suspension: if the agent is suspended, park here
-        // until the registry signals a resume (reactive Promise, zero polling).
-        if (options.registry !== undefined) {
-          const registryEntry = await options.registry.lookup(pid.id);
-          if (registryEntry?.status.phase === "suspended") {
-            await new Promise<void>((resolve) => {
-              // let justified: mutable ref to unsubscribe the suspension watcher
-              let unsub: (() => void) | undefined;
-              unsub = options.registry?.watch((watchEvent) => {
-                if (
-                  watchEvent.kind === "transitioned" &&
-                  watchEvent.agentId === pid.id &&
-                  watchEvent.to === "running"
-                ) {
-                  unsub?.();
-                  unsub = undefined;
-                  resolve();
-                }
-              });
-            });
-          }
-        }
+        adapterIterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
+        enterIdle = false;
 
-        // Inbox drain: process queued messages at turn boundary.
-        // Steer items → adapter.inject() if available; fallback to followup.
-        // Collect/followup items accumulate for next turn context.
-        const inboxComponent: InboxComponent | undefined = agent.component(INBOX);
-        if (inboxComponent !== undefined && inboxComponent.depth() > 0) {
-          const inboxItems: readonly InboxItem[] = inboxComponent.drain();
-          for (const item of inboxItems) {
-            if (item.mode === "steer" && adapter.inject !== undefined) {
-              await adapter.inject({
-                senderId: item.from,
-                content: [{ kind: "text", text: item.content }],
-                timestamp: item.createdAt,
+        // --- Main event loop ---
+        turnLoop: while (true) {
+          // Turn-boundary suspension: if the agent is suspended, park here
+          // until the registry signals a resume (reactive Promise, zero polling).
+          if (options.registry !== undefined) {
+            const registryEntry = await options.registry.lookup(pid.id);
+            if (registryEntry?.status.phase === "suspended") {
+              await new Promise<void>((resolve) => {
+                // let justified: mutable ref to unsubscribe the suspension watcher
+                let unsub: (() => void) | undefined;
+                unsub = options.registry?.watch((watchEvent) => {
+                  if (
+                    watchEvent.kind === "transitioned" &&
+                    watchEvent.agentId === pid.id &&
+                    watchEvent.to === "running"
+                  ) {
+                    unsub?.();
+                    unsub = undefined;
+                    resolve();
+                  }
+                });
               });
             }
-            // collect/followup items: no immediate action needed here —
-            // middleware (e.g., inbox-middleware in L2) will route them
-            // into the next turn's context during onBeforeTurn hooks.
           }
-        }
 
-        // Deferred forge refresh: runs AFTER consumer processed turn_end,
-        // so tools/middleware injected between turns take effect next turn
-        if (pendingForgeRefresh) {
-          pendingForgeRefresh = false;
-          // Skip refresh if watch is active and nothing changed since last notification
-          const shouldRefresh = forge?.watch === undefined || forgeStateDirty;
-          if (shouldRefresh && forge !== undefined && cachedTerminals !== undefined) {
-            forgeStateDirty = false;
-            await refreshForgeState(cachedTerminals);
-          }
-        }
-
-        // Dynamic middleware refresh (e.g., debug-attach hot-wiring)
-        if (options.dynamicMiddleware !== undefined && cachedTerminals !== undefined) {
-          const dynamicMw = options.dynamicMiddleware();
-          if (dynamicMw !== previousDynamicMw) {
-            previousDynamicMw = dynamicMw;
-            const allMw = sortByPriority([
-              ...allMiddleware,
-              ...(previousForgedMw ?? []),
-              ...(dynamicMw ?? []),
-            ]);
-            activeToolChain = composeToolChain(allMw, cachedTerminals.toolHandler);
-            activeModelChain = composeModelChain(allMw, cachedTerminals.modelHandler);
-            if (cachedTerminals.modelStreamHandler !== undefined) {
-              activeStreamChain = composeModelStreamChain(
-                allMw,
-                cachedTerminals.modelStreamHandler,
-              );
+          // Inbox drain: process queued messages at turn boundary.
+          // Steer items → adapter.inject() if available; fallback to followup.
+          // Collect/followup items accumulate for next turn context.
+          const inboxComponent: InboxComponent | undefined = agent.component(INBOX);
+          if (inboxComponent !== undefined && inboxComponent.depth() > 0) {
+            const inboxItems: readonly InboxItem[] = inboxComponent.drain();
+            for (const item of inboxItems) {
+              if (item.mode === "steer" && adapter.inject !== undefined) {
+                await adapter.inject({
+                  senderId: item.from,
+                  content: [{ kind: "text", text: item.content }],
+                  timestamp: item.createdAt,
+                });
+              }
+              // collect/followup items: no immediate action needed here —
+              // middleware (e.g., inbox-middleware in L2) will route them
+              // into the next turn's context during onBeforeTurn hooks.
             }
           }
-        }
 
-        // Emit turn_start event with onBeforeTurn hooks
-        const turnCtx = createTurnContext({
-          session: sessionCtx,
-          turnIndex: currentTurnIndex,
-          messages: input.kind === "messages" ? input.messages : [],
-          signal: runSignal,
-          approvalHandler: options.approvalHandler,
-          sendStatus: options.sendStatus,
-        });
-        await runTurnHooks(allMiddleware, "onBeforeTurn", turnCtx);
-        yield { kind: "turn_start", turnIndex: currentTurnIndex } as EngineEvent;
-
-        // Process adapter events for this turn
-        while (true) {
-          const result = await adapterIterator.next();
-
-          if (result.done) {
-            // Adapter stream exhausted
-            agent.transition({ kind: "complete", stopReason: "completed" });
-            return;
-          }
-
-          const event = result.value;
-
-          if (event.kind === "turn_end") {
-            currentTurnIndex = event.turnIndex + 1;
-            pendingForgeRefresh = true;
-            const turnEndCtx = createTurnContext({
-              session: sessionCtx,
-              turnIndex: event.turnIndex,
-              messages: [],
-              signal: runSignal,
-              approvalHandler: options.approvalHandler,
-              sendStatus: options.sendStatus,
-            });
-            await runTurnHooks(allMiddleware, "onAfterTurn", turnEndCtx);
-            yield event;
-            break; // → next turn in outer loop
-          }
-
-          if (event.kind === "done") {
+          // Deferred forge refresh: runs AFTER consumer processed turn_end,
+          // so tools/middleware injected between turns take effect next turn
+          if (pendingForgeRefresh) {
             pendingForgeRefresh = false;
-            agent.transition({
-              kind: "complete",
-              stopReason: event.output.stopReason,
-              metrics: event.output.metrics,
-            });
+            // Skip refresh if watch is active and nothing changed since last notification
+            const shouldRefresh = forge?.watch === undefined || forgeStateDirty;
+            if (shouldRefresh && forge !== undefined && cachedTerminals !== undefined) {
+              forgeStateDirty = false;
+              await refreshForgeState(cachedTerminals);
+            }
+          }
+
+          // Dynamic middleware refresh (e.g., debug-attach hot-wiring)
+          if (options.dynamicMiddleware !== undefined && cachedTerminals !== undefined) {
+            const dynamicMw = options.dynamicMiddleware();
+            if (dynamicMw !== previousDynamicMw) {
+              previousDynamicMw = dynamicMw;
+              const allMw = sortByPriority([
+                ...allMiddleware,
+                ...(previousForgedMw ?? []),
+                ...(dynamicMw ?? []),
+              ]);
+              activeToolChain = composeToolChain(allMw, cachedTerminals.toolHandler);
+              activeModelChain = composeModelChain(allMw, cachedTerminals.modelHandler);
+              if (cachedTerminals.modelStreamHandler !== undefined) {
+                activeStreamChain = composeModelStreamChain(
+                  allMw,
+                  cachedTerminals.modelStreamHandler,
+                );
+              }
+            }
+          }
+
+          // Emit turn_start event with onBeforeTurn hooks
+          const turnCtx = createTurnContext({
+            session: sessionCtx,
+            turnIndex: currentTurnIndex,
+            messages: input.kind === "messages" ? input.messages : [],
+            signal: runSignal,
+            approvalHandler: options.approvalHandler,
+            sendStatus: options.sendStatus,
+          });
+          await runTurnHooks(allMiddleware, "onBeforeTurn", turnCtx);
+          yield { kind: "turn_start", turnIndex: currentTurnIndex } as EngineEvent;
+
+          // Process adapter events for this turn
+          while (true) {
+            const result = await adapterIterator.next();
+
+            if (result.done) {
+              // Adapter stream exhausted — idle if reusable, else terminate
+              if (agent.manifest.reuse === true) {
+                enterIdle = true;
+                break turnLoop;
+              }
+              agent.transition({ kind: "complete", stopReason: "completed" });
+              return;
+            }
+
+            const event = result.value;
+
+            if (event.kind === "turn_end") {
+              currentTurnIndex = event.turnIndex + 1;
+              pendingForgeRefresh = true;
+              const turnEndCtx = createTurnContext({
+                session: sessionCtx,
+                turnIndex: event.turnIndex,
+                messages: [],
+                signal: runSignal,
+                approvalHandler: options.approvalHandler,
+                sendStatus: options.sendStatus,
+              });
+              await runTurnHooks(allMiddleware, "onAfterTurn", turnEndCtx);
+              yield event;
+              break; // → next turn in outer loop
+            }
+
+            if (event.kind === "done") {
+              // Idle on normal completion if reusable; errors/timeouts always terminate
+              if (agent.manifest.reuse === true && event.output.stopReason === "completed") {
+                enterIdle = true;
+                yield event;
+                break turnLoop;
+              }
+              pendingForgeRefresh = false;
+              agent.transition({
+                kind: "complete",
+                stopReason: event.output.stopReason,
+                metrics: event.output.metrics,
+              });
+              yield event;
+              return;
+            }
+
             yield event;
+          }
+        }
+
+        // --- Idle-wake: park until inbox has items, then restart ---
+        if (!enterIdle) break;
+
+        // Clean up exhausted adapter iterator before idling
+        if (adapterIterator?.return !== undefined) {
+          try {
+            await adapterIterator.return();
+          } catch (_cleanupError: unknown) {
+            // Adapter cleanup failure during idle transition is non-fatal
+          }
+          adapterIterator = undefined;
+        }
+
+        agent.transition({ kind: "idle" });
+
+        // Update registry so external observers see the idle state
+        if (options.registry !== undefined) {
+          const entry = await options.registry.lookup(pid.id);
+          if (entry !== undefined && entry.status.phase !== "idle") {
+            await options.registry.transition(pid.id, "idle", entry.status.generation, {
+              kind: "task_completed_idle",
+            });
+          }
+        }
+
+        // Wait for inbox messages, abort signal, or external registry wake
+        const idleInbox: InboxComponent | undefined = agent.component(INBOX);
+        await new Promise<void>((resolve) => {
+          // Fast path: inbox already has items (pushed during final turn)
+          if (idleInbox !== undefined && idleInbox.depth() > 0) {
+            resolve();
+            return;
+          }
+          // Fast path: already aborted
+          if (runSignal.aborted) {
+            resolve();
             return;
           }
 
-          yield event;
+          // let justified: mutable timer ref for idle polling
+          let timer: ReturnType<typeof setInterval> | undefined;
+          // let justified: mutable unsubscribe ref for registry watcher
+          let unsub: (() => void) | undefined;
+
+          const cleanup = (): void => {
+            if (timer !== undefined) {
+              clearInterval(timer);
+              timer = undefined;
+            }
+            if (unsub !== undefined) {
+              unsub();
+              unsub = undefined;
+            }
+            runSignal.removeEventListener("abort", onIdleAbort);
+          };
+
+          const onIdleAbort = (): void => {
+            cleanup();
+            resolve();
+          };
+
+          // Abort signal — resolve immediately so finally block can terminate
+          runSignal.addEventListener("abort", onIdleAbort, { once: true });
+
+          // Poll inbox every 1s — unref'd so it doesn't keep the process alive
+          timer = setInterval(() => {
+            if (idleInbox !== undefined && idleInbox.depth() > 0) {
+              cleanup();
+              resolve();
+            }
+          }, 1_000);
+          // Bun's setInterval returns a Timer with .unref() — prevent keeping process alive
+          unrefTimer(timer);
+
+          // Also watch for external wake via registry (e.g., inbox push + registry transition)
+          if (options.registry !== undefined) {
+            unsub = options.registry.watch((watchEvent) => {
+              if (
+                watchEvent.kind === "transitioned" &&
+                watchEvent.agentId === pid.id &&
+                watchEvent.to === "running"
+              ) {
+                cleanup();
+                resolve();
+              }
+            });
+          }
+        });
+
+        // If aborted while idle, exit the reuse loop — finally block handles cleanup
+        if (runSignal.aborted) break;
+
+        // Resume from idle
+        agent.transition({ kind: "resume" });
+
+        // Update registry back to running
+        if (options.registry !== undefined) {
+          const entry = await options.registry.lookup(pid.id);
+          if (entry !== undefined && entry.status.phase === "idle") {
+            await options.registry.transition(pid.id, "running", entry.status.generation, {
+              kind: "inbox_wake",
+            });
+          }
         }
+        // Continue reuseLoop → creates new adapter stream, drains inbox at turn boundary
       }
     } catch (error: unknown) {
       // Guard error → convert to a done event
@@ -625,8 +757,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         }
       }
 
-      // Transition agent if not already terminated (e.g., consumer break / return)
-      if (agent.state === "running") {
+      // Transition agent if not already terminated (e.g., consumer break / return / abort)
+      if (agent.state === "running" || agent.state === "idle") {
         agent.transition({ kind: "complete", stopReason: "interrupted" });
       }
 

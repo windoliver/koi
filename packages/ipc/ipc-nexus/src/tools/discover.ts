@@ -36,7 +36,7 @@ export function createDiscoverTool(
           phase: {
             type: "string",
             description:
-              "Filter by process state: created, running, waiting, suspended, or terminated. Defaults to running.",
+              "Filter by process state: created, running, waiting, suspended, idle, or terminated. Defaults to running.",
           },
         },
         required: [],
@@ -59,7 +59,7 @@ export function createDiscoverTool(
 
       if (rawPhase !== undefined && (typeof rawPhase !== "string" || !isProcessState(rawPhase))) {
         return {
-          error: `Invalid phase: ${String(rawPhase)}. Must be one of: created, running, waiting, suspended, terminated`,
+          error: `Invalid phase: ${String(rawPhase)}. Must be one of: created, running, waiting, suspended, idle, terminated`,
           code: "VALIDATION",
         };
       }

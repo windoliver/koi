@@ -165,7 +165,7 @@ export function toolCallId(id: string): ToolCallId {
 // Process identity
 // ---------------------------------------------------------------------------
 
-export type ProcessState = "created" | "running" | "waiting" | "suspended" | "terminated";
+export type ProcessState = "created" | "running" | "waiting" | "suspended" | "idle" | "terminated";
 
 export interface ProcessId {
   readonly id: AgentId;
@@ -504,6 +504,8 @@ export type ChildLifecycleEvent =
   | { readonly kind: "completed"; readonly childId: AgentId; readonly exitCode: number }
   | { readonly kind: "error"; readonly childId: AgentId; readonly cause?: unknown }
   | { readonly kind: "signaled"; readonly childId: AgentId; readonly signal: string }
+  | { readonly kind: "idled"; readonly childId: AgentId }
+  | { readonly kind: "woke"; readonly childId: AgentId }
   | { readonly kind: "terminated"; readonly childId: AgentId; readonly exitCode: number };
 
 /** Handle for monitoring and controlling a child agent's lifecycle. */

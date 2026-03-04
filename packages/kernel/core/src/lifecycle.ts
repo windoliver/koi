@@ -58,7 +58,11 @@ export type TransitionReason =
   /** Agent received a STOP signal → transitioning to "suspended". */
   | { readonly kind: "signal_stop" }
   /** Agent received a CONT signal → transitioning from "suspended" to "running". */
-  | { readonly kind: "signal_cont" };
+  | { readonly kind: "signal_cont" }
+  /** Task completed, agent staying alive in idle pool (running → idle). */
+  | { readonly kind: "task_completed_idle" }
+  /** New message received in idle agent's inbox (idle → running). */
+  | { readonly kind: "inbox_wake" };
 
 // ---------------------------------------------------------------------------
 // Valid state transitions (architecture-doc invariants)
@@ -71,17 +75,19 @@ export type TransitionReason =
  *
  * Transitions:
  *   created → running, terminated
- *   running → waiting, suspended, terminated
+ *   running → waiting, suspended, idle, terminated
  *   waiting → running, suspended, terminated
  *   suspended → running, terminated
+ *   idle → running, terminated
  *   terminated → (none)
  */
 export const VALID_TRANSITIONS: Readonly<Record<ProcessState, readonly ProcessState[]>> =
   Object.freeze({
     created: ["running", "terminated"] as const,
-    running: ["waiting", "suspended", "terminated"] as const,
+    running: ["waiting", "suspended", "idle", "terminated"] as const,
     waiting: ["running", "suspended", "terminated"] as const,
     suspended: ["running", "terminated"] as const,
+    idle: ["running", "terminated"] as const,
     terminated: [] as const,
   });
 
@@ -251,6 +257,8 @@ export function exitCodeForTransitionReason(reason: TransitionReason): number {
     case "completed":
     case "signal_stop":
     case "signal_cont":
+    case "task_completed_idle":
+    case "inbox_wake":
       return 0;
     case "error":
       return 1;

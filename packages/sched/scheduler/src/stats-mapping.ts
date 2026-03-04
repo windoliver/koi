@@ -40,6 +40,7 @@ export function mapSchedulerStatsByProcessState(stats: SchedulerStats): ProcessS
     running: 0,
     waiting: 0,
     suspended: 0,
+    idle: 0,
     terminated: 0,
   };
 

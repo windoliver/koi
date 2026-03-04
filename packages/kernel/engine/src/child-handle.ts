@@ -60,6 +60,16 @@ export function createChildHandle(
         notify({ kind: "started", childId });
       }
 
+      // running → idle = idled
+      if (event.from === "running" && event.to === "idle") {
+        notify({ kind: "idled", childId });
+      }
+
+      // idle → running = woke
+      if (event.from === "idle" && event.to === "running") {
+        notify({ kind: "woke", childId });
+      }
+
       // Any transition to terminated — map reason to completed/error/terminated
       if (event.to === "terminated") {
         const exitCode = exitCodeForTransitionReason(event.reason);

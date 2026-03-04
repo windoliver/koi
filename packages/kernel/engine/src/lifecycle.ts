@@ -1,7 +1,7 @@
 /**
  * Agent lifecycle state machine — pure transition function.
  *
- * States: created → running → waiting → suspended → terminated
+ * States: created → running → waiting → suspended → idle → terminated
  * All transitions are pure: transition(current, event) → new state.
  * The terminated state is absorbing — no transitions out.
  */
@@ -21,6 +21,7 @@ export type AgentLifecycle =
       readonly suspendedAt: number;
       readonly reason: string;
     }
+  | { readonly state: "idle"; readonly idledAt: number }
   | {
       readonly state: "terminated";
       readonly stopReason: EngineStopReason;
@@ -39,6 +40,7 @@ export type LifecycleEvent =
   | { readonly kind: "wait"; readonly reason: WaitReason }
   | { readonly kind: "resume" }
   | { readonly kind: "suspend"; readonly reason: string }
+  | { readonly kind: "idle" }
   | {
       readonly kind: "complete";
       readonly stopReason: EngineStopReason;
@@ -94,6 +96,8 @@ export function transition(
           return { state: "waiting", reason: event.reason, since: now };
         case "suspend":
           return { state: "suspended", suspendedAt: now, reason: event.reason };
+        case "idle":
+          return { state: "idle", idledAt: now };
         case "complete":
           return terminated(event.stopReason, now, event.metrics);
         case "error":
@@ -119,6 +123,19 @@ export function transition(
     }
 
     case "suspended": {
+      switch (event.kind) {
+        case "resume":
+          return { state: "running", startedAt: now, turnIndex: 0 };
+        case "complete":
+          return terminated(event.stopReason, now, event.metrics);
+        case "error":
+          return terminated("error", now);
+        default:
+          return current;
+      }
+    }
+
+    case "idle": {
       switch (event.kind) {
         case "resume":
           return { state: "running", startedAt: now, turnIndex: 0 };

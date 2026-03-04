@@ -106,6 +106,43 @@ describe("validateTransition", () => {
     expect(result.ok).toBe(true);
   });
 
+  // --- Idle transitions ---
+
+  test("running → idle is valid", () => {
+    const result = validateTransition("running", "idle");
+    expect(result.ok).toBe(true);
+  });
+
+  test("idle → running is valid", () => {
+    const result = validateTransition("idle", "running");
+    expect(result.ok).toBe(true);
+  });
+
+  test("idle → terminated is valid", () => {
+    const result = validateTransition("idle", "terminated");
+    expect(result.ok).toBe(true);
+  });
+
+  test("idle → waiting is invalid", () => {
+    const result = validateTransition("idle", "waiting");
+    expect(result.ok).toBe(false);
+  });
+
+  test("idle → suspended is invalid", () => {
+    const result = validateTransition("idle", "suspended");
+    expect(result.ok).toBe(false);
+  });
+
+  test("idle → created is invalid", () => {
+    const result = validateTransition("idle", "created");
+    expect(result.ok).toBe(false);
+  });
+
+  test("created → idle is invalid", () => {
+    const result = validateTransition("created", "idle");
+    expect(result.ok).toBe(false);
+  });
+
   // --- Edge: verify all transitions in VALID_TRANSITIONS are accepted ---
 
   test("all valid transitions from architecture doc are accepted", () => {
@@ -221,6 +258,34 @@ describe("applyTransition", () => {
     applyTransition(original, input("created", "running", 0, { kind: "assembly_complete" }));
 
     expect(original).toEqual(originalCopy);
+  });
+
+  // --- Idle transition increments generation ---
+
+  test("running → idle increments generation", () => {
+    const result = applyTransition(
+      { phase: "running", generation: 2, conditions: [], lastTransitionAt: 0 },
+      input("running", "idle", 2, { kind: "task_completed_idle" }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.phase).toBe("idle");
+      expect(result.value.generation).toBe(3);
+      expect(result.value.reason).toEqual({ kind: "task_completed_idle" });
+    }
+  });
+
+  test("idle → running increments generation", () => {
+    const result = applyTransition(
+      { phase: "idle", generation: 3, conditions: [], lastTransitionAt: 0 },
+      input("idle", "running", 3, { kind: "inbox_wake" }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.phase).toBe("running");
+      expect(result.value.generation).toBe(4);
+      expect(result.value.reason).toEqual({ kind: "inbox_wake" });
+    }
   });
 
   // --- Multiple sequential transitions ---

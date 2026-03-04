@@ -23,6 +23,7 @@ const KOI_TO_NEXUS: Readonly<Record<ProcessState, string>> = Object.freeze({
   running: "CONNECTED",
   waiting: "IDLE",
   suspended: "SUSPENDED",
+  idle: "IDLE",
   terminated: "SUSPENDED",
 });
 

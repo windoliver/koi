@@ -21,6 +21,7 @@ import {
   DEFAULT_SCHEDULER_CONFIG,
   DELEGATION,
   EVENTS,
+  exitCodeForTransitionReason,
   external,
   FILESYSTEM,
   GOVERNANCE,
@@ -80,8 +81,8 @@ describe("RETRYABLE_DEFAULTS backward compatibility", () => {
 // ---------------------------------------------------------------------------
 
 describe("VALID_TRANSITIONS backward compatibility", () => {
-  test("all 5 process states exist", () => {
-    const states = ["created", "running", "waiting", "suspended", "terminated"] as const;
+  test("all 6 process states exist", () => {
+    const states = ["created", "running", "waiting", "suspended", "idle", "terminated"] as const;
     for (const state of states) {
       expect(VALID_TRANSITIONS).toHaveProperty(state);
     }
@@ -92,9 +93,10 @@ describe("VALID_TRANSITIONS backward compatibility", () => {
     expect(VALID_TRANSITIONS.created).toContain("terminated");
   });
 
-  test("running can transition to waiting, suspended, and terminated", () => {
+  test("running can transition to waiting, suspended, idle, and terminated", () => {
     expect(VALID_TRANSITIONS.running).toContain("waiting");
     expect(VALID_TRANSITIONS.running).toContain("suspended");
+    expect(VALID_TRANSITIONS.running).toContain("idle");
     expect(VALID_TRANSITIONS.running).toContain("terminated");
   });
 
@@ -107,6 +109,11 @@ describe("VALID_TRANSITIONS backward compatibility", () => {
   test("suspended can transition to running and terminated", () => {
     expect(VALID_TRANSITIONS.suspended).toContain("running");
     expect(VALID_TRANSITIONS.suspended).toContain("terminated");
+  });
+
+  test("idle can transition to running and terminated", () => {
+    expect(VALID_TRANSITIONS.idle).toContain("running");
+    expect(VALID_TRANSITIONS.idle).toContain("terminated");
   });
 
   test("terminated has no transitions", () => {
@@ -300,5 +307,19 @@ describe("ID factory backward compatibility", () => {
   test("scheduleId returns branded string", () => {
     const id = scheduleId("sch-1");
     expect(id as string).toBe("sch-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TransitionReason idle variants
+// ---------------------------------------------------------------------------
+
+describe("TransitionReason idle variants backward compatibility", () => {
+  test("task_completed_idle maps to exit code 0", () => {
+    expect(exitCodeForTransitionReason({ kind: "task_completed_idle" })).toBe(0);
+  });
+
+  test("inbox_wake maps to exit code 0", () => {
+    expect(exitCodeForTransitionReason({ kind: "inbox_wake" })).toBe(0);
   });
 });
