@@ -2,7 +2,14 @@
  * L2 types for @koi/orchestrator — callback signatures, tool descriptors, config.
  */
 
-import type { ArtifactRef, DecisionRecord, KoiError, TaskBoardEvent, TaskItemId } from "@koi/core";
+import type {
+  ArtifactRef,
+  DecisionRecord,
+  KoiError,
+  TaskBoardEvent,
+  TaskItemId,
+  TaskResult,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Callback types (L0-compatible signatures, no L2 imports)
@@ -13,6 +20,7 @@ export interface SpawnWorkerRequest {
   readonly description: string;
   readonly agentId?: string | undefined;
   readonly signal: AbortSignal;
+  readonly upstreamResults?: readonly TaskResult[] | undefined;
 }
 
 export type SpawnWorkerResult =
@@ -49,6 +57,7 @@ export interface OrchestratorConfig {
   readonly maxRetries?: number | undefined;
   readonly maxOutputPerTask?: number | undefined;
   readonly maxDurationMs?: number | undefined;
+  readonly maxUpstreamContextPerTask?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +69,7 @@ interface OrchestratorDefaults {
   readonly maxRetries: number;
   readonly maxOutputPerTask: number;
   readonly maxDurationMs: number;
+  readonly maxUpstreamContextPerTask: number;
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorDefaults = Object.freeze({
@@ -67,6 +77,7 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorDefaults = Object.freeze({
   maxRetries: 3,
   maxOutputPerTask: 5000,
   maxDurationMs: 1_800_000,
+  maxUpstreamContextPerTask: 2000,
 });
 
 // ---------------------------------------------------------------------------

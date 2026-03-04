@@ -4,7 +4,7 @@ import { taskItemId } from "@koi/core";
 import { createAssignWorkerExecutor } from "./assign-worker-tool.js";
 import { createTaskBoard } from "./board.js";
 import type { BoardHolder } from "./orchestrate-tool.js";
-import type { OrchestratorConfig, SpawnWorkerResult } from "./types.js";
+import type { OrchestratorConfig, SpawnWorkerRequest, SpawnWorkerResult } from "./types.js";
 
 function createHolder(board?: TaskBoard): BoardHolder {
   // let justified: mutable board reference
@@ -203,5 +203,62 @@ describe("executeAssignWorker", () => {
     const completed = holder.getBoard().completed();
     expect(completed).toHaveLength(1);
     expect(completed[0]?.durationMs).toBeGreaterThan(0);
+  });
+
+  test("collects completed upstream results for task with dependencies", async () => {
+    const executeAssignWorker = createAssignWorkerExecutor();
+    const board = createTaskBoard();
+    const r1 = board.addAll([
+      { id: taskItemId("a"), description: "Task A" },
+      { id: taskItemId("b"), description: "Task B", dependencies: [taskItemId("a")] },
+    ]);
+    if (!r1.ok) throw new Error("setup failed");
+    const holder = createHolder(r1.value);
+
+    // Track what spawn receives
+    const captured: SpawnWorkerRequest[] = [];
+
+    const config: OrchestratorConfig = {
+      spawn: async (req) => {
+        captured.push(req);
+        return { ok: true, output: `result-${req.taskId}` };
+      },
+    };
+
+    // Complete A first
+    await executeAssignWorker({ task_id: "a" }, holder, config, controller.signal);
+    expect(holder.getBoard().completed()).toHaveLength(1);
+
+    // Now assign B — should receive upstream results from A
+    await executeAssignWorker({ task_id: "b" }, holder, config, controller.signal);
+
+    const bRequest = captured[1];
+    expect(bRequest).toBeDefined();
+    expect(bRequest?.upstreamResults).toBeDefined();
+    expect(bRequest?.upstreamResults).toHaveLength(1);
+    expect(bRequest?.upstreamResults?.[0]?.taskId).toBe(taskItemId("a"));
+    expect(bRequest?.upstreamResults?.[0]?.output).toBe("result-a");
+  });
+
+  test("passes empty upstreamResults for task with no dependencies", async () => {
+    const executeAssignWorker = createAssignWorkerExecutor();
+    const board = createTaskBoard();
+    const r = board.add({ id: taskItemId("a"), description: "Task A" });
+    if (!r.ok) throw new Error("setup failed");
+    const holder = createHolder(r.value);
+
+    const captured: SpawnWorkerRequest[] = [];
+    const config: OrchestratorConfig = {
+      spawn: async (req) => {
+        captured.push(req);
+        return { ok: true, output: "done" };
+      },
+    };
+
+    await executeAssignWorker({ task_id: "a" }, holder, config, controller.signal);
+
+    const aRequest = captured[0];
+    expect(aRequest).toBeDefined();
+    expect(aRequest?.upstreamResults).toBeUndefined();
   });
 });

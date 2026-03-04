@@ -27,7 +27,7 @@ export {
   ORCHESTRATOR_SKILL_CONTENT,
   ORCHESTRATOR_SKILL_NAME,
 } from "./skill.js";
-export { mapSpawnToWorker } from "./spawn-adapter.js";
+export { formatUpstreamContext, mapSpawnToWorker } from "./spawn-adapter.js";
 export { executeSynthesize } from "./synthesize-tool.js";
 // types
 export type {

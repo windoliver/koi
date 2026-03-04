@@ -70,6 +70,13 @@ export function validateOrchestratorConfig(config: unknown): Result<Orchestrator
     return validationError("'maxDurationMs' must be a positive integer");
   }
 
+  if (
+    config.maxUpstreamContextPerTask !== undefined &&
+    !isPositiveInteger(config.maxUpstreamContextPerTask)
+  ) {
+    return validationError("'maxUpstreamContextPerTask' must be a positive integer");
+  }
+
   if (config.onEvent !== undefined && typeof config.onEvent !== "function") {
     return validationError("'onEvent' must be a function or undefined");
   }

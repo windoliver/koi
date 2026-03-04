@@ -2,7 +2,7 @@
  * assign_worker tool — assigns a ready task to a worker and spawns it.
  */
 
-import type { AgentId } from "@koi/core";
+import type { AgentId, TaskResult } from "@koi/core";
 import { taskItemId } from "@koi/core";
 import type { BoardHolder } from "./orchestrate-tool.js";
 import type { OrchestratorConfig } from "./types.js";
@@ -76,6 +76,13 @@ export function createAssignWorkerExecutor(): (
       return `Internal error: task ${input.task_id} not found after assignment`;
     }
 
+    // Collect completed upstream results for DAG context propagation
+    const upstreamResults: TaskResult[] = [];
+    for (const depId of item.dependencies) {
+      const depResult = holder.getBoard().result(depId);
+      if (depResult !== undefined) upstreamResults.push(depResult);
+    }
+
     // Spawn the worker
     const startMs = Date.now();
     const spawnResult = await config.spawn({
@@ -83,6 +90,7 @@ export function createAssignWorkerExecutor(): (
       description: item.description,
       agentId: workerId,
       signal,
+      upstreamResults: upstreamResults.length > 0 ? upstreamResults : undefined,
     });
     const durationMs = Date.now() - startMs;
 
