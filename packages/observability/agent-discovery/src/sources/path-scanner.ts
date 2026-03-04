@@ -59,6 +59,7 @@ export function createPathSource(config?: PathSourceConfig): DiscoverySource {
             capabilities: agent.capabilities,
             healthy: true as const,
             source: "path" as const,
+            protocol: agent.protocol,
           },
         ];
       });

@@ -4,6 +4,7 @@
 
 import type {
   ExternalAgentDescriptor,
+  ExternalAgentProtocol,
   ExternalAgentSource,
   ExternalAgentTransport,
   Result,
@@ -47,6 +48,8 @@ export interface KnownCliAgent {
   readonly capabilities: readonly string[];
   readonly versionFlag: string;
   readonly transport: ExternalAgentTransport;
+  /** Wire protocol for sandboxed spawning. Omit for agents that only support raw stdio. */
+  readonly protocol?: ExternalAgentProtocol | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,9 @@
 /** Transport protocol used to communicate with the external agent. */
 export type ExternalAgentTransport = "cli" | "mcp" | "a2a";
 
+/** Wire protocol for sandboxed agent communication. */
+export type ExternalAgentProtocol = "acp" | "stdio";
+
 /** Discovery source that found the external agent. */
 export type ExternalAgentSource = "path" | "mcp" | "filesystem";
 
@@ -23,4 +26,6 @@ export interface ExternalAgentDescriptor {
   readonly healthy?: boolean | undefined;
   readonly source: ExternalAgentSource;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  /** Wire protocol for sandboxed spawning: "acp" for JSON-RPC, "stdio" for raw stdin/stdout. */
+  readonly protocol?: ExternalAgentProtocol | undefined;
 }

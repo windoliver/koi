@@ -17,6 +17,8 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@koi/agent-discovery": "workspace:*",
+    "@koi/agent-spawner": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/edit-match": "workspace:*",
     "@koi/forge-integrity": "workspace:*",

@@ -10,6 +10,12 @@
       "path": "../../kernel/core"
     },
     {
+      "path": "../../observability/agent-discovery"
+    },
+    {
+      "path": "../agent-spawner"
+    },
+    {
       "path": "../../forge/forge-integrity"
     },
     {

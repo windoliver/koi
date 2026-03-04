@@ -1,0 +1,27 @@
+{
+  "name": "@koi/agent-spawner",
+  "description": "Spawn external coding agents inside sandboxed containers with ACP or stdio communication",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/acp-protocol": "workspace:*",
+    "@koi/sandbox-cloud-base": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

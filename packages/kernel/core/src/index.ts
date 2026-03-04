@@ -437,6 +437,7 @@ export type { ExaptationKind, ExaptationSignal, UsagePurposeObservation } from "
 // external agent — types for runtime discovery of external coding agents
 export type {
   ExternalAgentDescriptor,
+  ExternalAgentProtocol,
   ExternalAgentSource,
   ExternalAgentTransport,
 } from "./external-agent.js";

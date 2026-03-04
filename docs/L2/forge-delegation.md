@@ -117,8 +117,9 @@ interface ForgeDeps {
 When these callbacks are absent, `delegateTo` returns a clear error. Forge works
 exactly as before — no behavior change for existing callers.
 
-The L3 consumer (e.g., `@koi/forge` bundle) wires these to `@koi/agent-discovery`
-and the appropriate engine adapter.
+The L3 consumer wires these via `createForgeDelegation()` — see
+[Forge Delegation Wiring (L3)](../L3/forge-delegation.md) for the composition root
+that connects `@koi/agent-discovery` and `@koi/agent-spawner` to these callbacks.
 
 ---
 
@@ -165,8 +166,8 @@ The delegation feature separates **authoring** from **verification**:
 - The coding agent's claims about its output are never trusted
 - All code goes through sandbox execution + adversarial verification
 
-Future work (#744): the coding agent itself should run inside a sandbox container
-(Docker/E2B) so it can't damage the host while writing code.
+The coding agent now runs inside a sandbox container (Docker/E2B) via
+`@koi/agent-spawner` — see [Forge Delegation Wiring (L3)](../L3/forge-delegation.md).
 
 ---
 

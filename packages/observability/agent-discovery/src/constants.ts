@@ -14,6 +14,7 @@ export const KNOWN_CLI_AGENTS: readonly KnownCliAgent[] = [
     capabilities: ["code-generation", "code-review", "debugging", "refactoring"],
     versionFlag: "--version",
     transport: "cli",
+    protocol: "acp",
   },
   {
     name: "codex",
@@ -22,6 +23,7 @@ export const KNOWN_CLI_AGENTS: readonly KnownCliAgent[] = [
     capabilities: ["code-generation", "debugging"],
     versionFlag: "--version",
     transport: "cli",
+    protocol: "acp",
   },
   {
     name: "aider",
@@ -46,6 +48,7 @@ export const KNOWN_CLI_AGENTS: readonly KnownCliAgent[] = [
     capabilities: ["code-generation", "code-review"],
     versionFlag: "--version",
     transport: "cli",
+    protocol: "acp",
   },
 ] as const;
 
