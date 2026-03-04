@@ -4,6 +4,7 @@
 
 import type {
   AgentId,
+  AgentRegistry,
   CheckpointPolicy,
   ComponentProvider,
   HandoffEvent,
@@ -24,14 +25,25 @@ import type { LongRunningHarness } from "@koi/long-running";
 // Harness → Handoff bridge config
 // ---------------------------------------------------------------------------
 
-/** Config for the harness-to-handoff bridge. */
+/**
+ * Config for the harness-to-handoff bridge.
+ *
+ * Exactly one target strategy must be provided:
+ * - `targetAgentId` — static target agent
+ * - `resolveTarget` — custom dynamic resolution callback
+ * - `registry` + `targetCapability` — capability-based discovery via AgentRegistry
+ */
 export interface HarnessHandoffBridgeConfig {
   readonly harnessStore: HarnessSnapshotStore;
   readonly handoffStore: HandoffStore;
-  /** Static target. Use this OR resolveTarget, not both. */
+  /** Static target. Mutually exclusive with resolveTarget and targetCapability. */
   readonly targetAgentId?: AgentId | undefined;
   /** Dynamic target resolution. Called at bridge fire time with the completed snapshot. */
   readonly resolveTarget?: ((snapshot: HarnessSnapshot) => AgentId | Promise<AgentId>) | undefined;
+  /** AgentRegistry for capability-based discovery. Use with targetCapability. */
+  readonly registry?: AgentRegistry | undefined;
+  /** Capability string to match. Use with registry. */
+  readonly targetCapability?: string | undefined;
   /** What the next agent should do. Defaults to generated summary. */
   readonly nextPhaseInstructions?: string | undefined;
   readonly onEvent?: ((event: HandoffEvent) => void) | undefined;
@@ -62,6 +74,11 @@ export interface AutonomousAgentParts {
   readonly inboxPolicy?: InboxPolicy | undefined;
   /** Optional harness-to-handoff bridge config. */
   readonly handoffBridge?: HarnessHandoffBridgeConfig | undefined;
+  /**
+   * When true (default when handoffBridge is configured), auto-fires the bridge
+   * when the scheduler reaches "stopped" phase. Set to false to opt out.
+   */
+  readonly autoFireBridge?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------

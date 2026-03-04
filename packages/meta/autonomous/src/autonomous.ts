@@ -13,6 +13,8 @@ import {
   createPlanAutonomousProvider,
 } from "@koi/long-running";
 import { createHarnessHandoffBridge } from "./bridge.js";
+import type { BridgeAutoFireHandle } from "./bridge-auto-fire.js";
+import { createBridgeAutoFire } from "./bridge-auto-fire.js";
 import type { AutonomousAgent, AutonomousAgentParts, HarnessHandoffBridge } from "./types.js";
 
 export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent {
@@ -103,10 +105,16 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
 
   const cachedProviders: readonly ComponentProvider[] = providerList;
 
-  // --- Optional bridge ---
+  // --- Optional bridge + auto-fire ---
   const handoffBridge: HarnessHandoffBridge | undefined =
     parts.handoffBridge !== undefined
       ? createHarnessHandoffBridge(parts.harness, parts.handoffBridge)
+      : undefined;
+
+  // Auto-fire: when bridge exists and autoFireBridge is not explicitly false
+  const autoFireHandle: BridgeAutoFireHandle | undefined =
+    handoffBridge !== undefined && parts.autoFireBridge !== false
+      ? createBridgeAutoFire({ scheduler: parts.scheduler, bridge: handoffBridge })
       : undefined;
 
   // --- API ---
@@ -116,8 +124,10 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   const dispose = async (): Promise<void> => {
     if (disposed) return;
     disposed = true;
-    // Order: stop scheduler first (prevents new resumes), then dispose harness
+    // Order: cancel watcher → dispose scheduler → await watcher.done → dispose harness
+    autoFireHandle?.cancel();
     await parts.scheduler.dispose();
+    await autoFireHandle?.done;
     await parts.harness.dispose();
   };
 

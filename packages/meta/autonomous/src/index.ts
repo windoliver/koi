@@ -7,6 +7,8 @@
  */
 export { createAutonomousAgent } from "./autonomous.js";
 export { createHarnessHandoffBridge } from "./bridge.js";
+export type { BridgeAutoFireConfig, BridgeAutoFireHandle } from "./bridge-auto-fire.js";
+export { createBridgeAutoFire } from "./bridge-auto-fire.js";
 export { createCapabilityResolver } from "./capability-resolver.js";
 export {
   generateCompletedPhaseDescription,

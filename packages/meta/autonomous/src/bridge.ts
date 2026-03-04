@@ -9,6 +9,7 @@
 import type { ChainId, HandoffId, KoiError, Result } from "@koi/core";
 import { chainId } from "@koi/core";
 import type { LongRunningHarness } from "@koi/long-running";
+import { createCapabilityResolver } from "./capability-resolver.js";
 import { mapSnapshotToEnvelope } from "./map-snapshot.js";
 import type { HarnessHandoffBridge, HarnessHandoffBridgeConfig } from "./types.js";
 
@@ -18,7 +19,10 @@ import type { HarnessHandoffBridge, HarnessHandoffBridgeConfig } from "./types.j
  * The bridge reads the harness snapshot on demand (when onHarnessCompleted is called),
  * maps it to a HandoffEnvelope, and stores it in the handoff store.
  *
- * Exactly one of `targetAgentId` or `resolveTarget` must be provided.
+ * Exactly one target strategy must be provided:
+ * - `targetAgentId` — static target
+ * - `resolveTarget` — custom callback
+ * - `registry` + `targetCapability` — capability-based discovery
  */
 export function createHarnessHandoffBridge(
   harness: LongRunningHarness,
@@ -26,14 +30,39 @@ export function createHarnessHandoffBridge(
 ): HarnessHandoffBridge {
   const hasStatic = config.targetAgentId !== undefined;
   const hasDynamic = config.resolveTarget !== undefined;
-  if (hasStatic && hasDynamic) {
-    throw new Error("HarnessHandoffBridgeConfig: provide targetAgentId OR resolveTarget, not both");
+  const hasCapability = config.targetCapability !== undefined;
+  const hasRegistry = config.registry !== undefined;
+
+  // Validate registry + targetCapability pair
+  if (hasCapability && !hasRegistry) {
+    throw new Error("HarnessHandoffBridgeConfig: targetCapability requires registry");
   }
-  if (!hasStatic && !hasDynamic) {
+  if (hasRegistry && !hasCapability) {
+    throw new Error("HarnessHandoffBridgeConfig: registry requires targetCapability");
+  }
+
+  // Count how many strategies are provided
+  const strategyCount = (hasStatic ? 1 : 0) + (hasDynamic ? 1 : 0) + (hasCapability ? 1 : 0);
+  if (strategyCount > 1) {
     throw new Error(
-      "HarnessHandoffBridgeConfig: one of targetAgentId or resolveTarget is required",
+      "HarnessHandoffBridgeConfig: provide exactly one of targetAgentId, resolveTarget, or registry + targetCapability",
     );
   }
+  if (strategyCount === 0) {
+    throw new Error(
+      "HarnessHandoffBridgeConfig: one of targetAgentId, resolveTarget, or registry + targetCapability is required",
+    );
+  }
+
+  // Normalize capability-based config into a resolveTarget callback
+  // config justified: shallow copy to add computed resolveTarget without mutating original
+  const effectiveConfig =
+    config.registry !== undefined && config.targetCapability !== undefined
+      ? {
+          ...config,
+          resolveTarget: createCapabilityResolver(config.registry, config.targetCapability),
+        }
+      : config;
   // let justified: mutable idempotency state — tracks whether the bridge has already fired
   let fired = false;
   let cachedResult: Result<HandoffId, KoiError> | undefined;
@@ -52,7 +81,7 @@ export function createHarnessHandoffBridge(
       const error: KoiError = {
         code: "NOT_FOUND",
         message: `Failed to read harness snapshot: ${headResult.error.message}`,
-        retryable: false,
+        retryable: headResult.error.retryable,
         context: { harnessId: harness.harnessId },
       };
       return { ok: false, error };
@@ -80,12 +109,12 @@ export function createHarnessHandoffBridge(
       return { ok: false, error };
     }
 
-    // Resolve target agent ID — static or dynamic
-    // Safety: constructor validation guarantees exactly one of these is defined
-    let targetAgentId = config.targetAgentId; // let justified: may be reassigned from resolveTarget
-    if (targetAgentId === undefined && config.resolveTarget !== undefined) {
+    // Resolve target agent ID — static or dynamic (capability-based normalized to resolveTarget)
+    // Safety: constructor validation guarantees exactly one strategy is defined
+    let targetAgentId = effectiveConfig.targetAgentId; // let justified: may be reassigned from resolveTarget
+    if (targetAgentId === undefined && effectiveConfig.resolveTarget !== undefined) {
       try {
-        targetAgentId = await config.resolveTarget(snapshot);
+        targetAgentId = await effectiveConfig.resolveTarget(snapshot);
       } catch (e: unknown) {
         const error: KoiError = {
           code: "VALIDATION",
@@ -116,7 +145,7 @@ export function createHarnessHandoffBridge(
       const error: KoiError = {
         code: "INTERNAL",
         message: `Failed to store handoff envelope: ${putResult.error.message}`,
-        retryable: false,
+        retryable: putResult.error.retryable,
         context: { harnessId: harness.harnessId, handoffId: envelope.id },
       };
       return { ok: false, error };

@@ -7,11 +7,13 @@
 import { describe, expect, mock, test } from "bun:test";
 import type {
   AgentId,
+  AgentRegistry,
   HandoffEnvelope,
   HandoffEvent,
   HarnessSnapshot,
   HarnessSnapshotStore,
   KoiError,
+  RegistryEntry,
   Result,
   SnapshotNode,
 } from "@koi/core";
@@ -161,6 +163,35 @@ function createMockHandoffStore(): HandoffStore & {
     bindRegistry: mock(() => {}),
     dispose: mock(() => {}),
   };
+}
+
+function createMockRegistry(entries: readonly RegistryEntry[] = []): AgentRegistry {
+  return {
+    register: mock(() => entries[0] as RegistryEntry),
+    deregister: mock(() => true),
+    lookup: mock(() => undefined),
+    list: mock(() => entries),
+    transition: mock(() => ({ ok: true, value: entries[0] }) as never),
+    patch: mock(() => ({ ok: true, value: entries[0] }) as never),
+    watch: mock(() => () => {}),
+    [Symbol.asyncDispose]: async () => {},
+  };
+}
+
+function createRegistryEntry(id: AgentId): RegistryEntry {
+  return {
+    agentId: id,
+    manifest: {
+      name: "test-agent",
+      model: "test",
+    },
+    phase: "running",
+    generation: 1,
+    capabilities: ["deploy"],
+    tags: {},
+    registeredAt: Date.now(),
+    updatedAt: Date.now(),
+  } as unknown as RegistryEntry;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,10 +448,12 @@ describe("createHarnessHandoffBridge", () => {
         targetAgentId: TARGET_AGENT,
         resolveTarget: async () => TARGET_AGENT,
       }),
-    ).toThrow("provide targetAgentId OR resolveTarget, not both");
+    ).toThrow(
+      "provide exactly one of targetAgentId, resolveTarget, or registry + targetCapability",
+    );
   });
 
-  test("throws when neither targetAgentId nor resolveTarget are provided", () => {
+  test("throws when no target strategy is provided", () => {
     const harness = createMockHarness();
     const harnessStore = createMockHarnessStore();
     const handoffStore = createMockHandoffStore();
@@ -430,7 +463,77 @@ describe("createHarnessHandoffBridge", () => {
         harnessStore,
         handoffStore,
       }),
-    ).toThrow("one of targetAgentId or resolveTarget is required");
+    ).toThrow("one of targetAgentId, resolveTarget, or registry + targetCapability is required");
+  });
+
+  test("resolves target via targetCapability + registry", async () => {
+    const snapshot = createCompletedSnapshot();
+    const harness = createMockHarness();
+    const harnessStore = createMockHarnessStore(snapshot);
+    const handoffStore = createMockHandoffStore();
+    const capabilityTarget = agentId("deploy-agent");
+    const registry = createMockRegistry([createRegistryEntry(capabilityTarget)]);
+
+    const bridge = createHarnessHandoffBridge(harness, {
+      harnessStore,
+      handoffStore,
+      registry,
+      targetCapability: "deploy",
+    });
+
+    const result = await bridge.onHarnessCompleted();
+
+    expect(result.ok).toBe(true);
+    expect(handoffStore.storedEnvelopes).toHaveLength(1);
+    expect(handoffStore.storedEnvelopes[0]?.to).toBe(capabilityTarget);
+  });
+
+  test("throws when targetCapability provided without registry", () => {
+    const harness = createMockHarness();
+    const harnessStore = createMockHarnessStore();
+    const handoffStore = createMockHandoffStore();
+
+    expect(() =>
+      createHarnessHandoffBridge(harness, {
+        harnessStore,
+        handoffStore,
+        targetCapability: "deploy",
+      }),
+    ).toThrow("targetCapability requires registry");
+  });
+
+  test("throws when registry provided without targetCapability", () => {
+    const harness = createMockHarness();
+    const harnessStore = createMockHarnessStore();
+    const handoffStore = createMockHandoffStore();
+    const registry = createMockRegistry();
+
+    expect(() =>
+      createHarnessHandoffBridge(harness, {
+        harnessStore,
+        handoffStore,
+        registry,
+      }),
+    ).toThrow("registry requires targetCapability");
+  });
+
+  test("throws when targetCapability combined with targetAgentId", () => {
+    const harness = createMockHarness();
+    const harnessStore = createMockHarnessStore();
+    const handoffStore = createMockHandoffStore();
+    const registry = createMockRegistry();
+
+    expect(() =>
+      createHarnessHandoffBridge(harness, {
+        harnessStore,
+        handoffStore,
+        targetAgentId: TARGET_AGENT,
+        registry,
+        targetCapability: "deploy",
+      }),
+    ).toThrow(
+      "provide exactly one of targetAgentId, resolveTarget, or registry + targetCapability",
+    );
   });
 
   test("does not fire onEvent on error", async () => {
@@ -449,5 +552,52 @@ describe("createHarnessHandoffBridge", () => {
     await bridge.onHarnessCompleted();
 
     expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  test("propagates retryable from harnessStore.head error", async () => {
+    const harness = createMockHarness();
+    const harnessStore = createMockHarnessStore();
+    (harnessStore.head as ReturnType<typeof mock>).mockImplementation(() =>
+      Promise.resolve({
+        ok: false,
+        error: { code: "INTERNAL", message: "DB down", retryable: true },
+      }),
+    );
+    const handoffStore = createMockHandoffStore();
+
+    const bridge = createHarnessHandoffBridge(harness, {
+      harnessStore,
+      handoffStore,
+      targetAgentId: TARGET_AGENT,
+    });
+
+    const result = await bridge.onHarnessCompleted();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(true);
+    }
+  });
+
+  test("propagates retryable from handoffStore.put error", async () => {
+    const snapshot = createCompletedSnapshot();
+    const harness = createMockHarness();
+    const harnessStore = createMockHarnessStore(snapshot);
+    const handoffStore = createMockHandoffStore();
+    (handoffStore.put as ReturnType<typeof mock>).mockImplementation(() => ({
+      ok: false,
+      error: { code: "CONFLICT", message: "Duplicate", retryable: true },
+    }));
+
+    const bridge = createHarnessHandoffBridge(harness, {
+      harnessStore,
+      handoffStore,
+      targetAgentId: TARGET_AGENT,
+    });
+
+    const result = await bridge.onHarnessCompleted();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(true);
+    }
   });
 });

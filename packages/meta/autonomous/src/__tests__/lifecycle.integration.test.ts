@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import type {
   AgentId,
+  HandoffEnvelope,
   HarnessSnapshot,
   HarnessSnapshotStore,
   KoiError,
@@ -349,7 +350,7 @@ describe("AutonomousAgent lifecycle integration", () => {
     expect(mw[3]?.name).toBe("compactor");
   });
 
-  test("handoff bridge fires when harness completes", async () => {
+  test("handoff bridge fires when harness completes (manual)", async () => {
     const ctrl = createControllableHarness();
     const TARGET_AGENT: AgentId = agentId("agent-target");
 
@@ -431,6 +432,7 @@ describe("AutonomousAgent lifecycle integration", () => {
         targetAgentId: TARGET_AGENT,
         nextPhaseInstructions: "Deploy the results",
       },
+      autoFireBridge: false, // manual-only mode
     });
 
     // Verify bridge exists
@@ -443,7 +445,7 @@ describe("AutonomousAgent lifecycle integration", () => {
     scheduler.start();
     await waitForPhase(() => scheduler.status().phase, ["stopped"]);
 
-    // Fire the bridge
+    // Fire the bridge manually
     const result = await bridge?.onHarnessCompleted();
     expect(result?.ok).toBe(true);
     expect(bridge?.hasFired()).toBe(true);
@@ -505,6 +507,181 @@ describe("AutonomousAgent lifecycle integration", () => {
     const provs = agent.providers();
     const autonomousProvider = provs.find((p) => p.name === "autonomous-provider");
     expect(autonomousProvider).toBeDefined();
+  });
+
+  test("bridge auto-fires without manual onHarnessCompleted() call", async () => {
+    const ctrl = createControllableHarness();
+    const TARGET_AGENT: AgentId = agentId("agent-auto");
+
+    const completedSnapshot: HarnessSnapshot = {
+      harnessId: ctrl.harness.harnessId,
+      phase: "completed",
+      sessionSeq: 1,
+      taskBoard: {
+        items: [],
+        results: [{ taskId: taskItemId("task-1"), output: "Done", durationMs: 3000 }],
+      },
+      summaries: [],
+      keyArtifacts: [],
+      agentId: "agent-a",
+      metrics: {
+        totalSessions: 1,
+        totalTurns: 5,
+        totalInputTokens: 1000,
+        totalOutputTokens: 500,
+        completedTaskCount: 1,
+        pendingTaskCount: 0,
+        elapsedMs: 30000,
+      },
+      startedAt: Date.now() - 30000,
+      checkpointedAt: Date.now(),
+    };
+
+    const snapshotNode: SnapshotNode<HarnessSnapshot> = {
+      nodeId: "node-auto" as never,
+      chainId: ctrl.harness.harnessId as never,
+      parentIds: [],
+      contentHash: "hash-auto",
+      data: completedSnapshot,
+      createdAt: Date.now(),
+      metadata: {},
+    };
+
+    const mockHarnessStore: HarnessSnapshotStore = {
+      head: () => Promise.resolve({ ok: true, value: snapshotNode }),
+      put: () => Promise.resolve({ ok: true, value: undefined }),
+      get: () => Promise.resolve({ ok: true, value: snapshotNode }),
+      list: () => Promise.resolve({ ok: true, value: [snapshotNode] }),
+      ancestors: () => Promise.resolve({ ok: true, value: [] }),
+      fork: () => Promise.resolve({ ok: true, value: {} as never }),
+      prune: () => Promise.resolve({ ok: true, value: 0 }),
+      close: () => {},
+    };
+
+    const handoffStore = createInMemoryHandoffStore();
+
+    const scheduler = createHarnessScheduler({
+      harness: ctrl.harness,
+      pollIntervalMs: 10,
+      delay: immediateDelay,
+    });
+
+    const agent = createAutonomousAgent({
+      harness: ctrl.harness,
+      scheduler,
+      handoffBridge: {
+        harnessStore: mockHarnessStore,
+        handoffStore,
+        targetAgentId: TARGET_AGENT,
+      },
+      // autoFireBridge defaults to true
+    });
+
+    const bridge = agent.handoffBridge;
+    expect(bridge).toBeDefined();
+
+    // Simulate: harness reaches completed → scheduler stops → auto-fire triggers
+    ctrl.setPhase("completed");
+    scheduler.start();
+    await waitForPhase(() => scheduler.status().phase, ["stopped"]);
+
+    // Wait a tick for the auto-fire watcher to detect "stopped" and fire
+    await Bun.sleep(50);
+
+    expect(bridge?.hasFired()).toBe(true);
+
+    await agent.dispose();
+  });
+
+  test("manual fire before auto-fire is idempotent", async () => {
+    const ctrl = createControllableHarness();
+    const TARGET_AGENT: AgentId = agentId("agent-idem");
+
+    const completedSnapshot: HarnessSnapshot = {
+      harnessId: ctrl.harness.harnessId,
+      phase: "completed",
+      sessionSeq: 1,
+      taskBoard: { items: [], results: [] },
+      summaries: [],
+      keyArtifacts: [],
+      agentId: "agent-a",
+      metrics: {
+        totalSessions: 1,
+        totalTurns: 3,
+        totalInputTokens: 500,
+        totalOutputTokens: 250,
+        completedTaskCount: 0,
+        pendingTaskCount: 0,
+        elapsedMs: 10000,
+      },
+      startedAt: Date.now() - 10000,
+      checkpointedAt: Date.now(),
+    };
+
+    const snapshotNode: SnapshotNode<HarnessSnapshot> = {
+      nodeId: "node-idem" as never,
+      chainId: ctrl.harness.harnessId as never,
+      parentIds: [],
+      contentHash: "hash-idem",
+      data: completedSnapshot,
+      createdAt: Date.now(),
+      metadata: {},
+    };
+
+    // let justified: track put call count for idempotency verification
+    let putCount = 0;
+    const mockHarnessStore: HarnessSnapshotStore = {
+      head: () => Promise.resolve({ ok: true, value: snapshotNode }),
+      put: () => Promise.resolve({ ok: true, value: undefined }),
+      get: () => Promise.resolve({ ok: true, value: snapshotNode }),
+      list: () => Promise.resolve({ ok: true, value: [snapshotNode] }),
+      ancestors: () => Promise.resolve({ ok: true, value: [] }),
+      fork: () => Promise.resolve({ ok: true, value: {} as never }),
+      prune: () => Promise.resolve({ ok: true, value: 0 }),
+      close: () => {},
+    };
+
+    const handoffStore = createInMemoryHandoffStore();
+    const originalPut = handoffStore.put.bind(handoffStore);
+    handoffStore.put = (envelope: HandoffEnvelope) => {
+      putCount += 1;
+      return originalPut(envelope);
+    };
+
+    const scheduler = createHarnessScheduler({
+      harness: ctrl.harness,
+      pollIntervalMs: 10,
+      delay: immediateDelay,
+    });
+
+    const agent = createAutonomousAgent({
+      harness: ctrl.harness,
+      scheduler,
+      handoffBridge: {
+        harnessStore: mockHarnessStore,
+        handoffStore,
+        targetAgentId: TARGET_AGENT,
+      },
+    });
+
+    const bridge = agent.handoffBridge;
+    expect(bridge).toBeDefined();
+
+    // Manually fire BEFORE scheduler starts
+    const manualResult = await bridge?.onHarnessCompleted();
+    expect(manualResult.ok).toBe(true);
+    expect(putCount).toBe(1);
+
+    // Now start scheduler — auto-fire should detect hasFired() and skip
+    ctrl.setPhase("completed");
+    scheduler.start();
+    await waitForPhase(() => scheduler.status().phase, ["stopped"]);
+    await Bun.sleep(50);
+
+    // Put should still be 1 — auto-fire did not re-fire
+    expect(putCount).toBe(1);
+
+    await agent.dispose();
   });
 
   test("full lifecycle with thread store: suspend → resume → complete", async () => {

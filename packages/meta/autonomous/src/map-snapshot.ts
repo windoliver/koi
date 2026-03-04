@@ -129,7 +129,7 @@ export function mapSnapshotToEnvelope(
   const completedDescription = generateCompletedPhaseDescription(snapshot);
 
   return {
-    id: handoffId(crypto.randomUUID()),
+    id: handoffId(`harness-handoff-${snapshot.harnessId}-${String(snapshot.sessionSeq)}`),
     from: sourceAgentId,
     to: targetAgentId,
     status: "pending",

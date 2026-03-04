@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AgentId, ContextSummary, HarnessSnapshot, KeyArtifact, TaskResult } from "@koi/core";
-import { agentId, harnessId, taskItemId } from "@koi/core";
+import { agentId, handoffId, harnessId, taskItemId } from "@koi/core";
 import {
   generateCompletedPhaseDescription,
   generateWarnings,
@@ -389,8 +389,26 @@ describe("mapSnapshotToEnvelope", () => {
     const snapshot = createSnapshot();
     const envelope = mapSnapshotToEnvelope(snapshot, AGENT_B);
 
-    // Should be a non-empty string (UUID format)
+    // Should be a non-empty string
     expect(typeof envelope.id).toBe("string");
     expect(envelope.id.length).toBeGreaterThan(0);
+  });
+
+  test("generates deterministic ID from harnessId and sessionSeq", () => {
+    const snapshot = createSnapshot({
+      harnessId: harnessId("my-harness"),
+      sessionSeq: 5,
+    });
+    const envelope = mapSnapshotToEnvelope(snapshot, AGENT_B);
+
+    expect(envelope.id).toBe(handoffId("harness-handoff-my-harness-5"));
+  });
+
+  test("same snapshot produces same ID on repeated calls", () => {
+    const snapshot = createSnapshot();
+    const envelope1 = mapSnapshotToEnvelope(snapshot, AGENT_B);
+    const envelope2 = mapSnapshotToEnvelope(snapshot, AGENT_B);
+
+    expect(envelope1.id).toBe(envelope2.id);
   });
 });
