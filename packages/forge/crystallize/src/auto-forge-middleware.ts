@@ -265,7 +265,13 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
           ? signal.trigger.requiredCapability
           : signal.trigger.kind === "no_matching_tool"
             ? signal.trigger.query
-            : signal.trigger.toolName;
+            : signal.trigger.kind === "performance_degradation"
+              ? signal.trigger.toolName
+              : signal.trigger.kind === "agent_capability_gap"
+                ? signal.trigger.agentType
+                : signal.trigger.kind === "agent_repeated_failure"
+                  ? signal.trigger.agentType
+                  : signal.trigger.agentType;
 
     const provenance: ForgeProvenance = {
       source: {
