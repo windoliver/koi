@@ -1,9 +1,10 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/model-router API surface . has stable type surface 1`] = `
-"import { JsonObject, ModelRequest, ModelResponse, KoiError, Result, KoiMiddleware } from '@koi/core';
+"import { JsonObject, ModelRequest, ModelResponse, KoiError, KoiMiddleware, Result } from '@koi/core';
 import { RetryConfig, CircuitBreakerConfig, CircuitBreaker, CircuitBreakerSnapshot } from '@koi/errors';
 export { CircuitBreaker, CircuitBreakerConfig, CircuitBreakerSnapshot, CircuitState, RetryConfig, computeBackoff, createCircuitBreaker, withRetry } from '@koi/errors';
+import { BrickDescriptor } from '@koi/resolve';
 
 /**
  * Provider adapter interface for multi-provider LLM routing.
@@ -478,6 +479,36 @@ interface ResolvedTargetConfig {
 }
 
 /**
+ * BrickDescriptor for @koi/model-router.
+ *
+ * Enables manifest auto-resolution: validates cascade/fallback/round-robin/weighted
+ * routing options from koi.yaml, then creates the model-router middleware.
+ *
+ * Example koi.yaml:
+ * \`\`\`yaml
+ * middleware:
+ *   - model-router:
+ *       strategy: cascade
+ *       confidenceThreshold: 0.7
+ *       targets:
+ *         - anthropic:claude-haiku-4-5
+ *         - anthropic:claude-sonnet-4-5
+ * \`\`\`
+ */
+
+/** Maps provider names to their expected environment variable for the API key. */
+declare const PROVIDER_ENV_KEYS: Readonly<Record<string, string>>;
+/** Maps provider names to their adapter factory functions. */
+declare const PROVIDER_FACTORIES: Readonly<Record<string, (config: ProviderAdapterConfig) => ProviderAdapter>>;
+/**
+ * Descriptor for model-router middleware.
+ *
+ * Wires cascade routing (or fallback/round-robin/weighted) from YAML config.
+ * Auto-creates complexity classifier + evaluator for cascade strategy.
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
  * Fallback chain orchestration.
  *
  * Tries targets in order, skipping those with open circuit breakers.
@@ -571,6 +602,6 @@ declare function createModelRouter(config: ResolvedRouterConfig, adapters: Reado
  */
 declare function createModelRouterMiddleware(router: ModelRouter): KoiMiddleware;
 
-export { type CascadeAttempt, type CascadeClassifier, type CascadeConfig, type CascadeCostMetrics, type CascadeEvaluationResult, type CascadeEvaluator, type CascadeResult, type CascadeTierConfig, type ClassificationResult, type ComplexityClassifierOptions, type ComplexityTier, type CompositionStrategy, type DimensionKey, type DiscoverOptions, type DiscoveredProvider, type FallbackAttempt, type FallbackResult, type FallbackTarget, type FetchWithTimeoutOptions, type FetchWithTimeoutResult, type HealthProbeConfig, type KeywordEvaluatorOptions, type LMStudioAdapterConfig, type LengthHeuristicOptions, type LocalProviderKind, type ModelCapabilitiesPartial, type ModelRouter, type ModelRouterConfig, type ModelRouterOptions, type ModelTargetConfig, type OllamaAdapterConfig, type OpenAICompatibleConfig, type OpenRouterAdapterConfig, type ProviderAdapter, type ProviderAdapterConfig, type ResolvedCascadeConfig, type ResolvedRouterConfig, type RouterMetrics, type RoutingStrategy, type StreamChunk, type TierCostMetrics, type VLLMAdapterConfig, type VerbalizedEvaluatorOptions, type WeightedEvaluator, composeEvaluators, createAnthropicAdapter, createCascadeMetricsTracker, createComplexityClassifier, createKeywordEvaluator, createLMStudioAdapter, createLengthHeuristicEvaluator, createModelRouter, createModelRouterMiddleware, createOllamaAdapter, createOpenAIAdapter, createOpenAICompatibleAdapter, createOpenRouterAdapter, createVLLMAdapter, createVerbalizedEvaluator, discoverLocalProviders, fetchWithTimeout, handleAbortError, mapStatusToErrorCode, parseRetryAfter, parseSSEStream, withFallback };
+export { type CascadeAttempt, type CascadeClassifier, type CascadeConfig, type CascadeCostMetrics, type CascadeEvaluationResult, type CascadeEvaluator, type CascadeResult, type CascadeTierConfig, type ClassificationResult, type ComplexityClassifierOptions, type ComplexityTier, type CompositionStrategy, type DimensionKey, type DiscoverOptions, type DiscoveredProvider, type FallbackAttempt, type FallbackResult, type FallbackTarget, type FetchWithTimeoutOptions, type FetchWithTimeoutResult, type HealthProbeConfig, type KeywordEvaluatorOptions, type LMStudioAdapterConfig, type LengthHeuristicOptions, type LocalProviderKind, type ModelCapabilitiesPartial, type ModelRouter, type ModelRouterConfig, type ModelRouterOptions, type ModelTargetConfig, type OllamaAdapterConfig, type OpenAICompatibleConfig, type OpenRouterAdapterConfig, PROVIDER_ENV_KEYS, PROVIDER_FACTORIES, type ProviderAdapter, type ProviderAdapterConfig, type ResolvedCascadeConfig, type ResolvedRouterConfig, type RouterMetrics, type RoutingStrategy, type StreamChunk, type TierCostMetrics, type VLLMAdapterConfig, type VerbalizedEvaluatorOptions, type WeightedEvaluator, composeEvaluators, createAnthropicAdapter, createCascadeMetricsTracker, createComplexityClassifier, createKeywordEvaluator, createLMStudioAdapter, createLengthHeuristicEvaluator, createModelRouter, createModelRouterMiddleware, createOllamaAdapter, createOpenAIAdapter, createOpenAICompatibleAdapter, createOpenRouterAdapter, createVLLMAdapter, createVerbalizedEvaluator, descriptor, discoverLocalProviders, fetchWithTimeout, handleAbortError, mapStatusToErrorCode, parseRetryAfter, parseSSEStream, withFallback };
 "
 `;
