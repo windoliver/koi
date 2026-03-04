@@ -68,9 +68,9 @@ describe("createMapAgentResolver", () => {
     expect(result).toEqual({ ok: true, value: agent });
   });
 
-  it("returns NOT_FOUND error for unknown key", () => {
+  it("returns NOT_FOUND error for unknown key", async () => {
     const resolver = createMapAgentResolver(new Map());
-    const result = resolver.resolve("unknown");
+    const result = await resolver.resolve("unknown");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("NOT_FOUND");
