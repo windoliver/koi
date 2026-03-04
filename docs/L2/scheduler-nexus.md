@@ -1,126 +1,179 @@
-# @koi/scheduler-nexus — Nexus-Backed Priority Queue for Task Dispatch
+# @koi/scheduler-nexus — Nexus-Backed Distributed Scheduler
 
-Implements the L0 `TaskQueueBackend` contract using Nexus Astraea as the priority queue for scheduled task dispatch. Koi retains ownership of cron timing, retry logic, and dead-letter semantics. Nexus handles 5-tier priority ordering, aging, credit-based boost, HRRN scoring, and fair-share admission control.
+Implements L0 `TaskStore`, `ScheduleStore`, and `TaskQueueBackend` contracts using Nexus as the distributed backend. Enables cross-node task scheduling with at-least-once delivery, atomic claim semantics, and cron tick deduplication.
+
+**Layer:** L2 (depends on `@koi/core`, `@koi/nexus-client`, `@koi/errors`, `@koi/resolve`)
 
 ---
 
 ## Why It Exists
 
-In a single-node Koi deployment, the scheduler uses a local in-memory min-heap for priority ordering. Tasks are dispatched directly from the heap to the local agent runtime. This works well for one process but breaks down when agents run across multiple nodes.
+In a single-node Koi deployment, the scheduler uses local SQLite for persistence and an in-memory min-heap for priority ordering. This works well for one process but breaks down when agents run across multiple nodes:
 
-Without this package, you'd need to:
-1. Build a distributed priority queue with deduplication
-2. Map Koi's task priority model to your queue backend
-3. Handle idempotency for cron-fired tasks across restarts
-4. Implement fair-share admission control to prevent agent starvation
-5. Thread connection management (timeouts, retries, auth) through your HTTP layer
-6. Do all of the above while respecting Koi's layer architecture (L2 imports L0 only)
+1. **Crashed tasks are stuck** — if Node A dies mid-task, no other node can see or retry it
+2. **Duplicate cron execution** — every node fires every cron independently, causing N-times execution
+3. **No work distribution** — tasks can only run on the node that created them
+4. **No shared queue** — priority ordering is per-node, not global
 
-`@koi/scheduler-nexus` handles all of this. Point it at a Nexus Astraea server and task dispatch scales across any number of nodes.
+`@koi/scheduler-nexus` solves all of these by delegating task storage, schedule persistence, and claim arbitration to a shared Nexus server.
 
 ---
 
 ## What This Enables
 
-### Before vs After
+### Single-Node (Before — SQLite Only)
 
 ```
-BEFORE: local heap, single-node dispatch
-════════════════════════════════════════
+┌──────────────────────────────────────────┐
+│  Node A (only node)                       │
+│                                           │
+│  ┌──────────┐    ┌───────────────────┐   │
+│  │  Cron    │───▶│  Local SQLite     │   │
+│  │  Timer   │    │  + Min-Heap       │   │
+│  └──────────┘    └────────┬──────────┘   │
+│  ┌──────────┐             │ poll()       │
+│  │ submit() │───▶         ▼              │
+│  └──────────┘    ┌───────────────────┐   │
+│                  │  Local Dispatch   │   │
+│                  └───────────────────┘   │
+└──────────────────────────────────────────┘
 
-  ┌────────────────────────────────────────┐
-  │  Node 1 (only node)                    │
-  │                                        │
-  │  ┌──────────┐    ┌──────────────────┐  │
-  │  │  Cron    │───▶│  Local Min-Heap  │  │
-  │  │  Timer   │    │  ┌────┐ ┌────┐   │  │
-  │  └──────────┘    │  │ P0 │ │ P5 │   │  │
-  │                  │  └────┘ └────┘   │  │
-  │  ┌──────────┐    │  ┌────┐ ┌────┐   │  │
-  │  │  submit()│───▶│  │ P3 │ │ P9 │   │  │
-  │  └──────────┘    └───────┬──────────┘  │
-  │                          │ poll()      │
-  │                          ▼             │
-  │                  ┌──────────────────┐  │
-  │                  │  Local Dispatch  │  │
-  │                  │  (dispatcher fn) │  │
-  │                  └──────────────────┘  │
-  └────────────────────────────────────────┘
+If Node A crashes → tasks are stuck, cron stops firing
+```
 
-  Single process. No cross-node visibility.
-  Priority = simple numeric comparison.
+### Multi-Node (After — Nexus-Backed)
 
+```
+┌──────────┐     ┌──────────┐     ┌──────────┐
+│  Node A  │     │  Node B  │     │  Node C  │
+│          │     │          │     │          │
+│  claim() │     │  claim() │     │  claim() │
+│  ack()   │     │  ack()   │     │  ack()   │
+│  tick()  │     │  tick()  │     │  tick()  │
+└─────┬────┘     └─────┬────┘     └─────┬────┘
+      │                │                │
+      └───────────┬────┴────────────────┘
+                  ▼
+         ┌──────────────────┐
+         │  Nexus Server    │
+         │                  │
+         │  Task Store      │ ← persistent, shared
+         │  Schedules       │ ← cron definitions
+         │  Tick Claims     │ ← dedup per window
+         │  Claim Queue     │ ← visibility timeout
+         └──────────────────┘
+```
 
-AFTER: Nexus Astraea owns the queue, Koi owns timing
-═════════════════════════════════════════════════════
+**Key behaviors:**
 
-  Node 1                          Node 2
-  ┌───────────────────┐           ┌───────────────────┐
-  │  Cron ──▶ submit()│           │  submit() ────────│──┐
-  │       │           │           │                   │  │
-  │       ▼           │           └───────────────────┘  │
-  │  enqueueTask()    │                                  │
-  │       │           │                                  │
-  └───────┼───────────┘                                  │
-          │ POST /api/v2/scheduler/submit                │
-          ▼                                              ▼
-  ┌──────────────────────────────────────────────────────────┐
-  │                  Nexus Astraea                           │
-  │                                                          │
-  │  5-tier priority + aging + HRRN + fair-share admission   │
-  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐          │
-  │  │ Tier0│ │ Tier1│ │ Tier2│ │ Tier3│ │ Tier4│          │
-  │  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘          │
-  │                                                          │
-  │  Deduplication via idempotency keys                      │
-  │  Credit-based boost prevents starvation                  │
-  └──────────────────────────────────────────────────────────┘
+- **At-least-once delivery** — if a node crashes mid-task, the visibility timeout expires and another node re-claims it
+- **No duplicate cron execution** — `tick()` uses minute-level bucketing; first node to tick wins, others skip
+- **Adaptive polling** — empty claims trigger exponential backoff to reduce Nexus load; resets instantly when tasks appear
+- **Auto-detection** — scheduler detects distributed mode when `queueBackend.claim` is present; falls back to local mode otherwise
 
-  Koi retains: cron timing, retry backoff, dead-letter, timeout
-  Nexus handles: priority ordering, admission control, dedup
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  @koi/scheduler-nexus  (L2)                                      │
+│                                                                   │
+│  nexus-task-store.ts       ← createNexusTaskStore()              │
+│  nexus-schedule-store.ts   ← createNexusScheduleStore()          │
+│  nexus-queue.ts            ← createNexusTaskQueue()              │
+│  nexus-scheduler.ts        ← createNexusSchedulerBackends()      │
+│  scheduler-config.ts       ← NexusSchedulerConfig + validator    │
+│  config.ts                 ← NexusTaskQueueConfig (base)         │
+│  index.ts                  ← public API surface                   │
+│                                                                   │
+├─────────────────────────────────────────────────────────────────  │
+│  Dependencies                                                     │
+│                                                                   │
+│  @koi/core          (L0)   TaskStore, ScheduleStore,              │
+│                             TaskQueueBackend, ScheduledTask,       │
+│                             CronSchedule, branded IDs              │
+│  @koi/nexus-client  (L0u)  NexusClient, mapHttpError              │
+│  @koi/errors        (L0u)  isKoiError                              │
+│  @koi/resolve       (L0u)  BrickDescriptor                         │
+└─────────────────────────────────────────────────────────────────  ┘
 ```
 
 ---
 
 ## How It Works
 
-### Task Lifecycle
+### Transport
+
+Two transport layers coexist for backwards compatibility:
+
+| Operation | Transport | Why |
+|-----------|-----------|-----|
+| `enqueue`, `cancel`, `status` | REST (HTTP) | Existing API, backwards-compatible |
+| `claim`, `ack`, `nack`, `tick` | JSON-RPC (NexusClient) | New distributed methods, batch-friendly |
+| `TaskStore.*`, `ScheduleStore.*` | JSON-RPC (NexusClient) | Full CRUD, consistent with other Nexus stores |
+
+### RPC Method Mapping
+
+**TaskStore:**
+
+| Method | JSON-RPC | Params |
+|--------|----------|--------|
+| `save(task)` | `scheduler.task.save` | Full task (snake_case) |
+| `load(id)` | `scheduler.task.load` | `{ id }` |
+| `remove(id)` | `scheduler.task.remove` | `{ id }` |
+| `updateStatus(id, status, patch?)` | `scheduler.task.updateStatus` | `{ id, status, started_at?, ... }` |
+| `query(filter)` | `scheduler.task.query` | `{ status?, agent_id?, priority?, limit? }` |
+| `loadPending()` | `scheduler.task.query` | `{ status: "pending" }` |
+
+**ScheduleStore:**
+
+| Method | JSON-RPC | Params |
+|--------|----------|--------|
+| `saveSchedule(schedule)` | `scheduler.schedule.save` | Full schedule (snake_case) |
+| `removeSchedule(id)` | `scheduler.schedule.remove` | `{ id }` |
+| `loadSchedules()` | `scheduler.schedule.list` | `{}` |
+
+**Distributed queue (optional methods on TaskQueueBackend):**
+
+| Method | JSON-RPC | Params | Response |
+|--------|----------|--------|----------|
+| `claim(nodeId, limit?)` | `scheduler.claim` | `{ node_id, limit?, visibility_timeout_ms }` | Full tasks |
+| `ack(taskId, result?)` | `scheduler.ack` | `{ task_id, result? }` | `{ ok }` |
+| `nack(taskId, reason?)` | `scheduler.nack` | `{ task_id, reason? }` | `{ ok }` |
+| `tick(scheduleId, nodeId)` | `scheduler.tick` | `{ schedule_id, node_id }` | `{ claimed }` |
+
+### Claim Flow
 
 ```
-submit() or cron fire
-  │
-  ├─ Build ScheduledTask (id, priority, input, mode)
-  │
-  ├─ Generate idempotency key (cron only): "{scheduleId}:{timestamp}"
-  │
-  ├─ queueBackend present?
-  │   ├─ YES: POST /api/v2/scheduler/submit → Nexus
-  │   │       Body: { task_id, agent_id, priority, mode, metadata, idempotency_key }
-  │   │       Nexus assigns queue position, returns task ID
-  │   │       Local heap is NOT used (Nexus is sole queue)
-  │   │
-  │   └─ NO:  store.save(task) + heap.insert(task)
-  │           Local poll() dispatches when ready
-  │
-  └─ emit("task:submitted")
+  Node A                         Nexus Server
+  ┌──────────┐                  ┌──────────────────────┐
+  │ claim(   │                  │                      │
+  │  "a",    │  ──── RPC ────→  │ 1. Find pending tasks │
+  │  limit=3 │                  │ 2. Mark claimed_by=a  │
+  │ )        │                  │ 3. Set claimed_at=now │
+  │          │ ◄── tasks[] ──── │ 4. Return full tasks  │
+  │          │                  │                      │
+  │ execute  │                  │  If no ack within     │
+  │ ...      │                  │  visibilityTimeoutMs: │
+  │          │                  │  → task becomes       │
+  │ ack(id)  │  ──── RPC ────→  │    claimable again    │
+  │          │ ◄── { ok } ───── │ 5. Mark completed     │
+  └──────────┘                  └──────────────────────┘
+```
 
+### Cron Tick Deduplication
 
-cancel(taskId)
-  │
-  ├─ queueBackend present?
-  │   ├─ YES: POST /api/v2/scheduler/task/{id}/cancel → Nexus
-  │   │       Returns { cancelled: boolean }
-  │   │
-  │   └─ NO:  heap.remove(task) + store.updateStatus("completed")
-  │
-  └─ emit("task:cancelled") if successful
+```
+All nodes evaluate cron expressions locally every minute.
+When a schedule fires:
 
+  Node A: tick("sched_1", "node-a") → { claimed: true }  ← winner, enqueues
+  Node B: tick("sched_1", "node-b") → { claimed: false } ← skips
+  Node C: tick("sched_1", "node-c") → { claimed: false } ← skips
 
-status(taskId)
-  │
-  └─ GET /api/v2/scheduler/task/{id} → Nexus
-     Returns TaskStatus or undefined (404)
-     Validates against known status values
+Server uses minute-level bucketing: key = "${scheduleId}:${Math.floor(now/60000)}"
+First caller wins. Subsequent calls in the same bucket return false.
 ```
 
 ### Ownership Split
@@ -129,13 +182,14 @@ status(taskId)
 ┌─────────────────────────────────┬──────────────────────────────────┐
 │         Koi Owns                │         Nexus Owns               │
 ├─────────────────────────────────┼──────────────────────────────────┤
-│  Cron expression parsing        │  Priority queue ordering         │
-│  Cron fire timing               │  5-tier priority levels          │
-│  Retry count + backoff calc     │  Aging + credit-based boost      │
-│  Dead-letter after max retries  │  HRRN scoring                    │
-│  Task timeout enforcement       │  Fair-share admission control    │
-│  Schedule pause/resume          │  Idempotency deduplication       │
-│  Event emission (watch)         │  Cross-node task visibility      │
+│  Cron expression parsing        │  Task persistence (shared)       │
+│  Cron fire timing               │  Schedule persistence (shared)   │
+│  Retry count + backoff calc     │  Priority queue ordering         │
+│  Dead-letter after max retries  │  Claim arbitration (vis timeout) │
+│  Task timeout enforcement       │  Tick deduplication              │
+│  Schedule pause/resume          │  Cross-node task visibility      │
+│  Event emission (watch)         │  Idempotency deduplication       │
+│  Adaptive poll backoff          │  Fair-share admission control    │
 └─────────────────────────────────┴──────────────────────────────────┘
 ```
 
@@ -143,22 +197,29 @@ status(taskId)
 
 ## Configuration
 
-### `NexusTaskQueueConfig`
+### `NexusSchedulerConfig` (recommended)
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `baseUrl` | `string` | (required) | Nexus Astraea base URL |
-| `apiKey` | `string` | (required) | Bearer token for authentication |
-| `timeoutMs` | `number` | `10_000` | HTTP request timeout |
-| `fetch` | `typeof fetch` | `globalThis.fetch` | Injectable fetch for testing |
+```typescript
+interface NexusSchedulerConfig {
+  readonly baseUrl: string;               // Nexus server URL
+  readonly apiKey: string;                 // Bearer token
+  readonly timeoutMs?: number;             // HTTP timeout (default: 10,000ms)
+  readonly visibilityTimeoutMs?: number;   // Claim expiry (default: 30,000ms)
+  readonly fetch?: typeof globalThis.fetch; // Injectable for testing
+}
+```
 
-### API
+| Config | Default | Description |
+|--------|---------|-------------|
+| `baseUrl` | (required) | Nexus server URL |
+| `apiKey` | (required) | Bearer token for authentication |
+| `timeoutMs` | `10_000` | HTTP request timeout |
+| `visibilityTimeoutMs` | `30_000` | How long a claimed task stays invisible to other nodes |
+| `fetch` | `globalThis.fetch` | Injectable fetch for testing with fakes |
 
-| Function | Returns | Purpose |
-|----------|---------|---------|
-| `createNexusTaskQueue(config)` | `TaskQueueBackend` | Factory — creates the HTTP client |
-| `validateNexusTaskQueueConfig(input)` | `Result<Config, KoiError>` | Validates raw config (never throws) |
-| `schedulerNexusDescriptor` | `BrickDescriptor` | For manifest auto-resolution |
+### `NexusTaskQueueConfig` (base — REST-only queue)
+
+Subset of `NexusSchedulerConfig` without `visibilityTimeoutMs`. Use when you only need `enqueue`/`cancel`/`status` without distributed claim semantics.
 
 ### Error Mapping
 
@@ -169,67 +230,111 @@ status(taskId)
 | 429 | `RATE_LIMIT` | Yes |
 | 500+ | `EXTERNAL` | Yes |
 | Network failure | `EXTERNAL` | Yes |
-| Timeout | Propagated from `AbortSignal` | Yes |
 
 ---
 
 ## Examples
 
-### Basic: Plug Nexus into an existing scheduler
+### Full Distributed Setup (Recommended)
 
 ```typescript
+import { createNexusSchedulerBackends } from "@koi/scheduler-nexus";
 import { createScheduler } from "@koi/scheduler";
+
+// One config → all three backends
+const { taskStore, scheduleStore, queueBackend } = createNexusSchedulerBackends({
+  baseUrl: "https://nexus.example.com",
+  apiKey: process.env.NEXUS_API_KEY,
+  visibilityTimeoutMs: 30_000,
+});
+
+// Scheduler auto-detects distributed mode
+const scheduler = createScheduler(
+  config,
+  taskStore,
+  dispatcher,
+  undefined,        // clock
+  scheduleStore,
+  queueBackend,
+  "node-east-1",    // nodeId — identifies this node
+);
+
+// Submit — any node in the cluster can pick it up
+await scheduler.submit({ agentId: "my-agent", input: { text: "hello" } });
+
+// Cron — all nodes evaluate, only one enqueues per tick window
+await scheduler.schedule({
+  expression: "*/5 * * * *",
+  agentId: "cleanup-agent",
+  input: { kind: "cleanup" },
+});
+```
+
+### REST-Only Queue (No Distributed Claims)
+
+```typescript
 import { createNexusTaskQueue } from "@koi/scheduler-nexus";
 
 const backend = createNexusTaskQueue({
   baseUrl: "https://astraea.nexus.example.com",
-  apiKey: process.env.NEXUS_API_KEY!,
+  apiKey: process.env.NEXUS_API_KEY,
 });
 
-const scheduler = createScheduler(
-  config, store, dispatcher, clock,
-  scheduleStore,
-  backend,       // optional — omit for local-only mode
-);
-
-// API is identical regardless of backend
-const id = await scheduler.submit(agentId("worker"), input, "spawn", {
-  priority: 1,   // Nexus will apply 5-tier + HRRN scoring
-});
-
-await scheduler.cancel(id);  // Delegates to Nexus
+// Only enqueue/cancel/status — no claim/ack/nack/tick
+const scheduler = createScheduler(config, store, dispatcher, clock, scheduleStore, backend);
 ```
 
-### Cron with idempotency
+### Individual Backends
 
 ```typescript
-// Cron tasks automatically get idempotency keys: "{scheduleId}:{fireTimestamp}"
-// If the same cron fires twice at the same timestamp, Nexus deduplicates.
-const schedId = await scheduler.schedule(
-  "0 */5 * * *",           // every 5 minutes
-  agentId("reporter"),
-  { kind: "text", text: "generate-report" },
-  "spawn",
-);
+import { createNexusClient } from "@koi/nexus-client";
+import { createNexusTaskStore, createNexusScheduleStore } from "@koi/scheduler-nexus";
+
+const client = createNexusClient({ baseUrl, apiKey });
+const taskStore = createNexusTaskStore(client);
+const scheduleStore = createNexusScheduleStore(client);
 ```
 
-### Testing with mock fetch
+### Testing with Fake Nexus
 
 ```typescript
-import { createNexusTaskQueue } from "@koi/scheduler-nexus";
+import { createNexusSchedulerBackends } from "@koi/scheduler-nexus";
+import { createFakeNexusFetch } from "@koi/test-utils";
 
-const mockFetch = async () =>
-  new Response(JSON.stringify({ id: "task_123" }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const queue = createNexusTaskQueue({
-  baseUrl: "https://test.example.com",
+const { taskStore, scheduleStore, queueBackend } = createNexusSchedulerBackends({
+  baseUrl: "http://fake-nexus",
   apiKey: "test-key",
-  fetch: mockFetch as typeof globalThis.fetch,
+  fetch: createFakeNexusFetch(),  // in-memory JSON-RPC server
 });
 ```
+
+---
+
+## API Reference
+
+### Factories
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `createNexusSchedulerBackends(config)` | `NexusSchedulerBackends` | Creates all three backends from one config |
+| `createNexusTaskStore(client)` | `TaskStore` | Nexus-backed task persistence |
+| `createNexusScheduleStore(client)` | `ScheduleStore` | Nexus-backed schedule persistence |
+| `createNexusTaskQueue(config)` | `TaskQueueBackend` | Priority queue + distributed claim/ack/nack/tick |
+
+### Validation
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `validateNexusSchedulerConfig(raw)` | `Result<NexusSchedulerConfig, KoiError>` | Validates full distributed config |
+| `validateNexusTaskQueueConfig(raw)` | `Result<NexusTaskQueueConfig, KoiError>` | Validates base queue config |
+
+### Types
+
+| Type | Description |
+|------|-------------|
+| `NexusSchedulerConfig` | Full config with `visibilityTimeoutMs` |
+| `NexusTaskQueueConfig` | Base config (REST-only queue) |
+| `NexusSchedulerBackends` | `{ taskStore, scheduleStore, queueBackend }` |
 
 ---
 
@@ -237,30 +342,70 @@ const queue = createNexusTaskQueue({
 
 | Decision | Rationale |
 |----------|-----------|
-| Koi owns retry, Nexus is dumb queue | Retry policy is agent-specific; centralizing it in Nexus would leak Koi semantics into the queue backend |
-| Heap skipped when backend present | Nexus is sole queue — no duplication. Local heap would be stale since Nexus reorders by HRRN |
-| Idempotency key = `{scheduleId}:{timestamp}` | Deterministic per cron fire. Same schedule + same fire time = same key = deduplicated |
-| `TaskStore` stays local | Backend is HTTP-only for enqueue/cancel/status. Task persistence remains in SQLite for crash recovery |
-| `O(n)` heap.remove() accepted | Off hot path (cancel is rare). KISS over complexity |
-| Injectable fetch | Enables unit testing without network. Follows pay-nexus/registry-nexus pattern |
-| `AbortSignal.timeout` for HTTP | Native Bun/Node 22+. No external timeout libraries needed |
+| Two transports (REST + JSON-RPC) | Existing enqueue/cancel/status stays REST for backwards compat. New distributed methods use JSON-RPC for batch-friendly semantics. |
+| Optional distributed methods on L0 | `claim`/`ack`/`nack`/`tick` are optional on `TaskQueueBackend`. Existing SQLite implementations are unaffected. |
+| Visibility timeout (server-managed) | Server tracks claim time + timeout. No distributed locks or coordination protocols needed. |
+| Minute-level tick bucketing | Cron expressions have minute granularity. Using 1-minute windows matches the minimum cron interval. |
+| Shared NexusClient in composite factory | `createNexusSchedulerBackends` creates one client shared across all three backends. |
+| Wire format uses snake_case | Matches Nexus API conventions. Mapper functions handle camelCase conversion. |
+| Koi owns retry, Nexus is dumb queue | Retry policy is agent-specific; centralizing it in Nexus would leak Koi semantics. |
+| Adaptive polling with backoff | Empty claim results trigger exponential backoff (via `computeRetryDelay`). Prevents thundering herd on idle clusters. |
+| Contract test suites | `runTaskStoreContractTests` and `runScheduleStoreContractTests` verify both SQLite and Nexus stores with identical assertions. |
+
+---
+
+## Swappable Backends
+
+`@koi/scheduler-nexus` provides distributed implementations of three L0 interfaces:
+
+```
+                    TaskStore                (L0 interface)
+                       │
+              ┌────────┴────────┐
+              ▼                 ▼
+          SQLite             Nexus
+        (single-node)    (multi-node,
+                          JSON-RPC)
+
+                 ScheduleStore               (L0 interface)
+                       │
+              ┌────────┴────────┐
+              ▼                 ▼
+          SQLite             Nexus
+
+              TaskQueueBackend               (L0 interface)
+                       │
+              ┌────────┴────────┐
+              ▼                 ▼
+         Local heap          Nexus
+       (in-memory)     (REST + JSON-RPC,
+                        claim/ack/nack)
+```
 
 ---
 
 ## File Structure
 
 ```
-packages/scheduler-nexus/
-├── package.json           # deps: @koi/core, @koi/resolve
+packages/sched/scheduler-nexus/
+├── package.json
 ├── tsconfig.json
-├── tsup.config.ts         # ESM-only, node22 target
+├── tsup.config.ts
 └── src/
-    ├── index.ts           # Public API exports
-    ├── config.ts           # NexusTaskQueueConfig + validateNexusTaskQueueConfig()
-    ├── nexus-queue.ts      # createNexusTaskQueue() — TaskQueueBackend impl
-    ├── descriptor.ts       # BrickDescriptor for manifest resolution
-    ├── config.test.ts      # 15 config validation tests
-    └── nexus-queue.test.ts # 20 HTTP client tests
+    ├── index.ts                    # Public API exports
+    ├── config.ts                   # NexusTaskQueueConfig (base)
+    ├── scheduler-config.ts         # NexusSchedulerConfig + validator
+    ├── nexus-queue.ts              # createNexusTaskQueue() — REST + JSON-RPC
+    ├── nexus-task-store.ts         # createNexusTaskStore() — JSON-RPC
+    ├── nexus-schedule-store.ts     # createNexusScheduleStore() — JSON-RPC
+    ├── nexus-scheduler.ts          # createNexusSchedulerBackends() — composite
+    ├── descriptor.ts               # BrickDescriptor for manifest resolution
+    ├── config.test.ts              # Base config validation tests
+    ├── scheduler-config.test.ts    # Full config validation tests
+    ├── nexus-queue.test.ts         # HTTP client tests
+    ├── nexus-task-store.test.ts    # Contract tests (via fake-nexus-fetch)
+    ├── nexus-schedule-store.test.ts # Contract tests (via fake-nexus-fetch)
+    └── nexus-distributed.test.ts   # 5 distributed scenario tests
 ```
 
 ---
@@ -268,13 +413,37 @@ packages/scheduler-nexus/
 ## Layer Compliance
 
 ```
-L0  @koi/core ─────────┐
-                        ▼
-L0u @koi/resolve ──┐
-                   ▼
-L2  @koi/scheduler-nexus
-    imports from L0 + L0u only
+L0  @koi/core ────────────────────────────────────────────────┐
+    TaskStore, ScheduleStore, TaskQueueBackend,                 │
+    ScheduledTask, CronSchedule, TaskFilter,                    │
+    TaskId, ScheduleId, AgentId, taskId(), scheduleId()         │
+                                                                 │
+L0u @koi/nexus-client ──────────────────────────────────────  │
+    NexusClient, createNexusClient, mapHttpError                │
+                                                                 │
+L0u @koi/errors ────────────────────────────────────────────  │
+    isKoiError                                                   │
+                                                                 │
+L0u @koi/resolve ───────────────────────────────────────────  │
+    BrickDescriptor                                              │
+                                                                 ▼
+L2  @koi/scheduler-nexus ◄─────────────────────────────────  ┘
+    imports from L0 and L0u only
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 packages
-    ✗ never imports @koi/scheduler
+    ✗ zero external npm dependencies
+    ✓ All interface properties readonly
+    ✓ NexusClient injected, not created at module level
+    ✓ RPC errors wrapped with cause chaining
 ```
+
+---
+
+## Related
+
+- Issue: #756 — feat: Scheduler Nexus Backend (Distributed Job Queue)
+- `@koi/scheduler` — Core scheduler with SQLite store, poll loop, cron engine
+- `@koi/nexus-client` — Shared JSON-RPC transport
+- `@koi/test-utils` — `createFakeNexusFetch()` with scheduler RPC handlers, contract test suites
+- `@koi/store-nexus` — Same pattern for ForgeStore (brick storage)
+- `@koi/filesystem-nexus` — Same pattern for FileSystemBackend
