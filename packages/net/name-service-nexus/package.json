@@ -1,6 +1,6 @@
 {
-  "name": "@koi/name-service",
-  "description": "Register and resolve agent names with TTL expiry and fuzzy suggestions",
+  "name": "@koi/name-service-nexus",
+  "description": "Nexus-backed ANS backend with poll-based projection sync",
   "version": "0.0.0",
   "private": true,
   "type": "module",

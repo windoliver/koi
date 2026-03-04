@@ -31,6 +31,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/harness-scheduler",
   "@koi/hash",
   "@koi/manifest",
+  "@koi/name-resolution",
   "@koi/nexus-client",
   "@koi/resolve",
   "@koi/sandbox-cloud-base",

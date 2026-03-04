@@ -1,6 +1,6 @@
 {
-  "name": "@koi/name-service",
-  "description": "Register and resolve agent names with TTL expiry and fuzzy suggestions",
+  "name": "@koi/name-resolution",
+  "description": "Pure ANS algorithms: composite keys, name validation, scope resolution, fuzzy matching",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -19,7 +19,6 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/name-resolution": "workspace:*",
     "@koi/validation": "workspace:*"
   },
   "devDependencies": {

@@ -20,11 +20,13 @@ import type {
   Result,
 } from "@koi/core";
 import { DEFAULT_ANS_CONFIG, RETRYABLE_DEFAULTS } from "@koi/core";
-import { compositeKey } from "./composite-key.js";
+import {
+  compositeKey,
+  computeSuggestions,
+  resolveByScope,
+  validateName,
+} from "@koi/name-resolution";
 import { createExpiryScheduler } from "./expiry-scheduler.js";
-import { computeSuggestions } from "./fuzzy-matcher.js";
-import { validateName } from "./name-validation.js";
-import { resolveByScope } from "./scope-resolver.js";
 
 /** Merge user config with defaults. */
 function mergeConfig(partial?: Partial<AnsConfig>): AnsConfig {

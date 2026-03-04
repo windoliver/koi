@@ -1,7 +1,7 @@
 /**
  * Pure scope-based resolution logic for ANS.
  *
- * Resolves a name by checking scopes in priority order (agent → zone → global),
+ * Resolves a name by checking scopes in priority order (agent -> zone -> global),
  * looking up both canonical names and aliases.
  */
 
@@ -28,8 +28,8 @@ function isExpired(record: NameRecord): boolean {
  *
  * @param name - The name to resolve (canonical or alias).
  * @param scope - Optional scope to restrict resolution to.
- * @param records - Map of composite key → NameRecord.
- * @param aliases - Map of alias composite key → canonical composite key.
+ * @param records - Map of composite key -> NameRecord.
+ * @param aliases - Map of alias composite key -> canonical composite key.
  */
 export function resolveByScope(
   name: string,

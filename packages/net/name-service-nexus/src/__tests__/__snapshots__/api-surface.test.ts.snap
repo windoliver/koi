@@ -1,0 +1,87 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/name-service-nexus API surface . has stable type surface 1`] = `
+"import { AnsConfig, Result, KoiError, NameServiceBackend } from '@koi/core';
+
+/**
+ * Configuration types and validation for the Nexus-backed ANS backend.
+ */
+
+/** Fetch-compatible function type for injectable HTTP clients. */
+type FetchFn = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+/** Configuration for the Nexus-backed ANS backend. */
+interface NexusNameServiceConfig {
+    /** Nexus server base URL (e.g. "https://nexus.example.com"). */
+    readonly baseUrl: string;
+    /** API key for Nexus authentication (e.g. "sk-..."). */
+    readonly apiKey: string;
+    /** Optional Nexus zone scope for name listing. */
+    readonly zoneId?: string | undefined;
+    /** HTTP request timeout in milliseconds. Default: 10_000. */
+    readonly timeoutMs?: number | undefined;
+    /** Poll interval in milliseconds for sync updates. 0 = disabled. Default: 5_000. */
+    readonly pollIntervalMs?: number | undefined;
+    /** Maximum number of entries in the local projection cache. Default: 10_000. */
+    readonly maxEntries?: number | undefined;
+    /** Injectable fetch function for testing. Defaults to globalThis.fetch. */
+    readonly fetch?: FetchFn | undefined;
+    /** Optional partial ANS config (merged with DEFAULT_ANS_CONFIG). */
+    readonly ansConfig?: Partial<AnsConfig> | undefined;
+}
+/** Default configuration values. */
+declare const DEFAULT_NEXUS_NAME_SERVICE_CONFIG: {
+    readonly timeoutMs: 10000;
+    readonly pollIntervalMs: 5000;
+    readonly maxEntries: 10000;
+};
+/** Validate a NexusNameServiceConfig. Returns a typed error on failure. */
+declare function validateNexusNameServiceConfig(config: NexusNameServiceConfig): Result<NexusNameServiceConfig, KoiError>;
+
+/**
+ * Nexus-backed ANS backend implementation.
+ *
+ * Uses Nexus as the authoritative store for name records. Maintains a local
+ * in-memory projection for fast reads, synchronized via periodic polling.
+ * Write operations hit Nexus first, then update the local projection
+ * (write-then-project pattern).
+ *
+ * L2 package — imports only from @koi/core (L0) and L0u packages.
+ */
+
+/**
+ * Create a Nexus-backed ANS backend.
+ *
+ * Performs eager warmup by listing all names from Nexus at startup.
+ * Starts a poll timer to keep the local projection in sync.
+ *
+ * @param config - Nexus connection and sync configuration.
+ */
+declare function createNexusNameService(config: NexusNameServiceConfig): Promise<NameServiceBackend>;
+
+/**
+ * Nexus JSON-RPC 2.0 client for ANS operations.
+ *
+ * Self-contained transport (same pattern as registry-nexus/nexus-client.ts).
+ * Posts to \${baseUrl}/api/ans/\${method}.
+ * All RPC methods return Result<T, KoiError> — no thrown exceptions
+ * for expected failures.
+ */
+
+/** Wire format for a name record in Nexus. */
+interface NexusNameRecord {
+    readonly name: string;
+    readonly binding_kind: "agent" | "brick";
+    readonly agent_id?: string | undefined;
+    readonly brick_id?: string | undefined;
+    readonly brick_kind?: string | undefined;
+    readonly scope: string;
+    readonly aliases: readonly string[];
+    readonly registered_at: number;
+    readonly expires_at: number;
+    readonly registered_by: string;
+    readonly zone_id?: string | undefined;
+}
+
+export { DEFAULT_NEXUS_NAME_SERVICE_CONFIG, type FetchFn, type NexusNameRecord, type NexusNameServiceConfig, createNexusNameService, validateNexusNameServiceConfig };
+"
+`;
