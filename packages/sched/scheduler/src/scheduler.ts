@@ -32,7 +32,7 @@ import { createSystemClock } from "./clock.js";
 import { createMinHeap } from "./heap.js";
 import { computeRetryDelay } from "./retry.js";
 import { createSemaphore } from "./semaphore.js";
-import { createPeriodicTimer } from "./timer.js";
+import { createAdaptiveTimer, createPeriodicTimer } from "./timer.js";
 
 // ---------------------------------------------------------------------------
 // Task dispatcher signature
@@ -55,8 +55,11 @@ export function createScheduler(
   clock?: Clock,
   scheduleStore?: ScheduleStore,
   queueBackend?: TaskQueueBackend,
+  nodeId?: string,
 ): TaskScheduler {
   const clk = clock ?? createSystemClock();
+  const localNodeId = nodeId ?? `node_${Math.random().toString(36).slice(2, 10)}`;
+  const distributedMode = queueBackend?.claim !== undefined;
   let disposed = false; // let: set to true on dispose
 
   // ---------------------------------------------------------------------------
@@ -166,6 +169,25 @@ export function createScheduler(
     return id;
   }
 
+  /**
+   * Cron tick wrapper — in distributed mode, claims the tick before enqueuing
+   * so only one node fires per schedule interval.
+   */
+  async function cronTick(
+    sid: ScheduleId,
+    agentIdVal: AgentId,
+    input: EngineInput,
+    mode: "spawn" | "dispatch",
+    options?: TaskOptions,
+    idempotencyKey?: string,
+  ): Promise<void> {
+    if (distributedMode && queueBackend?.tick !== undefined) {
+      const claimed = await queueBackend.tick(sid, localNodeId);
+      if (!claimed) return; // Another node won this tick
+    }
+    await createAndEnqueueTask(agentIdVal, input, mode, options, idempotencyKey);
+  }
+
   /** Race a promise against a clock-based timeout. Returns the result or throws TIMEOUT KoiError. */
   function executeWithTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined): Promise<T> {
     if (timeoutMs === undefined) return promise;
@@ -222,6 +244,11 @@ export function createScheduler(
         await store.updateStatus(task.id, "completed", { completedAt: clk.now() });
         completedCount += 1;
         emit({ kind: "task:completed", taskId: task.id, result });
+
+        // In distributed mode, ack the task on the backend
+        if (distributedMode) {
+          await queueBackend?.ack?.(task.id, result);
+        }
       } catch (err: unknown) {
         // Timeout errors arrive as KoiError objects with code "TIMEOUT"
         const isTimeoutError =
@@ -241,16 +268,21 @@ export function createScheduler(
 
         const nextRetries = task.retries + 1;
         if (nextRetries < task.maxRetries) {
-          // Retry: re-queue with backoff
-          const delay = computeRetryDelay(task.retries, config);
-          const retask: ScheduledTask = {
-            ...task,
-            status: "pending",
-            retries: nextRetries,
-            scheduledAt: clk.now() + delay,
-            lastError: koiError,
-          };
-          await enqueueLocally(retask);
+          if (distributedMode) {
+            // Distributed mode: nack so the server re-queues
+            await queueBackend?.nack?.(task.id, koiError.message);
+          } else {
+            // Local mode: re-queue with backoff
+            const delay = computeRetryDelay(task.retries, config);
+            const retask: ScheduledTask = {
+              ...task,
+              status: "pending",
+              retries: nextRetries,
+              scheduledAt: clk.now() + delay,
+              lastError: koiError,
+            };
+            await enqueueLocally(retask);
+          }
           failedCount += 1;
           emit({ kind: "task:failed", taskId: task.id, error: koiError });
         } else {
@@ -261,11 +293,18 @@ export function createScheduler(
           });
           deadLetteredCount += 1;
           emit({ kind: "task:dead_letter", taskId: task.id, error: koiError });
+
+          // In distributed mode, nack with dead-letter reason
+          if (distributedMode) {
+            await queueBackend?.nack?.(task.id, `dead_letter: ${koiError.message}`);
+          }
         }
       }
     } catch (_infraError: unknown) {
       // Infrastructure failure (store error) — re-insert for retry on next poll
-      heap.insert(task);
+      if (!distributedMode) {
+        heap.insert(task);
+      }
     } finally {
       semaphore.release();
     }
@@ -298,7 +337,54 @@ export function createScheduler(
     }
   }
 
-  const pollTimer = createPeriodicTimer(clk, config.pollIntervalMs, poll);
+  // ---------------------------------------------------------------------------
+  // Distributed poll loop — claims tasks from the backend
+  // ---------------------------------------------------------------------------
+
+  let consecutiveEmpty = 0; // let: tracks empty claim results for adaptive backoff
+
+  async function distributedPoll(): Promise<void> {
+    if (disposed) return;
+
+    const availableSlots = semaphore.available();
+    if (availableSlots <= 0) return;
+
+    try {
+      const claimed = (await queueBackend?.claim?.(localNodeId, availableSlots)) ?? [];
+
+      if (claimed.length === 0) {
+        consecutiveEmpty += 1;
+        return;
+      }
+
+      // Reset backoff on successful claim
+      consecutiveEmpty = 0;
+
+      for (const task of claimed) {
+        if (!semaphore.acquire()) break;
+
+        // Save task locally for status tracking, then dispatch
+        await store.save(task);
+        void dispatchTask(task);
+      }
+    } catch (_claimError: unknown) {
+      // Claim failure — backoff will handle next attempt
+      consecutiveEmpty += 1;
+    }
+  }
+
+  function computeAdaptiveInterval(): number {
+    if (consecutiveEmpty === 0) return config.pollIntervalMs;
+    return Math.min(
+      config.maxRetryDelayMs,
+      config.pollIntervalMs * 2 ** Math.min(consecutiveEmpty, 10),
+    );
+  }
+
+  // In distributed mode, use adaptive polling; otherwise use fixed-interval local poll
+  const pollTimer = distributedMode
+    ? createAdaptiveTimer(clk, () => computeAdaptiveInterval(), distributedPoll)
+    : createPeriodicTimer(clk, config.pollIntervalMs, poll);
 
   // ---------------------------------------------------------------------------
   // Initialize: load pending tasks from store into heap
@@ -357,7 +443,8 @@ export function createScheduler(
 
         const cronJob = new Cron(meta.expression, cronOptions, () => {
           const idempotencyKey = `${meta.id}:${String(clk.now())}`;
-          void createAndEnqueueTask(
+          void cronTick(
+            meta.id,
             meta.agentId,
             meta.input,
             meta.mode,
@@ -435,7 +522,7 @@ export function createScheduler(
 
     const cronJob = new Cron(expression, cronOptions, () => {
       const idempotencyKey = `${id}:${String(clk.now())}`;
-      void createAndEnqueueTask(agentIdVal, input, mode, options, idempotencyKey);
+      void cronTick(id, agentIdVal, input, mode, options, idempotencyKey);
     });
 
     crons.set(id, cronJob);

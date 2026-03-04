@@ -93,6 +93,10 @@ export type { FakePermissionBackend, FakePermissionBackendOptions } from "./perm
 export { createFakePermissionBackend } from "./permission-backend.js";
 export type { ResolverContractOptions } from "./resolver-contract.js";
 export { testResolverContract } from "./resolver-contract.js";
+export {
+  runScheduleStoreContractTests,
+  runTaskStoreContractTests,
+} from "./scheduler-store-contract.js";
 export { runScratchpadContractTests } from "./scratchpad-contract.js";
 export { runSessionPersistenceContractTests } from "./session-persistence-contract.js";
 export type { SkillRegistryContractOptions } from "./skill-registry-contract.js";
