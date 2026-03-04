@@ -1366,6 +1366,18 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/mm/middleware-conversation": {
+      "name": "@koi/middleware-conversation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/mm/middleware-hot-memory": {
       "name": "@koi/middleware-hot-memory",
       "version": "0.0.0",
@@ -3024,6 +3036,8 @@
     "@koi/middleware-compactor": ["@koi/middleware-compactor@workspace:packages/mm/middleware-compactor"],
 
     "@koi/middleware-context-editing": ["@koi/middleware-context-editing@workspace:packages/mm/middleware-context-editing"],
+
+    "@koi/middleware-conversation": ["@koi/middleware-conversation@workspace:packages/mm/middleware-conversation"],
 
     "@koi/middleware-degenerate": ["@koi/middleware-degenerate@workspace:packages/middleware/middleware-degenerate"],
 
