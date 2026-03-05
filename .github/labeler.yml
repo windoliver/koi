@@ -51,6 +51,7 @@
       - "packages/**/token-estimator/**"
       - "packages/**/validation/**"
       - "packages/**/variant-selection/**"
+      - "packages/**/welford-stats/**"
 
 "layer:L3":
   - changed-files:
@@ -136,4 +137,5 @@
       - "!packages/**/tool-stack/**"
       - "!packages/**/validation/**"
       - "!packages/**/variant-selection/**"
+      - "!packages/**/welford-stats/**"
       - "!packages/**/workspace-stack/**"
