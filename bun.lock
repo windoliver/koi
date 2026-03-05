@@ -1061,6 +1061,20 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/goal-stack": {
+      "name": "@koi/goal-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/middleware-goal-anchor": "workspace:*",
+        "@koi/middleware-goal-reminder": "workspace:*",
+        "@koi/middleware-planning": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/governance": {
       "name": "@koi/governance",
       "version": "0.0.0",
@@ -3188,6 +3202,8 @@
     "@koi/gateway-webhook": ["@koi/gateway-webhook@workspace:packages/net/gateway-webhook"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
+
+    "@koi/goal-stack": ["@koi/goal-stack@workspace:packages/meta/goal-stack"],
 
     "@koi/governance": ["@koi/governance@workspace:packages/meta/governance"],
 
