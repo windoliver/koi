@@ -32,7 +32,6 @@ const SUBSYSTEM_MAP: Readonly<Record<string, string>> = {
   // mm/ — memory, context, transcript
   context: "mm",
   "memory-fs": "mm",
-  "knowledge-vault": "mm",
   transcript: "mm",
   "session-store": "mm",
   "snapshot-store-sqlite": "mm",

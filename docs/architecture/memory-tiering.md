@@ -423,4 +423,3 @@ Snapshots the `.d.ts` output — any unintended signature change causes a diff.
 | **#455** | `@koi/core` | This change — L0 type additions |
 | **#195** | `@koi/memory-nexus` | Blocked by #455 — needs tier/decay fields on results |
 | **#24** | `@koi/entity-memory` | Related — entity-scoped memory uses `relatedEntities` |
-| **#327** | `@koi/knowledge-vault` | Related — long-term knowledge uses `category` classification |
