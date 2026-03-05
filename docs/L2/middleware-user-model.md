@@ -44,7 +44,7 @@ Based on [PAHF (Liang et al., 2025)](https://arxiv.org/abs/2602.16173): combinin
 - **N+1 query elimination** — single `memory.recall()` per turn with turn-scoped cache, instead of each middleware recalling independently
 - **SignalSource interface** — plug in IDE state, environment sensors, or any external context via a simple `{ name, read() }` contract with automatic timeout and failure isolation
 - **Unified signal pipeline** — corrections, drift, and sensor data all flow through `SignalSink.ingest()`, enabling future coordination (e.g., sensor data confirming drift)
-- **Drop-in migration** — old packages become thin deprecation shims that delegate to `mw-user-model`; existing code keeps working with a console.warn
+- **Clean replacement** — old `mw-personalization` and `mw-preference` packages have been removed; `mw-user-model` is the sole implementation
 
 ### For users
 
