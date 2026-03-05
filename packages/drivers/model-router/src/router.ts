@@ -20,6 +20,7 @@ import type { ResolvedRouterConfig, ResolvedTargetConfig } from "./config.js";
 import { type FallbackTarget, withFallback } from "./fallback.js";
 import type { ProviderAdapter, StreamChunk } from "./provider-adapter.js";
 import { withRetry } from "./retry.js";
+import { createTargetOrderer } from "./target-ordering.js";
 
 export interface RouterMetrics {
   readonly totalRequests: number;
@@ -42,6 +43,8 @@ export interface ModelRouterOptions {
   readonly evaluator?: CascadeEvaluator;
   readonly classifier?: CascadeClassifier;
   readonly clock?: () => number;
+  /** Injectable random for deterministic testing of weighted strategy. */
+  readonly random?: () => number;
 }
 
 function targetId(t: ResolvedTargetConfig): string {
@@ -110,6 +113,14 @@ export function createModelRouter(
   const enabledFallbackTargets: readonly FallbackTarget[] = fallbackTargets.filter(
     (t) => t.enabled,
   );
+
+  // Target ordering for round-robin / weighted strategies
+  const targetWeights = new Map(config.targets.map((t) => [targetId(t), t.weight]));
+  const orderTargets = createTargetOrderer({
+    strategy: config.strategy,
+    weights: targetWeights,
+    ...(options.random !== undefined ? { random: options.random } : {}),
+  });
 
   // Create per-target circuit breakers
   const circuitBreakers = new Map<string, CircuitBreaker>();
@@ -227,7 +238,7 @@ export function createModelRouter(
       }));
       return tierTargets.length > 0 ? tierTargets : enabledFallbackTargets;
     }
-    return enabledFallbackTargets;
+    return orderTargets(enabledFallbackTargets);
   }
 
   /**
@@ -303,7 +314,7 @@ export function createModelRouter(
       }
 
       const result = await withFallback(
-        fallbackTargets,
+        orderTargets(enabledFallbackTargets),
         (target) => executeForTargetId(target.id, request),
         circuitBreakers,
         clock,
