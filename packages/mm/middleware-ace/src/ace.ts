@@ -23,8 +23,9 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
+import { estimateTokens } from "@koi/token-estimator";
 import type { AceConfig } from "./config.js";
-import { selectPlaybooks } from "./injector.js";
+import { selectPlaybooks, selectStructuredPlaybooks } from "./injector.js";
 import { createLlmPipeline, createStatPipeline, isLlmPipelineEnabled } from "./pipeline.js";
 import { extractCitedBulletIds, serializeForInjection } from "./playbook.js";
 import { createTrajectoryBuffer } from "./trajectory-buffer.js";
@@ -114,23 +115,27 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       }
 
       // Select stat-based playbooks within token budget
+      const totalBudget = config.maxInjectionTokens ?? DEFAULT_MAX_INJECTION_TOKENS;
       const selected = selectPlaybooks(cachedStatPlaybooks ?? [], {
-        maxTokens: config.maxInjectionTokens ?? DEFAULT_MAX_INJECTION_TOKENS,
+        maxTokens: totalBudget,
         clock,
       });
 
-      // Build enriched request
-      const enrichedRequest = buildEnrichedRequest(
-        request,
-        selected,
+      // Compute stat token usage, derive remaining budget for structured playbooks
+      const statTokensUsed = selected.reduce((sum, pb) => sum + estimateTokens(pb.strategy), 0);
+      const remainingBudget = totalBudget - statTokensUsed;
+      const filteredStructured = selectStructuredPlaybooks(
         cachedStructuredPlaybooks ?? [],
-        clock,
+        remainingBudget,
       );
 
-      const totalPlaybookCount = selected.length + (cachedStructuredPlaybooks ?? []).length;
+      // Build enriched request
+      const enrichedRequest = buildEnrichedRequest(request, selected, filteredStructured, clock);
+
+      const totalPlaybookCount = selected.length + filteredStructured.length;
       activePlaybookCount = totalPlaybookCount;
 
-      if (selected.length > 0 || (cachedStructuredPlaybooks ?? []).length > 0) {
+      if (selected.length > 0 || filteredStructured.length > 0) {
         config.onInject?.(selected);
       }
 
