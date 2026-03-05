@@ -34,7 +34,6 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/manifest",
   "@koi/name-resolution",
   "@koi/nexus-client",
-  "@koi/redaction",
   "@koi/resolve",
   "@koi/sandbox-cloud-base",
   "@koi/sandbox-wasm",
@@ -70,12 +69,11 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/ipc-stack",
   "@koi/middleware-personalization", // deprecation shim — delegates to @koi/middleware-user-model
   "@koi/middleware-preference", // deprecation shim — delegates to @koi/middleware-user-model
+  "@koi/node-stack",
   "@koi/quality-gate",
   "@koi/retry-stack",
-  "@koi/rlm-stack",
   "@koi/sandbox-cloud",
   "@koi/sandbox-stack",
   "@koi/starter",
-  "@koi/tool-stack",
   "@koi/workspace-stack",
 ]);
