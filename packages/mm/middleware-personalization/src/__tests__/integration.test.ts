@@ -1,14 +1,19 @@
 /**
- * Integration test — multi-turn preference learning loop.
+ * Integration test — validates that the deprecation shim delegates correctly.
  *
- * Uses a stateful mock memory to simulate the full lifecycle:
- * cold start → preference recall → correction → corrected behavior.
+ * Since the shim delegates to @koi/middleware-user-model, we verify the
+ * unified middleware behavior: [User Context] format and onBeforeTurn processing.
  */
 
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { MemoryRecallOptions, MemoryResult, MemoryStoreOptions } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
-import type { ModelRequest, ModelResponse, TurnContext } from "@koi/core/middleware";
+import type {
+  ModelRequest,
+  ModelResponse,
+  SessionContext,
+  TurnContext,
+} from "@koi/core/middleware";
 import { createPersonalizationMiddleware } from "../personalization.js";
 
 interface StoredEntry {
@@ -44,17 +49,24 @@ function createStatefulMemory(): {
   };
 }
 
-function createTurnContext(turnIndex: number): TurnContext {
+function createSessionCtx(): SessionContext {
   return {
-    session: {
-      agentId: "test-agent",
-      sessionId: "integration-session" as never,
-      runId: "integration-run" as never,
-      metadata: {},
-    },
+    agentId: "test-agent",
+    sessionId: "integration-session" as never,
+    runId: "integration-run" as never,
+    metadata: {},
+  };
+}
+
+function createTurnContext(
+  turnIndex: number,
+  messages: readonly InboundMessage[] = [],
+): TurnContext {
+  return {
+    session: createSessionCtx(),
     turnIndex,
     turnId: `turn-${turnIndex}` as never,
-    messages: [],
+    messages,
     metadata: {},
   };
 }
@@ -77,91 +89,62 @@ function createNext(): ReturnType<typeof mock> & ((req: ModelRequest) => Promise
   );
 }
 
-describe("multi-turn preference learning", () => {
-  test("cold start → preference recall → correction → corrected behavior", async () => {
+describe("personalization shim integration", () => {
+  const originalWarn = console.warn;
+
+  afterEach(() => {
+    console.warn = originalWarn;
+  });
+
+  test("shim creates middleware that injects [User Context] block", async () => {
+    console.warn = mock(() => {});
+
     const memory = createStatefulMemory();
-    const mw = createPersonalizationMiddleware({ memory });
-
-    // --- Turn 1: cold start, ambiguous instruction ---
-    const next1 = createNext();
-    await mw.wrapModelCall?.(
-      createTurnContext(0),
-      createRequest("How should I format dates — ISO or locale?"),
-      next1,
-    );
-
-    // Expect clarification directive (no preferences exist)
-    const call1 = next1.mock.calls[0]?.[0] as ModelRequest;
-    expect(call1.messages[0]).toBeDefined();
-    expect(call1.messages[0]?.content[0]).toEqual(
-      expect.objectContaining({ kind: "text", text: expect.stringContaining("ask the user") }),
-    );
-
-    // Simulate: user answered, middleware stores the preference externally
-    await memory.store("User prefers ISO-8601 format", {
+    // Pre-seed a preference
+    await memory.store("User prefers dark mode", {
       namespace: "preferences",
       category: "preference",
     });
 
-    // --- Turn 2: preference recall (non-ambiguous instruction) ---
-    // Create a new middleware instance to reset cache (simulating real scenario)
-    const mw2 = createPersonalizationMiddleware({ memory });
-    const next2 = createNext();
-    await mw2.wrapModelCall?.(
-      createTurnContext(1),
-      createRequest("Format the timestamps in the report"),
-      next2,
+    const mw = createPersonalizationMiddleware({ memory });
+
+    // Start session
+    await mw.onSessionStart?.(createSessionCtx());
+
+    // Call wrapModelCall
+    const next = createNext();
+    await mw.wrapModelCall?.(createTurnContext(0), createRequest("Format the output"), next);
+
+    const calledWith = next.mock.calls[0]?.[0] as ModelRequest;
+    expect(calledWith.messages[0]).toBeDefined();
+    const text =
+      calledWith.messages[0]?.content[0]?.kind === "text"
+        ? calledWith.messages[0].content[0].text
+        : "";
+    expect(text).toContain("[User Context]");
+    expect(text).toContain("dark mode");
+  });
+
+  test("shim preserves ambiguity detection behavior", async () => {
+    console.warn = mock(() => {});
+
+    const memory = createStatefulMemory();
+    const mw = createPersonalizationMiddleware({ memory });
+    await mw.onSessionStart?.(createSessionCtx());
+
+    const next = createNext();
+    await mw.wrapModelCall?.(
+      createTurnContext(0),
+      createRequest("How should I format dates — ISO or locale?"),
+      next,
     );
 
-    // Expect [User Preferences] injected
-    const call2 = next2.mock.calls[0]?.[0] as ModelRequest;
-    expect(call2.messages[0]).toBeDefined();
-    expect(call2.messages[0]?.content[0]).toEqual(
-      expect.objectContaining({
-        kind: "text",
-        text: expect.stringContaining("[User Preferences]"),
-      }),
-    );
-    expect(call2.messages[0]?.content[0]).toEqual(
-      expect.objectContaining({
-        kind: "text",
-        text: expect.stringContaining("ISO-8601"),
-      }),
-    );
-
-    // --- Turn 3: preference correction ---
-    const mw3 = createPersonalizationMiddleware({ memory });
-    const next3 = createNext();
-    await mw3.wrapModelCall?.(
-      createTurnContext(2),
-      createRequest("Actually, I prefer US date format MM/DD/YYYY instead"),
-      next3,
-    );
-
-    // Correction should have been stored
-    const prefEntries = memory.entries.filter((e) => e.category === "preference");
-    expect(prefEntries.length).toBe(2); // original + correction
-    expect(prefEntries[1]?.content).toContain("MM/DD/YYYY");
-
-    // --- Turn 4: corrected behavior ---
-    const mw4 = createPersonalizationMiddleware({ memory });
-    const next4 = createNext();
-    await mw4.wrapModelCall?.(createTurnContext(3), createRequest("Display the dates"), next4);
-
-    // Expect [User Preferences] with both entries (new + old)
-    const call4 = next4.mock.calls[0]?.[0] as ModelRequest;
-    expect(call4.messages[0]).toBeDefined();
-    expect(call4.messages[0]?.content[0]).toEqual(
-      expect.objectContaining({
-        kind: "text",
-        text: expect.stringContaining("[User Preferences]"),
-      }),
-    );
-    expect(call4.messages[0]?.content[0]).toEqual(
-      expect.objectContaining({
-        kind: "text",
-        text: expect.stringContaining("MM/DD/YYYY"),
-      }),
-    );
+    // With unified middleware, ambiguity detected → [User Context] with clarification
+    const calledWith = next.mock.calls[0]?.[0] as ModelRequest;
+    const text =
+      calledWith.messages[0]?.content[0]?.kind === "text"
+        ? calledWith.messages[0].content[0].text
+        : "";
+    expect(text).toContain("Clarification");
   });
 });

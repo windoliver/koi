@@ -13,6 +13,7 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
+    "@koi/middleware-user-model": "workspace:*",
     "@koi/token-estimator": "workspace:*"
   },
   "devDependencies": {

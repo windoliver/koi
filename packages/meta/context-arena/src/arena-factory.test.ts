@@ -135,11 +135,10 @@ describe("createContextArena personalization", () => {
     const bundle = await createContextArena(
       baseConfig({ memory, personalization: { enabled: true } }),
     );
-    // 5 middleware: squash + compactor + context-editing + personalization + preference (memory → default-on)
-    expect(bundle.middleware).toHaveLength(5);
+    // 4 middleware: squash + compactor + context-editing + user-model (unified)
+    expect(bundle.middleware).toHaveLength(4);
     const names = bundle.middleware.map((mw) => mw.name);
-    expect(names).toContain("personalization");
-    expect(names).toContain("preference-drift");
+    expect(names).toContain("user-model");
   });
 
   test("personalization middleware uses resolved config values", async () => {
@@ -214,11 +213,11 @@ describe("createContextArena memory wiring", () => {
 
     // memoryFs provider still attaches even when config.memory overrides for extraction
     expect(bundle.providers).toHaveLength(2);
-    // 3 base + hot memory + preference = 5 middleware
+    // 3 base + hot memory + user-model = 5 middleware
     expect(bundle.middleware).toHaveLength(5);
   });
 
-  test("memoryFs adds hot memory and preference middleware", async () => {
+  test("memoryFs adds hot memory and user-model middleware", async () => {
     const dir = await makeTmpDir();
     const bundle = await createContextArena(
       baseConfig({
@@ -226,13 +225,13 @@ describe("createContextArena memory wiring", () => {
       }),
     );
 
-    // squash (220) + compactor (225) + context-editing (250) + hot-memory (310) + preference (410)
+    // squash (220) + compactor (225) + context-editing (250) + hot-memory (310) + user-model (415)
     expect(bundle.middleware).toHaveLength(5);
     const priorities = bundle.middleware.map((mw) => mw.priority);
-    expect(priorities).toEqual([220, 225, 250, 310, 410]);
+    expect(priorities).toEqual([220, 225, 250, 310, 415]);
   });
 
-  test("preference: false disables preference middleware even with memory", async () => {
+  test("preference: false disables user-model middleware when personalization also off", async () => {
     const dir = await makeTmpDir();
     const bundle = await createContextArena(
       baseConfig({
@@ -242,12 +241,13 @@ describe("createContextArena memory wiring", () => {
     );
 
     // squash + compactor + context-editing + hot-memory = 4
+    // (personalization is default-off and preference is explicitly false, so no user-model)
     expect(bundle.middleware).toHaveLength(4);
     const names = bundle.middleware.map((mw) => mw.name);
-    expect(names).not.toContain("preference-drift");
+    expect(names).not.toContain("user-model");
   });
 
-  test("preference middleware wired with classify callback", async () => {
+  test("user-model middleware wired with classify callback", async () => {
     const dir = await makeTmpDir();
     const bundle = await createContextArena(
       baseConfig({
@@ -256,10 +256,10 @@ describe("createContextArena memory wiring", () => {
       }),
     );
 
-    // squash + compactor + context-editing + hot-memory + preference = 5
+    // squash + compactor + context-editing + hot-memory + user-model = 5
     expect(bundle.middleware).toHaveLength(5);
-    const prefMw = bundle.middleware.find((mw) => mw.name === "preference-drift");
-    expect(prefMw).toBeDefined();
+    const umMw = bundle.middleware.find((mw) => mw.name === "user-model");
+    expect(umMw).toBeDefined();
   });
 });
 
@@ -522,8 +522,8 @@ describe("createContextArena compactor archiver wiring", () => {
 
     const bundle = await createContextArena(baseConfig({ archiver: store, memory }));
 
-    // Memory triggers preference middleware, so 4 middleware total
-    // (squash + compactor + context-editing + preference)
+    // Memory triggers user-model middleware (preference default-on), so 4 middleware total
+    // (squash + compactor + context-editing + user-model)
     expect(bundle.middleware).toHaveLength(4);
     expect(bundle.config.archiver).toBe(store);
   });
@@ -594,10 +594,10 @@ describe("createContextArena conversation wiring", () => {
       }),
     );
 
-    // conversation (100) + squash (220) + compactor (225) + context-editing (250) + hot-memory (310) + preference (410)
+    // conversation (100) + squash (220) + compactor (225) + context-editing (250) + hot-memory (310) + user-model (415)
     expect(bundle.middleware).toHaveLength(6);
     const priorities = bundle.middleware.map((mw) => mw.priority);
-    expect(priorities).toEqual([100, 220, 225, 250, 310, 410]);
+    expect(priorities).toEqual([100, 220, 225, 250, 310, 415]);
 
     await Promise.all(tmpDirs.map((d) => rm(d, { recursive: true, force: true })));
   });

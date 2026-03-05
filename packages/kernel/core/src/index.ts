@@ -370,6 +370,7 @@ export {
   toolCallId,
   toolToken,
   turnId,
+  USER_MODEL,
   WEBHOOK,
   WORKSPACE,
   ZONE_REGISTRY,
@@ -921,6 +922,14 @@ export type {
   TranscriptPageOptions,
 } from "./transcript.js";
 export { transcriptEntryId } from "./transcript.js";
+// user model — unified preference learning + sensor enrichment
+export type {
+  SignalSink,
+  SignalSource,
+  UserModelComponent,
+  UserSignal,
+  UserSnapshot,
+} from "./user-model.js";
 // validation utilities — runtime type guards and validators
 export { isProcessState, validateNonEmpty } from "./validation-utils.js";
 // version index — version label → BrickId resolution contract

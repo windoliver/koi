@@ -552,6 +552,8 @@ export const NAME_SERVICE: SubsystemToken<NameServiceReader> =
   token<NameServiceReader>("name-service");
 export const ZONE_REGISTRY: SubsystemToken<ZoneRegistry> = token<ZoneRegistry>("zone-registry");
 export const INBOX: SubsystemToken<InboxComponent> = token<InboxComponent>("inbox");
+export const USER_MODEL: SubsystemToken<import("./user-model.js").UserModelComponent> =
+  token<import("./user-model.js").UserModelComponent>("user-model");
 
 // ---------------------------------------------------------------------------
 // Agent environment (inheritable key-value env down the spawn tree)

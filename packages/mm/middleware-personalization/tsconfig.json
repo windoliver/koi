@@ -13,6 +13,9 @@
       "path": "../../lib/errors"
     },
     {
+      "path": "../middleware-user-model"
+    },
+    {
       "path": "../token-estimator"
     }
   ]

@@ -20,6 +20,7 @@
     "@koi/middleware-hot-memory": "workspace:*",
     "@koi/middleware-personalization": "workspace:*",
     "@koi/middleware-preference": "workspace:*",
+    "@koi/middleware-user-model": "workspace:*",
     "@koi/snapshot-chain-store": "workspace:*",
     "@koi/token-estimator": "workspace:*",
     "@koi/tool-squash": "workspace:*"
