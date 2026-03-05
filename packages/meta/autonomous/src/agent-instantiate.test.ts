@@ -117,7 +117,7 @@ describe("createAgentFromBrick", () => {
     const resolvedMw = { name: "context-arena", priority: 500 } as unknown as KoiMiddleware;
     const registry: MiddlewareRegistry = {
       get: (name: string) => (name === "context-arena" ? async () => resolvedMw : undefined),
-      names: () => ["context-arena"],
+      names: () => new Set(["context-arena"]),
     };
 
     const result = await createAgentFromBrick(brick, {
@@ -138,7 +138,7 @@ describe("createAgentFromBrick", () => {
     const explicitMw = { name: "test-mw", priority: 100 } as unknown as KoiMiddleware;
     const registry: MiddlewareRegistry = {
       get: (name: string) => (name === "context-arena" ? async () => manifestMw : undefined),
-      names: () => ["context-arena"],
+      names: () => new Set(["context-arena"]),
     };
 
     const result = await createAgentFromBrick(brick, {
