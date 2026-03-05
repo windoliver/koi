@@ -1128,6 +1128,21 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/node-stack": {
+      "name": "@koi/node-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/agent-discovery": "workspace:*",
+        "@koi/agent-procfs": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/debug": "workspace:*",
+        "@koi/node": "workspace:*",
+        "@koi/tracing": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/quality-gate": {
       "name": "@koi/quality-gate",
       "version": "0.0.0",
@@ -1996,6 +2011,7 @@
         "@koi/gateway-types": "workspace:*",
         "@koi/gateway-webhook": "workspace:*",
         "@koi/nexus-client": "workspace:*",
+        "@koi/tracing": "workspace:*",
       },
     },
     "packages/net/gateway-types": {
@@ -3381,6 +3397,8 @@
     "@koi/nexus-store": ["@koi/nexus-store@workspace:packages/fs/nexus-store"],
 
     "@koi/node": ["@koi/node@workspace:packages/deploy/node"],
+
+    "@koi/node-stack": ["@koi/node-stack@workspace:packages/meta/node-stack"],
 
     "@koi/orchestrator": ["@koi/orchestrator@workspace:packages/ipc/orchestrator"],
 

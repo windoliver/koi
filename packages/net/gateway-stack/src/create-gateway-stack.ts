@@ -12,6 +12,7 @@ import type { NexusSessionStoreHandle } from "@koi/gateway-nexus";
 import { createNexusSessionStore, validateGatewayNexusConfig } from "@koi/gateway-nexus";
 import { createWebhookServer } from "@koi/gateway-webhook";
 import { createNexusClient } from "@koi/nexus-client";
+import { createTracedFetch } from "@koi/tracing";
 import type { GatewayStack, GatewayStackConfig, GatewayStackDeps } from "./types.js";
 
 export function createGatewayStack(
@@ -26,10 +27,14 @@ export function createGatewayStack(
     if (!validation.ok) {
       throw new Error(`Invalid gateway-nexus config: ${validation.error.message}`);
     }
+    const fetchFn =
+      config.tracing !== undefined
+        ? createTracedFetch(config.nexus.fetch ?? globalThis.fetch)
+        : config.nexus.fetch;
     const client = createNexusClient({
       baseUrl: config.nexus.nexusUrl,
       apiKey: config.nexus.apiKey,
-      fetch: config.nexus.fetch,
+      fetch: fetchFn,
     });
     nexusHandle = createNexusSessionStore({
       client,
