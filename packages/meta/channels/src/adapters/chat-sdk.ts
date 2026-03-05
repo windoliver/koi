@@ -13,7 +13,9 @@ export async function createChatSdkShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createChatSdkChannels } = await import("@koi/channel-chat-sdk");
-  const adapters = createChatSdkChannels(config as Parameters<typeof createChatSdkChannels>[0]);
+  const adapters = createChatSdkChannels(
+    config as unknown as Parameters<typeof createChatSdkChannels>[0],
+  );
   if (adapters.length === 0) {
     throw new Error("[channel-chat-sdk] No platforms configured in chat-sdk config");
   }

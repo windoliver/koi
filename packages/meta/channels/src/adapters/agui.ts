@@ -13,6 +13,6 @@ export async function createAguiShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createAguiChannel } = await import("@koi/channel-agui");
-  const result = createAguiChannel(config as Parameters<typeof createAguiChannel>[0]);
+  const result = createAguiChannel(config as unknown as Parameters<typeof createAguiChannel>[0]);
   return result.channel;
 }

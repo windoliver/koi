@@ -6,5 +6,5 @@ export async function createDiscordShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createDiscordChannel } = await import("@koi/channel-discord");
-  return createDiscordChannel(config as Parameters<typeof createDiscordChannel>[0]);
+  return createDiscordChannel(config as unknown as Parameters<typeof createDiscordChannel>[0]);
 }

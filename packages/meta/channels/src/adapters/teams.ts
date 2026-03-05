@@ -6,5 +6,5 @@ export async function createTeamsShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createTeamsChannel } = await import("@koi/channel-teams");
-  return createTeamsChannel(config as Parameters<typeof createTeamsChannel>[0]);
+  return createTeamsChannel(config as unknown as Parameters<typeof createTeamsChannel>[0]);
 }

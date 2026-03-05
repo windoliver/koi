@@ -6,5 +6,5 @@ export async function createMatrixShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createMatrixChannel } = await import("@koi/channel-matrix");
-  return createMatrixChannel(config as Parameters<typeof createMatrixChannel>[0]);
+  return createMatrixChannel(config as unknown as Parameters<typeof createMatrixChannel>[0]);
 }

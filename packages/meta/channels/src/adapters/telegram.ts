@@ -6,5 +6,5 @@ export async function createTelegramShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createTelegramChannel } = await import("@koi/channel-telegram");
-  return createTelegramChannel(config as Parameters<typeof createTelegramChannel>[0]);
+  return createTelegramChannel(config as unknown as Parameters<typeof createTelegramChannel>[0]);
 }

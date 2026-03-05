@@ -1,10 +1,17 @@
 import type { ChannelAdapter, JsonObject } from "@koi/core";
 import type { ChannelRuntimeOpts } from "../types.js";
 
-export async function createCanvasFallbackShim(
-  config: JsonObject,
+/**
+ * Canvas-fallback is a wrapper adapter (takes an inner ChannelAdapter + config),
+ * not a standalone channel factory. It cannot be created from manifest config alone.
+ * Use it directly via `@koi/channel-canvas-fallback` when wrapping another channel.
+ */
+export function createCanvasFallbackShim(
+  _config: JsonObject,
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
-  const { createCanvasFallbackChannel } = await import("@koi/channel-canvas-fallback");
-  return createCanvasFallbackChannel(config as Parameters<typeof createCanvasFallbackChannel>[0]);
+  throw new Error(
+    "canvas-fallback is a wrapper adapter — it wraps another channel, not a standalone channel. " +
+      "Import createCanvasFallbackChannel from @koi/channel-canvas-fallback directly.",
+  );
 }

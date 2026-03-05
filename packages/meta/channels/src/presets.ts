@@ -24,7 +24,6 @@ const FULL = Object.freeze([
   "whatsapp",
   "voice",
   "mobile",
-  "canvas-fallback",
   "chat-sdk",
   "agui",
 ] as const);

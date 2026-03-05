@@ -6,5 +6,5 @@ export async function createVoiceShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createVoiceChannel } = await import("@koi/channel-voice");
-  return createVoiceChannel(config as Parameters<typeof createVoiceChannel>[0]);
+  return createVoiceChannel(config as unknown as Parameters<typeof createVoiceChannel>[0]);
 }

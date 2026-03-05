@@ -6,5 +6,5 @@ export async function createSlackShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createSlackChannel } = await import("@koi/channel-slack");
-  return createSlackChannel(config as Parameters<typeof createSlackChannel>[0]);
+  return createSlackChannel(config as unknown as Parameters<typeof createSlackChannel>[0]);
 }

@@ -6,5 +6,5 @@ export async function createWhatsappShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createWhatsAppChannel } = await import("@koi/channel-whatsapp");
-  return createWhatsAppChannel(config as Parameters<typeof createWhatsAppChannel>[0]);
+  return createWhatsAppChannel(config as unknown as Parameters<typeof createWhatsAppChannel>[0]);
 }

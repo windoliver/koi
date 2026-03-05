@@ -6,5 +6,5 @@ export async function createMobileShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createMobileChannel } = await import("@koi/channel-mobile");
-  return createMobileChannel(config as Parameters<typeof createMobileChannel>[0]);
+  return createMobileChannel(config as unknown as Parameters<typeof createMobileChannel>[0]);
 }

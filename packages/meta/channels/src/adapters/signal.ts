@@ -6,5 +6,5 @@ export async function createSignalShim(
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
   const { createSignalChannel } = await import("@koi/channel-signal");
-  return createSignalChannel(config as Parameters<typeof createSignalChannel>[0]);
+  return createSignalChannel(config as unknown as Parameters<typeof createSignalChannel>[0]);
 }
