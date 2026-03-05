@@ -1,6 +1,6 @@
 {
-  "name": "@koi/agui",
-  "description": "Connect AG-UI web frontends to Koi agents via HTTP Server-Sent Events",
+  "name": "@koi/channel-agui",
+  "description": "AG-UI SSE channel adapter — connect CopilotKit-compatible web frontends to Koi agents",
   "version": "0.0.0",
   "private": true,
   "type": "module",
