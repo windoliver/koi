@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import type { ThreadStore } from "@koi/core";
 import type { SessionId } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelHandler } from "@koi/core/middleware";
@@ -180,4 +181,64 @@ describe("resolveContextArenaConfig", () => {
     expect(resolved.hotMemoryMaxTokens).toBe(8000);
     expect(resolved.hotMemoryRefreshInterval).toBe(2);
   });
+
+  // --- Conversation ---
+
+  test("conversationEnabled is false by default (no threadStore)", () => {
+    const resolved = resolveContextArenaConfig(baseConfig());
+    expect(resolved.conversationEnabled).toBe(false);
+  });
+
+  test("conversationEnabled is true when threadStore provided", () => {
+    const resolved = resolveContextArenaConfig(baseConfig({ threadStore: stubThreadStore() }));
+    expect(resolved.conversationEnabled).toBe(true);
+  });
+
+  test("conversationEnabled is false when disabled even with threadStore", () => {
+    const resolved = resolveContextArenaConfig(
+      baseConfig({
+        threadStore: stubThreadStore(),
+        conversation: { disabled: true },
+      }),
+    );
+    expect(resolved.conversationEnabled).toBe(false);
+  });
+
+  test("conversation token budget uses preset when no override", () => {
+    const resolved = resolveContextArenaConfig(baseConfig({ threadStore: stubThreadStore() }));
+    // balanced preset at 200K: 200_000 * 0.03 = 6_000
+    expect(resolved.conversationMaxHistoryTokens).toBe(6_000);
+  });
+
+  test("conversation user overrides take precedence", () => {
+    const resolved = resolveContextArenaConfig(
+      baseConfig({
+        threadStore: stubThreadStore(),
+        conversation: { maxHistoryTokens: 10_000, maxMessages: 50 },
+      }),
+    );
+    expect(resolved.conversationMaxHistoryTokens).toBe(10_000);
+    expect(resolved.conversationMaxMessages).toBe(50);
+  });
+
+  test("conversationMaxMessages defaults to 200", () => {
+    const resolved = resolveContextArenaConfig(baseConfig({ threadStore: stubThreadStore() }));
+    expect(resolved.conversationMaxMessages).toBe(200);
+  });
 });
+
+/** Minimal stub ThreadStore — never called during config resolution. */
+function stubThreadStore(): ThreadStore {
+  return {
+    appendAndCheckpoint: () => {
+      throw new Error("stub");
+    },
+    loadThread: () => {
+      throw new Error("stub");
+    },
+    listMessages: () => {
+      throw new Error("stub");
+    },
+    close: () => {},
+  };
+}

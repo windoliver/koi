@@ -5,10 +5,21 @@
  */
 
 import type { ContextHydratorMiddleware, ContextManifestConfig } from "@koi/context";
-import type { PruningPolicy, SnapshotChainStore, TokenEstimator } from "@koi/core";
+import type {
+  PruningPolicy,
+  SnapshotChainStore,
+  ThreadMessage,
+  ThreadStore,
+  TokenEstimator,
+} from "@koi/core";
 import type { Agent, ComponentProvider, MemoryComponent, SessionId } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
-import type { CapabilityFragment, KoiMiddleware, ModelHandler } from "@koi/core/middleware";
+import type {
+  CapabilityFragment,
+  KoiMiddleware,
+  ModelHandler,
+  SessionContext,
+} from "@koi/core/middleware";
 import type { FsMemoryConfig, FsSearchIndexer, FsSearchRetriever } from "@koi/memory-fs";
 import type { CompactionTrigger } from "@koi/middleware-compactor";
 import type { LlmClassifier } from "@koi/middleware-preference";
@@ -66,6 +77,19 @@ export interface HotMemoryOverrides {
   readonly disabled?: boolean | undefined;
 }
 
+export interface ConversationOverrides {
+  /** Override max tokens for injected thread history. */
+  readonly maxHistoryTokens?: number | undefined;
+  /** Override max messages to load from the store. Default: 200. */
+  readonly maxMessages?: number | undefined;
+  /** Custom thread ID resolver. Falls back to middleware default. */
+  readonly resolveThreadId?: ((ctx: SessionContext) => string | undefined) | undefined;
+  /** Optional compaction callback applied when messages exceed maxMessages. */
+  readonly compact?: ((messages: readonly ThreadMessage[]) => readonly ThreadMessage[]) | undefined;
+  /** Set true to disable conversation even when threadStore is configured. */
+  readonly disabled?: boolean | undefined;
+}
+
 /** User-facing configuration for createContextArena. */
 export interface ContextArenaConfig {
   // --- Required ---
@@ -90,6 +114,10 @@ export interface ContextArenaConfig {
   /** Pruning policy for the snapshot archive. */
   readonly pruningPolicy?: PruningPolicy | undefined;
 
+  // --- Optional dependencies ---
+  /** Thread store for conversation history loading/persistence. Gates the conversation middleware. */
+  readonly threadStore?: ThreadStore | undefined;
+
   // --- Per-package overrides ---
   /** Override compactor-specific settings. */
   readonly compactor?: CompactorOverrides | undefined;
@@ -99,6 +127,8 @@ export interface ContextArenaConfig {
   readonly squash?: SquashOverrides | undefined;
   /** Override personalization-specific settings. */
   readonly personalization?: PersonalizationOverrides | undefined;
+  /** Override conversation-specific settings. Requires threadStore to be configured. */
+  readonly conversation?: ConversationOverrides | undefined;
 
   // --- Opt-in modules ---
   /** Project conventions preserved through compaction. Mapped to CapabilityFragment internally. */
@@ -176,6 +206,11 @@ export interface ResolvedContextArenaConfig {
   readonly hotMemoryRefreshInterval: number;
   readonly hotMemoryEnabled: boolean;
 
+  // Conversation
+  readonly conversationMaxHistoryTokens: number;
+  readonly conversationMaxMessages: number;
+  readonly conversationEnabled: boolean;
+
   // Conventions
   readonly conventions: readonly CapabilityFragment[];
 
@@ -191,7 +226,7 @@ export interface ResolvedContextArenaConfig {
 
 /** Return value of createContextArena — everything needed to wire into createKoi. */
 export interface ContextArenaBundle {
-  /** Middleware in priority order: squash (220) → compactor (225) → context-editing (250). */
+  /** Middleware in priority order: conversation (100, opt-in) → squash (220) → compactor (225) → context-editing (250). */
   readonly middleware: readonly KoiMiddleware[];
   /** Component providers (squash provider + optional memory provider). */
   readonly providers: readonly ComponentProvider[];
@@ -225,6 +260,8 @@ export interface PresetSpec {
   readonly hotMemoryTokenFraction: number;
   /** Hot memory turn refresh interval. */
   readonly hotMemoryRefreshInterval: number;
+  /** Conversation history token budget as fraction of context window. */
+  readonly conversationHistoryFraction: number;
 }
 
 /** Computed budget values from a preset + window size. */
@@ -239,4 +276,5 @@ export interface PresetBudget {
   readonly squashMaxPendingSquashes: number;
   readonly hotMemoryMaxTokens: number;
   readonly hotMemoryRefreshInterval: number;
+  readonly conversationMaxHistoryTokens: number;
 }

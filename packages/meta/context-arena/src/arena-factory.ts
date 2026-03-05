@@ -23,6 +23,7 @@ import {
   createSnapshotArchiver,
 } from "@koi/middleware-compactor";
 import { createContextEditingMiddleware } from "@koi/middleware-context-editing";
+import { createConversationMiddleware } from "@koi/middleware-conversation";
 import { createHotMemoryMiddleware } from "@koi/middleware-hot-memory";
 import { createPersonalizationMiddleware } from "@koi/middleware-personalization";
 import { createPreferenceMiddleware } from "@koi/middleware-preference";
@@ -61,7 +62,7 @@ function createDefaultMergeHandler(summarizer: ModelHandler): MergeHandler {
 /**
  * Creates a fully wired context arena bundle with coordinated budget allocation.
  *
- * Middleware ordering in the returned array: squash (220) → compactor (225) → context-editing (250) → hot-memory (310, opt-in) → personalization (420, opt-in) → preference (410, default-on with memory).
+ * Middleware ordering in the returned array: conversation (100, opt-in) → squash (220) → compactor (225) → context-editing (250) → hot-memory (310, opt-in) → personalization (420, opt-in) → preference (410, default-on with memory).
  * Priority is owned by L2 packages — arena just returns them in priority order.
  *
  * @param config - User-facing configuration with required summarizer, sessionId, and getMessages
@@ -69,6 +70,28 @@ function createDefaultMergeHandler(summarizer: ModelHandler): MergeHandler {
  */
 export async function createContextArena(config: ContextArenaConfig): Promise<ContextArenaBundle> {
   const resolved = resolveContextArenaConfig(config);
+
+  // --- Opt-in: conversation history (requires threadStore) ---
+  const conversationMiddleware =
+    resolved.conversationEnabled && config.threadStore !== undefined
+      ? createConversationMiddleware({
+          store: config.threadStore,
+          maxHistoryTokens: resolved.conversationMaxHistoryTokens,
+          maxMessages: resolved.conversationMaxMessages,
+          // Bridge TokenEstimator (number | Promise<number>) to conversation's sync (number) API.
+          // Falls back to chars/4 if the estimator is async — matches conversation's own default.
+          estimateTokens: (text: string): number => {
+            const result = resolved.tokenEstimator.estimateText(text);
+            return typeof result === "number" ? result : Math.ceil(text.length / 4);
+          },
+          ...(config.conversation?.resolveThreadId !== undefined
+            ? { resolveThreadId: config.conversation.resolveThreadId }
+            : {}),
+          ...(config.conversation?.compact !== undefined
+            ? { compact: config.conversation.compact }
+            : {}),
+        })
+      : undefined;
 
   // --- Opt-in: filesystem memory ---
   // Auto-wire merge handler when memoryFs is enabled (unless explicitly disabled or provided)
@@ -189,6 +212,7 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
 
   // --- Middleware in priority order ---
   const middleware = [
+    ...(conversationMiddleware !== undefined ? [conversationMiddleware] : []),
     squashBundle.middleware,
     compactorMiddleware,
     contextEditingMiddleware,

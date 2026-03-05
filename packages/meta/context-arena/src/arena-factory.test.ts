@@ -2,7 +2,14 @@ import { afterAll, describe, expect, mock, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChainId, NodeId, PutOptions, SnapshotChainStore, SnapshotNode } from "@koi/core";
+import type {
+  ChainId,
+  NodeId,
+  PutOptions,
+  SnapshotChainStore,
+  SnapshotNode,
+  ThreadStore,
+} from "@koi/core";
 import type { MemoryComponent, SessionId } from "@koi/core/ecs";
 import type { KoiError, Result } from "@koi/core/errors";
 import type { InboundMessage } from "@koi/core/message";
@@ -519,5 +526,91 @@ describe("createContextArena compactor archiver wiring", () => {
     // (squash + compactor + context-editing + preference)
     expect(bundle.middleware).toHaveLength(4);
     expect(bundle.config.archiver).toBe(store);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Conversation middleware wiring
+// ---------------------------------------------------------------------------
+
+/** Minimal stub ThreadStore — methods throw if called (factory only wires, doesn't invoke). */
+function stubThreadStore(): ThreadStore {
+  return {
+    appendAndCheckpoint: () => {
+      throw new Error("stub");
+    },
+    loadThread: () => {
+      throw new Error("stub");
+    },
+    listMessages: () => {
+      throw new Error("stub");
+    },
+    close: () => {},
+  };
+}
+
+describe("createContextArena conversation wiring", () => {
+  test("conversation not added when no threadStore", async () => {
+    const bundle = await createContextArena(baseConfig());
+    expect(bundle.middleware).toHaveLength(3);
+    const names = bundle.middleware.map((mw) => mw.name);
+    expect(names).not.toContain("koi:conversation");
+  });
+
+  test("conversation added when threadStore provided", async () => {
+    const bundle = await createContextArena(baseConfig({ threadStore: stubThreadStore() }));
+    expect(bundle.middleware).toHaveLength(4);
+    const names = bundle.middleware.map((mw) => mw.name);
+    expect(names).toContain("koi:conversation");
+  });
+
+  test("priority order includes conversation at 100", async () => {
+    const bundle = await createContextArena(baseConfig({ threadStore: stubThreadStore() }));
+    const priorities = bundle.middleware.map((mw) => mw.priority);
+    expect(priorities).toEqual([100, 220, 225, 250]);
+  });
+
+  test("conversation not added when disabled even with threadStore", async () => {
+    const bundle = await createContextArena(
+      baseConfig({
+        threadStore: stubThreadStore(),
+        conversation: { disabled: true },
+      }),
+    );
+    expect(bundle.middleware).toHaveLength(3);
+    const names = bundle.middleware.map((mw) => mw.name);
+    expect(names).not.toContain("koi:conversation");
+  });
+
+  test("conversation + memoryFs produces correct middleware count", async () => {
+    const tmpDirs: string[] = [];
+    const dir = await mkdtemp(join(tmpdir(), "koi-arena-conv-"));
+    tmpDirs.push(dir);
+
+    const bundle = await createContextArena(
+      baseConfig({
+        threadStore: stubThreadStore(),
+        memoryFs: { config: { baseDir: dir } },
+      }),
+    );
+
+    // conversation (100) + squash (220) + compactor (225) + context-editing (250) + hot-memory (310) + preference (410)
+    expect(bundle.middleware).toHaveLength(6);
+    const priorities = bundle.middleware.map((mw) => mw.priority);
+    expect(priorities).toEqual([100, 220, 225, 250, 310, 410]);
+
+    await Promise.all(tmpDirs.map((d) => rm(d, { recursive: true, force: true })));
+  });
+
+  test("resolved config values flow through to conversation", async () => {
+    const bundle = await createContextArena(
+      baseConfig({
+        threadStore: stubThreadStore(),
+        conversation: { maxHistoryTokens: 12_000, maxMessages: 100 },
+      }),
+    );
+    expect(bundle.config.conversationEnabled).toBe(true);
+    expect(bundle.config.conversationMaxHistoryTokens).toBe(12_000);
+    expect(bundle.config.conversationMaxMessages).toBe(100);
   });
 });
