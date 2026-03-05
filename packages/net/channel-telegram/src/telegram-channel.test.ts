@@ -96,13 +96,15 @@ describe("createTelegramChannel — polling mode", () => {
   test("reconnect does not cause duplicate event dispatch", async () => {
     // let justified: accumulates handler invocations across reconnect cycles
     let handlerCallCount = 0;
-    const mockBot = makeMockBot();
 
-    // Capture registered handlers so we can simulate events
+    // Build a mock bot that captures registered handlers for simulation
     const registeredHandlers: ((...args: readonly unknown[]) => void)[] = [];
-    mockBot.on = mock((_event: string, handler: (...args: readonly unknown[]) => void) => {
-      registeredHandlers.push(handler);
-    }) as MockBot["on"];
+    const mockBot: MockBot = {
+      ...makeMockBot(),
+      on: mock((_event: string, handler: (...args: readonly unknown[]) => void) => {
+        registeredHandlers.push(handler);
+      }),
+    };
 
     const adapter = createTelegramChannel({
       token: DUMMY_TOKEN,
