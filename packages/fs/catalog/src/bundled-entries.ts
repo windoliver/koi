@@ -13,7 +13,7 @@
 import type { CatalogEntry } from "@koi/core";
 
 // ---------------------------------------------------------------------------
-// Middleware (25 packages)
+// Middleware (24 packages)
 // ---------------------------------------------------------------------------
 
 const MIDDLEWARE_ENTRIES: readonly CatalogEntry[] = [
