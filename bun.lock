@@ -1104,6 +1104,26 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/ipc-stack": {
+      "name": "@koi/ipc-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/federation": "workspace:*",
+        "@koi/ipc-local": "workspace:*",
+        "@koi/ipc-nexus": "workspace:*",
+        "@koi/orchestrator": "workspace:*",
+        "@koi/parallel-minions": "workspace:*",
+        "@koi/scratchpad-local": "workspace:*",
+        "@koi/scratchpad-nexus": "workspace:*",
+        "@koi/task-spawn": "workspace:*",
+        "@koi/workspace": "workspace:*",
+        "@koi/workspace-nexus": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/sandbox-cloud": {
       "name": "@koi/sandbox-cloud",
       "version": "0.0.0",
@@ -3218,6 +3238,8 @@
     "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/ipc/ipc-local"],
 
     "@koi/ipc-nexus": ["@koi/ipc-nexus@workspace:packages/ipc/ipc-nexus"],
+
+    "@koi/ipc-stack": ["@koi/ipc-stack@workspace:packages/meta/ipc-stack"],
 
     "@koi/knowledge-vault": ["@koi/knowledge-vault@workspace:packages/mm/knowledge-vault"],
 
