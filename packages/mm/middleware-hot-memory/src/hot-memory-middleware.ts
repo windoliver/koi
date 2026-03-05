@@ -94,7 +94,7 @@ export function createHotMemoryMiddleware(config: HotMemoryConfig): KoiMiddlewar
     name: "koi:hot-memory",
     priority: 310,
 
-    onSessionStart(_ctx: SessionContext): void {
+    async onSessionStart(_ctx: SessionContext): Promise<void> {
       initialized = false;
       turnCount = 0;
       hotCount = 0;
