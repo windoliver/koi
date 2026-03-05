@@ -1,9 +1,9 @@
 /**
- * @koi/context-arena — Coordinated context management (Layer 3)
+ * @koi/context-arena — Everything about context (Layer 3)
  *
- * Arena allocator for the context window: a single factory allocates
- * token budgets across all 7 context management packages with coherent
- * preset-driven profiles (conservative / balanced / aggressive).
+ * Composes and coordinates all context sources — personality (soul),
+ * bootstrap files (.koi/), conversation history, memory, compaction,
+ * and context editing — with preset-driven budget allocation.
  *
  * Usage:
  *   const bundle = await createContextArena({
@@ -21,13 +21,57 @@
  *   });
  */
 
-// Search DI types re-exported for L3 convenience — adapter authors import from one place.
+// --- Bootstrap: .koi/ file hierarchy resolver ---
+export type {
+  BootstrapConfig,
+  BootstrapResolveResult,
+  BootstrapResult,
+  BootstrapSlot,
+  BootstrapTextSource,
+  ResolvedSlot,
+} from "@koi/bootstrap";
+export { DEFAULT_SLOTS, resolveBootstrap } from "@koi/bootstrap";
+
+// --- Search DI types re-exported for L3 convenience ---
 export type {
   FsIndexDoc,
   FsSearchHit,
   FsSearchIndexer,
   FsSearchRetriever,
 } from "@koi/memory-fs";
+
+// --- Soul: agent personality middleware ---
+export type {
+  CachedPersona,
+  ChannelPersonaConfig,
+  ContentInput,
+  CreateSoulOptions,
+  MetaInstructionSources,
+  PersonaMapResult,
+  ResolvedPersona,
+  SoulMiddleware,
+  SoulState,
+} from "@koi/soul";
+export {
+  createAllWatchedPaths,
+  createPersonaMap,
+  createPersonaWatchedPaths,
+  createSoulMessage,
+  createSoulMiddleware,
+  DEFAULT_IDENTITY_MAX_TOKENS,
+  DEFAULT_SOUL_MAX_TOKENS,
+  DEFAULT_TOTAL_MAX_TOKENS,
+  DEFAULT_USER_MAX_TOKENS,
+  descriptor as soulDescriptor,
+  enrichRequest,
+  extractInput,
+  extractMaxTokens,
+  generateMetaInstructionText,
+  generatePersonaText,
+  personasFromManifest,
+  resolvePersonaContent,
+  validateSoulConfig,
+} from "@koi/soul";
 export { createContextArena } from "./arena-factory.js";
 export { resolveContextArenaConfig } from "./config-resolution.js";
 export { computePresetBudget, PRESET_SPECS } from "./presets.js";
