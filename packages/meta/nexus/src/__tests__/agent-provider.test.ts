@@ -3,7 +3,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Agent, AgentGroupId, AgentId, AgentManifest, ProcessState } from "@koi/core";
+import type {
+  Agent,
+  AgentGroupId,
+  AgentId,
+  AgentManifest,
+  ProcessState,
+  SubsystemToken,
+} from "@koi/core";
 import { EVENTS, FILESYSTEM, MAILBOX, MEMORY } from "@koi/core";
 import { createNexusClient } from "@koi/nexus-client";
 import { createFakeNexusFetch } from "@koi/test-utils";
@@ -33,7 +40,7 @@ function makeFakeAgent(agentId: string, groupId?: string): Agent {
     has: (token: { toString(): string }): boolean => components.has(token.toString()),
     hasAll: (...tokens: readonly { toString(): string }[]): boolean =>
       tokens.every((t) => components.has(t.toString())),
-    query: <T>(_prefix: string): ReadonlyMap<string, T> => new Map(),
+    query: <T>(_prefix: string): ReadonlyMap<SubsystemToken<T>, T> => new Map(),
     components: (): ReadonlyMap<string, unknown> => components,
   };
 }

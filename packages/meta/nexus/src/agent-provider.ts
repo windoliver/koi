@@ -92,12 +92,15 @@ export function createNexusAgentProvider(
       const skipped: SkippedComponent[] = [];
 
       // ── Forge store ──
+      const forgeOverride = agentOverrides.forge;
       const forgeStore = createNexusForgeStore({
         baseUrl,
         apiKey,
         basePath: ns.forge,
         ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
-        ...(agentOverrides.forge !== undefined ? agentOverrides.forge : {}),
+        ...(forgeOverride?.concurrency !== undefined
+          ? { concurrency: forgeOverride.concurrency }
+          : {}),
       });
       components.set("forge-store", forgeStore);
 
@@ -146,11 +149,17 @@ export function createNexusAgentProvider(
       components.set(FILESYSTEM as string, filesystem);
 
       // ── Mailbox ──
+      const mbOverride = agentOverrides.mailbox;
       const mailbox = createNexusMailbox({
         agentId,
         baseUrl,
         authToken: apiKey,
-        ...(agentOverrides.mailbox !== undefined ? agentOverrides.mailbox : {}),
+        ...(mbOverride?.delivery !== undefined ? { delivery: mbOverride.delivery } : {}),
+        ...(mbOverride?.seenCapacity !== undefined
+          ? { seenCapacity: mbOverride.seenCapacity }
+          : {}),
+        ...(mbOverride?.pollMinMs !== undefined ? { pollMinMs: mbOverride.pollMinMs } : {}),
+        ...(mbOverride?.pollMaxMs !== undefined ? { pollMaxMs: mbOverride.pollMaxMs } : {}),
       });
       components.set(MAILBOX as string, mailbox);
 
@@ -166,7 +175,7 @@ export function createNexusAgentProvider(
           components.set(WORKSPACE as string, wsResult.value);
         } else {
           skipped.push({
-            token: WORKSPACE as string,
+            name: WORKSPACE as string,
             reason: wsResult.error.message,
           });
         }

@@ -4,6 +4,7 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { AgentId } from "@koi/core";
+import type { NexusClient } from "@koi/nexus-client";
 import { computeAgentNamespace, computeGroupNamespace, ensureNamespace } from "../namespace.js";
 
 describe("computeAgentNamespace", () => {
@@ -33,8 +34,10 @@ describe("computeGroupNamespace", () => {
 
 describe("ensureNamespace", () => {
   test("calls rpc write for each path", async () => {
-    const rpcMock = mock(() => Promise.resolve({ ok: true, value: null }));
-    const client = { rpc: rpcMock };
+    const rpcMock = mock((_method: string, _params: Record<string, unknown>) =>
+      Promise.resolve({ ok: true as const, value: null }),
+    );
+    const client: NexusClient = { rpc: rpcMock as NexusClient["rpc"] };
 
     await ensureNamespace(client, ["/agents/a/events", "/agents/a/memory"]);
 
@@ -54,10 +57,10 @@ describe("ensureNamespace", () => {
     const originalWarn = console.warn;
     console.warn = warnSpy;
 
-    const rpcMock = mock()
+    const rpcMock = mock(() => Promise.resolve({ ok: true as const, value: null }))
       .mockImplementationOnce(() => Promise.reject(new Error("network")))
-      .mockImplementationOnce(() => Promise.resolve({ ok: true, value: null }));
-    const client = { rpc: rpcMock };
+      .mockImplementationOnce(() => Promise.resolve({ ok: true as const, value: null }));
+    const client: NexusClient = { rpc: rpcMock as NexusClient["rpc"] };
 
     await ensureNamespace(client, ["/fail", "/succeed"]);
 
@@ -68,8 +71,8 @@ describe("ensureNamespace", () => {
   });
 
   test("handles empty paths array", async () => {
-    const rpcMock = mock(() => Promise.resolve({ ok: true, value: null }));
-    const client = { rpc: rpcMock };
+    const rpcMock = mock(() => Promise.resolve({ ok: true as const, value: null }));
+    const client: NexusClient = { rpc: rpcMock as NexusClient["rpc"] };
 
     await ensureNamespace(client, []);
 

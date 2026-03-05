@@ -122,7 +122,7 @@ export interface FilesystemOverrides {
 
 /** Override config for agent-scoped mailbox. */
 export interface MailboxOverrides {
-  readonly delivery?: "immediate" | "coalesced" | undefined;
+  readonly delivery?: "sse" | "polling" | undefined;
   readonly seenCapacity?: number | undefined;
   readonly pollMinMs?: number | undefined;
   readonly pollMaxMs?: number | undefined;
