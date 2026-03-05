@@ -179,10 +179,13 @@ export function createDeliveryManager(
         }
         return deliverToSubscription(sub, event);
       })
-      .catch(() => {
-        // Guard against unexpected failures (e.g. ULID generation) to keep
-        // the chain alive for subsequent events. deliverToSubscription handles
-        // its own retry/DLQ errors — this catch prevents chain breakage only.
+      .catch((err: unknown) => {
+        // Keep the chain alive for subsequent events. deliverToSubscription
+        // handles its own retry/DLQ errors — this catch prevents chain breakage.
+        console.warn(
+          "[event-delivery] unexpected delivery failure:",
+          err instanceof Error ? err.message : err,
+        );
       });
   }
 
@@ -209,8 +212,12 @@ export function createDeliveryManager(
           await deliverToSubscription(sub, event);
         }
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         // Prevent chain breakage during replay
+        console.warn(
+          "[event-delivery] unexpected replay failure:",
+          err instanceof Error ? err.message : err,
+        );
       });
   }
 
@@ -220,7 +227,7 @@ export function createDeliveryManager(
 
   const subscribe = (options: SubscribeOptions): SubscriptionHandle => {
     const fromPos = options.fromPosition ?? Number.MAX_SAFE_INTEGER;
-    const maxRetries = options.maxRetries ?? 3;
+    const maxRetries = Math.max(1, options.maxRetries ?? 3);
     const types = options.types !== undefined ? new Set(options.types) : undefined;
 
     const sub: SubscriptionState = {

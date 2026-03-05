@@ -23,6 +23,7 @@ import type {
   TransitionReason,
 } from "@koi/core";
 import { AGENT_SIGNALS, exitCodeForTransitionReason } from "@koi/core";
+import { createListenerSet } from "@koi/event-delivery";
 
 /** Default grace period for TERM signal before force-termination (ms). */
 const DEFAULT_GRACE_PERIOD_MS = 5000;
@@ -38,17 +39,14 @@ export function createChildHandle(
   abortController?: AbortController,
   gracePeriodMs: number = DEFAULT_GRACE_PERIOD_MS,
 ): ChildHandle {
-  const listeners = new Set<(event: ChildLifecycleEvent) => void>();
+  const listeners = createListenerSet<ChildLifecycleEvent>({
+    onError: (err) =>
+      console.warn("[child-handle] listener threw:", err instanceof Error ? err.message : err),
+  });
   // let justified: set once, cleared on cleanup
   let unsubscribe: (() => void) | undefined;
   // let justified: last-seen TransitionReason for exit-code computation
   let lastReason: TransitionReason | undefined;
-
-  function notify(event: ChildLifecycleEvent): void {
-    for (const listener of listeners) {
-      listener(event);
-    }
-  }
 
   unsubscribe = registry.watch((event) => {
     if (event.kind === "transitioned" && event.agentId === childId) {
@@ -57,28 +55,28 @@ export function createChildHandle(
 
       // created → running = started
       if (event.from === "created" && event.to === "running") {
-        notify({ kind: "started", childId });
+        listeners.notify({ kind: "started", childId });
       }
 
       // running → idle = idled
       if (event.from === "running" && event.to === "idle") {
-        notify({ kind: "idled", childId });
+        listeners.notify({ kind: "idled", childId });
       }
 
       // idle → running = woke
       if (event.from === "idle" && event.to === "running") {
-        notify({ kind: "woke", childId });
+        listeners.notify({ kind: "woke", childId });
       }
 
       // Any transition to terminated — map reason to completed/error/terminated
       if (event.to === "terminated") {
         const exitCode = exitCodeForTransitionReason(event.reason);
         if (event.reason.kind === "completed") {
-          notify({ kind: "completed", childId, exitCode });
+          listeners.notify({ kind: "completed", childId, exitCode });
         } else if (event.reason.kind === "error") {
-          notify({ kind: "error", childId, cause: event.reason.cause });
+          listeners.notify({ kind: "error", childId, cause: event.reason.cause });
         }
-        notify({ kind: "terminated", childId, exitCode });
+        listeners.notify({ kind: "terminated", childId, exitCode });
         cleanup();
       }
     }
@@ -86,7 +84,7 @@ export function createChildHandle(
     // Deregistered = terminated (child removed from registry)
     if (event.kind === "deregistered" && event.agentId === childId) {
       // No reason available for deregister — use default exit code 1
-      notify({ kind: "terminated", childId, exitCode: 1 });
+      listeners.notify({ kind: "terminated", childId, exitCode: 1 });
       cleanup();
     }
   });
@@ -99,7 +97,7 @@ export function createChildHandle(
   }
 
   async function signal(kind: string): Promise<void> {
-    notify({ kind: "signaled", childId, signal: kind });
+    listeners.notify({ kind: "signaled", childId, signal: kind });
 
     switch (kind) {
       case AGENT_SIGNALS.STOP: {
@@ -195,10 +193,7 @@ export function createChildHandle(
   }
 
   function onEvent(listener: (event: ChildLifecycleEvent) => void): () => void {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
+    return listeners.subscribe(listener);
   }
 
   return {

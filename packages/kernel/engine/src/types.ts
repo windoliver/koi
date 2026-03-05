@@ -287,7 +287,12 @@ export interface ForgeRuntime {
   readonly resolveTool: (toolId: string) => Promise<Tool | undefined>;
   /** Get descriptors for all currently available forged tools. */
   readonly toolDescriptors: () => Promise<readonly ToolDescriptor[]>;
-  /** Get currently active forged middleware. Re-queried at turn boundaries. */
+  /**
+   * Get currently active forged middleware. Re-queried at turn boundaries.
+   * Forged middleware participates in wrapper hooks only (wrapModelCall, wrapModelStream,
+   * wrapToolCall). It does NOT participate in lifecycle hooks (onSessionStart/End,
+   * onBeforeTurn/AfterTurn) or describeCapabilities.
+   */
   readonly middleware?: () => Promise<readonly KoiMiddleware[]>;
   /** Push notification when forged capabilities change. Returns unsubscribe. */
   readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;

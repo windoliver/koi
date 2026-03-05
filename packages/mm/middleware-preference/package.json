@@ -11,7 +11,8 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/middleware-user-model": "workspace:*"
   },
   "devDependencies": {},
   "scripts": {

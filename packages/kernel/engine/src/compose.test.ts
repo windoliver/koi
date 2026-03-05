@@ -28,6 +28,8 @@ import {
   createTerminalHandlers,
   formatCapabilityMessage,
   injectCapabilities,
+  recomposeChains,
+  resolveActiveMiddleware,
   runSessionHooks,
   runTurnHooks,
   sortMiddlewareByPhase,
@@ -1724,5 +1726,161 @@ describe("createComposedCallHandlers capability injection", () => {
     // Only injected tools message, no capabilities message
     const capMsg = receivedRequest?.messages.find((m) => m.senderId === "system:capabilities");
     expect(capMsg).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveActiveMiddleware
+// ---------------------------------------------------------------------------
+
+describe("resolveActiveMiddleware", () => {
+  function mw(
+    name: string,
+    phase?: "intercept" | "resolve" | "observe",
+    priority?: number,
+  ): KoiMiddleware {
+    return {
+      name,
+      ...(phase !== undefined ? { phase } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      describeCapabilities: () => undefined,
+    };
+  }
+
+  test("returns phase-sorted array for static-only input", () => {
+    const result = resolveActiveMiddleware([
+      mw("obs", "observe", 100),
+      mw("int", "intercept", 900),
+    ]);
+
+    expect(result[0]?.name).toBe("int");
+    expect(result[1]?.name).toBe("obs");
+  });
+
+  test("merges static + forged, phase-sorted", () => {
+    const result = resolveActiveMiddleware([mw("static", "observe")], [mw("forged", "intercept")]);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]?.name).toBe("forged");
+    expect(result[1]?.name).toBe("static");
+  });
+
+  test("merges static + forged + dynamic, phase-sorted", () => {
+    const result = resolveActiveMiddleware(
+      [mw("static", "resolve")],
+      [mw("forged", "observe")],
+      [mw("dynamic", "intercept")],
+    );
+
+    expect(result).toHaveLength(3);
+    expect(result[0]?.name).toBe("dynamic");
+    expect(result[1]?.name).toBe("static");
+    expect(result[2]?.name).toBe("forged");
+  });
+
+  test("empty forged/dynamic treated as absent", () => {
+    const static_ = [mw("a"), mw("b")];
+    const resultWithUndef = resolveActiveMiddleware(static_);
+    const resultWithEmpty = resolveActiveMiddleware(static_, [], []);
+
+    expect(resultWithUndef).toHaveLength(2);
+    expect(resultWithEmpty).toHaveLength(2);
+  });
+
+  test("does not mutate input arrays", () => {
+    const input = [mw("obs", "observe"), mw("int", "intercept")];
+    const snapshot = [...input];
+
+    resolveActiveMiddleware(input);
+
+    expect(input).toEqual(snapshot);
+  });
+
+  test("intercept middleware always before observe regardless of priority", () => {
+    const result = resolveActiveMiddleware([
+      mw("obs-low", "observe", 1),
+      mw("int-high", "intercept", 999),
+    ]);
+
+    expect(result[0]?.name).toBe("int-high");
+    expect(result[1]?.name).toBe("obs-low");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recomposeChains
+// ---------------------------------------------------------------------------
+
+describe("recomposeChains", () => {
+  test("returns all three chains when stream terminal provided", () => {
+    const sorted: readonly KoiMiddleware[] = [];
+    const terminals = {
+      modelHandler: async () => mockModelResponse(),
+      toolHandler: async () => ({ output: "ok" }),
+      modelStreamHandler: () => (async function* () {})(),
+    };
+
+    const chains = recomposeChains(sorted, terminals);
+
+    expect(typeof chains.toolChain).toBe("function");
+    expect(typeof chains.modelChain).toBe("function");
+    expect(chains.streamChain).toBeDefined();
+    expect(typeof chains.streamChain).toBe("function");
+  });
+
+  test("returns toolChain + modelChain only when no stream terminal", () => {
+    const sorted: readonly KoiMiddleware[] = [];
+    const terminals = {
+      modelHandler: async () => mockModelResponse(),
+      toolHandler: async () => ({ output: "ok" }),
+    };
+
+    const chains = recomposeChains(sorted, terminals);
+
+    expect(typeof chains.toolChain).toBe("function");
+    expect(typeof chains.modelChain).toBe("function");
+    expect(chains.streamChain).toBeUndefined();
+  });
+
+  test("chains dispatch through middleware in correct order", async () => {
+    const order: string[] = [];
+    const mw: KoiMiddleware = {
+      name: "recorder",
+      phase: "resolve",
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_ctx, req, next) => {
+        order.push("model-before");
+        const res = await next(req);
+        order.push("model-after");
+        return res;
+      },
+      wrapToolCall: async (_ctx, req, next) => {
+        order.push("tool-before");
+        const res = await next(req);
+        order.push("tool-after");
+        return res;
+      },
+    };
+
+    const terminals = {
+      modelHandler: async () => {
+        order.push("model-terminal");
+        return mockModelResponse();
+      },
+      toolHandler: async () => {
+        order.push("tool-terminal");
+        return { output: "ok" } as ToolResponse;
+      },
+    };
+
+    const chains = recomposeChains([mw], terminals);
+    const ctx = mockTurnContext();
+
+    await chains.modelChain(ctx, mockModelRequest());
+    expect(order).toEqual(["model-before", "model-terminal", "model-after"]);
+
+    order.length = 0;
+    await chains.toolChain(ctx, mockToolRequest());
+    expect(order).toEqual(["tool-before", "tool-terminal", "tool-after"]);
   });
 });

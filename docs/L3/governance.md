@@ -1,12 +1,12 @@
 # @koi/governance — Enterprise Compliance Bundle
 
-Layer 3 meta-package that assembles up to 11 middleware and 4 scope providers
+Layer 3 meta-package that assembles up to 12 middleware and 4 scope providers
 into a single `createGovernanceStack()` call.
 
 ## What This Enables
 
 **One-line enterprise compliance.** Instead of manually importing, configuring,
-and ordering 11 separate middleware packages, callers get:
+and ordering 12 separate middleware packages, callers get:
 
 - **Deployment presets** (`open`, `standard`, `strict`) with sensible defaults
 - **3-layer config merge**: defaults → preset → user overrides
@@ -38,7 +38,7 @@ const stack = createGovernanceStack({
 // Strict — PII redaction, guardrails, read-only filesystem, HTTPS-only browser
 const strict = createGovernanceStack({
   preset: "strict",
-  audit: { sink: myAuditSink },
+  auditBackend: { kind: "sqlite", dbPath: "./audit.db" },
   backends: { filesystem: myFsBackend },
 });
 
@@ -81,6 +81,7 @@ const runtime = await createKoi({
 | 300 | audit | observe | Compliance audit logging |
 | 340 | pii | resolve | PII detection and redaction |
 | 350 | sanitize | resolve | Content sanitization |
+| 360 | agent-monitor | observe | Behavioral anomaly detection (ASI10) |
 | 375 | guardrails | resolve | Output schema validation |
 
 ## New Middleware (v0.x)
@@ -143,6 +144,150 @@ if (delegationEscalationHandle?.isPending()) {
 
 **Not included in presets** — requires deployment-specific config (channel, agent IDs).
 
+## Declarative Audit Backend
+
+Instead of manually importing and instantiating audit sink packages, use the
+`auditBackend` field to declaratively select which backend to use. The factory
+auto-creates the `AuditSink` and wires it into both the audit middleware and
+scope backends (`backends.auditSink`) in a single config field.
+
+### Supported Backends
+
+| Kind | Package | Storage | Cleanup |
+|------|---------|---------|---------|
+| `sqlite` | `@koi/audit-sink-local` | Local SQLite database | `close()` tracked as disposable |
+| `ndjson` | `@koi/audit-sink-local` | Newline-delimited JSON file | `close()` tracked as disposable |
+| `nexus` | `@koi/audit-sink-nexus` | Batched writes to Nexus server | Timer `.unref()`'d (no disposable) |
+| `custom` | (user-provided) | Any `AuditSink` implementation | User manages lifecycle |
+
+### Examples
+
+```typescript
+// SQLite — local development / single-node deployments
+const stack = createGovernanceStack({
+  preset: "standard",
+  auditBackend: { kind: "sqlite", dbPath: "./audit.db" },
+  backends: { filesystem: myFsBackend },
+});
+
+// NDJSON — lightweight file-based logging
+const stack = createGovernanceStack({
+  auditBackend: { kind: "ndjson", filePath: "/var/log/koi/audit.ndjson" },
+});
+
+// Nexus — production, multi-node, durable + queryable
+const stack = createGovernanceStack({
+  preset: "strict",
+  auditBackend: {
+    kind: "nexus",
+    baseUrl: "http://nexus.internal:2026",
+    apiKey: process.env.NEXUS_API_KEY!,
+  },
+});
+
+// Custom — bring your own AuditSink
+const stack = createGovernanceStack({
+  auditBackend: { kind: "custom", sink: myCustomSink },
+});
+
+// Combine with other audit middleware options
+const stack = createGovernanceStack({
+  auditBackend: { kind: "sqlite", dbPath: ":memory:" },
+  audit: { redactRequestBodies: true, maxEntrySize: 20_000 },
+  // NOTE: audit.sink must NOT be set when auditBackend is used (mutually exclusive)
+});
+```
+
+### Mutual Exclusion
+
+`auditBackend` and `audit.sink` are **mutually exclusive**. Providing both
+throws an error with an actionable message. Use `auditBackend` for declarative
+selection, or provide `audit: { sink }` for manual wiring.
+
+### Disposable Lifecycle
+
+SQLite and NDJSON sinks expose a `close()` method that is automatically tracked
+in the bundle's `disposables` array. Call `disposable[Symbol.dispose]()` (or use
+a `using` block) to release file handles on shutdown.
+
+### Agent Monitor + Security Analyzer Pipeline (priority 360)
+
+Implements **OWASP ASI10 (Inadequate Agent-Human Oversight)** defense by
+auto-wiring a detection→classification→enforcement pipeline:
+
+```
+agent-monitor (detects anomalies)
+    ↓ onAnomaly callback
+anomaly collector (buffers per-session)
+    ↓ getRecentAnomalies
+security-analyzer monitor-bridge (elevates risk)
+    ↓ SecurityAnalyzer interface
+exec-approvals (auto-denies critical risk)
+```
+
+**What this enables:**
+
+- **Behavioral anomaly detection** — monitors tool call rates, error spikes,
+  repeated calls, destructive actions, session duration, delegation depth,
+  and 6 more signal types via `@koi/agent-monitor`
+- **Risk-aware approval routing** — when anomalies are detected, the
+  `@koi/security-analyzer` monitor bridge elevates risk classification,
+  causing `exec-approvals` to auto-deny critical-risk tool calls
+- **Zero-config pipeline assembly** — governance auto-creates the anomaly
+  collector, rules analyzer, and monitor bridge when `agentMonitor` and
+  `execApprovals` are both configured. No manual wiring needed.
+- **User callback chaining** — user-provided `onAnomaly` and `onMetrics`
+  callbacks are chained with the governance pipeline, never replaced
+
+**Auto-wiring rules:**
+
+| Config combination | Result |
+|---|---|
+| `agentMonitor` alone | Monitor middleware at 360, no analyzer injection |
+| `agentMonitor` + `execApprovals` | Full pipeline: collector + bridge + injection |
+| `securityAnalyzer` + `execApprovals` | Rules analyzer injected, no bridge |
+| `execApprovals.securityAnalyzer` set | Auto-wiring skipped (user wins) |
+
+```typescript
+// Minimal — standard preset auto-enables monitoring with default thresholds
+const stack = createGovernanceStack({ preset: "standard" });
+
+// Strict preset — tighter thresholds + anomaly-kind filtering
+const strict = createGovernanceStack({
+  preset: "strict",
+  execApprovals: {
+    rules: { allow: ["group:fs_read"], deny: [], ask: ["*"] },
+    onAsk: hitlPrompt,
+  },
+});
+// strict.anomalyCollector is available for external inspection
+
+// Custom — explicit thresholds + user callbacks
+const custom = createGovernanceStack({
+  agentMonitor: {
+    thresholds: { maxToolCallsPerTurn: 8, maxDestructiveCallsPerTurn: 1 },
+    onAnomaly: (signal) => telemetry.track("anomaly", signal),
+    onMetrics: (sessionId, summary) => metrics.record(summary),
+  },
+  securityAnalyzer: {
+    highPatterns: ["rm -rf", "DROP TABLE"],
+    elevateOnAnomalyKinds: ["tool_rate_exceeded", "denied_tool_calls"],
+  },
+  execApprovals: {
+    rules: { allow: [], deny: [], ask: ["*"] },
+    onAsk: hitlPrompt,
+  },
+});
+```
+
+The `anomalyCollector` on the returned `GovernanceBundle` provides:
+- `getRecentAnomalies(sessionId)` — read buffered signals (up to 50 per session)
+- `clearSession(sessionId)` — flush session buffer (auto-called on session end)
+
+**Included in presets:**
+- `standard` — default thresholds (detection only, no risk elevation without exec-approvals)
+- `strict` — tighter thresholds + anomaly-kind filtering for risk elevation
+
 ## Deployment Presets
 
 ### `open` (default)
@@ -156,6 +301,7 @@ if (delegationEscalationHandle?.isPending()) {
 - Permissions: allow fs_read, web, browser, lsp; deny fs_delete; ask runtime
 - PII: mask strategy
 - Sanitize: enabled (empty rules)
+- Agent monitor: default thresholds (detection only)
 - Scope: filesystem (rw) + browser (block private addresses)
 
 ### `strict`
@@ -164,6 +310,8 @@ if (delegationEscalationHandle?.isPending()) {
 - PII: redact strategy
 - Sanitize: enabled
 - Guardrails: enabled
+- Agent monitor: tighter thresholds (10 calls/turn, 1 destructive/turn, 2min max session)
+- Security analyzer: risk elevation on tool_rate_exceeded, denied_tool_calls, irreversible_action_rate, delegation_depth_exceeded
 - Scope: filesystem (ro) + browser (HTTPS only, block private) + credentials + memory
 
 ## Config Resolution
@@ -213,6 +361,10 @@ interface GovernanceBundle {
   readonly nexusHooks?: NexusDelegationHooks;
   readonly sessionStore?: SessionRevocationStore;
   readonly delegationEscalationHandle?: DelegationEscalationHandle;
+  readonly anomalyCollector?: {
+    readonly getRecentAnomalies: (sessionId: string) => readonly AnomalySignalLike[];
+    readonly clearSession: (sessionId: string) => void;
+  };
 }
 
 interface ResolvedGovernanceMeta {
@@ -238,4 +390,4 @@ interface ResolvedGovernanceMeta {
 Dependencies:
 - L0: `@koi/core` (types)
 - L0u: `@koi/scope` (enforcer, scoping)
-- L2: `@koi/filesystem`, `@koi/tool-browser`, 11 middleware packages
+- L2: `@koi/agent-monitor`, `@koi/audit-sink-local`, `@koi/audit-sink-nexus`, `@koi/filesystem`, `@koi/security-analyzer`, `@koi/tool-browser`, 11 middleware packages

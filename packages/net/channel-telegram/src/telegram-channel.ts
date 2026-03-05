@@ -206,11 +206,18 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       },
 
       onPlatformEvent: (handler) => {
-        bot.on("message", handler);
-        bot.on("callback_query", handler);
-        // Return a no-op unsubscribe: grammY doesn't support removing individual listeners,
-        // and bot.stop() in platformDisconnect halts all event processing.
-        return () => {};
+        // let justified: active flag gates dispatching; cleared on unsubscribe
+        // to prevent duplicate dispatch across reconnect cycles (grammY does not
+        // support removing individual listeners).
+        let active = true;
+        const guard = (ctx: Context): void => {
+          if (active) handler(ctx);
+        };
+        bot.on("message", guard);
+        bot.on("callback_query", guard);
+        return () => {
+          active = false;
+        };
       },
 
       normalize: createNormalizer(config.token),
@@ -250,9 +257,16 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     },
 
     onPlatformEvent: (handler) => {
-      bot.on("message", handler);
-      bot.on("callback_query", handler);
-      return () => {};
+      // let justified: active flag gates dispatching; cleared on unsubscribe
+      let active = true;
+      const guard = (ctx: Context): void => {
+        if (active) handler(ctx);
+      };
+      bot.on("message", guard);
+      bot.on("callback_query", guard);
+      return () => {
+        active = false;
+      };
     },
 
     normalize: createNormalizer(config.token),

@@ -302,13 +302,6 @@ interface RetryQueue {
     /** Returns the number of items waiting in the queue. */
     readonly size: () => number;
 }
-/**
- * Creates a rate-limit-aware send queue.
- *
- * Sends are executed sequentially. On a rate-limit error the queue
- * pauses for the retry-after duration (or computed backoff) before
- * retrying.
- */
 declare function createRetryQueue(config?: RetryQueueConfig): RetryQueue;
 
 /**

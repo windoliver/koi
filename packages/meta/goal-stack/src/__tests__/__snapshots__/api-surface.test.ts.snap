@@ -1,0 +1,123 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/goal-stack API surface . has stable type surface 1`] = `
+"import { TodoItem } from '@koi/middleware-goal-anchor';
+export { GoalAnchorConfig, TodoItem, TodoItemStatus, TodoState } from '@koi/middleware-goal-anchor';
+import { ReminderSource } from '@koi/middleware-goal-reminder';
+export { GoalReminderConfig, ReminderSessionState, ReminderSource } from '@koi/middleware-goal-reminder';
+import { PlanItem } from '@koi/middleware-planning';
+export { PlanConfig, PlanItem, PlanStatus, descriptor as planningDescriptor } from '@koi/middleware-planning';
+import { KoiMiddleware, ComponentProvider } from '@koi/core';
+import { TurnContext } from '@koi/core/middleware';
+
+/**
+ * Types for @koi/goal-stack — goal-directed middleware bundle (Layer 3).
+ */
+
+/** Available composition presets for the goal stack. */
+type GoalStackPreset = "minimal" | "standard" | "autonomous";
+/**
+ * Preset specification — controls which sub-middleware are included
+ * and their default configuration values.
+ */
+interface GoalStackPresetSpec {
+    readonly includeAnchor: boolean;
+    readonly includeReminder: boolean;
+    readonly includePlanning: boolean;
+    readonly reminderBaseInterval: number;
+    readonly reminderMaxInterval: number;
+    readonly anchorHeader: string;
+    readonly reminderHeader: string;
+}
+/** User-facing configuration for createGoalStack(). */
+interface GoalStackConfig {
+    /** Preset name. Default: "standard". */
+    readonly preset?: GoalStackPreset | undefined;
+    /** Declared task objectives — required when anchor or reminder is active. */
+    readonly objectives?: readonly string[] | undefined;
+    /** Goal-anchor overrides (injected every model call). */
+    readonly anchor?: {
+        readonly header?: string | undefined;
+        readonly onComplete?: ((item: TodoItem) => void) | undefined;
+    } | undefined;
+    /** Goal-reminder overrides (adaptive periodic injection). */
+    readonly reminder?: {
+        readonly header?: string | undefined;
+        readonly baseInterval?: number | undefined;
+        readonly maxInterval?: number | undefined;
+        readonly isDrifting?: ((ctx: TurnContext) => boolean | Promise<boolean>) | undefined;
+        readonly sources?: readonly ReminderSource[] | undefined;
+    } | undefined;
+    /** Planning middleware overrides (write_plan tool). */
+    readonly planning?: {
+        readonly onPlanUpdate?: ((plan: readonly PlanItem[]) => void) | undefined;
+        readonly priority?: number | undefined;
+    } | undefined;
+}
+/** Metadata about the resolved goal stack composition. */
+interface ResolvedGoalStackMeta {
+    readonly preset: GoalStackPreset;
+    readonly middlewareCount: number;
+    readonly includesAnchor: boolean;
+    readonly includesReminder: boolean;
+    readonly includesPlanning: boolean;
+}
+/** The composed goal stack bundle returned by createGoalStack(). */
+interface GoalStackBundle {
+    /** Ordered middleware array (by priority: reminder 330, anchor 340, planning 450). */
+    readonly middlewares: readonly KoiMiddleware[];
+    /** Component providers — always empty, future-proof slot. */
+    readonly providers: readonly ComponentProvider[];
+    /** Metadata about the resolved composition. */
+    readonly config: ResolvedGoalStackMeta;
+}
+
+/**
+ * Config resolution for goal stack — applies preset defaults and validates.
+ */
+
+/** Resolved internal config with preset applied. */
+interface ResolvedGoalStackConfig {
+    readonly preset: GoalStackPreset;
+    readonly config: GoalStackConfig;
+}
+/**
+ * Resolves user config against the selected preset.
+ *
+ * Validates that objectives are provided when the preset includes
+ * anchor or reminder middleware. Throws with a helpful message
+ * suggesting the "minimal" preset when objectives are missing.
+ */
+declare function resolveGoalStackConfig(config: GoalStackConfig): ResolvedGoalStackConfig;
+
+/**
+ * Goal stack factory — composes goal-anchor, goal-reminder, and planning
+ * middleware into a single bundle with preset-driven defaults.
+ */
+
+/**
+ * Creates a composed goal stack from configuration.
+ *
+ * Middleware are added in priority order:
+ *   1. goal-reminder (330) — adaptive periodic injection
+ *   2. goal-anchor (340) — every-call todo injection
+ *   3. planning (450) — write_plan tool
+ */
+declare function createGoalStack(config?: GoalStackConfig): GoalStackBundle;
+
+/**
+ * Preset specifications for goal stack composition.
+ */
+
+/**
+ * Preset specifications keyed by preset name.
+ *
+ * - minimal: planning only — no anchor/reminder, no objectives required
+ * - standard: all three middlewares, moderate reminder intervals (5/20)
+ * - autonomous: all three middlewares, tighter reminder intervals (3/10)
+ */
+declare const GOAL_STACK_PRESET_SPECS: Readonly<Record<GoalStackPreset, GoalStackPresetSpec>>;
+
+export { GOAL_STACK_PRESET_SPECS, type GoalStackBundle, type GoalStackConfig, type GoalStackPreset, type GoalStackPresetSpec, type ResolvedGoalStackMeta, createGoalStack, resolveGoalStackConfig };
+"
+`;

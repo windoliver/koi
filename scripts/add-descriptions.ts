@@ -70,8 +70,8 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
   "@koi/engine-loop":
     "Execute pure TypeScript ReAct loop with parallel tool calls and iterative Reason+Act cycles",
   "@koi/engine-pi": "Wrap pi-agent-core with full middleware interposition on model and tool calls",
-  "@koi/engine-rlm":
-    "Virtualize unbounded input outside context window with recursive chunking and sub-querying",
+  "@koi/middleware-rlm":
+    "Virtualize unbounded input as middleware — any engine can process inputs larger than context window",
   "@koi/model-router":
     "Route model calls across multiple LLM providers with retry, fallback, cascade, and circuit breaker",
 
@@ -246,8 +246,6 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Batch and forward audit entries to Nexus server via JSON-RPC with retry",
   "@koi/capability-verifier":
     "Verify HMAC and Ed25519 capability tokens, track session revocation, validate delegation chains",
-  "@koi/collusion-detector":
-    "Detect agent collusion via synchronous moves, variance collapse, concentration, specialization",
   "@koi/delegation":
     "Create monotonically attenuated delegation tokens with scope checking and cascading revocation",
   "@koi/doctor": "Static security analysis of agent manifests aligned with OWASP Agentic Top 10",
@@ -277,8 +275,6 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Forward permission queries to Nexus ReBAC server with typed contract implementations",
   "@koi/redaction":
     "Mask secrets (API keys, credentials, tokens) in logs with 13 built-in pattern detectors",
-  "@koi/reputation":
-    "Calculate weighted trust scores from feedback for pluggable agent reputation backend",
   "@koi/scope":
     "Wrap infrastructure tokens with capability-attenuation scopes (filesystem, browser, credentials, memory)",
   "@koi/security-analyzer":
@@ -348,6 +344,8 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Self-extending system for agent composition, verification, integrity attestation, and policy enforcement",
   "@koi/governance":
     "Enterprise compliance stack composing 9 middleware for permissions, approvals, auditing, and guardrails",
+  "@koi/rlm-stack":
+    "Wire code-execution sandbox into RLM middleware for script-based input analysis",
   "@koi/sandbox-stack":
     "One-call factory for sandboxed code execution with timeout guards and pluggable backend adapters",
   "@koi/starter":

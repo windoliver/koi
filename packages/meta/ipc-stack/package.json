@@ -1,0 +1,35 @@
+{
+  "name": "@koi/ipc-stack",
+  "description": "IPC meta-package composing messaging, delegation, workspace, scratchpad, and federation via createIpcStack()",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/federation": "workspace:*",
+    "@koi/ipc-local": "workspace:*",
+    "@koi/ipc-nexus": "workspace:*",
+    "@koi/orchestrator": "workspace:*",
+    "@koi/parallel-minions": "workspace:*",
+    "@koi/scratchpad-local": "workspace:*",
+    "@koi/scratchpad-nexus": "workspace:*",
+    "@koi/task-spawn": "workspace:*",
+    "@koi/workspace": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  }
+}

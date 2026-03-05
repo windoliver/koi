@@ -5,6 +5,9 @@
  * deployment presets, scope configuration, and the GovernanceBundle return shape.
  */
 
+import type { AgentMonitorConfig } from "@koi/agent-monitor";
+import type { NdjsonAuditSinkConfig, SqliteAuditSinkConfig } from "@koi/audit-sink-local";
+import type { NexusAuditSinkConfig } from "@koi/audit-sink-nexus";
 import type { SessionRevocationStore } from "@koi/capability-verifier";
 import type {
   AuditSink,
@@ -31,7 +34,20 @@ import type { PermissionRules, PermissionsMiddlewareConfig } from "@koi/middlewa
 import type { PIIConfig } from "@koi/middleware-pii";
 import type { SanitizeMiddlewareConfig } from "@koi/middleware-sanitize";
 import type { NexusPermissionBackend, OnGrantHook, OnRevokeHook } from "@koi/permissions-nexus";
+import type { RedactionConfig, Redactor } from "@koi/redaction";
+import type { AnomalySignalLike } from "@koi/security-analyzer";
 import type { BrowserDriver } from "@koi/tool-browser";
+
+// ---------------------------------------------------------------------------
+// Audit backend config
+// ---------------------------------------------------------------------------
+
+/** Declarative audit backend selection — auto-creates the AuditSink and wires it into audit middleware + scope backends. */
+export type AuditBackendConfig =
+  | ({ readonly kind: "sqlite" } & SqliteAuditSinkConfig)
+  | ({ readonly kind: "ndjson" } & NdjsonAuditSinkConfig)
+  | ({ readonly kind: "nexus" } & NexusAuditSinkConfig)
+  | { readonly kind: "custom"; readonly sink: AuditSink };
 
 // ---------------------------------------------------------------------------
 // Deployment presets
@@ -71,6 +87,23 @@ export interface GovernanceScopeBackends {
 }
 
 // ---------------------------------------------------------------------------
+// Security analyzer governance config
+// ---------------------------------------------------------------------------
+
+/** Governance-level config for the security analyzer pipeline. */
+export interface SecurityAnalyzerGovernanceConfig {
+  /** Custom high-risk patterns (merged with defaults if provided). */
+  readonly highPatterns?: readonly string[] | undefined;
+  /** Custom medium-risk patterns (merged with defaults if provided). */
+  readonly mediumPatterns?: readonly string[] | undefined;
+  /** Anomaly kinds that trigger risk elevation to "high".
+   *  When omitted, all anomaly kinds trigger elevation. */
+  readonly elevateOnAnomalyKinds?: readonly string[] | undefined;
+  /** Override analyzer timeout (ms). Default: 2000ms from exec-approvals. */
+  readonly analyzerTimeoutMs?: number | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Stack configuration
 // ---------------------------------------------------------------------------
 
@@ -98,6 +131,13 @@ export interface GovernanceStackConfig {
    */
   readonly permissionRules?: PermissionRules | undefined;
 
+  // ── Audit backend (declarative) ─────────────────────────────────────
+  /**
+   * Declarative audit backend. Auto-creates the AuditSink and wires it
+   * into audit middleware + scope backends. Mutually exclusive with `audit.sink`.
+   */
+  readonly auditBackend?: AuditBackendConfig | undefined;
+
   // ── Middleware configs (all optional) ─────────────────────────────────
   /** Coarse-grained tool allow/deny/ask rules. Priority 100. */
   readonly permissions?: PermissionsMiddlewareConfig | undefined;
@@ -117,10 +157,23 @@ export interface GovernanceStackConfig {
   readonly audit?: AuditMiddlewareConfig | undefined;
   /** PII detection and redaction. Priority 340. */
   readonly pii?: PIIConfig | undefined;
+  /** Secret redaction (API keys, credentials, tokens). Priority 345. */
+  readonly redaction?: Partial<RedactionConfig> | undefined;
   /** Content sanitization. Priority 350. */
   readonly sanitize?: SanitizeMiddlewareConfig | undefined;
   /** Output schema validation. Priority 375. */
   readonly guardrails?: GuardrailsConfig | undefined;
+
+  // ── Anomaly detection + security analysis ──────────────────────────────
+  /** Behavioral anomaly detection middleware (OWASP ASI10). Priority 360.
+   *  When configured alongside execApprovals, governance auto-creates a
+   *  monitor-bridge SecurityAnalyzer and injects it into exec-approvals. */
+  readonly agentMonitor?: AgentMonitorConfig | undefined;
+
+  /** Security analyzer config for risk classification.
+   *  When omitted but agentMonitor + execApprovals are both present,
+   *  governance auto-creates a default rules analyzer + monitor bridge. */
+  readonly securityAnalyzer?: SecurityAnalyzerGovernanceConfig | undefined;
 
   // ── Delegation bridge ──────────────────────────────────────────────────
   /**
@@ -202,4 +255,13 @@ export interface GovernanceBundle {
   readonly sessionStore?: SessionRevocationStore;
   /** Delegation escalation handle — present when `delegationEscalation` is configured. */
   readonly delegationEscalationHandle?: DelegationEscalationHandle;
+  /** Compiled redactor — present when `redaction` is configured. */
+  readonly redactor?: Redactor;
+  /** Anomaly collector — present when agentMonitor is auto-wired with execApprovals. */
+  readonly anomalyCollector?:
+    | {
+        readonly getRecentAnomalies: (sessionId: string) => readonly AnomalySignalLike[];
+        readonly clearSession: (sessionId: string) => void;
+      }
+    | undefined;
 }

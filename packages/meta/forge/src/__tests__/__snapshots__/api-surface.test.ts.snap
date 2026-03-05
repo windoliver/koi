@@ -3,7 +3,7 @@
 exports[`@koi/forge API surface . has stable type surface 1`] = `
 "import { SandboxAdapter, ForgeStore, ForgeScope, Result, TurnTrace, KoiError, KoiMiddleware, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ComponentProvider } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, CounterExample, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from '@koi/core';
-import { ForgeConfig, SandboxExecutor, DependencyConfig, ForgePipeline } from '@koi/forge-types';
+import { ForgeConfig, ForgePipeline, SandboxExecutor, DependencyConfig } from '@koi/forge-types';
 export { AutoPromotionConfig, BrickContentInput, CreateProvenanceOptions, DEFAULT_REVERIFICATION_CONFIG, DependencyConfig, DriftCheckResult, DriftChecker, ForgeAgentInput, ForgeAgentInputWithBricks, ForgeAgentInputWithManifest, ForgeChannelInput, ForgeConfig, ForgeContext, ForgeError, ForgeInput, ForgeInputBase, ForgeMiddlewareInput, ForgePipeline, ForgeResult, ForgeResultMetadata, ForgeSkillInput, ForgeToolInput, ForgeVerifier, FormatConfig, GovernanceResult, ManifestParseResult, ManifestParser, MutationPressureConfig, PromoteChange, PromoteResult, ResolveStageReport, ReverificationConfig, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, ScopePromotionConfig, SelfTestStageReport, StageReport, TestFailure, TrustStageReport, VerificationConfig, VerificationReport, VerificationStage, VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig } from '@koi/forge-types';
 export { AttestationCache, IntegrityAttestationFailed, IntegrityContentMismatch, IntegrityOk, IntegrityResult, SlsaBuildDefinition, SlsaBuildMetadata, SlsaBuilder, SlsaKoiExtensions, SlsaProvenanceV1, SlsaProvenanceV1WithExtensions, SlsaResourceDescriptor, SlsaRunDetails, canonicalJsonSerialize, createAttestationCache, createForgeProvenance, extractBrickContent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, signAttestation, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity } from '@koi/forge-integrity';
 export { DriftCheckerConfig, FORGE_GOVERNANCE, ForgeSessionCounterInstance, ForgeSessionCounterOptions, ForgeUsageMiddlewareConfig, ReverificationHandler, ReverificationQueue, UsagePromotedResult, UsageRecordedResult, UsageResult, checkGovernance, checkMutationPressure, checkScopePromotion, computeAutoPromotion, createDriftChecker, createForgeGovernanceContributor, createForgeSessionCounter, createForgeUsageMiddleware, createReverificationQueue, recordBrickUsage, validateTrustTransition } from '@koi/forge-policy';
@@ -100,6 +100,21 @@ interface ForgeMiddlewareStackResult {
 declare function createForgeMiddlewareStack(config: ForgeMiddlewareStackConfig): ForgeMiddlewareStackResult;
 
 /**
+ * createForgePipeline — composition root that wires L2 sub-packages into a ForgePipeline.
+ *
+ * Lives in the L3 @koi/forge bundle because it imports from multiple L2 peers
+ * (forge-verifier, forge-integrity, forge-policy), which only L3 may do.
+ */
+
+/**
+ * Create a wired ForgePipeline instance.
+ *
+ * Pass the result as \`pipeline\` in ForgeDeps so that @koi/forge-tools
+ * can call cross-package operations without direct L2→L2 imports.
+ */
+declare function createForgePipeline(): ForgePipeline;
+
+/**
  * ForgeRuntime factory — creates a live forge runtime backed by a ForgeStore.
  *
  * Enables hot-attach: forged tools become available mid-session without
@@ -177,21 +192,6 @@ interface FullForgeSystem {
  * - ForgeMiddlewareStack (demand, exaptation, crystallize, auto-forge, optimizer, usage)
  */
 declare function createFullForgeSystem(config: CreateFullForgeSystemConfig): FullForgeSystem;
-
-/**
- * createForgePipeline — composition root that wires L2 sub-packages into a ForgePipeline.
- *
- * Lives in the L3 @koi/forge bundle because it imports from multiple L2 peers
- * (forge-verifier, forge-integrity, forge-policy), which only L3 may do.
- */
-
-/**
- * Create a wired ForgePipeline instance.
- *
- * Pass the result as \`pipeline\` in ForgeDeps so that @koi/forge-tools
- * can call cross-package operations without direct L2→L2 imports.
- */
-declare function createForgePipeline(): ForgePipeline;
 
 export { type CreateForgeRuntimeOptions, type CreateFullForgeSystemConfig, type ForgeDelegation, type ForgeDelegationConfig, type ForgeMiddlewareStackConfig, type ForgeMiddlewareStackResult, type ForgeRuntimeInstance, type FullForgeSystem, createForgeDelegation, createForgeMiddlewareStack, createForgePipeline, createForgeRuntime, createFullForgeSystem };
 "

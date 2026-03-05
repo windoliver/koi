@@ -117,17 +117,6 @@
         "@sinclair/typebox": "0.34.33",
       },
     },
-    "packages/drivers/engine-rlm": {
-      "name": "@koi/engine-rlm",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/drivers/model-router": {
       "name": "@koi/model-router",
       "version": "0.0.0",
@@ -385,6 +374,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -398,6 +388,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -749,6 +740,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
         "@koi/execution-context": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/session-repair": "workspace:*",
@@ -1026,6 +1018,7 @@
         "@koi/middleware-hot-memory": "workspace:*",
         "@koi/middleware-personalization": "workspace:*",
         "@koi/middleware-preference": "workspace:*",
+        "@koi/middleware-user-model": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/tool-squash": "workspace:*",
@@ -1066,10 +1059,29 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/goal-stack": {
+      "name": "@koi/goal-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/middleware-goal-anchor": "workspace:*",
+        "@koi/middleware-goal-reminder": "workspace:*",
+        "@koi/middleware-planning": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/governance": {
       "name": "@koi/governance",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/agent-monitor": "workspace:*",
+        "@koi/audit-sink-local": "workspace:*",
+        "@koi/audit-sink-nexus": "workspace:*",
         "@koi/capability-verifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/delegation": "workspace:*",
@@ -1085,7 +1097,9 @@
         "@koi/middleware-pii": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
+        "@koi/redaction": "workspace:*",
         "@koi/scope": "workspace:*",
+        "@koi/security-analyzer": "workspace:*",
         "@koi/tool-browser": "workspace:*",
       },
       "devDependencies": {
@@ -1095,16 +1109,59 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/meta/sandbox-cloud": {
-      "name": "@koi/sandbox-cloud",
+    "packages/meta/ipc-stack": {
+      "name": "@koi/ipc-stack",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/sandbox-cloud-base": "workspace:*",
-        "@koi/sandbox-cloudflare": "workspace:*",
-        "@koi/sandbox-daytona": "workspace:*",
-        "@koi/sandbox-e2b": "workspace:*",
-        "@koi/sandbox-vercel": "workspace:*",
+        "@koi/federation": "workspace:*",
+        "@koi/ipc-local": "workspace:*",
+        "@koi/ipc-nexus": "workspace:*",
+        "@koi/orchestrator": "workspace:*",
+        "@koi/parallel-minions": "workspace:*",
+        "@koi/scratchpad-local": "workspace:*",
+        "@koi/scratchpad-nexus": "workspace:*",
+        "@koi/task-spawn": "workspace:*",
+        "@koi/workspace": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/meta/quality-gate": {
+      "name": "@koi/quality-gate",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/middleware-feedback-loop": "workspace:*",
+        "@koi/middleware-output-verifier": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/meta/retry-stack": {
+      "name": "@koi/retry-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/middleware-fs-rollback": "workspace:*",
+        "@koi/middleware-guided-retry": "workspace:*",
+        "@koi/middleware-semantic-retry": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/meta/rlm-stack": {
+      "name": "@koi/rlm-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/code-executor": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/middleware-rlm": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1114,8 +1171,16 @@
       "name": "@koi/sandbox-stack",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/code-executor": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
         "@koi/sandbox-cloud-base": "workspace:*",
+        "@koi/sandbox-cloudflare": "workspace:*",
+        "@koi/sandbox-daytona": "workspace:*",
+        "@koi/sandbox-docker": "workspace:*",
+        "@koi/sandbox-e2b": "workspace:*",
+        "@koi/sandbox-executor": "workspace:*",
+        "@koi/sandbox-vercel": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1140,6 +1205,23 @@
         "@koi/scratchpad-local": "workspace:*",
         "@koi/soul": "workspace:*",
         "@koi/tool-browser": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/meta/tool-stack": {
+      "name": "@koi/tool-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/middleware-call-dedup": "workspace:*",
+        "@koi/middleware-call-limits": "workspace:*",
+        "@koi/middleware-degenerate": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
+        "@koi/middleware-tool-audit": "workspace:*",
+        "@koi/middleware-tool-recovery": "workspace:*",
+        "@koi/middleware-tool-selector": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1299,6 +1381,17 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-rlm": {
+      "name": "@koi/middleware-rlm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -1501,6 +1594,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/middleware-user-model": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
@@ -1512,6 +1606,19 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/middleware-user-model": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-user-model": {
+      "name": "@koi/middleware-user-model",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/mm/session-repair": {
@@ -2232,16 +2339,6 @@
         "@koi/errors": "workspace:*",
       },
     },
-    "packages/security/collusion-detector": {
-      "name": "@koi/collusion-detector",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/security/delegation": {
       "name": "@koi/delegation",
       "version": "0.0.0",
@@ -2423,16 +2520,6 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/security/reputation": {
-      "name": "@koi/reputation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -3094,8 +3181,6 @@
 
     "@koi/code-mode": ["@koi/code-mode@workspace:packages/fs/code-mode"],
 
-    "@koi/collusion-detector": ["@koi/collusion-detector@workspace:packages/security/collusion-detector"],
-
     "@koi/config": ["@koi/config@workspace:packages/kernel/config"],
 
     "@koi/context": ["@koi/context@workspace:packages/mm/context"],
@@ -3137,8 +3222,6 @@
     "@koi/engine-loop": ["@koi/engine-loop@workspace:packages/drivers/engine-loop"],
 
     "@koi/engine-pi": ["@koi/engine-pi@workspace:packages/drivers/engine-pi"],
-
-    "@koi/engine-rlm": ["@koi/engine-rlm@workspace:packages/drivers/engine-rlm"],
 
     "@koi/errors": ["@koi/errors@workspace:packages/lib/errors"],
 
@@ -3194,6 +3277,8 @@
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
+    "@koi/goal-stack": ["@koi/goal-stack@workspace:packages/meta/goal-stack"],
+
     "@koi/governance": ["@koi/governance@workspace:packages/meta/governance"],
 
     "@koi/governance-memory": ["@koi/governance-memory@workspace:packages/security/governance-memory"],
@@ -3207,6 +3292,8 @@
     "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/ipc/ipc-local"],
 
     "@koi/ipc-nexus": ["@koi/ipc-nexus@workspace:packages/ipc/ipc-nexus"],
+
+    "@koi/ipc-stack": ["@koi/ipc-stack@workspace:packages/meta/ipc-stack"],
 
     "@koi/knowledge-vault": ["@koi/knowledge-vault@workspace:packages/mm/knowledge-vault"],
 
@@ -3278,6 +3365,8 @@
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/middleware/middleware-report"],
 
+    "@koi/middleware-rlm": ["@koi/middleware-rlm@workspace:packages/middleware/middleware-rlm"],
+
     "@koi/middleware-sandbox": ["@koi/middleware-sandbox@workspace:packages/middleware/middleware-sandbox"],
 
     "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/security/middleware-sanitize"],
@@ -3291,6 +3380,8 @@
     "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/middleware/middleware-tool-selector"],
 
     "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/middleware/middleware-turn-ack"],
+
+    "@koi/middleware-user-model": ["@koi/middleware-user-model@workspace:packages/mm/middleware-user-model"],
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/drivers/model-router"],
 
@@ -3316,6 +3407,8 @@
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
 
+    "@koi/quality-gate": ["@koi/quality-gate@workspace:packages/meta/quality-gate"],
+
     "@koi/recipe-codex-mcp": ["@koi/recipe-codex-mcp@workspace:recipes/codex-mcp"],
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
@@ -3328,13 +3421,13 @@
 
     "@koi/registry-sqlite": ["@koi/registry-sqlite@workspace:packages/fs/registry-sqlite"],
 
-    "@koi/reputation": ["@koi/reputation@workspace:packages/security/reputation"],
-
     "@koi/resolve": ["@koi/resolve@workspace:packages/fs/resolve"],
 
-    "@koi/sandbox": ["@koi/sandbox@workspace:packages/virt/sandbox"],
+    "@koi/retry-stack": ["@koi/retry-stack@workspace:packages/meta/retry-stack"],
 
-    "@koi/sandbox-cloud": ["@koi/sandbox-cloud@workspace:packages/meta/sandbox-cloud"],
+    "@koi/rlm-stack": ["@koi/rlm-stack@workspace:packages/meta/rlm-stack"],
+
+    "@koi/sandbox": ["@koi/sandbox@workspace:packages/virt/sandbox"],
 
     "@koi/sandbox-cloud-base": ["@koi/sandbox-cloud-base@workspace:packages/virt/sandbox-cloud-base"],
 
@@ -3419,6 +3512,8 @@
     "@koi/tool-exec": ["@koi/tool-exec@workspace:packages/fs/tool-exec"],
 
     "@koi/tool-squash": ["@koi/tool-squash@workspace:packages/mm/tool-squash"],
+
+    "@koi/tool-stack": ["@koi/tool-stack@workspace:packages/meta/tool-stack"],
 
     "@koi/tools-github": ["@koi/tools-github@workspace:packages/fs/tools-github"],
 

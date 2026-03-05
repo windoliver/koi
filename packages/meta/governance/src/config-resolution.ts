@@ -54,8 +54,11 @@ export function resolveGovernanceConfig(config: GovernanceStackConfig): Governan
     governanceBackend: config.governanceBackend ?? spec.governanceBackend,
     audit: config.audit ?? spec.audit,
     pii: config.pii ?? spec.pii,
+    redaction: config.redaction ?? spec.redaction,
     sanitize: config.sanitize ?? spec.sanitize,
     guardrails: config.guardrails ?? spec.guardrails,
+    agentMonitor: config.agentMonitor ?? spec.agentMonitor,
+    securityAnalyzer: config.securityAnalyzer ?? spec.securityAnalyzer,
     scope: config.scope ?? spec.scope,
   };
 }

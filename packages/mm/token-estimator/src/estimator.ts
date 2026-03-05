@@ -33,6 +33,16 @@ export function createHeuristicEstimator(config?: HeuristicEstimatorConfig): Tok
   const msgOverhead = config?.perMessageOverhead ?? 4;
   const blockOverhead = config?.perNonTextBlockOverhead ?? 100;
 
+  if (cpt <= 0) {
+    throw new Error(`charsPerToken must be positive, got ${cpt}`);
+  }
+  if (msgOverhead < 0) {
+    throw new Error(`perMessageOverhead must be non-negative, got ${msgOverhead}`);
+  }
+  if (blockOverhead < 0) {
+    throw new Error(`perNonTextBlockOverhead must be non-negative, got ${blockOverhead}`);
+  }
+
   return {
     estimateText(text: string): number {
       return Math.ceil(text.length / cpt);

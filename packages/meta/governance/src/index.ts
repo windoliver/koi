@@ -2,11 +2,11 @@
  * @koi/governance — Enterprise compliance meta-package (Layer 3)
  *
  * One-line enterprise compliance for AI agent deployments.
- * Composes up to 11 middleware + scope providers via createGovernanceStack():
+ * Composes up to 12 middleware + scope providers via createGovernanceStack():
  *
  *   permissions → exec-approvals → delegation → capability-request →
  *   delegation-escalation → governance-backend → pay → intent-capsule →
- *   audit → pii → sanitize → guardrails
+ *   audit → pii → sanitize → agent-monitor → guardrails
  *
  * Supports deployment presets: "open" (default), "standard", "strict".
  *
@@ -22,6 +22,14 @@
  * ```
  */
 
+// ── Types: agent-monitor ──────────────────────────────────────────────
+export type { AgentMonitorConfig, AnomalySignal, SessionMetricsSummary } from "@koi/agent-monitor";
+// ── Types: audit backends ────────────────────────────────────────────────
+export type { NdjsonAuditSinkConfig, SqliteAuditSinkConfig } from "@koi/audit-sink-local";
+// ── Factories: audit backends ────────────────────────────────────────────
+export { createNdjsonAuditSink, createSqliteAuditSink } from "@koi/audit-sink-local";
+export type { NexusAuditSinkConfig } from "@koi/audit-sink-nexus";
+export { createNexusAuditSink, validateNexusAuditSinkConfig } from "@koi/audit-sink-nexus";
 // ── Types: capability verifier ──────────────────────────────────────────
 export type { SessionRevocationStore } from "@koi/capability-verifier";
 // ── Types: middleware sub-configs ────────────────────────────────────────
@@ -43,6 +51,14 @@ export type {
 } from "@koi/middleware-permissions";
 export type { PIIConfig } from "@koi/middleware-pii";
 export type { SanitizeMiddlewareConfig } from "@koi/middleware-sanitize";
+export type {
+  RedactionConfig,
+  RedactObjectResult,
+  Redactor,
+  RedactStringResult,
+} from "@koi/redaction";
+// ── Types: security-analyzer ──────────────────────────────────────────
+export type { AnomalySignalLike, RulesAnalyzerConfig } from "@koi/security-analyzer";
 // ── Functions ───────────────────────────────────────────────────────────
 export { resolveGovernanceConfig } from "./config-resolution.js";
 export { createGovernanceStack } from "./governance-stack.js";
@@ -50,6 +66,7 @@ export { createGovernanceStack } from "./governance-stack.js";
 export { GOVERNANCE_PRESET_SPECS } from "./presets.js";
 // ── Types: governance bundle ────────────────────────────────────────────
 export type {
+  AuditBackendConfig,
   GovernanceBundle,
   GovernancePreset,
   GovernancePresetSpec,
@@ -58,4 +75,5 @@ export type {
   GovernanceStackConfig,
   NexusDelegationHooks,
   ResolvedGovernanceMeta,
+  SecurityAnalyzerGovernanceConfig,
 } from "./types.js";

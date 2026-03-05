@@ -26,7 +26,9 @@ const STANDARD: GovernancePresetSpec = Object.freeze({
     ask: Object.freeze(["group:runtime"]),
   }),
   pii: Object.freeze({ strategy: "mask" as const }),
+  redaction: Object.freeze({}),
   sanitize: Object.freeze({ rules: Object.freeze([] as readonly []) }),
+  agentMonitor: Object.freeze({}),
   scope: Object.freeze({
     filesystem: Object.freeze({ root: ".", mode: "rw" as const }),
     browser: Object.freeze({ blockPrivateAddresses: true }),
@@ -40,8 +42,27 @@ const STRICT: GovernancePresetSpec = Object.freeze({
     ask: Object.freeze([] as readonly string[]),
   }),
   pii: Object.freeze({ strategy: "redact" as const }),
+  redaction: Object.freeze({}),
   sanitize: Object.freeze({ rules: Object.freeze([] as readonly []) }),
   guardrails: Object.freeze({ rules: Object.freeze([] as readonly []) }),
+  agentMonitor: Object.freeze({
+    thresholds: Object.freeze({
+      maxToolCallsPerTurn: 10,
+      maxErrorCallsPerSession: 5,
+      maxConsecutiveRepeatCalls: 3,
+      maxDeniedCallsPerSession: 2,
+      maxDestructiveCallsPerTurn: 1,
+      maxSessionDurationMs: 120_000,
+    }),
+  }),
+  securityAnalyzer: Object.freeze({
+    elevateOnAnomalyKinds: Object.freeze([
+      "tool_rate_exceeded",
+      "denied_tool_calls",
+      "irreversible_action_rate",
+      "delegation_depth_exceeded",
+    ]),
+  }),
   scope: Object.freeze({
     filesystem: Object.freeze({ root: ".", mode: "ro" as const }),
     browser: Object.freeze({

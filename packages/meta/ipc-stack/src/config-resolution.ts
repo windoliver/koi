@@ -1,0 +1,55 @@
+/**
+ * Config resolution: 3-layer merge (defaults -> preset -> user overrides).
+ *
+ * Validates required fields and resolves preset defaults.
+ */
+
+import { IPC_PRESET_SPECS } from "./presets.js";
+import type { IpcStackConfig } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve IPC config by merging preset defaults under user overrides.
+ *
+ * Validation rules:
+ * - Nexus messaging without config throws (requires agentId + connection info)
+ * - Orchestrator delegation without config throws (requires spawn wiring config)
+ */
+export function resolveIpcConfig(config: IpcStackConfig): IpcStackConfig {
+  const preset = config.preset ?? "local";
+  const spec = IPC_PRESET_SPECS[preset];
+
+  // Validate: nexus messaging requires explicit config
+  const effectiveMessaging = config.messaging ?? spec.messaging;
+  if (
+    effectiveMessaging?.kind === "nexus" &&
+    !("config" in effectiveMessaging && effectiveMessaging.config !== undefined)
+  ) {
+    throw new Error(
+      "[@koi/ipc-stack] Nexus messaging requires explicit config with agentId. " +
+        "Provide messaging: { kind: 'nexus', config: { agentId, ... } }.",
+    );
+  }
+
+  // Validate: orchestrator delegation requires explicit config
+  const effectiveDelegation = config.delegation ?? spec.delegation;
+  if (
+    effectiveDelegation?.kind === "orchestrator" &&
+    !("config" in effectiveDelegation && effectiveDelegation.config !== undefined)
+  ) {
+    throw new Error(
+      "[@koi/ipc-stack] Orchestrator delegation requires explicit config. " +
+        "Provide delegation: { kind: 'orchestrator', config: { ... } }.",
+    );
+  }
+
+  return {
+    ...config,
+    preset,
+    messaging: effectiveMessaging,
+    delegation: effectiveDelegation,
+  };
+}

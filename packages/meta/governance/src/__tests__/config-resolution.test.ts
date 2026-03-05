@@ -136,6 +136,40 @@ describe("resolveGovernanceConfig", () => {
     expect(resolved.intentCapsule?.systemPrompt).toBe("My mission.");
   });
 
+  // ── agentMonitor + securityAnalyzer resolution ────────────────────────
+
+  test("agentMonitor: user override wins over preset", () => {
+    const resolved = resolveGovernanceConfig({
+      preset: "standard",
+      agentMonitor: { thresholds: { maxToolCallsPerTurn: 5 } },
+    });
+    expect(resolved.agentMonitor?.thresholds?.maxToolCallsPerTurn).toBe(5);
+  });
+
+  test("securityAnalyzer: preset defaults applied when user omits", () => {
+    const resolved = resolveGovernanceConfig({ preset: "strict" });
+    expect(resolved.securityAnalyzer).toBeDefined();
+    expect(resolved.securityAnalyzer?.elevateOnAnomalyKinds).toContain("tool_rate_exceeded");
+  });
+
+  test("agentMonitor: undefined when preset is open and user omits", () => {
+    const resolved = resolveGovernanceConfig({});
+    expect(resolved.agentMonitor).toBeUndefined();
+  });
+
+  test("securityAnalyzer: user override wins over preset", () => {
+    const resolved = resolveGovernanceConfig({
+      preset: "strict",
+      securityAnalyzer: { highPatterns: ["custom-pattern"] },
+    });
+    expect(resolved.securityAnalyzer?.highPatterns).toEqual(["custom-pattern"]);
+  });
+
+  test("agentMonitor: preset standard provides default config", () => {
+    const resolved = resolveGovernanceConfig({ preset: "standard" });
+    expect(resolved.agentMonitor).toBeDefined();
+  });
+
   test("delegationEscalation passed through without preset defaults", () => {
     const config = {
       channel: { name: "mock", capabilities: {} },

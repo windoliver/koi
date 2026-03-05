@@ -203,3 +203,38 @@ describe("CHARS_PER_TOKEN", () => {
     expect(CHARS_PER_TOKEN).toBe(4);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Input validation
+// ---------------------------------------------------------------------------
+
+describe("createHeuristicEstimator input validation", () => {
+  test("throws for charsPerToken = 0", () => {
+    expect(() => createHeuristicEstimator({ charsPerToken: 0 })).toThrow(
+      "charsPerToken must be positive",
+    );
+  });
+
+  test("throws for negative charsPerToken", () => {
+    expect(() => createHeuristicEstimator({ charsPerToken: -1 })).toThrow(
+      "charsPerToken must be positive",
+    );
+  });
+
+  test("throws for negative perMessageOverhead", () => {
+    expect(() => createHeuristicEstimator({ perMessageOverhead: -1 })).toThrow(
+      "perMessageOverhead must be non-negative",
+    );
+  });
+
+  test("throws for negative perNonTextBlockOverhead", () => {
+    expect(() => createHeuristicEstimator({ perNonTextBlockOverhead: -1 })).toThrow(
+      "perNonTextBlockOverhead must be non-negative",
+    );
+  });
+
+  test("accepts zero overhead values", () => {
+    const est = createHeuristicEstimator({ perMessageOverhead: 0, perNonTextBlockOverhead: 0 });
+    expect(est.estimateText("abcd")).toBe(1);
+  });
+});

@@ -269,12 +269,18 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
 
     // Apply connect timeout if configured (0 = disabled)
     if (connectTimeoutMs > 0) {
+      // let justified: timer handle must be captured for cleanup after Promise.race
+      let timerId: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_resolve, reject) => {
-        setTimeout(() => {
+        timerId = setTimeout(() => {
           reject(new Error(`Channel "${name}" connect timed out after ${connectTimeoutMs}ms`));
         }, connectTimeoutMs);
       });
-      await Promise.race([platformConnect(), timeout]);
+      try {
+        await Promise.race([platformConnect(), timeout]);
+      } finally {
+        if (timerId !== undefined) clearTimeout(timerId);
+      }
     } else {
       await platformConnect();
     }

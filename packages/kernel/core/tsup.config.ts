@@ -45,6 +45,7 @@ export default defineConfig({
     "src/debug.ts",
     "src/zone.ts",
     "src/cost-tracker.ts",
+    "src/user-model.ts",
   ],
   format: ["esm"],
   dts: {

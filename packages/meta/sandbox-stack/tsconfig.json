@@ -10,7 +10,31 @@
       "path": "../../kernel/core"
     },
     {
+      "path": "../../middleware/middleware-sandbox"
+    },
+    {
+      "path": "../../virt/code-executor"
+    },
+    {
       "path": "../../virt/sandbox-cloud-base"
+    },
+    {
+      "path": "../../virt/sandbox-cloudflare"
+    },
+    {
+      "path": "../../virt/sandbox-daytona"
+    },
+    {
+      "path": "../../virt/sandbox-docker"
+    },
+    {
+      "path": "../../virt/sandbox-e2b"
+    },
+    {
+      "path": "../../virt/sandbox-executor"
+    },
+    {
+      "path": "../../virt/sandbox-vercel"
     }
   ]
 }

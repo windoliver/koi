@@ -33,12 +33,19 @@ export interface RetryQueue {
  * pauses for the retry-after duration (or computed backoff) before
  * retrying.
  */
+/** A queued item with its deferred resolve/reject so the caller's enqueue() awaits completion. */
+interface QueueEntry {
+  readonly fn: () => Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+}
+
 export function createRetryQueue(config?: RetryQueueConfig): RetryQueue {
   const retryConfig = config?.retry ?? DEFAULT_RETRY_CONFIG;
   const extractRetryAfterMs = config?.extractRetryAfterMs;
 
   // let justified: mutable queue state
-  let queue: readonly (() => Promise<void>)[] = [];
+  let queue: readonly QueueEntry[] = [];
   let processing = false;
 
   const processQueue = async (): Promise<void> => {
@@ -46,15 +53,16 @@ export function createRetryQueue(config?: RetryQueueConfig): RetryQueue {
     processing = true;
 
     while (queue.length > 0) {
-      const [fn, ...rest] = queue;
+      const [entry, ...rest] = queue;
       queue = rest;
 
-      if (fn !== undefined) {
+      if (entry !== undefined) {
+        // let justified: tracks the last error across retry attempts
         let lastError: unknown;
 
         for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
           try {
-            await fn();
+            await entry.fn();
             lastError = undefined;
             break;
           } catch (error: unknown) {
@@ -72,9 +80,10 @@ export function createRetryQueue(config?: RetryQueueConfig): RetryQueue {
         }
 
         if (lastError !== undefined) {
-          // Final attempt failed — propagate but continue processing queue
-          processing = false;
-          throw lastError;
+          // Final attempt failed — reject the caller's promise but continue queue
+          entry.reject(lastError);
+        } else {
+          entry.resolve();
         }
       }
     }
@@ -83,9 +92,11 @@ export function createRetryQueue(config?: RetryQueueConfig): RetryQueue {
   };
 
   return {
-    enqueue: async (fn: () => Promise<void>): Promise<void> => {
-      queue = [...queue, fn];
-      await processQueue();
+    enqueue: (fn: () => Promise<void>): Promise<void> => {
+      return new Promise<void>((resolve, reject) => {
+        queue = [...queue, { fn, resolve, reject }];
+        void processQueue();
+      });
     },
 
     size: (): number => queue.length,

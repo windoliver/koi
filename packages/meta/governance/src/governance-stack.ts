@@ -1,7 +1,7 @@
 /**
  * createGovernanceStack — enterprise compliance middleware assembly.
  *
- * Composes up to 11 middleware into a single stack with a fixed priority order.
+ * Composes up to 12 middleware into a single stack with a fixed priority order.
  * All fields are optional — include only what your deployment needs.
  *
  * Priority order (lower = outer layer, runs first on request):
@@ -16,13 +16,19 @@
  *   300  koi:audit
  *   340  koi:pii
  *   350  koi:sanitize
+ *   360  koi:agent-monitor   (behavioral anomaly detection, OWASP ASI10)
  *   375  koi:guardrails
  */
 
+import type { AgentMonitorConfig, AnomalySignal, SessionMetricsSummary } from "@koi/agent-monitor";
+import { createAgentMonitorMiddleware } from "@koi/agent-monitor";
+import { createNdjsonAuditSink, createSqliteAuditSink } from "@koi/audit-sink-local";
+import { createNexusAuditSink } from "@koi/audit-sink-nexus";
 import type { SessionRevocationStore } from "@koi/capability-verifier";
 import { createCapabilityVerifier, createSessionRevocationStore } from "@koi/capability-verifier";
 import type {
   Agent,
+  AuditSink,
   ComponentProvider,
   DelegationId,
   MailboxComponent,
@@ -57,10 +63,13 @@ import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPIIMiddleware } from "@koi/middleware-pii";
 import { createSanitizeMiddleware } from "@koi/middleware-sanitize";
 import { createNexusOnGrant, createNexusOnRevoke } from "@koi/permissions-nexus";
+import { createRedactor } from "@koi/redaction";
+import type { AnomalySignalLike } from "@koi/security-analyzer";
+import { createMonitorBridgeAnalyzer, createRulesSecurityAnalyzer } from "@koi/security-analyzer";
 
 import { resolveGovernanceConfig } from "./config-resolution.js";
 import { wireGovernanceScope } from "./scope-wiring.js";
-import type { GovernanceBundle, GovernanceStackConfig } from "./types.js";
+import type { AuditBackendConfig, GovernanceBundle, GovernanceStackConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Approval routing provider (auto-discovery)
@@ -221,6 +230,186 @@ function autoWireVerifier(delegation: DelegationMiddlewareConfig | undefined): A
 }
 
 // ---------------------------------------------------------------------------
+// Audit backend auto-wiring
+// ---------------------------------------------------------------------------
+
+interface AuditSinkResult {
+  readonly sink: AuditSink;
+  /** Optional close disposable (for SQLite/NDJSON cleanup). */
+  readonly close?: (() => void) | undefined;
+}
+
+/** Create an AuditSink from a declarative AuditBackendConfig. */
+function createAuditSinkFromConfig(config: AuditBackendConfig): AuditSinkResult {
+  switch (config.kind) {
+    case "sqlite": {
+      const { kind: _, ...sinkConfig } = config;
+      const sink = createSqliteAuditSink(sinkConfig);
+      return { sink, close: sink.close };
+    }
+    case "ndjson": {
+      const { kind: _, ...sinkConfig } = config;
+      const sink = createNdjsonAuditSink(sinkConfig);
+      return { sink, close: sink.close };
+    }
+    case "nexus": {
+      const { kind: _, ...sinkConfig } = config;
+      return { sink: createNexusAuditSink(sinkConfig) };
+    }
+    case "custom":
+      return { sink: config.sink };
+    default: {
+      const _exhaustive: never = config;
+      throw new Error(`Unknown audit backend kind: ${(_exhaustive as AuditBackendConfig).kind}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Anomaly collector (glue between agent-monitor and security-analyzer)
+// ---------------------------------------------------------------------------
+
+interface AnomalyCollector {
+  readonly getRecentAnomalies: (sessionId: string) => readonly AnomalySignalLike[];
+  readonly onAnomaly: (signal: AnomalySignalLike) => void;
+  readonly clearSession: (sessionId: string) => void;
+}
+
+const MAX_ANOMALIES_PER_SESSION = 50;
+
+function createAnomalyCollector(): AnomalyCollector {
+  const buffers = new Map<string, readonly AnomalySignalLike[]>();
+  return {
+    getRecentAnomalies: (sessionId) => buffers.get(sessionId) ?? [],
+    onAnomaly: (signal) => {
+      const buf = buffers.get(signal.sessionId) ?? [];
+      buffers.set(
+        signal.sessionId,
+        buf.length < MAX_ANOMALIES_PER_SESSION
+          ? [...buf, { kind: signal.kind, sessionId: signal.sessionId }]
+          : [...buf.slice(1), { kind: signal.kind, sessionId: signal.sessionId }],
+      );
+    },
+    clearSession: (sessionId) => {
+      buffers.delete(sessionId);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Security analyzer auto-wiring
+// ---------------------------------------------------------------------------
+
+interface SecurityAnalyzerWireResult {
+  readonly effectiveExecApprovals: ExecApprovalsConfig;
+  readonly collector: AnomalyCollector | undefined;
+}
+
+/**
+ * Conditionally compose rules analyzer + monitor bridge and inject into exec-approvals.
+ *
+ * Skip conditions:
+ * 1. execApprovals is undefined
+ * 2. execApprovals.securityAnalyzer is already set (user wins)
+ * 3. Neither agentMonitor nor securityAnalyzer config is present
+ */
+function autoWireSecurityAnalyzer(resolved: GovernanceStackConfig): SecurityAnalyzerWireResult {
+  const ea = resolved.execApprovals;
+
+  // Skip if no exec-approvals to inject into
+  if (ea === undefined) {
+    return { effectiveExecApprovals: ea as never, collector: undefined };
+  }
+
+  // Skip if user already provided a securityAnalyzer (user wins)
+  if (ea.securityAnalyzer !== undefined) {
+    return { effectiveExecApprovals: ea, collector: undefined };
+  }
+
+  const monitorCfg = resolved.agentMonitor;
+  const analyzerCfg = resolved.securityAnalyzer;
+
+  // Skip if neither pipeline component is configured
+  if (monitorCfg === undefined && analyzerCfg === undefined) {
+    return { effectiveExecApprovals: ea, collector: undefined };
+  }
+
+  // Create rules analyzer from securityAnalyzer config (if any)
+  const rulesAnalyzer = createRulesSecurityAnalyzer(
+    analyzerCfg !== undefined
+      ? {
+          ...(analyzerCfg.highPatterns !== undefined
+            ? { highPatterns: analyzerCfg.highPatterns }
+            : {}),
+          ...(analyzerCfg.mediumPatterns !== undefined
+            ? { mediumPatterns: analyzerCfg.mediumPatterns }
+            : {}),
+        }
+      : {},
+  );
+
+  // If agentMonitor is configured, wrap with monitor bridge
+  if (monitorCfg !== undefined) {
+    const collector = createAnomalyCollector();
+    const bridged = createMonitorBridgeAnalyzer({
+      wrapped: rulesAnalyzer,
+      getRecentAnomalies: collector.getRecentAnomalies,
+      ...(analyzerCfg?.elevateOnAnomalyKinds !== undefined
+        ? { elevateOnAnomalyKinds: analyzerCfg.elevateOnAnomalyKinds }
+        : {}),
+    });
+    return {
+      effectiveExecApprovals: {
+        ...ea,
+        securityAnalyzer: bridged,
+        ...(analyzerCfg?.analyzerTimeoutMs !== undefined
+          ? { analyzerTimeoutMs: analyzerCfg.analyzerTimeoutMs }
+          : {}),
+      },
+      collector,
+    };
+  }
+
+  // No agentMonitor → rules analyzer only (no bridge)
+  return {
+    effectiveExecApprovals: {
+      ...ea,
+      securityAnalyzer: rulesAnalyzer,
+      ...(analyzerCfg?.analyzerTimeoutMs !== undefined
+        ? { analyzerTimeoutMs: analyzerCfg.analyzerTimeoutMs }
+        : {}),
+    },
+    collector: undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Agent-monitor config builder (chains governance callbacks with user callbacks)
+// ---------------------------------------------------------------------------
+
+function buildAgentMonitorConfig(
+  config: AgentMonitorConfig,
+  collector: AnomalyCollector | undefined,
+): AgentMonitorConfig {
+  if (collector === undefined) return config;
+
+  const userOnAnomaly = config.onAnomaly;
+  const userOnMetrics = config.onMetrics;
+
+  return {
+    ...config,
+    onAnomaly: (signal: AnomalySignal): void => {
+      collector.onAnomaly(signal);
+      if (userOnAnomaly !== undefined) userOnAnomaly(signal);
+    },
+    onMetrics: (sessionId: SessionId, summary: SessionMetricsSummary): void => {
+      collector.clearSession(sessionId as string);
+      if (userOnMetrics !== undefined) userOnMetrics(sessionId, summary);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main factory
 // ---------------------------------------------------------------------------
 
@@ -241,7 +430,29 @@ function autoWireVerifier(delegation: DelegationMiddlewareConfig | undefined): A
  * and mailbox from the agent entity — zero explicit config needed.
  */
 export function createGovernanceStack(config: GovernanceStackConfig): GovernanceBundle {
-  const resolved = resolveGovernanceConfig(config);
+  // Validate: auditBackend and audit.sink are mutually exclusive
+  if (config.auditBackend !== undefined && config.audit?.sink !== undefined) {
+    throw new Error(
+      "GovernanceStack: 'auditBackend' and 'audit.sink' are mutually exclusive. " +
+        "Use 'auditBackend' for declarative backend selection, or provide 'audit.sink' directly.",
+    );
+  }
+
+  // Auto-create audit sink from declarative config
+  const auditSinkResult =
+    config.auditBackend !== undefined ? createAuditSinkFromConfig(config.auditBackend) : undefined;
+
+  // If auditBackend is provided, merge the sink into the config before resolution
+  const effectiveConfig =
+    auditSinkResult !== undefined
+      ? {
+          ...config,
+          audit: { ...config.audit, sink: auditSinkResult.sink },
+          backends: { ...config.backends, auditSink: auditSinkResult.sink },
+        }
+      : config;
+
+  const resolved = resolveGovernanceConfig(effectiveConfig);
 
   // Validate: capabilityRequest requires delegationBridge
   if (config.capabilityRequest !== undefined && config.delegationBridge === undefined) {
@@ -278,14 +489,25 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
         })
       : undefined;
 
+  // ── Auto-wire security analyzer pipeline ─────────────────────────────
+  // agent-monitor → security-analyzer → exec-approvals
+  const { effectiveExecApprovals, collector } = autoWireSecurityAnalyzer(resolved);
+
   // ── Agent approval routing auto-wiring ────────────────────────────────
   // When exec-approvals is configured, create a ComponentProvider that auto-discovers
   // agentId (pid.id), parentId (pid.parent), and mailbox (MAILBOX component) during
   // agent assembly. Zero explicit config needed — routing is wired dynamically.
   const disposables: Disposable[] = [];
+
+  // Track audit sink close for cleanup (SQLite/NDJSON file handles)
+  if (auditSinkResult?.close !== undefined) {
+    const closeFn = auditSinkResult.close;
+    disposables.push({ [Symbol.dispose]: closeFn });
+  }
+
   const approvalRouting =
     resolved.execApprovals !== undefined
-      ? createApprovalRoutingProvider(resolved.execApprovals, disposables)
+      ? createApprovalRoutingProvider(effectiveExecApprovals, disposables)
       : undefined;
 
   // Auto-wire capability verifier when delegation is configured without explicit verifier
@@ -296,6 +518,12 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
   const delegationEscalationHandle =
     config.delegationEscalation !== undefined
       ? createDelegationEscalationMiddleware(config.delegationEscalation)
+      : undefined;
+
+  // Build effective agent-monitor config with chained callbacks
+  const effectiveAgentMonitor =
+    resolved.agentMonitor !== undefined
+      ? buildAgentMonitorConfig(resolved.agentMonitor, collector)
       : undefined;
 
   const candidates: ReadonlyArray<KoiMiddleware | undefined> = [
@@ -327,8 +555,12 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     resolved.pii !== undefined
       ? createPIIMiddleware(resolved.pii) // 340
       : undefined,
+    // Note: redaction (345) is not a middleware — it's a standalone Redactor exposed on the bundle.
     resolved.sanitize !== undefined
       ? createSanitizeMiddleware(resolved.sanitize) // 350
+      : undefined,
+    effectiveAgentMonitor !== undefined
+      ? { ...createAgentMonitorMiddleware(effectiveAgentMonitor), priority: 360 } // 360
       : undefined,
     resolved.guardrails !== undefined
       ? createGuardrailsMiddleware(resolved.guardrails) // 375
@@ -368,6 +600,10 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     ...approvalRoutingProviders,
   ];
 
+  // Create redactor when redaction config is provided
+  const redactor =
+    resolved.redaction !== undefined ? createRedactor(resolved.redaction) : undefined;
+
   return {
     middlewares,
     providers,
@@ -381,5 +617,14 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     ...(nexusHooks !== undefined ? { nexusHooks } : {}),
     ...(sessionStore !== undefined ? { sessionStore } : {}),
     ...(delegationEscalationHandle !== undefined ? { delegationEscalationHandle } : {}),
+    ...(redactor !== undefined ? { redactor } : {}),
+    ...(collector !== undefined
+      ? {
+          anomalyCollector: {
+            getRecentAnomalies: collector.getRecentAnomalies,
+            clearSession: collector.clearSession,
+          },
+        }
+      : {}),
   };
 }

@@ -53,29 +53,55 @@ export function createShutdownHandler(
     // 1. Stop accepting new work
     callbacks.onStopAccepting();
 
-    // 2. Drain active work with timeout
-    const drainPromise = callbacks.onDrainAgents();
+    // 2. Drain active work with timeout — wrapped in try/finally so
+    //    cleanup and shutdown_complete are always reached, even if
+    //    onDrainAgents() rejects.
     let drainTimeoutId: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<void>((resolve) => {
-      drainTimeoutId = setTimeout(resolve, timeoutMs);
-    });
+    try {
+      const drainPromise = callbacks.onDrainAgents();
+      const timeoutPromise = new Promise<void>((resolve) => {
+        drainTimeoutId = setTimeout(resolve, timeoutMs);
+      });
 
-    await Promise.race([drainPromise, timeoutPromise]);
-    // Clear timer to prevent it from delaying process exit
-    if (drainTimeoutId !== undefined) clearTimeout(drainTimeoutId);
+      await Promise.race([drainPromise, timeoutPromise]);
+    } catch (drainError: unknown) {
+      emit("shutdown_error", {
+        phase: "drain",
+        error: drainError instanceof Error ? drainError.message : String(drainError),
+      });
+    } finally {
+      if (drainTimeoutId !== undefined) clearTimeout(drainTimeoutId);
+    }
 
-    // 3. Clean up resources
-    await callbacks.onCleanup();
+    // 3. Clean up resources — also guarded so shutdown_complete fires
+    try {
+      await callbacks.onCleanup();
+    } catch (cleanupError: unknown) {
+      emit("shutdown_error", {
+        phase: "cleanup",
+        error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      });
+    }
 
     emit("shutdown_complete", { signal });
   }
 
   return {
     install() {
+      // Idempotency guard: repeated install() would leak duplicate listeners
+      if (signalHandlers.size > 0) return;
+
       const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
       for (const sig of signals) {
         const handler = (): void => {
-          void doShutdown(sig);
+          // .catch prevents unhandled rejection when doShutdown rejects
+          // (doShutdown is now resilient via try/finally, but defense-in-depth)
+          void doShutdown(sig).catch((err: unknown) => {
+            emit("shutdown_error", {
+              phase: "signal",
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
         };
         signalHandlers.set(sig, handler);
         process.on(sig, handler);

@@ -216,6 +216,7 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
               kind: "reaction_added",
               event: inner as unknown as import("./normalize.js").SlackReactionEvent,
             });
+            acknowledgeEvent(event);
           });
 
           socketClient.on("reaction_removed", (rawEvent: unknown) => {
@@ -225,6 +226,7 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
               kind: "reaction_removed",
               event: inner as unknown as import("./normalize.js").SlackReactionEvent,
             });
+            acknowledgeEvent(event);
           });
         }
       }

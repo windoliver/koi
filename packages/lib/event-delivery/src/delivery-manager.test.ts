@@ -338,4 +338,78 @@ describe("createDeliveryManager", () => {
       expect(received).toHaveLength(0);
     });
   });
+
+  describe("maxRetries edge cases", () => {
+    test("maxRetries 0 is clamped to 1 — handler runs at least once", async () => {
+      const cb = createNoopCallbacks();
+      const dm = createDeliveryManager(cb);
+      const deadLetters: DeadLetterEntry[] = [];
+
+      dm.subscribe({
+        streamId: "s",
+        subscriptionName: "sub-zero-retry",
+        fromPosition: 0,
+        maxRetries: 0,
+        handler: () => {
+          throw new Error("always fails");
+        },
+        onDeadLetter: (entry) => {
+          deadLetters.push(entry);
+        },
+      });
+
+      dm.notifySubscribers("s", createEnvelope({ streamId: "s", sequence: 1 }));
+      await Bun.sleep(100);
+
+      // Should dead-letter after 1 attempt instead of silently dropping
+      expect(deadLetters).toHaveLength(1);
+      expect(deadLetters[0]?.attempts).toBe(1);
+    });
+
+    test("negative maxRetries is clamped to 1", async () => {
+      const cb = createNoopCallbacks();
+      const dm = createDeliveryManager(cb);
+      const deadLetters: DeadLetterEntry[] = [];
+
+      dm.subscribe({
+        streamId: "s",
+        subscriptionName: "sub-neg-retry",
+        fromPosition: 0,
+        maxRetries: -5,
+        handler: () => {
+          throw new Error("always fails");
+        },
+        onDeadLetter: (entry) => {
+          deadLetters.push(entry);
+        },
+      });
+
+      dm.notifySubscribers("s", createEnvelope({ streamId: "s", sequence: 1 }));
+      await Bun.sleep(100);
+
+      expect(deadLetters).toHaveLength(1);
+    });
+
+    test("maxRetries 0 still delivers successfully if handler succeeds", async () => {
+      const cb = createNoopCallbacks();
+      const dm = createDeliveryManager(cb);
+      const received: EventEnvelope[] = [];
+
+      const handle = dm.subscribe({
+        streamId: "s",
+        subscriptionName: "sub-zero-ok",
+        fromPosition: 0,
+        maxRetries: 0,
+        handler: (evt) => {
+          received.push(evt);
+        },
+      });
+
+      dm.notifySubscribers("s", createEnvelope({ streamId: "s", sequence: 1 }));
+      await Bun.sleep(100);
+
+      expect(received).toHaveLength(1);
+      expect(handle.position()).toBe(1);
+    });
+  });
 });

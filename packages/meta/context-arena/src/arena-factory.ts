@@ -25,8 +25,7 @@ import {
 import { createContextEditingMiddleware } from "@koi/middleware-context-editing";
 import { createConversationMiddleware } from "@koi/middleware-conversation";
 import { createHotMemoryMiddleware } from "@koi/middleware-hot-memory";
-import { createPersonalizationMiddleware } from "@koi/middleware-personalization";
-import { createPreferenceMiddleware } from "@koi/middleware-preference";
+import { createUserModelMiddleware } from "@koi/middleware-user-model";
 import { createSquashProvider } from "@koi/tool-squash";
 import { resolveContextArenaConfig } from "./config-resolution.js";
 import type { ContextArenaBundle, ContextArenaConfig } from "./types.js";
@@ -62,7 +61,7 @@ function createDefaultMergeHandler(summarizer: ModelHandler): MergeHandler {
 /**
  * Creates a fully wired context arena bundle with coordinated budget allocation.
  *
- * Middleware ordering in the returned array: conversation (100, opt-in) → squash (220) → compactor (225) → context-editing (250) → hot-memory (310, opt-in) → personalization (420, opt-in) → preference (410, default-on with memory).
+ * Middleware ordering in the returned array: conversation (100, opt-in) → squash (220) → compactor (225) → context-editing (250) → hot-memory (310, opt-in) → user-model (415, opt-in).
  * Priority is owned by L2 packages — arena just returns them in priority order.
  *
  * @param config - User-facing configuration with required summarizer, sessionId, and getMessages
@@ -189,24 +188,21 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
         })
       : undefined;
 
-  // --- Opt-in: personalization middleware ---
-  const personalizationMiddleware =
-    resolved.personalizationEnabled && effectiveMemory !== undefined
-      ? createPersonalizationMiddleware({
+  // --- Unified user model middleware (replaces personalization + preference-drift) ---
+  const userModelMiddleware =
+    (resolved.personalizationEnabled || resolved.preferenceEnabled) && effectiveMemory !== undefined
+      ? createUserModelMiddleware({
           memory: effectiveMemory,
+          preAction: { enabled: resolved.personalizationEnabled },
+          postAction: { enabled: resolved.personalizationEnabled },
+          drift: {
+            enabled: resolved.preferenceEnabled,
+            ...(config.preference !== false && config.preference?.classify !== undefined
+              ? { classify: config.preference.classify }
+              : {}),
+          },
           relevanceThreshold: resolved.personalizationRelevanceThreshold,
           maxPreferenceTokens: resolved.personalizationMaxPreferenceTokens,
-        })
-      : undefined;
-
-  // --- Default-on: preference drift detection (requires memory) ---
-  const preferenceMiddleware =
-    resolved.preferenceEnabled && effectiveMemory !== undefined
-      ? createPreferenceMiddleware({
-          memory: effectiveMemory,
-          ...(config.preference !== false && config.preference?.classify !== undefined
-            ? { classify: config.preference.classify }
-            : {}),
         })
       : undefined;
 
@@ -217,8 +213,7 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
     compactorMiddleware,
     contextEditingMiddleware,
     ...(hotMemoryMiddleware !== undefined ? [hotMemoryMiddleware] : []),
-    ...(personalizationMiddleware !== undefined ? [personalizationMiddleware] : []),
-    ...(preferenceMiddleware !== undefined ? [preferenceMiddleware] : []),
+    ...(userModelMiddleware !== undefined ? [userModelMiddleware] : []),
   ];
 
   // --- Opt-in: memory provider (user-scoped or single-instance) ---

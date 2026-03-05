@@ -1,0 +1,32 @@
+{
+  "name": "@koi/goal-stack",
+  "description": "Goal-directed middleware bundle composing anchor, reminder, and planning middleware",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "@koi/middleware-goal-anchor": "workspace:*",
+    "@koi/middleware-goal-reminder": "workspace:*",
+    "@koi/middleware-planning": "workspace:*",
+    "@koi/resolve": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  }
+}

@@ -84,6 +84,20 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     middlewareList.push(parts.collectiveMemoryMiddleware);
   }
 
+  if (parts.eventTraceMiddleware !== undefined) {
+    middlewareList.push(parts.eventTraceMiddleware);
+  }
+
+  if (parts.reportMiddleware !== undefined) {
+    middlewareList.push(parts.reportMiddleware);
+  }
+
+  if (parts.goalStackMiddleware !== undefined) {
+    for (const mw of parts.goalStackMiddleware) {
+      middlewareList.push(mw);
+    }
+  }
+
   const cachedMiddleware: readonly KoiMiddleware[] = middlewareList;
 
   // --- Build providers list ---

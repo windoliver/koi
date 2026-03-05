@@ -160,6 +160,10 @@
     "./procfs": {
       "types": "./dist/procfs.d.ts",
       "import": "./dist/procfs.js"
+    },
+    "./user-model": {
+      "types": "./dist/user-model.d.ts",
+      "import": "./dist/user-model.js"
     }
   },
   "scripts": {
