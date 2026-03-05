@@ -910,6 +910,10 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/lib/welford-stats": {
+      "name": "@koi/welford-stats",
+      "version": "0.0.0",
+    },
     "packages/meta/agent-spawner": {
       "name": "@koi/agent-spawner",
       "version": "0.0.0",
@@ -2142,6 +2146,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/welford-stats": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -3564,6 +3569,8 @@
     "@koi/webhook-delivery": ["@koi/webhook-delivery@workspace:packages/net/webhook-delivery"],
 
     "@koi/webhook-provider": ["@koi/webhook-provider@workspace:packages/net/webhook-provider"],
+
+    "@koi/welford-stats": ["@koi/welford-stats@workspace:packages/lib/welford-stats"],
 
     "@koi/workspace": ["@koi/workspace@workspace:packages/ipc/workspace"],
 
