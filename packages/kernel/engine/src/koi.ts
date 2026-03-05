@@ -268,6 +268,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: tools accessor for cooperating adapters (set once at session start)
     let toolsAccessor: ReturnType<typeof createDedupedToolsAccessor> | undefined;
 
+    // let justified: pending engine events emitted by terminal wrappers (e.g., discovery:miss)
+    const pendingEngineEvents: EngineEvent[] = [];
+
     // Structured IDs encode trust boundary: agent ownership is parseable from the ID itself.
     // Format: "agent:{agentId}:{uuid}" for session, plain UUID for run.
     const sid: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
@@ -352,9 +355,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         const baseToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
         // Wrap tool terminal with execution context so tools can
         // read session identity via getExecutionContext().
-        const rawToolTerminal: ToolHandler = (request) => {
+        // Also emits discovery:miss when tool lookup fails (NOT_FOUND).
+        const rawToolTerminal: ToolHandler = async (request) => {
           const execCtx = { session: sessionCtx, turnIndex: currentTurnIndex };
-          return runWithExecutionContext(execCtx, () => baseToolTerminal(request));
+          try {
+            return await runWithExecutionContext(execCtx, () => baseToolTerminal(request));
+          } catch (e: unknown) {
+            if (e instanceof KoiRuntimeError && e.code === "NOT_FOUND") {
+              pendingEngineEvents.push({
+                kind: "discovery:miss",
+                resolverSource: forge !== undefined ? "forge+entity" : "entity",
+                timestamp: Date.now(),
+              });
+            }
+            throw e;
+          }
         };
         const rawModelStreamTerminal = adapter.terminals.modelStream;
 
@@ -570,6 +585,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               }
               agent.transition({ kind: "complete", stopReason: "completed" });
               return;
+            }
+
+            // Drain pending events emitted by terminal wrappers (e.g., discovery:miss)
+            if (pendingEngineEvents.length > 0) {
+              for (const pending of pendingEngineEvents) {
+                yield pending;
+              }
+              pendingEngineEvents.length = 0;
             }
 
             const event = result.value;

@@ -19,7 +19,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { extractMessage } from "@koi/errors";
+import { extractMessage, KoiRuntimeError } from "@koi/errors";
 import type { DemandContext } from "./confidence.js";
 import { computeDemandConfidence, DEFAULT_CONFIDENCE_WEIGHTS } from "./confidence.js";
 import {
@@ -168,6 +168,38 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
   }
 
   // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  /** Check latency degradation via health tracker and emit signal if threshold exceeded. */
+  function checkLatencyDegradation(toolId: string): void {
+    if (config.healthTracker === undefined) return;
+    const snapshot = config.healthTracker.getHealthSnapshot(toolId);
+    const latencyTrigger = detectLatencyDegradation(
+      toolId,
+      snapshot,
+      thresholds.latencyDegradationP95Ms,
+    );
+    if (latencyTrigger !== undefined) {
+      emitSignal(latencyTrigger, {
+        failureCount: snapshot?.metrics.usageCount ?? 0,
+        threshold: thresholds.latencyDegradationP95Ms,
+      });
+    }
+  }
+
+  /** Update capability gap counts for all matching patterns in the response text. */
+  function updateGapCounts(responseText: string): void {
+    for (const pattern of patterns) {
+      const match = pattern.exec(responseText);
+      if (match !== null) {
+        const capability = match[0];
+        capabilityGapCounts.set(capability, (capabilityGapCounts.get(capability) ?? 0) + 1);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Middleware
   // ---------------------------------------------------------------------------
 
@@ -187,7 +219,22 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       try {
         response = await next(request);
       } catch (e: unknown) {
-        // Record failure
+        // NOT_FOUND → tool never existed → emit no_matching_tool (not repeated_failure)
+        if (e instanceof KoiRuntimeError && e.code === "NOT_FOUND") {
+          const trigger: ForgeTrigger = {
+            kind: "no_matching_tool",
+            query: toolId,
+            attempts: 1,
+          };
+          emitSignal(trigger, {
+            failureCount: 1,
+            threshold: thresholds.repeatedFailureCount,
+          });
+          checkLatencyDegradation(toolId);
+          throw e;
+        }
+
+        // Other errors → record consecutive failure
         const count = (consecutiveFailures.get(toolId) ?? 0) + 1;
         consecutiveFailures.set(toolId, count);
 
@@ -196,51 +243,25 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         failedToolCalls.set(`rf:${toolId}`, calls);
 
         // Check repeated failure heuristic
-        const trigger = detectRepeatedFailure(toolId, count, thresholds.repeatedFailureCount);
-        if (trigger !== undefined) {
-          emitSignal(trigger, {
+        const repeatedTrigger = detectRepeatedFailure(
+          toolId,
+          count,
+          thresholds.repeatedFailureCount,
+        );
+        if (repeatedTrigger !== undefined) {
+          emitSignal(repeatedTrigger, {
             failureCount: count,
             threshold: thresholds.repeatedFailureCount,
           });
         }
 
-        // Check latency degradation via health tracker
-        if (config.healthTracker !== undefined) {
-          const snapshot = config.healthTracker.getHealthSnapshot(toolId);
-          const latencyTrigger = detectLatencyDegradation(
-            toolId,
-            snapshot,
-            thresholds.latencyDegradationP95Ms,
-          );
-          if (latencyTrigger !== undefined) {
-            emitSignal(latencyTrigger, {
-              failureCount: snapshot?.metrics.usageCount ?? 0,
-              threshold: thresholds.latencyDegradationP95Ms,
-            });
-          }
-        }
-
+        checkLatencyDegradation(toolId);
         throw e;
       }
 
       // Success — reset consecutive failure counter
       consecutiveFailures.set(toolId, 0);
-
-      // Check latency degradation on success too
-      if (config.healthTracker !== undefined) {
-        const snapshot = config.healthTracker.getHealthSnapshot(toolId);
-        const latencyTrigger = detectLatencyDegradation(
-          toolId,
-          snapshot,
-          thresholds.latencyDegradationP95Ms,
-        );
-        if (latencyTrigger !== undefined) {
-          emitSignal(latencyTrigger, {
-            failureCount: snapshot?.metrics.usageCount ?? 0,
-            threshold: thresholds.latencyDegradationP95Ms,
-          });
-        }
-      }
+      checkLatencyDegradation(toolId);
 
       return response;
     },
@@ -258,6 +279,9 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       const responseText = extractResponseText(response);
       if (responseText.length === 0) return response;
 
+      // Always update gap counts first
+      updateGapCounts(responseText);
+
       // Check capability gap patterns
       const trigger = detectCapabilityGap(
         responseText,
@@ -267,29 +291,11 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       );
 
       if (trigger !== undefined) {
-        // Update gap counts (mutation justified: encapsulated in closure)
-        for (const pattern of patterns) {
-          const match = pattern.exec(responseText);
-          if (match !== null) {
-            const capability = match[0];
-            capabilityGapCounts.set(capability, (capabilityGapCounts.get(capability) ?? 0) + 1);
-          }
-        }
-
         const gapKey = trigger.kind === "capability_gap" ? trigger.requiredCapability : "";
         emitSignal(trigger, {
           failureCount: capabilityGapCounts.get(gapKey) ?? 1,
           threshold: thresholds.capabilityGapOccurrences,
         });
-      } else {
-        // Still track gap counts even when below threshold
-        for (const pattern of patterns) {
-          const match = pattern.exec(responseText);
-          if (match !== null) {
-            const capability = match[0];
-            capabilityGapCounts.set(capability, (capabilityGapCounts.get(capability) ?? 0) + 1);
-          }
-        }
       }
 
       return response;

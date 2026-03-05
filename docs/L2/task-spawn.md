@@ -73,17 +73,21 @@ const runtime = await createKoi({ manifest, adapter, providers: [provider] });
 
 ```
 packages/task-spawn/src/
-├── types.ts          Interfaces, branded types, descriptor factory (165 lines)
-├── config.ts         Validation: validateTaskSpawnConfig (122 lines)
-├── task-tool.ts      Tool factory: createTaskTool (128 lines)
-├── output.ts         Result → string extraction (22 lines)
-├── provider.ts       ComponentProvider factory (22 lines)
-├── index.ts          Public re-exports (35 lines)
-├── task-tool.test.ts Unit tests (colocated)
-├── config.test.ts    Validation tests (colocated)
-├── output.test.ts    Output tests (colocated)
-├── types.test.ts     Type tests (colocated)
-├── provider.test.ts  Provider tests (colocated)
+├── types.ts                        Interfaces, branded types, descriptor factory
+├── config.ts                       Validation: validateTaskSpawnConfig
+├── task-tool.ts                    Tool factory: createTaskTool
+├── output.ts                       Result → string extraction
+├── provider.ts                     ComponentProvider factory
+├── registry-agent-resolver.ts      AgentResolver backed by AgentRegistry + catalog
+├── mailbox-message-fn.ts           MessageFn backed by MailboxComponent IPC
+├── index.ts                        Public re-exports
+├── task-tool.test.ts               Unit tests (colocated)
+├── config.test.ts                  Validation tests (colocated)
+├── output.test.ts                  Output tests (colocated)
+├── types.test.ts                   Type tests (colocated)
+├── provider.test.ts                Provider tests (colocated)
+├── registry-agent-resolver.test.ts Resolver tests (colocated)
+├── mailbox-message-fn.test.ts      MessageFn tests (colocated)
 └── __tests__/
     ├── e2e-copilot.test.ts   E2E: copilot routing through L1
     ├── e2e-pi.test.ts        E2E: pi adapter integration
@@ -94,7 +98,8 @@ packages/task-spawn/src/
 
 ```
 @koi/task-spawn (L2)
-  └── @koi/core (L0)  ← only production dependency
+  ├── @koi/core (L0)        ← types & contracts
+  └── @koi/delegation (L0u) ← sendAndWait for mailbox IPC
 ```
 
 ## How It Works
@@ -172,6 +177,8 @@ Validation via `validateTaskSpawnConfig()` returns `Result<TaskSpawnConfig, KoiE
 | `createTaskTool(config)` | `Promise<Tool>` | Creates the task tool directly |
 | `createTaskToolDescriptor(summaries)` | `ToolDescriptor` | Builds descriptor with agent_type enum |
 | `createMapAgentResolver(agents)` | `AgentResolver` | Wraps a static map as a resolver |
+| `createRegistryAgentResolver(catalog, registry)` | `AgentResolver` | Wraps catalog + live AgentRegistry with `findLive()` |
+| `createMailboxMessageFn(config)` | `MessageFn` | Creates MessageFn backed by MailboxComponent IPC |
 | `validateTaskSpawnConfig(config)` | `Result<TaskSpawnConfig, KoiError>` | Validates unknown input |
 
 ### Types
@@ -234,7 +241,36 @@ const resolver: AgentResolver = {
 const config: TaskSpawnConfig = { agentResolver: resolver, spawn: mySpawnFn };
 ```
 
-### Copilot Routing with State Check
+### Copilot Routing with Live Registry (recommended)
+
+Use the built-in factory functions that wire `AgentRegistry` and `MailboxComponent`:
+
+```typescript
+import { createRegistryAgentResolver, createMailboxMessageFn } from "@koi/task-spawn";
+
+// Wraps a static catalog with live agent discovery from the registry
+const resolver = createRegistryAgentResolver(agentCatalog, agentRegistry);
+
+// Creates a MessageFn backed by mailbox IPC (send → wait for response)
+const messageFn = createMailboxMessageFn({
+  mailbox,
+  senderId: parentAgentId,
+  timeoutMs: 30_000,
+});
+
+const config: TaskSpawnConfig = {
+  agentResolver: resolver,
+  spawn: mySpawnFn,
+  message: messageFn,
+};
+```
+
+The resolver's `findLive()` queries the registry for:
+- **Idle agents**: `phase: "waiting"` + `condition: "Ready"` → routes via `message()`
+- **Busy agents**: `phase: "running"` → falls through to `spawn()`
+- **No match**: `suspended` / `terminated` / none → falls through to `spawn()`
+
+### Copilot Routing with Custom State Check
 
 ```typescript
 const resolver: AgentResolver = {
@@ -275,6 +311,8 @@ E2E_TESTS=1 bun test packages/task-spawn/src/__tests__/e2e-pi.test.ts
 | output.test.ts | 4 | Output extraction (success, failure, empty) |
 | types.test.ts | 16 | Descriptor factory, type guards, map resolver |
 | provider.test.ts | 4 | ComponentProvider integration |
+| registry-agent-resolver.test.ts | 8 | Registry-backed resolver: resolve, list, findLive states |
+| mailbox-message-fn.test.ts | 5 | Mailbox MessageFn: happy path, timeout, abort, send fail |
 | e2e-copilot.test.ts | 3 (gated) | Full L1 copilot routing round-trip |
 | e2e-pi.test.ts | 3 (gated) | Pi adapter integration |
 
@@ -295,11 +333,12 @@ Overall source coverage: **98.7%** (100% function coverage).
 
 ```
 @koi/task-spawn (L2)
-  ├── @koi/core              (L0) ✓
-  ├── @koi/core/assembly     (L0) ✓
-  ├── @koi/core/ecs          (L0) ✓
-  ├── @koi/core/common       (L0) ✓
-  └── @koi/core/errors       (L0) ✓
+  ├── @koi/core              (L0)  ✓
+  ├── @koi/core/assembly     (L0)  ✓
+  ├── @koi/core/ecs          (L0)  ✓
+  ├── @koi/core/common       (L0)  ✓
+  ├── @koi/core/errors       (L0)  ✓
+  └── @koi/delegation        (L0u) ✓  ← sendAndWait for mailbox IPC
 
   ✗ @koi/engine   — not imported (correct)
   ✗ @koi/node     — not imported (correct)

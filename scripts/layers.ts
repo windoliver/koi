@@ -20,6 +20,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/channel-base",
   "@koi/crypto-utils",
   "@koi/dashboard-types",
+  "@koi/delegation",
   "@koi/edit-match",
   "@koi/errors",
   "@koi/event-delivery",

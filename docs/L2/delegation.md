@@ -48,7 +48,7 @@ Child discovers it needs write_file access mid-task
 
 ### Layer
 
-`@koi/delegation` is an **L2 feature package**. It imports only from `@koi/core` (L0).
+`@koi/delegation` is an **L0u utility package**. It imports only from `@koi/core` (L0) and peer L0u (`@koi/crypto-utils`). As L0u, it can be imported by both L1 and L2 packages.
 
 ### Module Map
 
@@ -59,6 +59,7 @@ src/
 ├── capability-request-bridge.ts  Pull-model bridge (ComponentProvider + KoiMiddleware)
 ├── capability-request-constants.ts  Message types, response statuses, defaults
 ├── wait-for-response.ts        Mailbox response waiter with timeout/abort
+├── send-and-wait.ts            Composes mailbox.send() + waitForResponse() into single IPC call
 ├── middleware.ts               KoiMiddleware for grant verification on tool calls
 ├── map-grant-to-token.ts      Maps DelegationGrant → CapabilityToken for verifier dispatch
 ├── grant.ts                    Grant creation + monotonic attenuation

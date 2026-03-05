@@ -16,8 +16,10 @@ export type {
   TaskableAgentSummary,
 } from "@koi/core/agent-resolver";
 export { validateTaskSpawnConfig } from "./config.js";
+export { createMailboxMessageFn, type MailboxMessageFnConfig } from "./mailbox-message-fn.js";
 export { extractOutput } from "./output.js";
 export { createTaskSpawnProvider } from "./provider.js";
+export { createRegistryAgentResolver } from "./registry-agent-resolver.js";
 export { TASK_SPAWN_SKILL, TASK_SPAWN_SKILL_CONTENT, TASK_SPAWN_SKILL_NAME } from "./skill.js";
 export { mapSpawnToTask } from "./spawn-adapter.js";
 export { createTaskTool, DEFAULT_DESCRIPTOR_TTL_MS } from "./task-tool.js";

@@ -9,7 +9,8 @@
  * Fallback: on timeout, malformed response, or send failure → delegate to fallback (HITL).
  */
 
-import type { AgentId, AgentMessage, MailboxComponent, MessageId } from "@koi/core";
+import type { AgentId, MailboxComponent } from "@koi/core";
+import { waitForResponse } from "@koi/delegation";
 import { KoiRuntimeError } from "@koi/errors";
 
 import { DEFAULT_APPROVAL_TIMEOUT_MS } from "./config.js";
@@ -91,8 +92,12 @@ export function createAgentApprovalHandler(
 
     const correlationId = sendResult.value.id;
 
-    // Wait for matching response (inline ~30 lines, same pattern as delegation's waitForResponse)
-    const response = await waitForCorrelatedResponse(mailbox, correlationId, timeoutMs);
+    // Wait for matching response via delegation's waitForResponse
+    const response = await waitForResponse({
+      mailbox,
+      correlationId,
+      timeoutMs,
+    });
 
     if (!response.ok) {
       return invokeFallback(fallback, req, response.reason);
@@ -120,45 +125,6 @@ export function createAgentApprovalHandler(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-type WaitOk = { readonly ok: true; readonly message: AgentMessage };
-type WaitFail = { readonly ok: false; readonly reason: string };
-
-function waitForCorrelatedResponse(
-  mailbox: MailboxComponent,
-  correlationId: MessageId,
-  timeoutMs: number,
-): Promise<WaitOk | WaitFail> {
-  return new Promise<WaitOk | WaitFail>((resolve) => {
-    let settled = false;
-    let unsub: (() => void) | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const cleanup = (): void => {
-      settled = true;
-      if (unsub !== undefined) unsub();
-      if (timer !== undefined) clearTimeout(timer);
-    };
-
-    unsub = mailbox.onMessage((message: AgentMessage) => {
-      if (settled) return;
-      if (message.kind !== "response") return;
-      if (message.correlationId !== correlationId) return;
-
-      cleanup();
-      resolve({ ok: true, message });
-    });
-
-    // If handler fired synchronously and already settled
-    if (settled) return;
-
-    timer = setTimeout(() => {
-      if (settled) return;
-      cleanup();
-      resolve({ ok: false, reason: `Timeout after ${timeoutMs}ms` });
-    }, timeoutMs);
-  });
-}
 
 function mapDecision(
   decision: Readonly<{
