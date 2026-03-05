@@ -1,6 +1,6 @@
 {
   "name": "@koi/context-arena",
-  "description": "Allocate token budgets across context management middleware with preset-driven profiles",
+  "description": "Compose and coordinate all context sources — personality, bootstrap files, conversation, memory — with preset-driven budget allocation",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,6 +11,7 @@
     }
   },
   "dependencies": {
+    "@koi/bootstrap": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/context": "workspace:*",
     "@koi/memory-fs": "workspace:*",
@@ -22,6 +23,7 @@
     "@koi/middleware-preference": "workspace:*",
     "@koi/middleware-user-model": "workspace:*",
     "@koi/snapshot-chain-store": "workspace:*",
+    "@koi/soul": "workspace:*",
     "@koi/token-estimator": "workspace:*",
     "@koi/tool-squash": "workspace:*"
   },

@@ -1,28 +1,30 @@
-# @koi/context-arena — Coordinated Context Window Management
+# @koi/context-arena — Everything About Context
 
-Arena allocator for the context window: a single `createContextArena()` factory allocates token budgets across all 7 context management packages with coherent preset-driven profiles (conservative / balanced / aggressive). Three required fields, one function call, and every middleware gets coordinated thresholds.
+Single entry point for all context sources — personality (soul), bootstrap files (.koi/), conversation history, memory, compaction, and context editing — with preset-driven budget allocation. One L3 meta-package owns the entire context pipeline: what content enters the context window and how much room each piece gets.
 
 ---
 
 ## Why It Exists
 
-Koi's context management is spread across 7 independent L2 packages. Each has its own defaults, and without coordination:
+An agent's context window is fed by many sources: personality files (SOUL.md, STYLE.md), bootstrap instructions (.koi/INSTRUCTIONS.md), conversation history, extracted facts, and live tool results. These sources are spread across 9+ independent L2 packages, each with its own defaults. Without coordination:
 
-1. **Budget collisions** — the compactor's trigger threshold doesn't account for context-editing's trigger. Both can fire at the same time, wasting an expensive LLM summarization call when a cheap tool-result trim would have sufficed.
-2. **Manual tuning** — users must understand 8+ numeric parameters across 3 packages, calculate token fractions by hand, and hope the values are coherent.
-3. **Inconsistent defaults** — each L2 package's defaults were designed in isolation. A `preserveRecent: 4` in one package and `preserveRecent: 6` in another creates asymmetric behavior.
+1. **Scattered imports** — wiring personality, bootstrap, conversation, memory, compaction, and editing requires importing from 6+ packages and understanding their interdependencies.
+2. **Budget collisions** — the compactor's trigger threshold doesn't account for context-editing's trigger. Both can fire at the same time, wasting an expensive LLM summarization call when a cheap tool-result trim would have sufficed.
+3. **Manual tuning** — users must understand 15+ numeric parameters across multiple packages, calculate token fractions by hand, and hope the values are coherent.
+4. **No single context story** — personality injection, bootstrap resolution, and context management live in separate packages with no unified entry point.
 
 Without this package:
-- Users must manually configure and wire 3-7 middleware + providers
+- Users must manually configure and wire 5-9 middleware + providers
 - Budget parameters conflict (editing fires after compactor instead of before)
-- No single place to reason about the full context management stack
+- No single place to reason about the full context pipeline
 - Adding a new context feature requires touching multiple configuration sites
+- Soul and bootstrap APIs must be imported separately from their L2 packages
 
 ---
 
 ## Architecture
 
-`@koi/context-arena` is an **L3 meta-package** — it re-exports nothing from L0/L1 and adds no new logic beyond coordination. It imports from L0 (`@koi/core`) and L2 feature packages.
+`@koi/context-arena` is an **L3 meta-package** — it adds no new logic beyond coordination and re-exports. It imports from L0 (`@koi/core`), L0u utilities, and L2 feature packages.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -34,20 +36,33 @@ Without this package:
 │  arena-factory.ts      ← createContextArena() async factory│
 │  registry-adapter.ts   ← createContextArenaEntries() for  │
 │                          @koi/starter manifest resolution  │
-│  index.ts              ← public API surface                │
+│  index.ts              ← public API + re-exports from     │
+│                          soul, bootstrap, memory-fs        │
 │                                                           │
 ├───────────────────────────────────────────────────────────┤
-│  Dependencies                                             │
+│  Context Sources (content)                                │
 │                                                           │
-│  @koi/core                    (L0)   Types, interfaces    │
-│  @koi/context                 (L2)   Context hydrator     │
-│  @koi/memory-fs               (L2)   Filesystem memory    │
-│  @koi/middleware-compactor     (L2)   Compaction middleware│
-│  @koi/middleware-context-editing (L2) Context editing MW   │
-│  @koi/middleware-conversation  (L2)   Thread history MW    │
-│  @koi/snapshot-chain-store    (L0u)  Archive store        │
-│  @koi/token-estimator         (L2)   Heuristic estimator  │
-│  @koi/tool-squash             (L2)   Agent-initiated squash│
+│  @koi/soul                   (L2)   Agent personality MW  │
+│  @koi/bootstrap              (L2)   .koi/ file resolver   │
+│  @koi/context                (L2)   Context hydrator      │
+│                                                           │
+├───────────────────────────────────────────────────────────┤
+│  Context Management (budget + lifecycle)                   │
+│                                                           │
+│  @koi/middleware-compactor     (L2)  Compaction middleware │
+│  @koi/middleware-context-editing (L2) Context editing MW  │
+│  @koi/middleware-conversation  (L2)  Thread history MW    │
+│  @koi/middleware-hot-memory    (L2)  Hot memory injection │
+│  @koi/middleware-user-model    (L2)  Personalization MW   │
+│  @koi/tool-squash             (L2)  Agent-initiated squash│
+│  @koi/memory-fs               (L2)  Filesystem memory    │
+│                                                           │
+├───────────────────────────────────────────────────────────┤
+│  Infrastructure                                           │
+│                                                           │
+│  @koi/core                    (L0)  Types, interfaces     │
+│  @koi/snapshot-chain-store    (L0u) Archive store         │
+│  @koi/token-estimator         (L0u) Heuristic estimator   │
 └───────────────────────────────────────────────────────────┘
 ```
 
@@ -614,17 +629,21 @@ L0  @koi/core ──────────────────────
     SnapshotChainStore, PruningPolicy, ComponentProvider,    │
     Agent, MemoryComponent, InboundMessage                   │
                                                              │
-L2  @koi/middleware-compactor ─────────┐                     │
+L2  @koi/soul ─────────────────────────┐ (content)           │
+    @koi/bootstrap ────────────────────┤                     │
+    @koi/context ──────────────────────┤                     │
+    @koi/middleware-compactor ─────────┤ (management)        │
     @koi/middleware-context-editing ────┤                     │
     @koi/middleware-conversation ───────┤                     │
+    @koi/middleware-hot-memory ────────┤                     │
+    @koi/middleware-user-model ────────┤                     │
     @koi/tool-squash ──────────────────┤                     │
-    @koi/context ──────────────────────┤                     │
     @koi/memory-fs ────────────────────┤                     │
-    @koi/token-estimator ──────────────┤                     │
+    @koi/token-estimator ──────────────┤ (infra)             │
     @koi/snapshot-chain-store (L0u) ───┤                     │
                                        ▼                     │
 L3  @koi/context-arena ◄──────────────────────────────────────┘
-    imports from L0 + L2 only
+    imports from L0 + L0u + L2 only
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L3 packages (@koi/starter)
     ✓ All interface properties readonly
