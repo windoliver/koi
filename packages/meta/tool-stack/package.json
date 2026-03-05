@@ -1,0 +1,33 @@
+{
+  "name": "@koi/tool-stack",
+  "description": "Tool execution lifecycle stack composing 7 middleware for auditing, limits, recovery, dedup, sandbox, selection, and failover",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/middleware-call-dedup": "workspace:*",
+    "@koi/middleware-call-limits": "workspace:*",
+    "@koi/middleware-degenerate": "workspace:*",
+    "@koi/middleware-sandbox": "workspace:*",
+    "@koi/middleware-tool-audit": "workspace:*",
+    "@koi/middleware-tool-recovery": "workspace:*",
+    "@koi/middleware-tool-selector": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  }
+}
