@@ -70,6 +70,9 @@ But they don't coordinate. Without a composition layer:
 │  middleware() ─────────────────────────────────────────────────── │
 │    [0] harness middleware  (long-running-harness)                  │
 │    [1] compactor middleware (optional)                             │
+│    [2] collective memory middleware (optional)                     │
+│    [3] event-trace middleware (optional, priority 475)             │
+│    [4] report middleware (optional, priority 275)                  │
 │                                                                    │
 │  dispose() ────────────────────────────────────────────────────── │
 │    1. scheduler.dispose()   ← stop polling first                  │
@@ -91,9 +94,11 @@ The factory accepts pre-constructed parts (instance-based pattern) and wires the
 3. **Idempotent dispose** — a `disposed` flag ensures the cleanup sequence runs exactly once.
 
 ```
-createAutonomousAgent({ harness, scheduler, compactorMiddleware? })
+createAutonomousAgent({ harness, scheduler, compactorMiddleware?, ... })
   │
-  ├── cache middleware: [harness.createMiddleware(), compactorMiddleware?]
+  ├── cache middleware: [harness.createMiddleware(), checkpoint?, inbox?,
+  │                       compactorMiddleware?, collectiveMemoryMiddleware?,
+  │                       eventTraceMiddleware?, reportMiddleware?]
   │
   └── return AutonomousAgent {
         harness,            ← direct reference
@@ -114,6 +119,9 @@ interface AutonomousAgentParts {
   readonly harness: LongRunningHarness;         // Multi-session lifecycle manager
   readonly scheduler: HarnessScheduler;         // Auto-resume polling scheduler
   readonly compactorMiddleware?: KoiMiddleware;  // Optional context compaction
+  readonly collectiveMemoryMiddleware?: KoiMiddleware;  // Optional cross-run learning
+  readonly reportMiddleware?: KoiMiddleware;     // Optional post-run summaries
+  readonly eventTraceMiddleware?: KoiMiddleware;  // Optional per-event tracing + rewind
   readonly threadStore?: ThreadStore;            // Enables checkpoint + inbox middleware
   readonly checkpointPolicy?: CheckpointPolicy; // Override checkpoint frequency
   readonly inboxPolicy?: InboxPolicy;           // Override inbox queue caps
@@ -190,6 +198,37 @@ const mw = agent.middleware();
 // mw[1] = compactor middleware
 ```
 
+### With Event-Trace and Report Middleware
+
+```typescript
+import { createEventTraceMiddleware } from "@koi/middleware-event-trace";
+import { createReportMiddleware } from "@koi/middleware-report";
+
+const eventTrace = createEventTraceMiddleware({
+  store: snapshotStore,
+  chainId: chainId("agent-1-trace"),
+});
+
+const report = createReportMiddleware({
+  objective: "Refactor auth module",
+  onReport: async (_report, markdown) => {
+    await postToSlack("#agent-reports", markdown);
+  },
+});
+
+const agent = createAutonomousAgent({
+  harness,
+  scheduler,
+  eventTraceMiddleware: eventTrace.middleware,
+  reportMiddleware: report.middleware,
+});
+
+// After the run:
+const runReport = report.getReport();       // Structured post-run summary
+const events = await eventTrace             // Query specific events
+  .getEventsBetween({ turnIndex: 0, eventIndex: 0 }, { turnIndex: 5, eventIndex: 99 });
+```
+
 ### Full Stack with SQLite Persistence
 
 ```typescript
@@ -262,7 +301,7 @@ snapshotStore.close();
 |----------------|------|-------------|
 | `harness` | `LongRunningHarness` | Direct reference to the harness |
 | `scheduler` | `HarnessScheduler` | Direct reference to the scheduler |
-| `middleware()` | `() → readonly KoiMiddleware[]` | Cached array: harness + checkpoint + inbox + compactor |
+| `middleware()` | `() → readonly KoiMiddleware[]` | Cached array: harness + checkpoint + inbox + compactor + memory + event-trace + report |
 | `providers()` | `() → readonly ComponentProvider[]` | Plan autonomous + inbox providers |
 | `dispose()` | `() → Promise<void>` | Idempotent: stop scheduler, then dispose harness |
 | `agentResolver?` | `AgentResolver` | Auto-created from forgeStore if provided |
@@ -300,6 +339,9 @@ snapshotStore.close();
 | Idempotent dispose | Safe to call from multiple cleanup paths (error handlers, shutdown hooks) |
 | Cached middleware array | Same reference every call — avoids re-creating harness middleware |
 | Optional compactor (not required) | Not all agents need context compaction; keep the minimal path simple |
+| Optional event-trace and report | Not all agents need tracing/reporting; wired the same way as compactor |
+| Event-trace before report in list | Event-trace (priority 475) wraps early; report (priority 275) captures final picture. Engine sorts by priority anyway |
+| Accept `KoiMiddleware`, not handles | Caller creates the handle and passes `.middleware` — keeps handle management outside the bundle, avoids importing L2 types into L3 |
 | Auto-create resolver from forgeStore | Zero-config forge bridge — just pass `forgeStore` |
 | TTL cache for brick search (5s default) | Avoid hammering forge on every resolve call |
 | Re-select on every resolve (no selection cache) | Fresh fitness exploration each time |

@@ -27,6 +27,10 @@ export interface AutonomousAgentParts {
   readonly compactorMiddleware?: KoiMiddleware | undefined;
   /** Optional collective memory middleware for cross-run learning persistence. */
   readonly collectiveMemoryMiddleware?: KoiMiddleware | undefined;
+  /** Optional report middleware for post-run summaries and progress tracking. */
+  readonly reportMiddleware?: KoiMiddleware | undefined;
+  /** Optional event-trace middleware for per-event tracing and mid-turn rewind. */
+  readonly eventTraceMiddleware?: KoiMiddleware | undefined;
   /** Optional thread store for persistent checkpoint support. */
   readonly threadStore?: ThreadStore | undefined;
   /** Checkpoint policy override. Defaults to DEFAULT_CHECKPOINT_POLICY. */
