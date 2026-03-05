@@ -1,7 +1,7 @@
 /**
  * createGovernanceStack — enterprise compliance middleware assembly.
  *
- * Composes up to 9 middleware into a single stack with a fixed priority order.
+ * Composes up to 11 middleware into a single stack with a fixed priority order.
  * All fields are optional — include only what your deployment needs.
  *
  * Priority order (lower = outer layer, runs first on request):
@@ -9,8 +9,10 @@
  *   110  koi:exec-approvals  (overridden from default 100)
  *   120  koi:delegation      (overridden from default undefined/500)
  *   125  koi:capability-request (pull-model delegation requests)
+ *   130  koi:delegation-escalation (human escalation on delegatee exhaustion)
  *   150  koi:governance-backend
  *   200  koi:pay
+ *   290  koi:intent-capsule  (OWASP ASI01 mandate binding)
  *   300  koi:audit
  *   340  koi:pii
  *   350  koi:sanitize
@@ -46,8 +48,10 @@ import {
   createParentApprovalHandler,
 } from "@koi/exec-approvals";
 import { createAuditMiddleware } from "@koi/middleware-audit";
+import { createDelegationEscalationMiddleware } from "@koi/middleware-delegation-escalation";
 import { createGovernanceBackendMiddleware } from "@koi/middleware-governance-backend";
 import { createGuardrailsMiddleware } from "@koi/middleware-guardrails";
+import { createIntentCapsuleMiddleware } from "@koi/middleware-intent-capsule";
 import { createPayMiddleware } from "@koi/middleware-pay";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPIIMiddleware } from "@koi/middleware-pii";
@@ -242,7 +246,8 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
   // Validate: capabilityRequest requires delegationBridge
   if (config.capabilityRequest !== undefined && config.delegationBridge === undefined) {
     throw new Error(
-      "GovernanceStack: capabilityRequest requires delegationBridge to also be configured",
+      "GovernanceStack: 'capabilityRequest' requires 'delegationBridge' to also be configured. " +
+        "Add a delegationBridge with a DelegationManager to enable pull-model capability requests.",
     );
   }
 
@@ -287,6 +292,12 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
   const preset = resolved.preset ?? "open";
   const { delegation: effectiveDelegation, sessionStore } = autoWireVerifier(resolved.delegation);
 
+  // Wire delegation-escalation when configured (returns a handle, extract .middleware)
+  const delegationEscalationHandle =
+    config.delegationEscalation !== undefined
+      ? createDelegationEscalationMiddleware(config.delegationEscalation)
+      : undefined;
+
   const candidates: ReadonlyArray<KoiMiddleware | undefined> = [
     resolved.permissions !== undefined
       ? createPermissionsMiddleware(resolved.permissions) // 100
@@ -298,11 +309,17 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
       ? { ...createDelegationMiddleware(effectiveDelegation), priority: 120 } // override
       : undefined,
     capabilityRequestBridge?.middleware, // 125
+    delegationEscalationHandle !== undefined
+      ? { ...delegationEscalationHandle.middleware, priority: 130 } // override from 300
+      : undefined,
     resolved.governanceBackend !== undefined
       ? createGovernanceBackendMiddleware(resolved.governanceBackend) // 150
       : undefined,
     resolved.pay !== undefined
       ? createPayMiddleware(resolved.pay) // 200
+      : undefined,
+    config.intentCapsule !== undefined
+      ? createIntentCapsuleMiddleware(config.intentCapsule) // 290
       : undefined,
     resolved.audit !== undefined
       ? createAuditMiddleware(resolved.audit) // 300
@@ -359,10 +376,10 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
       preset,
       middlewareCount: middlewares.length,
       providerCount: providers.length,
-      payDeprecated: resolved.pay !== undefined,
       scopeEnabled: resolved.scope !== undefined,
     },
     ...(nexusHooks !== undefined ? { nexusHooks } : {}),
     ...(sessionStore !== undefined ? { sessionStore } : {}),
+    ...(delegationEscalationHandle !== undefined ? { delegationEscalationHandle } : {}),
   };
 }

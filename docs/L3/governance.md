@@ -1,12 +1,12 @@
 # @koi/governance — Enterprise Compliance Bundle
 
-Layer 3 meta-package that assembles up to 9 middleware and 4 scope providers
+Layer 3 meta-package that assembles up to 11 middleware and 4 scope providers
 into a single `createGovernanceStack()` call.
 
 ## What This Enables
 
 **One-line enterprise compliance.** Instead of manually importing, configuring,
-and ordering 9 separate middleware packages, callers get:
+and ordering 11 separate middleware packages, callers get:
 
 - **Deployment presets** (`open`, `standard`, `strict`) with sensible defaults
 - **3-layer config merge**: defaults → preset → user overrides
@@ -14,7 +14,11 @@ and ordering 9 separate middleware packages, callers get:
   with enforcer + scoping + audit
 - **Pattern-based permissions shorthand**: `permissionRules: { allow: [...] }`
   instead of constructing a full `PermissionBackend`
-- **Pay deprecation path**: `pay` still works but emits `console.warn`
+- **Cost/budget governance**: `pay` middleware for token budget enforcement
+- **OWASP ASI01 defense**: `intentCapsule` cryptographically binds the agent's
+  mandate at session start and verifies integrity on every model call
+- **Human escalation**: `delegationEscalation` pauses the engine loop and asks
+  a human for instructions when all delegatee circuit breakers are open
 
 ## Quick Start
 
@@ -38,27 +42,106 @@ const strict = createGovernanceStack({
   backends: { filesystem: myFsBackend },
 });
 
+// With intent-capsule (ASI01 defense) + delegation escalation
+const governed = createGovernanceStack({
+  preset: "standard",
+  intentCapsule: {
+    systemPrompt: manifest.model.options.system,
+    objectives: ["Process invoices", "Generate reports"],
+  },
+  delegationEscalation: {
+    channel: humanChannel,
+    isExhausted: () => manager.isExhausted(workerIds),
+    issuerId: agentId("supervisor"),
+    monitoredDelegateeIds: workerIds,
+    taskSummary: "Batch invoice processing",
+  },
+});
+
 const runtime = await createKoi({
   manifest,
   adapter,
-  middleware: stack.middlewares,
-  providers: stack.providers,
+  middleware: governed.middlewares,
+  providers: governed.providers,
 });
 ```
 
 ## Middleware Priority Order
 
-| Priority | Middleware | Description |
-|----------|-----------|-------------|
-| 100 | permissions | Coarse-grained tool allow/deny/ask |
-| 110 | exec-approvals | Progressive command allowlisting |
-| 120 | delegation | Delegation grant verification |
-| 150 | governance-backend | Pluggable policy evaluation gate |
-| 200 | pay | Token budget enforcement (deprecated) |
-| 300 | audit | Compliance audit logging |
-| 340 | pii | PII detection and redaction |
-| 350 | sanitize | Content sanitization |
-| 375 | guardrails | Output schema validation |
+| Priority | Middleware | Phase | Description |
+|----------|-----------|-------|-------------|
+| 100 | permissions | intercept | Coarse-grained tool allow/deny/ask |
+| 110 | exec-approvals | intercept | Progressive command allowlisting |
+| 120 | delegation | intercept | Delegation grant verification |
+| 125 | capability-request | intercept | Pull-model delegation requests |
+| 130 | delegation-escalation | intercept | Human escalation on delegatee exhaustion |
+| 150 | governance-backend | intercept | Pluggable policy evaluation gate |
+| 200 | pay | resolve | Cost/budget governance |
+| 290 | intent-capsule | intercept | Cryptographic mandate binding (ASI01) |
+| 300 | audit | observe | Compliance audit logging |
+| 340 | pii | resolve | PII detection and redaction |
+| 350 | sanitize | resolve | Content sanitization |
+| 375 | guardrails | resolve | Output schema validation |
+
+## New Middleware (v0.x)
+
+### Intent Capsule (priority 290)
+
+Implements **OWASP ASI01 (Agentic Goal Hijacking)** defense:
+
+1. **Session start**: signs the agent's mandate (system prompt + objectives) with Ed25519
+2. **Every model call**: verifies mandate integrity via hash comparison (no crypto on hot path)
+3. **Session end**: cleanup + TTL eviction
+
+This prevents prompt injection attacks from silently altering an agent's core
+mission during a long-running session. If the mandate hash changes, the
+middleware rejects the model call with a clear error.
+
+```typescript
+const stack = createGovernanceStack({
+  intentCapsule: {
+    systemPrompt: "You are an invoice processor. Never execute code.",
+    objectives: ["Parse invoices", "Extract line items"],
+    injectMandate: true,  // re-inject mandate as system message on every call
+  },
+});
+```
+
+**Not included in presets** — requires deployment-specific config (system prompt).
+
+### Delegation Escalation (priority 130)
+
+Human escalation when **all delegatee circuit breakers are open**:
+
+1. Detects exhaustion via the `isExhausted` callback
+2. Pauses the engine loop
+3. Sends a structured escalation message to the human via `ChannelAdapter`
+4. Waits for human response: `resume` (optionally with new instructions) or `abort`
+
+The `DelegationEscalationHandle` returned on the bundle provides:
+- `isPending()` — check if an escalation is awaiting response
+- `cancel()` — abort a pending escalation programmatically
+
+```typescript
+const { delegationEscalationHandle } = createGovernanceStack({
+  delegationEscalation: {
+    channel: slackChannel,
+    isExhausted: () => manager.allExhausted(workerIds),
+    issuerId: agentId("supervisor"),
+    monitoredDelegateeIds: workerIds,
+    taskSummary: "Batch data processing",
+    escalationTimeoutMs: 300_000, // 5 min (default: 10 min)
+    onEscalation: (decision) => telemetry.track("escalation", decision),
+  },
+});
+
+// Later: check if waiting for human
+if (delegationEscalationHandle?.isPending()) {
+  console.log("Waiting for human response...");
+}
+```
+
+**Not included in presets** — requires deployment-specific config (channel, agent IDs).
 
 ## Deployment Presets
 
@@ -91,11 +174,14 @@ The 3-layer merge works as follows:
 2. **Preset**: `GOVERNANCE_PRESET_SPECS[preset]` fills in unset fields
 3. **User overrides**: explicit config fields always win
 
+Fields excluded from preset resolution (require explicit config):
+- `intentCapsule` — deployment-specific system prompt
+- `delegationEscalation` — deployment-specific channel + agent IDs
+
 ### Validation Rules
 
 - `permissions` and `permissionRules` are mutually exclusive (throws)
-- `execApprovals` requires an `onAsk` handler (throws)
-- `pay` emits a deprecation warning via `console.warn`
+- `capabilityRequest` requires `delegationBridge` (throws with actionable message)
 
 ## Scope Wiring
 
@@ -123,13 +209,16 @@ interface GovernanceBundle {
   readonly middlewares: readonly KoiMiddleware[];
   readonly providers: readonly ComponentProvider[];
   readonly config: ResolvedGovernanceMeta;
+  readonly disposables: readonly Disposable[];
+  readonly nexusHooks?: NexusDelegationHooks;
+  readonly sessionStore?: SessionRevocationStore;
+  readonly delegationEscalationHandle?: DelegationEscalationHandle;
 }
 
 interface ResolvedGovernanceMeta {
   readonly preset: GovernancePreset;
   readonly middlewareCount: number;
   readonly providerCount: number;
-  readonly payDeprecated: boolean;
   readonly scopeEnabled: boolean;
 }
 ```
@@ -149,4 +238,4 @@ interface ResolvedGovernanceMeta {
 Dependencies:
 - L0: `@koi/core` (types)
 - L0u: `@koi/scope` (enforcer, scoping)
-- L2: `@koi/filesystem`, `@koi/tool-browser`, 9 middleware packages
+- L2: `@koi/filesystem`, `@koi/tool-browser`, 11 middleware packages

@@ -2,10 +2,11 @@
  * @koi/governance — Enterprise compliance meta-package (Layer 3)
  *
  * One-line enterprise compliance for AI agent deployments.
- * Composes up to 9 middleware + scope providers via createGovernanceStack():
+ * Composes up to 11 middleware + scope providers via createGovernanceStack():
  *
- *   permissions → exec-approvals → delegation → governance-backend →
- *   pay → audit → pii → sanitize → guardrails
+ *   permissions → exec-approvals → delegation → capability-request →
+ *   delegation-escalation → governance-backend → pay → intent-capsule →
+ *   audit → pii → sanitize → guardrails
  *
  * Supports deployment presets: "open" (default), "standard", "strict".
  *
@@ -27,9 +28,13 @@ export type { SessionRevocationStore } from "@koi/capability-verifier";
 export type { DelegationMiddlewareConfig, DelegationProviderConfig } from "@koi/delegation";
 export type { ExecApprovalsConfig } from "@koi/exec-approvals";
 export type { AuditMiddlewareConfig } from "@koi/middleware-audit";
+export type {
+  DelegationEscalationConfig,
+  DelegationEscalationHandle,
+} from "@koi/middleware-delegation-escalation";
 export type { GovernanceBackendMiddlewareConfig } from "@koi/middleware-governance-backend";
 export type { GuardrailsConfig } from "@koi/middleware-guardrails";
-/** @deprecated Use @koi/middleware-pay directly. */
+export type { IntentCapsuleConfig } from "@koi/middleware-intent-capsule";
 export type { PayMiddlewareConfig } from "@koi/middleware-pay";
 export type {
   PatternBackendConfig,
