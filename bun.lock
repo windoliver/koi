@@ -1017,8 +1017,6 @@
         "@koi/middleware-context-editing": "workspace:*",
         "@koi/middleware-conversation": "workspace:*",
         "@koi/middleware-hot-memory": "workspace:*",
-        "@koi/middleware-personalization": "workspace:*",
-        "@koi/middleware-preference": "workspace:*",
         "@koi/middleware-user-model": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/soul": "workspace:*",
@@ -1638,27 +1636,6 @@
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/mm/middleware-personalization": {
-      "name": "@koi/middleware-personalization",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/middleware-user-model": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/mm/middleware-preference": {
-      "name": "@koi/middleware-preference",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/middleware-user-model": "workspace:*",
       },
     },
     "packages/mm/middleware-user-model": {
@@ -3408,13 +3385,9 @@
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
-    "@koi/middleware-personalization": ["@koi/middleware-personalization@workspace:packages/mm/middleware-personalization"],
-
     "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/security/middleware-pii"],
 
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/middleware/middleware-planning"],
-
-    "@koi/middleware-preference": ["@koi/middleware-preference@workspace:packages/mm/middleware-preference"],
 
     "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/middleware/middleware-reflex"],
 

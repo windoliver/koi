@@ -38,8 +38,6 @@ const SUBSYSTEM_MAP: Readonly<Record<string, string>> = {
   "middleware-compactor": "mm",
   "middleware-context-editing": "mm",
   "middleware-hot-memory": "mm",
-  "middleware-personalization": "mm",
-  "middleware-preference": "mm",
   "middleware-ace": "mm",
   "tool-squash": "mm",
   "session-repair": "mm",
