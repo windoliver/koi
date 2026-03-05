@@ -19,8 +19,14 @@ export {
   extractAcpOutput,
   parseStdioOutput,
 } from "./delegation-protocol.js";
+// Routing SpawnFn — manifest.sandbox-based dispatch
+export type { RoutingSpawnConfig } from "./routing-spawn.js";
+export {
+  createRoutingSpawnFn,
+  mapManifestToDescriptor,
+  mapSandboxConfigToProfile,
+} from "./routing-spawn.js";
 export type { Semaphore } from "./semaphore.js";
-
 // Semaphore (exported for testing)
 export { createSemaphore } from "./semaphore.js";
 // Spawner factory

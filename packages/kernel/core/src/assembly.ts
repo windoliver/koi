@@ -6,6 +6,7 @@ import type { BrickId } from "./brick-snapshot.js";
 import type { JsonObject } from "./common.js";
 import type { DegeneracyConfig } from "./degeneracy.js";
 import type { DelegationConfig } from "./delegation.js";
+import type { FilesystemPolicy, NetworkPolicy, ResourceLimits } from "./sandbox-profile.js";
 import type { SupervisionConfig } from "./supervision.js";
 import type { OutboundWebhookConfig } from "./webhook.js";
 
@@ -120,6 +121,24 @@ export interface CapabilityConfig {
   readonly requiresPoP?: boolean;
 }
 
+/**
+ * Declarative sandbox configuration for agent manifests.
+ *
+ * When present on a manifest, the agent should be spawned inside an isolated
+ * sandbox (E2B, Daytona, OS-level, etc.) rather than in-process. The runtime
+ * resolves this config into a full SandboxProfile for the chosen adapter.
+ */
+export interface ManifestSandboxConfig {
+  /** Sandbox adapter name (e.g., "e2b", "daytona", "os"). Undefined = use default. */
+  readonly adapter?: string | undefined;
+  /** Filesystem policy overrides for the sandbox. */
+  readonly filesystem?: FilesystemPolicy | undefined;
+  /** Network policy — defaults to deny for forged agents. */
+  readonly network?: NetworkPolicy | undefined;
+  /** Resource limit overrides. */
+  readonly resources?: ResourceLimits | undefined;
+}
+
 export interface AgentManifest {
   readonly name: string;
   readonly version: string;
@@ -141,6 +160,12 @@ export interface AgentManifest {
    */
   readonly lifecycle?: "copilot" | "worker" | undefined;
   readonly metadata?: JsonObject;
+  /**
+   * Sandbox configuration — when present, the agent should be spawned
+   * inside an isolated sandbox environment. When absent, the agent runs
+   * in-process (default for lightweight workers).
+   */
+  readonly sandbox?: ManifestSandboxConfig | undefined;
   /** Declared agent capabilities for discovery and handoff routing. */
   readonly capabilities?: readonly string[] | undefined;
   /** Declared task objectives — used by goal drift detection and attention management middleware. */

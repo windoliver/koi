@@ -12,7 +12,7 @@ export type ExternalAgentTransport = "cli" | "mcp" | "a2a";
 export type ExternalAgentProtocol = "acp" | "stdio";
 
 /** Discovery source that found the external agent. */
-export type ExternalAgentSource = "path" | "mcp" | "filesystem";
+export type ExternalAgentSource = "path" | "mcp" | "filesystem" | "manifest";
 
 /** Descriptor for an external coding agent discovered at runtime. */
 export interface ExternalAgentDescriptor {

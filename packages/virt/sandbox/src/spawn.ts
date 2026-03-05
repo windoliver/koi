@@ -10,6 +10,8 @@ import type { SandboxProfile } from "./types.js";
 export interface SpawnOptions {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
+  /** Abort signal — kills the process when aborted. */
+  readonly signal?: AbortSignal;
 }
 
 export interface SandboxProcess {
@@ -27,6 +29,18 @@ export function spawn(
   args: readonly string[],
   options?: SpawnOptions,
 ): Result<SandboxProcess, KoiError> {
+  // Early exit if already aborted
+  if (options?.signal?.aborted) {
+    return {
+      ok: false,
+      error: {
+        code: "EXTERNAL",
+        message: "Spawn aborted before start",
+        retryable: false,
+      },
+    };
+  }
+
   const cmd = createSandboxCommand(profile, command, args);
   if (!cmd.ok) {
     return cmd;
@@ -54,6 +68,17 @@ export function spawn(
     }
 
     const proc = Bun.spawn([executable, ...execArgs], spawnOpts);
+
+    // Wire abort signal to kill the process
+    if (options?.signal !== undefined) {
+      options.signal.addEventListener(
+        "abort",
+        () => {
+          proc.kill(9);
+        },
+        { once: true },
+      );
+    }
 
     return {
       ok: true,

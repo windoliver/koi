@@ -14,14 +14,27 @@ export type { ClassifiedError } from "./classify-error.js";
 export { classifyCloudError } from "./classify-error.js";
 
 // Cloud instance factory — shared exec/readFile/writeFile/destroy
-export type { CloudInstanceConfig, CloudSdkSandbox } from "./cloud-instance.js";
+export type {
+  CloudInstanceConfig,
+  CloudSdkProcessHandle,
+  CloudSdkSandbox,
+} from "./cloud-instance.js";
 export { createCloudInstance } from "./cloud-instance.js";
 
 // Destroy guard — prevents method calls after destroy()
 export type { DestroyGuard } from "./guard.js";
 export { createDestroyGuard } from "./guard.js";
+// Line reader — NDJSON-over-pipe with backpressure caps
+export type { LineReaderOptions } from "./line-reader.js";
+export {
+  createLineReader,
+  DEFAULT_MAX_LINE_BYTES,
+  DEFAULT_MAX_TOTAL_BYTES,
+} from "./line-reader.js";
 // Nexus FUSE mount — post-creation Nexus VFS mounting
 export { mountNexusFuse } from "./nexus-mount.js";
+// Shell escaping — safe command interpolation for cloud SDKs
+export { shellEscape, shellJoin } from "./shell-escape.js";
 // Test fixtures — shared profiles and streaming helpers
 export { createTestProfile } from "./test-profiles.js";
 export type { StreamCollector } from "./test-streaming.js";

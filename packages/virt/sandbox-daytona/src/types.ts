@@ -16,6 +16,15 @@ export interface DaytonaCreateOpts {
   readonly target?: string;
 }
 
+/** Handle returned by Daytona background process spawn. */
+export interface DaytonaProcessHandle {
+  readonly pid: number;
+  readonly sendStdin: (data: string) => void | Promise<void>;
+  readonly closeStdin: () => void;
+  readonly exited: Promise<number>;
+  readonly kill: (signal?: number) => void;
+}
+
 /** Minimal interface wrapping the Daytona SDK sandbox instance. */
 export interface DaytonaSdkSandbox {
   readonly commands: {
@@ -33,6 +42,21 @@ export interface DaytonaSdkSandbox {
       readonly stdout: string;
       readonly stderr: string;
     }>;
+    /**
+     * Spawn a long-lived background process with streaming I/O.
+     *
+     * Maps to Daytona SDK's session-based execution with
+     * `createSession()` + `sendSessionCommandInput()`.
+     */
+    readonly spawn?: (
+      cmd: string,
+      opts?: {
+        readonly cwd?: string;
+        readonly envs?: Record<string, string>;
+        readonly onStdout?: (data: string) => void;
+        readonly onStderr?: (data: string) => void;
+      },
+    ) => Promise<DaytonaProcessHandle>;
   };
   readonly files: {
     readonly read: (path: string) => Promise<string>;
