@@ -13,8 +13,11 @@ export interface NexusClientConfig {
   readonly baseUrl: string;
   /** Nexus API key for authentication. */
   readonly apiKey: string;
-  /** Injectable fetch for testing. Default: globalThis.fetch. */
-  readonly fetch?: typeof globalThis.fetch | undefined;
+  /** Injectable fetch for testing/tracing. Default: globalThis.fetch. */
+  readonly fetch?:
+    | typeof globalThis.fetch
+    | ((input: Request | string | URL, init?: RequestInit) => Promise<Response>)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------

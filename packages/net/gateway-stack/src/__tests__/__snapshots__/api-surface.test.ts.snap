@@ -1,7 +1,9 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/gateway-stack API surface . has stable type surface 1`] = `
-"import { Gateway, GatewayDeps } from '@koi/gateway';
+"import { TracingConfig } from '@koi/tracing';
+export { TracingConfig, createTracedFetch } from '@koi/tracing';
+import { Gateway, GatewayDeps } from '@koi/gateway';
 import { CanvasWiring, CanvasConfig, CanvasAuthenticator } from '@koi/gateway-canvas';
 import { GatewayNexusConfig } from '@koi/gateway-nexus';
 import { GatewayConfig } from '@koi/gateway-types';
@@ -23,6 +25,8 @@ interface GatewayStackConfig {
     readonly webhook?: WebhookConfig;
     /** Nexus config for HA state stores. Omit to use in-memory stores. */
     readonly nexus?: GatewayNexusConfig;
+    /** Tracing config. When provided, wraps Nexus fetch with traced fetch. */
+    readonly tracing?: TracingConfig | undefined;
 }
 /**
  * Full gateway stack dependencies — core deps + optional subsystem authenticators.
