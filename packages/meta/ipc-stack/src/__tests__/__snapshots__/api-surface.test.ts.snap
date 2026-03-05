@@ -1,0 +1,169 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/ipc-stack API surface . has stable type surface 1`] = `
+"import { FederationMiddlewareConfig, SyncEngineConfig, SyncEngineHandle } from '@koi/federation';
+export { FederationMiddlewareConfig, SyncEngineConfig, SyncEngineHandle } from '@koi/federation';
+import { LocalMailboxConfig, MailboxRouter } from '@koi/ipc-local';
+export { LocalMailboxConfig, MailboxRouter } from '@koi/ipc-local';
+import { IpcNexusProviderConfig } from '@koi/ipc-nexus';
+export { IpcNexusProviderConfig } from '@koi/ipc-nexus';
+import { OrchestratorConfig } from '@koi/orchestrator';
+export { OrchestratorConfig } from '@koi/orchestrator';
+import { ParallelMinionsConfig } from '@koi/parallel-minions';
+export { ParallelMinionsConfig } from '@koi/parallel-minions';
+import { LocalScratchpadConfig } from '@koi/scratchpad-local';
+export { LocalScratchpadConfig } from '@koi/scratchpad-local';
+import { ScratchpadNexusProviderConfig } from '@koi/scratchpad-nexus';
+export { ScratchpadNexusProviderConfig } from '@koi/scratchpad-nexus';
+import { TaskSpawnConfig } from '@koi/task-spawn';
+export { TaskSpawnConfig } from '@koi/task-spawn';
+import { WorkspaceProviderConfig } from '@koi/workspace';
+export { WorkspaceProviderConfig } from '@koi/workspace';
+import { SpawnFn, ComponentProvider, KoiMiddleware } from '@koi/core';
+
+/**
+ * Types for the IPC meta-package bundle.
+ *
+ * Defines IpcStackConfig (preset + subsystem fields),
+ * deployment presets, and the IpcBundle return shape.
+ */
+
+/** Deployment preset levels for IPC stacks. */
+type IpcPreset = "local" | "cloud" | "hybrid";
+/**
+ * Configuration for the IPC meta-package stack.
+ *
+ * All subsystem fields are optional. When \`preset\` is specified, its defaults
+ * are merged under user overrides. The \`spawn\` field is always required —
+ * it bridges L2 delegation packages to L1 runtime.
+ */
+interface IpcStackConfig {
+    /** Deployment preset. Defaults to "local". */
+    readonly preset?: IpcPreset | undefined;
+    /** Unified spawn function — required for delegation subsystems. */
+    readonly spawn: SpawnFn;
+    /** Messaging subsystem configuration. */
+    readonly messaging?: {
+        readonly kind: "local";
+        readonly config?: Omit<LocalMailboxConfig, "agentId"> | undefined;
+    } | {
+        readonly kind: "nexus";
+        readonly config?: IpcNexusProviderConfig | undefined;
+    } | undefined;
+    /** Delegation subsystem configuration. */
+    readonly delegation?: {
+        readonly kind: "task-spawn";
+        readonly config?: Omit<TaskSpawnConfig, "spawn"> | undefined;
+    } | {
+        readonly kind: "parallel-minions";
+        readonly config?: Omit<ParallelMinionsConfig, "spawn"> | undefined;
+    } | {
+        readonly kind: "orchestrator";
+        readonly config: Omit<OrchestratorConfig, "spawn">;
+    } | undefined;
+    /** Workspace isolation configuration. */
+    readonly workspace?: WorkspaceProviderConfig | undefined;
+    /** Scratchpad subsystem configuration. */
+    readonly scratchpad?: {
+        readonly kind: "local";
+        readonly config: LocalScratchpadConfig;
+    } | {
+        readonly kind: "nexus";
+        readonly config: ScratchpadNexusProviderConfig;
+    } | undefined;
+    /** Federation subsystem configuration. */
+    readonly federation?: {
+        readonly middleware?: FederationMiddlewareConfig | undefined;
+        readonly sync?: SyncEngineConfig | undefined;
+    } | undefined;
+}
+/**
+ * Partial config without meta-fields, used for preset definitions.
+ * Presets cannot specify spawn, workspace, scratchpad, or federation
+ * (those require user-specific config).
+ */
+type IpcPresetSpec = Partial<Omit<IpcStackConfig, "preset" | "spawn" | "workspace" | "scratchpad" | "federation">>;
+/** Metadata about the resolved IPC stack for inspection. */
+interface ResolvedIpcMeta {
+    readonly preset: IpcPreset;
+    readonly messagingKind: "local" | "nexus" | "none";
+    readonly delegationKind: "task-spawn" | "parallel-minions" | "orchestrator" | "none";
+    readonly scratchpadKind: "local" | "nexus" | "none";
+    readonly workspaceEnabled: boolean;
+    readonly federationEnabled: boolean;
+    readonly providerCount: number;
+    readonly middlewareCount: number;
+}
+/** Return value of createIpcStack(). */
+interface IpcBundle {
+    readonly providers: readonly ComponentProvider[];
+    readonly middlewares: readonly KoiMiddleware[];
+    readonly disposables: readonly Disposable[];
+    readonly config: ResolvedIpcMeta;
+    /** Local mailbox router — present when messaging.kind = "local". */
+    readonly router?: MailboxRouter;
+    /** Sync engine handle — present when federation.sync is configured. */
+    readonly syncEngine?: SyncEngineHandle;
+}
+
+/**
+ * Config resolution: 3-layer merge (defaults -> preset -> user overrides).
+ *
+ * Validates required fields and resolves preset defaults.
+ */
+
+/**
+ * Resolve IPC config by merging preset defaults under user overrides.
+ *
+ * Validation rules:
+ * - Nexus messaging without config throws (requires agentId + connection info)
+ * - Orchestrator delegation without config throws (requires spawn wiring config)
+ */
+declare function resolveIpcConfig(config: IpcStackConfig): IpcStackConfig;
+
+/**
+ * createIpcStack — IPC subsystem assembly.
+ *
+ * Composes messaging, delegation, workspace, scratchpad, and federation
+ * into a single IpcBundle with providers, middlewares, and disposables.
+ *
+ * Subsystem composition order:
+ *   1. Messaging (local router or nexus provider)
+ *   2. Delegation (task-spawn, parallel-minions, or orchestrator)
+ *   3. Workspace (optional)
+ *   4. Scratchpad (local component or nexus provider + flush middleware)
+ *   5. Federation (middleware + optional sync engine)
+ */
+
+/**
+ * Assemble an IPC subsystem stack.
+ *
+ * Returns an \`IpcBundle\` with \`providers\`, \`middlewares\`, \`disposables\`,
+ * and metadata. Pass \`providers\` and \`middlewares\` directly to createKoi():
+ *
+ * \`\`\`typescript
+ * const { providers, middlewares, router } = createIpcStack({
+ *   preset: "local",
+ *   spawn: mySpawnFn,
+ * });
+ * const runtime = await createKoi({ ..., middleware: middlewares, providers });
+ * \`\`\`
+ *
+ * Config resolution: defaults -> preset -> user overrides.
+ */
+declare function createIpcStack(config: IpcStackConfig): IpcBundle;
+
+/**
+ * IPC deployment presets: local, cloud, hybrid.
+ *
+ * Each preset provides sensible defaults for messaging and delegation.
+ * User overrides always win. Workspace, scratchpad, and federation
+ * are opt-in (not preset-defaulted) since they require user-specific config.
+ */
+
+/** Frozen registry of IPC preset specs, keyed by preset name. */
+declare const IPC_PRESET_SPECS: Readonly<Record<IpcPreset, IpcPresetSpec>>;
+
+export { IPC_PRESET_SPECS, type IpcBundle, type IpcPreset, type IpcPresetSpec, type IpcStackConfig, type ResolvedIpcMeta, createIpcStack, resolveIpcConfig };
+"
+`;
