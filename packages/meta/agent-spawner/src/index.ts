@@ -1,5 +1,5 @@
 /**
- * @koi/agent-spawner — Spawn coding agents inside sandboxed containers (L3)
+ * @koi/agent-spawner — Spawn coding agents inside sandboxed containers (L2)
  *
  * Provides ACP (JSON-RPC) and stdio communication paths for delegating
  * coding tasks to external agents in isolation.
