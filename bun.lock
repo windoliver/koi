@@ -1074,6 +1074,7 @@
       "name": "@koi/governance",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/agent-monitor": "workspace:*",
         "@koi/audit-sink-local": "workspace:*",
         "@koi/audit-sink-nexus": "workspace:*",
         "@koi/capability-verifier": "workspace:*",
@@ -1093,6 +1094,7 @@
         "@koi/permissions-nexus": "workspace:*",
         "@koi/redaction": "workspace:*",
         "@koi/scope": "workspace:*",
+        "@koi/security-analyzer": "workspace:*",
         "@koi/tool-browser": "workspace:*",
       },
       "devDependencies": {

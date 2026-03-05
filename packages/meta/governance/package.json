@@ -28,8 +28,10 @@
     "@koi/middleware-pii": "workspace:*",
     "@koi/redaction": "workspace:*",
     "@koi/permissions-nexus": "workspace:*",
+    "@koi/agent-monitor": "workspace:*",
     "@koi/middleware-sanitize": "workspace:*",
     "@koi/scope": "workspace:*",
+    "@koi/security-analyzer": "workspace:*",
     "@koi/tool-browser": "workspace:*"
   },
   "devDependencies": {

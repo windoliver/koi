@@ -376,23 +376,25 @@ describe("createGovernanceStack", () => {
 
   // ── Preset tests ──────────────────────────────────────────────────────
 
-  test("preset: standard → permissions + pii + sanitize", () => {
+  test("preset: standard → permissions + pii + sanitize + agent-monitor", () => {
     const { middlewares, config } = createGovernanceStack({ preset: "standard" });
     const names = middlewares.map((mw) => mw.name);
     expect(names).toContain("permissions");
     expect(names).toContain("pii");
     expect(names).toContain("sanitize");
+    expect(names).toContain("agent-monitor");
     expect(config.preset).toBe("standard");
     expect(config.scopeEnabled).toBe(true); // standard has scope config
   });
 
-  test("preset: strict → permissions + pii + sanitize + guardrails", () => {
+  test("preset: strict → permissions + pii + sanitize + guardrails + agent-monitor", () => {
     const { middlewares, config } = createGovernanceStack({ preset: "strict" });
     const names = middlewares.map((mw) => mw.name);
     expect(names).toContain("permissions");
     expect(names).toContain("pii");
     expect(names).toContain("sanitize");
     expect(names).toContain("guardrails");
+    expect(names).toContain("agent-monitor");
     expect(config.preset).toBe("strict");
     expect(config.scopeEnabled).toBe(true);
   });

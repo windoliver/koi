@@ -95,6 +95,39 @@ describe("GOVERNANCE_PRESET_SPECS", () => {
     expect(GOVERNANCE_PRESET_SPECS.strict.scope?.browser?.allowedProtocols).toEqual(["https:"]);
   });
 
+  // ── Agent monitor + security analyzer ────────────────────────────────
+
+  test("open: no agentMonitor", () => {
+    expect(GOVERNANCE_PRESET_SPECS.open.agentMonitor).toBeUndefined();
+  });
+
+  test("standard: includes agentMonitor with default thresholds", () => {
+    expect(GOVERNANCE_PRESET_SPECS.standard.agentMonitor).toBeDefined();
+    // Default empty config — uses agent-monitor's own DEFAULT_THRESHOLDS
+    expect(GOVERNANCE_PRESET_SPECS.standard.agentMonitor).toEqual({});
+  });
+
+  test("standard: no securityAnalyzer", () => {
+    expect(GOVERNANCE_PRESET_SPECS.standard.securityAnalyzer).toBeUndefined();
+  });
+
+  test("strict: includes agentMonitor with tighter thresholds", () => {
+    const monitor = GOVERNANCE_PRESET_SPECS.strict.agentMonitor;
+    expect(monitor).toBeDefined();
+    expect(monitor?.thresholds?.maxToolCallsPerTurn).toBe(10);
+    expect(monitor?.thresholds?.maxDestructiveCallsPerTurn).toBe(1);
+    expect(monitor?.thresholds?.maxSessionDurationMs).toBe(120_000);
+  });
+
+  test("strict: includes securityAnalyzer with elevateOnAnomalyKinds", () => {
+    const analyzer = GOVERNANCE_PRESET_SPECS.strict.securityAnalyzer;
+    expect(analyzer).toBeDefined();
+    expect(analyzer?.elevateOnAnomalyKinds).toContain("tool_rate_exceeded");
+    expect(analyzer?.elevateOnAnomalyKinds).toContain("denied_tool_calls");
+    expect(analyzer?.elevateOnAnomalyKinds).toContain("irreversible_action_rate");
+    expect(analyzer?.elevateOnAnomalyKinds).toContain("delegation_depth_exceeded");
+  });
+
   // ── Ordering invariant ────────────────────────────────────────────────
 
   test("preset field count: open <= standard <= strict", () => {

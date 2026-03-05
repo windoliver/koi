@@ -5,6 +5,7 @@
  * deployment presets, scope configuration, and the GovernanceBundle return shape.
  */
 
+import type { AgentMonitorConfig } from "@koi/agent-monitor";
 import type { NdjsonAuditSinkConfig, SqliteAuditSinkConfig } from "@koi/audit-sink-local";
 import type { NexusAuditSinkConfig } from "@koi/audit-sink-nexus";
 import type { SessionRevocationStore } from "@koi/capability-verifier";
@@ -34,6 +35,7 @@ import type { PIIConfig } from "@koi/middleware-pii";
 import type { SanitizeMiddlewareConfig } from "@koi/middleware-sanitize";
 import type { NexusPermissionBackend, OnGrantHook, OnRevokeHook } from "@koi/permissions-nexus";
 import type { RedactionConfig, Redactor } from "@koi/redaction";
+import type { AnomalySignalLike } from "@koi/security-analyzer";
 import type { BrowserDriver } from "@koi/tool-browser";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,23 @@ export interface GovernanceScopeBackends {
   readonly credentials?: CredentialComponent | undefined;
   readonly memory?: MemoryComponent | undefined;
   readonly auditSink?: AuditSink | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Security analyzer governance config
+// ---------------------------------------------------------------------------
+
+/** Governance-level config for the security analyzer pipeline. */
+export interface SecurityAnalyzerGovernanceConfig {
+  /** Custom high-risk patterns (merged with defaults if provided). */
+  readonly highPatterns?: readonly string[] | undefined;
+  /** Custom medium-risk patterns (merged with defaults if provided). */
+  readonly mediumPatterns?: readonly string[] | undefined;
+  /** Anomaly kinds that trigger risk elevation to "high".
+   *  When omitted, all anomaly kinds trigger elevation. */
+  readonly elevateOnAnomalyKinds?: readonly string[] | undefined;
+  /** Override analyzer timeout (ms). Default: 2000ms from exec-approvals. */
+  readonly analyzerTimeoutMs?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +163,17 @@ export interface GovernanceStackConfig {
   readonly sanitize?: SanitizeMiddlewareConfig | undefined;
   /** Output schema validation. Priority 375. */
   readonly guardrails?: GuardrailsConfig | undefined;
+
+  // ── Anomaly detection + security analysis ──────────────────────────────
+  /** Behavioral anomaly detection middleware (OWASP ASI10). Priority 360.
+   *  When configured alongside execApprovals, governance auto-creates a
+   *  monitor-bridge SecurityAnalyzer and injects it into exec-approvals. */
+  readonly agentMonitor?: AgentMonitorConfig | undefined;
+
+  /** Security analyzer config for risk classification.
+   *  When omitted but agentMonitor + execApprovals are both present,
+   *  governance auto-creates a default rules analyzer + monitor bridge. */
+  readonly securityAnalyzer?: SecurityAnalyzerGovernanceConfig | undefined;
 
   // ── Delegation bridge ──────────────────────────────────────────────────
   /**
@@ -227,4 +257,11 @@ export interface GovernanceBundle {
   readonly delegationEscalationHandle?: DelegationEscalationHandle;
   /** Compiled redactor — present when `redaction` is configured. */
   readonly redactor?: Redactor;
+  /** Anomaly collector — present when agentMonitor is auto-wired with execApprovals. */
+  readonly anomalyCollector?:
+    | {
+        readonly getRecentAnomalies: (sessionId: string) => readonly AnomalySignalLike[];
+        readonly clearSession: (sessionId: string) => void;
+      }
+    | undefined;
 }
