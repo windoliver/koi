@@ -1123,6 +1123,33 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/quality-gate": {
+      "name": "@koi/quality-gate",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/middleware-feedback-loop": "workspace:*",
+        "@koi/middleware-output-verifier": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/meta/retry-stack": {
+      "name": "@koi/retry-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/middleware-fs-rollback": "workspace:*",
+        "@koi/middleware-guided-retry": "workspace:*",
+        "@koi/middleware-semantic-retry": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/sandbox-stack": {
       "name": "@koi/sandbox-stack",
       "version": "0.0.0",
@@ -3341,6 +3368,8 @@
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
 
+    "@koi/quality-gate": ["@koi/quality-gate@workspace:packages/meta/quality-gate"],
+
     "@koi/recipe-codex-mcp": ["@koi/recipe-codex-mcp@workspace:recipes/codex-mcp"],
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
@@ -3356,6 +3385,8 @@
     "@koi/reputation": ["@koi/reputation@workspace:packages/security/reputation"],
 
     "@koi/resolve": ["@koi/resolve@workspace:packages/fs/resolve"],
+
+    "@koi/retry-stack": ["@koi/retry-stack@workspace:packages/meta/retry-stack"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/virt/sandbox"],
 
