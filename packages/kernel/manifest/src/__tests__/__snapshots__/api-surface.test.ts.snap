@@ -57,6 +57,10 @@ interface ManifestScopeConfig {
  * Extension fields that exist in koi.yaml but are outside L0 core contracts.
  * All values are validated by the schema layer.
  */
+/** Nexus backend connection config in the manifest. */
+interface NexusManifestConfig {
+    readonly url?: string | undefined;
+}
 interface ManifestExtensions {
     readonly engine?: unknown;
     readonly schedule?: unknown;
@@ -67,6 +71,7 @@ interface ManifestExtensions {
     readonly user?: SoulUserConfig | undefined;
     readonly deploy?: DeployConfig | undefined;
     readonly scope?: ManifestScopeConfig | undefined;
+    readonly nexus?: NexusManifestConfig | undefined;
 }
 /**
  * The fully loaded and validated agent manifest.
