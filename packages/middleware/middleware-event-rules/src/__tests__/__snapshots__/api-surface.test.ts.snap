@@ -1,0 +1,274 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-event-rules API surface . has stable type surface 1`] = `
+"import { SessionId } from '@koi/core/ecs';
+import { KoiMiddleware, Result, KoiError } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
+
+/**
+ * Type definitions for @koi/middleware-event-rules.
+ *
+ * Covers the YAML rule schema, compiled runtime types,
+ * action context, and evaluation results.
+ */
+
+/** Rule-local event vocabulary, decoupled from EngineEvent. */
+type RuleEventType = "tool_call" | "turn_complete" | "session_start" | "session_end";
+/** Regex match operator. */
+interface RegexOperator {
+    readonly regex: string;
+}
+/** Numeric comparison operators. */
+interface NumericOperator {
+    readonly gte?: number | undefined;
+    readonly lte?: number | undefined;
+    readonly gt?: number | undefined;
+    readonly lt?: number | undefined;
+}
+/** A match value: primitive exact match, operator object, or array (oneOf). */
+type MatchValue = string | number | boolean | RegexOperator | NumericOperator | readonly (string | number | boolean)[];
+/** Match predicate object — flat key-value pairs. */
+type MatchPredicates = Readonly<Record<string, MatchValue>>;
+/** Built-in action types. */
+type ActionType = "emit" | "escalate" | "log" | "notify" | "skip_tool";
+/** Log level for \`log\` action. */
+type LogLevel = "info" | "warn" | "error" | "debug";
+/** Raw action as parsed from YAML. */
+interface RawAction {
+    readonly type: ActionType;
+    readonly event?: string;
+    readonly message?: string;
+    readonly channel?: string;
+    readonly level?: LogLevel;
+    readonly toolId?: string;
+}
+/** Windowed counter condition. */
+interface RawCondition {
+    readonly count: number;
+    readonly window: string;
+}
+/** A single rule as parsed from YAML. */
+interface RawRule {
+    readonly name: string;
+    readonly on: RuleEventType;
+    readonly match?: MatchPredicates;
+    readonly condition?: RawCondition;
+    readonly actions: readonly RawAction[];
+    readonly stopOnMatch?: boolean;
+}
+/** Top-level YAML config. */
+interface RawEventRulesConfig {
+    readonly rules: readonly RawRule[];
+}
+/** A compiled predicate: field name + test closure. */
+interface CompiledPredicate {
+    readonly field: string;
+    readonly test: (value: unknown) => boolean;
+}
+/** A compiled rule with parsed window, compiled predicates, and indexed position. */
+interface CompiledRule {
+    readonly name: string;
+    readonly on: RuleEventType;
+    readonly predicates: readonly CompiledPredicate[];
+    readonly condition: {
+        readonly count: number;
+        readonly windowMs: number;
+    } | undefined;
+    readonly actions: readonly RawAction[];
+    readonly stopOnMatch: boolean;
+}
+/** Immutable compiled ruleset with pre-indexed lookup by event type. */
+interface CompiledRuleset {
+    readonly rules: readonly CompiledRule[];
+    readonly byEventType: ReadonlyMap<RuleEventType, readonly CompiledRule[]>;
+}
+/** An event emitted to the rule engine for evaluation. */
+interface RuleEvent {
+    readonly type: RuleEventType;
+    readonly fields: Readonly<Record<string, unknown>>;
+    readonly sessionId: SessionId;
+}
+/** Result of evaluating rules against an event. */
+interface RuleEvalResult {
+    /** Actions to execute. */
+    readonly actions: readonly ResolvedAction[];
+    /** Tool IDs to skip (from skip_tool actions). */
+    readonly skipToolIds: readonly string[];
+}
+/** An action resolved with its originating rule name and event context. */
+interface ResolvedAction {
+    readonly ruleName: string;
+    readonly action: RawAction;
+}
+/** Logger interface for rule actions. */
+interface RuleLogger {
+    readonly info: (message: string) => void;
+    readonly warn: (message: string) => void;
+    readonly error: (message: string) => void;
+    readonly debug: (message: string) => void;
+}
+/** Dependencies injected into action execution. */
+interface ActionContext {
+    readonly logger?: RuleLogger;
+    readonly emitEvent?: (event: string, data: unknown) => void | Promise<void>;
+    readonly requestEscalation?: (message: string) => void | Promise<void>;
+    readonly sendNotification?: (channel: string, message: string) => void | Promise<void>;
+}
+/** A rule engine instance scoped to a single session. */
+interface RuleEngine {
+    /** Evaluate an event against the ruleset and return matched actions. */
+    readonly evaluate: (event: RuleEvent) => RuleEvalResult;
+    /** Clear all counter state. */
+    readonly reset: () => void;
+}
+/** Configuration for createEventRulesMiddleware. */
+interface EventRulesConfig {
+    /** Compiled ruleset (already validated). */
+    readonly ruleset: CompiledRuleset;
+    /** Action context dependencies. */
+    readonly actionContext?: ActionContext;
+    /** Injectable clock for testing. Default: Date.now. */
+    readonly now?: () => number;
+}
+
+/**
+ * Action execution — runs resolved actions with graceful degradation.
+ *
+ * Each action is wrapped in try/catch. Errors are logged but never propagated.
+ * Missing dependencies degrade to logging.
+ */
+
+/**
+ * Executes resolved actions with template interpolation and graceful degradation.
+ *
+ * @param resolvedActions - Actions matched by the rule engine.
+ * @param eventContext - Context for template interpolation (event fields + extras).
+ * @param actionContext - Injected dependencies for action execution.
+ */
+declare function executeActions(resolvedActions: readonly ResolvedAction[], eventContext: Readonly<Record<string, unknown>>, actionContext: ActionContext): Promise<void>;
+
+/**
+ * BrickDescriptor for @koi/middleware-event-rules.
+ *
+ * Enables manifest auto-resolution: validates event rules options
+ * from koi.yaml, then creates the event-rules middleware.
+ *
+ * Usage in koi.yaml:
+ *   middleware:
+ *     - name: event-rules
+ *       options:
+ *         rules:
+ *           - name: tool-failure-escalate
+ *             on: tool_call
+ *             match:
+ *               ok: false
+ *             condition:
+ *               count: 3
+ *               window: "1m"
+ *             actions:
+ *               - type: escalate
+ *                 message: "Tool {{toolId}} failed {{count}} times"
+ */
+
+/**
+ * Descriptor for event-rules middleware.
+ *
+ * Creates a declarative event→action middleware from validated YAML options.
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
+ * Duration string parser — converts "30s", "5m", "1h" to milliseconds.
+ */
+/**
+ * Parses a duration string into milliseconds.
+ *
+ * @returns milliseconds, or \`undefined\` for invalid/zero input.
+ */
+declare function parseDuration(input: string): number | undefined;
+
+/**
+ * Shallow template interpolation for rule action messages.
+ *
+ * Replaces \`{{varName}}\` placeholders with values from a context object.
+ * Undefined variables produce \`"<undefined:varName>"\` sentinel strings.
+ */
+/**
+ * Interpolates \`{{varName}}\` placeholders in a template string.
+ *
+ * @param template - String with \`{{varName}}\` placeholders.
+ * @param context - Key-value context for substitution.
+ * @returns Interpolated string.
+ */
+declare function interpolate(template: string, context: Readonly<Record<string, unknown>>): string;
+
+/**
+ * Rule loading utilities — parse YAML strings or files into compiled rulesets.
+ */
+
+/**
+ * Parses a YAML string into a compiled ruleset.
+ *
+ * @param yaml - YAML string containing event rules config.
+ * @returns Compiled ruleset or validation error.
+ */
+declare function loadRulesFromString(yaml: string): Result<CompiledRuleset, KoiError>;
+/**
+ * Loads and compiles event rules from a YAML file.
+ *
+ * @param filePath - Path to the YAML file.
+ * @returns Compiled ruleset or error.
+ */
+declare function loadRulesFromFile(filePath: string): Promise<Result<CompiledRuleset, KoiError>>;
+
+/**
+ * Rule engine — evaluates compiled rules against events.
+ *
+ * Session-scoped, in-memory counter state with sorted-array storage
+ * and binary-search prune-on-read. No background timers.
+ */
+
+/**
+ * Creates a rule engine for a compiled ruleset.
+ *
+ * @param ruleset - Pre-compiled and indexed ruleset.
+ * @param now - Injectable clock (default: Date.now).
+ */
+declare function createRuleEngine(ruleset: CompiledRuleset, now?: () => number): RuleEngine;
+
+/**
+ * Event rules middleware — declarative event→action mapping.
+ *
+ * Hooks into session lifecycle, turn completion, and tool calls to evaluate
+ * rules and execute actions. Session-scoped engine instances with in-memory
+ * counter state.
+ *
+ * Priority 750: observe phase, runs after most business-logic middleware.
+ */
+
+/**
+ * Creates an event-rules middleware from a compiled ruleset.
+ *
+ * @param config - Compiled ruleset + optional action context + clock.
+ */
+declare function createEventRulesMiddleware(config: EventRulesConfig): KoiMiddleware$1;
+
+/**
+ * Zod schema + compilation for event rule configs.
+ *
+ * Validates YAML input exhaustively at load time, compiles regex patterns
+ * into closures, parses duration strings, and pre-indexes rules by event type.
+ */
+
+/**
+ * Validates and compiles an event rules config from unknown input.
+ *
+ * Performs exhaustive validation (Zod), compiles regex into closures,
+ * parses durations, and pre-indexes rules by event type.
+ */
+declare function validateEventRulesConfig(input: unknown): Result<CompiledRuleset, KoiError>;
+
+export { type ActionContext, type ActionType, type CompiledPredicate, type CompiledRule, type CompiledRuleset, type EventRulesConfig, type LogLevel, type MatchPredicates, type MatchValue, type NumericOperator, type RawAction, type RawCondition, type RawEventRulesConfig, type RawRule, type RegexOperator, type ResolvedAction, type RuleEngine, type RuleEvalResult, type RuleEvent, type RuleEventType, type RuleLogger, createEventRulesMiddleware, createRuleEngine, descriptor, executeActions, interpolate, loadRulesFromFile, loadRulesFromString, parseDuration, validateEventRulesConfig };
+"
+`;
