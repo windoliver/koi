@@ -1,5 +1,5 @@
 /**
- * Node stack types — config and return types for the full node bundle.
+ * Node stack types — config and return types for the full node bundle (L3).
  *
  * @module
  */
