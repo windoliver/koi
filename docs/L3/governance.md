@@ -38,7 +38,7 @@ const stack = createGovernanceStack({
 // Strict — PII redaction, guardrails, read-only filesystem, HTTPS-only browser
 const strict = createGovernanceStack({
   preset: "strict",
-  audit: { sink: myAuditSink },
+  auditBackend: { kind: "sqlite", dbPath: "./audit.db" },
   backends: { filesystem: myFsBackend },
 });
 
@@ -143,6 +143,72 @@ if (delegationEscalationHandle?.isPending()) {
 
 **Not included in presets** — requires deployment-specific config (channel, agent IDs).
 
+## Declarative Audit Backend
+
+Instead of manually importing and instantiating audit sink packages, use the
+`auditBackend` field to declaratively select which backend to use. The factory
+auto-creates the `AuditSink` and wires it into both the audit middleware and
+scope backends (`backends.auditSink`) in a single config field.
+
+### Supported Backends
+
+| Kind | Package | Storage | Cleanup |
+|------|---------|---------|---------|
+| `sqlite` | `@koi/audit-sink-local` | Local SQLite database | `close()` tracked as disposable |
+| `ndjson` | `@koi/audit-sink-local` | Newline-delimited JSON file | `close()` tracked as disposable |
+| `nexus` | `@koi/audit-sink-nexus` | Batched writes to Nexus server | Timer `.unref()`'d (no disposable) |
+| `custom` | (user-provided) | Any `AuditSink` implementation | User manages lifecycle |
+
+### Examples
+
+```typescript
+// SQLite — local development / single-node deployments
+const stack = createGovernanceStack({
+  preset: "standard",
+  auditBackend: { kind: "sqlite", dbPath: "./audit.db" },
+  backends: { filesystem: myFsBackend },
+});
+
+// NDJSON — lightweight file-based logging
+const stack = createGovernanceStack({
+  auditBackend: { kind: "ndjson", filePath: "/var/log/koi/audit.ndjson" },
+});
+
+// Nexus — production, multi-node, durable + queryable
+const stack = createGovernanceStack({
+  preset: "strict",
+  auditBackend: {
+    kind: "nexus",
+    baseUrl: "http://nexus.internal:2026",
+    apiKey: process.env.NEXUS_API_KEY!,
+  },
+});
+
+// Custom — bring your own AuditSink
+const stack = createGovernanceStack({
+  auditBackend: { kind: "custom", sink: myCustomSink },
+});
+
+// Combine with other audit middleware options
+const stack = createGovernanceStack({
+  auditBackend: { kind: "sqlite", dbPath: ":memory:" },
+  audit: { redactRequestBodies: true, maxEntrySize: 20_000 },
+  // NOTE: audit.sink must NOT be set when auditBackend is used (mutually exclusive)
+});
+```
+
+### Mutual Exclusion
+
+`auditBackend` and `audit.sink` are **mutually exclusive**. Providing both
+throws an error with an actionable message. Use `auditBackend` for declarative
+selection, or provide `audit: { sink }` for manual wiring.
+
+### Disposable Lifecycle
+
+SQLite and NDJSON sinks expose a `close()` method that is automatically tracked
+in the bundle's `disposables` array. Call `disposable[Symbol.dispose]()` (or use
+a `using` block) to release file handles on shutdown.
+
 ## Deployment Presets
 
 ### `open` (default)
@@ -238,4 +304,4 @@ interface ResolvedGovernanceMeta {
 Dependencies:
 - L0: `@koi/core` (types)
 - L0u: `@koi/scope` (enforcer, scoping)
-- L2: `@koi/filesystem`, `@koi/tool-browser`, 11 middleware packages
+- L2: `@koi/audit-sink-local`, `@koi/audit-sink-nexus`, `@koi/filesystem`, `@koi/tool-browser`, 11 middleware packages

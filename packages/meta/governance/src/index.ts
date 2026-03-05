@@ -22,6 +22,12 @@
  * ```
  */
 
+// ── Types: audit backends ────────────────────────────────────────────────
+export type { NdjsonAuditSinkConfig, SqliteAuditSinkConfig } from "@koi/audit-sink-local";
+// ── Factories: audit backends ────────────────────────────────────────────
+export { createNdjsonAuditSink, createSqliteAuditSink } from "@koi/audit-sink-local";
+export type { NexusAuditSinkConfig } from "@koi/audit-sink-nexus";
+export { createNexusAuditSink, validateNexusAuditSinkConfig } from "@koi/audit-sink-nexus";
 // ── Types: capability verifier ──────────────────────────────────────────
 export type { SessionRevocationStore } from "@koi/capability-verifier";
 // ── Types: middleware sub-configs ────────────────────────────────────────
@@ -50,6 +56,7 @@ export { createGovernanceStack } from "./governance-stack.js";
 export { GOVERNANCE_PRESET_SPECS } from "./presets.js";
 // ── Types: governance bundle ────────────────────────────────────────────
 export type {
+  AuditBackendConfig,
   GovernanceBundle,
   GovernancePreset,
   GovernancePresetSpec,

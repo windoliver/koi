@@ -5,6 +5,8 @@
  * deployment presets, scope configuration, and the GovernanceBundle return shape.
  */
 
+import type { NdjsonAuditSinkConfig, SqliteAuditSinkConfig } from "@koi/audit-sink-local";
+import type { NexusAuditSinkConfig } from "@koi/audit-sink-nexus";
 import type { SessionRevocationStore } from "@koi/capability-verifier";
 import type {
   AuditSink,
@@ -32,6 +34,17 @@ import type { PIIConfig } from "@koi/middleware-pii";
 import type { SanitizeMiddlewareConfig } from "@koi/middleware-sanitize";
 import type { NexusPermissionBackend, OnGrantHook, OnRevokeHook } from "@koi/permissions-nexus";
 import type { BrowserDriver } from "@koi/tool-browser";
+
+// ---------------------------------------------------------------------------
+// Audit backend config
+// ---------------------------------------------------------------------------
+
+/** Declarative audit backend selection — auto-creates the AuditSink and wires it into audit middleware + scope backends. */
+export type AuditBackendConfig =
+  | ({ readonly kind: "sqlite" } & SqliteAuditSinkConfig)
+  | ({ readonly kind: "ndjson" } & NdjsonAuditSinkConfig)
+  | ({ readonly kind: "nexus" } & NexusAuditSinkConfig)
+  | { readonly kind: "custom"; readonly sink: AuditSink };
 
 // ---------------------------------------------------------------------------
 // Deployment presets
@@ -97,6 +110,13 @@ export interface GovernanceStackConfig {
    * Creates a pattern permission backend automatically.
    */
   readonly permissionRules?: PermissionRules | undefined;
+
+  // ── Audit backend (declarative) ─────────────────────────────────────
+  /**
+   * Declarative audit backend. Auto-creates the AuditSink and wires it
+   * into audit middleware + scope backends. Mutually exclusive with `audit.sink`.
+   */
+  readonly auditBackend?: AuditBackendConfig | undefined;
 
   // ── Middleware configs (all optional) ─────────────────────────────────
   /** Coarse-grained tool allow/deny/ask rules. Priority 100. */

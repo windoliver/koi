@@ -19,10 +19,13 @@
  *   375  koi:guardrails
  */
 
+import { createNdjsonAuditSink, createSqliteAuditSink } from "@koi/audit-sink-local";
+import { createNexusAuditSink } from "@koi/audit-sink-nexus";
 import type { SessionRevocationStore } from "@koi/capability-verifier";
 import { createCapabilityVerifier, createSessionRevocationStore } from "@koi/capability-verifier";
 import type {
   Agent,
+  AuditSink,
   ComponentProvider,
   DelegationId,
   MailboxComponent,
@@ -60,7 +63,7 @@ import { createNexusOnGrant, createNexusOnRevoke } from "@koi/permissions-nexus"
 
 import { resolveGovernanceConfig } from "./config-resolution.js";
 import { wireGovernanceScope } from "./scope-wiring.js";
-import type { GovernanceBundle, GovernanceStackConfig } from "./types.js";
+import type { AuditBackendConfig, GovernanceBundle, GovernanceStackConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Approval routing provider (auto-discovery)
@@ -221,6 +224,42 @@ function autoWireVerifier(delegation: DelegationMiddlewareConfig | undefined): A
 }
 
 // ---------------------------------------------------------------------------
+// Audit backend auto-wiring
+// ---------------------------------------------------------------------------
+
+interface AuditSinkResult {
+  readonly sink: AuditSink;
+  /** Optional close disposable (for SQLite/NDJSON cleanup). */
+  readonly close?: (() => void) | undefined;
+}
+
+/** Create an AuditSink from a declarative AuditBackendConfig. */
+function createAuditSinkFromConfig(config: AuditBackendConfig): AuditSinkResult {
+  switch (config.kind) {
+    case "sqlite": {
+      const { kind: _, ...sinkConfig } = config;
+      const sink = createSqliteAuditSink(sinkConfig);
+      return { sink, close: sink.close };
+    }
+    case "ndjson": {
+      const { kind: _, ...sinkConfig } = config;
+      const sink = createNdjsonAuditSink(sinkConfig);
+      return { sink, close: sink.close };
+    }
+    case "nexus": {
+      const { kind: _, ...sinkConfig } = config;
+      return { sink: createNexusAuditSink(sinkConfig) };
+    }
+    case "custom":
+      return { sink: config.sink };
+    default: {
+      const _exhaustive: never = config;
+      throw new Error(`Unknown audit backend kind: ${(_exhaustive as AuditBackendConfig).kind}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main factory
 // ---------------------------------------------------------------------------
 
@@ -241,7 +280,29 @@ function autoWireVerifier(delegation: DelegationMiddlewareConfig | undefined): A
  * and mailbox from the agent entity — zero explicit config needed.
  */
 export function createGovernanceStack(config: GovernanceStackConfig): GovernanceBundle {
-  const resolved = resolveGovernanceConfig(config);
+  // Validate: auditBackend and audit.sink are mutually exclusive
+  if (config.auditBackend !== undefined && config.audit?.sink !== undefined) {
+    throw new Error(
+      "GovernanceStack: 'auditBackend' and 'audit.sink' are mutually exclusive. " +
+        "Use 'auditBackend' for declarative backend selection, or provide 'audit.sink' directly.",
+    );
+  }
+
+  // Auto-create audit sink from declarative config
+  const auditSinkResult =
+    config.auditBackend !== undefined ? createAuditSinkFromConfig(config.auditBackend) : undefined;
+
+  // If auditBackend is provided, merge the sink into the config before resolution
+  const effectiveConfig =
+    auditSinkResult !== undefined
+      ? {
+          ...config,
+          audit: { ...config.audit, sink: auditSinkResult.sink },
+          backends: { ...config.backends, auditSink: auditSinkResult.sink },
+        }
+      : config;
+
+  const resolved = resolveGovernanceConfig(effectiveConfig);
 
   // Validate: capabilityRequest requires delegationBridge
   if (config.capabilityRequest !== undefined && config.delegationBridge === undefined) {
@@ -283,6 +344,13 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
   // agentId (pid.id), parentId (pid.parent), and mailbox (MAILBOX component) during
   // agent assembly. Zero explicit config needed — routing is wired dynamically.
   const disposables: Disposable[] = [];
+
+  // Track audit sink close for cleanup (SQLite/NDJSON file handles)
+  if (auditSinkResult?.close !== undefined) {
+    const closeFn = auditSinkResult.close;
+    disposables.push({ [Symbol.dispose]: closeFn });
+  }
+
   const approvalRouting =
     resolved.execApprovals !== undefined
       ? createApprovalRoutingProvider(resolved.execApprovals, disposables)

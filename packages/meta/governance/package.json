@@ -11,6 +11,8 @@
     }
   },
   "dependencies": {
+    "@koi/audit-sink-local": "workspace:*",
+    "@koi/audit-sink-nexus": "workspace:*",
     "@koi/capability-verifier": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/delegation": "workspace:*",
