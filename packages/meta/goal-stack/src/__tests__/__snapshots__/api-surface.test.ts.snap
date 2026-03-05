@@ -1,110 +1,123 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/goal-stack API surface . has stable type surface 1`] = `
-"import { GoalAnchorConfig } from '@koi/middleware-goal-anchor';
+"import { TodoItem } from '@koi/middleware-goal-anchor';
 export { GoalAnchorConfig, TodoItem, TodoItemStatus, TodoState } from '@koi/middleware-goal-anchor';
-import { GoalReminderConfig } from '@koi/middleware-goal-reminder';
+import { ReminderSource } from '@koi/middleware-goal-reminder';
 export { GoalReminderConfig, ReminderSessionState, ReminderSource } from '@koi/middleware-goal-reminder';
-import { PlanConfig } from '@koi/middleware-planning';
-export { PlanConfig, PlanItem, PlanStatus } from '@koi/middleware-planning';
-import { KoiMiddleware } from '@koi/core';
+import { PlanItem } from '@koi/middleware-planning';
+export { PlanConfig, PlanItem, PlanStatus, descriptor as planningDescriptor } from '@koi/middleware-planning';
+import { KoiMiddleware, ComponentProvider } from '@koi/core';
+import { TurnContext } from '@koi/core/middleware';
 
 /**
- * Types for the goal-stack L3 bundle.
- *
- * Reuses L2 config types directly (GoalAnchorConfig, GoalReminderConfig, PlanConfig)
- * to avoid type drift. Presets only control which middleware to enable — they don't
- * supply domain values like objectives or sources.
+ * Types for @koi/goal-stack — goal-directed middleware bundle (Layer 3).
  */
 
-/** Resolved config returned by \`resolveGoalStackConfig()\`. */
-interface ResolvedGoalStackConfig {
-    readonly planning: Omit<PlanConfig, "priority"> | undefined;
-    readonly anchor: GoalAnchorConfig | undefined;
-    readonly reminder: GoalReminderConfig | undefined;
-    readonly meta: ResolvedGoalStackMeta;
+/** Available composition presets for the goal stack. */
+type GoalStackPreset = "minimal" | "standard" | "autonomous";
+/**
+ * Preset specification — controls which sub-middleware are included
+ * and their default configuration values.
+ */
+interface GoalStackPresetSpec {
+    readonly includeAnchor: boolean;
+    readonly includeReminder: boolean;
+    readonly includePlanning: boolean;
+    readonly reminderBaseInterval: number;
+    readonly reminderMaxInterval: number;
+    readonly anchorHeader: string;
+    readonly reminderHeader: string;
 }
-/** Which middleware are enabled by default. */
-type GoalStackPreset = "light" | "standard" | "full";
-/**
- * Top-level config for the goal stack bundle.
- *
- * - \`preset\` selects which middleware are enabled by default (default: "light")
- * - Providing a middleware config explicitly enables it regardless of preset
- * - Priority is blocked on planning to preserve stack ordering (330, 340, 450)
- */
+/** User-facing configuration for createGoalStack(). */
 interface GoalStackConfig {
+    /** Preset name. Default: "standard". */
     readonly preset?: GoalStackPreset | undefined;
-    readonly anchor?: GoalAnchorConfig | undefined;
-    readonly reminder?: GoalReminderConfig | undefined;
-    readonly planning?: Omit<PlanConfig, "priority"> | undefined;
+    /** Declared task objectives — required when anchor or reminder is active. */
+    readonly objectives?: readonly string[] | undefined;
+    /** Goal-anchor overrides (injected every model call). */
+    readonly anchor?: {
+        readonly header?: string | undefined;
+        readonly onComplete?: ((item: TodoItem) => void) | undefined;
+    } | undefined;
+    /** Goal-reminder overrides (adaptive periodic injection). */
+    readonly reminder?: {
+        readonly header?: string | undefined;
+        readonly baseInterval?: number | undefined;
+        readonly maxInterval?: number | undefined;
+        readonly isDrifting?: ((ctx: TurnContext) => boolean | Promise<boolean>) | undefined;
+        readonly sources?: readonly ReminderSource[] | undefined;
+    } | undefined;
+    /** Planning middleware overrides (write_plan tool). */
+    readonly planning?: {
+        readonly onPlanUpdate?: ((plan: readonly PlanItem[]) => void) | undefined;
+        readonly priority?: number | undefined;
+    } | undefined;
 }
-/** Per-preset flags controlling which middleware are enabled. */
-interface GoalStackPresetFlags {
-    readonly planning: boolean;
-    readonly anchor: boolean;
-    readonly reminder: boolean;
-}
-/** Inspection metadata returned alongside the assembled middleware array. */
+/** Metadata about the resolved goal stack composition. */
 interface ResolvedGoalStackMeta {
     readonly preset: GoalStackPreset;
     readonly middlewareCount: number;
-    readonly planning: boolean;
-    readonly anchor: boolean;
-    readonly reminder: boolean;
+    readonly includesAnchor: boolean;
+    readonly includesReminder: boolean;
+    readonly includesPlanning: boolean;
 }
-/** Return value of \`createGoalStack()\`. */
+/** The composed goal stack bundle returned by createGoalStack(). */
 interface GoalStackBundle {
+    /** Ordered middleware array (by priority: reminder 330, anchor 340, planning 450). */
     readonly middlewares: readonly KoiMiddleware[];
+    /** Component providers — always empty, future-proof slot. */
+    readonly providers: readonly ComponentProvider[];
+    /** Metadata about the resolved composition. */
     readonly config: ResolvedGoalStackMeta;
 }
 
 /**
- * Config resolution for the goal stack bundle.
+ * Config resolution for goal stack — applies preset defaults and validates.
+ */
+
+/** Resolved internal config with preset applied. */
+interface ResolvedGoalStackConfig {
+    readonly preset: GoalStackPreset;
+    readonly config: GoalStackConfig;
+}
+/**
+ * Resolves user config against the selected preset.
  *
- * Determines which middleware are enabled based on preset flags and explicit config.
- * Validates that enabled middleware have required config values.
+ * Validates that objectives are provided when the preset includes
+ * anchor or reminder middleware. Throws with a helpful message
+ * suggesting the "minimal" preset when objectives are missing.
+ */
+declare function resolveGoalStackConfig(config: GoalStackConfig): ResolvedGoalStackConfig;
+
+/**
+ * Goal stack factory — composes goal-anchor, goal-reminder, and planning
+ * middleware into a single bundle with preset-driven defaults.
  */
 
 /**
- * Resolve goal stack config by merging preset flags with explicit config.
+ * Creates a composed goal stack from configuration.
  *
- * Rules:
- * - Middleware is enabled if its preset flag is true OR user provides its config
- * - If enabled by preset but no config provided, throws with a clear message
- *   (exception: planning, whose config is fully optional)
- */
-declare function resolveGoalStackConfig(config?: GoalStackConfig): ResolvedGoalStackConfig;
-
-/**
- * Factory for the goal stack bundle.
- *
- * Composes up to 3 goal-management middleware into a single bundle:
- *   - goal-reminder (priority 330)
- *   - goal-anchor   (priority 340)
- *   - plan           (priority 450)
- */
-
-/**
- * Create a goal management stack from config.
- *
- * Returns an ordered array of middleware (ascending priority: 330, 340, 450)
- * plus metadata for inspection.
+ * Middleware are added in priority order:
+ *   1. goal-reminder (330) — adaptive periodic injection
+ *   2. goal-anchor (340) — every-call todo injection
+ *   3. planning (450) — write_plan tool
  */
 declare function createGoalStack(config?: GoalStackConfig): GoalStackBundle;
 
 /**
- * Frozen preset flags for the goal stack.
- *
- * Presets only control which middleware are enabled — they cannot supply
- * domain-specific config values like objectives or sources. Providing
- * explicit middleware config always wins (e.g., anchor config with "light"
- * preset still enables anchor).
+ * Preset specifications for goal stack composition.
  */
 
-/** Frozen preset flag registry. */
-declare const GOAL_STACK_PRESET_FLAGS: Readonly<Record<GoalStackPreset, GoalStackPresetFlags>>;
+/**
+ * Preset specifications keyed by preset name.
+ *
+ * - minimal: planning only — no anchor/reminder, no objectives required
+ * - standard: all three middlewares, moderate reminder intervals (5/20)
+ * - autonomous: all three middlewares, tighter reminder intervals (3/10)
+ */
+declare const GOAL_STACK_PRESET_SPECS: Readonly<Record<GoalStackPreset, GoalStackPresetSpec>>;
 
-export { GOAL_STACK_PRESET_FLAGS, type GoalStackBundle, type GoalStackConfig, type GoalStackPreset, type GoalStackPresetFlags, type ResolvedGoalStackConfig, type ResolvedGoalStackMeta, createGoalStack, resolveGoalStackConfig };
+export { GOAL_STACK_PRESET_SPECS, type GoalStackBundle, type GoalStackConfig, type GoalStackPreset, type GoalStackPresetSpec, type ResolvedGoalStackMeta, createGoalStack, resolveGoalStackConfig };
 "
 `;

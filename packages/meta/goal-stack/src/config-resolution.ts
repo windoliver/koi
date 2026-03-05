@@ -1,63 +1,39 @@
 /**
- * Config resolution for the goal stack bundle.
- *
- * Determines which middleware are enabled based on preset flags and explicit config.
- * Validates that enabled middleware have required config values.
+ * Config resolution for goal stack — applies preset defaults and validates.
  */
 
-import { GOAL_STACK_PRESET_FLAGS } from "./presets.js";
-import type { GoalStackConfig, GoalStackPreset, ResolvedGoalStackConfig } from "./types.js";
+import { GOAL_STACK_PRESET_SPECS } from "./presets.js";
+import type { GoalStackConfig, GoalStackPreset } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// Resolution
-// ---------------------------------------------------------------------------
+/** Default preset when none specified. */
+const DEFAULT_PRESET: GoalStackPreset = "standard";
+
+/** Resolved internal config with preset applied. */
+export interface ResolvedGoalStackConfig {
+  readonly preset: GoalStackPreset;
+  readonly config: GoalStackConfig;
+}
 
 /**
- * Resolve goal stack config by merging preset flags with explicit config.
+ * Resolves user config against the selected preset.
  *
- * Rules:
- * - Middleware is enabled if its preset flag is true OR user provides its config
- * - If enabled by preset but no config provided, throws with a clear message
- *   (exception: planning, whose config is fully optional)
+ * Validates that objectives are provided when the preset includes
+ * anchor or reminder middleware. Throws with a helpful message
+ * suggesting the "minimal" preset when objectives are missing.
  */
-export function resolveGoalStackConfig(config: GoalStackConfig = {}): ResolvedGoalStackConfig {
-  const preset: GoalStackPreset = config.preset ?? "light";
-  const flags = GOAL_STACK_PRESET_FLAGS[preset];
+export function resolveGoalStackConfig(config: GoalStackConfig): ResolvedGoalStackConfig {
+  const preset = config.preset ?? DEFAULT_PRESET;
+  const spec = GOAL_STACK_PRESET_SPECS[preset];
 
-  const planningEnabled = flags.planning || config.planning !== undefined;
-  const anchorEnabled = flags.anchor || config.anchor !== undefined;
-  const reminderEnabled = flags.reminder || config.reminder !== undefined;
+  const needsObjectives = spec.includeAnchor || spec.includeReminder;
+  const hasObjectives = config.objectives !== undefined && config.objectives.length > 0;
 
-  // Validate: collect all missing-config errors in one pass
-  const errors: readonly string[] = [
-    ...(anchorEnabled && config.anchor === undefined
-      ? [
-          `Anchor middleware is enabled by preset "${preset}" but no anchor config was provided. ` +
-            "Supply { anchor: { objectives: [...] } }.",
-        ]
-      : []),
-    ...(reminderEnabled && config.reminder === undefined
-      ? [
-          `Reminder middleware is enabled by preset "${preset}" but no reminder config was provided. ` +
-            "Supply { reminder: { sources: [...], baseInterval: N, maxInterval: N } }.",
-        ]
-      : []),
-  ];
-
-  if (errors.length > 0) {
-    throw new Error(`[@koi/goal-stack] ${errors.join(" ")}`);
+  if (needsObjectives && !hasObjectives) {
+    throw new Error(
+      `GoalStackConfig: preset "${preset}" requires non-empty objectives for anchor/reminder middleware. ` +
+        `Provide objectives or use the "minimal" preset (planning only).`,
+    );
   }
 
-  return {
-    planning: planningEnabled ? (config.planning ?? {}) : undefined,
-    anchor: anchorEnabled ? config.anchor : undefined,
-    reminder: reminderEnabled ? config.reminder : undefined,
-    meta: {
-      preset,
-      middlewareCount: [planningEnabled, anchorEnabled, reminderEnabled].filter(Boolean).length,
-      planning: planningEnabled,
-      anchor: anchorEnabled,
-      reminder: reminderEnabled,
-    },
-  };
+  return { preset, config };
 }

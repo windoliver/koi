@@ -43,6 +43,8 @@ export interface AutonomousAgentParts {
   readonly forgeStore?: ForgeStore | undefined;
   /** Optional health recorder for spawn fitness tracking. */
   readonly healthRecorder?: import("./spawn-fitness-wrapper.js").SpawnHealthRecorder | undefined;
+  /** Optional goal-stack middleware for intra-session goal tracking. */
+  readonly goalStackMiddleware?: readonly KoiMiddleware[] | undefined;
 }
 
 // ---------------------------------------------------------------------------

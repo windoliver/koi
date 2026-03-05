@@ -1066,9 +1066,11 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/middleware-goal-anchor": "workspace:*",
         "@koi/middleware-goal-reminder": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",

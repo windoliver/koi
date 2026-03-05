@@ -92,6 +92,12 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     middlewareList.push(parts.reportMiddleware);
   }
 
+  if (parts.goalStackMiddleware !== undefined) {
+    for (const mw of parts.goalStackMiddleware) {
+      middlewareList.push(mw);
+    }
+  }
+
   const cachedMiddleware: readonly KoiMiddleware[] = middlewareList;
 
   // --- Build providers list ---
