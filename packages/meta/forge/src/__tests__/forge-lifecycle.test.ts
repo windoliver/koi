@@ -7,14 +7,17 @@
 
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor, SigningBackend } from "@koi/core";
-import { createDefaultForgeConfig } from "../config.js";
+import {
+  mapProvenanceToStatement,
+  verifyBrickAttestation,
+  verifyBrickIntegrity,
+} from "@koi/forge-integrity";
+import type { ForgeDeps } from "@koi/forge-tools";
+import { createForgeToolTool, createInMemoryForgeStore } from "@koi/forge-tools";
+import type { ForgeResult } from "@koi/forge-types";
+import { createDefaultForgeConfig } from "@koi/forge-types";
+import { createForgePipeline } from "../create-forge-stack.js";
 import { createForgeRuntime } from "../forge-runtime.js";
-import { verifyBrickAttestation, verifyBrickIntegrity } from "../integrity.js";
-import { createInMemoryForgeStore } from "../memory-store.js";
-import { mapProvenanceToStatement } from "../slsa-serializer.js";
-import { createForgeToolTool } from "../tools/forge-tool.js";
-import type { ForgeDeps } from "../tools/shared.js";
-import type { ForgeResult } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -94,6 +97,7 @@ describe("forge lifecycle with provenance", () => {
         forgesThisSession: 0,
       },
       signer,
+      pipeline: createForgePipeline(),
     };
 
     // 2. Execute forge pipeline for a tool

@@ -28,18 +28,25 @@ import type {
 } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
+import {
+  mapProvenanceToSlsa,
+  mapProvenanceToStatement,
+  verifyAttestation,
+  verifyBrickAttestation,
+  verifyBrickIntegrity,
+} from "@koi/forge-integrity";
+import type { ForgeDeps } from "@koi/forge-tools";
+import {
+  createForgeComponentProvider,
+  createForgeSkillTool,
+  createForgeToolTool,
+  createInMemoryForgeStore,
+} from "@koi/forge-tools";
+import type { ForgeResult, SandboxExecutor } from "@koi/forge-types";
+import { createDefaultForgeConfig } from "@koi/forge-types";
 import { createAnthropicAdapter } from "@koi/model-router";
-import { verifyAttestation } from "../attestation.js";
-import { createDefaultForgeConfig } from "../config.js";
-import { createForgeComponentProvider } from "../forge-component-provider.js";
+import { createForgePipeline } from "../create-forge-stack.js";
 import { createForgeRuntime } from "../forge-runtime.js";
-import { verifyBrickAttestation, verifyBrickIntegrity } from "../integrity.js";
-import { createInMemoryForgeStore } from "../memory-store.js";
-import { mapProvenanceToSlsa, mapProvenanceToStatement } from "../slsa-serializer.js";
-import { createForgeSkillTool } from "../tools/forge-skill.js";
-import { createForgeToolTool } from "../tools/forge-tool.js";
-import type { ForgeDeps } from "../tools/shared.js";
-import type { ForgeResult, SandboxExecutor } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -143,6 +150,7 @@ function createSignedDeps(
       forgesThisSession: sessionForges,
     },
     signer,
+    pipeline: createForgePipeline(),
   };
 }
 

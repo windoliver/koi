@@ -58,11 +58,11 @@ L2  @koi/forge-exaptation    ─ this package (depends on L0 + L0u only)
 ┌──────────────────────────────────────────────────────────────┐
 │                 Exaptation Detection Pipeline                 │
 │                                                               │
-│   wrapModelCall (priority 460):                               │
+│   wrapModelCall (priority 465):                               │
 │     ├── capture model response text (truncated to 200 words)  │
 │     └── cache tool descriptions from ModelRequest.tools       │
 │                                                               │
-│   wrapToolCall (priority 460):                                │
+│   wrapToolCall (priority 465):                                │
 │     ├── tokenize cached tool description + model context      │
 │     ├── compute Jaccard distance (divergence score)           │
 │     ├── store UsagePurposeObservation in ring buffer          │
@@ -271,7 +271,7 @@ The architecture supports swapping `computeJaccardDistance` for embedding-based 
 | **Cooldown per brick** (default 60s) | Prevents signal spam for continuously-drifting tools. |
 | **Fat signal with embedded evidence** | Self-contained — consumers don't need to query back. |
 | **Conservative thresholds** | 5 obs, 0.7 divergence, 2 agents — reduces false positives at the cost of slower detection. |
-| **Priority 460** | Between forge-demand (455) and feedback-loop (450). Close to forge-demand as a sibling forge-signal middleware. |
+| **Priority 465** | Between forge-demand (455) and middleware-degenerate (460). Close to forge-demand as a sibling forge-signal middleware. |
 | **Standalone L0 types** | `ExaptationSignal` defined independently. Will unify with `BrickAnnotation` when #254 lands. |
 
 ---

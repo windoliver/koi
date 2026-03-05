@@ -14,12 +14,12 @@ import type {
   SandboxExecutor,
 } from "@koi/core";
 import { brickId } from "@koi/core";
+import type { ForgeDeps } from "@koi/forge-tools";
+import { createComposeForge } from "@koi/forge-tools";
+import type { ForgeError, ForgeResult } from "@koi/forge-types";
+import { createDefaultForgeConfig } from "@koi/forge-types";
 import { createTestToolArtifact } from "@koi/test-utils";
-import { createDefaultForgeConfig } from "../src/config.js";
-import type { ForgeError } from "../src/errors.js";
-import { createComposeForge } from "../src/tools/compose-forge.js";
-import type { ForgeDeps } from "../src/tools/shared.js";
-import type { ForgeResult } from "../src/types.js";
+import { createForgePipeline } from "../src/create-forge-stack.js";
 
 // ---------------------------------------------------------------------------
 // In-memory store
@@ -69,6 +69,7 @@ function createDeps(store: ForgeStore): ForgeDeps {
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: { agentId: "agent-1", depth: 0, sessionId: "session-1", forgesThisSession: 0 },
+    pipeline: createForgePipeline(),
   };
 }
 

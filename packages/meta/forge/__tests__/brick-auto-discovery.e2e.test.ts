@@ -33,6 +33,8 @@ import type {
 import { agentToken, brickId, skillToken, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
+import { createForgeComponentProvider, createInMemoryForgeStore } from "@koi/forge-tools";
+import type { SandboxExecutor } from "@koi/forge-types";
 import { computeBrickId } from "@koi/hash";
 import {
   createTestAgentArtifact,
@@ -40,10 +42,7 @@ import {
   createTestSkillArtifact,
   createTestToolArtifact,
 } from "@koi/test-utils";
-import { createForgeComponentProvider } from "../src/forge-component-provider.js";
 import { createForgeRuntime } from "../src/forge-runtime.js";
-import { createInMemoryForgeStore } from "../src/memory-store.js";
-import type { SandboxExecutor } from "../src/types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate

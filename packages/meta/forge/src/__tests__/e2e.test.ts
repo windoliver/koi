@@ -28,16 +28,19 @@ import type {
 import { toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
+import type { ForgeDeps } from "@koi/forge-tools";
+import {
+  createForgeComponentProvider,
+  createForgeMiddlewareTool,
+  createForgeToolTool,
+  createInMemoryForgeStore,
+  createMemoryStoreChangeNotifier,
+} from "@koi/forge-tools";
+import type { ForgeResult, SandboxExecutor } from "@koi/forge-types";
+import { createDefaultForgeConfig } from "@koi/forge-types";
 import { createAnthropicAdapter } from "@koi/model-router";
-import { createDefaultForgeConfig } from "../config.js";
-import { createForgeComponentProvider } from "../forge-component-provider.js";
+import { createForgePipeline } from "../create-forge-stack.js";
 import { createForgeRuntime } from "../forge-runtime.js";
-import { createInMemoryForgeStore } from "../memory-store.js";
-import { createMemoryStoreChangeNotifier } from "../store-notifier.js";
-import { createForgeMiddlewareTool } from "../tools/forge-middleware.js";
-import { createForgeToolTool } from "../tools/forge-tool.js";
-import type { ForgeDeps } from "../tools/shared.js";
-import type { ForgeResult, SandboxExecutor } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -121,6 +124,7 @@ function defaultDeps(
       sessionId: "e2e-session",
       forgesThisSession: sessionForges,
     },
+    pipeline: createForgePipeline(),
   };
 }
 
@@ -693,6 +697,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
           forgesThisSession: 0,
         },
         signer,
+        pipeline: createForgePipeline(),
       };
 
       // Step 1: Forge a tool (signer in deps → provenance gets attestation)

@@ -202,7 +202,7 @@ export function createExaptationDetector(config: ExaptationConfig): ExaptationHa
 
   const middleware: KoiMiddleware = {
     name: "forge-exaptation-detector",
-    priority: 460,
+    priority: 465,
 
     async wrapModelCall(
       _ctx: TurnContext,

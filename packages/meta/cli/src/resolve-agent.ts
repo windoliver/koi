@@ -6,7 +6,7 @@
  */
 
 import { dirname, resolve as pathResolve } from "node:path";
-import type { ForgeStore, KoiError, ModelHandler, Result } from "@koi/core";
+import type { AgentArtifact, ForgeStore, KoiError, ModelHandler, Result } from "@koi/core";
 import { descriptor as externalEngineDescriptor } from "@koi/engine-external";
 import type { LoadedManifest } from "@koi/manifest";
 import { descriptor as aceDescriptor } from "@koi/middleware-ace";
@@ -39,6 +39,7 @@ import type {
 import {
   createRegistry,
   discoverDescriptors,
+  registerBundledAgents,
   registerCompanionSkills,
   resolveManifest,
 } from "@koi/resolve";
@@ -168,6 +169,8 @@ export interface ResolveAgentOptions {
   readonly packagesDir?: string | undefined;
   /** Optional ForgeStore for companion skill auto-registration. */
   readonly forgeStore?: ForgeStore | undefined;
+  /** Optional bundled agents to register into the ForgeStore. */
+  readonly bundledAgents?: readonly AgentArtifact[] | undefined;
 }
 
 /**
@@ -209,6 +212,24 @@ export async function resolveAgent(
       }
       for (const err of errors) {
         process.stderr.write(`warn: ${err}\n`);
+      }
+    }
+
+    // Register bundled agents if provided
+    if (options.bundledAgents !== undefined && options.bundledAgents.length > 0) {
+      const agentResult = await registerBundledAgents(options.bundledAgents, options.forgeStore);
+      if (agentResult.ok) {
+        const { registered, skipped, errors: agentErrors } = agentResult.value;
+        if (registered > 0 || agentErrors.length > 0) {
+          process.stderr.write(
+            `info: bundled agents: ${String(registered)} registered, ${String(skipped)} skipped` +
+              (agentErrors.length > 0 ? `, ${String(agentErrors.length)} errors` : "") +
+              "\n",
+          );
+        }
+        for (const err of agentErrors) {
+          process.stderr.write(`warn: ${err}\n`);
+        }
       }
     }
   }

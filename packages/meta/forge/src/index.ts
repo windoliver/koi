@@ -278,11 +278,93 @@ export {
 } from "@koi/forge-tools";
 
 // ---------------------------------------------------------------------------
+// @koi/forge-demand (L2) — demand-triggered forge detection
+// ---------------------------------------------------------------------------
+
+export type {
+  ConfidenceWeights,
+  FeedbackLoopHealthHandle,
+  ForgeDemandConfig,
+  ForgeDemandHandle,
+  HeuristicThresholds,
+} from "@koi/forge-demand";
+export {
+  createDefaultForgeDemandConfig,
+  createForgeDemandDetector,
+  DEFAULT_CAPABILITY_GAP_PATTERNS,
+  DEFAULT_FORGE_DEMAND_CONFIG,
+  validateForgeDemandConfig,
+} from "@koi/forge-demand";
+
+// ---------------------------------------------------------------------------
+// @koi/forge-exaptation (L2) — purpose drift detection
+// ---------------------------------------------------------------------------
+
+export type {
+  ExaptationConfig,
+  ExaptationHandle,
+  ExaptationThresholds,
+} from "@koi/forge-exaptation";
+export {
+  computeExaptationConfidence,
+  computeJaccardDistance,
+  createDefaultExaptationConfig,
+  createExaptationDetector,
+  DEFAULT_EXAPTATION_CONFIG,
+  detectPurposeDrift,
+  tokenize,
+  truncateToWords,
+  validateExaptationConfig,
+} from "@koi/forge-exaptation";
+
+// ---------------------------------------------------------------------------
+// @koi/forge-optimizer (L2) — statistical brick optimization
+// ---------------------------------------------------------------------------
+
+export type {
+  BrickOptimizer,
+  OptimizationConfig,
+  OptimizationResult,
+  OptimizerMiddlewareConfig,
+} from "@koi/forge-optimizer";
+export {
+  computeFitnessScore,
+  createBrickOptimizer,
+  createOptimizerMiddleware,
+} from "@koi/forge-optimizer";
+
+// ---------------------------------------------------------------------------
+// @koi/crystallize (L0u) — pattern detection and auto-forge
+// ---------------------------------------------------------------------------
+
+export type {
+  AutoForgeConfig,
+  AutoForgeVerifier,
+  AutoForgeVerifierResult,
+  CrystallizationCandidate,
+  CrystallizeConfig,
+  CrystallizeHandle,
+  ToolNgram,
+  ToolStep,
+} from "@koi/crystallize";
+export {
+  createAutoForgeMiddleware,
+  createCrystallizeMiddleware,
+} from "@koi/crystallize";
+
+// ---------------------------------------------------------------------------
 // L3-only: composition root + runtime
 // ---------------------------------------------------------------------------
 
 export type { ForgeDelegation, ForgeDelegationConfig } from "./create-forge-delegation.js";
 export { createForgeDelegation } from "./create-forge-delegation.js";
+export type {
+  ForgeMiddlewareStackConfig,
+  ForgeMiddlewareStackResult,
+} from "./create-forge-middleware-stack.js";
+export { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
 export { createForgePipeline } from "./create-forge-stack.js";
+export type { CreateFullForgeSystemConfig, FullForgeSystem } from "./create-full-forge-system.js";
+export { createFullForgeSystem } from "./create-full-forge-system.js";
 export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";
 export { createForgeRuntime } from "./forge-runtime.js";

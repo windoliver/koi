@@ -8,14 +8,13 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent, AgentDescriptor, SkillComponent, SubsystemToken } from "@koi/core";
 import { agentId, agentToken, skillToken, toolToken } from "@koi/core";
+import { createForgeComponentProvider, createInMemoryForgeStore } from "@koi/forge-tools";
+import type { SandboxExecutor } from "@koi/forge-types";
 import {
   createTestAgentArtifact,
   createTestSkillArtifact,
   createTestToolArtifact,
 } from "@koi/test-utils";
-import { createForgeComponentProvider } from "../src/forge-component-provider.js";
-import { createInMemoryForgeStore } from "../src/memory-store.js";
-import type { SandboxExecutor } from "../src/types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

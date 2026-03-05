@@ -16,6 +16,7 @@ import type {
   Result,
 } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
+import type { MiddlewareRegistry } from "@koi/starter";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,6 +30,10 @@ export interface AgentInstantiateConfig {
   readonly middleware?: readonly KoiMiddleware[] | undefined;
   /** Optional component providers for the instantiated agent. */
   readonly providers?: readonly ComponentProvider[] | undefined;
+  /** Optional middleware registry — when provided, manifest-declared middleware are resolved and prepended. */
+  readonly middlewareRegistry?: MiddlewareRegistry | undefined;
+  /** Agent depth — passed to middleware resolution for depth-aware middleware. */
+  readonly agentDepth?: number | undefined;
 }
 
 /** Result of agent instantiation — ready to pass to createKoi(). */
@@ -92,6 +97,19 @@ export async function createAgentFromBrick(
 
   const manifest = parseResult.value.manifest;
 
+  // Resolve manifest-declared middleware when a registry is provided.
+  // Uses dynamic import to keep @koi/starter off the critical path for callers that don't need it.
+  // let justified: manifestMiddleware may be populated by async resolution
+  let manifestMiddleware: readonly KoiMiddleware[] = [];
+  if (config.middlewareRegistry !== undefined) {
+    const { resolveManifestMiddleware } = await import("@koi/starter");
+    manifestMiddleware = await resolveManifestMiddleware(
+      manifest,
+      config.middlewareRegistry,
+      config.agentDepth !== undefined ? { agentDepth: config.agentDepth } : undefined,
+    );
+  }
+
   // eslint-disable-next-line no-restricted-syntax -- justified: let for try/catch
   let adapter: EngineAdapter;
   try {
@@ -114,7 +132,7 @@ export async function createAgentFromBrick(
       manifest,
       adapter,
       brickId: brick.id as BrickId,
-      middleware: config.middleware ?? [],
+      middleware: [...manifestMiddleware, ...(config.middleware ?? [])],
       providers: config.providers ?? [],
     },
   };

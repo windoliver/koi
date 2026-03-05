@@ -5,16 +5,20 @@
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor } from "@koi/core";
 import { brickId } from "@koi/core";
+import { checkGovernance } from "@koi/forge-policy";
+import type { ForgeDeps } from "@koi/forge-tools";
+import { createForgeToolTool, createInMemoryForgeStore } from "@koi/forge-tools";
+import type {
+  BrickArtifact,
+  ForgeContext,
+  ForgeError,
+  ForgeInput,
+  ToolArtifact,
+} from "@koi/forge-types";
+import { createDefaultForgeConfig } from "@koi/forge-types";
+import { verify, verifyStatic } from "@koi/forge-verifier";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
-import { createDefaultForgeConfig } from "../config.js";
-import type { ForgeError } from "../errors.js";
-import { checkGovernance } from "../governance.js";
-import { createInMemoryForgeStore } from "../memory-store.js";
-import { createForgeToolTool } from "../tools/forge-tool.js";
-import type { ForgeDeps } from "../tools/shared.js";
-import type { BrickArtifact, ForgeContext, ForgeInput, ToolArtifact } from "../types.js";
-import { verify } from "../verify.js";
-import { verifyStatic } from "../verify-static.js";
+import { createForgePipeline } from "../create-forge-stack.js";
 
 const DEFAULT_VERIFICATION = createDefaultForgeConfig().verification;
 
@@ -41,6 +45,7 @@ function createDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: DEFAULT_CONTEXT,
+    pipeline: createForgePipeline(),
     ...overrides,
   };
 }
@@ -160,7 +165,7 @@ describe("Edge case 5: N+1th forge when maxForgesPerSession = N", () => {
 
 describe("Edge case 6: Scope promotion without HITL when required", () => {
   test("returns requiresHumanApproval", async () => {
-    const { checkScopePromotion } = await import("../governance.js");
+    const { checkScopePromotion } = await import("@koi/forge-policy");
     const config = createDefaultForgeConfig({
       scopePromotion: {
         requireHumanApproval: true,

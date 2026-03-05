@@ -22,14 +22,17 @@ import type {
   SandboxExecutor,
 } from "@koi/core";
 import { agentId, channelToken, isAttachResult, middlewareToken } from "@koi/core";
-import { createDefaultForgeConfig } from "../config.js";
-import { createForgeComponentProvider } from "../forge-component-provider.js";
-import { createInMemoryForgeStore } from "../memory-store.js";
-import { createForgeChannelTool } from "../tools/forge-channel.js";
-import { createForgeMiddlewareTool } from "../tools/forge-middleware.js";
-import { createPromoteForgeTool } from "../tools/promote-forge.js";
-import type { ForgeDeps } from "../tools/shared.js";
-import type { ForgeContext, ForgeResult, PromoteResult } from "../types.js";
+import type { ForgeDeps } from "@koi/forge-tools";
+import {
+  createForgeChannelTool,
+  createForgeComponentProvider,
+  createForgeMiddlewareTool,
+  createInMemoryForgeStore,
+  createPromoteForgeTool,
+} from "@koi/forge-tools";
+import type { ForgeContext, ForgeResult, PromoteResult } from "@koi/forge-types";
+import { createDefaultForgeConfig } from "@koi/forge-types";
+import { createForgePipeline } from "../create-forge-stack.js";
 
 function mockExecutor(): SandboxExecutor {
   return {
@@ -77,7 +80,14 @@ describe("Forge non-tool bricks — integration", () => {
       forgesThisSession: 0,
     };
     const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
+    const deps: ForgeDeps = {
+      store,
+      executor,
+      verifiers: [],
+      config,
+      context,
+      pipeline: createForgePipeline(),
+    };
 
     // Step 1: Forge middleware (starts at "sandbox" trust)
     const forgeMw = createForgeMiddlewareTool(deps);
@@ -125,7 +135,14 @@ describe("Forge non-tool bricks — integration", () => {
       forgesThisSession: 0,
     };
     const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
+    const deps: ForgeDeps = {
+      store,
+      executor,
+      verifiers: [],
+      config,
+      context,
+      pipeline: createForgePipeline(),
+    };
 
     // Step 1: Forge channel
     const forgeCh = createForgeChannelTool(deps);
@@ -171,7 +188,14 @@ describe("Forge non-tool bricks — integration", () => {
       forgesThisSession: 0,
     };
     const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
+    const deps: ForgeDeps = {
+      store,
+      executor,
+      verifiers: [],
+      config,
+      context,
+      pipeline: createForgePipeline(),
+    };
 
     // Forge middleware (starts at "sandbox")
     const forgeMw = createForgeMiddlewareTool(deps);
@@ -210,7 +234,14 @@ describe("Forge non-tool bricks — integration", () => {
       forgesThisSession: 0,
     };
     const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
+    const deps: ForgeDeps = {
+      store,
+      executor,
+      verifiers: [],
+      config,
+      context,
+      pipeline: createForgePipeline(),
+    };
 
     // Forge middleware (starts at "sandbox")
     const forgeMw = createForgeMiddlewareTool(deps);
@@ -250,7 +281,14 @@ describe("Forge non-tool bricks — integration", () => {
       forgesThisSession: 0,
     };
     const config = createDefaultForgeConfig({ defaultScope: "zone" });
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
+    const deps: ForgeDeps = {
+      store,
+      executor,
+      verifiers: [],
+      config,
+      context,
+      pipeline: createForgePipeline(),
+    };
 
     // Forge middleware with zone scope + zone tag
     const forgeMw = createForgeMiddlewareTool(deps);
@@ -301,7 +339,14 @@ describe("Forge non-tool bricks — integration", () => {
       forgesThisSession: 0,
     };
     const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
+    const deps: ForgeDeps = {
+      store,
+      executor,
+      verifiers: [],
+      config,
+      context,
+      pipeline: createForgePipeline(),
+    };
 
     // Forge middleware with an env requirement that won't be satisfied
     const forgeMw = createForgeMiddlewareTool(deps);
@@ -341,7 +386,14 @@ describe("Forge non-tool bricks — integration", () => {
       forgesThisSession: 0,
     };
     const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
+    const deps: ForgeDeps = {
+      store,
+      executor,
+      verifiers: [],
+      config,
+      context,
+      pipeline: createForgePipeline(),
+    };
 
     const forgeMw = createForgeMiddlewareTool(deps);
     const forgeResult = (await forgeMw.execute({

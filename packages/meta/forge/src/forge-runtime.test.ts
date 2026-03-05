@@ -5,16 +5,16 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AgentDescriptor, SigningBackend, SkillComponent, ToolArtifact } from "@koi/core";
 import { brickId } from "@koi/core";
+import { signAttestation } from "@koi/forge-integrity";
+import { createInMemoryForgeStore } from "@koi/forge-tools";
+import type { SandboxExecutor } from "@koi/forge-types";
 import { computeBrickId } from "@koi/hash";
 import {
   createTestAgentArtifact,
   createTestSkillArtifact,
   DEFAULT_PROVENANCE,
 } from "@koi/test-utils";
-import { signAttestation } from "./attestation.js";
 import { createForgeRuntime } from "./forge-runtime.js";
-import { createInMemoryForgeStore } from "./memory-store.js";
-import type { SandboxExecutor } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
