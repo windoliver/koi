@@ -22,14 +22,17 @@ import type {
 } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
-import { createDefaultForgeConfig } from "../config.js";
-import { createForgeComponentProvider } from "../forge-component-provider.js";
-import { createInMemoryForgeStore } from "../memory-store.js";
-import { createForgeSkillTool } from "../tools/forge-skill.js";
-import { createForgeToolTool } from "../tools/forge-tool.js";
-import { createSearchForgeTool } from "../tools/search-forge.js";
-import type { ForgeDeps } from "../tools/shared.js";
-import type { BrickArtifact, ForgeResult, SandboxExecutor } from "../types.js";
+import type { ForgeDeps } from "@koi/forge-tools";
+import {
+  createForgeComponentProvider,
+  createForgeSkillTool,
+  createForgeToolTool,
+  createInMemoryForgeStore,
+  createSearchForgeTool,
+} from "@koi/forge-tools";
+import type { BrickArtifact, ForgeResult, SandboxExecutor } from "@koi/forge-types";
+import { createDefaultForgeConfig } from "@koi/forge-types";
+import { createForgePipeline } from "../create-forge-stack.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -96,6 +99,7 @@ function defaultDeps(
       sessionId: "e2e-session",
       forgesThisSession: 0,
     },
+    pipeline: createForgePipeline(),
   };
 }
 

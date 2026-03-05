@@ -1,4 +1,4 @@
-import { createInMemoryForgeStore } from "../memory-store.js";
+import { createInMemoryForgeStore } from "@koi/forge-tools";
 import { describeForgeStoreContract } from "./store-contract.js";
 
 describeForgeStoreContract("InMemoryForgeStore", () => createInMemoryForgeStore());

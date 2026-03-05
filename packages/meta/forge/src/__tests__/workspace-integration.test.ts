@@ -9,14 +9,14 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DependencyConfig } from "../config.js";
+import type { DependencyConfig } from "@koi/forge-types";
 import {
   cleanupStaleWorkspaces,
   computeDependencyHash,
   createBrickWorkspace,
   resolveWorkspacePath,
   writeBrickEntry,
-} from "../workspace-manager.js";
+} from "@koi/forge-verifier";
 
 const ENABLED = process.env.WORKSPACE_INTEGRATION === "1";
 const describeIntegration = ENABLED ? describe : describe.skip;

@@ -15,6 +15,9 @@ export {
 export { discoverDescriptors } from "./discover.js";
 // errors
 export { aggregateErrors, formatResolutionError } from "./errors.js";
+export type { BundledAgentRegistrationResult } from "./register-bundled-agents.js";
+// bundled agent registration
+export { registerBundledAgents } from "./register-bundled-agents.js";
 export type { CompanionSkillRegistrationResult } from "./register-companion-skills.js";
 // companion skill registration
 export { registerCompanionSkills } from "./register-companion-skills.js";

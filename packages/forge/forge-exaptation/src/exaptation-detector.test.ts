@@ -630,7 +630,7 @@ describe("createExaptationDetector", () => {
 
     it("has correct priority", () => {
       const handle = createExaptationDetector(createConfig());
-      expect(handle.middleware.priority).toBe(460);
+      expect(handle.middleware.priority).toBe(465);
     });
   });
 });

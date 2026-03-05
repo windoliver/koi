@@ -26,24 +26,26 @@ import type { AgentManifest, EngineEvent, EngineOutput, ModelRequest, Result } f
 import { toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
-import { createAnthropicAdapter } from "@koi/model-router";
-import type { DependencyConfig } from "../config.js";
-import { createDefaultForgeConfig } from "../config.js";
-import { auditDependencies, auditTransitiveDependencies } from "../dependency-audit.js";
-import type { ForgeError } from "../errors.js";
-import { createForgeComponentProvider } from "../forge-component-provider.js";
-import { createForgeRuntime } from "../forge-runtime.js";
-import { createInMemoryForgeStore } from "../memory-store.js";
-import { createForgeToolTool } from "../tools/forge-tool.js";
-import type { ForgeDeps } from "../tools/shared.js";
-import type { ForgeResult, SandboxExecutor } from "../types.js";
-import { verify } from "../verify.js";
+import type { ForgeDeps } from "@koi/forge-tools";
 import {
+  createForgeComponentProvider,
+  createForgeToolTool,
+  createInMemoryForgeStore,
+} from "@koi/forge-tools";
+import type { DependencyConfig, ForgeError, ForgeResult, SandboxExecutor } from "@koi/forge-types";
+import { createDefaultForgeConfig } from "@koi/forge-types";
+import {
+  auditDependencies,
+  auditTransitiveDependencies,
   computeDependencyHash,
   createBrickWorkspace,
   resolveWorkspacePath,
-} from "../workspace-manager.js";
-import { scanWorkspaceCode } from "../workspace-scan.js";
+  scanWorkspaceCode,
+  verify,
+} from "@koi/forge-verifier";
+import { createAnthropicAdapter } from "@koi/model-router";
+import { createForgePipeline } from "../create-forge-stack.js";
+import { createForgeRuntime } from "../forge-runtime.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -118,7 +120,7 @@ function defaultDeps(
   store: ReturnType<typeof createInMemoryForgeStore>,
   executor: SandboxExecutor,
   sessionForges = 0,
-  configOverrides?: Partial<import("../config.js").ForgeConfig>,
+  configOverrides?: Partial<import("@koi/forge-types").ForgeConfig>,
 ): ForgeDeps {
   return {
     store,
@@ -131,6 +133,7 @@ function defaultDeps(
       sessionId: "dep-e2e-session",
       forgesThisSession: sessionForges,
     },
+    pipeline: createForgePipeline(),
   };
 }
 

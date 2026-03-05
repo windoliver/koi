@@ -4,6 +4,7 @@
 
 import { describe, expect, it, mock } from "bun:test";
 import type { BrickArtifact, ComponentProvider, EngineAdapter, KoiMiddleware } from "@koi/core";
+import type { MiddlewareRegistry } from "@koi/starter";
 import { createTestAgentArtifact, createTestToolArtifact } from "@koi/test-utils";
 
 import { createAgentFromBrick } from "./agent-instantiate.js";
@@ -13,6 +14,7 @@ import { createAgentFromBrick } from "./agent-instantiate.js";
 // ---------------------------------------------------------------------------
 
 const VALID_YAML = `name: "test-agent"\nversion: "0.0.1"\nmodel: "mock-model"`;
+const YAML_WITH_MIDDLEWARE = `name: "test-agent"\nversion: "0.0.1"\nmodel: "mock-model"\nmiddleware:\n  - name: "context-arena"`;
 const INVALID_YAML = "not: valid: yaml: {{";
 
 function mockAdapter(): EngineAdapter {
@@ -107,6 +109,64 @@ describe("createAgentFromBrick", () => {
     if (result.ok) {
       expect(result.value.middleware).toHaveLength(1);
       expect(result.value.providers).toHaveLength(1);
+    }
+  });
+
+  it("resolves manifest middleware when registry provided", async () => {
+    const brick = createTestAgentArtifact({ manifestYaml: YAML_WITH_MIDDLEWARE });
+    const resolvedMw = { name: "context-arena", priority: 500 } as unknown as KoiMiddleware;
+    const registry: MiddlewareRegistry = {
+      get: (name: string) => (name === "context-arena" ? async () => resolvedMw : undefined),
+      names: () => new Set(["context-arena"]),
+    };
+
+    const result = await createAgentFromBrick(brick, {
+      adapterFactory: async () => mockAdapter(),
+      middlewareRegistry: registry,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.middleware).toHaveLength(1);
+      expect(result.value.middleware[0]).toBe(resolvedMw);
+    }
+  });
+
+  it("merges manifest + explicit middleware", async () => {
+    const brick = createTestAgentArtifact({ manifestYaml: YAML_WITH_MIDDLEWARE });
+    const manifestMw = { name: "context-arena", priority: 500 } as unknown as KoiMiddleware;
+    const explicitMw = { name: "test-mw", priority: 100 } as unknown as KoiMiddleware;
+    const registry: MiddlewareRegistry = {
+      get: (name: string) => (name === "context-arena" ? async () => manifestMw : undefined),
+      names: () => new Set(["context-arena"]),
+    };
+
+    const result = await createAgentFromBrick(brick, {
+      adapterFactory: async () => mockAdapter(),
+      middlewareRegistry: registry,
+      middleware: [explicitMw],
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Manifest middleware comes first, then explicit
+      expect(result.value.middleware).toHaveLength(2);
+      expect(result.value.middleware[0]).toBe(manifestMw);
+      expect(result.value.middleware[1]).toBe(explicitMw);
+    }
+  });
+
+  it("works without registry (backward compatible)", async () => {
+    const brick = createTestAgentArtifact({ manifestYaml: YAML_WITH_MIDDLEWARE });
+
+    const result = await createAgentFromBrick(brick, {
+      adapterFactory: async () => mockAdapter(),
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // No registry → no manifest middleware resolved
+      expect(result.value.middleware).toEqual([]);
     }
   });
 });
