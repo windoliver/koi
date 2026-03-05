@@ -1,6 +1,6 @@
 {
   "name": "@koi/tool-stack",
-  "description": "Tool execution lifecycle stack composing 7 middleware for auditing, limits, recovery, dedup, sandbox, selection, and failover",
+  "description": "Tool lifecycle stack composing 7 middleware for audit, limits, recovery, dedup, and sandbox",
   "version": "0.0.0",
   "private": true,
   "type": "module",
