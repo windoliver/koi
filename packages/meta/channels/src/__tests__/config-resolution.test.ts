@@ -27,9 +27,10 @@ describe("resolveChannelStackConfig", () => {
     expect(result.channels[0]?.name).toBe("cli");
   });
 
-  test("full preset includes all 14 adapters", () => {
+  test("full preset includes all 13 standalone adapters", () => {
     const result = resolveChannelStackConfig({ preset: "full" });
-    expect(result.channels).toHaveLength(14);
+    // 14 adapters minus canvas-fallback (wrapper-only, not standalone)
+    expect(result.channels).toHaveLength(13);
   });
 
   test("applies default runtime opts", () => {

@@ -1,8 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/channels API surface . has stable type surface 1`] = `
-"import { ChannelAdapter, ComponentProvider, JsonObject, ChannelConfig } from '@koi/core';
-import { HealthStatus } from '@koi/channel-base';
+"import { HealthStatus } from '@koi/channel-base';
+import { ChannelAdapter, ComponentProvider, JsonObject, ChannelConfig } from '@koi/core';
 
 /**
  * Core types for the @koi/channels L3 meta-package.

@@ -1,6 +1,6 @@
 # @koi/channels — Channel Adapter Registry & Stack
 
-Manifest-driven channel resolution for Koi agents. One call wires up any combination of the 14 built-in channel adapters (Slack, Discord, Telegram, Teams, Email, Matrix, Signal, WhatsApp, Voice, CLI, Mobile, Canvas-Fallback, Chat-SDK, AG-UI) with unified lifecycle, health checks, and ECS integration.
+Manifest-driven channel resolution for Koi agents. One call wires up any combination of the built-in channel adapters (Slack, Discord, Telegram, Teams, Email, Matrix, Signal, WhatsApp, Voice, CLI, Mobile, Canvas-Fallback, Chat-SDK, AG-UI) with unified lifecycle, health checks, and ECS integration.
 
 ---
 
@@ -144,7 +144,7 @@ for (const [name, status] of health) {
 |--------|----------|----------|
 | `minimal` | cli | Local dev, testing |
 | `standard` | cli, slack, discord, telegram | Typical production |
-| `full` | All 14 adapters | Maximum platform reach |
+| `full` | All 13 standalone adapters | Maximum platform reach |
 
 ---
 
