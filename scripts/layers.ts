@@ -73,8 +73,10 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/node-stack",
   "@koi/quality-gate",
   "@koi/retry-stack",
+  "@koi/rlm-stack",
   "@koi/sandbox-cloud",
   "@koi/sandbox-stack",
   "@koi/starter",
+  "@koi/tool-stack",
   "@koi/workspace-stack",
 ]);
