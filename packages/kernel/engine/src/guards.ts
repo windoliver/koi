@@ -3,7 +3,8 @@
  * loop detection, and spawn governance.
  *
  * Each guard is created by a factory function that closes over mutable state.
- * State is scoped to the middleware instance lifetime (one per session).
+ * State is reset per session via onSessionStart hooks, so guards are safe
+ * to reuse across multiple run() calls on the same KoiRuntime.
  */
 
 import type {
@@ -66,10 +67,11 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
     ...config,
   };
 
-  // let justified: mutable counters scoped to this middleware instance lifetime
+  // let justified: mutable counters reset per session via onSessionStart
   let turns = 0;
   let totalTokens = 0;
-  const startedAt = Date.now();
+  // let justified: mutable timestamp reset per session via onSessionStart
+  let startedAt = Date.now();
 
   function checkLimits(): void {
     if (turns >= limits.maxTurns) {
@@ -112,6 +114,12 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
     name: "koi:iteration-guard",
     describeCapabilities: () => undefined,
     priority: 0,
+
+    onSessionStart: async () => {
+      turns = 0;
+      totalTokens = 0;
+      startedAt = Date.now();
+    },
 
     wrapModelCall: async (_ctx, request, next) => {
       checkLimits();
@@ -380,7 +388,7 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
 
   // Circular buffer for O(1) insert + evict
   const ringBuffer = new Array<number>(detection.windowSize).fill(0);
-  // let justified: mutable write cursor and fill count for circular buffer
+  // let justified: mutable write cursor and fill count for circular buffer, reset per session
   let cursor = 0;
   let filled = 0;
 
@@ -400,6 +408,17 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
   /** Queued warnings to inject into the next model call. */
   // let justified: mutable binding swapped on each injection cycle
   let pendingWarnings: readonly LoopWarningInfo[] = [];
+
+  /** Reset all mutable state for a new session. */
+  function resetState(): void {
+    ringBuffer.fill(0);
+    cursor = 0;
+    filled = 0;
+    hashCounts.clear();
+    firedWarnings.clear();
+    noProgressState.clear();
+    pendingWarnings = [];
+  }
 
   // Both conditions required: injectWarning must not be explicitly disabled,
   // AND warningThreshold must be set (otherwise no warnings are ever generated).
@@ -441,6 +460,10 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
     name: "koi:loop-detector",
     describeCapabilities: () => undefined,
     priority: 1,
+
+    onSessionStart: async () => {
+      resetState();
+    },
 
     // Only attach model hooks when injection is enabled — avoids per-call
     // overhead on the hot path when no warnings can ever be queued.
@@ -624,6 +647,11 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
     name: "koi:spawn-guard",
     describeCapabilities: () => undefined,
     priority: 2,
+
+    onSessionStart: async () => {
+      directChildren = 0;
+      firedFanOutWarning = false;
+    },
 
     wrapToolCall: async (_ctx, request, next) => {
       // 0. Check depth-based tool restrictions (applies to ALL tools)

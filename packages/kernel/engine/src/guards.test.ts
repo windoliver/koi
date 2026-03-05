@@ -8,6 +8,7 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
+  SessionContext,
   SubsystemToken,
   ToolRequest,
   ToolResponse,
@@ -57,6 +58,10 @@ function mockToolResponse(output: unknown = 42): ToolResponse {
 
 type ModelNext = (req: ModelRequest) => Promise<ModelResponse>;
 type ToolNext = (req: ToolRequest) => Promise<ToolResponse>;
+
+function mockSessionContext(): SessionContext {
+  return { agentId: "a1", sessionId: sessionId("s1"), runId: runId("r1"), metadata: {} };
+}
 
 /** Extract wrapModelCall from a guard, asserting it exists. */
 function getModelWrap(
@@ -2159,5 +2164,148 @@ describe("composed guards interaction", () => {
         expect(e.message).toContain("Loop detected");
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onSessionStart — guard state reset across sessions
+// ---------------------------------------------------------------------------
+
+describe("onSessionStart resets guard state", () => {
+  test("iteration guard resets turns and tokens across sessions", async () => {
+    const guard = createIterationGuard({ maxTurns: 2, maxTokens: 200 });
+    const wrap = getModelWrap(guard);
+    const next: ModelNext = mock(() =>
+      Promise.resolve(mockModelResponse({ inputTokens: 30, outputTokens: 20 })),
+    );
+    const ctx = mockTurnContext();
+
+    // Session 1: consume 2 turns (turns counter = 2 after trackUsage)
+    await wrap(ctx, mockModelRequest(), next);
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Without reset, next call would throw (turns=2 >= maxTurns=2)
+    // Reset via onSessionStart
+    await guard.onSessionStart?.(mockSessionContext());
+
+    // Session 2: should start fresh — 2 more turns succeed
+    await wrap(ctx, mockModelRequest(), next);
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(4);
+
+    // 3rd call in session 2 hits the limit (turns=2 >= maxTurns=2)
+    try {
+      await wrap(ctx, mockModelRequest(), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("TIMEOUT");
+        expect(e.message).toContain("Max turns exceeded");
+      }
+    }
+  });
+
+  test("iteration guard resets duration timer across sessions", async () => {
+    const guard = createIterationGuard({ maxDurationMs: 50 });
+    const wrap = getModelWrap(guard);
+    const next: ModelNext = mock(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return mockModelResponse();
+    });
+    const ctx = mockTurnContext();
+
+    // Session 1: one slow call (30ms elapsed)
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Wait to exceed the 50ms budget from original startedAt
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Reset via onSessionStart — refreshes startedAt
+    await guard.onSessionStart?.(mockSessionContext());
+
+    // Session 2: should succeed (fresh timer)
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  test("loop detector resets state across sessions", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 3,
+      noProgressEnabled: false,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Session 1: 2 identical calls (below threshold of 3)
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+
+    // Reset via onSessionStart
+    await detector.onSessionStart?.(mockSessionContext());
+
+    // Session 2: 2 more identical calls — without reset, this would be 4 (over threshold)
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    expect(next).toHaveBeenCalledTimes(4);
+
+    // 3rd call in session 2 hits the threshold
+    await expect(wrap(ctx, mockToolRequest("calc", { a: 1 }), next)).rejects.toBeInstanceOf(
+      KoiRuntimeError,
+    );
+  });
+
+  test("loop detector resets warnings across sessions", async () => {
+    const warnings: unknown[] = [];
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+      noProgressEnabled: false,
+      onWarning: (info) => warnings.push(info),
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Session 1: trigger warning
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    expect(warnings).toHaveLength(1);
+
+    // Reset
+    await detector.onSessionStart?.(mockSessionContext());
+
+    // Session 2: same hash should fire warning again (firedWarnings was cleared)
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    expect(warnings).toHaveLength(2);
+  });
+
+  test("spawn guard resets fan-out warning across sessions", async () => {
+    const warnings: unknown[] = [];
+    const guard = createSpawnGuard({
+      policy: {
+        maxFanOut: 5,
+        fanOutWarningAt: 1,
+        onWarning: (info) => warnings.push(info),
+      },
+    });
+    const wrap = getToolWrap(guard);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Session 1: trigger fan-out warning (use default spawn tool id "forge_agent")
+    await wrap(ctx, mockToolRequest("forge_agent"), next);
+    expect(warnings).toHaveLength(1);
+
+    // Reset
+    await guard.onSessionStart?.(mockSessionContext());
+
+    // Session 2: warning should fire again
+    await wrap(ctx, mockToolRequest("forge_agent"), next);
+    expect(warnings).toHaveLength(2);
   });
 });
