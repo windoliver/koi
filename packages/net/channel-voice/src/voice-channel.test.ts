@@ -403,3 +403,171 @@ describe("createVoiceChannel — onMessage", () => {
     await adapter.disconnect();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Barge-in (interruption handling)
+// ---------------------------------------------------------------------------
+
+describe("createVoiceChannel — barge-in", () => {
+  test("transcript while speaking calls pipeline.interrupt()", async () => {
+    const { adapter, pipeline } = makeAdapter();
+    await adapter.connect();
+    await adapter.createSession();
+
+    // Register onMessage handler to activate the transcript listener
+    adapter.onMessage(async () => {});
+
+    // Trigger speak to set isSpeaking = true
+    await adapter.send({ content: [{ kind: "text", text: "Agent talking" }] });
+    expect(pipeline.isSpeaking()).toBe(true);
+
+    // User barges in
+    pipeline.emitTranscript(createMockTranscript("User interrupts"));
+    expect(pipeline.mocks.interrupt).toHaveBeenCalledTimes(1);
+
+    await adapter.disconnect();
+  });
+
+  test("transcript while NOT speaking does not call interrupt", async () => {
+    const { adapter, pipeline } = makeAdapter();
+    await adapter.connect();
+    await adapter.createSession();
+
+    adapter.onMessage(async () => {});
+
+    // Pipeline is not speaking — just emit a transcript
+    pipeline.emitTranscript(createMockTranscript("Normal speech"));
+    expect(pipeline.mocks.interrupt).not.toHaveBeenCalled();
+
+    await adapter.disconnect();
+  });
+
+  test("non-final transcript while speaking still triggers interrupt", async () => {
+    const { adapter, pipeline } = makeAdapter();
+    await adapter.connect();
+    await adapter.createSession();
+
+    adapter.onMessage(async () => {});
+
+    await adapter.send({ content: [{ kind: "text", text: "Agent talking" }] });
+
+    pipeline.emitTranscript({
+      text: "partial...",
+      isFinal: false,
+      participantId: "user-1",
+    });
+
+    // Interrupt should fire even for non-final (barge-in on any speech)
+    expect(pipeline.mocks.interrupt).toHaveBeenCalledTimes(1);
+
+    await adapter.disconnect();
+  });
+
+  test("interrupt aborts pending speak retries (AbortError swallowed)", async () => {
+    const { adapter, pipeline } = makeAdapter();
+    await adapter.connect();
+    await adapter.createSession();
+
+    adapter.onMessage(async () => {});
+
+    // First call succeeds (sets isSpeaking=true), then make speak hang
+    // let requires justification: mutable call count for mock behavior switching
+    let callCount = 0;
+    // let requires justification: mutable resolve reference for deferred promise
+    let resolveSpeak: (() => void) | undefined;
+    pipeline.mocks.speak.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        // First call: succeed normally but leave speaking=true (via the side-effect in previous default)
+        return;
+      }
+      // Subsequent calls: hang until resolved
+      return new Promise<void>((resolve) => {
+        resolveSpeak = resolve;
+      });
+    });
+
+    // First speak — succeeds, sets up the adapter's abort controller
+    await adapter.send({ content: [{ kind: "text", text: "First response" }] });
+
+    // Second speak — will hang
+    const sendPromise = adapter.send({ content: [{ kind: "text", text: "Long response" }] });
+
+    // Allow speak to start
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Resolve the hanging speak so send can complete
+    resolveSpeak?.();
+
+    // send should complete without throwing
+    await sendPromise;
+
+    await adapter.disconnect();
+  });
+
+  test("second speak replaces abort controller from first", async () => {
+    const { adapter, pipeline } = makeAdapter();
+    await adapter.connect();
+    await adapter.createSession();
+
+    adapter.onMessage(async () => {});
+
+    // First send
+    await adapter.send({ content: [{ kind: "text", text: "First" }] });
+    // Second send (replaces controller)
+    await adapter.send({ content: [{ kind: "text", text: "Second" }] });
+
+    // Both should have called speak
+    expect(pipeline.mocks.speak).toHaveBeenCalledTimes(2);
+
+    await adapter.disconnect();
+  });
+
+  test("interrupt during sendStatus processing aborts filler speech", async () => {
+    const { adapter, pipeline } = makeAdapter();
+    await adapter.connect();
+    await adapter.createSession();
+
+    adapter.onMessage(async () => {});
+
+    // First, trigger a speak to set isSpeaking = true (using default mock)
+    await adapter.send({ content: [{ kind: "text", text: "Agent talking" }] });
+    expect(pipeline.isSpeaking()).toBe(true);
+
+    // Now barge in during what would be a sendStatus
+    pipeline.emitTranscript(createMockTranscript("User interrupts filler"));
+    expect(pipeline.mocks.interrupt).toHaveBeenCalledTimes(1);
+    expect(pipeline.isSpeaking()).toBe(false);
+
+    await adapter.disconnect();
+  });
+
+  test("disconnect aborts in-flight speak", async () => {
+    const { adapter, pipeline } = makeAdapter();
+    await adapter.connect();
+    await adapter.createSession();
+
+    adapter.onMessage(async () => {});
+
+    // Make speak hang
+    // let requires justification: mutable resolve reference for deferred promise
+    let resolveSpeak: (() => void) | undefined;
+    pipeline.mocks.speak.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSpeak = resolve;
+        }),
+    );
+
+    const sendPromise = adapter.send({ content: [{ kind: "text", text: "Will be cut off" }] });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Disconnect aborts the controller — send should complete without throwing
+    const disconnectPromise = adapter.disconnect();
+
+    resolveSpeak?.();
+    await sendPromise;
+    await disconnectPromise;
+  });
+});

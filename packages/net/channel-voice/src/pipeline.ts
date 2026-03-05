@@ -37,6 +37,10 @@ export interface VoicePipeline {
   readonly onTranscript: (handler: (event: TranscriptEvent) => void) => () => void;
   /** Whether the pipeline is currently running in a room. */
   readonly isRunning: () => boolean;
+  /** Abort current TTS playback. No-op if not speaking. Sync for minimal latency. */
+  readonly interrupt: () => void;
+  /** Whether TTS is currently playing audio. */
+  readonly isSpeaking: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +77,36 @@ function buildTtsOptions(config: VoiceChannelConfig): Record<string, unknown> {
   return opts;
 }
 
+// ---------------------------------------------------------------------------
+// Type guards for dynamic LiveKit return values
+// ---------------------------------------------------------------------------
+
+interface SpeechHandle {
+  readonly interrupt: () => void;
+}
+
+interface Thenable {
+  readonly then: (onFulfill: () => void, onReject: () => void) => unknown;
+}
+
+function isSpeechHandle(value: unknown): value is SpeechHandle {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "interrupt" in value &&
+    typeof (value as Record<string, unknown>).interrupt === "function"
+  );
+}
+
+function isThenable(value: unknown): value is Thenable {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "then" in value &&
+    typeof (value as Record<string, unknown>).then === "function"
+  );
+}
+
 /**
  * Creates a VoicePipeline backed by LiveKit Agents (v1.0).
  *
@@ -83,10 +117,20 @@ function buildTtsOptions(config: VoiceChannelConfig): Record<string, unknown> {
 export function createLiveKitPipeline(config: VoiceChannelConfig): VoicePipeline {
   // let requires justification: mutable running state managed by start/stop lifecycle
   let running = false;
+  // let requires justification: mutable speaking state managed by speak/interrupt/stop
+  let speaking = false;
   // let requires justification: transcript handler list updated by onTranscript and its unsubscribe
   let transcriptHandlers: readonly ((event: TranscriptEvent) => void)[] = [];
   // let requires justification: AgentSession reference created on start, destroyed on stop
-  let session: { say: (text: string) => unknown; close: () => Promise<void> } | undefined;
+  let session:
+    | {
+        readonly say: (text: string) => unknown;
+        readonly close: () => Promise<void>;
+        readonly interrupt: () => void;
+      }
+    | undefined;
+  // let requires justification: holds current SpeechHandle for interrupt, replaced per speak call
+  let currentSpeechHandle: { readonly interrupt: () => void } | undefined;
 
   const createSttPlugin = async (): Promise<unknown> => {
     const opts = buildSttOptions(config);
@@ -159,6 +203,7 @@ export function createLiveKitPipeline(config: VoiceChannelConfig): VoicePipeline
     session = {
       say: (text: string) => agentSession.say(text),
       close: () => agentSession.close(),
+      interrupt: () => agentSession.interrupt(),
     };
     running = true;
   };
@@ -168,6 +213,8 @@ export function createLiveKitPipeline(config: VoiceChannelConfig): VoicePipeline
       return; // no-op when not running
     }
     running = false;
+    speaking = false;
+    currentSpeechHandle = undefined;
     if (session !== undefined) {
       await session.close();
       session = undefined;
@@ -178,8 +225,42 @@ export function createLiveKitPipeline(config: VoiceChannelConfig): VoicePipeline
     if (session === undefined) {
       throw new Error("Pipeline not started — call start() before speak()");
     }
-    session.say(text);
+    speaking = true;
+    const handle = session.say(text);
+    // LiveKit's say() returns a SpeechHandle with interrupt()
+    if (isSpeechHandle(handle)) {
+      currentSpeechHandle = handle;
+    }
+    // Capture reference for completion callback identity check
+    const capturedHandle = currentSpeechHandle;
+    // Reset speaking when playback completes naturally (handle may be thenable)
+    if (isThenable(handle)) {
+      const onComplete = (): void => {
+        // Only clear if this handle is still current (not replaced by new speak)
+        if (currentSpeechHandle === capturedHandle) {
+          speaking = false;
+          currentSpeechHandle = undefined;
+        }
+      };
+      handle.then(onComplete, onComplete);
+    }
   };
+
+  const interrupt = (): void => {
+    if (!speaking) {
+      return; // no-op when not speaking
+    }
+    speaking = false;
+    if (currentSpeechHandle !== undefined) {
+      currentSpeechHandle.interrupt();
+      currentSpeechHandle = undefined;
+    }
+    if (session !== undefined) {
+      session.interrupt();
+    }
+  };
+
+  const isSpeaking = (): boolean => speaking;
 
   const onTranscript = (handler: (event: TranscriptEvent) => void): (() => void) => {
     transcriptHandlers = [...transcriptHandlers, handler];
@@ -196,5 +277,5 @@ export function createLiveKitPipeline(config: VoiceChannelConfig): VoicePipeline
 
   const isRunning = (): boolean => running;
 
-  return { start, stop, speak, onTranscript, isRunning };
+  return { start, stop, speak, onTranscript, isRunning, interrupt, isSpeaking };
 }

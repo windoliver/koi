@@ -22,6 +22,8 @@ function createMockPipeline(overrides?: { readonly speakError?: Error }): VoiceP
     }),
     isRunning: () => true,
     onTranscript: () => () => {},
+    interrupt: mock(() => {}),
+    isSpeaking: () => false,
   };
 }
 

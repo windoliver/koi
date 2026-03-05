@@ -145,6 +145,52 @@ describe("voice-integration", () => {
     await adapter.disconnect();
   });
 
+  test("barge-in: speak interrupted by transcript, new message dispatched", async () => {
+    const configResult = validateVoiceConfig(RAW_CONFIG);
+    if (!configResult.ok) return;
+
+    const { pipeline, roomService, tokenGen } = makeIntegrationSetup();
+    const adapter = createVoiceChannel(configResult.value, {
+      pipeline,
+      roomService,
+      tokenGenerator: tokenGen,
+    });
+
+    await adapter.connect();
+    await adapter.createSession();
+
+    const received: unknown[] = [];
+    adapter.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    // Agent starts speaking
+    await adapter.send({ content: [{ kind: "text", text: "Agent response" }] });
+    expect(pipeline.isSpeaking()).toBe(true);
+    expect(pipeline.mocks.speak).toHaveBeenCalledWith("Agent response");
+
+    // User barges in
+    pipeline.emitTranscript(createMockTranscript("User interrupts"));
+
+    // interrupt should have been called
+    expect(pipeline.mocks.interrupt).toHaveBeenCalledTimes(1);
+    expect(pipeline.isSpeaking()).toBe(false);
+
+    // New inbound message should be dispatched
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(received).toHaveLength(1);
+    const msg = received[0] as {
+      readonly content: readonly { readonly kind: string; readonly text: string }[];
+    };
+    expect(msg.content[0]?.text).toBe("User interrupts");
+
+    // Agent can respond cleanly after barge-in
+    await adapter.send({ content: [{ kind: "text", text: "New agent response" }] });
+    expect(pipeline.mocks.speak).toHaveBeenCalledWith("New agent response");
+
+    await adapter.disconnect();
+  });
+
   test("error recovery: STT failure surfaces in handler error", async () => {
     const configResult = validateVoiceConfig(RAW_CONFIG);
     if (!configResult.ok) return;
