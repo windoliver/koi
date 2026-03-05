@@ -1,6 +1,6 @@
 {
   "name": "@koi/sandbox-stack",
-  "description": "One-call factory for sandboxed code execution with timeout guards and pluggable backend adapters",
+  "description": "Unified L3 bundle for sandboxed code execution — cloud dispatch, stack composition, timeout guards, and middleware",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,8 +11,16 @@
     }
   },
   "dependencies": {
+    "@koi/code-executor": "workspace:*",
     "@koi/core": "workspace:*",
-    "@koi/sandbox-cloud-base": "workspace:*"
+    "@koi/middleware-sandbox": "workspace:*",
+    "@koi/sandbox-cloud-base": "workspace:*",
+    "@koi/sandbox-cloudflare": "workspace:*",
+    "@koi/sandbox-daytona": "workspace:*",
+    "@koi/sandbox-docker": "workspace:*",
+    "@koi/sandbox-e2b": "workspace:*",
+    "@koi/sandbox-executor": "workspace:*",
+    "@koi/sandbox-vercel": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

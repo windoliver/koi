@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { KoiError, Result, SandboxAdapter } from "@koi/core";
-import type { CloudSandboxConfig } from "./types.js";
+import type { CloudSandboxConfig } from "./cloud-types.js";
 
 // Mock all provider factories before importing the module under test
 const mockCloudflareResult: Result<SandboxAdapter, KoiError> = {
@@ -10,6 +10,10 @@ const mockCloudflareResult: Result<SandboxAdapter, KoiError> = {
 const mockDaytonaResult: Result<SandboxAdapter, KoiError> = {
   ok: true,
   value: { name: "daytona" } as unknown as SandboxAdapter,
+};
+const mockDockerResult: Result<SandboxAdapter, KoiError> = {
+  ok: true,
+  value: { name: "docker" } as unknown as SandboxAdapter,
 };
 const mockE2bResult: Result<SandboxAdapter, KoiError> = {
   ok: true,
@@ -22,6 +26,7 @@ const mockVercelResult: Result<SandboxAdapter, KoiError> = {
 
 const mockCreateCloudflare = mock(() => mockCloudflareResult);
 const mockCreateDaytona = mock(() => mockDaytonaResult);
+const mockCreateDocker = mock(() => mockDockerResult);
 const mockCreateE2b = mock(() => mockE2bResult);
 const mockCreateVercel = mock(() => mockVercelResult);
 
@@ -30,6 +35,9 @@ mock.module("@koi/sandbox-cloudflare", () => ({
 }));
 mock.module("@koi/sandbox-daytona", () => ({
   createDaytonaAdapter: mockCreateDaytona,
+}));
+mock.module("@koi/sandbox-docker", () => ({
+  createDockerAdapter: mockCreateDocker,
 }));
 mock.module("@koi/sandbox-e2b", () => ({
   createE2bAdapter: mockCreateE2b,
@@ -54,6 +62,13 @@ describe("createCloudSandbox", () => {
     const result = createCloudSandbox(config);
     expect(result).toBe(mockDaytonaResult);
     expect(mockCreateDaytona).toHaveBeenCalledWith(config);
+  });
+
+  test("dispatches to createDockerAdapter for provider docker", () => {
+    const config = { provider: "docker" } as unknown as CloudSandboxConfig;
+    const result = createCloudSandbox(config);
+    expect(result).toBe(mockDockerResult);
+    expect(mockCreateDocker).toHaveBeenCalledWith(config);
   });
 
   test("dispatches to createE2bAdapter for provider e2b", () => {
