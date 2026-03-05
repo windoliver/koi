@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { MemoryComponent, MemoryResult } from "@koi/core";
 import type { InboundMessage } from "@koi/core/message";
-import { createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
+import {
+  createMockSessionContext,
+  createMockTurnContext,
+  createSpyModelHandler,
+} from "@koi/test-utils";
 import { createHotMemoryMiddleware } from "./hot-memory-middleware.js";
 
 function userMsg(text: string): InboundMessage {
@@ -202,6 +206,67 @@ describe("createHotMemoryMiddleware", () => {
 
     const fragment = mw.describeCapabilities?.(ctx);
     expect(fragment).toBeUndefined();
+  });
+
+  test("new session fetches fresh memories after previous session populated cache", async () => {
+    let recallCount = 0;
+    const memory: MemoryComponent = {
+      recall: async () => {
+        recallCount++;
+        return recallCount === 1
+          ? [createMemoryResult("session-1 fact")]
+          : [createMemoryResult("session-2 fact")];
+      },
+      store: async () => {},
+    };
+
+    const mw = createHotMemoryMiddleware({ memory });
+    const spy = createSpyModelHandler();
+
+    // Session 1: initial fetch
+    await mw.wrapModelCall?.(ctx, { messages: [userMsg("hello")] }, spy.handler);
+    expect(recallCount).toBe(1);
+
+    // Start new session — should reset
+    mw.onSessionStart?.(createMockSessionContext());
+
+    // Session 2: should fetch fresh memories
+    await mw.wrapModelCall?.(ctx, { messages: [userMsg("hello again")] }, spy.handler);
+    expect(recallCount).toBe(2);
+
+    const hotMsg = spy.calls[1]?.messages?.[0];
+    expect(hotMsg?.senderId).toBe("system:hot-memory");
+    if (hotMsg?.content[0]?.kind === "text") {
+      expect(hotMsg.content[0].text).toContain("session-2 fact");
+    }
+  });
+
+  test("turnCount resets across sessions", async () => {
+    let recallCount = 0;
+    const memory: MemoryComponent = {
+      recall: async () => {
+        recallCount++;
+        return [createMemoryResult("fact")];
+      },
+      store: async () => {},
+    };
+
+    const mw = createHotMemoryMiddleware({ memory, refreshInterval: 2 });
+    const spy = createSpyModelHandler();
+
+    // Session 1: 3 turns (initial fetch + refresh at turn 2)
+    await mw.wrapModelCall?.(ctx, { messages: [userMsg("t0")] }, spy.handler);
+    await mw.wrapModelCall?.(ctx, { messages: [userMsg("t1")] }, spy.handler);
+    await mw.wrapModelCall?.(ctx, { messages: [userMsg("t2")] }, spy.handler);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const afterSession1 = recallCount;
+
+    // Start new session — turnCount resets to 0
+    mw.onSessionStart?.(createMockSessionContext());
+
+    // Session 2: first call should re-initialize (turnCount is 0 again)
+    await mw.wrapModelCall?.(ctx, { messages: [userMsg("new t0")] }, spy.handler);
+    expect(recallCount).toBeGreaterThan(afterSession1);
   });
 
   test("refreshInterval 0 means session start only", async () => {

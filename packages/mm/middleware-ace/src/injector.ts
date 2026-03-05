@@ -3,7 +3,8 @@
  */
 
 import { estimateTokens } from "@koi/token-estimator";
-import type { Playbook } from "./types.js";
+import { estimateStructuredTokens } from "./playbook.js";
+import type { Playbook, StructuredPlaybook } from "./types.js";
 
 export interface SelectOptions {
   readonly maxTokens: number;
@@ -29,6 +30,29 @@ export function selectPlaybooks(
     if (tokensUsed + tokens > options.maxTokens) continue;
     tokensUsed += tokens;
     selected.push(pb);
+  }
+
+  return selected;
+}
+
+/**
+ * Select structured playbooks within a remaining token budget.
+ * Greedy selection: include playbooks in order while budget allows.
+ */
+export function selectStructuredPlaybooks(
+  available: readonly StructuredPlaybook[],
+  remainingTokens: number,
+): readonly StructuredPlaybook[] {
+  if (available.length === 0 || remainingTokens <= 0) return [];
+
+  const selected: StructuredPlaybook[] = [];
+  let tokensUsed = 0; // let: accumulator for token budget
+
+  for (const sp of available) {
+    const tokens = estimateStructuredTokens(sp);
+    if (tokensUsed + tokens > remainingTokens) continue;
+    tokensUsed += tokens;
+    selected.push(sp);
   }
 
   return selected;

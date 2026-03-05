@@ -224,6 +224,7 @@ export function createCompactorMiddleware(config: CompactorConfig): CompactorMid
     ...(store !== undefined
       ? {
           async onSessionStart(ctx: SessionContext): Promise<void> {
+            state = { ...state, cachedRestore: undefined };
             try {
               const result = await store.load(ctx.sessionId);
               if (result !== undefined && result.strategy !== "noop") {

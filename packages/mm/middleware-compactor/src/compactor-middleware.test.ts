@@ -264,6 +264,51 @@ describe("createCompactorMiddleware", () => {
       expect(spy.calls[0]?.messages).toBe(messages);
     });
 
+    test("session B does not inherit session A's stale cachedRestore", async () => {
+      const summaryMsg: InboundMessage = {
+        content: [{ kind: "text", text: "Session A summary" }],
+        senderId: "system:compactor",
+        timestamp: 1,
+        metadata: { compacted: true },
+      };
+      const storedResult: CompactionResult = {
+        messages: [summaryMsg],
+        originalTokens: 100,
+        compactedTokens: 20,
+        strategy: "llm-summary",
+      };
+
+      // Session A loads a restore, session B's store returns undefined
+      let loadCallCount = 0;
+      const store: CompactionStore = {
+        save: async () => {},
+        load: async () => {
+          loadCallCount++;
+          // First call (session A) returns a result, second (session B) returns undefined
+          return loadCallCount === 1 ? storedResult : undefined;
+        },
+      };
+
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        trigger: { messageCount: 100 },
+        store,
+      });
+
+      // Session A: loads restore but never makes a model call (cachedRestore stays set)
+      await mw.onSessionStart?.(createMockSessionContext());
+
+      // Session B: store returns undefined
+      await mw.onSessionStart?.(createMockSessionContext());
+
+      // Session B's model call should NOT inject session A's summary
+      const messages = [userMsg("new message")];
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+
+      expect(spy.calls[0]?.messages).toBe(messages);
+    });
+
     test("no onSessionStart hook when store is not configured", () => {
       const mw = createCompactorMiddleware({
         summarizer: createMockSummarizer(),

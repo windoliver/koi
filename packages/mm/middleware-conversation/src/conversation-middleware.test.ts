@@ -271,6 +271,128 @@ describe("createConversationMiddleware", () => {
     });
   });
 
+  describe("role derivation", () => {
+    test("derives 'assistant' role for messages with agentId as senderId", async () => {
+      const store = createMockThreadStore();
+      const mw = createConversationMiddleware({ store });
+
+      const sessionCtx = createMockSessionContext({
+        metadata: { threadId: "t1" },
+        agentId: "agent-007",
+      });
+      await mw.onSessionStart?.(sessionCtx);
+
+      const agentMsg: InboundMessage = {
+        content: [{ kind: "text", text: "I am the agent" }],
+        senderId: "agent-007",
+        timestamp: Date.now(),
+      };
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(
+        createMockTurnContext({ session: sessionCtx }),
+        { messages: [agentMsg] },
+        spy.handler,
+      );
+
+      await mw.onSessionEnd?.(sessionCtx);
+
+      // The user message captured should have role "assistant" since senderId === agentId
+      const persisted = store.appended[0];
+      expect(persisted?.[0]?.role).toBe("assistant");
+    });
+
+    test("derives 'system' role for system:* senderIds", async () => {
+      const store = createMockThreadStore();
+      const mw = createConversationMiddleware({ store });
+
+      const sessionCtx = createMockSessionContext({
+        metadata: { threadId: "t1" },
+      });
+      await mw.onSessionStart?.(sessionCtx);
+
+      const sysMsg: InboundMessage = {
+        content: [{ kind: "text", text: "system notice" }],
+        senderId: "system:compactor",
+        timestamp: Date.now(),
+      };
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(
+        createMockTurnContext({ session: sessionCtx }),
+        { messages: [sysMsg] },
+        spy.handler,
+      );
+
+      await mw.onSessionEnd?.(sessionCtx);
+
+      const persisted = store.appended[0];
+      expect(persisted?.[0]?.role).toBe("system");
+    });
+
+    test("derives 'tool' role for tool:* senderIds", async () => {
+      const store = createMockThreadStore();
+      const mw = createConversationMiddleware({ store });
+
+      const sessionCtx = createMockSessionContext({
+        metadata: { threadId: "t1" },
+      });
+      await mw.onSessionStart?.(sessionCtx);
+
+      const toolMsg: InboundMessage = {
+        content: [{ kind: "text", text: "tool output" }],
+        senderId: "tool:search",
+        timestamp: Date.now(),
+      };
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(
+        createMockTurnContext({ session: sessionCtx }),
+        { messages: [toolMsg] },
+        spy.handler,
+      );
+
+      await mw.onSessionEnd?.(sessionCtx);
+
+      const persisted = store.appended[0];
+      expect(persisted?.[0]?.role).toBe("tool");
+    });
+  });
+
+  describe("message deduplication", () => {
+    test("same messages across multiple model calls are not duplicated", async () => {
+      const store = createMockThreadStore();
+      const mw = createConversationMiddleware({ store });
+
+      const sessionCtx = createMockSessionContext({
+        metadata: { threadId: "t1" },
+      });
+      await mw.onSessionStart?.(sessionCtx);
+
+      const msg = userInbound("hello");
+      const spy = createSpyModelHandler();
+
+      // First model call with the same message
+      await mw.wrapModelCall?.(
+        createMockTurnContext({ session: sessionCtx }),
+        { messages: [msg] },
+        spy.handler,
+      );
+
+      // Second model call with the same message (same timestamp)
+      await mw.wrapModelCall?.(
+        createMockTurnContext({ session: sessionCtx }),
+        { messages: [msg] },
+        spy.handler,
+      );
+
+      await mw.onSessionEnd?.(sessionCtx);
+
+      // Should only persist 1 user message + 2 assistant responses = 3 total
+      const persisted = store.appended[0];
+      expect(persisted).toBeDefined();
+      const userMsgs = persisted?.filter((m) => m.role === "user") ?? [];
+      expect(userMsgs).toHaveLength(1);
+    });
+  });
+
   describe("thread ID resolution", () => {
     test("uses metadata.threadId", async () => {
       const store = createMockThreadStore();

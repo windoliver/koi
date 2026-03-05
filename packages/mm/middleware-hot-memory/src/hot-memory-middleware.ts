@@ -10,7 +10,7 @@
 
 import type { MemoryResult } from "@koi/core";
 import type { InboundMessage } from "@koi/core/message";
-import type { CapabilityFragment, KoiMiddleware } from "@koi/core/middleware";
+import type { CapabilityFragment, KoiMiddleware, SessionContext } from "@koi/core/middleware";
 import type { HotMemoryConfig } from "./types.js";
 import { HOT_MEMORY_DEFAULTS } from "./types.js";
 
@@ -93,6 +93,14 @@ export function createHotMemoryMiddleware(config: HotMemoryConfig): KoiMiddlewar
   return {
     name: "koi:hot-memory",
     priority: 310,
+
+    async onSessionStart(_ctx: SessionContext): Promise<void> {
+      initialized = false;
+      turnCount = 0;
+      hotCount = 0;
+      cachedTokenCount = 0;
+      cachedMessage = undefined;
+    },
 
     describeCapabilities(): CapabilityFragment | undefined {
       if (hotCount === 0) return undefined;

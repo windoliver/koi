@@ -423,6 +423,91 @@ describe("createAceMiddleware", () => {
     });
   });
 
+  // --- Structured playbook budget tests ---
+  describe("structured playbook budget", () => {
+    test("structured playbooks respect shared budget with stat playbooks", async () => {
+      const playbookStore = createInMemoryPlaybookStore();
+      // Stat playbook: ~100 tokens (400 chars)
+      await playbookStore.save({
+        id: "pb-stat",
+        title: "Stat Strategy",
+        strategy: "a".repeat(400),
+        tags: [],
+        confidence: 0.9,
+        source: "curated",
+        createdAt: 1000,
+        updatedAt: 1000,
+        sessionCount: 1,
+      });
+
+      const structuredStore = createInMemoryStructuredPlaybookStore();
+      // Structured playbook: ~250 tokens (1000 chars)
+      await structuredStore.save({
+        id: "sp-large",
+        title: "Large Structured",
+        sections: [
+          {
+            name: "Big Section",
+            slug: "big",
+            bullets: [
+              {
+                id: "[big-00001]",
+                content: "x".repeat(1000),
+                helpful: 1,
+                harmful: 0,
+                createdAt: 1000,
+                updatedAt: 1000,
+              },
+            ],
+          },
+        ],
+        tags: [],
+        source: "curated",
+        createdAt: 1000,
+        updatedAt: 1000,
+        sessionCount: 1,
+      });
+
+      const mockReflector = {
+        analyze: async () => ({ rootCause: "", keyInsight: "", bulletTags: [] }),
+      };
+      const mockCurator = { curate: async () => [] };
+
+      const mw = createAceMiddleware({
+        ...baseConfig(),
+        playbookStore,
+        structuredPlaybookStore: structuredStore,
+        reflector: mockReflector,
+        curator: mockCurator,
+        maxInjectionTokens: 120, // Only enough for the stat playbook (~100 tokens)
+      });
+
+      const ctx = {
+        session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+        turnIndex: 0,
+        turnId: "r:t0" as never,
+        messages: [],
+        metadata: {},
+      };
+
+      let capturedRequest: ModelRequest | undefined;
+      await mw.wrapModelCall?.(ctx, createModelRequest(), async (req) => {
+        capturedRequest = req;
+        return createModelResponse();
+      });
+
+      expect(capturedRequest).toBeDefined();
+      // The enriched request should have the stat playbook but not the structured one
+      // (budget exhausted by stat playbook)
+      const injected = capturedRequest?.messages[0];
+      expect(injected?.senderId).toBe("system:ace");
+      if (injected?.content[0]?.kind === "text") {
+        expect(injected.content[0].text).toContain("Stat Strategy");
+        expect(injected.content[0].text).not.toContain("Large Structured");
+      }
+    });
+  });
+
   // --- Bullet ID extraction tests ---
   describe("citation tracking", () => {
     test("wrapModelCall extracts bullet IDs from model response", async () => {

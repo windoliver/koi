@@ -15,6 +15,7 @@ import type {
   ModelStreamHandler,
   SessionContext,
   ThreadMessage,
+  ThreadMessageRole,
   TurnContext,
 } from "@koi/core";
 import { agentId, threadId, threadMessageId } from "@koi/core";
@@ -57,6 +58,16 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
   let messageCounter = 0;
   // let justified: raw ThreadMessages loaded from store, reused in onSessionEnd for pruning
   let loadedRawMessages: readonly ThreadMessage[] = [];
+  // let justified: tracks captured message timestamps to prevent duplicates across calls
+  let capturedTimestamps = new Set<number>();
+
+  /** Derive role from senderId: agent → assistant, system:* → system, tool:* → tool, else user. */
+  function deriveRole(msg: InboundMessage): ThreadMessageRole {
+    if (sessionRef !== undefined && msg.senderId === sessionRef.agentId) return "assistant";
+    if (msg.senderId.startsWith("system")) return "system";
+    if (msg.senderId.startsWith("tool")) return "tool";
+    return "user";
+  }
 
   /**
    * Inject loaded history into a model request, respecting the token budget.
@@ -96,7 +107,7 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
    */
   function mapInboundToThread(
     msg: InboundMessage,
-    role: "user" | "assistant",
+    role: ThreadMessageRole,
     sessionId: string,
   ): ThreadMessage {
     // Extract text content from content blocks
@@ -141,12 +152,16 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
    * Record new user messages from a model request (excluding history).
    */
   function captureNewUserMessages(request: ModelRequest, sessionId: string): void {
-    const userMessages = request.messages
-      .filter((m) => !isFromHistory(m))
-      .map((m) => mapInboundToThread(m, "user", sessionId));
+    const fresh = request.messages.filter(
+      (m) => !isFromHistory(m) && !capturedTimestamps.has(m.timestamp),
+    );
 
-    if (userMessages.length > 0) {
-      newTurnMessages = [...newTurnMessages, ...userMessages];
+    if (fresh.length > 0) {
+      const mapped = fresh.map((m) => {
+        capturedTimestamps = new Set([...capturedTimestamps, m.timestamp]);
+        return mapInboundToThread(m, deriveRole(m), sessionId);
+      });
+      newTurnMessages = [...newTurnMessages, ...mapped];
     }
   }
 
@@ -164,6 +179,7 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       messageCounter = 0;
       sessionRef = ctx;
       loadedRawMessages = [];
+      capturedTimestamps = new Set();
 
       const rawThreadId = ctx.metadata.threadId;
       const metadataThreadId = typeof rawThreadId === "string" ? rawThreadId : undefined;

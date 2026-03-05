@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { selectPlaybooks } from "./injector.js";
-import type { Playbook } from "./types.js";
+import { selectPlaybooks, selectStructuredPlaybooks } from "./injector.js";
+import type { Playbook, StructuredPlaybook } from "./types.js";
 
 // estimateTokens canonical tests live in @koi/token-estimator.
 
@@ -90,5 +90,115 @@ describe("selectPlaybooks", () => {
     const original = [...playbooks];
     selectPlaybooks(playbooks, { maxTokens: 500, clock });
     expect(playbooks).toEqual(original);
+  });
+});
+
+function makeStructuredPlaybook(overrides?: Partial<StructuredPlaybook>): StructuredPlaybook {
+  return {
+    id: "sp-1",
+    title: "Test Structured",
+    sections: [
+      {
+        name: "Strategies",
+        slug: "strategies",
+        bullets: [
+          {
+            id: "[strategies-00001]",
+            content: "a".repeat(100),
+            helpful: 1,
+            harmful: 0,
+            createdAt: 1000,
+            updatedAt: 1000,
+          },
+        ],
+      },
+    ],
+    tags: [],
+    source: "curated",
+    createdAt: 1000,
+    updatedAt: 1000,
+    sessionCount: 1,
+    ...overrides,
+  };
+}
+
+describe("selectStructuredPlaybooks", () => {
+  test("returns empty for no available playbooks", () => {
+    const result = selectStructuredPlaybooks([], 500);
+    expect(result).toHaveLength(0);
+  });
+
+  test("returns empty when remaining budget is 0", () => {
+    const result = selectStructuredPlaybooks([makeStructuredPlaybook()], 0);
+    expect(result).toHaveLength(0);
+  });
+
+  test("selects playbooks within remaining budget", () => {
+    const small = makeStructuredPlaybook({
+      id: "sp-small",
+      sections: [
+        {
+          name: "Tips",
+          slug: "tips",
+          bullets: [
+            {
+              id: "[tips-00001]",
+              content: "short",
+              helpful: 1,
+              harmful: 0,
+              createdAt: 1000,
+              updatedAt: 1000,
+            },
+          ],
+        },
+      ],
+    });
+    const result = selectStructuredPlaybooks([small], 500);
+    expect(result).toHaveLength(1);
+  });
+
+  test("skips playbooks that exceed remaining budget", () => {
+    const large = makeStructuredPlaybook({
+      id: "sp-large",
+      sections: [
+        {
+          name: "Big",
+          slug: "big",
+          bullets: [
+            {
+              id: "[big-00001]",
+              content: "x".repeat(2000),
+              helpful: 1,
+              harmful: 0,
+              createdAt: 1000,
+              updatedAt: 1000,
+            },
+          ],
+        },
+      ],
+    });
+    const small = makeStructuredPlaybook({
+      id: "sp-small",
+      sections: [
+        {
+          name: "Small",
+          slug: "small",
+          bullets: [
+            {
+              id: "[small-00001]",
+              content: "tiny",
+              helpful: 1,
+              harmful: 0,
+              createdAt: 1000,
+              updatedAt: 1000,
+            },
+          ],
+        },
+      ],
+    });
+    // Budget only allows the small one (2000 chars = 500 tokens for large, 4 chars = 1 token for small)
+    const result = selectStructuredPlaybooks([large, small], 50);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.id).toBe("sp-small");
   });
 });
