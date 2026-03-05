@@ -1320,6 +1320,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware/middleware-event-rules": {
+      "name": "@koi/middleware-event-rules",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware/middleware-feedback-loop": {
       "name": "@koi/middleware-feedback-loop",
       "version": "0.0.0",
@@ -3355,6 +3368,8 @@
     "@koi/middleware-degenerate": ["@koi/middleware-degenerate@workspace:packages/middleware/middleware-degenerate"],
 
     "@koi/middleware-delegation-escalation": ["@koi/middleware-delegation-escalation@workspace:packages/security/middleware-delegation-escalation"],
+
+    "@koi/middleware-event-rules": ["@koi/middleware-event-rules@workspace:packages/middleware/middleware-event-rules"],
 
     "@koi/middleware-event-trace": ["@koi/middleware-event-trace@workspace:packages/observability/middleware-event-trace"],
 
