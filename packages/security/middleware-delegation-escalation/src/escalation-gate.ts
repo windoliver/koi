@@ -49,11 +49,30 @@ export function parseHumanResponse(message: InboundMessage): EscalationDecision 
 // Factory
 // ---------------------------------------------------------------------------
 
+export interface EscalationGateOptions {
+  /** AbortSignal to cancel the escalation. */
+  readonly signal?: AbortSignal;
+  /** Maximum time in ms before the escalation times out. */
+  readonly timeoutMs?: number;
+  /**
+   * Correlation token to filter inbound messages.
+   * Only messages whose metadata.correlationToken or threadId matches
+   * this value will be considered. Without this, in shared channels
+   * unrelated traffic can accidentally resolve the gate.
+   */
+  readonly correlationToken?: string;
+}
+
 export function createEscalationGate(
   channel: ChannelAdapter,
-  signal?: AbortSignal,
+  signalOrOptions?: AbortSignal | EscalationGateOptions,
   timeoutMs?: number,
 ): EscalationGate {
+  // Support both old positional args and new options object
+  const isOpts = signalOrOptions !== undefined && !(signalOrOptions instanceof AbortSignal);
+  const signal = isOpts ? signalOrOptions.signal : signalOrOptions;
+  const resolvedTimeoutMs = isOpts ? signalOrOptions.timeoutMs : timeoutMs;
+  const correlationToken = isOpts ? signalOrOptions.correlationToken : undefined;
   // let: mutable — gate state is inherently stateful (pending → resolved)
   let pending = true;
   // let: mutable — cleanup references cleared on resolution
@@ -86,21 +105,30 @@ export function createEscalationGate(
       resolve({ kind: "abort", reason: "Escalation cancelled" });
     };
 
-    // Listen for human response
+    // Listen for human response — filter by correlationToken when set
     unsubscribe = channel.onMessage(async (message: InboundMessage) => {
       if (!pending) return;
+      if (correlationToken !== undefined) {
+        const meta = message.metadata as Record<string, unknown> | undefined;
+        const matchesThread = message.threadId === correlationToken;
+        const matchesMeta = meta?.correlationToken === correlationToken;
+        if (!matchesThread && !matchesMeta) return; // Not our escalation — ignore
+      }
       const decision = parseHumanResponse(message);
       cleanup();
       resolve(decision);
     });
 
     // Timeout race
-    if (timeoutMs !== undefined && timeoutMs > 0) {
+    if (resolvedTimeoutMs !== undefined && resolvedTimeoutMs > 0) {
       timer = setTimeout(() => {
         if (!pending) return;
         cleanup();
-        resolve({ kind: "abort", reason: `Escalation timed out after ${String(timeoutMs)}ms` });
-      }, timeoutMs);
+        resolve({
+          kind: "abort",
+          reason: `Escalation timed out after ${String(resolvedTimeoutMs)}ms`,
+        });
+      }, resolvedTimeoutMs);
     }
 
     // AbortSignal race

@@ -61,6 +61,17 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
   }
 
   async function checkBudget(sessionId: string): Promise<void> {
+    // Fast path: if a previous call already recorded overspend, fail immediately
+    // without an async tracker query. This closes the single-call overspend gap
+    // by ensuring subsequent calls within the same turn are blocked instantly.
+    if (hardKill) {
+      const cached = lastKnownRemaining.get(sessionId);
+      if (cached !== undefined && cached <= 0) {
+        throw KoiRuntimeError.from("RATE_LIMIT", `Budget exhausted. Limit: $${budget.toFixed(4)}`, {
+          context: { budget, remaining: 0 },
+        });
+      }
+    }
     const remainingBudget = await tracker.remaining(sessionId, budget);
     if (hardKill && remainingBudget <= 0) {
       throw KoiRuntimeError.from("RATE_LIMIT", `Budget exhausted. Limit: $${budget.toFixed(4)}`, {

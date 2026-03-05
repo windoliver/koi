@@ -94,7 +94,17 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): KoiMiddlew
         durationMs: 0,
         metadata: ctx.metadata,
       };
-      fireAndForget(entry);
+      // Await the session_end entry before flushing to prevent the race
+      // where flush completes before the entry is durably queued.
+      try {
+        await sink.log(entry);
+      } catch (error: unknown) {
+        if (onError) {
+          onError(error, entry);
+        } else {
+          swallowError(error, { package: "middleware-audit", operation: "sink.log" });
+        }
+      }
 
       if (sink.flush) {
         await sink.flush();
