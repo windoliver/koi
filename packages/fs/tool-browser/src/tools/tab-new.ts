@@ -2,7 +2,7 @@
  * Tool factory for `browser_tab_new` — opens a new browser tab.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalTimeout } from "../parse-args.js";
 import type { CompiledNavigationSecurity } from "../url-security.js";
 import { parseSecureOptionalUrl } from "../url-security.js";
@@ -13,7 +13,7 @@ const MAX_TIMEOUT_MS = 60_000;
 export function createBrowserTabNewTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   security?: CompiledNavigationSecurity,
 ): Tool {
   return {
@@ -35,7 +35,8 @@ export function createBrowserTabNewTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const urlResult = parseSecureOptionalUrl(args, "url", security);
       if (!urlResult.ok) return urlResult.err;

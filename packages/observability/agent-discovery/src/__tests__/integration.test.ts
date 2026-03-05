@@ -215,7 +215,7 @@ describe("agent-discovery integration", () => {
 
     expect(tool.descriptor.name).toBe("discover_agents");
     expect(tool.descriptor.description).toContain("external coding agents");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
 
     const schema = tool.descriptor.inputSchema;
     expect(schema.type).toBe("object");

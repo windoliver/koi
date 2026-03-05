@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentManifest } from "./assembly.js";
 import { createSingleToolProvider } from "./create-single-tool-provider.js";
 import type { Agent, AttachResult, ProcessId, SubsystemToken, Tool } from "./ecs.js";
-import { agentId, isAttachResult } from "./ecs.js";
+import { agentId, DEFAULT_UNSANDBOXED_POLICY, isAttachResult } from "./ecs.js";
 
 /** Extract ReadonlyMap from attach() result (handles both AttachResult and bare Map). */
 function extractMap(
@@ -52,7 +52,8 @@ function createMockTool(name: string): Tool {
       description: `Mock ${name} tool`,
       inputSchema: { type: "object" },
     },
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async () => `${name}-result`,
   };
 }

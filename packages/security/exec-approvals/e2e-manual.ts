@@ -14,7 +14,7 @@
  */
 
 import type { AgentManifest, EngineEvent, EngineOutput } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 // Self-import via relative path — the package is not self-symlinked
@@ -115,7 +115,8 @@ function makeAddProvider(spy?: () => void): {
                 required: ["a", "b"],
               },
             },
-            trustTier: "verified" as const,
+            origin: "primordial",
+            policy: DEFAULT_UNSANDBOXED_POLICY,
             execute: async (input: unknown) => {
               spy?.();
               const { a, b } = input as { a: number; b: number };
@@ -147,7 +148,8 @@ function makeBashProvider(spy?: (cmd: string) => void): {
                 required: ["command"],
               },
             },
-            trustTier: "verified" as const,
+            origin: "primordial",
+            policy: DEFAULT_UNSANDBOXED_POLICY,
             execute: async (input: unknown) => {
               const { command } = input as { command: string };
               spy?.(command);

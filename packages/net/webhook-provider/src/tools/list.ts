@@ -2,12 +2,12 @@
  * Tool factory for `webhook_list` — list configured webhooks (sanitized).
  */
 
-import type { JsonObject, Tool, TrustTier, WebhookComponent } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy, WebhookComponent } from "@koi/core";
 
 export function createListTool(
   component: WebhookComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -19,7 +19,8 @@ export function createListTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (_args: JsonObject): Promise<unknown> => {
       try {
         const webhooks = await component.list();

@@ -22,9 +22,9 @@ describe("createCompactContextTool", () => {
     });
   });
 
-  test("trustTier is 'verified'", () => {
+  test("policy is 'verified'", () => {
     const tool = createCompactContextTool(createDeps());
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("execute() calls scheduleCompaction", async () => {

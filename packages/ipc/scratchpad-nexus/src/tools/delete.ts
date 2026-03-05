@@ -2,13 +2,13 @@
  * Tool factory for scratchpad_delete — delete a file from the shared scratchpad.
  */
 
-import type { JsonObject, ScratchpadComponent, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, ScratchpadComponent, Tool, ToolPolicy } from "@koi/core";
 import { scratchpadPath } from "@koi/core";
 
 export function createDeleteTool(
   component: ScratchpadComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -22,7 +22,8 @@ export function createDeleteTool(
         required: ["path"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const path = args.path;
 

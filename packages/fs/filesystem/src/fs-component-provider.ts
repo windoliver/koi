@@ -6,8 +6,14 @@
  * available to any engine with zero engine changes.
  */
 
-import type { ComponentProvider, FileSystemBackend, Tool, TrustTier } from "@koi/core";
-import { createServiceProvider, FILESYSTEM, skillToken, toolToken } from "@koi/core";
+import type { ComponentProvider, FileSystemBackend, Tool, ToolPolicy } from "@koi/core";
+import {
+  createServiceProvider,
+  DEFAULT_UNSANDBOXED_POLICY,
+  FILESYSTEM,
+  skillToken,
+  toolToken,
+} from "@koi/core";
 import type { FileSystemScope } from "@koi/scope";
 import { createScopedFileSystem } from "@koi/scope";
 import type { Retriever } from "@koi/search-provider";
@@ -22,7 +28,7 @@ import { createFsWriteTool } from "./tools/write.js";
 
 export interface FileSystemProviderConfig {
   readonly backend: FileSystemBackend;
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   readonly prefix?: string;
   readonly operations?: readonly FileSystemOperation[];
   /**
@@ -38,7 +44,7 @@ export interface FileSystemProviderConfig {
 }
 
 const TOOL_FACTORIES: Readonly<
-  Record<FileSystemOperation, (b: FileSystemBackend, p: string, t: TrustTier) => Tool>
+  Record<FileSystemOperation, (b: FileSystemBackend, p: string, t: ToolPolicy) => Tool>
 > = {
   read: createFsReadTool,
   write: createFsWriteTool,
@@ -50,7 +56,7 @@ const TOOL_FACTORIES: Readonly<
 export function createFileSystemProvider(config: FileSystemProviderConfig): ComponentProvider {
   const {
     backend: rawBackend,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = DEFAULT_PREFIX,
     operations = OPERATIONS,
     scope,
@@ -67,14 +73,14 @@ export function createFileSystemProvider(config: FileSystemProviderConfig): Comp
     backend,
     operations,
     factories: TOOL_FACTORIES,
-    trustTier,
+    policy,
     prefix,
     customTools: (_backend, _agent) => {
       const skillEntry: readonly [string, unknown] = [skillToken(FS_SKILL_NAME) as string, skill];
       if (retriever === undefined) {
         return [skillEntry];
       }
-      const semanticTool = createFsSemanticSearchTool(retriever, prefix, trustTier);
+      const semanticTool = createFsSemanticSearchTool(retriever, prefix, policy);
       return [skillEntry, [toolToken(semanticTool.descriptor.name) as string, semanticTool]];
     },
     detach: async (b) => {

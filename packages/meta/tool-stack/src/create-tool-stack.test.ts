@@ -4,13 +4,14 @@
  * - Empty config → empty middleware array
  * - Each middleware individually → array of 1 with correct name
  * - All middleware provided → array of 7 in correct priority order
- * - Sandbox simplified config maps to correct tierFor/profileFor
- * - skipToolIds produces promoted tier for listed tools
+ * - Sandbox simplified config maps to correct policyFor/profileFor
+ * - skipToolIds produces unsandboxed policy for listed tools
  * - perToolTimeouts feeds through to per-tool overrides
  */
 
 import { describe, expect, test } from "bun:test";
 import type { ForgeStore } from "@koi/core/brick-store";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core/ecs";
 import type { ToolHandler } from "@koi/core/middleware";
 import { createToolStack } from "./create-tool-stack.js";
 
@@ -193,10 +194,11 @@ describe("createToolStack", () => {
       expect(middleware[0]?.name).toBe("sandbox");
     });
 
-    test("tierFor escape hatch overrides default tier resolution", () => {
+    test("policyFor escape hatch overrides default policy resolution", () => {
       const { middleware } = createToolStack({
         sandbox: {
-          tierFor: (toolId: string) => (toolId === "trusted" ? "promoted" : "sandbox"),
+          policyFor: (toolId: string) =>
+            toolId === "trusted" ? DEFAULT_UNSANDBOXED_POLICY : DEFAULT_SANDBOXED_POLICY,
         },
       });
       expect(middleware).toHaveLength(1);

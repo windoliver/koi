@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JsonObject, KoiError, Result } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { WebExecutor, WebFetchResult } from "../web-executor.js";
 import { createWebFetchTool } from "./web-fetch.js";
 
@@ -32,7 +33,7 @@ function successResponse(
 }
 
 function execute(executor: WebExecutor, args: JsonObject): Promise<unknown> {
-  const tool = createWebFetchTool(executor, "web", "verified");
+  const tool = createWebFetchTool(executor, "web", DEFAULT_UNSANDBOXED_POLICY);
   return tool.execute(args);
 }
 
@@ -43,17 +44,17 @@ function execute(executor: WebExecutor, args: JsonObject): Promise<unknown> {
 describe("web_fetch descriptor", () => {
   test("has correct name and schema", () => {
     const executor = mockExecutor(successResponse(""));
-    const tool = createWebFetchTool(executor, "web", "verified");
+    const tool = createWebFetchTool(executor, "web", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("web_fetch");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
     expect(tool.descriptor.inputSchema).toHaveProperty("required");
   });
 
   test("respects custom prefix", () => {
     const executor = mockExecutor(successResponse(""));
-    const tool = createWebFetchTool(executor, "custom", "promoted");
+    const tool = createWebFetchTool(executor, "custom", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("custom_fetch");
-    expect(tool.trustTier).toBe("promoted");
+    expect(tool.policy.sandbox).toBe(false);
   });
 });
 

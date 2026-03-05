@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JsonObject } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { WebExecutor, WebSearchResult } from "../web-executor.js";
 import { createWebSearchTool } from "./web-search.js";
 
@@ -25,7 +26,7 @@ function mockExecutor(results: readonly WebSearchResult[]): WebExecutor {
 }
 
 function execute(executor: WebExecutor, args: JsonObject): Promise<unknown> {
-  const tool = createWebSearchTool(executor, "web", "verified");
+  const tool = createWebSearchTool(executor, "web", DEFAULT_UNSANDBOXED_POLICY);
   return tool.execute(args);
 }
 
@@ -42,14 +43,14 @@ const SAMPLE_RESULTS: readonly WebSearchResult[] = [
 describe("web_search", () => {
   test("descriptor has correct name and schema", () => {
     const executor = mockExecutor([]);
-    const tool = createWebSearchTool(executor, "web", "verified");
+    const tool = createWebSearchTool(executor, "web", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("web_search");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("respects custom prefix", () => {
     const executor = mockExecutor([]);
-    const tool = createWebSearchTool(executor, "agent", "sandbox");
+    const tool = createWebSearchTool(executor, "agent", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("agent_search");
   });
 

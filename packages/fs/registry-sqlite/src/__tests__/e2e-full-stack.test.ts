@@ -34,7 +34,7 @@ import type {
   ToolResponse,
   VersionChangeEvent,
 } from "@koi/core";
-import { brickId, publisherId, skillId, toolToken } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, publisherId, skillId, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { assertOk, createTestToolArtifact } from "@koi/test-utils";
@@ -103,7 +103,8 @@ function createMultiplyTool(): Tool {
         required: ["a", "b"],
       },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (input: Readonly<Record<string, unknown>>) => {
       const a = Number(input.a ?? 0);
       const b = Number(input.b ?? 0);

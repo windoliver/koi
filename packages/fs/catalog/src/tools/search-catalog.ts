@@ -15,7 +15,7 @@ import type {
   JsonObject,
   Tool,
 } from "@koi/core";
-import { ALL_BRICK_KINDS, ALL_CATALOG_SOURCES } from "@koi/core";
+import { ALL_BRICK_KINDS, ALL_CATALOG_SOURCES, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Input validation
@@ -109,7 +109,8 @@ export function createSearchCatalogTool(reader: CatalogReader, agent: Agent): To
         additionalProperties: false,
       },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => {
       const input = parseInput(args);
       const page = await reader.search({

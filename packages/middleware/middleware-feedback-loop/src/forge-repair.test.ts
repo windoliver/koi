@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { BrickArtifact, ForgeStore, KoiError, Result, ToolArtifact } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import type { ForgeRepairConfig } from "./forge-repair.js";
@@ -40,7 +40,8 @@ const defaultToolArtifact: ToolArtifact = {
   testCases: [{ name: "basic", input: { x: 1 }, expectedOutput: { x: 1 } }],
   description: "A test tool",
   scope: "agent",
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   lifecycle: "active",
   provenance: DEFAULT_PROVENANCE,
   version: "1.0.0",

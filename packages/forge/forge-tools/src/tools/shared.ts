@@ -18,6 +18,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type {
   ForgeConfig,
   ForgeContext,
@@ -445,7 +446,8 @@ export function buildBaseFields(
     name: input.name,
     description: input.description,
     scope: deps.config.defaultScope,
-    trustTier: report.finalTrustTier,
+    origin: "forged",
+    policy: report.sandbox ? DEFAULT_SANDBOXED_POLICY : DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     version: "0.0.1",
     tags: input.tags ?? [],
@@ -539,7 +541,8 @@ export async function runForgePipeline(
         description: forgeInput.description,
         inputSchema: forgeInput.kind === "tool" ? forgeInput.inputSchema : {},
       },
-      trustTier: report.finalTrustTier,
+      origin: "forged",
+      policy: report.sandbox ? DEFAULT_SANDBOXED_POLICY : DEFAULT_UNSANDBOXED_POLICY,
       scope: deps.config.defaultScope,
       lifecycle: "active",
       verificationReport: report,
@@ -618,7 +621,8 @@ export async function runForgePipeline(
       description: forgeInput.description,
       inputSchema: forgeInput.kind === "tool" ? forgeInput.inputSchema : {},
     },
-    trustTier: report.finalTrustTier,
+    origin: "forged",
+    policy: report.sandbox ? DEFAULT_SANDBOXED_POLICY : DEFAULT_UNSANDBOXED_POLICY,
     scope: deps.config.defaultScope,
     lifecycle: "active",
     verificationReport: report,
@@ -676,7 +680,8 @@ export function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): T
 
   return {
     descriptor,
-    trustTier: "promoted", // Primordial tools are first-party
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY, // Primordial tools are first-party
     execute,
   };
 }

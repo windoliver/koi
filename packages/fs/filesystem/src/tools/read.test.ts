@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { FileReadOptions } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createFailingBackend, createMockBackend } from "../test-helpers.js";
 import { createFsReadTool } from "./read.js";
 
 describe("createFsReadTool", () => {
   test("returns file content on success", async () => {
-    const tool = createFsReadTool(createMockBackend(), "fs", "verified");
+    const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "/tmp/test.txt" })) as {
       readonly content: string;
       readonly path: string;
@@ -30,7 +31,7 @@ describe("createFsReadTool", () => {
       },
     };
 
-    const tool = createFsReadTool(backend, "fs", "verified");
+    const tool = createFsReadTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ path: "/test", offset: 10, limit: 50, encoding: "ascii" });
 
     expect(receivedOptions).toEqual({ offset: 10, limit: 50, encoding: "ascii" });
@@ -49,14 +50,14 @@ describe("createFsReadTool", () => {
       },
     };
 
-    const tool = createFsReadTool(backend, "fs", "verified");
+    const tool = createFsReadTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ path: "/test" });
 
     expect(receivedOptions).toEqual({});
   });
 
   test("returns error object on backend failure", async () => {
-    const tool = createFsReadTool(createFailingBackend(), "fs", "verified");
+    const tool = createFsReadTool(createFailingBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "/missing" })) as {
       readonly error: string;
       readonly code: string;
@@ -67,9 +68,9 @@ describe("createFsReadTool", () => {
   });
 
   test("descriptor has correct name and schema", () => {
-    const tool = createFsReadTool(createMockBackend(), "custom", "sandbox");
+    const tool = createFsReadTool(createMockBackend(), "custom", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("custom_read");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
 
     const schema = tool.descriptor.inputSchema as Record<string, unknown>;
     const required = schema.required as readonly string[];
@@ -88,7 +89,7 @@ describe("createFsReadTool", () => {
       },
     };
 
-    const tool = createFsReadTool(backend, "fs", "verified");
+    const tool = createFsReadTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "/async" })) as {
       readonly content: string;
     };
@@ -96,14 +97,14 @@ describe("createFsReadTool", () => {
   });
 
   test("returns validation error when path is missing", async () => {
-    const tool = createFsReadTool(createMockBackend(), "fs", "verified");
+    const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as { readonly error: string; readonly code: string };
     expect(result.code).toBe("VALIDATION");
     expect(result.error).toContain("path");
   });
 
   test("returns validation error when path is not a string", async () => {
-    const tool = createFsReadTool(createMockBackend(), "fs", "verified");
+    const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: 42 })) as {
       readonly error: string;
       readonly code: string;
@@ -112,7 +113,7 @@ describe("createFsReadTool", () => {
   });
 
   test("returns validation error when offset is not a number", async () => {
-    const tool = createFsReadTool(createMockBackend(), "fs", "verified");
+    const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "/test", offset: "ten" })) as {
       readonly error: string;
       readonly code: string;

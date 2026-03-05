@@ -11,6 +11,7 @@ import type {
   KoiError,
   Result,
 } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { registerBundledAgents } from "./register-bundled-agents.js";
 
 // ---------------------------------------------------------------------------
@@ -31,7 +32,7 @@ const DEFAULT_PROVENANCE: ForgeProvenance = {
   },
   verification: {
     passed: true,
-    finalTrustTier: "promoted",
+    sandbox: false,
     totalDurationMs: 0,
     stageResults: [],
   },
@@ -47,7 +48,8 @@ function createTestAgent(name: string, id?: string): AgentArtifact {
     name,
     description: `Test agent ${name}`,
     scope: "global",
-    trustTier: "promoted",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     version: "0.1.0",
     tags: [],

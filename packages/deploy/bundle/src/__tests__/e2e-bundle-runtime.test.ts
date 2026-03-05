@@ -30,7 +30,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { BUNDLE_FORMAT_VERSION, toolToken } from "@koi/core";
+import { BUNDLE_FORMAT_VERSION, DEFAULT_UNSANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { computeBrickId } from "@koi/hash";
@@ -143,7 +143,7 @@ function createTestProvenance(): ToolArtifact["provenance"] {
     },
     verification: {
       passed: true,
-      finalTrustTier: "verified",
+      sandbox: false,
       totalDurationMs: 1000,
       stageResults: [],
     },
@@ -162,7 +162,8 @@ function createMultiplyBrick(): ToolArtifact {
     name: "multiply",
     description: "Multiplies two numbers together and returns the product.",
     scope: "agent",
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     provenance: createTestProvenance(),
     version: "1.0.0",
@@ -190,7 +191,8 @@ function createWeatherBrick(): ToolArtifact {
     name: "get_weather",
     description: "Returns the current weather for a city. Always returns sunny 22C for testing.",
     scope: "agent",
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     provenance: createTestProvenance(),
     version: "1.0.0",
@@ -236,7 +238,8 @@ function createToolProviderFromStore(
               description: brick.description,
               inputSchema: brick.inputSchema,
             },
-            trustTier: brick.trustTier,
+            origin: brick.origin,
+            policy: brick.policy,
             execute: executor,
           },
         ]);
@@ -326,7 +329,7 @@ describeE2E("e2e: bundle export → import → real LLM agent", () => {
       const loadedMultiply = await destStore.load(multiplyBrick.id);
       expect(loadedMultiply.ok).toBe(true);
       if (!loadedMultiply.ok) return;
-      expect(loadedMultiply.value.trustTier).toBe("sandbox");
+      expect(loadedMultiply.value.policy.sandbox).toBe(true);
       expect(loadedMultiply.value.provenance.source).toEqual({
         origin: "bundled",
         bundleName: "e2e-portable-agent",
@@ -443,8 +446,8 @@ describeE2E("e2e: bundle export → import → real LLM agent", () => {
       if (!loaded.ok) return;
 
       // Original was "verified" — imported must be "sandbox"
-      expect(brick.trustTier).toBe("verified");
-      expect(loaded.value.trustTier).toBe("sandbox");
+      expect(brick.policy.sandbox).toBe(false);
+      expect(loaded.value.policy.sandbox).toBe(true);
 
       // Original was "forged" — imported must be "bundled"
       expect(brick.provenance.source.origin).toBe("forged");

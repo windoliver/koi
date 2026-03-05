@@ -35,7 +35,7 @@ import type {
   Tool,
   TurnContext,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { TOOL_PROFILES } from "../tool-profiles.js";
@@ -110,7 +110,8 @@ function makeTool(name: string, description: string): Tool {
         properties: { input: { type: "string" } },
       },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (input: Readonly<Record<string, unknown>>) => {
       return `${name} executed with: ${JSON.stringify(input)}`;
     },
@@ -130,7 +131,8 @@ const MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);

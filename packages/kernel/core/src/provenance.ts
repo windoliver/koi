@@ -7,7 +7,6 @@
  */
 
 import type { BrickSource } from "./brick-snapshot.js";
-import type { TrustTier } from "./ecs.js";
 
 // ---------------------------------------------------------------------------
 // Data classification
@@ -80,7 +79,7 @@ export interface ForgeRunMetadata {
 
 export interface ForgeVerificationSummary {
   readonly passed: boolean;
-  readonly finalTrustTier: TrustTier;
+  readonly sandbox: boolean;
   readonly totalDurationMs: number;
   readonly stageResults: readonly ForgeStageDigest[];
 }

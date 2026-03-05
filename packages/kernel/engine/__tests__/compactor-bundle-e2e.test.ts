@@ -16,7 +16,7 @@ import type {
   SubsystemToken,
   Tool,
 } from "@koi/core";
-import { GOVERNANCE, GOVERNANCE_VARIABLES, toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, GOVERNANCE, GOVERNANCE_VARIABLES, toolToken } from "@koi/core";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
 import type { CompactorBundle } from "@koi/middleware-compactor";
@@ -111,7 +111,8 @@ function createEchoTool(): { readonly tool: Tool; readonly provider: ComponentPr
         required: ["text"],
       },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (input: Readonly<Record<string, unknown>>) => String(input.text ?? ""),
   };
   const provider: ComponentProvider = {
@@ -159,7 +160,7 @@ describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () =>
       const compactTool = runtime.agent.component<Tool>(toolToken("compact_context"));
       expect(compactTool).toBeDefined();
       expect(compactTool?.descriptor.name).toBe("compact_context");
-      expect(compactTool?.trustTier).toBe("verified");
+      expect(compactTool?.policy.sandbox).toBe(false);
 
       // 2. Run a simple interaction — agent completes without error
       const events = await collectEvents(

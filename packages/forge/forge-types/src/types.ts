@@ -15,7 +15,8 @@ import type {
   ForgeScope,
   TestCase,
   ToolDescriptor,
-  TrustTier,
+  ToolOrigin,
+  ToolPolicy,
 } from "@koi/core";
 
 // Re-export L0 types that other forge modules import from this file
@@ -37,7 +38,8 @@ export interface ForgeResult {
   readonly kind: BrickKind;
   readonly name: string;
   readonly descriptor: ToolDescriptor;
-  readonly trustTier: TrustTier;
+  readonly origin: ToolOrigin;
+  readonly policy: ToolPolicy;
   readonly scope: ForgeScope;
   readonly lifecycle: BrickLifecycle;
   readonly verificationReport: VerificationReport;
@@ -69,7 +71,7 @@ export interface ResolveStageReport extends StageReport {
 
 export interface TrustStageReport extends StageReport {
   readonly stage: "trust";
-  readonly trustTier: TrustTier;
+  readonly sandbox: boolean;
 }
 
 export interface SelfTestStageReport extends StageReport {
@@ -81,7 +83,7 @@ export interface SelfTestStageReport extends StageReport {
 
 export interface VerificationReport {
   readonly stages: readonly StageReport[];
-  readonly finalTrustTier: TrustTier;
+  readonly sandbox: boolean;
   readonly totalDurationMs: number;
   readonly passed: boolean;
 }
@@ -222,7 +224,7 @@ export interface PromoteResult {
   readonly requiresHumanApproval: boolean;
   readonly changes: {
     readonly scope?: PromoteChange<ForgeScope>;
-    readonly trustTier?: PromoteChange<TrustTier>;
+    readonly policy?: PromoteChange<ToolPolicy>;
     readonly lifecycle?: PromoteChange<BrickLifecycle>;
   };
   readonly message?: string;

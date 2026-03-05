@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AttachResult, SkillComponent, Tool } from "@koi/core";
-import { isAttachResult } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, isAttachResult } from "@koi/core";
 import { GITHUB_SYSTEM_PROMPT } from "../constants.js";
 import { createGithubProvider } from "../github-component-provider.js";
 import { createMockAgent, createMockGhExecutor } from "../test-helpers.js";
@@ -48,21 +48,21 @@ describe("createGithubProvider", () => {
     const prCreate = components.get("tool:github_pr_create") as Tool;
     const prMerge = components.get("tool:github_pr_merge") as Tool;
     const prReview = components.get("tool:github_pr_review") as Tool;
-    expect(prCreate.trustTier).toBe("promoted");
-    expect(prMerge.trustTier).toBe("promoted");
-    expect(prReview.trustTier).toBe("promoted");
+    expect(prCreate.policy.sandbox).toBe(false);
+    expect(prMerge.policy.sandbox).toBe(false);
+    expect(prReview.policy.sandbox).toBe(false);
   });
 
   test("assigns configured trust tier to read operations", async () => {
     const executor = createMockGhExecutor([]);
-    const provider = createGithubProvider({ executor, trustTier: "sandbox" });
+    const provider = createGithubProvider({ executor, policy: DEFAULT_SANDBOXED_POLICY });
     const agent = createMockAgent();
     const components = extractMap(await provider.attach(agent));
 
     const prStatus = components.get("tool:github_pr_status") as Tool;
     const ciWait = components.get("tool:github_ci_wait") as Tool;
-    expect(prStatus.trustTier).toBe("sandbox");
-    expect(ciWait.trustTier).toBe("sandbox");
+    expect(prStatus.policy.sandbox).toBe(true);
+    expect(ciWait.policy.sandbox).toBe(true);
   });
 
   test("defaults read trust tier to verified", async () => {
@@ -72,7 +72,7 @@ describe("createGithubProvider", () => {
     const components = extractMap(await provider.attach(agent));
 
     const prStatus = components.get("tool:github_pr_status") as Tool;
-    expect(prStatus.trustTier).toBe("verified");
+    expect(prStatus.policy.sandbox).toBe(false);
   });
 
   test("limits operations when specified", async () => {

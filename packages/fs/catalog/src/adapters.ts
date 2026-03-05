@@ -73,7 +73,7 @@ function mapBrickToEntry(brick: BrickArtifact, nowMs: number): CatalogEntry {
     kind: brick.kind,
     source: "forged",
     description: brick.description,
-    ...(brick.trustTier !== undefined ? { trustTier: brick.trustTier } : {}),
+    ...(brick.policy !== undefined ? { policy: brick.policy } : {}),
     ...(brick.tags.length > 0 ? { tags: brick.tags } : {}),
     ...(brick.version !== undefined ? { version: brick.version } : {}),
     ...(hasFitnessData ? { fitnessScore: computeBrickFitness(fitness, nowMs) } : {}),

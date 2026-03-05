@@ -10,7 +10,7 @@ import {
   checkGovernance,
   checkMutationPressure,
   checkScopePromotion,
-  validateTrustTransition,
+  validatePolicyChange,
 } from "@koi/forge-policy";
 import type { ForgePipeline } from "@koi/forge-types";
 import { verify } from "@koi/forge-verifier";
@@ -30,6 +30,6 @@ export function createForgePipeline(): ForgePipeline {
     signAttestation,
     extractBrickContent,
     checkScopePromotion,
-    validateTrustTransition,
+    validatePolicyChange,
   };
 }

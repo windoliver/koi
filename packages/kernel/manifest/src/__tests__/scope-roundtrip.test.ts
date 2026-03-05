@@ -21,7 +21,7 @@ scope:
     allowedDomains:
       - docs.example.com
     blockPrivateAddresses: true
-    trustTier: verified
+    sandbox: false
   credentials:
     keyPattern: "api_key_*"
   memory:
@@ -37,7 +37,7 @@ scope:
     expect(scope.browser).toEqual({
       allowedDomains: ["docs.example.com"],
       blockPrivateAddresses: true,
-      trustTier: "verified",
+      sandbox: false,
     });
     expect(scope.credentials).toEqual({ keyPattern: "api_key_*" });
     expect(scope.memory).toEqual({ namespace: "research-agent" });

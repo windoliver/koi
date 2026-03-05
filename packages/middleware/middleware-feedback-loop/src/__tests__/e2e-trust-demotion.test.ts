@@ -26,7 +26,12 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { brickId, toolToken } from "@koi/core";
+import {
+  brickId,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+  toolToken,
+} from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createInMemoryForgeStore } from "@koi/forge";
@@ -95,13 +100,13 @@ function createForgedBrick(overrides?: Partial<BrickArtifact>): BrickArtifact {
     name: FORGED_TOOL_ID,
     description: "A flaky calculator tool for E2E trust demotion testing",
     scope: "agent",
-    trustTier: "promoted",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     provenance: { kind: "system", metadata: {} },
     version: "0.1.0",
     tags: ["e2e-test"],
     usageCount: 50,
-    lastPromotedAt: Date.now() - 7_200_000, // Promoted 2 hours ago (outside grace period)
     implementation: "function calc(a, b) { return a + b; }",
     inputSchema: {
       type: "object",
@@ -156,7 +161,8 @@ const STABLE_MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);
@@ -189,7 +195,8 @@ function createFlakyForgedTool(failAfter: number): {
         required: ["a", "b"],
       },
     },
-    trustTier: "promoted",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async (input: Readonly<Record<string, unknown>>) => {
       calls++;
       if (calls > failAfter) {
@@ -291,7 +298,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
       const loadResult = await forgeStore.load(FORGED_TOOL_BRICK_ID);
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
-        expect(loadResult.value.trustTier).toBe("promoted");
+        expect(loadResult.value.policy.sandbox).toBe(false);
       }
 
       await runtime.dispose();
@@ -357,9 +364,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
     "sustained failures demote promoted tool to verified via checkAndDemote",
     async () => {
       const forgeStore = createInMemoryForgeStore();
-      const brick = createForgedBrick({
-        lastPromotedAt: Date.now() - 7_200_000, // 2h ago, well outside grace period
-      });
+      const brick = createForgedBrick();
       await forgeStore.save(brick);
 
       const snapshotStore = createMockSnapshotStore();
@@ -400,8 +405,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
       const loadResult = await forgeStore.load(FORGED_TOOL_BRICK_ID);
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
-        expect(loadResult.value.trustTier).toBe("verified");
-        expect(loadResult.value.lastDemotedAt).toBeGreaterThan(0);
+        expect(loadResult.value.policy.sandbox).toBe(true);
       }
 
       // Verify onDemotion callback fired
@@ -423,9 +427,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
     "full demotion cycle: promoted → verified → sandbox with separate tracker calls",
     async () => {
       const forgeStore = createInMemoryForgeStore();
-      const brick = createForgedBrick({
-        lastPromotedAt: Date.now() - 7_200_000,
-      });
+      const brick = createForgedBrick();
       await forgeStore.save(brick);
 
       const snapshotStore = createMockSnapshotStore();
@@ -461,7 +463,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
       expect(demoted1).toBe(true);
 
       const load1 = await forgeStore.load(FORGED_TOOL_BRICK_ID);
-      expect(load1.ok && load1.value.trustTier).toBe("verified");
+      expect(load1.ok && load1.value.policy.sandbox).toBe(false);
 
       // --- Phase 2: verified → sandbox ---
       // Record more failures (ring buffer cycles)
@@ -473,7 +475,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
       expect(demoted2).toBe(true);
 
       const load2 = await forgeStore.load(FORGED_TOOL_BRICK_ID);
-      expect(load2.ok && load2.value.trustTier).toBe("sandbox");
+      expect(load2.ok && load2.value.policy.sandbox).toBe(true);
 
       // --- Phase 3: sandbox is floor — no further demotion ---
       tracker.recordFailure(FORGED_TOOL_ID, 100, "error-7");
@@ -605,9 +607,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
     async () => {
       const forgeStore = createInMemoryForgeStore();
       // Promoted just now — within grace period
-      const brick = createForgedBrick({
-        lastPromotedAt: Date.now(),
-      });
+      const brick = createForgedBrick();
       await forgeStore.save(brick);
 
       const snapshotStore = createMockSnapshotStore();
@@ -644,7 +644,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
       const loadResult = await forgeStore.load(FORGED_TOOL_BRICK_ID);
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
-        expect(loadResult.value.trustTier).toBe("promoted");
+        expect(loadResult.value.policy.sandbox).toBe(false);
       }
 
       // onDemotion never called

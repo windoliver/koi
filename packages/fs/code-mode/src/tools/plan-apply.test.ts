@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createPlanStore } from "../plan-store.js";
 import { createFailingBackend, createMockBackend } from "../test-helpers.js";
 import type { ApplyResult, CodePlan } from "../types.js";
@@ -20,7 +21,7 @@ describe("createPlanApplyTool", () => {
   test("returns NOT_FOUND when no plan exists", async () => {
     const backend = createMockBackend();
     const store = createPlanStore();
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as { error: string; code: string };
     expect(result.code).toBe("NOT_FOUND");
@@ -30,7 +31,7 @@ describe("createPlanApplyTool", () => {
     const backend = createMockBackend();
     const store = createPlanStore();
     store.set(makePlan());
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(true);
@@ -44,7 +45,7 @@ describe("createPlanApplyTool", () => {
     const backend = createMockBackend();
     const store = createPlanStore();
     store.set(makePlan({ state: "applied" }));
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as { error: string; code: string };
     expect(result.code).toBe("CONFLICT");
@@ -54,7 +55,7 @@ describe("createPlanApplyTool", () => {
     const backend = createMockBackend();
     const store = createPlanStore();
     store.set(makePlan({ state: "failed" }));
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as { error: string; code: string };
     expect(result.code).toBe("CONFLICT");
@@ -64,7 +65,7 @@ describe("createPlanApplyTool", () => {
     const backend = createMockBackend();
     const store = createPlanStore();
     store.set(makePlan({ id: "abc" }));
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ planId: "wrong-id" })) as { error: string; code: string };
     expect(result.code).toBe("CONFLICT");
@@ -74,7 +75,7 @@ describe("createPlanApplyTool", () => {
     const backend = createFailingBackend();
     const store = createPlanStore();
     store.set(makePlan());
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(false);
@@ -85,7 +86,7 @@ describe("createPlanApplyTool", () => {
     const backend = createMockBackend();
     const store = createPlanStore();
     store.set(makePlan({ id: "my-plan" }));
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ planId: "my-plan" })) as ApplyResult;
     expect(result.success).toBe(true);
@@ -99,7 +100,7 @@ describe("createPlanApplyTool", () => {
         steps: [{ kind: "delete", path: "/old.ts" }],
       }),
     );
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(true);
@@ -119,7 +120,7 @@ describe("createPlanApplyTool", () => {
         steps: [{ kind: "delete", path: "/old.ts" }],
       }),
     );
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(false);
@@ -142,7 +143,7 @@ describe("createPlanApplyTool", () => {
         ],
       }),
     );
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(false);
@@ -175,7 +176,7 @@ describe("createPlanApplyTool", () => {
         ],
       }),
     );
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(false);
@@ -209,7 +210,7 @@ describe("createPlanApplyTool", () => {
         ],
       }),
     );
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(false);
@@ -265,7 +266,12 @@ describe("createPlanApplyTool", () => {
       }),
     );
 
-    const tool = createPlanApplyTool(limitedBackend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(
+      limitedBackend,
+      store,
+      "code_plan",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
     const result = (await tool.execute({})) as ApplyResult;
 
     expect(result.success).toBe(false);
@@ -277,7 +283,7 @@ describe("createPlanApplyTool", () => {
     const backend = createMockBackend();
     const store = createPlanStore();
     store.set(makePlan());
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(true);
@@ -293,7 +299,7 @@ describe("createPlanApplyTool", () => {
         steps: [{ kind: "rename", path: "/old.ts", to: "/new.ts" }],
       }),
     );
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(true);
@@ -319,7 +325,12 @@ describe("createPlanApplyTool", () => {
         steps: [{ kind: "rename", path: "/old.ts", to: "/new.ts" }],
       }),
     );
-    const tool = createPlanApplyTool(backendNoRename, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(
+      backendNoRename,
+      store,
+      "code_plan",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(false);
@@ -342,7 +353,7 @@ describe("createPlanApplyTool", () => {
         ],
       }),
     );
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as ApplyResult;
     expect(result.success).toBe(false);
@@ -378,7 +389,7 @@ describe("createPlanApplyTool", () => {
         hashes: [{ path: "/src/index.ts", hash: 999999 }],
       }),
     );
-    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const tool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as { error: string; code: string };
     expect(result.code).toBe("STALE_REF");

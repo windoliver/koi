@@ -2,44 +2,33 @@
  * BrickDescriptor for @koi/middleware-sandbox.
  *
  * Enables manifest auto-resolution: validates sandbox config,
- * then creates the sandbox middleware with default trust tier profiles.
+ * then creates the sandbox middleware with default profiles.
  */
 
-import type { KoiMiddleware } from "@koi/core";
-import type { TrustTier } from "@koi/core/ecs";
+import type { KoiMiddleware, ToolPolicy } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { SandboxProfile } from "@koi/core/sandbox-profile";
 import type { BrickDescriptor } from "@koi/resolve";
 import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createSandboxMiddleware } from "./sandbox-middleware.js";
 
-/**
- * Default sandbox profiles by trust tier.
- * Sandbox tier: restricted. Verified: moderate. Promoted: unrestricted.
- */
-const DEFAULT_PROFILES: Readonly<Record<TrustTier, SandboxProfile>> = {
-  sandbox: {
-    tier: "sandbox",
-    filesystem: { allowRead: [], allowWrite: [] },
-    network: { allow: false, allowedHosts: [] },
-    resources: { maxMemoryMb: 256, timeoutMs: 30_000 },
-  },
-  verified: {
-    tier: "verified",
-    filesystem: { allowRead: ["**"], allowWrite: [] },
-    network: { allow: true, allowedHosts: ["*"] },
-    resources: { maxMemoryMb: 512, timeoutMs: 60_000 },
-  },
-  promoted: {
-    tier: "promoted",
-    filesystem: { allowRead: ["**"], allowWrite: ["**"] },
-    network: { allow: true, allowedHosts: ["*"] },
-    resources: { maxMemoryMb: 1024, timeoutMs: 120_000 },
-  },
+/** Default sandbox profile for sandboxed tools. */
+const DEFAULT_SANDBOX_PROFILE: SandboxProfile = {
+  filesystem: { allowRead: [], allowWrite: [] },
+  network: { allow: false, allowedHosts: [] },
+  resources: { maxMemoryMb: 256, timeoutMs: 30_000 },
+} as const;
+
+/** Default profile for unsandboxed tools (unrestricted). */
+const DEFAULT_UNSANDBOXED_PROFILE: SandboxProfile = {
+  filesystem: { allowRead: ["**"], allowWrite: ["**"] },
+  network: { allow: true, allowedHosts: ["*"] },
+  resources: { maxMemoryMb: 1024, timeoutMs: 120_000 },
 } as const;
 
 /**
  * Descriptor for sandbox middleware.
- * Uses default trust tier profiles and treats all tools as sandbox tier.
+ * Uses policy.sandbox boolean to determine which profile to apply.
  * Exported for registration with createRegistry().
  */
 export const descriptor: BrickDescriptor<KoiMiddleware> = {
@@ -49,8 +38,9 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   optionsValidator: (input) => validateRequiredDescriptorOptions(input, "Sandbox"),
   factory(): KoiMiddleware {
     return createSandboxMiddleware({
-      profileFor: (tier: TrustTier): SandboxProfile => DEFAULT_PROFILES[tier],
-      tierFor: (): TrustTier => "sandbox",
+      profileFor: (policy: ToolPolicy): SandboxProfile =>
+        policy.sandbox ? DEFAULT_SANDBOX_PROFILE : DEFAULT_UNSANDBOXED_PROFILE,
+      policyFor: (): ToolPolicy => DEFAULT_SANDBOXED_POLICY,
     });
   },
 };

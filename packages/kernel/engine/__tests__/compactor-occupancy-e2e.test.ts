@@ -29,7 +29,7 @@ import type {
   SubsystemToken,
   Tool,
 } from "@koi/core";
-import { GOVERNANCE, GOVERNANCE_VARIABLES, toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, GOVERNANCE, GOVERNANCE_VARIABLES, toolToken } from "@koi/core";
 import { createLoopAdapter } from "@koi/engine-loop";
 import type { CompactorMiddleware } from "@koi/middleware-compactor";
 import { createAnthropicAdapter } from "@koi/model-router";
@@ -273,7 +273,8 @@ describeE2E("e2e: context occupancy through full createKoi + compactor middlewar
             required: ["text"],
           },
         },
-        trustTier: "sandbox",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
         execute: async (input: Readonly<Record<string, unknown>>) => {
           return String(input.text ?? "");
         },

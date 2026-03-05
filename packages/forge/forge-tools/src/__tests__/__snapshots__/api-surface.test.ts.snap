@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
-"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, TrustTier, StoreChangeNotifier, ComponentProvider, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController, EngineAdapter, ExternalAgentDescriptor } from '@koi/core';
+"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, StoreChangeNotifier, ComponentProvider, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController, EngineAdapter, ExternalAgentDescriptor } from '@koi/core';
 import { ForgeError, DriftChecker, SandboxExecutor as SandboxExecutor$1, ForgeVerifier, ForgeConfig, ForgeContext, ManifestParser, ForgePipeline, ForgeToolInput, AgentArtifact } from '@koi/forge-types';
 import { BrickDescriptor } from '@koi/resolve';
 export { createMemoryStoreChangeNotifier } from '@koi/validation';
@@ -69,9 +69,10 @@ declare function brickCapabilityFragment(brick: BrickArtifact): CapabilityFragme
  * - Trust tier enforcement helpers
  */
 
+/** Trust tier ordering: sandbox < verified < promoted. */
 /** Returns true if \`actual\` meets or exceeds \`required\` trust tier. */
-declare function meetsMinTrust(actual: TrustTier, required: TrustTier): boolean;
-/** Returns true if the brick's trust tier meets the minimum for its kind. */
+declare function meetsMinTrust(actual: ToolPolicy, required: ToolPolicy): boolean;
+/** Returns true if the brick's policy is valid for its kind. */
 declare function meetsKindTrust(brick: BrickArtifact): boolean;
 /**
  * Map a BrickArtifact to its ECS component value based on kind.
@@ -103,7 +104,7 @@ interface DeltaInvalidator<V> {
  * - "removed" → delta (only the specific brick needs eviction)
  * - "updated" → delta (only the specific brick needs eviction)
  * - "promoted" → delta (scope/tier changed for specific brick)
- * - "demoted" → delta (trust tier decreased for specific brick)
+ * - "quarantined" → delta (brick quarantined for specific brick)
  */
 declare function createDeltaInvalidator<V>(): DeltaInvalidator<V>;
 
@@ -224,7 +225,7 @@ declare function createForgeRegistrySync(config: ForgeRegistrySyncConfig): () =>
 interface ForgeResolverContext {
     readonly agentId: string;
     /** Called when a brick is demoted due to fitness decay. */
-    readonly onDecayDemotion?: (brickId: string, from: TrustTier, to: TrustTier) => void;
+    readonly onDecayDemotion?: (brickId: string, from: ToolPolicy, to: ToolPolicy) => void;
     /** Called when a decay-related store update or callback throws. */
     readonly onError?: (error: unknown) => void;
     /** Called when discover() returns zero visible bricks. */

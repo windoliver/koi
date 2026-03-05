@@ -17,7 +17,7 @@ import type {
   Result,
   Tool,
 } from "@koi/core";
-import { brickId, MAX_PIPELINE_STEPS } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, MAX_PIPELINE_STEPS } from "@koi/core";
 import type { ForgeError, ForgePipeline, ForgeResult } from "@koi/forge-types";
 import { staticError, storeError } from "@koi/forge-types";
 import { computePipelineBrickId } from "@koi/hash";
@@ -169,12 +169,13 @@ async function composeForgeHandler(
       kind: "composite",
       name,
       descriptor: { name, description, inputSchema: {} },
-      trustTier: deps.config.defaultTrustTier ?? "sandbox",
+      origin: "primordial",
+      policy: deps.config.defaultPolicy ?? DEFAULT_SANDBOXED_POLICY,
       scope: deps.config.defaultScope,
       lifecycle: "active",
       verificationReport: {
         stages: [],
-        finalTrustTier: deps.config.defaultTrustTier ?? "sandbox",
+        sandbox: (deps.config.defaultPolicy ?? DEFAULT_SANDBOXED_POLICY).sandbox,
         totalDurationMs: 0,
         passed: true,
       },
@@ -197,7 +198,7 @@ async function composeForgeHandler(
     { name, description, ...(tags !== undefined ? { tags } : {}) },
     {
       stages: [],
-      finalTrustTier: deps.config.defaultTrustTier ?? "sandbox",
+      sandbox: (deps.config.defaultPolicy ?? DEFAULT_SANDBOXED_POLICY).sandbox,
       totalDurationMs: 0,
       passed: true,
     },
@@ -209,7 +210,7 @@ async function composeForgeHandler(
     context: deps.context,
     report: {
       stages: [],
-      finalTrustTier: deps.config.defaultTrustTier ?? "sandbox",
+      sandbox: (deps.config.defaultPolicy ?? DEFAULT_SANDBOXED_POLICY).sandbox,
       totalDurationMs: 0,
       passed: true,
     },
@@ -257,12 +258,13 @@ async function composeForgeHandler(
     kind: "composite",
     name,
     descriptor: { name, description, inputSchema: {} },
-    trustTier: baseFields.trustTier,
+    origin: "primordial",
+    policy: baseFields.policy,
     scope: baseFields.scope,
     lifecycle: "active",
     verificationReport: {
       stages: [],
-      finalTrustTier: baseFields.trustTier,
+      sandbox: baseFields.policy.sandbox,
       totalDurationMs: Date.now() - startedAt,
       passed: true,
     },

@@ -2,10 +2,10 @@
  * Tool stack configuration types.
  *
  * Each middleware slot is optional — omit to skip entirely.
- * Sandbox has a simplified config that hides tierFor/profileFor indirection.
+ * Sandbox has a simplified config that hides policyFor/profileFor indirection.
  */
 
-import type { TrustTier } from "@koi/core/ecs";
+import type { ToolPolicy } from "@koi/core/ecs";
 import type { KoiMiddleware } from "@koi/core/middleware";
 import type { CallDedupConfig } from "@koi/middleware-call-dedup";
 import type { ToolCallLimitConfig } from "@koi/middleware-call-limits";
@@ -15,14 +15,14 @@ import type { ToolRecoveryConfig } from "@koi/middleware-tool-recovery";
 import type { ToolSelectorConfig } from "@koi/middleware-tool-selector";
 
 /**
- * Simplified sandbox config — hides tierFor/profileFor indirection.
+ * Simplified sandbox config — hides policyFor/profileFor indirection.
  *
- * The full SandboxMiddlewareConfig requires two closures (tierFor, profileFor)
- * that compose tier resolution and profile construction. For 90% of use cases,
+ * The full SandboxMiddlewareConfig requires two closures (policyFor, profileFor)
+ * that compose policy resolution and profile construction. For 90% of use cases,
  * users just need timeout + skip list. This config generates those closures
  * from flat values.
  *
- * Escape hatch: provide `tierFor` to override default tier resolution.
+ * Escape hatch: provide `policyFor` to override default policy resolution.
  */
 export interface ToolStackSandboxConfig {
   /** Default timeout for sandboxed tools (default: 30_000 ms). */
@@ -31,21 +31,21 @@ export interface ToolStackSandboxConfig {
   readonly outputLimitBytes?: number | undefined;
   /** Grace period added to profile timeout (default: 5_000 ms). */
   readonly timeoutGraceMs?: number | undefined;
-  /** Tools to skip sandboxing entirely (treated as "promoted" tier). */
+  /** Tools to skip sandboxing entirely (given unsandboxed policy). */
   readonly skipToolIds?: readonly string[] | undefined;
   /** Per-tool timeout overrides (toolId → timeoutMs). */
   readonly perToolTimeouts?: ReadonlyMap<string, number> | undefined;
-  /** Escape hatch: override default tier resolution. */
-  readonly tierFor?: ((toolId: string) => TrustTier | undefined) | undefined;
+  /** Escape hatch: override default policy resolution. */
+  readonly policyFor?: ((toolId: string) => ToolPolicy | undefined) | undefined;
   /** Called when middleware detects a sandbox violation (timeout). */
   readonly onSandboxError?:
-    | ((toolId: string, tier: TrustTier, code: string, message: string) => void)
+    | ((toolId: string, policy: ToolPolicy, code: string, message: string) => void)
     | undefined;
   /** Called after every sandboxed tool execution with metrics. */
   readonly onSandboxMetrics?:
     | ((
         toolId: string,
-        tier: TrustTier,
+        policy: ToolPolicy,
         durationMs: number,
         outputBytes: number,
         truncated: boolean,

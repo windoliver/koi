@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/ipc-nexus API surface . has stable type surface 1`] = `
-"import { AgentId, MailboxComponent, TrustTier, AgentRegistry, ComponentProvider, Tool } from '@koi/core';
+"import { AgentId, MailboxComponent, ToolPolicy, AgentRegistry, ComponentProvider, Tool } from '@koi/core';
 export { AgentMessage, AgentMessageInput, MailboxComponent, MessageFilter, MessageId, MessageKind } from '@koi/core';
 
 /** Message delivery transport mode. */
@@ -54,7 +54,7 @@ interface IpcNexusProviderConfig {
     readonly agentId: AgentId;
     readonly nexusBaseUrl?: string | undefined;
     readonly authToken?: string | undefined;
-    readonly trustTier?: TrustTier | undefined;
+    readonly policy?: ToolPolicy | undefined;
     readonly prefix?: string | undefined;
     readonly delivery?: DeliveryMode | undefined;
     readonly seenCapacity?: number | undefined;
@@ -93,19 +93,19 @@ interface SseEvent {
  * Tool factory for ipc_discover — list live agents available for messaging.
  */
 
-declare function createDiscoverTool(registry: AgentRegistry, prefix: string, trustTier: TrustTier, callerId?: AgentId): Tool;
+declare function createDiscoverTool(registry: AgentRegistry, prefix: string, policy: ToolPolicy, callerId?: AgentId): Tool;
 
 /**
  * Tool factory for ipc_list — list messages in the agent's inbox.
  */
 
-declare function createListTool(component: MailboxComponent, prefix: string, trustTier: TrustTier): Tool;
+declare function createListTool(component: MailboxComponent, prefix: string, policy: ToolPolicy): Tool;
 
 /**
  * Tool factory for ipc_send — dispatch a message to another agent's mailbox.
  */
 
-declare function createSendTool(component: MailboxComponent, prefix: string, trustTier: TrustTier): Tool;
+declare function createSendTool(component: MailboxComponent, prefix: string, policy: ToolPolicy): Tool;
 
 export { DEFAULT_DELIVERY_MODE, DEFAULT_PREFIX, type DeliveryMode, type IpcNexusProviderConfig, type IpcOperation, type NexusMailboxConfig, OPERATIONS, type SseEvent, createDiscoverTool, createIpcNexusProvider, createListTool, createNexusMailbox, createSendTool };
 "

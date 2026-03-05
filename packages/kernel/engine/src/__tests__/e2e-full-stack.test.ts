@@ -26,7 +26,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createKoi } from "../koi.js";
 
@@ -93,7 +93,8 @@ const MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);
@@ -113,7 +114,8 @@ const GET_WEATHER_TOOL: Tool = {
       required: ["city"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const city = String(input.city ?? "unknown");
     return JSON.stringify({ city, temperature: 22, condition: "sunny" });

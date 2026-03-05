@@ -26,6 +26,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createBraveSearch } from "@koi/search-brave";
@@ -473,7 +474,8 @@ describeE2E("e2e: @koi/tools-web through createKoi + createPiAdapter", () => {
                     required: ["text"],
                   },
                 },
-                trustTier: "sandbox" as const,
+                origin: "primordial",
+                policy: DEFAULT_SANDBOXED_POLICY,
                 execute: async (input: Readonly<Record<string, unknown>>) => {
                   return String(input.text ?? "").toUpperCase();
                 },

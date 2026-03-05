@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { VersionEntry } from "@koi/core";
-import { brickId, publisherId } from "@koi/core";
+import { brickId, DEFAULT_UNSANDBOXED_POLICY, publisherId } from "@koi/core";
 import { createRegistryListVersionsTool } from "./registry-list-versions.js";
 import { createMockFacade } from "./test-helpers.js";
 
@@ -23,7 +23,7 @@ const VERSIONS: readonly VersionEntry[] = [
 describe("registry_list_versions tool", () => {
   test("returns NOT_FOUND when no versions exist", async () => {
     const facade = createMockFacade();
-    const tool = createRegistryListVersionsTool(facade, "registry", "verified");
+    const tool = createRegistryListVersionsTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ name: "missing", kind: "tool" })) as Record<
       string,
@@ -38,7 +38,7 @@ describe("registry_list_versions tool", () => {
         listVersions: () => ({ ok: true, value: VERSIONS }),
       },
     });
-    const tool = createRegistryListVersionsTool(facade, "registry", "verified");
+    const tool = createRegistryListVersionsTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ name: "my-tool", kind: "tool" })) as Record<
       string,
@@ -58,7 +58,7 @@ describe("registry_list_versions tool", () => {
         listVersions: () => ({ ok: true, value: VERSIONS }),
       },
     });
-    const tool = createRegistryListVersionsTool(facade, "registry", "verified");
+    const tool = createRegistryListVersionsTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ name: "my-tool", kind: "tool" })) as Record<
       string,
@@ -72,7 +72,7 @@ describe("registry_list_versions tool", () => {
 
   test("returns validation error for missing name", async () => {
     const facade = createMockFacade();
-    const tool = createRegistryListVersionsTool(facade, "registry", "verified");
+    const tool = createRegistryListVersionsTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ kind: "tool" })) as Record<string, unknown>;
     expect(result.code).toBe("VALIDATION");
@@ -80,7 +80,7 @@ describe("registry_list_versions tool", () => {
 
   test("returns validation error for missing kind", async () => {
     const facade = createMockFacade();
-    const tool = createRegistryListVersionsTool(facade, "registry", "verified");
+    const tool = createRegistryListVersionsTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ name: "test" })) as Record<string, unknown>;
     expect(result.code).toBe("VALIDATION");

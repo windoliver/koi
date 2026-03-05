@@ -5,11 +5,11 @@
  * WebhookProvider, and SchedulerProvider into a reusable factory.
  *
  * Exception: permitted in L0 as a pure function operating only on L0 types
- * (ComponentProvider, SubsystemToken, Tool, TrustTier, Agent).
+ * (ComponentProvider, SubsystemToken, Tool, ToolPolicy, Agent).
  */
 
-import type { Agent, ComponentProvider, SubsystemToken, Tool, TrustTier } from "./ecs.js";
-import { toolToken } from "./ecs.js";
+import type { Agent, ComponentProvider, SubsystemToken, Tool, ToolPolicy } from "./ecs.js";
+import { DEFAULT_UNSANDBOXED_POLICY, toolToken } from "./ecs.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -34,11 +34,11 @@ export interface ServiceProviderConfig<TBackend, TOperation extends string> {
 
   /** Map of operation name → tool factory function. */
   readonly factories: Readonly<
-    Record<TOperation, (backend: TBackend, prefix: string, tier: TrustTier) => Tool>
+    Record<TOperation, (backend: TBackend, prefix: string, policy: ToolPolicy) => Tool>
   >;
 
-  /** Trust tier for all standard tools. Defaults to "verified". */
-  readonly trustTier?: TrustTier | undefined;
+  /** Tool policy for all standard tools. Defaults to DEFAULT_UNSANDBOXED_POLICY. */
+  readonly policy?: ToolPolicy | undefined;
 
   /** Prefix for tool names. Defaults to empty string. */
   readonly prefix?: string | undefined;
@@ -94,7 +94,7 @@ export function createServiceProvider<TBackend, TOperation extends string>(
     backend,
     operations,
     factories,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = "",
     priority,
     cache: shouldCache = true,
@@ -127,7 +127,7 @@ export function createServiceProvider<TBackend, TOperation extends string>(
     // Standard tool entries from factories
     for (const op of operations) {
       const factory = factories[op];
-      const tool = factory(backend as TBackend, prefix, trustTier);
+      const tool = factory(backend as TBackend, prefix, policy);
       entries.push([toolToken(tool.descriptor.name) as string, tool]);
     }
 

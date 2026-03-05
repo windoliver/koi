@@ -31,7 +31,7 @@ describe("scope schema validation", () => {
         browser: {
           allowedDomains: ["docs.example.com"],
           blockPrivateAddresses: true,
-          trustTier: "verified",
+          sandbox: false,
         },
         credentials: { keyPattern: "api_key_*" },
         memory: { namespace: "research-agent" },
@@ -92,18 +92,16 @@ describe("scope schema validation", () => {
     expect(result.success).toBe(true);
   });
 
-  test("browser accepts all trustTier values", () => {
-    for (const tier of ["sandbox", "verified", "promoted"] as const) {
-      const result = parse({
-        scope: { browser: { trustTier: tier } },
-      });
-      expect(result.success).toBe(true);
-    }
+  test("browser accepts sandbox boolean", () => {
+    const result = parse({
+      scope: { browser: { sandbox: true } },
+    });
+    expect(result.success).toBe(true);
   });
 
-  test("browser rejects invalid trustTier", () => {
+  test("browser rejects invalid sandbox value", () => {
     const result = parse({
-      scope: { browser: { trustTier: "admin" } },
+      scope: { browser: { sandbox: "admin" } },
     });
     expect(result.success).toBe(false);
   });

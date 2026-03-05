@@ -33,7 +33,11 @@ import type {
   ToolResponse,
   WebhookComponent,
 } from "@koi/core";
-import { createServiceProvider, createSingleToolProvider } from "@koi/core";
+import {
+  createServiceProvider,
+  createSingleToolProvider,
+  DEFAULT_SANDBOXED_POLICY,
+} from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createFileSystemProvider } from "@koi/filesystem";
 import { createWebhookProvider } from "@koi/webhook-provider";
@@ -324,7 +328,8 @@ describeE2E("e2e: createServiceProvider through full L1 runtime", () => {
             required: ["input"],
           } as JsonObject,
         },
-        trustTier: "sandbox",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
         execute: async (args: JsonObject): Promise<unknown> => {
           const str = String(args.input ?? "");
           // Deterministic hash
@@ -582,7 +587,7 @@ describeE2E("e2e: createServiceProvider through full L1 runtime", () => {
 
       const mathFactories: Record<
         MathOp,
-        (backend: MathBackend, prefix: string, _trustTier: unknown) => Tool
+        (backend: MathBackend, prefix: string, _policy: unknown) => Tool
       > = {
         add: (b, prefix) => ({
           descriptor: {
@@ -597,7 +602,8 @@ describeE2E("e2e: createServiceProvider through full L1 runtime", () => {
               required: ["a", "b"],
             } as JsonObject,
           },
-          trustTier: "sandbox",
+          origin: "primordial",
+          policy: DEFAULT_SANDBOXED_POLICY,
           execute: async (args: JsonObject) => String(b.add(Number(args.a), Number(args.b))),
         }),
         multiply: (b, prefix) => ({
@@ -613,7 +619,8 @@ describeE2E("e2e: createServiceProvider through full L1 runtime", () => {
               required: ["a", "b"],
             } as JsonObject,
           },
-          trustTier: "sandbox",
+          origin: "primordial",
+          policy: DEFAULT_SANDBOXED_POLICY,
           execute: async (args: JsonObject) => String(b.multiply(Number(args.a), Number(args.b))),
         }),
       };

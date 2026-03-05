@@ -49,7 +49,6 @@ export type {
 // ---------------------------------------------------------------------------
 
 export type {
-  AutoPromotionConfig,
   BrickContentInput,
   CreateProvenanceOptions,
   DependencyConfig,
@@ -160,7 +159,6 @@ export type {
   ForgeUsageMiddlewareConfig,
   ReverificationHandler,
   ReverificationQueue,
-  UsagePromotedResult,
   UsageRecordedResult,
   UsageResult,
 } from "@koi/forge-policy";
@@ -169,7 +167,6 @@ export {
   checkGovernance,
   checkMutationPressure,
   checkScopePromotion,
-  computeAutoPromotion,
   createDriftChecker,
   createForgeGovernanceContributor,
   createForgeSessionCounter,
@@ -177,7 +174,7 @@ export {
   createReverificationQueue,
   FORGE_GOVERNANCE,
   recordBrickUsage,
-  validateTrustTransition,
+  validatePolicyChange,
 } from "@koi/forge-policy";
 
 // ---------------------------------------------------------------------------

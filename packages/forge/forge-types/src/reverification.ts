@@ -1,16 +1,14 @@
 /**
  * TTL-based re-verification — checks whether bricks are stale and
- * need re-verification. Single TTL for all non-sandbox tiers (Issue #703).
+ * need re-verification. Sandboxed bricks are re-verified; unsandboxed are not.
  */
-
-import type { TrustTier } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 export interface ReverificationConfig {
-  /** TTL in millis for all non-sandbox bricks (default: 24h). */
+  /** TTL in millis for sandboxed bricks (default: 24h). */
   readonly ttlMs: number;
   /** Maximum concurrent re-verifications. */
   readonly maxConcurrency: number;
@@ -28,11 +26,11 @@ export const DEFAULT_REVERIFICATION_CONFIG: ReverificationConfig = {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns TTL for a given trust tier.
- * Sandbox bricks are never re-verified — returns undefined.
+ * Returns TTL for a given sandbox status.
+ * Unsandboxed bricks are never re-verified — returns undefined.
  */
-export function computeTtl(trustTier: TrustTier, config: ReverificationConfig): number | undefined {
-  if (trustTier === "sandbox") {
+export function computeTtl(sandbox: boolean, config: ReverificationConfig): number | undefined {
+  if (!sandbox) {
     return undefined;
   }
   return config.ttlMs;
@@ -44,18 +42,18 @@ export function computeTtl(trustTier: TrustTier, config: ReverificationConfig): 
 
 /**
  * Returns true if the brick needs re-verification based on its
- * lastVerifiedAt timestamp and the TTL for its trust tier.
+ * lastVerifiedAt timestamp and the TTL for its sandbox status.
  */
 export function isStale(
   artifact: {
-    readonly trustTier: TrustTier;
+    readonly sandbox: boolean;
     readonly lastVerifiedAt?: number;
   },
   config: ReverificationConfig,
 ): boolean {
-  const ttl = computeTtl(artifact.trustTier, config);
+  const ttl = computeTtl(artifact.sandbox, config);
   if (ttl === undefined) {
-    // sandbox — never stale
+    // unsandboxed — never stale
     return false;
   }
   if (artifact.lastVerifiedAt === undefined) {

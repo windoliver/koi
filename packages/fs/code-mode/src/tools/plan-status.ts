@@ -2,11 +2,11 @@
  * code_plan_status tool — Returns the current plan state.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import type { PlanStore } from "../plan-store.js";
 import type { PlanStatus } from "../types.js";
 
-export function createPlanStatusTool(store: PlanStore, prefix: string, trustTier: TrustTier): Tool {
+export function createPlanStatusTool(store: PlanStore, prefix: string, policy: ToolPolicy): Tool {
   return {
     descriptor: {
       name: `${prefix}_status`,
@@ -16,7 +16,8 @@ export function createPlanStatusTool(store: PlanStore, prefix: string, trustTier
         properties: {},
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (_args: JsonObject): Promise<unknown> => {
       const plan = store.get();
       const status: PlanStatus = {

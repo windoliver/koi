@@ -5,7 +5,8 @@
  * middleware consumes it on the next wrapModelCall/wrapModelStream.
  */
 
-import type { JsonObject, Tool, ToolDescriptor, ToolExecuteOptions, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolDescriptor, ToolExecuteOptions } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Dependencies
@@ -29,11 +30,12 @@ export function createCompactContextTool(deps: CompactContextToolDeps): Tool {
     inputSchema: { type: "object", properties: {} } satisfies JsonObject,
   };
 
-  const trustTier: TrustTier = "verified";
+  const policy = DEFAULT_UNSANDBOXED_POLICY;
 
   return {
     descriptor,
-    trustTier,
+    policy,
+    origin: "primordial" as const,
     async execute(_args: JsonObject, _options?: ToolExecuteOptions): Promise<string> {
       deps.scheduleCompaction();
       const occupancy = deps.formatOccupancy();

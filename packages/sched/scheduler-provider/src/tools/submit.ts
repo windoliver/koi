@@ -2,13 +2,13 @@
  * Tool factory for `scheduler_submit` — submit a one-shot task.
  */
 
-import type { JsonObject, SchedulerComponent, TaskOptions, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, SchedulerComponent, TaskOptions, Tool, ToolPolicy } from "@koi/core";
 import { parseEnum, parseOptionalNumber, parseOptionalString } from "../parse-args.js";
 
 export function createSubmitTool(
   component: SchedulerComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -46,7 +46,8 @@ export function createSubmitTool(
         required: ["input", "mode"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const inputResult = parseOptionalString(args, "input");
       if (!inputResult.ok) return inputResult.err;

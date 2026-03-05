@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { CrystallizedToolDescriptor } from "./forge-handler.js";
 import { createCrystallizeForgeHandler } from "./forge-handler.js";
 import type { CrystallizationCandidate } from "./types.js";
@@ -45,7 +46,7 @@ describe("createCrystallizeForgeHandler", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.name).toBe("fetch-then-parse");
     expect(result[0]?.scope).toBe("agent");
-    expect(result[0]?.trustTier).toBe("sandbox");
+    expect(result[0]?.policy.sandbox).toBe(true);
   });
 
   test("does not forge candidate below confidence threshold", () => {
@@ -115,17 +116,17 @@ describe("createCrystallizeForgeHandler", () => {
     expect(forged?.provenance.ngramKey).toBe("fetch|parse");
   });
 
-  test("uses custom trustTier", () => {
+  test("uses custom policy", () => {
     const handler = createCrystallizeForgeHandler({
       scope: "agent",
-      trustTier: "verified",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       confidenceThreshold: 0.0,
     });
 
     const candidate = createCandidate(["a", "b"], 5, 1000);
     const result = handler.handleCandidates([candidate], 1000);
 
-    expect(result[0]?.trustTier).toBe("verified");
+    expect(result[0]?.policy.sandbox).toBe(false);
   });
 
   test("forged descriptor includes implementation", () => {

@@ -11,7 +11,7 @@
  */
 
 import type { BrickArtifact, KoiError, Result } from "@koi/core";
-import { BUNDLE_FORMAT_VERSION, validation } from "@koi/core";
+import { BUNDLE_FORMAT_VERSION, DEFAULT_SANDBOXED_POLICY, validation } from "@koi/core";
 import { computeBrickId, computeContentHash } from "@koi/hash";
 import { validateBrickArtifact } from "@koi/validation";
 
@@ -22,7 +22,8 @@ import type { ImportBrickError, ImportBundleConfig, ImportBundleResult } from ".
 function downgradeBrick(brick: BrickArtifact, bundleName: string): BrickArtifact {
   return {
     ...brick,
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     scope: "agent",
     provenance: {
       ...brick.provenance,

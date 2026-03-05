@@ -31,9 +31,9 @@ describe("createAskGuideTool", () => {
     expect(tool.descriptor.inputSchema.required).toContain("question");
   });
 
-  test("trustTier is verified", () => {
+  test("policy is verified", () => {
     const tool = createAskGuideTool({ search: fixedSearch([]) });
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   // -------------------------------------------------------------------------

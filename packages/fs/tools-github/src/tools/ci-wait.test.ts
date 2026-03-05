@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockGhExecutor, mockError, mockSuccess } from "../test-helpers.js";
 import { createGithubCiWaitTool } from "./ci-wait.js";
 
@@ -30,7 +31,7 @@ const MIXED_CHECKS = {
 describe("github_ci_wait — happy paths", () => {
   test("returns success when all checks pass immediately", async () => {
     const executor = createMockGhExecutor([mockSuccess(SUCCESS_CHECKS)]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ pr_number: 42, poll_interval_ms: 1 })) as Record<
       string,
       unknown
@@ -42,7 +43,7 @@ describe("github_ci_wait — happy paths", () => {
 
   test("returns success when no checks configured", async () => {
     const executor = createMockGhExecutor([mockSuccess({ statusCheckRollup: [] })]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ pr_number: 42, poll_interval_ms: 1 })) as Record<
       string,
       unknown
@@ -52,7 +53,7 @@ describe("github_ci_wait — happy paths", () => {
 
   test("returns success when statusCheckRollup is missing", async () => {
     const executor = createMockGhExecutor([mockSuccess({})]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ pr_number: 42, poll_interval_ms: 1 })) as Record<
       string,
       unknown
@@ -62,7 +63,7 @@ describe("github_ci_wait — happy paths", () => {
 
   test("returns failure when checks fail", async () => {
     const executor = createMockGhExecutor([mockSuccess(FAILURE_CHECKS)]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ pr_number: 42, poll_interval_ms: 1 })) as Record<
       string,
       unknown
@@ -77,7 +78,7 @@ describe("github_ci_wait — polling", () => {
       mockSuccess(PENDING_CHECKS),
       mockSuccess(SUCCESS_CHECKS),
     ]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       pr_number: 42,
       poll_interval_ms: 1,
@@ -89,7 +90,7 @@ describe("github_ci_wait — polling", () => {
 
   test("returns timeout when deadline exceeded", async () => {
     const executor = createMockGhExecutor([mockSuccess(PENDING_CHECKS)]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       pr_number: 42,
       timeout_ms: 1,
@@ -100,7 +101,7 @@ describe("github_ci_wait — polling", () => {
 
   test("fail_fast stops on first failure", async () => {
     const executor = createMockGhExecutor([mockSuccess(MIXED_CHECKS)]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       pr_number: 42,
       fail_fast: true,
@@ -115,42 +116,42 @@ describe("github_ci_wait — polling", () => {
 describe("github_ci_wait — argument validation", () => {
   test("rejects missing pr_number", async () => {
     const executor = createMockGhExecutor([]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({});
     expect(result).toMatchObject({ code: "VALIDATION" });
   });
 
   test("rejects non-number pr_number", async () => {
     const executor = createMockGhExecutor([]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({ pr_number: "42" });
     expect(result).toMatchObject({ code: "VALIDATION" });
   });
 
   test("rejects timeout_ms below minimum", async () => {
     const executor = createMockGhExecutor([]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({ pr_number: 42, timeout_ms: 0 });
     expect(result).toMatchObject({ code: "VALIDATION" });
   });
 
   test("rejects timeout_ms above maximum", async () => {
     const executor = createMockGhExecutor([]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({ pr_number: 42, timeout_ms: 99_999_999 });
     expect(result).toMatchObject({ code: "VALIDATION" });
   });
 
   test("rejects poll_interval_ms below minimum", async () => {
     const executor = createMockGhExecutor([]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({ pr_number: 42, poll_interval_ms: 0 });
     expect(result).toMatchObject({ code: "VALIDATION" });
   });
 
   test("rejects non-boolean fail_fast", async () => {
     const executor = createMockGhExecutor([]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({ pr_number: 42, fail_fast: "yes" });
     expect(result).toMatchObject({ code: "VALIDATION" });
   });
@@ -159,27 +160,27 @@ describe("github_ci_wait — argument validation", () => {
 describe("github_ci_wait — error handling", () => {
   test("returns error when PR not found", async () => {
     const executor = createMockGhExecutor([mockError("NOT_FOUND", "PR not found")]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({ pr_number: 9999, poll_interval_ms: 1 });
     expect(result).toMatchObject({ code: "NOT_FOUND" });
   });
 
   test("returns error on executor failure", async () => {
     const executor = createMockGhExecutor([mockError("EXTERNAL", "network error")]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({ pr_number: 42, poll_interval_ms: 1 });
     expect(result).toMatchObject({ code: "EXTERNAL" });
   });
 
   test("descriptor has correct name", () => {
     const executor = createMockGhExecutor([]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("github_ci_wait");
   });
 
   test("trust tier is verified", () => {
     const executor = createMockGhExecutor([]);
-    const tool = createGithubCiWaitTool(executor, "github", "verified");
-    expect(tool.trustTier).toBe("verified");
+    const tool = createGithubCiWaitTool(executor, "github", DEFAULT_UNSANDBOXED_POLICY);
+    expect(tool.policy.sandbox).toBe(false);
   });
 });

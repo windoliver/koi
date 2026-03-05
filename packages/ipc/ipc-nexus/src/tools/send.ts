@@ -8,7 +8,7 @@ import type {
   MailboxComponent,
   MessageKind,
   Tool,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
 import { agentId, messageId } from "@koi/core";
 
@@ -17,7 +17,7 @@ const VALID_KINDS = new Set<string>(["request", "response", "event", "cancel"]);
 export function createSendTool(
   component: MailboxComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -47,7 +47,8 @@ export function createSendTool(
         required: ["from", "to", "kind", "type", "payload"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const from = args.from;
       const to = args.to;

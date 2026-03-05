@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockSchedulerComponent } from "../test-helpers.js";
 import { createPauseTool } from "./pause.js";
 
 describe("createPauseTool", () => {
   test("returns paused: true on success", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createPauseTool(component, "scheduler", "verified");
+    const tool = createPauseTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ scheduleId: "sch-1" })) as {
       readonly paused: boolean;
     };
@@ -15,7 +16,7 @@ describe("createPauseTool", () => {
 
   test("passes branded ScheduleId to component", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createPauseTool(component, "scheduler", "verified");
+    const tool = createPauseTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ scheduleId: "sch-42" });
 
     expect(component.calls).toHaveLength(1);
@@ -25,7 +26,7 @@ describe("createPauseTool", () => {
 
   test("returns validation error when scheduleId missing", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createPauseTool(component, "scheduler", "verified");
+    const tool = createPauseTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly error: string;
       readonly code: string;
@@ -42,7 +43,7 @@ describe("createPauseTool", () => {
         throw new Error("not found");
       },
     };
-    const tool = createPauseTool(component, "scheduler", "verified");
+    const tool = createPauseTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ scheduleId: "sch-99" })) as {
       readonly error: string;
       readonly code: string;
@@ -53,7 +54,7 @@ describe("createPauseTool", () => {
 
   test("descriptor has correct name", () => {
     const component = createMockSchedulerComponent();
-    const tool = createPauseTool(component, "sched", "sandbox");
+    const tool = createPauseTool(component, "sched", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("sched_pause");
   });
 });

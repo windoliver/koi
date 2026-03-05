@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { MemoryStoreOptions } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockMemoryComponent } from "../test-helpers.js";
 import { createMemoryStoreTool } from "./store.js";
 
 describe("createMemoryStoreTool", () => {
   test("stores fact with correct options", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const tool = createMemoryStoreTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       content: "User prefers dark mode",
       category: "preference",
@@ -24,7 +25,7 @@ describe("createMemoryStoreTool", () => {
 
   test("stores fact with no optional fields", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const tool = createMemoryStoreTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       content: "Simple fact",
     })) as { readonly stored: boolean };
@@ -38,7 +39,7 @@ describe("createMemoryStoreTool", () => {
 
   test("returns validation error when content missing", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const tool = createMemoryStoreTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly error: string;
       readonly code: string;
@@ -50,7 +51,7 @@ describe("createMemoryStoreTool", () => {
 
   test("returns validation error when content is empty string", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const tool = createMemoryStoreTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ content: "" })) as {
       readonly error: string;
       readonly code: string;
@@ -61,7 +62,7 @@ describe("createMemoryStoreTool", () => {
 
   test("returns validation error when related_entities is not array", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const tool = createMemoryStoreTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       content: "fact",
       related_entities: "not-an-array",
@@ -78,7 +79,7 @@ describe("createMemoryStoreTool", () => {
         throw new Error("disk full");
       },
     };
-    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const tool = createMemoryStoreTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ content: "fact" })) as {
       readonly error: string;
       readonly code: string;
@@ -90,7 +91,7 @@ describe("createMemoryStoreTool", () => {
 
   test("passes causal_parents through to component.store()", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const tool = createMemoryStoreTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       content: "Applied the fix",
       causal_parents: ["parent-id-1", "parent-id-2"],
@@ -104,7 +105,7 @@ describe("createMemoryStoreTool", () => {
 
   test("omits causalParents when causal_parents not provided", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const tool = createMemoryStoreTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ content: "Simple fact" });
 
     const opts = component.calls[0]?.args?.[1] as MemoryStoreOptions;
@@ -113,7 +114,7 @@ describe("createMemoryStoreTool", () => {
 
   test("returns validation error when causal_parents is not array of strings", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const tool = createMemoryStoreTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       content: "fact",
       causal_parents: "not-an-array",
@@ -125,8 +126,8 @@ describe("createMemoryStoreTool", () => {
 
   test("descriptor has correct name with prefix", () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryStoreTool(component, "mem", "sandbox");
+    const tool = createMemoryStoreTool(component, "mem", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("mem_store");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 });

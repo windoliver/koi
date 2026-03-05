@@ -5,7 +5,7 @@
  * before attempting the merge.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { MERGE_STRATEGIES, PR_STATUS_FIELDS } from "../constants.js";
 import type { GhExecutor } from "../gh-executor.js";
 import { parseOptionalBoolean, parseOptionalEnum, parsePrNumber } from "../parse-args.js";
@@ -14,7 +14,7 @@ import { isRecord, mapErrorResult, parseGhJson } from "../parse-gh-error.js";
 export function createGithubPrMergeTool(
   executor: GhExecutor,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -39,7 +39,8 @@ export function createGithubPrMergeTool(
         required: ["pr_number"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const prResult = parsePrNumber(args, "pr_number");
       if (!prResult.ok) return prResult.err;

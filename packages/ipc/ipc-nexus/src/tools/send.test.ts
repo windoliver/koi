@@ -1,18 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockMailboxComponent } from "../test-helpers.js";
 import { createSendTool } from "./send.js";
 
 describe("createSendTool", () => {
   test("has correct descriptor", () => {
-    const tool = createSendTool(createMockMailboxComponent(), "ipc", "verified");
+    const tool = createSendTool(createMockMailboxComponent(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("ipc_send");
     expect(tool.descriptor.description).toBeTruthy();
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("sends message and returns result", async () => {
     const component = createMockMailboxComponent();
-    const tool = createSendTool(component, "ipc", "verified");
+    const tool = createSendTool(component, "ipc", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({
       from: "agent-a",
@@ -30,7 +31,7 @@ describe("createSendTool", () => {
   });
 
   test("validates required string fields", async () => {
-    const tool = createSendTool(createMockMailboxComponent(), "ipc", "verified");
+    const tool = createSendTool(createMockMailboxComponent(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({
       from: 123,
@@ -45,7 +46,7 @@ describe("createSendTool", () => {
   });
 
   test("validates kind is valid", async () => {
-    const tool = createSendTool(createMockMailboxComponent(), "ipc", "verified");
+    const tool = createSendTool(createMockMailboxComponent(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({
       from: "a",
@@ -61,7 +62,7 @@ describe("createSendTool", () => {
   });
 
   test("validates payload is an object", async () => {
-    const tool = createSendTool(createMockMailboxComponent(), "ipc", "verified");
+    const tool = createSendTool(createMockMailboxComponent(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({
       from: "a",
@@ -77,7 +78,7 @@ describe("createSendTool", () => {
 
   test("includes optional correlationId and ttlSeconds", async () => {
     const component = createMockMailboxComponent();
-    const tool = createSendTool(component, "ipc", "verified");
+    const tool = createSendTool(component, "ipc", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({
       from: "a",
@@ -95,8 +96,8 @@ describe("createSendTool", () => {
   });
 
   test("respects custom prefix", () => {
-    const tool = createSendTool(createMockMailboxComponent(), "msg", "sandbox");
+    const tool = createSendTool(createMockMailboxComponent(), "msg", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("msg_send");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 });

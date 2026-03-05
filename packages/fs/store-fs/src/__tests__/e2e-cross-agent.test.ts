@@ -23,7 +23,12 @@ import type {
   SandboxExecutor,
   ToolArtifact,
 } from "@koi/core";
-import { brickId, isAttachResult } from "@koi/core";
+import {
+  brickId,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+  isAttachResult,
+} from "@koi/core";
 import type { ForgeDeps } from "@koi/forge";
 import {
   createDefaultForgeConfig,
@@ -70,7 +75,8 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     name: "test-brick",
     description: "A test brick",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -138,8 +144,6 @@ function createDeps(store: OverlayForgeStore, agentId: string): ForgeDeps {
     config: createDefaultForgeConfig({
       scopePromotion: {
         requireHumanApproval: false,
-        minTrustForZone: "sandbox",
-        minTrustForGlobal: "promoted",
       },
     }),
     context: {
@@ -217,7 +221,8 @@ describe("cross-agent brick reuse e2e", () => {
       id: brickId("brick_to_share"),
       name: "shared-calculator",
       provenance: provenanceFor("alpha"),
-      trustTier: "verified",
+      origin: "primordial",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
     });
     await agentAlphaStore.save(sharedBrick);
 
@@ -311,7 +316,8 @@ describe("cross-agent brick reuse e2e", () => {
       id: brickId("brick_tool_promote"),
       name: "tool-promoted",
       scope: "agent",
-      trustTier: "verified",
+      origin: "primordial",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       provenance: provenanceFor("alpha"),
     });
     await agentAlphaStore.save(brick);

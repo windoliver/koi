@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AgentBundle, BrickArtifact, ForgeStore, ToolArtifact } from "@koi/core";
-import { BUNDLE_FORMAT_VERSION, bundleId } from "@koi/core";
+import { BUNDLE_FORMAT_VERSION, bundleId, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { computeBrickId, computeContentHash } from "@koi/hash";
 
 import { importBundle } from "./import-bundle.js";
@@ -28,7 +28,7 @@ function createTestProvenance(): ToolArtifact["provenance"] {
     },
     verification: {
       passed: true,
-      finalTrustTier: "verified",
+      sandbox: false,
       totalDurationMs: 1000,
       stageResults: [],
     },
@@ -47,7 +47,8 @@ function createTestBrick(overrides?: { readonly implementation?: string }): Tool
     name: "test-tool",
     description: "A test tool",
     scope: "agent",
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     provenance: createTestProvenance(),
     version: "1.0.0",
@@ -203,7 +204,7 @@ describe("importBundle", () => {
     const loadResult = await store.load(brick.id);
     expect(loadResult.ok).toBe(true);
     if (!loadResult.ok) return;
-    expect(loadResult.value.trustTier).toBe("sandbox");
+    expect(loadResult.value.policy.sandbox).toBe(true);
   });
 
   test("sets provenance source to bundled origin", async () => {

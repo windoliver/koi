@@ -19,6 +19,7 @@ import type {
   Result,
   Tool,
 } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -101,7 +102,8 @@ export function createAttachCapabilityTool(
         additionalProperties: false,
       },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => {
       const name = args.name;
       if (typeof name !== "string" || name.trim() === "") {

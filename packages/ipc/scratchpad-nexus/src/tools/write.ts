@@ -2,13 +2,13 @@
  * Tool factory for scratchpad_write — write a file to the shared scratchpad.
  */
 
-import type { JsonObject, ScratchpadComponent, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, ScratchpadComponent, Tool, ToolPolicy } from "@koi/core";
 import { scratchpadPath } from "@koi/core";
 
 export function createWriteTool(
   component: ScratchpadComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -30,7 +30,8 @@ export function createWriteTool(
         required: ["path", "content"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const path = args.path;
       const content = args.content;

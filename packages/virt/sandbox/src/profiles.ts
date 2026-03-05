@@ -2,7 +2,7 @@
  * Preset sandbox profile constructors.
  */
 
-import type { TrustTier } from "@koi/core";
+import type { ToolPolicy } from "@koi/core";
 import type { SandboxProfile } from "./types.js";
 
 const SENSITIVE_PATHS: readonly string[] = [
@@ -16,7 +16,6 @@ const SENSITIVE_PATHS: readonly string[] = [
 const SENSITIVE_PATTERNS: readonly string[] = [".env", ".env.*"];
 
 const RESTRICTIVE_DEFAULTS: SandboxProfile = {
-  tier: "sandbox",
   filesystem: {
     allowRead: ["/usr", "/bin", "/lib", "/etc", "/tmp"],
     denyRead: [...SENSITIVE_PATHS, ...SENSITIVE_PATTERNS],
@@ -32,7 +31,6 @@ const RESTRICTIVE_DEFAULTS: SandboxProfile = {
 };
 
 const PERMISSIVE_DEFAULTS: SandboxProfile = {
-  tier: "verified",
   filesystem: {
     allowRead: ["/usr", "/bin", "/lib", "/etc", "/tmp", "."],
     denyRead: [...SENSITIVE_PATHS],
@@ -48,7 +46,6 @@ const PERMISSIVE_DEFAULTS: SandboxProfile = {
 };
 
 const PASSTHROUGH_DEFAULTS: SandboxProfile = {
-  tier: "promoted",
   filesystem: {},
   network: { allow: true },
   resources: {},
@@ -62,23 +59,25 @@ export function permissiveProfile(overrides?: Partial<SandboxProfile>): SandboxP
   return mergeProfile(PERMISSIVE_DEFAULTS, overrides);
 }
 
-export function profileForTier(tier: TrustTier): SandboxProfile {
-  switch (tier) {
-    case "sandbox":
-      return restrictiveProfile();
-    case "verified":
-      return permissiveProfile();
-    case "promoted":
-      return { ...PASSTHROUGH_DEFAULTS };
+/**
+ * Creates a SandboxProfile based on the ToolPolicy.
+ * Sandboxed tools get restrictive defaults; unsandboxed get passthrough.
+ */
+export function createProfileFromPolicy(policy: ToolPolicy): SandboxProfile {
+  if (policy.sandbox) {
+    return restrictiveProfile();
   }
+  return { ...PASSTHROUGH_DEFAULTS };
 }
+
+/** @deprecated Use createProfileFromPolicy instead. */
+export const profileForTier: (policy: ToolPolicy) => SandboxProfile = createProfileFromPolicy;
 
 function mergeProfile(base: SandboxProfile, overrides?: Partial<SandboxProfile>): SandboxProfile {
   if (overrides === undefined) {
     return { ...base };
   }
   const result: SandboxProfile = {
-    tier: overrides.tier ?? base.tier,
     filesystem: overrides.filesystem ?? base.filesystem,
     network: overrides.network ?? base.network,
     resources: overrides.resources ?? base.resources,

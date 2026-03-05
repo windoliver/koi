@@ -128,7 +128,7 @@ describe("createDiscoverAgentsTool", () => {
 
     expect(tool.descriptor.name).toBe("discover_agents");
     expect(tool.descriptor.description).toContain("external coding agents");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
     expect(tool.descriptor.inputSchema.type).toBe("object");
   });
 

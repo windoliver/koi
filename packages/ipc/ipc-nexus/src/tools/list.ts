@@ -8,7 +8,7 @@ import type {
   MessageFilter,
   MessageKind,
   Tool,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
 import { agentId } from "@koi/core";
 
@@ -17,7 +17,7 @@ const VALID_KINDS = new Set<string>(["request", "response", "event", "cancel"]);
 export function createListTool(
   component: MailboxComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -46,7 +46,8 @@ export function createListTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const filter: MessageFilter = {
         ...(typeof args.kind === "string" && VALID_KINDS.has(args.kind)

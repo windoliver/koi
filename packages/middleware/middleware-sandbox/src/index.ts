@@ -9,7 +9,6 @@
 export type { SandboxMiddlewareConfig } from "./config.js";
 export {
   DEFAULT_OUTPUT_LIMIT_BYTES,
-  DEFAULT_SKIP_TIERS,
   DEFAULT_TIMEOUT_GRACE_MS,
   validateConfig,
 } from "./config.js";

@@ -2,7 +2,7 @@
  * Tool factory for `github_pr_review` — read existing reviews or post a new review.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { PR_REVIEW_READ_FIELDS, REVIEW_ACTIONS, REVIEW_EVENTS } from "../constants.js";
 import type { GhExecutor } from "../gh-executor.js";
 import { parseEnum, parseOptionalEnum, parseOptionalString, parsePrNumber } from "../parse-args.js";
@@ -11,7 +11,7 @@ import { mapErrorResult, parseGhJson } from "../parse-gh-error.js";
 export function createGithubPrReviewTool(
   executor: GhExecutor,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -38,7 +38,8 @@ export function createGithubPrReviewTool(
         required: ["pr_number", "action"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const prResult = parsePrNumber(args, "pr_number");
       if (!prResult.ok) return prResult.err;

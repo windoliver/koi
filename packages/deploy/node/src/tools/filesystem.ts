@@ -9,6 +9,7 @@ import { realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { normalize, resolve } from "node:path";
 import type { Tool, ToolDescriptor } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -86,7 +87,8 @@ export function createFilesystemTool(allowedPaths: readonly string[] = [process.
 
   return {
     descriptor: DESCRIPTOR,
-    trustTier: "promoted",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
 
     async execute(args) {
       const action = args.action;

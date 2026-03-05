@@ -10,9 +10,9 @@ import type {
   AgentRegistry,
   ComponentProvider,
   MailboxComponent,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
-import { createServiceProvider, MAILBOX, toolToken } from "@koi/core";
+import { createServiceProvider, DEFAULT_UNSANDBOXED_POLICY, MAILBOX, toolToken } from "@koi/core";
 import type { DeliveryMode, IpcOperation } from "./constants.js";
 import { DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
 import { createNexusMailbox } from "./mailbox-adapter.js";
@@ -28,7 +28,7 @@ export interface IpcNexusProviderConfig {
   readonly agentId: AgentId;
   readonly nexusBaseUrl?: string | undefined;
   readonly authToken?: string | undefined;
-  readonly trustTier?: TrustTier | undefined;
+  readonly policy?: ToolPolicy | undefined;
   readonly prefix?: string | undefined;
   readonly delivery?: DeliveryMode | undefined;
   readonly seenCapacity?: number | undefined;
@@ -50,7 +50,7 @@ const TOOL_FACTORIES: Readonly<
     (
       backend: MailboxComponent,
       prefix: string,
-      tier: TrustTier,
+      policy: ToolPolicy,
     ) => ReturnType<typeof createSendTool>
   >
 > = {
@@ -68,7 +68,7 @@ export function createIpcNexusProvider(config: IpcNexusProviderConfig): Componen
     agentId,
     nexusBaseUrl,
     authToken,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = DEFAULT_PREFIX,
     delivery,
     seenCapacity,
@@ -98,12 +98,12 @@ export function createIpcNexusProvider(config: IpcNexusProviderConfig): Componen
     backend: mailbox,
     operations,
     factories: TOOL_FACTORIES,
-    trustTier,
+    policy,
     prefix,
     ...(registry !== undefined
       ? {
           customTools: (_backend, agent) => {
-            const tool = createDiscoverTool(registry, prefix, trustTier, agent.pid.id);
+            const tool = createDiscoverTool(registry, prefix, policy, agent.pid.id);
             return [[toolToken(tool.descriptor.name) as string, tool]];
           },
         }

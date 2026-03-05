@@ -24,7 +24,7 @@ import type {
   RunReport,
   Tool,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import type { ProgressSnapshot } from "../config.js";
@@ -102,7 +102,8 @@ const MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);

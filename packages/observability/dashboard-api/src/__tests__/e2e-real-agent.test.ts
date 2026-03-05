@@ -26,7 +26,7 @@ import type {
   ProcessState,
   Tool,
 } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import { agentId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import type {
   DashboardAgentDetail,
   DashboardAgentSummary,
@@ -80,7 +80,8 @@ const MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);

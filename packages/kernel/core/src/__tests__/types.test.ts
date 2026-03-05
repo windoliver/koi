@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type {
   AbortReason,
   Agent,
@@ -48,8 +49,8 @@ import type {
   ToolCallId,
   ToolDescriptor,
   ToolExecuteOptions,
+  ToolPolicy,
   ToolRequest,
-  TrustTier,
   TurnContext,
   TurnId,
 } from "../index.js";
@@ -535,13 +536,16 @@ describe("PermissionConfig negative types", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TrustTier and GovernanceCheck
+// ToolPolicy and GovernanceCheck
 // ---------------------------------------------------------------------------
 
-describe("TrustTier", () => {
-  test("accepts valid trust tier literals", () => {
-    const tiers: readonly TrustTier[] = ["sandbox", "verified", "promoted"];
-    expect(tiers).toHaveLength(3);
+describe("ToolPolicy", () => {
+  test("accepts valid ToolPolicy objects", () => {
+    const policies: readonly ToolPolicy[] = [
+      { sandbox: true, capabilities: {} },
+      { sandbox: false, capabilities: {} },
+    ];
+    expect(policies).toHaveLength(2);
   });
 });
 
@@ -772,7 +776,8 @@ describe("Resolver type tests", () => {
         ok: true,
         value: {
           descriptor: { name: "t", description: "d", inputSchema: {} },
-          trustTier: "sandbox",
+          origin: "primordial",
+          policy: DEFAULT_SANDBOXED_POLICY,
           execute: async () => ({}),
         },
       }),
@@ -805,7 +810,8 @@ describe("Resolver type tests", () => {
         ok: true,
         value: {
           descriptor: { name: "t", description: "d", inputSchema: {} },
-          trustTier: "sandbox",
+          origin: "primordial",
+          policy: DEFAULT_SANDBOXED_POLICY,
           execute: async () => ({}),
         },
       }),
@@ -826,7 +832,8 @@ describe("Tool input typing", () => {
         description: "calculator",
         inputSchema: {},
       },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async (args) => {
         return { result: args.a };
       },
@@ -1318,7 +1325,8 @@ describe("Resolver.source", () => {
         ok: true,
         value: {
           descriptor: { name: "t", description: "d", inputSchema: {} },
-          trustTier: "sandbox",
+          origin: "primordial",
+          policy: DEFAULT_SANDBOXED_POLICY,
           execute: async () => ({}),
         },
       }),
@@ -1334,7 +1342,8 @@ describe("Resolver.source", () => {
         ok: true,
         value: {
           descriptor: { name: "t", description: "d", inputSchema: {} },
-          trustTier: "sandbox",
+          origin: "primordial",
+          policy: DEFAULT_SANDBOXED_POLICY,
           execute: async () => ({}),
         },
       }),
@@ -1733,7 +1742,8 @@ describe("ToolExecuteOptions", () => {
   test("Tool.execute is callable with 1 arg (backward compat)", () => {
     const tool: Tool = {
       descriptor: { name: "test", description: "test", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async (args) => args,
     };
     // Should compile and run with just args
@@ -1743,7 +1753,8 @@ describe("ToolExecuteOptions", () => {
   test("Tool.execute is callable with 2 args (options bag)", () => {
     const tool: Tool = {
       descriptor: { name: "test", description: "test", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async (args, options) => ({ args, signal: options?.signal }),
     };
     // Should compile and run with args + options

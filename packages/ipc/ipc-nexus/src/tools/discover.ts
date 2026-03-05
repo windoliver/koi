@@ -9,7 +9,7 @@ import type {
   ProcessState,
   RegistryFilter,
   Tool,
-  TrustTier,
+  ToolPolicy,
   VisibilityContext,
 } from "@koi/core";
 import { isProcessState } from "@koi/core";
@@ -19,7 +19,7 @@ const VALID_AGENT_TYPES: ReadonlySet<string> = new Set(["copilot", "worker"]);
 export function createDiscoverTool(
   registry: AgentRegistry,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   callerId?: AgentId,
 ): Tool {
   return {
@@ -42,7 +42,8 @@ export function createDiscoverTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const rawType = args.agentType;
       const rawPhase = args.phase;

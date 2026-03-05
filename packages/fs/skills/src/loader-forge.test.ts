@@ -14,7 +14,7 @@ import type {
   Result,
   SkillArtifact,
 } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { ScanFinding } from "@koi/skill-scanner";
 import {
   clearForgeSkillCache,
@@ -53,7 +53,8 @@ function createMockArtifact(overrides?: Partial<SkillArtifact>): SkillArtifact {
     name: "forged-review",
     description: "A forged code review skill.",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: {
       builder: { id: "test" },

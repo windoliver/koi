@@ -2,7 +2,7 @@
  * Tool factory for `fs_search` — searches file content via a FileSystemBackend.
  */
 
-import type { FileSearchOptions, FileSystemBackend, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { FileSearchOptions, FileSystemBackend, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import {
   parseOptionalBoolean,
   parseOptionalNumber,
@@ -13,7 +13,7 @@ import {
 export function createFsSearchTool(
   backend: FileSystemBackend,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -39,7 +39,8 @@ export function createFsSearchTool(
         required: ["pattern"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const patternResult = parseString(args, "pattern");
       if (!patternResult.ok) return patternResult.err;

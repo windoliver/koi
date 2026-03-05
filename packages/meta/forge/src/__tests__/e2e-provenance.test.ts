@@ -283,7 +283,7 @@ describeE2E("e2e provenance: signed forge → full L1 runtime with real LLM", ()
       expect(statement.predicate.koi_classification).toBe("internal");
       expect(statement.predicate.koi_contentMarkers).toEqual(["pii"]);
       expect(statement.predicate.koi_verification.passed).toBe(true);
-      expect(statement.predicate.koi_verification.finalTrustTier).toBe("sandbox");
+      expect(statement.predicate.koi_verification.sandbox).toBe("sandbox");
       expect(statement.predicate.koi_verification.totalDurationMs).toBeGreaterThanOrEqual(0);
 
       // Standard SLSA predicate still present

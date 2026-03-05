@@ -5,7 +5,7 @@
  * the target agent responds (grant/deny) or the request times out.
  */
 
-import type { AgentId, JsonObject, MailboxComponent, Tool, TrustTier } from "@koi/core";
+import type { AgentId, JsonObject, MailboxComponent, Tool, ToolPolicy } from "@koi/core";
 import { agentId as toAgentId } from "@koi/core";
 import {
   CAPABILITY_REQUEST_TYPE,
@@ -89,7 +89,7 @@ export function createDelegationRequestTool(
   mailbox: MailboxComponent,
   ownerAgentId: AgentId,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -126,7 +126,8 @@ export function createDelegationRequestTool(
         required: ["targetAgentId", "permissions", "reason"],
       },
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const input = validateRequestInput(args);
       const timeout = input.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;

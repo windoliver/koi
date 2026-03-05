@@ -4,7 +4,7 @@
  * Wraps DelegationManager.revoke() behind a Tool interface.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { delegationId } from "@koi/core";
 import type { DelegationManager } from "../delegation-manager.js";
 
@@ -35,7 +35,7 @@ function validateRevokeInput(args: JsonObject): RevokeInput {
 export function createDelegationRevokeTool(
   manager: DelegationManager,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -53,7 +53,8 @@ export function createDelegationRevokeTool(
         required: ["grantId"],
       },
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const input = validateRevokeInput(args);
       const revokedIds = await manager.revoke(delegationId(input.grantId), input.cascade);

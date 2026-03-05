@@ -8,7 +8,13 @@ import type {
   SubsystemToken,
   Tool,
 } from "@koi/core";
-import { agentId, COMPONENT_PRIORITY, isAttachResult } from "@koi/core";
+import {
+  agentId,
+  COMPONENT_PRIORITY,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+  isAttachResult,
+} from "@koi/core";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
 
 function extractMap(
@@ -24,7 +30,8 @@ function extractMap(
 function mockTool(name: string): Tool {
   return {
     descriptor: { name, description: `Mock tool ${name}`, inputSchema: { type: "object" } },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async () => ({ result: name }),
   };
 }
@@ -32,7 +39,8 @@ function mockTool(name: string): Tool {
 function mockVerifiedTool(name: string): Tool {
   return {
     descriptor: { name, description: `Verified tool ${name}`, inputSchema: { type: "object" } },
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async () => ({ result: name }),
   };
 }
@@ -250,7 +258,7 @@ describe("createInheritedComponentProvider", () => {
 
     const inherited = result.get("tool:secure") as Tool;
     expect(inherited).toBeDefined();
-    expect(inherited.trustTier).toBe("verified");
+    expect(inherited.policy.sandbox).toBe(false);
     expect(inherited.descriptor.name).toBe("secure");
     expect(inherited).toBe(verifiedTool);
   });

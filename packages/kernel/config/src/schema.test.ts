@@ -17,7 +17,7 @@ function validConfig(): Record<string, unknown> {
       maxForgeDepth: 1,
       maxForgesPerSession: 5,
       defaultScope: "agent",
-      defaultTrustTier: "sandbox",
+      defaultPolicy: "sandbox",
     },
     modelRouter: {
       strategy: "fallback",
@@ -292,7 +292,7 @@ describe("validateKoiConfig (forge)", () => {
           maxForgeDepth: 1,
           maxForgesPerSession: 5,
           defaultScope: "agent",
-          defaultTrustTier: "sandbox",
+          defaultPolicy: "sandbox",
         }),
       ).ok,
     ).toBe(true);
@@ -306,13 +306,13 @@ describe("validateKoiConfig (forge)", () => {
           maxForgeDepth: 1,
           maxForgesPerSession: 5,
           defaultScope: "invalid",
-          defaultTrustTier: "sandbox",
+          defaultPolicy: "sandbox",
         }),
       ).ok,
     ).toBe(false);
   });
 
-  test("rejects invalid defaultTrustTier", () => {
+  test("rejects invalid defaultPolicy", () => {
     expect(
       validateKoiConfig(
         withField("forge", {
@@ -320,7 +320,7 @@ describe("validateKoiConfig (forge)", () => {
           maxForgeDepth: 1,
           maxForgesPerSession: 5,
           defaultScope: "agent",
-          defaultTrustTier: "unknown",
+          defaultPolicy: "unknown",
         }),
       ).ok,
     ).toBe(false);
@@ -334,7 +334,7 @@ describe("validateKoiConfig (forge)", () => {
           maxForgeDepth: -1,
           maxForgesPerSession: 5,
           defaultScope: "agent",
-          defaultTrustTier: "sandbox",
+          defaultPolicy: "sandbox",
         }),
       ).ok,
     ).toBe(false);

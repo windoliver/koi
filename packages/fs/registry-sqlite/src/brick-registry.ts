@@ -146,14 +146,14 @@ export function createSqliteBrickRegistry(config: RegistrySqliteConfig): SqliteB
         if (existing !== null) {
           isUpdate = true;
           db.run(
-            `UPDATE bricks SET brick_id = ?, description = ?, scope = ?, trust_tier = ?,
+            `UPDATE bricks SET brick_id = ?, description = ?, scope = ?, sandbox = ?,
              lifecycle = ?, version = ?, usage_count = ?, created_at = ?, data = ?
              WHERE rowid = ?`,
             [
               brick.id,
               brick.description,
               brick.scope,
-              brick.trustTier,
+              brick.policy.sandbox ? 1 : 0,
               brick.lifecycle,
               brick.version,
               brick.usageCount,
@@ -173,7 +173,7 @@ export function createSqliteBrickRegistry(config: RegistrySqliteConfig): SqliteB
           insertFts(existing.rowid, brick.name, brick.description, brick.tags);
         } else {
           db.run(
-            `INSERT INTO bricks (brick_id, kind, name, description, scope, trust_tier,
+            `INSERT INTO bricks (brick_id, kind, name, description, scope, sandbox,
              lifecycle, version, usage_count, created_at, data)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
@@ -182,7 +182,7 @@ export function createSqliteBrickRegistry(config: RegistrySqliteConfig): SqliteB
               brick.name,
               brick.description,
               brick.scope,
-              brick.trustTier,
+              brick.policy.sandbox ? 1 : 0,
               brick.lifecycle,
               brick.version,
               brick.usageCount,

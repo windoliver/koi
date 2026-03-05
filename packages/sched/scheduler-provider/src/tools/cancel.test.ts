@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockSchedulerComponent } from "../test-helpers.js";
 import { createCancelTool } from "./cancel.js";
 
 describe("createCancelTool", () => {
   test("returns cancelled: true on success", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createCancelTool(component, "scheduler", "verified");
+    const tool = createCancelTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ taskId: "task-1" })) as {
       readonly cancelled: boolean;
     };
@@ -15,7 +16,7 @@ describe("createCancelTool", () => {
 
   test("passes branded TaskId to component", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createCancelTool(component, "scheduler", "verified");
+    const tool = createCancelTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ taskId: "task-42" });
 
     expect(component.calls).toHaveLength(1);
@@ -25,7 +26,7 @@ describe("createCancelTool", () => {
 
   test("returns validation error when taskId missing", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createCancelTool(component, "scheduler", "verified");
+    const tool = createCancelTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly error: string;
       readonly code: string;
@@ -42,7 +43,7 @@ describe("createCancelTool", () => {
         throw new Error("not found");
       },
     };
-    const tool = createCancelTool(component, "scheduler", "verified");
+    const tool = createCancelTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ taskId: "task-99" })) as {
       readonly error: string;
       readonly code: string;
@@ -54,7 +55,7 @@ describe("createCancelTool", () => {
 
   test("descriptor has correct name", () => {
     const component = createMockSchedulerComponent();
-    const tool = createCancelTool(component, "sched", "sandbox");
+    const tool = createCancelTool(component, "sched", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("sched_cancel");
   });
 });

@@ -3,7 +3,8 @@
  */
 
 import { describe, expect, it, mock } from "bun:test";
-import type { TrustTier } from "@koi/core/ecs";
+import type { ToolPolicy } from "@koi/core/ecs";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core/ecs";
 import type {
   CapabilityFragment,
   ToolHandler,
@@ -20,28 +21,28 @@ import { createSandboxMiddleware } from "./sandbox-middleware.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeProfile(tier: TrustTier, timeoutMs: number): SandboxProfile {
+/** Policy for sandboxed tools with tight timeout profile. */
+const SANDBOXED_POLICY: ToolPolicy = DEFAULT_SANDBOXED_POLICY;
+
+/** Policy for unsandboxed tools — pass through without wrapping. */
+const UNSANDBOXED_POLICY: ToolPolicy = DEFAULT_UNSANDBOXED_POLICY;
+
+function makeProfile(timeoutMs: number): SandboxProfile {
   return {
-    tier,
     filesystem: {},
     network: { allow: false },
     resources: { timeoutMs },
   };
 }
 
-const SANDBOX_PROFILE = makeProfile("sandbox", 50);
-const VERIFIED_PROFILE = makeProfile("verified", 200);
-const PROMOTED_PROFILE = makeProfile("promoted", 1000);
+const SANDBOX_PROFILE = makeProfile(50);
+const PERMISSIVE_PROFILE = makeProfile(200);
 
-function profileFor(tier: TrustTier): SandboxProfile {
-  switch (tier) {
-    case "sandbox":
-      return SANDBOX_PROFILE;
-    case "verified":
-      return VERIFIED_PROFILE;
-    case "promoted":
-      return PROMOTED_PROFILE;
+function profileFor(policy: ToolPolicy): SandboxProfile {
+  if (!policy.sandbox) {
+    return PERMISSIVE_PROFILE;
   }
+  return SANDBOX_PROFILE;
 }
 
 function makeRequest(toolId: string): ToolRequest {
@@ -49,12 +50,12 @@ function makeRequest(toolId: string): ToolRequest {
 }
 
 function makeConfig(
-  tierMap: Record<string, TrustTier | undefined>,
+  policyMap: Record<string, ToolPolicy | undefined>,
   overrides?: Partial<SandboxMiddlewareConfig>,
 ): SandboxMiddlewareConfig {
   return {
     profileFor,
-    tierFor: (toolId: string) => tierMap[toolId],
+    policyFor: (toolId: string) => policyMap[toolId],
     ...overrides,
   };
 }
@@ -74,9 +75,9 @@ function createDelayHandler(delayMs: number, response?: Partial<ToolResponse>): 
 // ---------------------------------------------------------------------------
 
 describe("createSandboxMiddleware", () => {
-  describe("tier resolution", () => {
-    it("passes through promoted tools without wrapping", async () => {
-      const mw = createSandboxMiddleware(makeConfig({ "my-tool": "promoted" }));
+  describe("policy resolution", () => {
+    it("passes through unsandboxed tools without wrapping", async () => {
+      const mw = createSandboxMiddleware(makeConfig({ "my-tool": UNSANDBOXED_POLICY }));
       const spy = createSpyToolHandler({ output: { ok: true } });
       const request = makeRequest("my-tool");
 
@@ -86,9 +87,9 @@ describe("createSandboxMiddleware", () => {
       expect(spy.calls).toHaveLength(1);
     });
 
-    it("wraps sandbox-tier tools with timeout enforcement", async () => {
+    it("wraps sandboxed tools with timeout enforcement", async () => {
       const mw = createSandboxMiddleware(
-        makeConfig({ "code-exec": "sandbox" }, { timeoutGraceMs: 100 }),
+        makeConfig({ "code-exec": SANDBOXED_POLICY }, { timeoutGraceMs: 100 }),
       );
       const spy = createSpyToolHandler({ output: { ran: true } });
       const request = makeRequest("code-exec");
@@ -99,9 +100,14 @@ describe("createSandboxMiddleware", () => {
       expect(spy.calls).toHaveLength(1);
     });
 
-    it("wraps verified-tier tools with permissive profile", async () => {
+    it("wraps sandboxed tools with permissive profile when configured", async () => {
+      // Use a custom profileFor that returns the permissive profile for all policies
+      const customProfileFor = (_policy: ToolPolicy): SandboxProfile => PERMISSIVE_PROFILE;
       const mw = createSandboxMiddleware(
-        makeConfig({ "trusted-tool": "verified" }, { timeoutGraceMs: 100 }),
+        makeConfig(
+          { "trusted-tool": SANDBOXED_POLICY },
+          { timeoutGraceMs: 100, profileFor: customProfileFor },
+        ),
       );
       const spy = createSpyToolHandler({ output: { verified: true } });
       const request = makeRequest("trusted-tool");
@@ -112,9 +118,9 @@ describe("createSandboxMiddleware", () => {
       expect(spy.calls).toHaveLength(1);
     });
 
-    it("treats unknown tools as sandbox when failClosed=true", async () => {
+    it("treats unknown tools as sandboxed when failClosed=true", async () => {
       const onMetrics = mock(
-        (_toolId: string, _tier: TrustTier, _d: number, _b: number, _t: boolean) => {},
+        (_toolId: string, _policy: ToolPolicy, _d: number, _b: number, _t: boolean) => {},
       );
       const mw = createSandboxMiddleware(
         makeConfig(
@@ -128,15 +134,15 @@ describe("createSandboxMiddleware", () => {
       const response = await mw.wrapToolCall?.(ctx, request, spy.handler);
 
       expect(response?.output).toEqual({ fallback: true });
-      // Metrics should fire with "sandbox" tier (fail-closed fallback)
+      // Metrics should fire with DEFAULT_SANDBOXED_POLICY (fail-closed fallback)
       expect(onMetrics).toHaveBeenCalledTimes(1);
       const call = onMetrics.mock.calls.at(0);
-      expect(call?.at(1)).toBe("sandbox");
+      expect(call?.at(1)).toEqual(DEFAULT_SANDBOXED_POLICY);
     });
 
     it("passes through unknown tools when failClosed=false", async () => {
       const onMetrics = mock(
-        (_toolId: string, _tier: TrustTier, _d: number, _b: number, _t: boolean) => {},
+        (_toolId: string, _policy: ToolPolicy, _d: number, _b: number, _t: boolean) => {},
       );
       const mw = createSandboxMiddleware(
         makeConfig(
@@ -159,7 +165,7 @@ describe("createSandboxMiddleware", () => {
     it("throws TIMEOUT when tool exceeds total timeout", async () => {
       const mw = createSandboxMiddleware(
         makeConfig(
-          { "slow-tool": "sandbox" },
+          { "slow-tool": SANDBOXED_POLICY },
           { timeoutGraceMs: 10 }, // total = 50 + 10 = 60ms
         ),
       );
@@ -177,13 +183,13 @@ describe("createSandboxMiddleware", () => {
         expect(kErr.code).toBe("TIMEOUT");
         expect(kErr.message).toContain("slow-tool");
         expect(kErr.message).toContain("60ms");
-        expect(kErr.context).toMatchObject({ toolId: "slow-tool", tier: "sandbox" });
+        expect(kErr.context).toMatchObject({ toolId: "slow-tool", sandbox: true });
       }
     });
 
     it("re-throws non-timeout errors unchanged", async () => {
       const mw = createSandboxMiddleware(
-        makeConfig({ "fail-tool": "sandbox" }, { timeoutGraceMs: 100 }),
+        makeConfig({ "fail-tool": SANDBOXED_POLICY }, { timeoutGraceMs: 100 }),
       );
       const customError = new Error("something broke");
       const handler: ToolHandler = async () => {
@@ -200,10 +206,10 @@ describe("createSandboxMiddleware", () => {
     });
 
     it("uses grace period: middleware fires after profile timeout + grace", async () => {
-      // Profile timeout = 50ms, grace = 30ms → total = 80ms
+      // Profile timeout = 50ms, grace = 30ms -> total = 80ms
       // Handler takes 40ms — within 80ms, so should succeed
       const mw = createSandboxMiddleware(
-        makeConfig({ "borderline-tool": "sandbox" }, { timeoutGraceMs: 30 }),
+        makeConfig({ "borderline-tool": SANDBOXED_POLICY }, { timeoutGraceMs: 30 }),
       );
       const handler = createDelayHandler(40);
       const request = makeRequest("borderline-tool");
@@ -217,7 +223,10 @@ describe("createSandboxMiddleware", () => {
   describe("output truncation", () => {
     it("does not truncate output within limit", async () => {
       const mw = createSandboxMiddleware(
-        makeConfig({ "small-tool": "sandbox" }, { outputLimitBytes: 1024, timeoutGraceMs: 100 }),
+        makeConfig(
+          { "small-tool": SANDBOXED_POLICY },
+          { outputLimitBytes: 1024, timeoutGraceMs: 100 },
+        ),
       );
       const spy = createSpyToolHandler({ output: { data: "small" } });
       const request = makeRequest("small-tool");
@@ -231,7 +240,7 @@ describe("createSandboxMiddleware", () => {
     it("truncates output exceeding limit with metadata", async () => {
       // Set a very small limit to trigger truncation
       const mw = createSandboxMiddleware(
-        makeConfig({ "big-tool": "sandbox" }, { outputLimitBytes: 10, timeoutGraceMs: 100 }),
+        makeConfig({ "big-tool": SANDBOXED_POLICY }, { outputLimitBytes: 10, timeoutGraceMs: 100 }),
       );
       const largeOutput = { data: "this is a string that is definitely longer than 10 bytes" };
       const spy = createSpyToolHandler({ output: largeOutput });
@@ -254,7 +263,7 @@ describe("createSandboxMiddleware", () => {
       const overrides = new Map([["slow-but-ok", { timeoutMs: 200 }]]);
       const mw = createSandboxMiddleware(
         makeConfig(
-          { "slow-but-ok": "sandbox" },
+          { "slow-but-ok": SANDBOXED_POLICY },
           { perToolOverrides: overrides, timeoutGraceMs: 10 },
         ),
       );
@@ -265,16 +274,13 @@ describe("createSandboxMiddleware", () => {
       expect(response?.output).toEqual({ result: "delayed" });
     });
 
-    it("respects skipTiers config", async () => {
+    it("passes through unsandboxed tools without metrics", async () => {
       const onMetrics = mock(
-        (_toolId: string, _tier: TrustTier, _d: number, _b: number, _t: boolean) => {},
+        (_toolId: string, _policy: ToolPolicy, _d: number, _b: number, _t: boolean) => {},
       );
-      // Skip verified tier (not just promoted)
+      // Unsandboxed tools should pass through without sandbox wrapping
       const mw = createSandboxMiddleware(
-        makeConfig(
-          { "ver-tool": "verified" },
-          { skipTiers: ["promoted", "verified"], onSandboxMetrics: onMetrics },
-        ),
+        makeConfig({ "ver-tool": UNSANDBOXED_POLICY }, { onSandboxMetrics: onMetrics }),
       );
       const spy = createSpyToolHandler({ output: { skipped: true } });
       const request = makeRequest("ver-tool");
@@ -282,7 +288,7 @@ describe("createSandboxMiddleware", () => {
       const response = await mw.wrapToolCall?.(ctx, request, spy.handler);
 
       expect(response?.output).toEqual({ skipped: true });
-      // No metrics — skipped tier
+      // No metrics — unsandboxed tool bypasses sandbox wrapping
       expect(onMetrics).toHaveBeenCalledTimes(0);
     });
 
@@ -296,7 +302,7 @@ describe("createSandboxMiddleware", () => {
   describe("signal threading", () => {
     it("threads signal to next handler via ToolRequest.signal", async () => {
       const mw = createSandboxMiddleware(
-        makeConfig({ "sig-tool": "sandbox" }, { timeoutGraceMs: 5_000 }),
+        makeConfig({ "sig-tool": SANDBOXED_POLICY }, { timeoutGraceMs: 5_000 }),
       );
       // let justified: captured from inside the handler
       let capturedSignal: AbortSignal | undefined;
@@ -315,7 +321,7 @@ describe("createSandboxMiddleware", () => {
 
     it("composes upstream signal with sandbox timeout", async () => {
       const mw = createSandboxMiddleware(
-        makeConfig({ "compose-tool": "sandbox" }, { timeoutGraceMs: 5_000 }),
+        makeConfig({ "compose-tool": SANDBOXED_POLICY }, { timeoutGraceMs: 5_000 }),
       );
       const upstreamController = new AbortController();
       // let justified: captured from inside the handler
@@ -343,9 +349,14 @@ describe("createSandboxMiddleware", () => {
 
   describe("observability", () => {
     it("calls onSandboxError on timeout", async () => {
-      const onError = mock((_toolId: string, _tier: TrustTier, _code: string, _msg: string) => {});
+      const onError = mock(
+        (_toolId: string, _policy: ToolPolicy, _code: string, _msg: string) => {},
+      );
       const mw = createSandboxMiddleware(
-        makeConfig({ "timeout-tool": "sandbox" }, { timeoutGraceMs: 10, onSandboxError: onError }),
+        makeConfig(
+          { "timeout-tool": SANDBOXED_POLICY },
+          { timeoutGraceMs: 10, onSandboxError: onError },
+        ),
       );
       const handler = createDelayHandler(500);
       const request = makeRequest("timeout-tool");
@@ -359,17 +370,17 @@ describe("createSandboxMiddleware", () => {
       expect(onError).toHaveBeenCalledTimes(1);
       const call = onError.mock.calls.at(0);
       expect(call?.at(0)).toBe("timeout-tool");
-      expect(call?.at(1)).toBe("sandbox");
+      expect(call?.at(1)).toEqual(SANDBOXED_POLICY);
       expect(call?.at(2)).toBe("TIMEOUT");
     });
 
     it("calls onSandboxMetrics for every sandboxed call", async () => {
       const onMetrics = mock(
-        (_toolId: string, _tier: TrustTier, _d: number, _b: number, _t: boolean) => {},
+        (_toolId: string, _policy: ToolPolicy, _d: number, _b: number, _t: boolean) => {},
       );
       const mw = createSandboxMiddleware(
         makeConfig(
-          { "metric-tool": "sandbox" },
+          { "metric-tool": SANDBOXED_POLICY },
           { timeoutGraceMs: 100, onSandboxMetrics: onMetrics },
         ),
       );
@@ -381,7 +392,7 @@ describe("createSandboxMiddleware", () => {
       expect(onMetrics).toHaveBeenCalledTimes(1);
       const call = onMetrics.mock.calls.at(0);
       expect(call?.at(0)).toBe("metric-tool");
-      expect(call?.at(1)).toBe("sandbox");
+      expect(call?.at(1)).toEqual(SANDBOXED_POLICY);
       expect(typeof call?.at(2)).toBe("number");
       expect(typeof call?.at(3)).toBe("number");
       expect(call?.at(4)).toBe(false);
@@ -391,7 +402,7 @@ describe("createSandboxMiddleware", () => {
   describe("fast-path throwIfAborted", () => {
     it("throws immediately when composed signal is already aborted", async () => {
       const mw = createSandboxMiddleware(
-        makeConfig({ "abort-tool": "sandbox" }, { timeoutGraceMs: 5_000 }),
+        makeConfig({ "abort-tool": SANDBOXED_POLICY }, { timeoutGraceMs: 5_000 }),
       );
       const spy = createSpyToolHandler({ output: { should: "not reach" } });
       const controller = new AbortController();

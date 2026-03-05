@@ -2,7 +2,7 @@
  * Tool factory for `browser_wait` — waits for a timeout, selector, or navigation.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import {
   parseOptionalSelectorState,
   parseOptionalTimeout,
@@ -18,7 +18,7 @@ const MAX_WAIT_TIMEOUT_MS = 30_000;
 export function createBrowserWaitTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -57,7 +57,8 @@ export function createBrowserWaitTool(
         required: ["kind"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const kindResult = parseWaitKind(args, "kind");
       if (!kindResult.ok) return kindResult.err;

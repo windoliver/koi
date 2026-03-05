@@ -21,7 +21,7 @@ import type {
   ToolHandler,
   ToolRequest,
 } from "@koi/core";
-import { brickId, toolToken } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import type { ForgeDeps, PromoteResult, ToolArtifact } from "@koi/forge";
@@ -60,7 +60,8 @@ function createTestBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     name: "test-brick",
     description: "A test brick for atomic promote E2E",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "forged",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -82,8 +83,6 @@ function createTestDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
     config: createDefaultForgeConfig({
       scopePromotion: {
         requireHumanApproval: false,
-        minTrustForZone: "sandbox",
-        minTrustForGlobal: "promoted",
       },
     }),
     // agentId must match DEFAULT_PROVENANCE.metadata.agentId ("agent-1")
@@ -99,8 +98,8 @@ function createTestDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
 // ---------------------------------------------------------------------------
 
 describe("e2e: atomic promote_forge through full createKoi stack", () => {
-  test("promote_forge atomically changes scope + trust via promoteAndUpdate()", async () => {
-    // 1. Set up forge store with a test brick (agent scope, sandbox trust)
+  test("promote_forge atomically changes scope + lifecycle via promoteAndUpdate()", async () => {
+    // 1. Set up forge store with a test brick (agent scope, active lifecycle)
     const store = createInMemoryForgeStore();
     const brick = createTestBrick();
     await store.save(brick);
@@ -149,7 +148,7 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
       modelCall: async () => {
         callCount++;
         if (callCount === 1) {
-          // Phase 1: force promote_forge call
+          // Phase 1: force promote_forge call (scope + lifecycle atomically)
           return {
             content: "I'll promote the brick.",
             model: MODEL_NAME,
@@ -162,7 +161,7 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
                   input: {
                     brickId: "brick_e2e_atomic",
                     targetScope: "zone",
-                    targetTrustTier: "verified",
+                    targetLifecycle: "deprecated",
                   },
                 },
               ],
@@ -171,7 +170,7 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
         }
         // Phase 2: final answer
         return {
-          content: "The brick has been promoted to zone scope with verified trust tier.",
+          content: "The brick has been promoted to zone scope with deprecated lifecycle.",
           model: MODEL_NAME,
           usage: { inputTokens: 20, outputTokens: 15 },
         };
@@ -195,7 +194,7 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
       const events = await collectEvents(
         runtime.run({
           kind: "text",
-          text: "Promote brick_e2e_atomic to zone scope with verified trust",
+          text: "Promote brick_e2e_atomic to zone scope with deprecated lifecycle",
         }),
       );
 
@@ -224,7 +223,7 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
         expect(typed.value.applied).toBe(true);
         expect(typed.value.requiresHumanApproval).toBe(false);
         expect(typed.value.changes.scope).toEqual({ from: "agent", to: "zone" });
-        expect(typed.value.changes.trustTier).toEqual({ from: "sandbox", to: "verified" });
+        expect(typed.value.changes.lifecycle).toEqual({ from: "active", to: "deprecated" });
       }
 
       // --- Verify middleware intercepted tool call ---
@@ -236,12 +235,12 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
       expect(hookLog).toContain("turn:before");
       expect(hookLog).toContain("turn:after");
 
-      // --- Verify store state (atomic: both scope + trust changed) ---
+      // --- Verify store state (atomic: both scope + lifecycle changed) ---
       const loadResult = await store.load(brickId("brick_e2e_atomic"));
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
         expect(loadResult.value.scope).toBe("zone");
-        expect(loadResult.value.trustTier).toBe("verified");
+        expect(loadResult.value.lifecycle).toBe("deprecated");
       }
 
       // Model was called twice (tool call + final answer)
@@ -257,7 +256,7 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
     const brick = createTestBrick({
       id: brickId("brick_multiform"),
       scope: "agent",
-      trustTier: "sandbox",
+      policy: DEFAULT_SANDBOXED_POLICY,
       lifecycle: "active",
       tags: ["existing-tag"],
     });
@@ -508,12 +507,12 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
   }, 30_000);
 
   test("multiple sequential promotes through L1 runtime", async () => {
-    // Two promote calls in sequence: first changes scope, second changes trust
+    // Two promote calls in sequence: first changes scope, second changes lifecycle
     const store = createInMemoryForgeStore();
     const brick = createTestBrick({
       id: brickId("brick_sequential"),
       scope: "agent",
-      trustTier: "sandbox",
+      policy: DEFAULT_SANDBOXED_POLICY,
       lifecycle: "active",
     });
     await store.save(brick);
@@ -555,9 +554,9 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
           };
         }
         if (callCount === 2) {
-          // Second call: promote trust to verified
+          // Second call: promote lifecycle to deprecated
           return {
-            content: "Second promotion — trust change.",
+            content: "Second promotion — lifecycle change.",
             model: MODEL_NAME,
             usage: { inputTokens: 15, outputTokens: 10 },
             metadata: {
@@ -567,7 +566,7 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
                   callId: "call-seq-2",
                   input: {
                     brickId: "brick_sequential",
-                    targetTrustTier: "verified",
+                    targetLifecycle: "deprecated",
                   },
                 },
               ],
@@ -592,7 +591,7 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
 
     try {
       const events = await collectEvents(
-        runtime.run({ kind: "text", text: "Promote brick scope then trust" }),
+        runtime.run({ kind: "text", text: "Promote brick scope then lifecycle" }),
       );
 
       const doneEvent = events.find((e) => e.kind === "done");
@@ -607,7 +606,7 @@ describe("e2e: atomic promote_forge through full createKoi stack", () => {
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
         expect(loadResult.value.scope).toBe("zone");
-        expect(loadResult.value.trustTier).toBe("verified");
+        expect(loadResult.value.lifecycle).toBe("deprecated");
       }
 
       expect(callCount).toBe(3);

@@ -7,7 +7,7 @@
 
 import type { Database } from "bun:sqlite";
 
-const LATEST_VERSION = 3;
+const LATEST_VERSION = 4;
 
 const V1_UP = `
 CREATE TABLE IF NOT EXISTS bricks (
@@ -41,6 +41,14 @@ const V2_UP = `ALTER TABLE bricks DROP COLUMN content_hash;`;
 /** V3: Add trail_strength column for stigmergic coordination. */
 const V3_UP = `ALTER TABLE bricks ADD COLUMN trail_strength REAL;`;
 
+/** V4: Replace trust_tier TEXT with sandbox INTEGER + capabilities_json TEXT + origin TEXT. */
+const V4_UP = `
+ALTER TABLE bricks ADD COLUMN sandbox INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE bricks ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE bricks ADD COLUMN origin TEXT NOT NULL DEFAULT 'forged';
+ALTER TABLE bricks DROP COLUMN trust_tier;
+`;
+
 interface UserVersionRow {
   readonly user_version: number;
 }
@@ -63,6 +71,10 @@ export function applyMigrations(db: Database): void {
     // V3: add trail_strength column
     if (currentVersion < 3) {
       db.exec(V3_UP);
+    }
+    // V4: replace trust_tier with sandbox + capabilities_json + origin
+    if (currentVersion < 4) {
+      db.exec(V4_UP);
     }
     db.exec(`PRAGMA user_version = ${LATEST_VERSION}`);
   })();

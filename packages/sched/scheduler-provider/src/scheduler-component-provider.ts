@@ -19,9 +19,9 @@ import type {
   TaskOptions,
   TaskScheduler,
   Tool,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
-import { SCHEDULER, skillToken, toolToken } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, SCHEDULER, skillToken, toolToken } from "@koi/core";
 import type { SchedulerOperation } from "./constants.js";
 import {
   DEFAULT_HISTORY_DEFAULT,
@@ -44,7 +44,7 @@ import { createUnscheduleTool } from "./tools/unschedule.js";
 
 export interface SchedulerProviderConfig {
   readonly scheduler: TaskScheduler;
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   readonly prefix?: string;
   readonly operations?: readonly SchedulerOperation[];
   /** Max results from query tool. Default: 50. */
@@ -100,7 +100,7 @@ function createSchedulerComponentForAgent(
 type ToolFactory = (
   component: SchedulerComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   queryLimit?: number,
   queryDefault?: number,
   historyLimit?: number,
@@ -122,7 +122,7 @@ const TOOL_FACTORIES: Readonly<Record<SchedulerOperation, ToolFactory>> = {
 export function createSchedulerProvider(config: SchedulerProviderConfig): ComponentProvider {
   const {
     scheduler,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = DEFAULT_PREFIX,
     operations = OPERATIONS,
     queryLimit = DEFAULT_QUERY_LIMIT,
@@ -142,7 +142,7 @@ export function createSchedulerProvider(config: SchedulerProviderConfig): Compon
         const tool = factory(
           component,
           prefix,
-          trustTier,
+          policy,
           queryLimit,
           queryDefault,
           historyLimit,

@@ -54,7 +54,6 @@ export function createAgentSpawner(config: AgentSpawnerConfig): AgentSpawner {
       : { allowWrite: ["/tmp"] };
 
   const defaultProfile: SandboxProfile = {
-    tier: "sandbox",
     filesystem,
     network: { allow: true },
     resources: {

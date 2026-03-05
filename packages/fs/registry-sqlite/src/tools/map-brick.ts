@@ -16,7 +16,7 @@ export function mapBrickSummary(brick: BrickArtifact): JsonObject {
     description: brick.description,
     version: brick.version,
     tags: [...brick.tags],
-    trustTier: brick.trustTier,
+    policy: brick.policy,
     lifecycle: brick.lifecycle,
     scope: brick.scope,
     usageCount: brick.usageCount,
@@ -81,7 +81,7 @@ export function mapBrickInstallSummary(brick: BrickArtifact): JsonObject {
     description: brick.description,
     version: brick.version,
     tags: [...brick.tags],
-    trustTier: brick.trustTier,
+    policy: brick.policy,
     lifecycle: brick.lifecycle,
     scope: brick.scope,
   };

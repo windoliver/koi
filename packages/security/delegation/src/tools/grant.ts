@@ -5,7 +5,7 @@
  * agent invocation during an agentic loop.
  */
 
-import type { AgentId, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { AgentId, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { agentId as toAgentId, delegationId as toDelegationId } from "@koi/core";
 import type { DelegationManager } from "../delegation-manager.js";
 
@@ -68,7 +68,7 @@ export function createDelegationGrantTool(
   manager: DelegationManager,
   ownerAgentId: AgentId,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -102,7 +102,8 @@ export function createDelegationGrantTool(
         required: ["delegateeId", "permissions"],
       },
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const input = validateGrantInput(args);
 

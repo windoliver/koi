@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS bricks (
   name         TEXT    NOT NULL,
   description  TEXT    NOT NULL DEFAULT '',
   scope        TEXT    NOT NULL,
-  trust_tier   TEXT    NOT NULL,
+  sandbox      INTEGER NOT NULL DEFAULT 1,
   lifecycle    TEXT    NOT NULL,
   version      TEXT    NOT NULL,
   usage_count  INTEGER NOT NULL DEFAULT 0,

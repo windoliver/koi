@@ -184,7 +184,7 @@ interface SlsaKoiExtensions {
     readonly koi_contentMarkers: readonly string[];
     readonly koi_verification: {
         readonly passed: boolean;
-        readonly finalTrustTier: string;
+        readonly sandbox: string;
         readonly totalDurationMs: number;
     };
 }

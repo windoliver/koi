@@ -17,7 +17,7 @@ import type {
   Result,
   SkillArtifact,
 } from "@koi/core";
-import { brickId, forgedSkill, fsSkill } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, forgedSkill, fsSkill } from "@koi/core";
 import { clearSkillCache } from "../loader.js";
 import { clearForgeSkillCache } from "../loader-forge.js";
 import { createSkillComponentProvider } from "../provider.js";
@@ -50,7 +50,8 @@ function createMockArtifact(overrides?: Partial<SkillArtifact>): SkillArtifact {
     name: "forged-review",
     description: "A forged code review skill.",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: {
       builder: { id: "test" },

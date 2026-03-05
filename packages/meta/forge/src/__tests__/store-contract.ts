@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ForgeProvenance, ForgeStore, StoreChangeEvent } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import {
   createTestSkillArtifact,
   createTestToolArtifact,
@@ -78,7 +78,8 @@ export function describeForgeStoreContract(
         name: "roundtrip-tool",
         description: "roundtrip description",
         scope: "global",
-        trustTier: "verified",
+        origin: "primordial",
+        policy: DEFAULT_UNSANDBOXED_POLICY,
         lifecycle: "active",
         tags: ["alpha", "beta"],
         usageCount: 42,
@@ -94,7 +95,7 @@ export function describeForgeStoreContract(
         expect(loadResult.value.name).toBe("roundtrip-tool");
         expect(loadResult.value.description).toBe("roundtrip description");
         expect(loadResult.value.scope).toBe("global");
-        expect(loadResult.value.trustTier).toBe("verified");
+        expect(loadResult.value.policy.sandbox).toBe(false);
         expect(loadResult.value.lifecycle).toBe("active");
         expect(loadResult.value.tags).toEqual(["alpha", "beta"]);
         expect(loadResult.value.usageCount).toBe(42);
@@ -159,17 +160,31 @@ export function describeForgeStoreContract(
       }
     });
 
-    test("search filters by trustTier", async () => {
+    test("search filters by policy", async () => {
       const store = await createStore();
-      await store.save(toolBrick({ id: brickId("tt_1"), trustTier: "sandbox" }));
-      await store.save(toolBrick({ id: brickId("tt_2"), trustTier: "verified" }));
-      await store.save(toolBrick({ id: brickId("tt_3"), trustTier: "promoted" }));
+      await store.save(
+        toolBrick({ id: brickId("tt_1"), origin: "primordial", policy: DEFAULT_SANDBOXED_POLICY }),
+      );
+      await store.save(
+        toolBrick({
+          id: brickId("tt_2"),
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
+        }),
+      );
+      await store.save(
+        toolBrick({
+          id: brickId("tt_3"),
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
+        }),
+      );
 
-      const result = await store.search({ trustTier: "verified" });
+      const result = await store.search({ sandbox: false });
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value.length).toBe(1);
-        expect(result.value[0]?.trustTier).toBe("verified");
+        expect(result.value.length).toBe(2);
+        expect(result.value.every((b) => b.policy.sandbox === false)).toBe(true);
       }
     });
 
@@ -346,17 +361,17 @@ export function describeForgeStoreContract(
       }
     });
 
-    test("update modifies trustTier", async () => {
+    test("update modifies policy", async () => {
       const store = await createStore();
       const id = brickId("up_tt");
-      await store.save(toolBrick({ id, trustTier: "sandbox" }));
+      await store.save(toolBrick({ id, origin: "primordial", policy: DEFAULT_SANDBOXED_POLICY }));
 
-      await store.update(id, { trustTier: "verified" });
+      await store.update(id, { policy: DEFAULT_UNSANDBOXED_POLICY });
 
       const loadResult = await store.load(id);
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
-        expect(loadResult.value.trustTier).toBe("verified");
+        expect(loadResult.value.policy.sandbox).toBe(false);
       }
     });
 

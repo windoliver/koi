@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockSchedulerComponent } from "../test-helpers.js";
 import { createScheduleTool } from "./schedule.js";
 
 describe("createScheduleTool", () => {
   test("returns scheduleId on success", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createScheduleTool(component, "scheduler", "verified");
+    const tool = createScheduleTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       expression: "0 0 * * *",
       input: "daily task",
@@ -17,7 +18,7 @@ describe("createScheduleTool", () => {
 
   test("passes timezone and priority to component", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createScheduleTool(component, "scheduler", "verified");
+    const tool = createScheduleTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({
       expression: "0 9 * * 1-5",
       input: "weekday task",
@@ -38,7 +39,7 @@ describe("createScheduleTool", () => {
 
   test("returns validation error when expression missing", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createScheduleTool(component, "scheduler", "verified");
+    const tool = createScheduleTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ input: "x", mode: "spawn" })) as {
       readonly error: string;
       readonly code: string;
@@ -50,7 +51,7 @@ describe("createScheduleTool", () => {
 
   test("returns validation error when mode is invalid", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createScheduleTool(component, "scheduler", "verified");
+    const tool = createScheduleTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       expression: "* * * * *",
       input: "x",
@@ -66,8 +67,8 @@ describe("createScheduleTool", () => {
 
   test("descriptor has correct name", () => {
     const component = createMockSchedulerComponent();
-    const tool = createScheduleTool(component, "sched", "promoted");
+    const tool = createScheduleTool(component, "sched", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("sched_schedule");
-    expect(tool.trustTier).toBe("promoted");
+    expect(tool.policy.sandbox).toBe(false);
   });
 });

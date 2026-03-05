@@ -38,7 +38,7 @@ describe("ForgeProvenance", () => {
     },
     verification: {
       passed: true,
-      finalTrustTier: "sandbox",
+      sandbox: true,
       totalDurationMs: 1000,
       stageResults: [
         { stage: "static", passed: true, durationMs: 100 },
@@ -124,7 +124,7 @@ describe("ForgeProvenance with BrickSource composition", () => {
       },
       verification: {
         passed: true,
-        finalTrustTier: "sandbox",
+        sandbox: true,
         totalDurationMs: 1,
         stageResults: [],
       },
@@ -150,7 +150,7 @@ describe("ForgeProvenance with BrickSource composition", () => {
       },
       verification: {
         passed: true,
-        finalTrustTier: "verified",
+        sandbox: false,
         totalDurationMs: 1,
         stageResults: [],
       },
@@ -176,7 +176,7 @@ describe("ForgeProvenance with BrickSource composition", () => {
       },
       verification: {
         passed: true,
-        finalTrustTier: "promoted",
+        sandbox: false,
         totalDurationMs: 1,
         stageResults: [],
       },
@@ -194,7 +194,7 @@ describe("ForgeVerificationSummary", () => {
   test("contains stage digests for 4-stage pipeline", () => {
     const summary: ForgeVerificationSummary = {
       passed: true,
-      finalTrustTier: "sandbox",
+      sandbox: true,
       totalDurationMs: 1000,
       stageResults: [
         { stage: "static", passed: true, durationMs: 100 },

@@ -1,18 +1,13 @@
 /**
- * Usage-based auto-promotion — tracks brick usage and promotes trust tier
- * when configurable thresholds are crossed.
+ * Usage recording — tracks brick usage count and fitness metrics.
+ *
+ * Auto-promotion was removed (security risk: auto-unsandboxing).
+ * Policy changes require explicit operator decisions.
  */
 
-import type {
-  BrickArtifact,
-  BrickFitnessMetrics,
-  ForgeStore,
-  KoiError,
-  Result,
-  TrustTier,
-} from "@koi/core";
+import type { BrickArtifact, BrickFitnessMetrics, ForgeStore, KoiError, Result } from "@koi/core";
 import { DEFAULT_BRICK_FITNESS, DEFAULT_TRAIL_STRENGTH, brickId as toBrickId } from "@koi/core";
-import type { AutoPromotionConfig, ForgeConfig, ForgeError } from "@koi/forge-types";
+import type { ForgeConfig, ForgeError } from "@koi/forge-types";
 import { storeError } from "@koi/forge-types";
 import { computeTrailReinforcement, recordLatency } from "@koi/validation";
 
@@ -26,15 +21,7 @@ export interface UsageRecordedResult {
   readonly newUsageCount: number;
 }
 
-export interface UsagePromotedResult {
-  readonly kind: "promoted";
-  readonly brickId: string;
-  readonly newUsageCount: number;
-  readonly previousTier: TrustTier;
-  readonly newTier: TrustTier;
-}
-
-export type UsageResult = UsageRecordedResult | UsagePromotedResult;
+export type UsageResult = UsageRecordedResult;
 
 // ---------------------------------------------------------------------------
 // Usage signal (fitness-aware usage tracking)
@@ -48,45 +35,7 @@ export interface UsageSignal {
 }
 
 // ---------------------------------------------------------------------------
-// Trust tier ordering (for threshold comparisons)
-// ---------------------------------------------------------------------------
-
-const TIER_ORDER: Readonly<Record<TrustTier, number>> = {
-  sandbox: 0,
-  verified: 1,
-  promoted: 2,
-} as const;
-
-// ---------------------------------------------------------------------------
-// Pure — determines if usage count crosses a promotion threshold
-// ---------------------------------------------------------------------------
-
-/**
- * Given a brick's current trust tier and its new usage count, returns the
- * tier it should be promoted to — or `undefined` if no promotion applies.
- */
-export function computeAutoPromotion(
-  currentTier: TrustTier,
-  newUsageCount: number,
-  config: AutoPromotionConfig,
-): TrustTier | undefined {
-  if (!config.enabled) {
-    return undefined;
-  }
-
-  if (currentTier === "sandbox" && newUsageCount >= config.sandboxToVerifiedThreshold) {
-    return "verified";
-  }
-
-  if (currentTier === "verified" && newUsageCount >= config.verifiedToPromotedThreshold) {
-    return "promoted";
-  }
-
-  return undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Orchestrator — loads brick, increments count, optionally promotes, persists
+// Pure — compute updated fitness metrics
 // ---------------------------------------------------------------------------
 
 function toForgeError(err: KoiError): ForgeError {
@@ -110,14 +59,14 @@ function computeUpdatedFitness(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Orchestrator — loads brick, increments count, persists
+// ---------------------------------------------------------------------------
+
 /**
  * Records a single usage of a brick. Increments `usageCount` and, when
- * auto-promotion is enabled and a threshold is crossed, promotes the
- * brick's trust tier.
- *
- * When `signal` is provided, also updates fitness metrics (success/error
- * counts, latency, recency). The `usageCount` is derived from total
- * fitness calls to stay DRY.
+ * `signal` is provided, also updates fitness metrics (success/error
+ * counts, latency, recency).
  */
 export async function recordBrickUsage(
   store: ForgeStore,
@@ -142,8 +91,6 @@ export async function recordBrickUsage(
       ? updatedFitness.successCount + updatedFitness.errorCount
       : brick.usageCount + 1;
 
-  const promotedTier = computeAutoPromotion(brick.trustTier, newUsageCount, config.autoPromotion);
-
   // Trail strength reinforcement (stigmergic coordination)
   const trailConfig = config.trail;
   const newTrailStrength =
@@ -153,26 +100,12 @@ export async function recordBrickUsage(
 
   const updateResult = await store.update(toBrickId(brickId), {
     usageCount: newUsageCount,
-    ...(promotedTier !== undefined ? { trustTier: promotedTier } : {}),
     ...(updatedFitness !== undefined ? { fitness: updatedFitness } : {}),
     ...(newTrailStrength !== undefined ? { trailStrength: newTrailStrength } : {}),
   });
 
   if (!updateResult.ok) {
     return { ok: false, error: storeError("SAVE_FAILED", updateResult.error.message) };
-  }
-
-  if (promotedTier !== undefined && TIER_ORDER[promotedTier] > TIER_ORDER[brick.trustTier]) {
-    return {
-      ok: true,
-      value: {
-        kind: "promoted",
-        brickId,
-        newUsageCount,
-        previousTier: brick.trustTier,
-        newTier: promotedTier,
-      },
-    };
   }
 
   return {

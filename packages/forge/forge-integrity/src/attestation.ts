@@ -74,7 +74,7 @@ function serializeInto(parts: string[], value: unknown): void {
 function mapVerificationSummary(report: VerificationReport): ForgeVerificationSummary {
   return {
     passed: report.passed,
-    finalTrustTier: report.finalTrustTier,
+    sandbox: report.sandbox,
     totalDurationMs: report.totalDurationMs,
     stageResults: report.stages.map((s) => ({
       stage: s.stage,

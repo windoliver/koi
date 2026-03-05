@@ -64,7 +64,8 @@ function extractMetadata(brick: BrickArtifact): BrickArtifactBase {
     name: brick.name,
     description: brick.description,
     scope: brick.scope,
-    trustTier: brick.trustTier,
+    origin: brick.origin,
+    policy: brick.policy,
     lifecycle: brick.lifecycle,
     provenance: brick.provenance,
     version: brick.version,
@@ -75,8 +76,6 @@ function extractMetadata(brick: BrickArtifact): BrickArtifactBase {
     ...(brick.fitness !== undefined ? { fitness: brick.fitness } : {}),
     ...(brick.trailStrength !== undefined ? { trailStrength: brick.trailStrength } : {}),
     ...(brick.lastVerifiedAt !== undefined ? { lastVerifiedAt: brick.lastVerifiedAt } : {}),
-    ...(brick.lastPromotedAt !== undefined ? { lastPromotedAt: brick.lastPromotedAt } : {}),
-    ...(brick.lastDemotedAt !== undefined ? { lastDemotedAt: brick.lastDemotedAt } : {}),
   };
 }
 
@@ -122,7 +121,7 @@ function computeIndexDiff(
       events.push({ kind: "saved", brickId: id });
     } else if (
       prevMeta.lifecycle !== meta.lifecycle ||
-      prevMeta.trustTier !== meta.trustTier ||
+      prevMeta.policy.sandbox !== meta.policy.sandbox ||
       prevMeta.scope !== meta.scope ||
       prevMeta.usageCount !== meta.usageCount ||
       prevMeta.trailStrength !== meta.trailStrength ||

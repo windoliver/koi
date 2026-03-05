@@ -4,8 +4,8 @@
  * Reads `agent.pid.ownerId` to route each agent to a per-user FsMemory instance.
  * Falls back to a shared FsMemory when no userId is available (backward compat).
  */
-import type { Agent, ComponentProvider, SkillComponent, Tool, TrustTier } from "@koi/core";
-import { MEMORY, skillToken, toolToken } from "@koi/core";
+import type { Agent, ComponentProvider, SkillComponent, Tool, ToolPolicy } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, MEMORY, skillToken, toolToken } from "@koi/core";
 import type { FsMemoryConfig } from "../types.js";
 import { createUserScopedMemory, type UserScopedMemory } from "../user-scoped-memory.js";
 import type { MemoryOperation } from "./constants.js";
@@ -29,7 +29,7 @@ export interface UserScopedMemoryProviderConfig {
   /** Tool name prefix. Default: "memory". */
   readonly prefix?: string | undefined;
   /** Trust tier for all tools. Default: "verified". */
-  readonly trustTier?: TrustTier | undefined;
+  readonly policy?: ToolPolicy | undefined;
   /** Subset of operations to expose. Default: all 3. */
   readonly operations?: readonly MemoryOperation[] | undefined;
   /** Max results for recall tool. Default: 10. */
@@ -46,7 +46,7 @@ export function createUserScopedMemoryProvider(
     maxCachedUsers,
     memoryConfig = {},
     prefix = DEFAULT_PREFIX,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     operations = MEMORY_OPERATIONS,
     recallLimit = DEFAULT_RECALL_LIMIT,
     searchLimit = DEFAULT_SEARCH_LIMIT,
@@ -71,9 +71,9 @@ export function createUserScopedMemoryProvider(
       const skillContent = generateMemorySkillContent(baseDir);
 
       const toolFactories: Readonly<Record<MemoryOperation, () => Tool>> = {
-        store: () => createMemoryStoreTool(memory.component, prefix, trustTier),
-        recall: () => createMemoryRecallTool(memory.component, prefix, trustTier, recallLimit),
-        search: () => createMemorySearchTool(memory, prefix, trustTier, searchLimit),
+        store: () => createMemoryStoreTool(memory.component, prefix, policy),
+        recall: () => createMemoryRecallTool(memory.component, prefix, policy, recallLimit),
+        search: () => createMemorySearchTool(memory, prefix, policy, searchLimit),
       };
 
       const toolEntries = operations.map((op) => {

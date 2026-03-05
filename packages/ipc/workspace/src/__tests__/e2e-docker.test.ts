@@ -33,7 +33,7 @@ import type {
   Tool,
   WorkspaceComponent,
 } from "@koi/core";
-import { toolToken, WORKSPACE } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken, WORKSPACE } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
@@ -186,7 +186,8 @@ const ECHO_TOOL: Tool = {
       required: ["text"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     return String(input.text ?? "");
   },

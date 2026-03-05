@@ -5,7 +5,7 @@
  * behind a Tool interface for agents to confirm they hold a permission.
  */
 
-import type { AgentId, JsonObject, PermissionBackend, Tool, TrustTier } from "@koi/core";
+import type { AgentId, JsonObject, PermissionBackend, Tool, ToolPolicy } from "@koi/core";
 import { delegationId as toDelegationId } from "@koi/core";
 import type { DelegationManager } from "../delegation-manager.js";
 
@@ -48,9 +48,10 @@ export function createDelegationCheckTool(
   permissionBackend: PermissionBackend | undefined,
   ownerAgentId: AgentId,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
+    origin: "primordial",
     descriptor: {
       name: `${prefix}_check`,
       description: "Check whether a delegated permission is valid. Returns { allowed, reason? }.",
@@ -64,7 +65,7 @@ export function createDelegationCheckTool(
         required: ["grantId", "permission"],
       },
     },
-    trustTier,
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const input = validateCheckInput(args);
 

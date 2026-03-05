@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { ForgeStore, KoiError, Result, ToolArtifact } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { AutoForgeVerifier } from "./auto-forge-middleware.js";
 import { createAutoForgeMiddleware } from "./auto-forge-middleware.js";
 import type { CrystallizedToolDescriptor } from "./forge-handler.js";
@@ -256,7 +257,7 @@ describe("createAutoForgeMiddleware", () => {
       crystallizeHandle: handle,
       forgeStore: store,
       scope: "zone",
-      trustTier: "verified",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       confidenceThreshold: 0.0,
       clock: () => 1000,
     });
@@ -268,7 +269,7 @@ describe("createAutoForgeMiddleware", () => {
     const savedBrick = (store.save as ReturnType<typeof mock>).mock.calls[0]?.[0] as ToolArtifact;
     expect(savedBrick.kind).toBe("tool");
     expect(savedBrick.scope).toBe("zone");
-    expect(savedBrick.trustTier).toBe("verified");
+    expect(savedBrick.policy.sandbox).toBe(false);
     expect(savedBrick.name).toBe("fetch-then-parse");
     expect(savedBrick.lifecycle).toBe("active");
     expect(savedBrick.tags).toContain("crystallized");

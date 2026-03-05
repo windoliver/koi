@@ -2,7 +2,7 @@
  * code_plan_create tool — Validates steps and creates a reviewable plan.
  */
 
-import type { FileEdit, FileSystemBackend, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { FileEdit, FileSystemBackend, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { generateUlid } from "@koi/hash";
 import { parseArray } from "../parse-args.js";
 import type { PlanStore } from "../plan-store.js";
@@ -19,7 +19,7 @@ export function createPlanCreateTool(
   backend: FileSystemBackend,
   store: PlanStore,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   config: ValidationConfig = DEFAULT_VALIDATION_CONFIG,
 ): Tool {
   return {
@@ -62,7 +62,8 @@ export function createPlanCreateTool(
         required: ["steps"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const stepsResult = parseArray(args, "steps");
       if (!stepsResult.ok) return stepsResult.err;

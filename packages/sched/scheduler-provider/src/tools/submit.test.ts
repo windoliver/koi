@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockSchedulerComponent } from "../test-helpers.js";
 import { createSubmitTool } from "./submit.js";
 
 describe("createSubmitTool", () => {
   test("returns taskId on success", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createSubmitTool(component, "scheduler", "verified");
+    const tool = createSubmitTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ input: "do something", mode: "spawn" })) as {
       readonly taskId: string;
     };
@@ -15,7 +16,7 @@ describe("createSubmitTool", () => {
 
   test("passes input and mode to component", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createSubmitTool(component, "scheduler", "verified");
+    const tool = createSubmitTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ input: "hello", mode: "dispatch" });
 
     expect(component.calls).toHaveLength(1);
@@ -26,7 +27,7 @@ describe("createSubmitTool", () => {
 
   test("passes optional task options", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createSubmitTool(component, "scheduler", "verified");
+    const tool = createSubmitTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({
       input: "task",
       mode: "spawn",
@@ -45,7 +46,7 @@ describe("createSubmitTool", () => {
 
   test("returns validation error when mode is invalid", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createSubmitTool(component, "scheduler", "verified");
+    const tool = createSubmitTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ input: "x", mode: "invalid" })) as {
       readonly error: string;
       readonly code: string;
@@ -57,9 +58,9 @@ describe("createSubmitTool", () => {
 
   test("descriptor has correct name and schema", () => {
     const component = createMockSchedulerComponent();
-    const tool = createSubmitTool(component, "sched", "sandbox");
+    const tool = createSubmitTool(component, "sched", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("sched_submit");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
 
     const schema = tool.descriptor.inputSchema as Record<string, unknown>;
     const required = schema.required as readonly string[];
@@ -74,7 +75,7 @@ describe("createSubmitTool", () => {
         throw new Error("scheduler unavailable");
       },
     };
-    const tool = createSubmitTool(component, "scheduler", "verified");
+    const tool = createSubmitTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ input: "x", mode: "spawn" })) as {
       readonly error: string;
       readonly code: string;

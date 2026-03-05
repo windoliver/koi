@@ -5,7 +5,7 @@
  * compile these into efficient runtime forms at construction time.
  */
 
-import type { TrustTier } from "@koi/core";
+import type { ToolPolicy } from "@koi/core";
 import type { NavigationSecurityConfig } from "./url-security.js";
 
 // ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ export interface CompiledFileSystemScope {
 
 export interface BrowserScope {
   readonly navigation: NavigationSecurityConfig;
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
 }
 
 // ---------------------------------------------------------------------------

@@ -18,10 +18,10 @@ import type {
   ForgeStore,
   KoiMiddleware,
   ToolArtifact,
-  TrustTier,
+  ToolPolicy,
   TurnContext,
 } from "@koi/core";
-import { brickId, DEFAULT_FORGE_BUDGET } from "@koi/core";
+import { brickId, DEFAULT_FORGE_BUDGET, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { CrystallizedToolDescriptor } from "./forge-handler.js";
 import { createCrystallizeForgeHandler } from "./forge-handler.js";
 import type { CrystallizationCandidate, CrystallizeHandle } from "./types.js";
@@ -62,7 +62,7 @@ export interface AutoForgeConfig {
   /** Visibility scope for forged tools. */
   readonly scope: ForgeScope;
   /** Trust tier for forged tools. Default: "sandbox". */
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   /** Max tools forged per session. Default: 3. */
   readonly maxForgedPerSession?: number;
   /** Minimum confidence to auto-forge. Default: 0.9. */
@@ -128,7 +128,7 @@ function mapDescriptorToBrick(descriptor: CrystallizedToolDescriptor, now: numbe
     },
     verification: {
       passed: true,
-      finalTrustTier: descriptor.trustTier,
+      sandbox: descriptor.policy.sandbox,
       totalDurationMs: 0,
       stageResults: [],
     },
@@ -143,7 +143,8 @@ function mapDescriptorToBrick(descriptor: CrystallizedToolDescriptor, now: numbe
     name: descriptor.name,
     description: descriptor.description,
     scope: descriptor.scope,
-    trustTier: descriptor.trustTier,
+    origin: "forged",
+    policy: descriptor.policy,
     lifecycle: "active",
     provenance,
     version: "0.1.0",
@@ -195,7 +196,7 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
     scope: config.scope,
     maxForgedPerSession: config.maxForgedPerSession ?? DEFAULT_MAX_FORGED,
     confidenceThreshold: config.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD,
-    ...(config.trustTier !== undefined ? { trustTier: config.trustTier } : {}),
+    ...(config.policy !== undefined ? { policy: config.policy } : {}),
     ...(config.onForged !== undefined ? { onForged: config.onForged } : {}),
     ...(config.onSuggested !== undefined ? { onSuggested: config.onSuggested } : {}),
   } as const;
@@ -298,7 +299,7 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       },
       verification: {
         passed: true,
-        finalTrustTier: "sandbox",
+        sandbox: true,
         totalDurationMs: 0,
         stageResults: [],
       },
@@ -313,7 +314,8 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       name: `pioneer-${triggerDesc}`,
       description: `Pioneer tool forged from demand signal: ${signal.trigger.kind}`,
       scope: config.scope,
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       lifecycle: "active",
       provenance,
       version: "0.1.0",

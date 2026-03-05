@@ -47,7 +47,6 @@ export function createSandboxStack(config: SandboxStackConfig): SandboxStack {
 /** Map user-facing SandboxStackConfig → L0 SandboxProfile. */
 function mapConfigToProfile(config: SandboxStackConfig): SandboxProfile {
   return {
-    tier: "sandbox",
     filesystem: {
       allowRead: ["/tmp"],
       allowWrite: ["/tmp"],

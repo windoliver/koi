@@ -1,6 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { BrickFitnessMetrics, BrickUpdate } from "@koi/core";
-import { DEFAULT_BRICK_FITNESS } from "@koi/core";
+import type { BrickFitnessMetrics, BrickUpdate, ToolPolicy } from "@koi/core";
+import {
+  DEFAULT_BRICK_FITNESS,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+} from "@koi/core";
 import type { ToolRequest } from "@koi/core/middleware";
 import {
   createMockSessionContext,
@@ -20,7 +24,7 @@ const ctx = createMockTurnContext();
 function createInMemoryForgeStore() {
   const bricks = new Map<
     string,
-    { readonly trustTier: string; fitness?: BrickFitnessMetrics; usageCount: number }
+    { readonly policy: ToolPolicy; fitness?: BrickFitnessMetrics; usageCount: number }
   >();
 
   return {
@@ -84,17 +88,17 @@ describe("fitness persistence pipeline", () => {
 
     // Seed 3 bricks
     forgeStore.bricks.set("brick-forged-alpha", {
-      trustTier: "promoted",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       fitness: DEFAULT_BRICK_FITNESS,
       usageCount: 0,
     });
     forgeStore.bricks.set("brick-forged-beta", {
-      trustTier: "verified",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       fitness: DEFAULT_BRICK_FITNESS,
       usageCount: 0,
     });
     forgeStore.bricks.set("brick-forged-gamma", {
-      trustTier: "sandbox",
+      policy: DEFAULT_SANDBOXED_POLICY,
       fitness: DEFAULT_BRICK_FITNESS,
       usageCount: 0,
     });
@@ -137,7 +141,7 @@ describe("fitness persistence pipeline", () => {
     const forgeStore = createInMemoryForgeStore();
 
     forgeStore.bricks.set("brick-forged-tool", {
-      trustTier: "promoted",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       fitness: DEFAULT_BRICK_FITNESS,
       usageCount: 0,
     });
@@ -190,12 +194,12 @@ describe("fitness persistence pipeline", () => {
     const forgeStore = createInMemoryForgeStore();
 
     forgeStore.bricks.set("brick-forged-a", {
-      trustTier: "promoted",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       fitness: DEFAULT_BRICK_FITNESS,
       usageCount: 0,
     });
     forgeStore.bricks.set("brick-forged-b", {
-      trustTier: "verified",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       fitness: DEFAULT_BRICK_FITNESS,
       usageCount: 0,
     });
@@ -268,7 +272,7 @@ describe("fitness persistence pipeline", () => {
     const forgeStore = createInMemoryForgeStore();
 
     forgeStore.bricks.set("brick-forged-tool", {
-      trustTier: "promoted",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       fitness: DEFAULT_BRICK_FITNESS,
       usageCount: 0,
     });
@@ -319,7 +323,7 @@ describe("fitness persistence pipeline", () => {
         }) as never,
     );
     forgeStore.bricks.set("brick-forged-tool", {
-      trustTier: "promoted",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       fitness: DEFAULT_BRICK_FITNESS,
       usageCount: 0,
     });
@@ -361,7 +365,7 @@ describe("fitness persistence pipeline", () => {
 
     // checkAndDemote should throw because load fails, caught by onDemotionError
     // Note: the error is caught in the middleware's catch handler
-    // Since ensureTrustTier returns early on error (doesn't throw),
+    // Since ensurePolicy returns early on error (doesn't throw),
     // the demotion check just returns false silently
     // This test verifies the catch block is wired correctly
   });

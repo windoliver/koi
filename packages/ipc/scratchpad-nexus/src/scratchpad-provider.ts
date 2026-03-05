@@ -11,9 +11,9 @@ import type {
   ComponentProvider,
   KoiMiddleware,
   ScratchpadComponent,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
-import { createServiceProvider, SCRATCHPAD } from "@koi/core";
+import { createServiceProvider, DEFAULT_UNSANDBOXED_POLICY, SCRATCHPAD } from "@koi/core";
 import type { NexusClientConfig } from "@koi/nexus-client";
 import { createNexusClient } from "@koi/nexus-client";
 import type { ScratchpadOperation } from "./constants.js";
@@ -39,7 +39,7 @@ export interface ScratchpadNexusProviderConfig {
   /** Nexus JSON-RPC client configuration. */
   readonly nexus?: NexusClientConfig | undefined;
   /** Trust tier for tools. Default: "verified". */
-  readonly trustTier?: TrustTier | undefined;
+  readonly policy?: ToolPolicy | undefined;
   /** Tool name prefix. Default: "scratchpad". */
   readonly prefix?: string | undefined;
   /** Operations to expose as tools. Default: all. */
@@ -67,7 +67,7 @@ const TOOL_FACTORIES: Readonly<
     (
       backend: ScratchpadComponent,
       prefix: string,
-      tier: TrustTier,
+      policy: ToolPolicy,
     ) => ReturnType<typeof createWriteTool>
   >
 > = {
@@ -88,7 +88,7 @@ export function createScratchpadNexusProvider(
   const {
     agentId,
     groupId,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = DEFAULT_PREFIX,
     operations = OPERATIONS,
   } = config;
@@ -129,7 +129,7 @@ export function createScratchpadNexusProvider(
     backend: adapter,
     operations,
     factories: TOOL_FACTORIES,
-    trustTier,
+    policy,
     prefix,
     detach: async () => {
       await adapter.flush();

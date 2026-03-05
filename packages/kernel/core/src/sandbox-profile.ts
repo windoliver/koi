@@ -9,8 +9,6 @@
  * this profile into their native configuration format.
  */
 
-import type { TrustTier } from "./ecs.js";
-
 /** Filesystem isolation policy. */
 export interface FilesystemPolicy {
   readonly allowRead?: readonly string[];
@@ -43,7 +41,6 @@ export interface NexusFuseMount {
 
 /** Declarative sandbox profile — platform-agnostic policy. */
 export interface SandboxProfile {
-  readonly tier: TrustTier;
   readonly filesystem: FilesystemPolicy;
   readonly network: NetworkPolicy;
   readonly resources: ResourceLimits;

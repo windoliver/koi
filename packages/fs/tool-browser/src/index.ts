@@ -69,7 +69,7 @@ export {
   BROWSER_SYSTEM_PROMPT,
   DEFAULT_PREFIX,
   EVALUATE_OPERATION,
-  EVALUATE_TRUST_TIER,
+  EVALUATE_POLICY,
   OPERATIONS,
 } from "./constants.js";
 // test helpers

@@ -67,7 +67,8 @@ export function brickToTool(
 
   return {
     descriptor,
-    trustTier: brick.trustTier,
+    origin: "forged",
+    policy: brick.policy,
     execute,
   };
 }

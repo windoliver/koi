@@ -2,7 +2,8 @@
  * Constants for memory provider tools.
  */
 
-import type { TrustTier } from "@koi/core";
+import type { ToolPolicy } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 
 /** Default tool name prefix. */
 export const DEFAULT_PREFIX = "memory" as const;
@@ -17,5 +18,5 @@ export const DEFAULT_RECALL_LIMIT = 10;
 /** Default maximum results for search queries. */
 export const DEFAULT_SEARCH_LIMIT = 20;
 
-/** Default trust tier for memory tools. */
-export const DEFAULT_TRUST_TIER: TrustTier = "verified";
+/** Default policy for memory tools. */
+export const DEFAULT_POLICY: ToolPolicy = DEFAULT_UNSANDBOXED_POLICY;

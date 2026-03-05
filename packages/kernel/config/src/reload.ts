@@ -25,7 +25,7 @@ export const DEFAULT_KOI_CONFIG: KoiConfig = Object.freeze({
     maxForgeDepth: 1,
     maxForgesPerSession: 5,
     defaultScope: "agent",
-    defaultTrustTier: "sandbox",
+    defaultPolicy: "sandbox",
   }),
   modelRouter: Object.freeze({
     strategy: "fallback",

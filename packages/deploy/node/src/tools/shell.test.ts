@@ -8,7 +8,7 @@ describe("shell tool", () => {
   it("has correct descriptor", () => {
     const tool = createShellTool();
     expect(tool.descriptor.name).toBe("shell");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 
   it("executes a simple command", async () => {

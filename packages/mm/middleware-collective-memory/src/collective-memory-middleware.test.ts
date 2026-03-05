@@ -12,6 +12,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createCollectiveMemoryMiddleware } from "./collective-memory-middleware.js";
 import type { CollectiveMemoryMiddlewareConfig } from "./types.js";
 
@@ -28,7 +29,8 @@ function createMockForgeStore(brick?: Partial<BrickArtifact>): ForgeStore {
     name: "researcher",
     description: "Research agent",
     scope: "session",
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     provenance: {
       builder: { id: "test", version: "1.0" },

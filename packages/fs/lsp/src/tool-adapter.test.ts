@@ -112,7 +112,7 @@ describe("createLspTools", () => {
     const tools = createLspTools(client, "srv");
 
     for (const tool of tools) {
-      expect(tool.trustTier).toBe("promoted");
+      expect(tool.policy.sandbox).toBe(false);
     }
   });
 
@@ -196,7 +196,7 @@ describe("createLspTools", () => {
     const tools = createLspTools(client, "srv");
     const diagTool = tools.find((t) => t.descriptor.name === "lsp/srv/get_diagnostics");
     expect(diagTool).toBeDefined();
-    expect(diagTool?.trustTier).toBe("promoted");
+    expect(diagTool?.policy.sandbox).toBe(false);
   });
 
   test("get_diagnostics tool returns cached diagnostics", async () => {

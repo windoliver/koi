@@ -25,7 +25,7 @@ import type {
   EngineInput,
   EngineOutput,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import type { ExecApprovalRequest, ProgressiveDecision } from "../index.js";
@@ -98,7 +98,8 @@ function makeAddNumbersProvider(onExecute?: () => void): {
           toolToken("add_numbers") as string,
           {
             descriptor: ADD_NUMBERS_DESCRIPTOR,
-            trustTier: "verified" as const,
+            origin: "primordial",
+            policy: DEFAULT_UNSANDBOXED_POLICY,
             execute: async (input: unknown) => {
               onExecute?.();
               const { a, b } = input as { readonly a: number; readonly b: number };
@@ -933,7 +934,8 @@ describe("exec-approvals middleware integration via createKoi (cooperating adapt
                   required: ["command"],
                 },
               },
-              trustTier: "verified" as const,
+              origin: "primordial",
+              policy: DEFAULT_UNSANDBOXED_POLICY,
               execute: async (input: unknown) => {
                 const { command } = input as { readonly command: string };
                 if (command.startsWith("git")) gitStatusExecuted = true;

@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockSchedulerComponent } from "../test-helpers.js";
 import { createHistoryTool } from "./history.js";
 
 describe("createHistoryTool", () => {
   test("returns runs array on success", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createHistoryTool(component, "scheduler", "verified");
+    const tool = createHistoryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly runs: readonly unknown[];
       readonly count: number;
@@ -17,7 +18,7 @@ describe("createHistoryTool", () => {
 
   test("passes status filter to component", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createHistoryTool(component, "scheduler", "verified");
+    const tool = createHistoryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ status: "failed" });
 
     expect(component.calls).toHaveLength(1);
@@ -28,7 +29,7 @@ describe("createHistoryTool", () => {
 
   test("passes since filter to component", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createHistoryTool(component, "scheduler", "verified");
+    const tool = createHistoryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const since = Date.now() - 60_000;
     await tool.execute({ since });
 
@@ -39,7 +40,7 @@ describe("createHistoryTool", () => {
 
   test("clamps limit to max", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createHistoryTool(component, "scheduler", "verified", 10, 5);
+    const tool = createHistoryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY, 10, 5);
     await tool.execute({ limit: 100 });
 
     const filter = component.calls[0]?.args?.[0] as Record<string, unknown>;
@@ -48,7 +49,7 @@ describe("createHistoryTool", () => {
 
   test("clamps limit to minimum of 1", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createHistoryTool(component, "scheduler", "verified", 50, 20);
+    const tool = createHistoryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY, 50, 20);
     await tool.execute({ limit: -5 });
 
     const filter = component.calls[0]?.args?.[0] as Record<string, unknown>;
@@ -57,7 +58,7 @@ describe("createHistoryTool", () => {
 
   test("uses default limit when not specified", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createHistoryTool(component, "scheduler", "verified", 50, 15);
+    const tool = createHistoryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY, 50, 15);
     await tool.execute({});
 
     const filter = component.calls[0]?.args?.[0] as Record<string, unknown>;
@@ -66,7 +67,7 @@ describe("createHistoryTool", () => {
 
   test("returns validation error for invalid status", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createHistoryTool(component, "scheduler", "verified");
+    const tool = createHistoryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ status: "running" })) as {
       readonly error: string;
       readonly code: string;
@@ -83,7 +84,7 @@ describe("createHistoryTool", () => {
         throw new Error("storage unavailable");
       },
     };
-    const tool = createHistoryTool(component, "scheduler", "verified");
+    const tool = createHistoryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly error: string;
       readonly code: string;
@@ -94,7 +95,7 @@ describe("createHistoryTool", () => {
 
   test("descriptor has correct name", () => {
     const component = createMockSchedulerComponent();
-    const tool = createHistoryTool(component, "sched", "sandbox");
+    const tool = createHistoryTool(component, "sched", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("sched_history");
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentManifest } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { ResolutionContext } from "@koi/resolve";
 import { descriptor } from "./descriptor.js";
 
@@ -69,15 +70,15 @@ describe("filesystem descriptor", () => {
     }
   });
 
-  test("validates trustTier as enum", () => {
-    for (const tier of ["sandbox", "verified", "promoted"]) {
-      expect(descriptor.optionsValidator({ trustTier: tier }).ok).toBe(true);
+  test("validates policy as ToolPolicy object", () => {
+    for (const policy of [DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY]) {
+      expect(descriptor.optionsValidator({ policy }).ok).toBe(true);
     }
 
-    const invalid = descriptor.optionsValidator({ trustTier: "invalid" });
+    const invalid = descriptor.optionsValidator({ policy: "invalid" });
     expect(invalid.ok).toBe(false);
     if (!invalid.ok) {
-      expect(invalid.error.message).toContain("trustTier");
+      expect(invalid.error.message).toContain("policy");
     }
   });
 
@@ -85,7 +86,8 @@ describe("filesystem descriptor", () => {
     const result = descriptor.optionsValidator({
       operations: ["read", "write", "edit", "list", "search"],
       prefix: "s3",
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
     });
     expect(result.ok).toBe(true);
   });

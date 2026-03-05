@@ -2,7 +2,7 @@
  * Tool factory for `browser_type` — types text into an element by its snapshot ref.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import {
   parseOptionalBoolean,
   parseOptionalSnapshotId,
@@ -17,7 +17,7 @@ const MAX_TIMEOUT_MS = 10_000;
 export function createBrowserTypeTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -51,7 +51,8 @@ export function createBrowserTypeTool(
         required: ["ref", "value"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const refResult = parseRef(args, "ref");
       if (!refResult.ok) return refResult.err;

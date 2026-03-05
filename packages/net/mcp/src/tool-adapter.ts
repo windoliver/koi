@@ -7,6 +7,7 @@
  */
 
 import type { JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { McpClientManager, McpToolInfo } from "./client-manager.js";
 
 /**
@@ -45,7 +46,8 @@ export function mapMcpToolToKoi(
 
   return {
     descriptor,
-    trustTier: "promoted",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute,
   };
 }

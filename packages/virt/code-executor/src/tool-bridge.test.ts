@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JsonObject, Tool } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createToolBridge } from "./tool-bridge.js";
 
 function createMockTool(name: string, handler?: (args: JsonObject) => unknown): Tool {
@@ -9,7 +10,8 @@ function createMockTool(name: string, handler?: (args: JsonObject) => unknown): 
       description: `Mock ${name} tool`,
       inputSchema: { type: "object" },
     },
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => {
       if (handler) return handler(args);
       return { result: `${name}-result` };

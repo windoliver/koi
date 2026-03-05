@@ -2,7 +2,7 @@
  * Tool factory for `memory_search` — browse memories by entity.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import type { FsMemory } from "../../types.js";
 import { DEFAULT_SEARCH_LIMIT } from "../constants.js";
 import { parseOptionalNumber, parseOptionalString } from "../parse-args.js";
@@ -10,7 +10,7 @@ import { parseOptionalNumber, parseOptionalString } from "../parse-args.js";
 export function createMemorySearchTool(
   memory: FsMemory,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   searchLimit: number = DEFAULT_SEARCH_LIMIT,
 ): Tool {
   return {
@@ -33,7 +33,8 @@ export function createMemorySearchTool(
         required: [],
       } satisfies JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const entityResult = parseOptionalString(args, "entity");
       if (!entityResult.ok) return entityResult.err;

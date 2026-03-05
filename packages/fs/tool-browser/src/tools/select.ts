@@ -2,7 +2,7 @@
  * Tool factory for `browser_select` — selects an option in a combobox by ref.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import {
   parseOptionalSnapshotId,
   parseOptionalTimeout,
@@ -16,7 +16,7 @@ const MAX_TIMEOUT_MS = 10_000;
 export function createBrowserSelectTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -49,7 +49,8 @@ export function createBrowserSelectTool(
         required: ["ref", "value"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const refResult = parseRef(args, "ref");
       if (!refResult.ok) return refResult.err;

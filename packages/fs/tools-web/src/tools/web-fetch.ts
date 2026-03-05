@@ -2,7 +2,7 @@
  * Tool factory for `web_fetch` — fetch a URL and return the response content.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { htmlToMarkdown } from "../html-to-markdown.js";
 import { stripHtml } from "../strip-html.js";
 import { isBlockedUrl } from "../url-policy.js";
@@ -26,7 +26,7 @@ function parseHeaders(raw: unknown): Readonly<Record<string, string>> | undefine
 export function createWebFetchTool(
   executor: WebExecutor,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -61,7 +61,8 @@ export function createWebFetchTool(
         required: ["url"],
       } satisfies JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       // Validate URL
       if (typeof args.url !== "string" || args.url.trim() === "") {

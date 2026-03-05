@@ -5,6 +5,7 @@
  * context retrieval rather than user elicitation.
  */
 
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type { Tool, ToolExecuteOptions } from "@koi/core/ecs";
 import { estimateTokens } from "@koi/token-estimator";
@@ -37,7 +38,8 @@ export function createAskGuideTool(config: AskGuideConfig): Tool {
 
   return {
     descriptor: ASK_GUIDE_TOOL_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
 
     async execute(args: JsonObject, _options?: ToolExecuteOptions): Promise<unknown> {
       // 1. Validate input

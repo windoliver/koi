@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolArtifact } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_PROVENANCE, runForgeStoreContractTests } from "@koi/test-utils";
 import { createFsForgeStore } from "./fs-store.js";
 import type { OverlayConfig } from "./overlay-store.js";
@@ -29,7 +29,8 @@ function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     name: "test-brick",
     description: "A test brick",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -544,7 +545,8 @@ describe("OverlayForgeStore", () => {
       const brick = createBrick({
         id: brickId("brick_atomic"),
         scope: "agent",
-        trustTier: "sandbox",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
         lifecycle: "draft",
         tags: ["old"],
       });
@@ -552,7 +554,7 @@ describe("OverlayForgeStore", () => {
 
       const store = await createOverlayForgeStore(config);
       const result = await store.promoteAndUpdate(brickId("brick_atomic"), "zone", {
-        trustTier: "verified",
+        policy: DEFAULT_UNSANDBOXED_POLICY,
         lifecycle: "active",
         tags: ["new", "zone:team-1"],
       });
@@ -570,7 +572,7 @@ describe("OverlayForgeStore", () => {
       expect(loaded.ok).toBe(true);
       if (loaded.ok) {
         expect(loaded.value.scope).toBe("zone");
-        expect(loaded.value.trustTier).toBe("verified");
+        expect(loaded.value.policy.sandbox).toBe(false);
         expect(loaded.value.lifecycle).toBe("active");
         expect(loaded.value.tags).toEqual(["new", "zone:team-1"]);
       }
@@ -580,14 +582,15 @@ describe("OverlayForgeStore", () => {
       const brick = createBrick({
         id: brickId("brick_same_tier"),
         scope: "agent",
-        trustTier: "sandbox",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
       });
       await seedTier(tiers.agent, brick);
 
       const store = await createOverlayForgeStore(config);
       // Promote to agent scope (already in agent tier)
       const result = await store.promoteAndUpdate(brickId("brick_same_tier"), "agent", {
-        trustTier: "verified",
+        policy: DEFAULT_UNSANDBOXED_POLICY,
       });
       expect(result.ok).toBe(true);
 
@@ -602,7 +605,7 @@ describe("OverlayForgeStore", () => {
       const loaded = await store.load(brickId("brick_same_tier"));
       expect(loaded.ok).toBe(true);
       if (loaded.ok) {
-        expect(loaded.value.trustTier).toBe("verified");
+        expect(loaded.value.policy.sandbox).toBe(false);
       }
     });
 
@@ -611,13 +614,14 @@ describe("OverlayForgeStore", () => {
       const brick = createBrick({
         id: brickId("brick_orphan"),
         scope: "zone",
-        trustTier: "sandbox",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
       });
       await seedTier(tiers.shared, brick);
 
       const store = await createOverlayForgeStore(config);
       const result = await store.promoteAndUpdate(brickId("brick_orphan"), "agent", {
-        trustTier: "verified",
+        policy: DEFAULT_UNSANDBOXED_POLICY,
       });
 
       // Should succeed regardless of source removal outcome
@@ -628,14 +632,14 @@ describe("OverlayForgeStore", () => {
       expect(loaded.ok).toBe(true);
       if (loaded.ok) {
         expect(loaded.value.scope).toBe("agent");
-        expect(loaded.value.trustTier).toBe("verified");
+        expect(loaded.value.policy.sandbox).toBe(false);
       }
     });
 
     test("returns NOT_FOUND for nonexistent brick", async () => {
       const store = await createOverlayForgeStore(config);
       const result = await store.promoteAndUpdate(brickId("nonexistent"), "zone", {
-        trustTier: "verified",
+        policy: DEFAULT_UNSANDBOXED_POLICY,
       });
 
       expect(result.ok).toBe(false);

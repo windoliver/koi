@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolArtifact } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_PROVENANCE, runForgeStoreContractTests } from "@koi/test-utils";
 import type { FsForgeStoreExtended } from "./fs-store.js";
 import { createFsForgeStore } from "./fs-store.js";
@@ -29,7 +29,8 @@ function createTestBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     name: "test-brick",
     description: "A test brick",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",

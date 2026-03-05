@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { AttachResult, SchedulerComponent, TaskScheduler, Tool } from "@koi/core";
-import { agentId, isAttachResult, SCHEDULER, scheduleId, taskId, toolToken } from "@koi/core";
+import {
+  agentId,
+  DEFAULT_SANDBOXED_POLICY,
+  isAttachResult,
+  SCHEDULER,
+  scheduleId,
+  taskId,
+  toolToken,
+} from "@koi/core";
 
 function extractMap(
   result: AttachResult | ReadonlyMap<string, unknown>,
@@ -85,12 +93,12 @@ describe("createSchedulerProvider — attach", () => {
   test("respects custom trust tier", async () => {
     const provider = createSchedulerProvider({
       scheduler: createMockTaskScheduler(),
-      trustTier: "sandbox",
+      policy: DEFAULT_SANDBOXED_POLICY,
     });
     const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("scheduler_submit") as string) as Tool;
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 
   test("respects operations filter", async () => {

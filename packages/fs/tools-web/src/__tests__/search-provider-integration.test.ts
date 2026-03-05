@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { createBraveSearch } from "@koi/search-brave";
 import { createWebSearchTool } from "../tools/web-search.js";
 import { createWebExecutor } from "../web-executor.js";
@@ -72,7 +73,7 @@ describe("SearchProvider → WebExecutor integration", () => {
 
     const searchProvider = createBraveSearch({ apiKey: "test-key", fetchFn });
     const executor = createWebExecutor({ searchProvider });
-    const tool = createWebSearchTool(executor, "web", "sandbox");
+    const tool = createWebSearchTool(executor, "web", DEFAULT_SANDBOXED_POLICY);
 
     expect(tool.descriptor.name).toBe("web_search");
 

@@ -5,7 +5,7 @@
  * Returns summaries (omits implementation, inputSchema, files, provenance, fitness).
  */
 
-import type { BrickKind, JsonObject, RegistryComponent, Tool, TrustTier } from "@koi/core";
+import type { BrickKind, JsonObject, RegistryComponent, Tool, ToolPolicy } from "@koi/core";
 import { ALL_BRICK_KINDS } from "@koi/core";
 import {
   parseOptionalEnum,
@@ -18,7 +18,7 @@ import { mapBrickSummary } from "./map-brick.js";
 export function createRegistrySearchTool(
   facade: RegistryComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -55,7 +55,8 @@ export function createRegistrySearchTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
 
     execute: async (args: JsonObject): Promise<unknown> => {
       const textResult = parseOptionalString(args, "text");

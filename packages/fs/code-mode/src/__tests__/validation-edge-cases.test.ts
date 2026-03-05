@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createPlanStore } from "../plan-store.js";
 import { createMockBackend } from "../test-helpers.js";
 import { createPlanApplyTool } from "../tools/plan-apply.js";
@@ -16,7 +17,7 @@ describe("validation edge cases", () => {
       "/src/b.ts": "const b = 2;",
     });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [
@@ -42,7 +43,7 @@ describe("validation edge cases", () => {
     const content = "line1\nline2\nline3\nline4\nline5";
     const backend = createMockBackend({ "/f.ts": content });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [
@@ -63,7 +64,7 @@ describe("validation edge cases", () => {
   test("edit step with empty oldText matches everywhere (ambiguous)", async () => {
     const backend = createMockBackend({ "/f.ts": "abc" });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "edit", path: "/f.ts", edits: [{ oldText: "", newText: "x" }] }],
@@ -81,8 +82,13 @@ describe("validation edge cases", () => {
     const backend = createMockBackend(files);
     const store = createPlanStore();
 
-    const createTool = createPlanCreateTool(backend, store, "code_plan", "verified");
-    const applyTool = createPlanApplyTool(backend, store, "code_plan", "verified");
+    const createTool = createPlanCreateTool(
+      backend,
+      store,
+      "code_plan",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
+    const applyTool = createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     // Create plan
     const preview = (await createTool.execute({
@@ -105,7 +111,7 @@ describe("validation edge cases", () => {
   test("create step for file that already exists fails validation", async () => {
     const backend = createMockBackend({ "/existing.ts": "hello" });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "create", path: "/existing.ts", content: "new content" }],
@@ -117,7 +123,7 @@ describe("validation edge cases", () => {
   test("edit step for missing file fails validation", async () => {
     const backend = createMockBackend();
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "edit", path: "/missing.ts", edits: [{ oldText: "x", newText: "y" }] }],
@@ -130,7 +136,7 @@ describe("validation edge cases", () => {
     const content = "ABCDEFGHIJKLMNOP";
     const backend = createMockBackend({ "/f.ts": content });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [

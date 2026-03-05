@@ -2,14 +2,14 @@
  * Tool factory for `scheduler_pause` — pause a recurring schedule.
  */
 
-import type { JsonObject, SchedulerComponent, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, SchedulerComponent, Tool, ToolPolicy } from "@koi/core";
 import { scheduleId } from "@koi/core";
 import { parseString } from "../parse-args.js";
 
 export function createPauseTool(
   component: SchedulerComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -24,7 +24,8 @@ export function createPauseTool(
         required: ["scheduleId"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const idResult = parseString(args, "scheduleId");
       if (!idResult.ok) return idResult.err;

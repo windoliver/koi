@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/memory-fs API surface . has stable type surface 1`] = `
-"import { MemoryComponent, TrustTier, ComponentProvider, Tool } from '@koi/core';
+"import { MemoryComponent, ToolPolicy, ComponentProvider, Tool } from '@koi/core';
 
 interface MemoryFact {
     readonly id: string;
@@ -144,7 +144,7 @@ interface MemoryProviderConfig {
     /** Tool name prefix. Default: "memory". */
     readonly prefix?: string;
     /** Trust tier for all tools. Default: "verified". */
-    readonly trustTier?: TrustTier;
+    readonly policy?: ToolPolicy;
     /** Subset of operations to expose. Default: all 3. */
     readonly operations?: readonly MemoryOperation[];
     /** Max results for recall tool. Default: 10. */
@@ -174,19 +174,19 @@ declare const MEMORY_SKILL_CONTENT: string;
  * Tool factory for \`memory_recall\` — search memories by semantic query.
  */
 
-declare function createMemoryRecallTool(component: MemoryComponent, prefix: string, trustTier: TrustTier, recallLimit?: number): Tool;
+declare function createMemoryRecallTool(component: MemoryComponent, prefix: string, policy: ToolPolicy, recallLimit?: number): Tool;
 
 /**
  * Tool factory for \`memory_search\` — browse memories by entity.
  */
 
-declare function createMemorySearchTool(memory: FsMemory, prefix: string, trustTier: TrustTier, searchLimit?: number): Tool;
+declare function createMemorySearchTool(memory: FsMemory, prefix: string, policy: ToolPolicy, searchLimit?: number): Tool;
 
 /**
  * Tool factory for \`memory_store\` — persist an atomic fact to long-term memory.
  */
 
-declare function createMemoryStoreTool(component: MemoryComponent, prefix: string, trustTier: TrustTier): Tool;
+declare function createMemoryStoreTool(component: MemoryComponent, prefix: string, policy: ToolPolicy): Tool;
 
 /**
  * User-scoped memory ComponentProvider.
@@ -204,7 +204,7 @@ interface UserScopedMemoryProviderConfig {
     /** Tool name prefix. Default: "memory". */
     readonly prefix?: string | undefined;
     /** Trust tier for all tools. Default: "verified". */
-    readonly trustTier?: TrustTier | undefined;
+    readonly policy?: ToolPolicy | undefined;
     /** Subset of operations to expose. Default: all 3. */
     readonly operations?: readonly MemoryOperation[] | undefined;
     /** Max results for recall tool. Default: 10. */

@@ -48,7 +48,7 @@ describe("mapMcpToolToKoi", () => {
     const client = createMockMcpClientManager({ name: "filesystem" });
     const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
 
-    expect(tool.trustTier).toBe("promoted");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("execute delegates to client.callTool with original tool name", async () => {

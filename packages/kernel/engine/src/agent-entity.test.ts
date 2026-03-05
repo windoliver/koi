@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentManifest, ComponentProvider, ProcessId, Tool } from "@koi/core";
-import { agentId, COMPONENT_PRIORITY, MEMORY, token, toolToken } from "@koi/core";
+import {
+  agentId,
+  COMPONENT_PRIORITY,
+  DEFAULT_SANDBOXED_POLICY,
+  MEMORY,
+  token,
+  toolToken,
+} from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 
 // ---------------------------------------------------------------------------
@@ -29,7 +36,8 @@ function testManifest(overrides?: Partial<AgentManifest>): AgentManifest {
 function testTool(name: string): Tool {
   return {
     descriptor: { name, description: `${name} tool`, inputSchema: {} },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async () => ({}),
   };
 }

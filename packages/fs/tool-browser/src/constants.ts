@@ -2,7 +2,8 @@
  * Constants for @koi/tool-browser — tool names, operations, and SDK mappings.
  */
 
-import type { SkillComponent } from "@koi/core";
+import type { SkillComponent, ToolPolicy } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 
 /** Default tool name prefix for browser tools. */
 export const DEFAULT_PREFIX = "browser" as const;
@@ -126,8 +127,8 @@ export type BrowserOperation = (typeof ALL_OPERATIONS)[number];
  */
 export const EVALUATE_OPERATION = "evaluate" as const;
 
-/** Trust tier for evaluate — higher than the default "verified". */
-export const EVALUATE_TRUST_TIER = "promoted" as const;
+/** Policy for evaluate — requires unsandboxed access. */
+export const EVALUATE_POLICY: ToolPolicy = DEFAULT_UNSANDBOXED_POLICY;
 
 /**
  * The `upload` operation writes files to the server process.

@@ -28,7 +28,7 @@ import type {
   ModelRequest,
   Tool,
 } from "@koi/core";
-import { MEMORY, toolToken } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, MEMORY, toolToken } from "@koi/core";
 import type { InboundMessage } from "@koi/core/message";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
@@ -78,7 +78,8 @@ function createMemoryStoreTool(fsMemory: FsMemory): Tool {
         required: ["content"],
       },
     },
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     async execute(args: JsonObject): Promise<unknown> {
       const content = args.content as string;
       const category = (args.category as string | undefined) ?? "context";
@@ -106,7 +107,8 @@ function createMemoryRecallTool(fsMemory: FsMemory): Tool {
         required: ["query"],
       },
     },
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     async execute(args: JsonObject): Promise<unknown> {
       const query = args.query as string;
       const limit = (args.limit as number | undefined) ?? 5;

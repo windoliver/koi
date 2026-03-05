@@ -29,7 +29,7 @@ forge:
   maxForgeDepth: 1
   maxForgesPerSession: 5
   defaultScope: agent
-  defaultTrustTier: sandbox
+  defaultPolicy: sandbox
 modelRouter:
   strategy: fallback
   targets:

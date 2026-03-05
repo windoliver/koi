@@ -14,8 +14,6 @@ import type { BrickDescriptor } from "@koi/resolve";
 import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import { OPERATIONS } from "./constants.js";
 
-const TRUST_TIERS = ["sandbox", "verified", "promoted"] as const;
-
 function validateFilesystemDescriptorOptions(
   input: unknown,
 ): Result<Record<string, unknown>, KoiError> {
@@ -61,14 +59,15 @@ function validateFilesystemDescriptorOptions(
     };
   }
 
-  // Validate trustTier
-  if (opts.trustTier !== undefined) {
-    if (!(TRUST_TIERS as readonly string[]).includes(opts.trustTier as string)) {
+  // Validate policy (must be an object with sandbox boolean)
+  if (opts.policy !== undefined) {
+    const p = opts.policy as Record<string, unknown>;
+    if (typeof p !== "object" || p === null || typeof p.sandbox !== "boolean") {
       return {
         ok: false,
         error: {
           code: "VALIDATION",
-          message: `filesystem.trustTier must be one of: ${TRUST_TIERS.join(", ")}`,
+          message: "filesystem.policy must be a ToolPolicy object with a 'sandbox' boolean field",
           retryable: RETRYABLE_DEFAULTS.VALIDATION,
         },
       };

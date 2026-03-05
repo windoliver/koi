@@ -51,7 +51,7 @@ export interface SlsaKoiExtensions {
   readonly koi_contentMarkers: readonly string[];
   readonly koi_verification: {
     readonly passed: boolean;
-    readonly finalTrustTier: string;
+    readonly sandbox: string;
     readonly totalDurationMs: number;
   };
 }
@@ -129,7 +129,7 @@ export function mapProvenanceToStatement(
     koi_contentMarkers: provenance.contentMarkers,
     koi_verification: {
       passed: provenance.verification.passed,
-      finalTrustTier: provenance.verification.finalTrustTier,
+      sandbox: String(provenance.verification.sandbox),
       totalDurationMs: provenance.verification.totalDurationMs,
     },
   };

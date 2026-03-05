@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TaskFilter } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_QUERY_DEFAULT } from "../constants.js";
 import { createMockSchedulerComponent } from "../test-helpers.js";
 import { createQueryTool } from "./query.js";
@@ -7,7 +8,7 @@ import { createQueryTool } from "./query.js";
 describe("createQueryTool", () => {
   test("returns tasks and count on success", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createQueryTool(component, "scheduler", "verified");
+    const tool = createQueryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly tasks: readonly unknown[];
       readonly count: number;
@@ -19,7 +20,7 @@ describe("createQueryTool", () => {
 
   test("passes status filter to component", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createQueryTool(component, "scheduler", "verified");
+    const tool = createQueryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ status: "pending" });
 
     expect(component.calls).toHaveLength(1);
@@ -29,7 +30,7 @@ describe("createQueryTool", () => {
 
   test("passes priority filter to component", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createQueryTool(component, "scheduler", "verified");
+    const tool = createQueryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ priority: 1 });
 
     const filter = component.calls[0]?.args?.[0] as TaskFilter;
@@ -38,7 +39,7 @@ describe("createQueryTool", () => {
 
   test("uses default limit when not specified", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createQueryTool(component, "scheduler", "verified");
+    const tool = createQueryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({});
 
     const filter = component.calls[0]?.args?.[0] as TaskFilter;
@@ -47,7 +48,7 @@ describe("createQueryTool", () => {
 
   test("clamps limit to max", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createQueryTool(component, "scheduler", "verified", 50, 20);
+    const tool = createQueryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY, 50, 20);
     await tool.execute({ limit: 999 });
 
     const filter = component.calls[0]?.args?.[0] as TaskFilter;
@@ -56,7 +57,7 @@ describe("createQueryTool", () => {
 
   test("clamps limit to minimum 1", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createQueryTool(component, "scheduler", "verified");
+    const tool = createQueryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ limit: -5 });
 
     const filter = component.calls[0]?.args?.[0] as TaskFilter;
@@ -65,7 +66,7 @@ describe("createQueryTool", () => {
 
   test("respects custom query limits", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createQueryTool(component, "scheduler", "verified", 10, 5);
+    const tool = createQueryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY, 10, 5);
     await tool.execute({});
 
     const filter = component.calls[0]?.args?.[0] as TaskFilter;
@@ -74,7 +75,7 @@ describe("createQueryTool", () => {
 
   test("returns validation error for invalid status", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createQueryTool(component, "scheduler", "verified");
+    const tool = createQueryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ status: "invalid" })) as {
       readonly error: string;
       readonly code: string;
@@ -86,7 +87,7 @@ describe("createQueryTool", () => {
 
   test("descriptor includes max limit in description", () => {
     const component = createMockSchedulerComponent();
-    const tool = createQueryTool(component, "scheduler", "verified", 25);
+    const tool = createQueryTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY, 25);
     expect(tool.descriptor.description).toContain("25");
   });
 });

@@ -16,7 +16,7 @@ export function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): 
   if (query.scope !== undefined && brick.scope !== query.scope) {
     return false;
   }
-  if (query.trustTier !== undefined && brick.trustTier !== query.trustTier) {
+  if (query.sandbox !== undefined && brick.policy.sandbox !== query.sandbox) {
     return false;
   }
   if (query.lifecycle !== undefined && brick.lifecycle !== query.lifecycle) {

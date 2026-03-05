@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AgentBundle, ToolArtifact } from "@koi/core";
-import { BUNDLE_FORMAT_VERSION, bundleId } from "@koi/core";
+import { BUNDLE_FORMAT_VERSION, bundleId, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { computeBrickId, computeContentHash } from "@koi/hash";
 
 import { deserializeBundle, serializeBundle } from "./serialize.js";
@@ -28,7 +28,7 @@ function createTestProvenance(): ToolArtifact["provenance"] {
     },
     verification: {
       passed: true,
-      finalTrustTier: "verified",
+      sandbox: false,
       totalDurationMs: 1000,
       stageResults: [],
     },
@@ -47,7 +47,8 @@ function createTestBrick(implementation?: string): ToolArtifact {
     name: "test-tool",
     description: "A test tool",
     scope: "agent",
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     provenance: createTestProvenance(),
     version: "1.0.0",

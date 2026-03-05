@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AttachResult, Tool } from "@koi/core";
-import { isAttachResult, toolToken, WEBHOOK } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, isAttachResult, toolToken, WEBHOOK } from "@koi/core";
 import { createMockAgent, createMockWebhookComponent } from "../test-helpers.js";
 import { createWebhookProvider } from "../webhook-component-provider.js";
 
@@ -53,12 +53,12 @@ describe("createWebhookProvider — attach", () => {
   test("respects custom trust tier", async () => {
     const provider = createWebhookProvider({
       webhookComponent: createMockWebhookComponent(),
-      trustTier: "sandbox",
+      policy: DEFAULT_SANDBOXED_POLICY,
     });
     const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("webhook_list") as string) as Tool;
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 
   test("respects operations filter", async () => {

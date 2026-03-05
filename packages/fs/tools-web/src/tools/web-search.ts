@@ -2,7 +2,7 @@
  * Tool factory for `web_search` — search the web via injectable backend.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import type { WebExecutor } from "../web-executor.js";
 
 const DEFAULT_MAX_RESULTS = 5;
@@ -11,7 +11,7 @@ const MAX_MAX_RESULTS = 20;
 export function createWebSearchTool(
   executor: WebExecutor,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -31,7 +31,8 @@ export function createWebSearchTool(
         required: ["query"],
       } satisfies JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       // Validate query
       if (typeof args.query !== "string" || args.query.trim() === "") {

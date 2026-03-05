@@ -2,6 +2,7 @@
  * Task tool factory — creates a Tool that delegates work to subagents.
  */
 
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type { Tool } from "@koi/core/ecs";
 import { extractOutput } from "./output.js";
@@ -67,7 +68,8 @@ export async function createTaskTool(config: TaskSpawnConfig): Promise<Tool> {
     get descriptor() {
       return cachedDescriptor;
     },
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
 
     async execute(args: JsonObject): Promise<unknown> {
       await refreshDescriptorIfStale();

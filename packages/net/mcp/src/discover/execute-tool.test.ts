@@ -18,7 +18,7 @@ describe("createExecuteTool", () => {
     const client = createMockMcpClientManager({ name: "api" });
     const tool = createExecuteTool("api", client);
 
-    expect(tool.trustTier).toBe("promoted");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("returns validation error for missing tool field", async () => {

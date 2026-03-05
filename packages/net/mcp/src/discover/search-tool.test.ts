@@ -43,7 +43,7 @@ describe("createSearchTool", () => {
 
   test("has promoted trust tier", () => {
     const tool = createSearchTool("filesystem", []);
-    expect(tool.trustTier).toBe("promoted");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("returns all tools when no query specified", async () => {

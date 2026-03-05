@@ -2,7 +2,7 @@
  * Tool factory for `browser_fill_form` — fills multiple form fields in one call.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseFormFields, parseOptionalSnapshotId, parseOptionalTimeout } from "../parse-args.js";
 
 const MIN_TIMEOUT_MS = 100;
@@ -11,7 +11,7 @@ const MAX_TIMEOUT_MS = 30_000;
 export function createBrowserFillFormTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -53,7 +53,8 @@ export function createBrowserFillFormTool(
         required: ["fields"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const fieldsResult = parseFormFields(args, "fields");
       if (!fieldsResult.ok) return fieldsResult.err;

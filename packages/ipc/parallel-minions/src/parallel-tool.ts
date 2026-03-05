@@ -2,6 +2,7 @@
  * Parallel tool factory — creates a Tool that delegates multiple tasks to subagents.
  */
 
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type { Tool } from "@koi/core/ecs";
 import { executeBatch } from "./executor.js";
@@ -70,7 +71,8 @@ export function createParallelTool(config: ParallelMinionsConfig): Tool {
 
   return {
     descriptor: PARALLEL_TOOL_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
 
     async execute(args: JsonObject): Promise<unknown> {
       const parsed = parseTasks(args);

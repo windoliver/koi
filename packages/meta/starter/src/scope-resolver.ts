@@ -17,7 +17,12 @@ import type {
   MemoryComponent,
   ScopeEnforcer,
 } from "@koi/core";
-import { COMPONENT_PRIORITY, CREDENTIALS } from "@koi/core";
+import {
+  COMPONENT_PRIORITY,
+  CREDENTIALS,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+} from "@koi/core";
 import { createFileSystemProvider } from "@koi/filesystem";
 import type {
   ManifestBrowserScope,
@@ -72,7 +77,9 @@ function mapManifestBrowserScope(config: ManifestBrowserScope): BrowserScope {
   };
   return {
     navigation,
-    ...(config.trustTier !== undefined ? { trustTier: config.trustTier } : {}),
+    ...(config.sandbox !== undefined
+      ? { policy: config.sandbox ? DEFAULT_SANDBOXED_POLICY : DEFAULT_UNSANDBOXED_POLICY }
+      : {}),
   };
 }
 

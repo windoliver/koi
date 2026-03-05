@@ -11,7 +11,7 @@ import type {
   JsonObject,
   Tool,
 } from "@koi/core";
-import { handoffId } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, handoffId } from "@koi/core";
 import type { HandoffStore } from "./store.js";
 import { ACCEPT_HANDOFF_DESCRIPTOR } from "./types.js";
 import { validateAcceptInput, validateArtifactRefs } from "./validate.js";
@@ -25,7 +25,8 @@ export interface CreateAcceptToolConfig {
 export function createAcceptTool(config: CreateAcceptToolConfig): Tool {
   return {
     descriptor: ACCEPT_HANDOFF_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
 
     async execute(args: JsonObject): Promise<unknown> {
       const validation = validateAcceptInput(args);

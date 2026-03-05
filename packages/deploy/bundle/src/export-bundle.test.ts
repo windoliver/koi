@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifact, ForgeStore, ToolArtifact } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { computeBrickId } from "@koi/hash";
 
 import { createBundle } from "./export-bundle.js";
@@ -28,7 +29,7 @@ function createTestProvenance(): ToolArtifact["provenance"] {
     },
     verification: {
       passed: true,
-      finalTrustTier: "verified",
+      sandbox: false,
       totalDurationMs: 1000,
       stageResults: [],
     },
@@ -51,7 +52,8 @@ function createTestBrick(overrides?: {
     name: "test-tool",
     description: "A test tool",
     scope: "agent",
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     provenance: createTestProvenance(),
     version: "1.0.0",

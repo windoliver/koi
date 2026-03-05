@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AttachResult, MemoryComponent, SkillComponent, Tool } from "@koi/core";
-import { isAttachResult, MEMORY, skillToken, toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, isAttachResult, MEMORY, skillToken, toolToken } from "@koi/core";
 import { createMemoryProvider } from "./memory-component-provider.js";
 import { createMockAgent, createMockFsMemory } from "./test-helpers.js";
 
@@ -66,12 +66,12 @@ describe("createMemoryProvider — attach", () => {
   test("respects custom trust tier", async () => {
     const provider = createMemoryProvider({
       memory: createMockFsMemory(),
-      trustTier: "sandbox",
+      policy: DEFAULT_SANDBOXED_POLICY,
     });
     const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("memory_store") as string) as Tool;
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 
   test("respects operations subset", async () => {

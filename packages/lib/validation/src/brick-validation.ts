@@ -10,7 +10,6 @@ import { ALL_BRICK_KINDS, internal } from "@koi/core";
 
 const VALID_KINDS = new Set<string>(ALL_BRICK_KINDS);
 const VALID_SCOPES = new Set(["agent", "zone", "global"]);
-const VALID_TRUST_TIERS = new Set(["sandbox", "verified", "promoted"]);
 const VALID_LIFECYCLES = new Set([
   "draft",
   "verifying",
@@ -43,8 +42,12 @@ function validateBase(data: Record<string, unknown>, source: string): Result<voi
   if (typeof data.description !== "string") return fail("missing 'description'", source);
   if (!VALID_SCOPES.has(data.scope as string))
     return fail(`invalid scope '${String(data.scope)}'`, source);
-  if (!VALID_TRUST_TIERS.has(data.trustTier as string))
-    return fail(`invalid trustTier '${String(data.trustTier)}'`, source);
+  if (
+    typeof data.policy !== "object" ||
+    data.policy === null ||
+    typeof (data.policy as Record<string, unknown>).sandbox !== "boolean"
+  )
+    return fail(`invalid policy '${String(data.policy)}'`, source);
   if (!VALID_LIFECYCLES.has(data.lifecycle as string))
     return fail(`invalid lifecycle '${String(data.lifecycle)}'`, source);
   if (!isRecord(data.provenance)) return fail("missing or non-object 'provenance'", source);

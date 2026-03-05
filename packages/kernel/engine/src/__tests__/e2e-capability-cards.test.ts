@@ -23,7 +23,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { skillToken, toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, skillToken, toolToken } from "@koi/core";
 import type { SkillComponent } from "@koi/core/ecs";
 import { descriptor as acpDescriptor } from "@koi/engine-acp";
 import { descriptor as claudeDescriptor } from "@koi/engine-claude";
@@ -108,7 +108,8 @@ const LOOKUP_TOOL: Tool = {
       required: ["engine_name"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const name = String(input.engine_name ?? "");
     const desc = ALL_ENGINE_DESCRIPTORS.find(

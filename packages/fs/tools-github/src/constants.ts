@@ -2,7 +2,8 @@
  * Constants for @koi/tools-github — tool names, operations, trust tiers, and system prompt.
  */
 
-import type { TrustTier } from "@koi/core";
+import type { ToolPolicy } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 
 /** All GitHub operation names. */
 export const OPERATIONS = ["pr_create", "pr_status", "pr_review", "pr_merge", "ci_wait"] as const;
@@ -23,8 +24,10 @@ export const WRITE_OPERATIONS: readonly GithubOperation[] = [
 export const READ_OPERATIONS: readonly GithubOperation[] = ["pr_status", "ci_wait"] as const;
 
 /** Resolve the trust tier for an operation — write ops are always promoted. */
-export function trustTierForOperation(op: GithubOperation, configTier: TrustTier): TrustTier {
-  return (WRITE_OPERATIONS as readonly string[]).includes(op) ? "promoted" : configTier;
+export function policyForOperation(op: GithubOperation, configTier: ToolPolicy): ToolPolicy {
+  return (WRITE_OPERATIONS as readonly string[]).includes(op)
+    ? DEFAULT_UNSANDBOXED_POLICY
+    : configTier;
 }
 
 /** Merge strategies for PR merge. */

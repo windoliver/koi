@@ -5,7 +5,7 @@
  * On any failure, rolls back previously applied steps in LIFO order.
  */
 
-import type { FileSystemBackend, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { FileSystemBackend, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalString } from "../parse-args.js";
 import type { PlanStore } from "../plan-store.js";
 import type { ApplyResult, CodePlan, CodePlanStep, StepResult } from "../types.js";
@@ -25,7 +25,7 @@ export function createPlanApplyTool(
   backend: FileSystemBackend,
   store: PlanStore,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -42,7 +42,8 @@ export function createPlanApplyTool(
         },
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const planIdResult = parseOptionalString(args, "planId");
       if (!planIdResult.ok) return planIdResult.err;

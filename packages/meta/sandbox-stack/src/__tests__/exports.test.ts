@@ -97,10 +97,6 @@ describe("@koi/sandbox-stack exports", () => {
     expect(typeof sandboxStack.DEFAULT_OUTPUT_LIMIT_BYTES).toBe("number");
   });
 
-  test("exports DEFAULT_SKIP_TIERS", () => {
-    expect(sandboxStack.DEFAULT_SKIP_TIERS).toBeDefined();
-  });
-
   test("exports DEFAULT_TIMEOUT_GRACE_MS", () => {
     expect(typeof sandboxStack.DEFAULT_TIMEOUT_GRACE_MS).toBe("number");
   });
@@ -110,7 +106,6 @@ describe("@koi/sandbox-stack exports", () => {
     const exported = Object.keys(sandboxStack).sort();
     expect(exported).toEqual([
       "DEFAULT_OUTPUT_LIMIT_BYTES",
-      "DEFAULT_SKIP_TIERS",
       "DEFAULT_TIMEOUT_GRACE_MS",
       "classifyCloudError",
       "createCachedBridge",

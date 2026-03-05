@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolArtifact } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_PROVENANCE, runForgeStoreContractTests } from "@koi/test-utils";
 import { createSqliteForgeStore, openForgeDb } from "./sqlite-store.js";
 
@@ -29,7 +29,8 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     name: "test-tool",
     description: "A test tool",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -103,13 +104,13 @@ describe("SQLite-specific", () => {
     }
   });
 
-  test("schema migration sets user_version = 3 and creates tables", () => {
+  test("schema migration sets user_version = 4 and creates tables", () => {
     const db = new Database(":memory:");
     db.run("PRAGMA foreign_keys = ON");
     createSqliteForgeStore({ db });
 
     const row = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
-    expect(row?.user_version).toBe(3);
+    expect(row?.user_version).toBe(4);
 
     // Verify tables exist by querying sqlite_master
     const tables = db

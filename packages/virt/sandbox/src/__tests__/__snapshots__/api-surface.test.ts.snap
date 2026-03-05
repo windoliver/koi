@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/sandbox API surface . has stable type surface 1`] = `
-"import { SandboxAdapter, TrustTier, SandboxProfile, Result, KoiError, SandboxAdapterResult } from '@koi/core';
+"import { SandboxAdapter, ToolPolicy, SandboxProfile, Result, KoiError, SandboxAdapterResult } from '@koi/core';
 export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance, SandboxProfile, SandboxAdapterResult as SandboxResult } from '@koi/core';
 
 /**
@@ -31,8 +31,8 @@ declare function createOsAdapter(): SandboxAdapter;
  * and adds the SandboxTier alias.
  */
 
-/** Sandbox-specific alias for the L0 TrustTier. */
-type SandboxTier = TrustTier;
+/** Sandbox-specific alias for the L0 ToolPolicy. */
+type SandboxTier = ToolPolicy;
 
 /**
  * createSandboxCommand() — shared sandbox command construction.
@@ -91,7 +91,8 @@ declare function execute(profile: SandboxProfile, command: string, args: readonl
 
 declare function restrictiveProfile(overrides?: Partial<SandboxProfile>): SandboxProfile;
 declare function permissiveProfile(overrides?: Partial<SandboxProfile>): SandboxProfile;
-declare function profileForTier(tier: TrustTier): SandboxProfile;
+/** @deprecated Use createProfileFromPolicy instead. */
+declare const profileForTier: (policy: ToolPolicy) => SandboxProfile;
 
 /**
  * spawn() — Streaming sandbox process API.

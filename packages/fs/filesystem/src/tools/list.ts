@@ -2,13 +2,13 @@
  * Tool factory for `fs_list` — lists directory contents via a FileSystemBackend.
  */
 
-import type { FileListOptions, FileSystemBackend, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { FileListOptions, FileSystemBackend, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalBoolean, parseOptionalString, parseString } from "../parse-args.js";
 
 export function createFsListTool(
   backend: FileSystemBackend,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -30,7 +30,8 @@ export function createFsListTool(
         required: ["path"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;

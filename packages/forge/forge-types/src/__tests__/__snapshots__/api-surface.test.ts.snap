@@ -1,16 +1,15 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-types API surface . has stable type surface 1`] = `
-"import { TrustTier, BrickRequires, DataClassification, ContentMarker, TestCase, BrickDriftContext, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, TrailConfig, Result, KoiError, SandboxExecutor, GovernanceController, ForgeStore, ForgeProvenance, SigningBackend, TrustTransitionCaller, BrickArtifact } from '@koi/core';
+"import { BrickRequires, DataClassification, ContentMarker, TestCase, BrickDriftContext, BrickId, BrickKind, ToolDescriptor, ToolOrigin, ToolPolicy, ForgeScope, BrickLifecycle, TrailConfig, Result, KoiError, SandboxExecutor, GovernanceController, ForgeStore, ForgeProvenance, SigningBackend, TrustTransitionCaller, BrickArtifact } from '@koi/core';
 export { AgentArtifact, BrickArtifact, BrickArtifactBase, BrickKind, BrickLifecycle, BrickRequires, CompositeArtifact, ForgeQuery, ForgeScope, ImplementationArtifact, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SkillArtifact, TestCase, ToolArtifact } from '@koi/core';
 
 /**
  * TTL-based re-verification — checks whether bricks are stale and
- * need re-verification. Single TTL for all non-sandbox tiers (Issue #703).
+ * need re-verification. Sandboxed bricks are re-verified; unsandboxed are not.
  */
-
 interface ReverificationConfig {
-    /** TTL in millis for all non-sandbox bricks (default: 24h). */
+    /** TTL in millis for sandboxed bricks (default: 24h). */
     readonly ttlMs: number;
     /** Maximum concurrent re-verifications. */
     readonly maxConcurrency: number;
@@ -19,16 +18,16 @@ interface ReverificationConfig {
 }
 declare const DEFAULT_REVERIFICATION_CONFIG: ReverificationConfig;
 /**
- * Returns TTL for a given trust tier.
- * Sandbox bricks are never re-verified — returns undefined.
+ * Returns TTL for a given sandbox status.
+ * Unsandboxed bricks are never re-verified — returns undefined.
  */
-declare function computeTtl(trustTier: TrustTier, config: ReverificationConfig): number | undefined;
+declare function computeTtl(sandbox: boolean, config: ReverificationConfig): number | undefined;
 /**
  * Returns true if the brick needs re-verification based on its
- * lastVerifiedAt timestamp and the TTL for its trust tier.
+ * lastVerifiedAt timestamp and the TTL for its sandbox status.
  */
 declare function isStale(artifact: {
-    readonly trustTier: TrustTier;
+    readonly sandbox: boolean;
     readonly lastVerifiedAt?: number;
 }, config: ReverificationConfig): boolean;
 
@@ -50,7 +49,8 @@ interface ForgeResult {
     readonly kind: BrickKind;
     readonly name: string;
     readonly descriptor: ToolDescriptor;
-    readonly trustTier: TrustTier;
+    readonly origin: ToolOrigin;
+    readonly policy: ToolPolicy;
     readonly scope: ForgeScope;
     readonly lifecycle: BrickLifecycle;
     readonly verificationReport: VerificationReport;
@@ -74,7 +74,7 @@ interface ResolveStageReport extends StageReport {
 }
 interface TrustStageReport extends StageReport {
     readonly stage: "trust";
-    readonly trustTier: TrustTier;
+    readonly sandbox: boolean;
 }
 interface SelfTestStageReport extends StageReport {
     readonly stage: "self_test";
@@ -84,7 +84,7 @@ interface SelfTestStageReport extends StageReport {
 }
 interface VerificationReport {
     readonly stages: readonly StageReport[];
-    readonly finalTrustTier: TrustTier;
+    readonly sandbox: boolean;
     readonly totalDurationMs: number;
     readonly passed: boolean;
 }
@@ -170,7 +170,7 @@ interface PromoteResult {
     readonly requiresHumanApproval: boolean;
     readonly changes: {
         readonly scope?: PromoteChange<ForgeScope>;
-        readonly trustTier?: PromoteChange<TrustTier>;
+        readonly policy?: PromoteChange<ToolPolicy>;
         readonly lifecycle?: PromoteChange<BrickLifecycle>;
     };
     readonly message?: string;
@@ -208,8 +208,6 @@ interface DriftChecker {
 
 interface ScopePromotionConfig {
     readonly requireHumanApproval: boolean;
-    readonly minTrustForZone: TrustTier;
-    readonly minTrustForGlobal: TrustTier;
 }
 interface VerificationConfig {
     readonly staticTimeoutMs: number;
@@ -219,11 +217,6 @@ interface VerificationConfig {
     readonly maxBrickSizeBytes: number;
     readonly failFast: boolean;
     readonly maxAutoTestCases: number;
-}
-interface AutoPromotionConfig {
-    readonly enabled: boolean;
-    readonly sandboxToVerifiedThreshold: number;
-    readonly verifiedToPromotedThreshold: number;
 }
 interface DependencyConfig {
     /** Package names explicitly allowed (empty = all allowed). */
@@ -266,10 +259,9 @@ interface ForgeConfig {
     readonly maxForgeDepth: number;
     readonly maxForgesPerSession: number;
     readonly defaultScope: ForgeScope;
-    readonly defaultTrustTier: TrustTier;
+    readonly defaultPolicy: ToolPolicy;
     readonly scopePromotion: ScopePromotionConfig;
     readonly verification: VerificationConfig;
-    readonly autoPromotion: AutoPromotionConfig;
     readonly dependencies: DependencyConfig;
     readonly format: FormatConfig;
     readonly reverification?: ReverificationConfig;
@@ -391,7 +383,7 @@ declare const DEFAULT_ATTESTATION_CACHE_CAP = 512;
  *
  * Each method corresponds to a capability owned by a different L2 sub-package:
  * - verify → @koi/forge-verifier
- * - checkGovernance, checkMutationPressure, checkScopePromotion, validateTrustTransition → @koi/forge-policy
+ * - checkGovernance, checkMutationPressure, checkScopePromotion, validatePolicyChange → @koi/forge-policy
  * - createProvenance, signAttestation, extractBrickContent → @koi/forge-integrity
  */
 interface ForgePipeline {
@@ -411,9 +403,9 @@ interface ForgePipeline {
         readonly content: string;
     };
     /** Check scope promotion governance. */
-    readonly checkScopePromotion: (currentScope: ForgeScope, targetScope: ForgeScope, trustTier: TrustTier, config: ForgeConfig) => Result<GovernanceResult, ForgeError>;
-    /** Validate trust tier transitions. */
-    readonly validateTrustTransition: (current: TrustTier, target: TrustTier, caller: TrustTransitionCaller) => Result<PromoteChange<TrustTier> | undefined, ForgeError>;
+    readonly checkScopePromotion: (currentScope: ForgeScope, targetScope: ForgeScope, config: ForgeConfig) => Result<GovernanceResult, ForgeError>;
+    /** Validate policy change (e.g., sandbox → unsandboxed requires HITL). */
+    readonly validatePolicyChange: (current: ToolPolicy, target: ToolPolicy, caller: TrustTransitionCaller) => Result<PromoteChange<ToolPolicy> | undefined, ForgeError>;
 }
 /**
  * Minimal shape for brick content extraction — works for full BrickArtifact
@@ -469,6 +461,6 @@ declare function isVisibleToAgent(brick: BrickArtifact, agentId: string, zoneId?
  */
 declare function filterByAgentScope(bricks: readonly BrickArtifact[], agentId: string, zoneId?: string | undefined): readonly BrickArtifact[];
 
-export { type AutoPromotionConfig, type BrickContentInput, type CreateProvenanceOptions, DEFAULT_ATTESTATION_CACHE_CAP, DEFAULT_REVERIFICATION_CONFIG, DEFAULT_SANDBOX_TIMEOUT_MS, type DependencyConfig, type DriftCheckResult, type DriftChecker, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeCompositeInput, type ForgeConfig, type ForgeContext, type ForgeError, type ForgeInput, type ForgeInputBase, type ForgeMiddlewareInput, type ForgePipeline, type ForgeResult, type ForgeResultMetadata, type ForgeSkillInput, type ForgeToolInput, type ForgeVerifier, type FormatConfig, type GovernanceResult, MAX_EXTERNAL_LISTENERS, type ManifestParseResult, type ManifestParser, type MutationPressureConfig, type PromoteChange, type PromoteResult, type ResolveStageReport, type ReverificationConfig, type ScopePromotionConfig, type SelfTestStageReport, type StageReport, type TestFailure, type TrustStageReport, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig };
+export { type BrickContentInput, type CreateProvenanceOptions, DEFAULT_ATTESTATION_CACHE_CAP, DEFAULT_REVERIFICATION_CONFIG, DEFAULT_SANDBOX_TIMEOUT_MS, type DependencyConfig, type DriftCheckResult, type DriftChecker, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeCompositeInput, type ForgeConfig, type ForgeContext, type ForgeError, type ForgeInput, type ForgeInputBase, type ForgeMiddlewareInput, type ForgePipeline, type ForgeResult, type ForgeResultMetadata, type ForgeSkillInput, type ForgeToolInput, type ForgeVerifier, type FormatConfig, type GovernanceResult, MAX_EXTERNAL_LISTENERS, type ManifestParseResult, type ManifestParser, type MutationPressureConfig, type PromoteChange, type PromoteResult, type ResolveStageReport, type ReverificationConfig, type ScopePromotionConfig, type SelfTestStageReport, type StageReport, type TestFailure, type TrustStageReport, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig };
 "
 `;

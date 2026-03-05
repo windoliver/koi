@@ -16,7 +16,7 @@ import type {
   ToolRequest,
   TurnContext,
 } from "@koi/core";
-import { brickId, toolToken } from "@koi/core";
+import { brickId, DEFAULT_UNSANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "./koi.js";
 import type { ForgeRuntime } from "./types.js";
 
@@ -501,7 +501,8 @@ describe("createKoi terminal injection", () => {
                     description: "Calculate",
                     inputSchema: {},
                   },
-                  trustTier: "verified",
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: executeMock,
                 },
               ],
@@ -560,7 +561,8 @@ describe("createKoi terminal injection", () => {
                 toolToken("sig-tool") as string,
                 {
                   descriptor: { name: "sig-tool", description: "Signal test", inputSchema: {} },
-                  trustTier: "verified" as const,
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: executeMock,
                 },
               ],
@@ -903,7 +905,8 @@ describe("createKoi HITL approval handler", () => {
                 tt("safe-tool") as string,
                 {
                   descriptor: { name: "safe-tool", description: "Safe", inputSchema: {} },
-                  trustTier: "verified",
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: async () => "safe-result",
                 },
               ],
@@ -911,7 +914,8 @@ describe("createKoi HITL approval handler", () => {
                 tt("dangerous-tool") as string,
                 {
                   descriptor: { name: "dangerous-tool", description: "Dangerous", inputSchema: {} },
-                  trustTier: "verified",
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: async () => "dangerous-result",
                 },
               ],
@@ -1092,7 +1096,8 @@ function mockTool(
 ): Tool {
   return {
     descriptor: { name, description: `Tool: ${name}`, inputSchema: {} },
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: mock(executeFn),
   };
 }
@@ -1184,7 +1189,8 @@ describe("createKoi live forge resolution", () => {
                 toolToken("calculator") as string,
                 {
                   descriptor: { name: "calculator", description: "Calc", inputSchema: {} },
-                  trustTier: "verified" as const,
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: entityExecute,
                 },
               ],
@@ -1293,7 +1299,8 @@ describe("createKoi live forge resolution", () => {
                 toolToken("entity-tool") as string,
                 {
                   descriptor: { name: "entity-tool", description: "Entity", inputSchema: {} },
-                  trustTier: "verified" as const,
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: async () => "ok",
                 },
               ],
@@ -1346,7 +1353,8 @@ describe("createKoi live forge resolution", () => {
                     description: "Entity version",
                     inputSchema: {},
                   },
-                  trustTier: "verified" as const,
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: async () => "ok",
                 },
               ],
@@ -1390,7 +1398,8 @@ describe("createKoi live forge resolution", () => {
                 toolToken("entity-tool") as string,
                 {
                   descriptor: { name: "entity-tool", description: "Entity", inputSchema: {} },
-                  trustTier: "verified" as const,
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: async () => "ok",
                 },
               ],
@@ -1557,7 +1566,8 @@ describe("createKoi live forge resolution", () => {
                 toolToken("my-tool") as string,
                 {
                   descriptor: { name: "my-tool", description: "Mine", inputSchema: {} },
-                  trustTier: "verified" as const,
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: async () => "ok",
                 },
               ],
@@ -1636,7 +1646,8 @@ describe("createKoi live forge resolution", () => {
                 toolToken("entity-calc") as string,
                 {
                   descriptor: { name: "entity-calc", description: "Calc", inputSchema: {} },
-                  trustTier: "verified" as const,
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: async () => "ok",
                 },
               ],
@@ -1812,7 +1823,8 @@ describe("createKoi live forge resolution", () => {
 
     const echoTool: Tool = {
       descriptor: { name: "echo", description: "Echo tool", inputSchema: {} },
-      trustTier: "verified",
+      origin: "primordial",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       execute: mock(async (input: unknown) => input),
     };
 
@@ -1962,7 +1974,8 @@ describe("createKoi live forge resolution", () => {
                     description: "Entity calculator",
                     inputSchema: {},
                   },
-                  trustTier: "verified" as const,
+                  origin: "primordial",
+                  policy: DEFAULT_UNSANDBOXED_POLICY,
                   execute: entityExecute,
                 },
               ],

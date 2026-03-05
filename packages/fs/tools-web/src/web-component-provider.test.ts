@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AttachResult, Tool } from "@koi/core";
-import { isAttachResult } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, isAttachResult } from "@koi/core";
 import { createWebProvider } from "./web-component-provider.js";
 import type { WebExecutor } from "./web-executor.js";
 
@@ -75,12 +75,12 @@ describe("createWebProvider", () => {
   test("sets trust tier on tools", async () => {
     const provider = createWebProvider({
       executor: createMockExecutor(),
-      trustTier: "promoted",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
     });
     const components = extractMap(await provider.attach(MOCK_AGENT));
 
     const fetchTool = components.get("tool:web_fetch") as Tool;
-    expect(fetchTool.trustTier).toBe("promoted");
+    expect(fetchTool.policy.sandbox).toBe(false);
   });
 
   test("has correct provider name", () => {

@@ -15,7 +15,7 @@ import type { KoiError, Result } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // Trust level — categorical output for routing and governance decisions
-// Distinct from TrustTier (forge/brick isolation) in ecs.ts
+// Distinct from ToolPolicy (forge/brick isolation) in ecs.ts
 // ---------------------------------------------------------------------------
 
 /**

@@ -7,6 +7,7 @@
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { DelegationScope, KoiError, Result, ScopeChecker, Tool } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { ToolCallHandlerDeps } from "./tool-call-handler.js";
 import { executeWithSignal, handleToolCall, isToolCallPayload } from "./tool-call-handler.js";
 import type { LocalResolver, ToolMeta } from "./tools/local-resolver.js";
@@ -34,7 +35,8 @@ function makeFrame(overrides?: Partial<NodeFrame>): NodeFrame {
 function makeTool(result: unknown = "ok"): Tool {
   return {
     descriptor: { name: "read_file", description: "Read a file", inputSchema: {} },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: mock(() => Promise.resolve(result)),
   };
 }
@@ -196,7 +198,8 @@ describe("handleToolCall", () => {
   it("sends execution_error and emits tool_error when tool throws", async () => {
     const failTool: Tool = {
       descriptor: { name: "read_file", description: "Read a file", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: mock(() => Promise.reject(new Error("disk full"))),
     };
     const failDeps = makeDeps({ resolver: makeResolver(failTool) });
@@ -252,7 +255,8 @@ describe("handleToolCall", () => {
   it("sends timeout when tool execution exceeds timeoutMs", async () => {
     const slowTool: Tool = {
       descriptor: { name: "read_file", description: "Slow tool", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: mock(() => new Promise(() => {})), // never resolves
     };
     const timeoutDeps = makeDeps({
@@ -298,7 +302,8 @@ describe("handleToolCall", () => {
   it("passes AbortSignal to tool.execute via options", async () => {
     const tool: Tool = {
       descriptor: { name: "read_file", description: "Read a file", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: mock((_args, options) => {
         // Verify signal is passed in options
         expect(options).toBeDefined();
@@ -321,7 +326,8 @@ describe("handleToolCall", () => {
     let capturedSignal: AbortSignal | undefined;
     const slowTool: Tool = {
       descriptor: { name: "read_file", description: "Slow tool", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: mock((_args, options) => {
         capturedSignal = options?.signal;
         return new Promise(() => {}); // never resolves
@@ -397,7 +403,8 @@ describe("handleToolCall", () => {
     const shutdownController = new AbortController();
     const slowTool: Tool = {
       descriptor: { name: "read_file", description: "Slow tool", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: mock(() => new Promise(() => {})), // never resolves
     };
     const shutdownDeps = makeDeps({
@@ -443,7 +450,8 @@ describe("executeWithSignal", () => {
     const controller = new AbortController();
     const cooperativeTool: Tool = {
       descriptor: { name: "coop", description: "Cooperative tool", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async (_args, options) => {
         step = 1;
         // Simulate long work — signal fires before this completes
@@ -471,7 +479,8 @@ describe("executeWithSignal", () => {
   it("non-cooperating tool is still bounded by deadline", async () => {
     const hangingTool: Tool = {
       descriptor: { name: "hang", description: "Hanging tool", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: () => new Promise(() => {}), // never resolves, ignores signal
     };
 
@@ -506,7 +515,8 @@ describe("executeWithSignal", () => {
   it("handles tool rejection with non-Error value", async () => {
     const tool: Tool = {
       descriptor: { name: "reject-null", description: "Rejects with null", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: mock(() => Promise.reject(null)),
     };
     const controller = new AbortController();
@@ -518,7 +528,8 @@ describe("executeWithSignal", () => {
     const controller = new AbortController();
     const neverTool: Tool = {
       descriptor: { name: "never", description: "Never resolves", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: mock(() => new Promise(() => {})),
     };
 
@@ -539,7 +550,8 @@ describe("executeWithSignal", () => {
     const controller = new AbortController();
     const tool: Tool = {
       descriptor: { name: "race-edge", description: "Race edge case", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: mock(() => {
         // Abort inside execute — the backstop (line 199 check) should catch this
         controller.abort(new Error("mid-execute-abort"));
@@ -558,7 +570,8 @@ describe("executeWithSignal", () => {
     const controller = new AbortController();
     const steppingTool: Tool = {
       descriptor: { name: "stepper", description: "Steps tool", inputSchema: {} },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async (_args, options) => {
         for (let i = 0; i < 20; i++) {
           if (options?.signal?.aborted) break;

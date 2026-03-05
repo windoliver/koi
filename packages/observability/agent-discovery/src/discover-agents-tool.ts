@@ -12,6 +12,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { DiscoveryHandle } from "./discovery.js";
 
 const VALID_TRANSPORTS = new Set<string>(["cli", "mcp", "a2a"]);
@@ -60,7 +61,8 @@ const TOOL_DESCRIPTOR: ToolDescriptor = {
 export function createDiscoverAgentsTool(discovery: DiscoveryHandle): Tool {
   return {
     descriptor: TOOL_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
 
     execute: async (args: JsonObject): Promise<unknown> => {
       const capability = typeof args.capability === "string" ? args.capability : undefined;

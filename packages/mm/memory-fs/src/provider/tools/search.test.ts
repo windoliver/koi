@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { MemoryRecallOptions } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockFsMemory, createMockMemoryComponent } from "../test-helpers.js";
 import { createMemorySearchTool } from "./search.js";
 
@@ -7,7 +8,7 @@ describe("createMemorySearchTool", () => {
   test("returns results when entity is provided", async () => {
     const component = createMockMemoryComponent();
     const memory = createMockFsMemory(component);
-    const tool = createMemorySearchTool(memory, "memory", "verified");
+    const tool = createMemorySearchTool(memory, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ entity: "alice" })) as {
       readonly results: readonly unknown[];
       readonly count: number;
@@ -22,7 +23,7 @@ describe("createMemorySearchTool", () => {
 
   test("returns entity list when no entity provided", async () => {
     const memory = createMockFsMemory();
-    const tool = createMemorySearchTool(memory, "memory", "verified");
+    const tool = createMemorySearchTool(memory, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly entities: readonly string[];
     };
@@ -35,7 +36,7 @@ describe("createMemorySearchTool", () => {
   test("respects custom limit for entity search", async () => {
     const component = createMockMemoryComponent();
     const memory = createMockFsMemory(component);
-    const tool = createMemorySearchTool(memory, "memory", "verified");
+    const tool = createMemorySearchTool(memory, "memory", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ entity: "alice", limit: 5 });
 
     const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
@@ -45,7 +46,7 @@ describe("createMemorySearchTool", () => {
   test("clamps limit to max", async () => {
     const component = createMockMemoryComponent();
     const memory = createMockFsMemory(component);
-    const tool = createMemorySearchTool(memory, "memory", "verified", 20);
+    const tool = createMemorySearchTool(memory, "memory", DEFAULT_UNSANDBOXED_POLICY, 20);
     await tool.execute({ entity: "alice", limit: 999 });
 
     const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
@@ -60,7 +61,7 @@ describe("createMemorySearchTool", () => {
       },
     };
     const memory = createMockFsMemory(component);
-    const tool = createMemorySearchTool(memory, "memory", "verified");
+    const tool = createMemorySearchTool(memory, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ entity: "alice" })) as {
       readonly error: string;
       readonly code: string;
@@ -77,7 +78,7 @@ describe("createMemorySearchTool", () => {
         throw new Error("fs error");
       },
     };
-    const tool = createMemorySearchTool(memory, "memory", "verified");
+    const tool = createMemorySearchTool(memory, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly error: string;
       readonly code: string;
@@ -89,7 +90,7 @@ describe("createMemorySearchTool", () => {
 
   test("descriptor has correct name", () => {
     const memory = createMockFsMemory();
-    const tool = createMemorySearchTool(memory, "mem", "sandbox");
+    const tool = createMemorySearchTool(memory, "mem", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("mem_search");
   });
 });

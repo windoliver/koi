@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/core";
+import {
+  agentId,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+} from "@koi/core";
 import { createDelegationManager } from "../delegation-manager.js";
 import { createDelegationRevokeTool } from "./revoke.js";
 
@@ -22,9 +27,9 @@ describe("createDelegationRevokeTool", () => {
   test("descriptor has correct name and schema", () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
-    const tool = createDelegationRevokeTool(manager, "delegation", "verified");
+    const tool = createDelegationRevokeTool(manager, "delegation", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("delegation_revoke");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("revokes an existing grant", async () => {
@@ -37,7 +42,7 @@ describe("createDelegationRevokeTool", () => {
     expect(grantResult.ok).toBe(true);
     if (!grantResult.ok) return;
 
-    const tool = createDelegationRevokeTool(manager, "delegation", "verified");
+    const tool = createDelegationRevokeTool(manager, "delegation", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({ grantId: grantResult.value.id });
 
     const output = result as { revokedIds: readonly string[] };
@@ -60,7 +65,7 @@ describe("createDelegationRevokeTool", () => {
     });
     expect(child.ok).toBe(true);
 
-    const tool = createDelegationRevokeTool(manager, "delegation", "verified");
+    const tool = createDelegationRevokeTool(manager, "delegation", DEFAULT_UNSANDBOXED_POLICY);
     const result = await tool.execute({ grantId: root.value.id, cascade: true });
 
     const output = result as { revokedIds: readonly string[] };
@@ -70,7 +75,7 @@ describe("createDelegationRevokeTool", () => {
   test("throws on missing grantId", async () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
-    const tool = createDelegationRevokeTool(manager, "delegation", "verified");
+    const tool = createDelegationRevokeTool(manager, "delegation", DEFAULT_UNSANDBOXED_POLICY);
 
     await expect(tool.execute({})).rejects.toThrow("grantId");
   });
@@ -78,7 +83,7 @@ describe("createDelegationRevokeTool", () => {
   test("uses custom prefix", () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
-    const tool = createDelegationRevokeTool(manager, "custom", "sandbox");
+    const tool = createDelegationRevokeTool(manager, "custom", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("custom_revoke");
   });
 });

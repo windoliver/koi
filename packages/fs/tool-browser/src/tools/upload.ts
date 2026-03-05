@@ -5,7 +5,7 @@
  * BrowserProviderConfig because it writes files to the server-side process.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import {
   parseOptionalBoolean,
   parseOptionalSnapshotId,
@@ -20,7 +20,7 @@ const MAX_TIMEOUT_MS = 10_000;
 export function createBrowserUploadTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -70,7 +70,8 @@ export function createBrowserUploadTool(
         required: ["ref", "files"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const refResult = parseRef(args, "ref");
       if (!refResult.ok) return refResult.err;

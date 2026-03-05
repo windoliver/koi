@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { KoiError } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { ForgeHealthConfig } from "./config.js";
 import { computeHealthAction, createToolHealthTracker, type HealthAction } from "./tool-health.js";
 import type { DemotionCriteria, ToolHealthMetrics } from "./types.js";
@@ -20,7 +21,8 @@ function createMockForgeStore(overrides?: Record<string, unknown>) {
       Promise.resolve({
         ok: true as const,
         value: {
-          trustTier: "promoted",
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
           lastPromotedAt: 0,
           lastDemotedAt: 0,
           ...(overrides ?? {}),
@@ -92,7 +94,7 @@ describe("computeHealthAction", () => {
     readonly quarantineMetrics: ToolHealthMetrics;
     readonly demotionMetrics: ToolHealthMetrics;
     readonly currentState: "healthy" | "degraded" | "quarantined";
-    readonly trustTier: "sandbox" | "verified" | "promoted";
+    readonly isSandboxed: boolean;
     readonly quarantineThreshold: number;
     readonly quarantineWindowSize: number;
     readonly demotionCriteria: DemotionCriteria;
@@ -106,7 +108,7 @@ describe("computeHealthAction", () => {
       quarantineMetrics: metricsWithRate(0, 0),
       demotionMetrics: metricsWithRate(0, 0),
       currentState: "quarantined",
-      trustTier: "promoted",
+      isSandboxed: false,
       quarantineThreshold: 0.5,
       quarantineWindowSize: 10,
       demotionCriteria: defaultDemotion,
@@ -120,7 +122,7 @@ describe("computeHealthAction", () => {
       quarantineMetrics: metricsWithRate(0.6, 10),
       demotionMetrics: metricsWithRate(0.4, 20),
       currentState: "healthy",
-      trustTier: "promoted",
+      isSandboxed: false,
       quarantineThreshold: 0.5,
       quarantineWindowSize: 10,
       demotionCriteria: defaultDemotion,
@@ -134,7 +136,7 @@ describe("computeHealthAction", () => {
       quarantineMetrics: metricsWithRate(0.2, 10),
       demotionMetrics: metricsWithRate(0.35, 15),
       currentState: "healthy",
-      trustTier: "promoted",
+      isSandboxed: false,
       quarantineThreshold: 0.5,
       quarantineWindowSize: 10,
       demotionCriteria: defaultDemotion,
@@ -148,7 +150,7 @@ describe("computeHealthAction", () => {
       quarantineMetrics: metricsWithRate(0.2, 10),
       demotionMetrics: metricsWithRate(0.35, 15),
       currentState: "healthy",
-      trustTier: "promoted",
+      isSandboxed: false,
       quarantineThreshold: 0.5,
       quarantineWindowSize: 10,
       demotionCriteria: defaultDemotion,
@@ -162,7 +164,7 @@ describe("computeHealthAction", () => {
       quarantineMetrics: metricsWithRate(0.2, 10),
       demotionMetrics: metricsWithRate(0.35, 15),
       currentState: "healthy",
-      trustTier: "verified",
+      isSandboxed: false,
       quarantineThreshold: 0.5,
       quarantineWindowSize: 10,
       demotionCriteria: defaultDemotion,
@@ -176,7 +178,7 @@ describe("computeHealthAction", () => {
       quarantineMetrics: metricsWithRate(0.2, 10),
       demotionMetrics: metricsWithRate(0.5, 20),
       currentState: "healthy",
-      trustTier: "sandbox",
+      isSandboxed: true,
       quarantineThreshold: 0.5,
       quarantineWindowSize: 10,
       demotionCriteria: defaultDemotion,
@@ -190,7 +192,7 @@ describe("computeHealthAction", () => {
       quarantineMetrics: metricsWithRate(0.1, 10),
       demotionMetrics: metricsWithRate(0.1, 20),
       currentState: "healthy",
-      trustTier: "promoted",
+      isSandboxed: false,
       quarantineThreshold: 0.5,
       quarantineWindowSize: 10,
       demotionCriteria: defaultDemotion,
@@ -204,7 +206,7 @@ describe("computeHealthAction", () => {
       quarantineMetrics: metricsWithRate(0.4, 5), // 0.4 >= 0.5 * 0.75 = 0.375
       demotionMetrics: metricsWithRate(0.2, 10),
       currentState: "healthy",
-      trustTier: "sandbox",
+      isSandboxed: true,
       quarantineThreshold: 0.5,
       quarantineWindowSize: 10,
       demotionCriteria: defaultDemotion,
@@ -218,7 +220,7 @@ describe("computeHealthAction", () => {
       quarantineMetrics: metricsWithRate(0.2, 4),
       demotionMetrics: metricsWithRate(0.5, 5), // below minSampleSize of 10
       currentState: "healthy",
-      trustTier: "promoted",
+      isSandboxed: false,
       quarantineThreshold: 0.5,
       quarantineWindowSize: 10,
       demotionCriteria: defaultDemotion,
@@ -235,7 +237,7 @@ describe("computeHealthAction", () => {
         c.quarantineMetrics,
         c.demotionMetrics,
         c.currentState,
-        c.trustTier,
+        c.isSandboxed,
         c.quarantineThreshold,
         c.quarantineWindowSize,
         c.demotionCriteria,
@@ -499,7 +501,10 @@ describe("ToolHealthTracker", () => {
 
 describe("trust demotion", () => {
   test("checkAndDemote updates trust tier in store", async () => {
-    const forgeStore = createMockForgeStore({ trustTier: "promoted" });
+    const forgeStore = createMockForgeStore({
+      origin: "primordial",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+    });
     const snapshotStore = createMockSnapshotStore();
     const onDemotion = mock(() => {});
 
@@ -536,13 +541,14 @@ describe("trust demotion", () => {
     // Verify store was updated with demoted trust tier
     expect(forgeStore.update).toHaveBeenCalledTimes(1);
     const updateCall = forgeStore.update.mock.calls[0] as unknown[];
-    expect(updateCall[1]).toEqual(
-      expect.objectContaining({ trustTier: "verified", lastDemotedAt: 100_000_000 }),
-    );
+    expect(updateCall[1]).toEqual(expect.objectContaining({ policy: DEFAULT_SANDBOXED_POLICY }));
   });
 
   test("checkAndDemote records snapshot event", async () => {
-    const forgeStore = createMockForgeStore({ trustTier: "promoted" });
+    const forgeStore = createMockForgeStore({
+      origin: "primordial",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+    });
     const snapshotStore = createMockSnapshotStore();
 
     const tracker = createToolHealthTracker(
@@ -575,12 +581,15 @@ describe("trust demotion", () => {
     >;
     const event = snapshot.event as Record<string, unknown>;
     expect(event.kind).toBe("demoted");
-    expect(event.fromTier).toBe("promoted");
-    expect(event.toTier).toBe("verified");
+    expect(event.fromTier).toBe("unsandboxed");
+    expect(event.toTier).toBe("sandboxed");
   });
 
   test("checkAndDemote fires onDemotion callback", async () => {
-    const forgeStore = createMockForgeStore({ trustTier: "verified" });
+    const forgeStore = createMockForgeStore({
+      origin: "primordial",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+    });
     const snapshotStore = createMockSnapshotStore();
     const onDemotion = mock(() => {});
 
@@ -610,13 +619,16 @@ describe("trust demotion", () => {
 
     expect(onDemotion).toHaveBeenCalledTimes(1);
     const event = (onDemotion.mock.calls[0] as unknown[])?.[0] as Record<string, unknown>;
-    expect(event.from).toBe("verified");
-    expect(event.to).toBe("sandbox");
+    expect(event.from).toBe("unsandboxed");
+    expect(event.to).toBe("sandboxed");
     expect(event.reason).toBe("error_rate");
   });
 
   test("checkAndDemote returns false when not warranted", async () => {
-    const forgeStore = createMockForgeStore({ trustTier: "promoted" });
+    const forgeStore = createMockForgeStore({
+      origin: "primordial",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+    });
 
     const tracker = createToolHealthTracker(
       createTestConfig({
@@ -650,7 +662,10 @@ describe("trust demotion", () => {
   });
 
   test("store errors throw with cause chaining", async () => {
-    const forgeStore = createMockForgeStore({ trustTier: "promoted" });
+    const forgeStore = createMockForgeStore({
+      origin: "primordial",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+    });
     forgeStore.update = mock(() =>
       Promise.resolve({
         ok: false as const,
@@ -725,7 +740,8 @@ describe("fitness flush", () => {
       Promise.resolve({
         ok: true as const,
         value: {
-          trustTier: "promoted",
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
           lastPromotedAt: 0,
           lastDemotedAt: 0,
           fitness: {
@@ -769,7 +785,8 @@ describe("fitness flush", () => {
       Promise.resolve({
         ok: true as const,
         value: {
-          trustTier: "promoted",
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
           lastPromotedAt: 0,
           lastDemotedAt: 0,
           fitness: {
@@ -847,7 +864,8 @@ describe("fitness flush", () => {
       Promise.resolve({
         ok: true as const,
         value: {
-          trustTier: "promoted",
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
           fitness: {
             successCount: 0,
             errorCount: 0,
@@ -896,7 +914,8 @@ describe("fitness flush", () => {
             resolve({
               ok: true as const,
               value: {
-                trustTier: "promoted",
+                origin: "primordial",
+                policy: DEFAULT_UNSANDBOXED_POLICY,
                 fitness: {
                   successCount: 0,
                   errorCount: 0,
@@ -939,7 +958,8 @@ describe("fitness flush", () => {
       Promise.resolve({
         ok: true as const,
         value: {
-          trustTier: "promoted",
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
           fitness: {
             successCount: 0,
             errorCount: 0,

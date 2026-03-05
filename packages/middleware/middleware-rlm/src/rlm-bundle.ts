@@ -7,7 +7,7 @@
  */
 
 import type { MiddlewareBundle, Tool } from "@koi/core";
-import { createSingleToolProvider } from "@koi/core";
+import { createSingleToolProvider, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createRlmMiddleware } from "./rlm.js";
 import { RLM_PROCESS_DESCRIPTOR, RLM_PROCESS_TOOL_NAME } from "./rlm-tool-descriptor.js";
 import type { RlmMiddlewareConfig } from "./types.js";
@@ -22,7 +22,8 @@ import type { RlmMiddlewareConfig } from "./types.js";
 function createRlmProcessTool(): Tool {
   return {
     descriptor: RLM_PROCESS_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async () => ({
       error: "rlm_process must be invoked through the middleware pipeline, not directly",
       code: "RLM_ERROR",

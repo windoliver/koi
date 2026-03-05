@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { Agent, Tool, ToolDescriptor } from "@koi/core/ecs";
 import type { ToolHandler, ToolRequest, ToolResponse } from "@koi/core/middleware";
 import { createPiTools, sanitizeToolName } from "./tool-bridge.js";
@@ -24,7 +25,8 @@ function makeToolDescriptor(name: string, description: string): ToolDescriptor {
 function makeTool(name: string, description: string): Tool {
   return {
     descriptor: makeToolDescriptor(name, description),
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (args) => `executed ${name} with ${JSON.stringify(args)}`,
   };
 }

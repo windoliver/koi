@@ -63,7 +63,7 @@ describe("createDiscoveryProvider", () => {
 
     const tool = result.get(toolKey) as Tool;
     expect(tool.descriptor.name).toBe("discover_agents");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   it("attaches EXTERNAL_AGENTS singleton", async () => {

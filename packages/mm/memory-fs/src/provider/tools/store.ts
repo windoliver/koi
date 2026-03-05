@@ -2,13 +2,13 @@
  * Tool factory for `memory_store` — persist an atomic fact to long-term memory.
  */
 
-import type { JsonObject, MemoryComponent, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, MemoryComponent, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalString, parseOptionalStringArray, parseString } from "../parse-args.js";
 
 export function createMemoryStoreTool(
   component: MemoryComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -41,7 +41,8 @@ export function createMemoryStoreTool(
         required: ["content"],
       } satisfies JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const contentResult = parseString(args, "content");
       if (!contentResult.ok) return contentResult.err;

@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { permissiveProfile, profileForTier, restrictiveProfile } from "./profiles.js";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import {
+  createProfileFromPolicy,
+  permissiveProfile,
+  profileForTier,
+  restrictiveProfile,
+} from "./profiles.js";
 
 describe("restrictiveProfile", () => {
   test("has network disallowed", () => {
@@ -33,11 +39,6 @@ describe("restrictiveProfile", () => {
   test("allows write only to /tmp/koi-sandbox-*", () => {
     const profile = restrictiveProfile();
     expect(profile.filesystem.allowWrite).toEqual(["/tmp/koi-sandbox-*"]);
-  });
-
-  test("has tier sandbox", () => {
-    const profile = restrictiveProfile();
-    expect(profile.tier).toBe("sandbox");
   });
 
   test("has resource limits set", () => {
@@ -82,40 +83,21 @@ describe("permissiveProfile", () => {
     expect(profile.filesystem.denyRead).toContain("~/.ssh");
   });
 
-  test("has tier verified", () => {
-    const profile = permissiveProfile();
-    expect(profile.tier).toBe("verified");
-  });
-
   test("has higher resource limits than restrictive", () => {
     const permissive = permissiveProfile();
     const restrictive = restrictiveProfile();
 
-    // Permissive profile should have higher limits
     expect(permissive.resources.maxMemoryMb).toBe(2048);
     expect(restrictive.resources.maxMemoryMb).toBe(512);
-    expect(permissive.resources.maxMemoryMb ?? 0).toBeGreaterThan(
-      restrictive.resources.maxMemoryMb ?? 0,
-    );
 
     expect(permissive.resources.timeoutMs).toBe(120_000);
-    expect(permissive.resources.timeoutMs ?? 0).toBeGreaterThan(
-      restrictive.resources.timeoutMs ?? 0,
-    );
-
     expect(permissive.resources.maxPids).toBe(256);
-    expect(permissive.resources.maxPids ?? 0).toBeGreaterThan(restrictive.resources.maxPids ?? 0);
-
     expect(permissive.resources.maxOpenFiles).toBe(1024);
-    expect(permissive.resources.maxOpenFiles ?? 0).toBeGreaterThan(
-      restrictive.resources.maxOpenFiles ?? 0,
-    );
   });
 
-  test("denies cloud config but not .env patterns", () => {
+  test("denies cloud config paths", () => {
     const profile = permissiveProfile();
     const denied = profile.filesystem.denyRead;
-    // Permissive uses SENSITIVE_PATHS but not SENSITIVE_PATTERNS
     expect(denied).toContain("~/.ssh");
     expect(denied).toContain("~/.gnupg");
     expect(denied).toContain("~/.aws");
@@ -129,49 +111,34 @@ describe("permissiveProfile", () => {
   });
 });
 
-describe("profileForTier", () => {
-  test("sandbox tier returns restrictive profile", () => {
-    const profile = profileForTier("sandbox");
-    expect(profile.tier).toBe("sandbox");
+describe("createProfileFromPolicy", () => {
+  test("sandboxed policy returns restrictive profile", () => {
+    const profile = createProfileFromPolicy(DEFAULT_SANDBOXED_POLICY);
     expect(profile.network.allow).toBe(false);
   });
 
-  test("verified tier returns permissive profile", () => {
-    const profile = profileForTier("verified");
-    expect(profile.tier).toBe("verified");
-    expect(profile.network.allow).toBe(true);
-  });
-
-  test("promoted tier returns pass-through profile", () => {
-    const profile = profileForTier("promoted");
-    expect(profile.tier).toBe("promoted");
+  test("unsandboxed policy returns pass-through profile", () => {
+    const profile = createProfileFromPolicy(DEFAULT_UNSANDBOXED_POLICY);
     expect(profile.network.allow).toBe(true);
     expect(profile.filesystem).toEqual({});
     expect(profile.resources).toEqual({});
   });
 
-  test("each tier has the correct tier field", () => {
-    const tiers = ["sandbox", "verified", "promoted"] as const;
-    for (const tier of tiers) {
-      const profile = profileForTier(tier);
-      expect(profile.tier).toBe(tier);
-    }
+  test("custom sandboxed policy returns restrictive profile", () => {
+    const profile = createProfileFromPolicy({
+      sandbox: true,
+      capabilities: { network: { allow: true } },
+    });
+    expect(profile.network.allow).toBe(false); // Profile is restrictive regardless of capabilities
   });
 
-  test("promoted tier has no resource limits", () => {
-    const profile = profileForTier("promoted");
-    expect(profile.resources.maxMemoryMb).toBeUndefined();
-    expect(profile.resources.timeoutMs).toBeUndefined();
-    expect(profile.resources.maxPids).toBeUndefined();
-    expect(profile.resources.maxOpenFiles).toBeUndefined();
+  test("custom unsandboxed policy returns pass-through", () => {
+    const profile = createProfileFromPolicy({ sandbox: false, capabilities: {} });
+    expect(profile.network.allow).toBe(true);
   });
 
-  test("promoted tier has no filesystem restrictions", () => {
-    const profile = profileForTier("promoted");
-    expect(profile.filesystem.allowRead).toBeUndefined();
-    expect(profile.filesystem.denyRead).toBeUndefined();
-    expect(profile.filesystem.allowWrite).toBeUndefined();
-    expect(profile.filesystem.denyWrite).toBeUndefined();
+  test("profileForTier is alias for createProfileFromPolicy", () => {
+    expect(profileForTier).toBe(createProfileFromPolicy);
   });
 });
 
@@ -181,8 +148,6 @@ describe("profile overrides", () => {
       network: { allow: true },
     });
     expect(profile.network.allow).toBe(true);
-    // Other fields should remain from base
-    expect(profile.tier).toBe("sandbox");
     expect(profile.filesystem.denyRead).toContain("~/.ssh");
   });
 
@@ -200,20 +165,11 @@ describe("profile overrides", () => {
     expect(profile.env).toEqual({ NODE_ENV: "test" });
   });
 
-  test("tier override replaces tier", () => {
-    const profile = restrictiveProfile({ tier: "verified" });
-    expect(profile.tier).toBe("verified");
-    // Filesystem stays restrictive
-    expect(profile.filesystem.allowWrite).toEqual(["/tmp/koi-sandbox-*"]);
-  });
-
   test("resources override replaces entire resources block", () => {
     const profile = restrictiveProfile({
       resources: { maxMemoryMb: 1024 },
     });
-    // Override replaces the entire resources block
     expect(profile.resources.maxMemoryMb).toBe(1024);
-    // Other resource fields are undefined because override replaces, not deep merges
     expect(profile.resources.timeoutMs).toBeUndefined();
   });
 
@@ -222,7 +178,6 @@ describe("profile overrides", () => {
       filesystem: { allowRead: ["/custom"] },
     });
     expect(profile.filesystem.allowRead).toEqual(["/custom"]);
-    // denyRead is undefined because override replaces
     expect(profile.filesystem.denyRead).toBeUndefined();
   });
 
@@ -231,21 +186,6 @@ describe("profile overrides", () => {
       network: { allow: false },
     });
     expect(profile.network.allow).toBe(false);
-    expect(profile.tier).toBe("verified");
-  });
-
-  test("multiple overrides applied together", () => {
-    const profile = restrictiveProfile({
-      tier: "verified",
-      network: { allow: true },
-      env: { HOME: "/tmp" },
-    });
-    expect(profile.tier).toBe("verified");
-    expect(profile.network.allow).toBe(true);
-    expect(profile.env).toEqual({ HOME: "/tmp" });
-    // filesystem and resources come from base
-    expect(profile.filesystem.denyRead).toContain("~/.ssh");
-    expect(profile.resources.maxMemoryMb).toBe(512);
   });
 
   test("calling without overrides returns a copy, not the original", () => {

@@ -7,6 +7,7 @@
  */
 
 import type { JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { McpToolInfo } from "../client-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -69,7 +70,8 @@ export function createSearchTool(serverName: string, tools: readonly McpToolInfo
 
   return {
     descriptor,
-    trustTier: "promoted",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute,
   };
 }

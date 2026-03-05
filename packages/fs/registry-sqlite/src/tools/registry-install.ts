@@ -17,7 +17,7 @@ import type {
   RegistryComponent,
   Result,
   Tool,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
 import { ALL_BRICK_KINDS, skillId } from "@koi/core";
 import { parseEnum, parseOptionalString, parseString } from "../parse-args.js";
@@ -28,7 +28,7 @@ export type OnInstallCallback = (artifact: BrickArtifact) => Promise<Result<void
 export function createRegistryInstallTool(
   facade: RegistryComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   onInstall?: OnInstallCallback,
 ): Tool {
   return {
@@ -57,7 +57,8 @@ export function createRegistryInstallTool(
         required: ["kind", "name"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
 
     execute: async (args: JsonObject): Promise<unknown> => {
       const kindResult = parseEnum<BrickKind>(args, "kind", [...ALL_BRICK_KINDS]);

@@ -67,9 +67,9 @@ describe("createExecTool", () => {
       expect(tool.descriptor.name).toBe("exec");
     });
 
-    it("has trustTier sandbox", () => {
+    it("has sandbox policy", () => {
       const tool = createTool();
-      expect(tool.trustTier).toBe("sandbox");
+      expect(tool.policy.sandbox).toBe(true);
     });
 
     it("has code as required in inputSchema", () => {

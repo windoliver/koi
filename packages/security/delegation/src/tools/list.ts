@@ -4,7 +4,7 @@
  * Wraps DelegationManager.list() behind a Tool interface.
  */
 
-import type { AgentId, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { AgentId, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import type { DelegationManager } from "../delegation-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -15,7 +15,7 @@ export function createDelegationListTool(
   manager: DelegationManager,
   ownerAgentId: AgentId,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -26,7 +26,8 @@ export function createDelegationListTool(
         properties: {},
       },
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (_args: JsonObject): Promise<unknown> => {
       const grants = manager.list(ownerAgentId);
       return {

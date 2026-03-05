@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { DelegationScope } from "@koi/core";
-import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/core";
+import {
+  agentId,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+} from "@koi/core";
 import { createDelegationManager } from "../delegation-manager.js";
 import { createDelegationGrantTool } from "./grant.js";
 
@@ -26,14 +31,19 @@ describe("createDelegationGrantTool", () => {
   } {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
-    const tool = createDelegationGrantTool(manager, agentId("owner"), "delegation", "verified");
+    const tool = createDelegationGrantTool(
+      manager,
+      agentId("owner"),
+      "delegation",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
     return { manager, tool };
   }
 
   test("descriptor has correct name and schema", () => {
     const { tool } = setup();
     expect(tool.descriptor.name).toBe("delegation_grant");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
     expect(tool.descriptor.inputSchema).toHaveProperty("required");
   });
 
@@ -92,9 +102,14 @@ describe("createDelegationGrantTool", () => {
   test("uses custom prefix", () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
-    const tool = createDelegationGrantTool(manager, agentId("owner"), "custom", "sandbox");
+    const tool = createDelegationGrantTool(
+      manager,
+      agentId("owner"),
+      "custom",
+      DEFAULT_SANDBOXED_POLICY,
+    );
     expect(tool.descriptor.name).toBe("custom_grant");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 
   // -----------------------------------------------------------------------

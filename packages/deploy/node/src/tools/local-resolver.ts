@@ -6,7 +6,7 @@
  */
 
 import type { KoiError, Result, SourceBundle, Tool, ToolDescriptor } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, RETRYABLE_DEFAULTS } from "@koi/core";
 import { createFilesystemTool } from "./filesystem.js";
 import { createShellTool } from "./shell.js";
 
@@ -97,7 +97,8 @@ export function createLocalResolver(config: ResolverConfig): LocalResolver {
 
           const tool: Tool = {
             descriptor,
-            trustTier: "sandbox",
+            origin: "primordial",
+            policy: DEFAULT_SANDBOXED_POLICY,
             async execute(args) {
               if (command === undefined) {
                 return { error: "Tool has no executable command" };

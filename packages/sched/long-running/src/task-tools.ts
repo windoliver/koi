@@ -9,7 +9,7 @@
  */
 
 import type { JsonObject, TaskBoardSnapshot, TaskItemId, Tool, ToolDescriptor } from "@koi/core";
-import { taskItemId } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, taskItemId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,7 +100,8 @@ const TASK_STATUS_DESCRIPTOR: ToolDescriptor = {
 export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
   const taskComplete: Tool = {
     descriptor: TASK_COMPLETE_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => {
       const tid = typeof args.task_id === "string" ? args.task_id : undefined;
       const output = typeof args.output === "string" ? args.output : undefined;
@@ -121,7 +122,8 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
 
   const taskUpdate: Tool = {
     descriptor: TASK_UPDATE_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => {
       const tid = typeof args.task_id === "string" ? args.task_id : undefined;
       const description = typeof args.description === "string" ? args.description : undefined;
@@ -135,7 +137,8 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
 
   const taskStatus: Tool = {
     descriptor: TASK_STATUS_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async (_args: JsonObject): Promise<unknown> => {
       const board = config.getTaskBoard();
       const pending = board.items.filter((i) => i.status === "pending").length;

@@ -2,7 +2,7 @@
  * Tool factory for `browser_scroll` — scrolls the page or to an element.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import {
   parseOptionalNumber,
   parseOptionalRef,
@@ -17,7 +17,7 @@ const MAX_TIMEOUT_MS = 10_000;
 export function createBrowserScrollTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -56,7 +56,8 @@ export function createBrowserScrollTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const refResult = parseOptionalRef(args, "ref");
       if (!refResult.ok) return refResult.err;

@@ -28,7 +28,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import { agentId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createNexusRegistryProvider } from "../component-provider.js";
@@ -236,7 +236,8 @@ const MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);
@@ -256,7 +257,8 @@ const LOOKUP_TOOL: Tool = {
       required: ["topic"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const topic = String(input.topic ?? "unknown");
     return JSON.stringify({ topic, fact: `${topic} is a well-known test topic.` });

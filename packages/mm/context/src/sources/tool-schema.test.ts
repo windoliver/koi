@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Tool } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createMockAgent } from "@koi/test-utils";
 import { resolveToolSchemaSource } from "./tool-schema.js";
 
@@ -11,7 +11,8 @@ function createAgentWithTools(
   for (const t of tools) {
     const tool: Tool = {
       descriptor: { name: t.name, description: t.description, inputSchema: { type: "object" } },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       async execute() {
         return {};
       },

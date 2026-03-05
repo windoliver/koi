@@ -2,7 +2,7 @@
  * Tool factory for `browser_navigate` — navigates to a URL.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalTimeout, parseOptionalWaitUntil } from "../parse-args.js";
 import type { CompiledNavigationSecurity } from "../url-security.js";
 import { parseSecureUrl } from "../url-security.js";
@@ -13,7 +13,7 @@ const MAX_TIMEOUT_MS = 60_000;
 export function createBrowserNavigateTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   security?: CompiledNavigationSecurity,
 ): Tool {
   return {
@@ -39,7 +39,8 @@ export function createBrowserNavigateTool(
         required: ["url"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const urlResult = parseSecureUrl(args, "url", security);
       if (!urlResult.ok) return urlResult.err;

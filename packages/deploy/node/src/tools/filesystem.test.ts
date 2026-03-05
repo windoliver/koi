@@ -19,7 +19,7 @@ describe("filesystem tool", () => {
   it("has correct descriptor", () => {
     const tool = createFilesystemTool();
     expect(tool.descriptor.name).toBe("filesystem");
-    expect(tool.trustTier).toBe("promoted");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   it("reads a file", async () => {

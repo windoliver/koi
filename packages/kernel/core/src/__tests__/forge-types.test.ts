@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { BrickKind, TrustTier } from "../index.js";
-import { ALL_BRICK_KINDS, MIN_TRUST_BY_KIND } from "../index.js";
+import type { BrickKind } from "../index.js";
+import { ALL_BRICK_KINDS, SANDBOX_REQUIRED_BY_KIND } from "../index.js";
 
 describe("ALL_BRICK_KINDS", () => {
   test("contains exactly 6 values", () => {
@@ -27,24 +27,24 @@ describe("ALL_BRICK_KINDS", () => {
   });
 });
 
-describe("MIN_TRUST_BY_KIND", () => {
+describe("SANDBOX_REQUIRED_BY_KIND", () => {
   test("has an entry for every kind in ALL_BRICK_KINDS", () => {
     for (const kind of ALL_BRICK_KINDS) {
-      expect(MIN_TRUST_BY_KIND).toHaveProperty(kind);
+      expect(SANDBOX_REQUIRED_BY_KIND).toHaveProperty(kind);
     }
   });
 
-  test("sandbox kinds require sandbox trust", () => {
+  test("sandbox kinds require sandbox", () => {
     const sandboxKinds: readonly BrickKind[] = ["tool", "skill", "agent", "composite"];
     for (const kind of sandboxKinds) {
-      expect(MIN_TRUST_BY_KIND[kind]).toBe("sandbox" satisfies TrustTier);
+      expect(SANDBOX_REQUIRED_BY_KIND[kind]).toBe(true);
     }
   });
 
-  test("middleware/channel require promoted trust", () => {
-    const promotedKinds: readonly BrickKind[] = ["middleware", "channel"];
-    for (const kind of promotedKinds) {
-      expect(MIN_TRUST_BY_KIND[kind]).toBe("promoted" satisfies TrustTier);
+  test("middleware/channel do not require sandbox", () => {
+    const noSandboxKinds: readonly BrickKind[] = ["middleware", "channel"];
+    for (const kind of noSandboxKinds) {
+      expect(SANDBOX_REQUIRED_BY_KIND[kind]).toBe(false);
     }
   });
 });

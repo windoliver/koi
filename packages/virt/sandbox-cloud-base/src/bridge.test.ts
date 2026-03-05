@@ -38,7 +38,7 @@ function createMockAdapter(instance: SandboxInstance): SandboxAdapter {
 }
 
 describe("createCachedBridge", () => {
-  const profile: SandboxProfile = createTestProfile("sandbox");
+  const profile: SandboxProfile = createTestProfile({ sandbox: true, capabilities: {} });
 
   test("executes code and returns parsed JSON output", async () => {
     const instance = createMockInstance();

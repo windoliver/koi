@@ -101,7 +101,6 @@ export function createFilesystemPolicy(mode: MountMode, workDir: string): Filesy
 }
 
 const DEFAULT_PROFILE: SandboxProfile = {
-  tier: "sandbox",
   filesystem: {
     allowRead: [],
     allowWrite: [],

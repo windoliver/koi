@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage, AgentMessageInput, JsonObject, MailboxComponent } from "@koi/core";
-import { agentId, messageId } from "@koi/core";
+import {
+  agentId,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+  messageId,
+} from "@koi/core";
 import {
   CAPABILITY_REQUEST_TYPE,
   CAPABILITY_RESPONSE_STATUS,
@@ -73,7 +78,7 @@ describe("createDelegationRequestTool", () => {
       mailbox,
       agentId("requester"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
     return { tool, mailbox };
   }
@@ -81,7 +86,7 @@ describe("createDelegationRequestTool", () => {
   test("descriptor has correct name and schema", () => {
     const { tool } = setup();
     expect(tool.descriptor.name).toBe("delegation_request");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
     expect(tool.descriptor.inputSchema.required).toEqual([
       "targetAgentId",
       "permissions",
@@ -190,8 +195,13 @@ describe("createDelegationRequestTool", () => {
 
   test("uses custom prefix", () => {
     const mailbox = createMockMailbox();
-    const tool = createDelegationRequestTool(mailbox, agentId("owner"), "custom", "sandbox");
+    const tool = createDelegationRequestTool(
+      mailbox,
+      agentId("owner"),
+      "custom",
+      DEFAULT_SANDBOXED_POLICY,
+    );
     expect(tool.descriptor.name).toBe("custom_request");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 });

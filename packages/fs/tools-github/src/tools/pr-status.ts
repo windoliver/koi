@@ -2,7 +2,7 @@
  * Tool factory for `github_pr_status` — get PR status including CI checks, reviews, and merge readiness.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { PR_STATUS_FIELDS } from "../constants.js";
 import type { GhExecutor } from "../gh-executor.js";
 import { parsePrNumber } from "../parse-args.js";
@@ -11,7 +11,7 @@ import { mapErrorResult, parseGhJson } from "../parse-gh-error.js";
 export function createGithubPrStatusTool(
   executor: GhExecutor,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -27,7 +27,8 @@ export function createGithubPrStatusTool(
         required: ["pr_number"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const prResult = parsePrNumber(args, "pr_number");
       if (!prResult.ok) return prResult.err;
