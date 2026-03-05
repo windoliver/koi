@@ -270,7 +270,6 @@ No LLM calls are ever made by this middleware.
 
 - [Issue #657](https://github.com/windoliver/koi/issues/657) — Convention
   survival + tier-aware context injection
-- `docs/L2/middleware-preference.md` — Preference drift detection (store-side)
-- `docs/L2/middleware-personalization.md` — Preference injection (recall-side)
+- `docs/L2/middleware-user-model.md` — Unified preference learning and drift detection
 - `docs/L2/memory-fs.md` — Memory backend with tier calculation
 - `docs/L3/context-arena.md` — Orchestrator that wires all memory middleware

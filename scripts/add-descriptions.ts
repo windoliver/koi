@@ -220,10 +220,6 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Replace old tool results with placeholders when token count exceeds threshold",
   "@koi/middleware-hot-memory":
     "Inject hot-tier memories into model calls at configurable intervals",
-  "@koi/middleware-personalization":
-    "Detect ambiguity pre-action and corrections post-action to learn user preferences",
-  "@koi/middleware-preference":
-    "Detect preference drift with keyword, LLM, and cascaded classifiers for adaptation",
   "@koi/session-repair":
     "Validate and repair message history through orphan repair, dedup, and merge phases",
   "@koi/session-store": "Persist sessions durably to enable crash recovery and resume capabilities",

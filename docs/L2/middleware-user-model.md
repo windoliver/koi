@@ -297,17 +297,9 @@ const bundle = await createContextArena({
 
 ## Migration from Old Packages
 
-Both old packages are now thin deprecation shims that delegate to `mw-user-model`:
+The old `@koi/middleware-personalization` and `@koi/middleware-preference` packages have been removed. Use `@koi/middleware-user-model` directly:
 
 ```typescript
-// Before (two middleware):
-import { createPersonalizationMiddleware } from "@koi/middleware-personalization";
-import { createPreferenceMiddleware } from "@koi/middleware-preference";
-
-const mw1 = createPersonalizationMiddleware({ memory });  // priority 420
-const mw2 = createPreferenceMiddleware({ memory, classify });  // priority 410
-
-// After (one middleware):
 import { createUserModelMiddleware } from "@koi/middleware-user-model";
 
 const mw = createUserModelMiddleware({
@@ -317,8 +309,6 @@ const mw = createUserModelMiddleware({
   drift: { enabled: true, classify },
 });  // priority 415
 ```
-
-The old imports still work but emit a `[DEPRECATED]` console.warn and delegate internally.
 
 ---
 
@@ -369,6 +359,4 @@ Verified by `bun run check:layers` — passes with zero violations.
 ## Related
 
 - [Issue #799](https://github.com/windoliver/koi/issues/799) — Unified UserModel Component
-- `docs/L2/middleware-personalization.md` — Pre/post-action channels (now deprecated shim)
-- `docs/L2/middleware-preference.md` — Drift detection (now deprecated shim)
 - `docs/architecture/Koi.md` — Four-layer architecture

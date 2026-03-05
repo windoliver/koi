@@ -25,12 +25,6 @@
       "path": "../../mm/middleware-hot-memory"
     },
     {
-      "path": "../../mm/middleware-personalization"
-    },
-    {
-      "path": "../../mm/middleware-preference"
-    },
-    {
       "path": "../../mm/middleware-user-model"
     },
     {
