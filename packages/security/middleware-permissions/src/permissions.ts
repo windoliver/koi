@@ -261,6 +261,17 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
     }
 
+    // Fail closed: any slot not filled by cache or backend defaults to deny
+    const MISSING_DENY: PermissionDecision = {
+      effect: "deny",
+      reason: "No decision returned by permission backend — failing closed",
+    };
+    for (let i = 0; i < results.length; i++) {
+      if (results[i] === undefined) {
+        results[i] = MISSING_DENY;
+      }
+    }
+
     return results as readonly PermissionDecision[];
   }
 
@@ -287,11 +298,13 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       const decisions = await resolveBatch(queries);
       const durationMs = clock() - startMs;
 
-      // Audit each decision and filter out denied tools — keep allow + ask
+      // Audit each decision and filter out denied tools — keep allow + ask.
+      // Fail closed: missing decisions are treated as deny.
       const filtered = request.tools.filter((t, i) => {
         const d = decisions[i];
-        if (d !== undefined) auditDecision(ctx, t.name, d, durationMs);
-        return d?.effect !== "deny";
+        if (d === undefined) return false;
+        auditDecision(ctx, t.name, d, durationMs);
+        return d.effect !== "deny";
       });
 
       return next({ ...request, tools: filtered });

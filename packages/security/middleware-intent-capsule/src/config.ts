@@ -3,6 +3,7 @@
  */
 
 import type { CapsuleVerifier } from "@koi/core/intent-capsule";
+import { verifyEd25519 } from "@koi/crypto-utils";
 
 /** Configuration for the intent capsule middleware. */
 export interface IntentCapsuleConfig {
@@ -54,14 +55,17 @@ export function resolveConfig(config: IntentCapsuleConfig): Required<IntentCapsu
 }
 
 /**
- * Default CapsuleVerifier: checks that the stored mandateHash matches
- * the re-computed hash of the current mandate fields.
- * A mismatch means the capsule was created from a different mandate.
+ * Default CapsuleVerifier: checks mandate hash equality AND verifies
+ * the Ed25519 signature against the capsule's public key.
+ * Hash check first (cheap), then signature verification (crypto).
  */
 const defaultVerifier: CapsuleVerifier = {
   verify(capsule, currentMandateHash) {
     if (capsule.mandateHash !== currentMandateHash) {
       return { ok: false, reason: "mandate_hash_mismatch" };
+    }
+    if (!verifyEd25519(capsule.mandateHash, capsule.publicKey, capsule.signature)) {
+      return { ok: false, reason: "invalid_signature" };
     }
     return { ok: true, capsule };
   },

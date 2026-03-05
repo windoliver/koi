@@ -48,6 +48,8 @@ export function createGuardrailsMiddleware(config: GuardrailsConfig): KoiMiddlew
 
   const hasModelOutputRules = modelOutputRules.length > 0;
   const hasToolOutputRules = toolOutputRules.length > 0;
+  // If any model output rules use "block" action, stream must buffer to prevent leakage
+  const hasBlockRules = modelOutputRules.some((r) => (r.action ?? "block") === "block");
 
   // Pre-built map for O(1) rule lookup by name
   const rulesByName = new Map(config.rules.map((r) => [r.name, r]));
@@ -200,6 +202,10 @@ export function createGuardrailsMiddleware(config: GuardrailsConfig): KoiMiddlew
             let buffer = "";
             // let justified: track buffer overflow state
             let overflowed = false;
+            // When block rules exist, hold chunks until validation passes on done
+            // to prevent yielding content that will later be blocked.
+            const pendingChunks: ModelChunk[] = hasBlockRules ? [] : [];
+            const shouldBuffer = hasBlockRules;
 
             for await (const chunk of next(request)) {
               switch (chunk.kind) {
@@ -223,21 +229,37 @@ export function createGuardrailsMiddleware(config: GuardrailsConfig): KoiMiddlew
                       buffer += chunk.delta;
                     }
                   }
-                  yield chunk;
+                  if (shouldBuffer) {
+                    pendingChunks.push(chunk);
+                  } else {
+                    yield chunk;
+                  }
                   break;
                 }
                 case "done": {
                   if (!overflowed && buffer.length > 0) {
                     const result = validateAllModelRules(buffer);
                     buffer = ""; // Release memory before potential throw
-                    if (!result.valid) handleStreamFailure(result);
+                    if (!result.valid) {
+                      pendingChunks.length = 0; // Release buffered chunks
+                      handleStreamFailure(result);
+                    }
                   }
                   buffer = ""; // Release memory
+                  // Flush buffered chunks now that validation passed
+                  for (const pending of pendingChunks) {
+                    yield pending;
+                  }
+                  pendingChunks.length = 0;
                   yield chunk;
                   break;
                 }
                 default: {
-                  yield chunk;
+                  if (shouldBuffer) {
+                    pendingChunks.push(chunk);
+                  } else {
+                    yield chunk;
+                  }
                 }
               }
             }

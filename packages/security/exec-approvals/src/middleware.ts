@@ -248,6 +248,7 @@ async function runAnalyzer(
   context: JsonObject,
   timeoutMs: number,
 ): Promise<RiskAnalysis> {
+  const ac = new AbortController();
   try {
     return await Promise.race([
       Promise.resolve(analyzer.analyze(toolId, input, context)),
@@ -256,10 +257,13 @@ async function runAnalyzer(
         if (typeof timer === "object" && "unref" in timer) {
           (timer as { unref(): void }).unref();
         }
+        ac.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
       }),
     ]);
   } catch {
     return RISK_ANALYSIS_UNKNOWN;
+  } finally {
+    ac.abort(); // Clear the timeout timer if analyze resolved first
   }
 }
 
