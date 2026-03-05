@@ -1,0 +1,62 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/node-stack API surface . has stable type surface 1`] = `
+"import { DiscoveryProviderConfig } from '@koi/agent-discovery';
+export { DiscoveryProviderConfig, createDiscoveryProvider } from '@koi/agent-discovery';
+import { ProcFsConfig } from '@koi/agent-procfs';
+export { AgentMounterConfig, ProcFsConfig, createAgentMounter, createProcFs } from '@koi/agent-procfs';
+export { DebugAttachConfig, DebugAttachResult, clearAllDebugSessions, createDebugAttach, createDebugObserve, hasDebugSession } from '@koi/debug';
+import { KoiNode, NodeDeps } from '@koi/node';
+export { FullKoiNode, KoiNode, NodeDeps, ThinKoiNode } from '@koi/node';
+import { TracingConfig } from '@koi/tracing';
+export { TracingConfig, createTracedFetch, createTracingMiddleware } from '@koi/tracing';
+import { ComponentProvider, KoiMiddleware, ProcFs, AgentRegistry } from '@koi/core';
+
+/**
+ * Node stack types — config and return types for the full node bundle.
+ */
+
+/**
+ * Full node stack configuration — core node + optional observability subsystems.
+ */
+interface NodeStackConfig {
+    /** Raw node config (validated internally by createNode). */
+    readonly node: unknown;
+    /** Discovery provider config. Omit to disable agent discovery. */
+    readonly discovery?: DiscoveryProviderConfig | undefined;
+    /** ProcFs config. Omit to disable agent introspection filesystem. */
+    readonly procfs?: ProcFsConfig | undefined;
+    /** Tracing middleware config. Omit to disable distributed tracing. */
+    readonly tracing?: TracingConfig | undefined;
+}
+/**
+ * Full node stack dependencies — core node deps + optional registry for agent mounting.
+ */
+interface NodeStackDeps extends NodeDeps {
+    /** Agent registry — required for agent mounter when procfs is configured. */
+    readonly registry?: AgentRegistry | undefined;
+}
+/**
+ * Full node stack — core node + optional discovery, tracing, and procfs.
+ */
+interface NodeStack {
+    readonly node: KoiNode;
+    readonly discoveryProvider: ComponentProvider | undefined;
+    readonly tracingMiddleware: KoiMiddleware | undefined;
+    readonly procFs: ProcFs | undefined;
+    /** Start the node. */
+    readonly start: () => Promise<void>;
+    /** Stop the node and dispose all subsystems. */
+    readonly stop: () => Promise<void>;
+}
+
+/**
+ * Full node stack factory — wires core node, agent-discovery, agent-procfs,
+ * and tracing into a single start/stop lifecycle.
+ */
+
+declare function createNodeStack(config: NodeStackConfig, deps?: NodeStackDeps): NodeStack;
+
+export { type NodeStack, type NodeStackConfig, type NodeStackDeps, createNodeStack };
+"
+`;

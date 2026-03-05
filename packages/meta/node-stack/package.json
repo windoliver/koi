@@ -1,6 +1,6 @@
 {
-  "name": "@koi/gateway-stack",
-  "description": "Convenience bundle that wires gateway, canvas, and webhook with unified lifecycle.",
+  "name": "@koi/node-stack",
+  "description": "Convenience bundle wiring @koi/node with agent-discovery, procfs, debug, and tracing.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,14 +11,15 @@
     }
   },
   "dependencies": {
+    "@koi/agent-discovery": "workspace:*",
+    "@koi/agent-procfs": "workspace:*",
     "@koi/core": "workspace:*",
-    "@koi/gateway": "workspace:*",
-    "@koi/gateway-canvas": "workspace:*",
-    "@koi/gateway-nexus": "workspace:*",
-    "@koi/gateway-types": "workspace:*",
-    "@koi/gateway-webhook": "workspace:*",
-    "@koi/nexus-client": "workspace:*",
+    "@koi/debug": "workspace:*",
+    "@koi/node": "workspace:*",
     "@koi/tracing": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

@@ -117,6 +117,17 @@
         "@sinclair/typebox": "0.34.33",
       },
     },
+    "packages/drivers/engine-rlm": {
+      "name": "@koi/engine-rlm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/drivers/model-router": {
       "name": "@koi/model-router",
       "version": "0.0.0",
@@ -1097,7 +1108,6 @@
         "@koi/middleware-pii": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
-        "@koi/redaction": "workspace:*",
         "@koi/scope": "workspace:*",
         "@koi/security-analyzer": "workspace:*",
         "@koi/tool-browser": "workspace:*",
@@ -1128,6 +1138,21 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/node-stack": {
+      "name": "@koi/node-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/agent-discovery": "workspace:*",
+        "@koi/agent-procfs": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/debug": "workspace:*",
+        "@koi/node": "workspace:*",
+        "@koi/tracing": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/quality-gate": {
       "name": "@koi/quality-gate",
       "version": "0.0.0",
@@ -1152,18 +1177,6 @@
       },
       "devDependencies": {
         "@koi/snapshot-chain-store": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/meta/rlm-stack": {
-      "name": "@koi/rlm-stack",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/code-executor": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/middleware-rlm": "workspace:*",
-      },
-      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -1205,23 +1218,6 @@
         "@koi/scratchpad-local": "workspace:*",
         "@koi/soul": "workspace:*",
         "@koi/tool-browser": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/meta/tool-stack": {
-      "name": "@koi/tool-stack",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/middleware-call-dedup": "workspace:*",
-        "@koi/middleware-call-limits": "workspace:*",
-        "@koi/middleware-degenerate": "workspace:*",
-        "@koi/middleware-sandbox": "workspace:*",
-        "@koi/middleware-tool-audit": "workspace:*",
-        "@koi/middleware-tool-recovery": "workspace:*",
-        "@koi/middleware-tool-selector": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1381,17 +1377,6 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware/middleware-rlm": {
-      "name": "@koi/middleware-rlm",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -1996,6 +1981,7 @@
         "@koi/gateway-types": "workspace:*",
         "@koi/gateway-webhook": "workspace:*",
         "@koi/nexus-client": "workspace:*",
+        "@koi/tracing": "workspace:*",
       },
     },
     "packages/net/gateway-types": {
@@ -2326,6 +2312,16 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/security/collusion-detector": {
+      "name": "@koi/collusion-detector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/security/delegation": {
       "name": "@koi/delegation",
       "version": "0.0.0",
@@ -2507,6 +2503,16 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/reputation": {
+      "name": "@koi/reputation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -3168,6 +3174,8 @@
 
     "@koi/code-mode": ["@koi/code-mode@workspace:packages/fs/code-mode"],
 
+    "@koi/collusion-detector": ["@koi/collusion-detector@workspace:packages/security/collusion-detector"],
+
     "@koi/config": ["@koi/config@workspace:packages/kernel/config"],
 
     "@koi/context": ["@koi/context@workspace:packages/mm/context"],
@@ -3209,6 +3217,8 @@
     "@koi/engine-loop": ["@koi/engine-loop@workspace:packages/drivers/engine-loop"],
 
     "@koi/engine-pi": ["@koi/engine-pi@workspace:packages/drivers/engine-pi"],
+
+    "@koi/engine-rlm": ["@koi/engine-rlm@workspace:packages/drivers/engine-rlm"],
 
     "@koi/errors": ["@koi/errors@workspace:packages/lib/errors"],
 
@@ -3350,8 +3360,6 @@
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/middleware/middleware-report"],
 
-    "@koi/middleware-rlm": ["@koi/middleware-rlm@workspace:packages/middleware/middleware-rlm"],
-
     "@koi/middleware-sandbox": ["@koi/middleware-sandbox@workspace:packages/middleware/middleware-sandbox"],
 
     "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/security/middleware-sanitize"],
@@ -3382,6 +3390,8 @@
 
     "@koi/node": ["@koi/node@workspace:packages/deploy/node"],
 
+    "@koi/node-stack": ["@koi/node-stack@workspace:packages/meta/node-stack"],
+
     "@koi/orchestrator": ["@koi/orchestrator@workspace:packages/ipc/orchestrator"],
 
     "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/ipc/parallel-minions"],
@@ -3406,11 +3416,11 @@
 
     "@koi/registry-sqlite": ["@koi/registry-sqlite@workspace:packages/fs/registry-sqlite"],
 
+    "@koi/reputation": ["@koi/reputation@workspace:packages/security/reputation"],
+
     "@koi/resolve": ["@koi/resolve@workspace:packages/fs/resolve"],
 
     "@koi/retry-stack": ["@koi/retry-stack@workspace:packages/meta/retry-stack"],
-
-    "@koi/rlm-stack": ["@koi/rlm-stack@workspace:packages/meta/rlm-stack"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/virt/sandbox"],
 
@@ -3497,8 +3507,6 @@
     "@koi/tool-exec": ["@koi/tool-exec@workspace:packages/fs/tool-exec"],
 
     "@koi/tool-squash": ["@koi/tool-squash@workspace:packages/mm/tool-squash"],
-
-    "@koi/tool-stack": ["@koi/tool-stack@workspace:packages/meta/tool-stack"],
 
     "@koi/tools-github": ["@koi/tools-github@workspace:packages/fs/tools-github"],
 
