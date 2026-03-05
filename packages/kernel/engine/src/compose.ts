@@ -55,6 +55,55 @@ export function sortMiddlewareByPhase(
 }
 
 // ---------------------------------------------------------------------------
+// Middleware merging + chain recomposition
+// ---------------------------------------------------------------------------
+
+/**
+ * Merge static, forged, and dynamic middleware into a single phase-sorted array.
+ * Callers are responsible for identity-check gating (only call when sources change).
+ */
+export function resolveActiveMiddleware(
+  staticMiddleware: readonly KoiMiddleware[],
+  forgedMiddleware?: readonly KoiMiddleware[],
+  dynamicMiddleware?: readonly KoiMiddleware[],
+): readonly KoiMiddleware[] {
+  if (forgedMiddleware === undefined && dynamicMiddleware === undefined) {
+    return sortMiddlewareByPhase(staticMiddleware);
+  }
+  return sortMiddlewareByPhase([
+    ...staticMiddleware,
+    ...(forgedMiddleware ?? []),
+    ...(dynamicMiddleware ?? []),
+  ]);
+}
+
+/** Terminal handler references returned by recomposeChains. */
+export interface RecomposedChains {
+  readonly toolChain: (ctx: TurnContext, request: ToolRequest) => Promise<ToolResponse>;
+  readonly modelChain: (ctx: TurnContext, request: ModelRequest) => Promise<ModelResponse>;
+  readonly streamChain:
+    | ((ctx: TurnContext, request: ModelRequest) => AsyncIterable<ModelChunk>)
+    | undefined;
+}
+
+/**
+ * Compose tool, model, and optional stream chains from sorted middleware + terminals.
+ * Does NOT sort — caller must pass pre-sorted middleware (from resolveActiveMiddleware).
+ */
+export function recomposeChains(
+  sortedMiddleware: readonly KoiMiddleware[],
+  terminals: TerminalHandlers,
+): RecomposedChains {
+  const toolChain = composeToolChain(sortedMiddleware, terminals.toolHandler);
+  const modelChain = composeModelChain(sortedMiddleware, terminals.modelHandler);
+  const streamChain =
+    terminals.modelStreamHandler !== undefined
+      ? composeModelStreamChain(sortedMiddleware, terminals.modelStreamHandler)
+      : undefined;
+  return { toolChain, modelChain, streamChain };
+}
+
+// ---------------------------------------------------------------------------
 // Generic onion composition
 // ---------------------------------------------------------------------------
 

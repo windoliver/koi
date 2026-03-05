@@ -3365,3 +3365,137 @@ describe("discovery:miss emission", () => {
     expect(errorCaught).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase ordering integration
+// ---------------------------------------------------------------------------
+
+describe("createKoi middleware phase ordering", () => {
+  test("intercept middleware runs before observe regardless of priority", async () => {
+    const order: string[] = [];
+
+    // Middleware A: observe phase, low priority (would run first in priority-only sort)
+    const observeMw: KoiMiddleware = {
+      name: "observe-mw",
+      phase: "observe",
+      priority: 100,
+      describeCapabilities: () => ({ label: "obs", description: "obs" }),
+      wrapModelCall: async (_ctx, req, next) => {
+        order.push("observe");
+        return next(req);
+      },
+    };
+
+    // Middleware B: intercept phase, high priority number
+    const interceptMw: KoiMiddleware = {
+      name: "intercept-mw",
+      phase: "intercept",
+      priority: 900,
+      describeCapabilities: () => ({ label: "int", description: "int" }),
+      wrapModelCall: async (_ctx, req, next) => {
+        order.push("intercept");
+        return next(req);
+      },
+    };
+
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    // Adapter that calls modelCall via callHandlers
+    const adapter: EngineAdapter = {
+      engineId: "phase-test",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          // Call model via callHandlers to trigger middleware chain
+          if (input.callHandlers?.modelCall !== undefined) {
+            await input.callHandlers.modelCall({ messages: [] });
+          }
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      // Pass observe first, intercept second — sort should fix ordering
+      middleware: [observeMw, interceptMw],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    // Intercept should execute before observe (outer onion = runs first)
+    expect(order).toEqual(["intercept", "observe"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forged middleware scope integration
+// ---------------------------------------------------------------------------
+
+describe("createKoi forged middleware scope", () => {
+  test("forged middleware wrapModelCall participates but lifecycle hooks do not", async () => {
+    const forgedWrapped: string[] = [];
+    const forgedLifecycle: string[] = [];
+
+    const forgedMw: KoiMiddleware = {
+      name: "forged-test",
+      describeCapabilities: () => ({ label: "forged-cap", description: "should not appear" }),
+      wrapModelCall: async (_ctx, req, next) => {
+        forgedWrapped.push("wrapModelCall");
+        return next(req);
+      },
+      onBeforeTurn: async () => {
+        forgedLifecycle.push("onBeforeTurn");
+      },
+      onAfterTurn: async () => {
+        forgedLifecycle.push("onAfterTurn");
+      },
+    };
+
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    // let: mutable captured messages for assertion
+    const _capturedMessages: readonly unknown[] = [];
+
+    const adapter: EngineAdapter = {
+      engineId: "forge-scope-test",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (input.callHandlers?.modelCall !== undefined) {
+            const req = { messages: [] };
+            // The request gets prepared with capabilities inside callHandlers
+            await input.callHandlers.modelCall(req);
+          }
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const forge: ForgeRuntime = {
+      resolveTool: async () => undefined,
+      toolDescriptors: async () => [],
+      middleware: async () => [forgedMw],
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    // forged middleware's wrapModelCall WAS called
+    expect(forgedWrapped).toEqual(["wrapModelCall"]);
+
+    // forged middleware's lifecycle hooks were NOT called
+    // (lifecycle hooks only run on static allMiddleware, not forged)
+    expect(forgedLifecycle).toEqual([]);
+  });
+});

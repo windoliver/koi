@@ -13,6 +13,7 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
+    "@koi/event-delivery": "workspace:*",
     "@koi/execution-context": "workspace:*",
     "@koi/hash": "workspace:*",
     "@koi/session-repair": "workspace:*"

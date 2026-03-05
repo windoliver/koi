@@ -42,11 +42,10 @@ import { runWithExecutionContext } from "@koi/execution-context";
 import { AgentEntity } from "./agent-entity.js";
 import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import {
-  composeModelChain,
-  composeModelStreamChain,
-  composeToolChain,
   createTerminalHandlers,
   injectCapabilities,
+  recomposeChains,
+  resolveActiveMiddleware,
   runSessionHooks,
   runTurnHooks,
 } from "./compose.js";
@@ -82,11 +81,6 @@ function unrefTimer(timer: ReturnType<typeof setInterval>): void {
   if (timer !== null && typeof timer === "object" && "unref" in timer) {
     (timer as { readonly unref: () => void }).unref();
   }
-}
-
-/** Sort middleware by priority (ascending). Guards get low numbers, L2 middleware gets higher. */
-function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddleware[] {
-  return [...middleware].sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
 }
 
 /** Factory for constructing TurnContext with hierarchical turnId. */
@@ -171,8 +165,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 2c. Wire transition validator into agent entity ---
   agent.setTransitionValidator(composed.validateTransition);
 
-  // --- 3. Compose middleware chain: guard middleware + user middleware, sorted by priority ---
-  const allMiddleware: readonly KoiMiddleware[] = sortByPriority([
+  // --- 3. Compose middleware chain: guard middleware + user middleware, phase-sorted ---
+  const allMiddleware: readonly KoiMiddleware[] = resolveActiveMiddleware([
     ...composed.guardMiddleware,
     ...middleware,
   ]);
@@ -309,12 +303,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         const forgedMw = await forge.middleware();
         if (forgedMw !== previousForgedMw) {
           previousForgedMw = forgedMw;
-          const allMw: readonly KoiMiddleware[] = [...allMiddleware, ...forgedMw];
-          activeToolChain = composeToolChain(allMw, terminals.toolHandler);
-          activeModelChain = composeModelChain(allMw, terminals.modelHandler);
-          if (terminals.modelStreamHandler !== undefined) {
-            activeStreamChain = composeModelStreamChain(allMw, terminals.modelStreamHandler);
-          }
+          const sorted = resolveActiveMiddleware(allMiddleware, forgedMw);
+          const chains = recomposeChains(sorted, terminals);
+          activeToolChain = chains.toolChain;
+          activeModelChain = chains.modelChain;
+          activeStreamChain = chains.streamChain;
         }
       }
     }
@@ -381,15 +374,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           rawModelStreamTerminal,
         );
 
-        // Initial chain composition
-        activeToolChain = composeToolChain(allMiddleware, cachedTerminals.toolHandler);
-        activeModelChain = composeModelChain(allMiddleware, cachedTerminals.modelHandler);
-        if (cachedTerminals.modelStreamHandler !== undefined) {
-          activeStreamChain = composeModelStreamChain(
-            allMiddleware,
-            cachedTerminals.modelStreamHandler,
-          );
-        }
+        // Initial chain composition (allMiddleware is already phase-sorted)
+        const initialChains = recomposeChains(allMiddleware, cachedTerminals);
+        activeToolChain = initialChains.toolChain;
+        activeModelChain = initialChains.modelChain;
+        activeStreamChain = initialChains.streamChain;
 
         // Entity tool descriptors (static, from assembly)
         const entityTools = agent.query<Tool>("tool:");
@@ -430,7 +419,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // Capture toolsAccessor in a const for the getter closure
         const accessor = toolsAccessor;
 
-        // Inject tool descriptors + capability descriptions into ModelRequest
+        /**
+         * Prepares a model request by injecting tool descriptors and capability descriptions.
+         *
+         * Note: Uses static `allMiddleware` (guards + user middleware) for capability injection.
+         * Forged and dynamic middleware participate in the call onion (wrapModelCall/wrapToolCall)
+         * but do NOT contribute to the [Active Capabilities] message. This is by design —
+         * injected middleware is "wrappers-only" and joins mid-session.
+         */
         const prepareRequest = (request: ModelRequest): ModelRequest => {
           // Inject tool descriptors if not already present
           const withTools: ModelRequest =
@@ -545,19 +541,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             const dynamicMw = options.dynamicMiddleware();
             if (dynamicMw !== previousDynamicMw) {
               previousDynamicMw = dynamicMw;
-              const allMw = sortByPriority([
-                ...allMiddleware,
-                ...(previousForgedMw ?? []),
-                ...(dynamicMw ?? []),
-              ]);
-              activeToolChain = composeToolChain(allMw, cachedTerminals.toolHandler);
-              activeModelChain = composeModelChain(allMw, cachedTerminals.modelHandler);
-              if (cachedTerminals.modelStreamHandler !== undefined) {
-                activeStreamChain = composeModelStreamChain(
-                  allMw,
-                  cachedTerminals.modelStreamHandler,
-                );
-              }
+              const sorted = resolveActiveMiddleware(
+                allMiddleware,
+                previousForgedMw ?? undefined,
+                dynamicMw ?? undefined,
+              );
+              const chains = recomposeChains(sorted, cachedTerminals);
+              activeToolChain = chains.toolChain;
+              activeModelChain = chains.modelChain;
+              activeStreamChain = chains.streamChain;
             }
           }
 

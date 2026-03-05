@@ -36,6 +36,7 @@ import {
   VALID_TRANSITIONS,
   validation,
 } from "@koi/core";
+import { createListenerSet } from "@koi/event-delivery";
 import { agentStreamId, REGISTRY_INDEX_STREAM } from "./stream-ids.js";
 
 // ---------------------------------------------------------------------------
@@ -73,18 +74,11 @@ export async function createMemoryRegistry(backend: EventBackend): Promise<Memor
   const sequenceMap = new Map<string, number>(); // agentId → last known stream sequence
   const knownAgentIds = new Set<AgentId>(); // tracks all ever-registered agent IDs
 
-  // let: replaced on watch/unsubscribe (same pattern as InMemoryRegistry)
-  let listeners: ReadonlySet<(event: RegistryEvent) => void> = new Set();
-
-  // -------------------------------------------------------------------------
-  // Internal helpers
-  // -------------------------------------------------------------------------
-
-  function notify(event: RegistryEvent): void {
-    for (const listener of listeners) {
-      listener(event);
-    }
-  }
+  const listeners = createListenerSet<RegistryEvent>({
+    onError: (err) =>
+      console.warn("[registry-memory] listener threw:", err instanceof Error ? err.message : err),
+  });
+  const notify = listeners.notify;
 
   /**
    * Inline transition validation using VALID_TRANSITIONS from L0.
@@ -455,17 +449,13 @@ export async function createMemoryRegistry(backend: EventBackend): Promise<Memor
   }
 
   function watch(listener: (event: RegistryEvent) => void): () => void {
-    listeners = new Set([...listeners, listener]);
-    return () => {
-      listeners = new Set([...listeners].filter((l) => l !== listener));
-    };
+    return listeners.subscribe(listener);
   }
 
   async function dispose(): Promise<void> {
     projection.clear();
     sequenceMap.clear();
     knownAgentIds.clear();
-    listeners = new Set();
   }
 
   // -------------------------------------------------------------------------
