@@ -67,7 +67,6 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/goal-stack",
   "@koi/governance",
   "@koi/ipc-stack",
-  "@koi/sandbox-cloud",
   "@koi/sandbox-stack",
   "@koi/starter",
   "@koi/workspace-stack",

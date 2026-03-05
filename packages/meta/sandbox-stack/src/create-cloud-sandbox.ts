@@ -1,9 +1,10 @@
 import type { KoiError, Result, SandboxAdapter } from "@koi/core";
 import { createCloudflareAdapter } from "@koi/sandbox-cloudflare";
 import { createDaytonaAdapter } from "@koi/sandbox-daytona";
+import { createDockerAdapter } from "@koi/sandbox-docker";
 import { createE2bAdapter } from "@koi/sandbox-e2b";
 import { createVercelAdapter } from "@koi/sandbox-vercel";
-import type { CloudSandboxConfig } from "./types.js";
+import type { CloudSandboxConfig } from "./cloud-types.js";
 
 /**
  * Dispatch factory — creates a SandboxAdapter for any supported cloud provider.
@@ -17,6 +18,8 @@ export function createCloudSandbox(config: CloudSandboxConfig): Result<SandboxAd
       return createCloudflareAdapter(config);
     case "daytona":
       return createDaytonaAdapter(config);
+    case "docker":
+      return createDockerAdapter(config);
     case "e2b":
       return createE2bAdapter(config);
     case "vercel":
