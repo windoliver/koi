@@ -1,6 +1,6 @@
 {
-  "name": "@koi/middleware-preference",
-  "description": "Detect preference drift with keyword, LLM, and cascaded classifiers for adaptation",
+  "name": "@koi/middleware-user-model",
+  "description": "Unified user modeling middleware combining preference learning, drift detection, and sensor enrichment",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,9 +12,12 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/middleware-user-model": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/token-estimator": "workspace:*"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",

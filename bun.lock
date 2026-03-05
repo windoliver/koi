@@ -1028,6 +1028,7 @@
         "@koi/middleware-hot-memory": "workspace:*",
         "@koi/middleware-personalization": "workspace:*",
         "@koi/middleware-preference": "workspace:*",
+        "@koi/middleware-user-model": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/tool-squash": "workspace:*",
@@ -1556,6 +1557,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/middleware-user-model": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
@@ -1567,6 +1569,19 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/middleware-user-model": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-user-model": {
+      "name": "@koi/middleware-user-model",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/mm/session-repair": {
@@ -3350,6 +3365,8 @@
     "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/middleware/middleware-tool-selector"],
 
     "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/middleware/middleware-turn-ack"],
+
+    "@koi/middleware-user-model": ["@koi/middleware-user-model@workspace:packages/mm/middleware-user-model"],
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/drivers/model-router"],
 

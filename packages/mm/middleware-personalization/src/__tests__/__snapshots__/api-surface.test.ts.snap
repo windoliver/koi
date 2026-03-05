@@ -74,12 +74,13 @@ interface ResolvedPersonalizationConfig {
 declare function validatePersonalizationConfig(config: unknown): Result<PersonalizationConfig, KoiError>;
 
 /**
- * Personalization middleware factory — dual-channel preference learning.
+ * Personalization middleware factory — DEPRECATED.
  *
- * Pre-action: injects relevant preferences + clarification directives.
- * Post-action: detects corrections and stores preference updates.
+ * @deprecated Use createUserModelMiddleware from @koi/middleware-user-model instead.
+ * This module is a thin shim that delegates to the unified user-model middleware.
  */
 
+/** @deprecated Use createUserModelMiddleware from @koi/middleware-user-model */
 declare function createPersonalizationMiddleware(config: PersonalizationConfig): KoiMiddleware;
 
 /**

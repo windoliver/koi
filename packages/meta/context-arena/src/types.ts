@@ -22,7 +22,7 @@ import type {
 } from "@koi/core/middleware";
 import type { FsMemoryConfig, FsSearchIndexer, FsSearchRetriever } from "@koi/memory-fs";
 import type { CompactionTrigger } from "@koi/middleware-compactor";
-import type { LlmClassifier } from "@koi/middleware-preference";
+import type { LlmClassifier } from "@koi/middleware-user-model";
 
 // ---------------------------------------------------------------------------
 // Preset
