@@ -281,6 +281,8 @@ export {
 // L3-only: composition root + runtime
 // ---------------------------------------------------------------------------
 
+export type { ForgeDelegation, ForgeDelegationConfig } from "./create-forge-delegation.js";
+export { createForgeDelegation } from "./create-forge-delegation.js";
 export { createForgePipeline } from "./create-forge-stack.js";
 export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";
 export { createForgeRuntime } from "./forge-runtime.js";

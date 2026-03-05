@@ -918,6 +918,18 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/agent-spawner": {
+      "name": "@koi/agent-spawner",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/acp-protocol": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/autonomous": {
       "name": "@koi/autonomous",
       "version": "0.0.0",
@@ -1025,6 +1037,8 @@
       "name": "@koi/forge",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/agent-discovery": "workspace:*",
+        "@koi/agent-spawner": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/edit-match": "workspace:*",
         "@koi/forge-integrity": "workspace:*",
@@ -3016,6 +3030,8 @@
     "@koi/agent-monitor": ["@koi/agent-monitor@workspace:packages/observability/agent-monitor"],
 
     "@koi/agent-procfs": ["@koi/agent-procfs@workspace:packages/observability/agent-procfs"],
+
+    "@koi/agent-spawner": ["@koi/agent-spawner@workspace:packages/meta/agent-spawner"],
 
     "@koi/audit-sink-local": ["@koi/audit-sink-local@workspace:packages/security/audit-sink-local"],
 

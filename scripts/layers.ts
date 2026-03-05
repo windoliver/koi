@@ -57,6 +57,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set(["@koi/engine"]);
  * L3 packages may depend on any layer.
  */
 export const L3_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/agent-spawner",
   "@koi/autonomous",
   "@koi/channels",
   "@koi/cli",
