@@ -1,12 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/goal-stack API surface . has stable type surface 1`] = `
-"import { TodoItem } from '@koi/middleware-goal-anchor';
-export { GoalAnchorConfig, TodoItem, TodoItemStatus, TodoState } from '@koi/middleware-goal-anchor';
-import { ReminderSource } from '@koi/middleware-goal-reminder';
-export { GoalReminderConfig, ReminderSessionState, ReminderSource } from '@koi/middleware-goal-reminder';
-import { PlanItem } from '@koi/middleware-planning';
-export { PlanConfig, PlanItem, PlanStatus, descriptor as planningDescriptor } from '@koi/middleware-planning';
+"import { TodoItem, ReminderSource, PlanItem } from '@koi/middleware-goal';
+export { GoalAnchorConfig, GoalReminderConfig, PlanConfig, PlanItem, PlanStatus, ReminderSessionState, ReminderSource, TodoItem, TodoItemStatus, TodoState, descriptor as planningDescriptor } from '@koi/middleware-goal';
 import { KoiMiddleware, ComponentProvider } from '@koi/core';
 import { TurnContext } from '@koi/core/middleware';
 

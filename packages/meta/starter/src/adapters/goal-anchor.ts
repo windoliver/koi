@@ -8,8 +8,8 @@
  */
 
 import type { KoiMiddleware, MiddlewareConfig } from "@koi/core";
-import type { TodoItem } from "@koi/middleware-goal-anchor";
-import { createGoalAnchorMiddleware, validateGoalAnchorConfig } from "@koi/middleware-goal-anchor";
+import type { TodoItem } from "@koi/middleware-goal";
+import { createGoalAnchorMiddleware, validateGoalAnchorConfig } from "@koi/middleware-goal";
 import type { RuntimeOpts } from "../registry.js";
 
 /**

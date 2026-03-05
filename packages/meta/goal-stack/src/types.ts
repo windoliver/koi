@@ -4,9 +4,7 @@
 
 import type { ComponentProvider, KoiMiddleware } from "@koi/core";
 import type { TurnContext } from "@koi/core/middleware";
-import type { TodoItem } from "@koi/middleware-goal-anchor";
-import type { ReminderSource } from "@koi/middleware-goal-reminder";
-import type { PlanItem } from "@koi/middleware-planning";
+import type { PlanItem, ReminderSource, TodoItem } from "@koi/middleware-goal";
 
 // ---------------------------------------------------------------------------
 // Presets

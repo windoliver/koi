@@ -74,11 +74,11 @@ const MIDDLEWARE_ENTRIES: readonly CatalogEntry[] = [
     tags: ["middleware", "filesystem", "rollback", "safety"],
   },
   {
-    name: "bundled:@koi/middleware-goal-anchor",
+    name: "bundled:@koi/middleware-goal",
     kind: "middleware",
     source: "bundled",
-    description: "Goal anchoring to keep agent focused on its primary objective",
-    tags: ["middleware", "goal", "focus", "steering"],
+    description: "Goal-directed middleware trio: anchor, reminder, and planning",
+    tags: ["middleware", "goal", "focus", "steering", "planning"],
   },
   {
     name: "bundled:@koi/middleware-governance-backend",
@@ -136,13 +136,7 @@ const MIDDLEWARE_ENTRIES: readonly CatalogEntry[] = [
     description: "PII detection and redaction in model inputs and outputs",
     tags: ["middleware", "pii", "redaction", "privacy"],
   },
-  {
-    name: "bundled:@koi/middleware-planning",
-    kind: "middleware",
-    source: "bundled",
-    description: "Planning assistance middleware for multi-step task decomposition",
-    tags: ["middleware", "planning", "task-decomposition", "reasoning"],
-  },
+  // @koi/middleware-planning merged into @koi/middleware-goal
   {
     name: "bundled:@koi/middleware-report",
     kind: "middleware",

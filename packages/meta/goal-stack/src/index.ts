@@ -18,18 +18,18 @@
 // ── Types: sub-package re-exports ──────────────────────────────────────
 export type {
   GoalAnchorConfig,
+  GoalReminderConfig,
+  PlanConfig,
+  PlanItem,
+  PlanStatus,
+  ReminderSessionState,
+  ReminderSource,
   TodoItem,
   TodoItemStatus,
   TodoState,
-} from "@koi/middleware-goal-anchor";
-export type {
-  GoalReminderConfig,
-  ReminderSessionState,
-  ReminderSource,
-} from "@koi/middleware-goal-reminder";
-export type { PlanConfig, PlanItem, PlanStatus } from "@koi/middleware-planning";
+} from "@koi/middleware-goal";
 // ── Constants: sub-package re-exports ──────────────────────────────────
-export { descriptor as planningDescriptor } from "@koi/middleware-planning";
+export { descriptor as planningDescriptor } from "@koi/middleware-goal";
 // ── Functions ──────────────────────────────────────────────────────────
 export { resolveGoalStackConfig } from "./config-resolution.js";
 export { createGoalStack } from "./goal-stack.js";

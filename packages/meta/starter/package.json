@@ -17,7 +17,7 @@
     "@koi/errors": "workspace:*",
     "@koi/filesystem": "workspace:*",
     "@koi/manifest": "workspace:*",
-    "@koi/middleware-goal-anchor": "workspace:*",
+    "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/scope": "workspace:*",
     "@koi/soul": "workspace:*",

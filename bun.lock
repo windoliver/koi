@@ -986,11 +986,11 @@
         "@koi/middleware-call-limits": "workspace:*",
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
+        "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-guided-retry": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-pii": "workspace:*",
-        "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-sandbox": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
@@ -1065,9 +1065,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
-        "@koi/middleware-goal-anchor": "workspace:*",
-        "@koi/middleware-goal-reminder": "workspace:*",
-        "@koi/middleware-planning": "workspace:*",
+        "@koi/middleware-goal": "workspace:*",
         "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
@@ -1237,7 +1235,7 @@
         "@koi/filesystem": "workspace:*",
         "@koi/ipc-local": "workspace:*",
         "@koi/manifest": "workspace:*",
-        "@koi/middleware-goal-anchor": "workspace:*",
+        "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/pay-local": "workspace:*",
         "@koi/scope": "workspace:*",
@@ -1358,27 +1356,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/middleware/middleware-goal-anchor": {
-      "name": "@koi/middleware-goal-anchor",
+    "packages/middleware/middleware-goal": {
+      "name": "@koi/middleware-goal",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/agent-monitor": "workspace:*",
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware/middleware-goal-reminder": {
-      "name": "@koi/middleware-goal-reminder",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -1407,18 +1394,6 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware/middleware-planning": {
-      "name": "@koi/middleware-planning",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -2715,11 +2690,11 @@
         "@koi/middleware-call-limits": "workspace:*",
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
+        "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-guided-retry": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-pii": "workspace:*",
-        "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-sandbox": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
@@ -3365,9 +3340,7 @@
 
     "@koi/middleware-fs-rollback": ["@koi/middleware-fs-rollback@workspace:packages/middleware/middleware-fs-rollback"],
 
-    "@koi/middleware-goal-anchor": ["@koi/middleware-goal-anchor@workspace:packages/middleware/middleware-goal-anchor"],
-
-    "@koi/middleware-goal-reminder": ["@koi/middleware-goal-reminder@workspace:packages/middleware/middleware-goal-reminder"],
+    "@koi/middleware-goal": ["@koi/middleware-goal@workspace:packages/middleware/middleware-goal"],
 
     "@koi/middleware-governance-backend": ["@koi/middleware-governance-backend@workspace:packages/security/middleware-governance-backend"],
 
@@ -3386,8 +3359,6 @@
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
     "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/security/middleware-pii"],
-
-    "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/middleware/middleware-planning"],
 
     "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/middleware/middleware-reflex"],
 

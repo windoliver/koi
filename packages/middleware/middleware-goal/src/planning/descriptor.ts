@@ -1,5 +1,5 @@
 /**
- * BrickDescriptor for @koi/middleware-planning.
+ * BrickDescriptor for @koi/middleware-goal (planning).
  *
  * Enables manifest auto-resolution: validates planning config options,
  * then creates the plan middleware.
@@ -16,7 +16,7 @@ import { createPlanMiddleware } from "./plan-middleware.js";
  */
 export const descriptor: BrickDescriptor<KoiMiddleware> = {
   kind: "middleware",
-  name: "@koi/middleware-planning",
+  name: "@koi/middleware-goal",
   aliases: ["planning"],
   optionsValidator: (input) => validateRequiredDescriptorOptions(input, "Planning"),
   factory(): KoiMiddleware {

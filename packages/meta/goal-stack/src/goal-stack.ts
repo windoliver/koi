@@ -4,11 +4,12 @@
  */
 
 import type { KoiMiddleware } from "@koi/core";
-import type { GoalAnchorConfig } from "@koi/middleware-goal-anchor";
-import { createGoalAnchorMiddleware } from "@koi/middleware-goal-anchor";
-import type { GoalReminderConfig } from "@koi/middleware-goal-reminder";
-import { createGoalReminderMiddleware } from "@koi/middleware-goal-reminder";
-import { createPlanMiddleware } from "@koi/middleware-planning";
+import type { GoalAnchorConfig, GoalReminderConfig } from "@koi/middleware-goal";
+import {
+  createGoalAnchorMiddleware,
+  createGoalReminderMiddleware,
+  createPlanMiddleware,
+} from "@koi/middleware-goal";
 import { resolveGoalStackConfig } from "./config-resolution.js";
 import { GOAL_STACK_PRESET_SPECS } from "./presets.js";
 import type { GoalStackBundle, GoalStackConfig, GoalStackPresetSpec } from "./types.js";
