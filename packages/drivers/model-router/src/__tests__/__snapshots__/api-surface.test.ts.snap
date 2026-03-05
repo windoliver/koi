@@ -572,6 +572,8 @@ interface ModelRouterOptions {
     readonly evaluator?: CascadeEvaluator;
     readonly classifier?: CascadeClassifier;
     readonly clock?: () => number;
+    /** Injectable random for deterministic testing of weighted strategy. */
+    readonly random?: () => number;
 }
 /**
  * Creates a model router with the given config and provider adapters.
