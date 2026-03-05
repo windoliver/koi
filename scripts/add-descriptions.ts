@@ -359,7 +359,8 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Detect anomalous agent behavior via adversarial middleware (excessive calls, errors)",
   "@koi/agent-procfs":
     "Expose agent runtime state via virtual filesystem mounts with TTL microcache",
-  "@koi/agui": "Connect AG-UI web frontends to Koi agents via HTTP Server-Sent Events",
+  "@koi/channel-agui":
+    "AG-UI SSE channel adapter — connect CopilotKit-compatible web frontends to Koi agents",
   "@koi/dashboard-api":
     "Serve REST endpoints + SSE events for agent/channel/skill dashboard metrics",
   "@koi/dashboard-types": "Define shared dashboard event discriminated unions and REST API types",

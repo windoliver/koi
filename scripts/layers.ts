@@ -58,6 +58,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set(["@koi/engine"]);
  */
 export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/autonomous",
+  "@koi/channels",
   "@koi/cli",
   "@koi/context-arena",
   "@koi/forge",
