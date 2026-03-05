@@ -16,6 +16,7 @@ import type {
 import {
   type ChannelAdapterConfig,
   createChannelAdapter,
+  type HealthStatus,
   type MessageNormalizer,
 } from "./channel-adapter-factory.js";
 import { text } from "./content-block-builders.js";
@@ -56,11 +57,14 @@ const normalizeNone: MessageNormalizer<MockEvent> = (_event) => null;
 
 interface TestSetup {
   readonly fire: (event: MockEvent) => void;
-  readonly adapter: ReturnType<typeof createChannelAdapter>;
+  readonly adapter: ReturnType<typeof createChannelAdapter> & {
+    readonly healthCheck?: () => HealthStatus;
+  };
   readonly sendLog: OutboundMessage[];
   readonly statusLog: ChannelStatus[];
   readonly errorLog: { readonly err: unknown; readonly message: InboundMessage }[];
   readonly ignoredLog: MockEvent[];
+  readonly normErrorLog: { readonly error: unknown; readonly rawEvent: MockEvent }[];
 }
 
 function buildTest(
@@ -69,6 +73,10 @@ function buildTest(
     readonly withSendStatus?: boolean;
     readonly caps?: ChannelCapabilities;
     readonly withQueue?: boolean;
+    readonly connectTimeoutMs?: number;
+    readonly maxQueueSize?: number;
+    readonly connectDelayMs?: number;
+    readonly healthTimeoutMs?: number;
   },
 ): TestSetup {
   let platformEventHandler: ((e: MockEvent) => void) | undefined;
@@ -76,11 +84,16 @@ function buildTest(
   const statusLog: ChannelStatus[] = [];
   const errorLog: { err: unknown; message: InboundMessage }[] = [];
   const ignoredLog: MockEvent[] = [];
+  const normErrorLog: { error: unknown; rawEvent: MockEvent }[] = [];
 
   const config: ChannelAdapterConfig<MockEvent> = {
     name: "test",
     capabilities: opts?.caps ?? ALL_CAPS,
-    platformConnect: async () => {},
+    platformConnect: async () => {
+      if (opts?.connectDelayMs !== undefined) {
+        await new Promise((resolve) => setTimeout(resolve, opts.connectDelayMs));
+      }
+    },
     platformDisconnect: async () => {},
     platformSend: async (msg) => {
       sendLog.push(msg);
@@ -98,16 +111,22 @@ function buildTest(
     onIgnoredEvent: (event) => {
       ignoredLog.push(event);
     },
+    onNormalizationError: (error, rawEvent) => {
+      normErrorLog.push({ error, rawEvent });
+    },
     ...(opts?.withSendStatus === true && {
       platformSendStatus: async (status) => {
         statusLog.push(status);
       },
     }),
     ...(opts?.withQueue === true && { queueWhenDisconnected: true }),
+    ...(opts?.connectTimeoutMs !== undefined && { connectTimeoutMs: opts.connectTimeoutMs }),
+    ...(opts?.maxQueueSize !== undefined && { maxQueueSize: opts.maxQueueSize }),
+    ...(opts?.healthTimeoutMs !== undefined && { healthTimeoutMs: opts.healthTimeoutMs }),
   };
 
   return {
-    adapter: createChannelAdapter(config),
+    adapter: createChannelAdapter(config) as TestSetup["adapter"],
     fire: (event) => {
       platformEventHandler?.(event);
     },
@@ -115,6 +134,7 @@ function buildTest(
     statusLog,
     errorLog,
     ignoredLog,
+    normErrorLog,
   };
 }
 
@@ -456,6 +476,190 @@ describe("createChannelAdapter", () => {
       // Content reference unchanged (same array passed to platformSend)
       expect(sendLog[0]?.content).toBe(content);
       await adapter.disconnect();
+    });
+  });
+
+  describe("connectTimeoutMs", () => {
+    test("connect() rejects when platform takes longer than timeout", async () => {
+      const { adapter } = buildTest(normalizeAll, {
+        connectTimeoutMs: 50,
+        connectDelayMs: 200,
+      });
+      await expect(adapter.connect()).rejects.toThrow("connect timed out after 50ms");
+    });
+
+    test("connect() succeeds when platform connects before timeout", async () => {
+      const { adapter } = buildTest(normalizeAll, {
+        connectTimeoutMs: 500,
+        connectDelayMs: 10,
+      });
+      await adapter.connect();
+      await adapter.disconnect();
+    });
+
+    test("connect timeout disabled when connectTimeoutMs is 0", async () => {
+      const { adapter } = buildTest(normalizeAll, {
+        connectTimeoutMs: 0,
+        connectDelayMs: 50,
+      });
+      await adapter.connect();
+      await adapter.disconnect();
+    });
+  });
+
+  describe("maxQueueSize", () => {
+    test("queue is bounded to maxQueueSize", async () => {
+      const { adapter, sendLog } = buildTest(normalizeAll, {
+        withQueue: true,
+        maxQueueSize: 3,
+      });
+
+      // Queue 5 messages — first 2 should be dropped
+      for (const i of [1, 2, 3, 4, 5]) {
+        await adapter.send({ content: [{ kind: "text", text: `msg-${i}` }] });
+      }
+
+      await adapter.connect();
+
+      expect(sendLog).toHaveLength(3);
+      expect(sendLog[0]?.content[0]).toEqual({ kind: "text", text: "msg-3" });
+      expect(sendLog[1]?.content[0]).toEqual({ kind: "text", text: "msg-4" });
+      expect(sendLog[2]?.content[0]).toEqual({ kind: "text", text: "msg-5" });
+      await adapter.disconnect();
+    });
+
+    test("queue drains fully on reconnect and resets dropped count", async () => {
+      const { adapter, sendLog } = buildTest(normalizeAll, {
+        withQueue: true,
+        maxQueueSize: 2,
+      });
+
+      await adapter.send({ content: [{ kind: "text", text: "a" }] });
+      await adapter.send({ content: [{ kind: "text", text: "b" }] });
+      await adapter.send({ content: [{ kind: "text", text: "c" }] });
+
+      await adapter.connect();
+      expect(sendLog).toHaveLength(2);
+      expect(sendLog[0]?.content[0]).toEqual({ kind: "text", text: "b" });
+      expect(sendLog[1]?.content[0]).toEqual({ kind: "text", text: "c" });
+      await adapter.disconnect();
+    });
+  });
+
+  describe("onNormalizationError", () => {
+    test("callback invoked when normalize throws synchronously", async () => {
+      const throwingNormalizer: MessageNormalizer<MockEvent> = () => {
+        throw new Error("parse fail");
+      };
+      const { adapter, fire, normErrorLog } = buildTest(throwingNormalizer);
+
+      await adapter.connect();
+      fire({ text: "bad", userId: "u1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(normErrorLog).toHaveLength(1);
+      expect((normErrorLog[0]?.error as Error).message).toBe("parse fail");
+      expect(normErrorLog[0]?.rawEvent).toEqual({ text: "bad", userId: "u1" });
+      await adapter.disconnect();
+    });
+
+    test("callback invoked when normalize rejects asynchronously", async () => {
+      const rejectingNormalizer: MessageNormalizer<MockEvent> = async () => {
+        throw new Error("async parse fail");
+      };
+      const { adapter, fire, normErrorLog } = buildTest(rejectingNormalizer);
+
+      await adapter.connect();
+      fire({ text: "bad-async", userId: "u2" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(normErrorLog).toHaveLength(1);
+      expect((normErrorLog[0]?.error as Error).message).toBe("async parse fail");
+      await adapter.disconnect();
+    });
+
+    test("handlers are not called when normalization fails", async () => {
+      const throwingNormalizer: MessageNormalizer<MockEvent> = () => {
+        throw new Error("kaboom");
+      };
+      const { adapter, fire } = buildTest(throwingNormalizer);
+      const received: InboundMessage[] = [];
+      adapter.onMessage(async (msg) => {
+        received.push(msg);
+      });
+
+      await adapter.connect();
+      fire({ text: "bad", userId: "u1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(received).toHaveLength(0);
+      await adapter.disconnect();
+    });
+  });
+
+  describe("healthCheck", () => {
+    test("reports unhealthy when not connected", () => {
+      const { adapter } = buildTest(normalizeAll);
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(false);
+      expect(status?.lastEventAt).toBe(0);
+    });
+
+    test("reports healthy after receiving events", async () => {
+      const { adapter, fire } = buildTest(normalizeAll, { healthTimeoutMs: 60_000 });
+      await adapter.connect();
+
+      fire({ text: "ping", userId: "u1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(true);
+      expect(status?.lastEventAt).toBeGreaterThan(0);
+      await adapter.disconnect();
+    });
+
+    test("reports unhealthy when events are stale", async () => {
+      const { adapter, fire } = buildTest(normalizeAll, { healthTimeoutMs: 1 });
+      await adapter.connect();
+
+      fire({ text: "old", userId: "u1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(false);
+      await adapter.disconnect();
+    });
+
+    test("staleness detection disabled when healthTimeoutMs is 0", async () => {
+      const { adapter } = buildTest(normalizeAll, { healthTimeoutMs: 0 });
+      await adapter.connect();
+      // No events fired, but healthy because staleness disabled
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(true);
+      await adapter.disconnect();
+    });
+
+    test("tracks lastEventAt even for ignored events", async () => {
+      const { adapter, fire } = buildTest(normalizeNone, { healthTimeoutMs: 60_000 });
+      await adapter.connect();
+
+      fire({ text: "ignored", userId: "u1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const status = adapter.healthCheck?.();
+      expect(status?.lastEventAt).toBeGreaterThan(0);
+      await adapter.disconnect();
+    });
+
+    test("reports unhealthy after disconnect", async () => {
+      const { adapter, fire } = buildTest(normalizeAll, { healthTimeoutMs: 60_000 });
+      await adapter.connect();
+      fire({ text: "hi", userId: "u1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await adapter.disconnect();
+
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(false);
     });
   });
 });

@@ -10,7 +10,11 @@
  * and renderBlocks() for use in MessageNormalizer<E> implementations.
  */
 
-export type { ChannelAdapterConfig, MessageNormalizer } from "./channel-adapter-factory.js";
+export type {
+  ChannelAdapterConfig,
+  HealthStatus,
+  MessageNormalizer,
+} from "./channel-adapter-factory.js";
 export { createChannelAdapter } from "./channel-adapter-factory.js";
 export type { ContentBlock } from "./content-block-builders.js";
 export { button, custom, file, image, text } from "./content-block-builders.js";
@@ -26,3 +30,5 @@ export { renderBlocks } from "./render-blocks.js";
 export type { RetryQueue, RetryQueueConfig } from "./retry-queue.js";
 export { createRetryQueue } from "./retry-queue.js";
 export { splitText } from "./split-text.js";
+export type { WalkCallbacks } from "./walk-content-blocks.js";
+export { walkContentBlocks } from "./walk-content-blocks.js";

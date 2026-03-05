@@ -16,7 +16,10 @@ import { RetryConfig } from '@koi/errors';
  * - Parallel handler dispatch via Promise.allSettled()
  * - Capability-aware block rendering (renderBlocks) before platformSend
  * - Conditional sendStatus inclusion (absent when not supported)
- * - Observability hooks: onHandlerError, onIgnoredEvent
+ * - Observability hooks: onHandlerError, onIgnoredEvent, onNormalizationError
+ * - Connect timeout (connectTimeoutMs)
+ * - Bounded disconnect queue (maxQueueSize, drop-oldest on overflow)
+ * - Health check (lastEventAt tracking)
  *
  * Backpressure note: this factory fires events as they arrive. If the platform
  * sends events faster than handlers can process them, handlers receive calls
@@ -29,6 +32,11 @@ import { RetryConfig } from '@koi/errors';
  * while disconnected.
  */
 
+/** Health status snapshot returned by the optional healthCheck() method. */
+interface HealthStatus {
+    readonly healthy: boolean;
+    readonly lastEventAt: number;
+}
 /**
  * Maps a raw platform event to an InboundMessage, or null to ignore the event.
  * May return a Promise for platforms that need an async API call during normalization
@@ -100,13 +108,33 @@ interface ChannelAdapterConfig<E> {
      * When false (default), send() throws if called while disconnected.
      */
     readonly queueWhenDisconnected?: boolean;
+    /**
+     * Maximum time in milliseconds to wait for platformConnect() to complete.
+     * If exceeded, connect() rejects with a timeout error.
+     * Set to 0 to disable the timeout. Defaults to 30_000 (30 seconds).
+     */
+    readonly connectTimeoutMs?: number;
+    /**
+     * Maximum number of messages to buffer when queueWhenDisconnected is true.
+     * When the queue exceeds this limit, the oldest message is dropped and a
+     * warning is logged. Defaults to 1_000.
+     */
+    readonly maxQueueSize?: number;
+    /**
+     * Called when normalize() throws or rejects. Receives the error and the
+     * raw platform event that caused it. The event is still treated as ignored
+     * (null) — handlers are not called.
+     *
+     * If not provided, a warning is logged to console.warn.
+     */
+    readonly onNormalizationError?: (error: unknown, rawEvent: E) => void;
+    /**
+     * Timeout in milliseconds for the health check. If no event has been
+     * dispatched within this window, healthCheck() reports unhealthy.
+     * Defaults to 300_000 (5 minutes). Set to 0 to disable staleness detection.
+     */
+    readonly healthTimeoutMs?: number;
 }
-/**
- * Builds a complete ChannelAdapter from platform-specific callbacks.
- *
- * @param config - Platform callbacks and optional observability hooks.
- * @returns A ChannelAdapter satisfying the @koi/core contract.
- */
 declare function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): ChannelAdapter;
 
 /**
@@ -293,6 +321,40 @@ declare function createRetryQueue(config?: RetryQueueConfig): RetryQueue;
  */
 declare function splitText(inputText: string, limit: number): readonly string[];
 
-export { type ChannelAdapterConfig, type Debouncer, type DebouncerConfig, type FormatErrorOptions, type MediaFallbackConfig, type MessageNormalizer, type Reconnector, type ReconnectorConfig, type RetryQueue, type RetryQueueConfig, button, createChannelAdapter, createDebouncer, createMediaFallback, createReconnector, createRetryQueue, custom, file, formatErrorForChannel, image, renderBlocks, splitText, text };
+/**
+ * Generic content block walker for platform send implementations.
+ *
+ * Handles the common accumulate-text → flush-on-non-text pattern that all
+ * platform-send functions share. Adapters provide platform-specific callbacks
+ * for each block kind; walkContentBlocks handles text merging and flushing.
+ *
+ * Text blocks are accumulated and merged with newlines. When a non-text block
+ * arrives, accumulated text is flushed via onText() before the non-text
+ * callback is invoked. Remaining text is flushed after the last block.
+ */
+
+/** Callbacks for each content block kind. All are optional — missing callbacks skip the block. */
+interface WalkCallbacks {
+    /** Called with merged text when flushed (on non-text block or end of blocks). */
+    readonly onText?: (text: string) => void;
+    /** Called for each image block (after flushing any pending text). */
+    readonly onImage?: (block: ImageBlock) => void;
+    /** Called for each file block (after flushing any pending text). */
+    readonly onFile?: (block: FileBlock) => void;
+    /** Called for each button block (after flushing any pending text). */
+    readonly onButton?: (block: ButtonBlock) => void;
+    /** Called for each custom block (after flushing any pending text). */
+    readonly onCustom?: (block: CustomBlock) => void;
+}
+/**
+ * Walks an array of content blocks, accumulating adjacent text blocks and
+ * flushing them when a non-text block is encountered or at the end.
+ *
+ * @param blocks - The content blocks to walk.
+ * @param callbacks - Platform-specific handlers for each block kind.
+ */
+declare function walkContentBlocks(blocks: readonly ContentBlock[], callbacks: WalkCallbacks): void;
+
+export { type ChannelAdapterConfig, type Debouncer, type DebouncerConfig, type FormatErrorOptions, type HealthStatus, type MediaFallbackConfig, type MessageNormalizer, type Reconnector, type ReconnectorConfig, type RetryQueue, type RetryQueueConfig, type WalkCallbacks, button, createChannelAdapter, createDebouncer, createMediaFallback, createReconnector, createRetryQueue, custom, file, formatErrorForChannel, image, renderBlocks, splitText, text, walkContentBlocks };
 "
 `;

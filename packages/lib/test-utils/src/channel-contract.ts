@@ -21,6 +21,13 @@ export interface ChannelContractOptions {
   readonly injectMessage?: (adapter: ChannelAdapter) => Promise<void>;
   /** Timeout for each test in milliseconds. Defaults to 5_000. */
   readonly timeoutMs?: number;
+  /**
+   * Optional threadId to include in send() contract tests.
+   * Adapters that require threadId for platform send (Slack, Discord, etc.)
+   * should provide a test value here. If omitted, messages are sent without
+   * threadId (suitable for adapters like CLI that don't require it).
+   */
+  readonly testThreadId?: string;
 }
 
 /**
@@ -92,6 +99,7 @@ export function testChannelAdapter(options: ChannelContractOptions): void {
       await adapter.connect();
       const message: OutboundMessage = {
         content: [{ kind: "text", text: "Hello from contract test" }],
+        ...(options.testThreadId !== undefined ? { threadId: options.testThreadId } : {}),
       };
       await adapter.send(message);
       await adapter.disconnect();
@@ -129,7 +137,10 @@ export function testChannelAdapter(options: ChannelContractOptions): void {
     async () => {
       const adapter = await createAdapter();
       await adapter.connect();
-      const message: OutboundMessage = { content: [] };
+      const message: OutboundMessage = {
+        content: [],
+        ...(options.testThreadId !== undefined ? { threadId: options.testThreadId } : {}),
+      };
       await adapter.send(message);
       await adapter.disconnect();
     },
@@ -223,6 +234,35 @@ export function testChannelAdapter(options: ChannelContractOptions): void {
         await inject(adapter);
         // Handler was unsubscribed; no new messages should arrive
         expect(received).toHaveLength(countBeforeUnsub);
+
+        await adapter.disconnect();
+      },
+      timeoutMs,
+    );
+
+    test(
+      "reconnection: handlers fire after disconnect → connect cycle",
+      async () => {
+        const adapter = await createAdapter();
+        const received: InboundMessage[] = [];
+
+        adapter.onMessage(async (msg) => {
+          received.push(msg);
+        });
+
+        // First connection
+        await adapter.connect();
+        await inject(adapter);
+        expect(received.length).toBeGreaterThan(0);
+        const countAfterFirst = received.length;
+
+        // Disconnect
+        await adapter.disconnect();
+
+        // Reconnect — handler should still fire
+        await adapter.connect();
+        await inject(adapter);
+        expect(received.length).toBeGreaterThan(countAfterFirst);
 
         await adapter.disconnect();
       },
