@@ -19,8 +19,11 @@ export interface NexusRestClientConfig {
   readonly timeoutMs?: number | undefined;
   /** Bearer token for authentication. */
   readonly authToken?: string | undefined;
-  /** Injectable fetch for testing. Default: globalThis.fetch. */
-  readonly fetch?: typeof globalThis.fetch | undefined;
+  /** Injectable fetch for testing/tracing. Default: globalThis.fetch. */
+  readonly fetch?:
+    | typeof globalThis.fetch
+    | ((input: Request | string | URL, init?: RequestInit) => Promise<Response>)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------

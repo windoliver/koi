@@ -12,5 +12,8 @@
  *   await stack.start(8080);
  */
 
+// -- Re-exports from @koi/tracing -------------------------------------------
+export type { TracingConfig } from "@koi/tracing";
+export { createTracedFetch } from "@koi/tracing";
 export { createGatewayStack } from "./create-gateway-stack.js";
 export type { GatewayStack, GatewayStackConfig, GatewayStackDeps } from "./types.js";

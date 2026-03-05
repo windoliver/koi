@@ -20,7 +20,8 @@ import { createChannelAdapter } from "@koi/channel-base";
 import type { ChannelAdapter, ChannelCapabilities, ChannelStatus } from "@koi/core";
 import type { RetryConfig } from "@koi/errors";
 import { withRetry } from "@koi/errors";
-import type { VoiceChannelConfig } from "./config.js";
+import { chunkTtsInput } from "./chunk-tts-input.js";
+import { DEFAULT_TTS_CHUNKING, type VoiceChannelConfig } from "./config.js";
 import { normalizeTranscript } from "./normalize.js";
 import type { TranscriptEvent, VoicePipeline } from "./pipeline.js";
 import { createLiveKitPipeline } from "./pipeline.js";
@@ -82,6 +83,14 @@ export function createVoiceChannel(
   const pipeline = overrides?.pipeline ?? createLiveKitPipeline(config);
   const debug = config.debug ?? false;
 
+  // Resolve TTS chunking config once at factory time
+  const chunkingConfig =
+    config.ttsChunking === false
+      ? false
+      : config.ttsChunking !== undefined
+        ? { ...DEFAULT_TTS_CHUNKING, ...config.ttsChunking }
+        : DEFAULT_TTS_CHUNKING;
+
   // let requires justification: room manager initialized on connect, used through lifecycle
   let roomManager: RoomManager | undefined;
   // let requires justification: tracks current room name, set by createSession
@@ -91,19 +100,24 @@ export function createVoiceChannel(
   // let requires justification: AbortController for current speak, replaced per call, aborted on interrupt
   let currentSpeakController: AbortController | undefined;
 
-  /** Speak text with abort support. Cancels any prior in-flight speak. */
-  const speakWithAbort = async (text: string): Promise<void> => {
+  /** Speak one or more chunks with abort support. Cancels any prior in-flight speak. */
+  const speakWithAbort = async (chunks: readonly string[]): Promise<void> => {
     // Abort any existing speak before starting a new one
     currentSpeakController?.abort();
     const controller = new AbortController();
     currentSpeakController = controller;
     try {
-      await withRetry(() => {
+      for (const chunk of chunks) {
         if (controller.signal.aborted) {
           throw new DOMException("Speech interrupted", "AbortError");
         }
-        return pipeline.speak(text);
-      }, SPEAK_RETRY_CONFIG);
+        await withRetry(() => {
+          if (controller.signal.aborted) {
+            throw new DOMException("Speech interrupted", "AbortError");
+          }
+          return pipeline.speak(chunk);
+        }, SPEAK_RETRY_CONFIG);
+      }
     } catch (e: unknown) {
       // AbortError is expected during barge-in — swallow it
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -169,13 +183,16 @@ export function createVoiceChannel(
         return;
       }
 
-      await speakWithAbort(texts.join("\n"));
+      const combined = texts.join("\n");
+      const chunks =
+        chunkingConfig === false ? [combined] : chunkTtsInput(combined, chunkingConfig);
+      await speakWithAbort(chunks);
     },
 
     platformSendStatus: async (status: ChannelStatus) => {
       // Only "processing" emits an audio cue — prevents dead air while agent thinks
       if (status.kind === "processing" && pipeline.isRunning()) {
-        await speakWithAbort(status.detail ?? "one moment");
+        await speakWithAbort([status.detail ?? "one moment"]);
       }
       // "idle" and "error" are no-ops — voice stops naturally
     },

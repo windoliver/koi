@@ -164,7 +164,7 @@ describe("createVoiceChannel — send", () => {
     await adapter.disconnect();
   });
 
-  test("send() with multiple TextBlocks joins with newline", async () => {
+  test("send() with multiple TextBlocks speaks each as a chunk", async () => {
     const { adapter, pipeline } = makeAdapter();
     await adapter.connect();
     await adapter.createSession();
@@ -176,7 +176,65 @@ describe("createVoiceChannel — send", () => {
       ],
     });
 
-    expect(pipeline.mocks.speak).toHaveBeenCalledWith("Line one\nLine two");
+    // Chunker merges short lines (< minChunkWords) into a single chunk
+    expect(pipeline.mocks.speak).toHaveBeenCalledTimes(1);
+    expect(pipeline.mocks.speak).toHaveBeenCalledWith("Line one Line two");
+
+    await adapter.disconnect();
+  });
+
+  test("send() with multi-sentence text calls speak() per chunk", async () => {
+    const { adapter, pipeline } = makeAdapter();
+    await adapter.connect();
+    await adapter.createSession();
+
+    await adapter.send({
+      content: [
+        {
+          kind: "text",
+          text: "First sentence here. Second sentence follows. Third sentence ends it.",
+        },
+      ],
+    });
+
+    // With default chunking (minChunkWords=3, maxChunkChars=200), each sentence
+    // has >= 3 words and fits within 200 chars, so expect 3 speak() calls
+    expect(pipeline.mocks.speak).toHaveBeenCalledTimes(3);
+    expect(pipeline.mocks.speak).toHaveBeenNthCalledWith(1, "First sentence here.");
+    expect(pipeline.mocks.speak).toHaveBeenNthCalledWith(2, "Second sentence follows.");
+    expect(pipeline.mocks.speak).toHaveBeenNthCalledWith(3, "Third sentence ends it.");
+
+    await adapter.disconnect();
+  });
+
+  test("send() with ttsChunking: false calls speak() once with full text", async () => {
+    const pipeline = createMockVoicePipeline();
+    const roomService = createMockRoomService();
+    const tokenGen = createMockTokenGenerator();
+    const config: VoiceChannelConfig = { ...BASE_CONFIG, ttsChunking: false };
+    const adapter = createVoiceChannel(config, {
+      pipeline,
+      roomService,
+      tokenGenerator: tokenGen,
+    });
+
+    await adapter.connect();
+    await adapter.createSession();
+
+    await adapter.send({
+      content: [
+        {
+          kind: "text",
+          text: "First sentence here. Second sentence follows. Third sentence ends it.",
+        },
+      ],
+    });
+
+    // Chunking disabled — single speak() with full text
+    expect(pipeline.mocks.speak).toHaveBeenCalledTimes(1);
+    expect(pipeline.mocks.speak).toHaveBeenCalledWith(
+      "First sentence here. Second sentence follows. Third sentence ends it.",
+    );
 
     await adapter.disconnect();
   });

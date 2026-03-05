@@ -128,6 +128,7 @@ export interface RawManifest {
   readonly deploy?: RawDeploy | undefined;
   readonly scope?: RawScope | undefined;
   readonly degeneracy?: Readonly<Record<string, RawDegeneracyConfig>> | undefined;
+  readonly nexus?: { readonly url?: string | undefined } | undefined;
   readonly [key: string]: unknown;
 }
 
@@ -366,6 +367,13 @@ const degeneracyConfigSchema = z
 /** Record of capability name → degeneracy config. */
 const degeneracySchema = z.record(z.string(), degeneracyConfigSchema);
 
+// ── Nexus schema ──
+
+/** Nexus backend connection config in the manifest. */
+const nexusSchema = z.object({
+  url: z.string().optional(),
+});
+
 // ── Scope schema ──
 
 /** Declarative scope boundaries for agent subsystems. */
@@ -441,6 +449,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     deploy: deploySchema.optional(),
     scope: scopeSchema.optional(),
     degeneracy: degeneracySchema.optional(),
+    nexus: nexusSchema.optional(),
   })
   .passthrough();
 

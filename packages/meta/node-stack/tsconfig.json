@@ -1,0 +1,16 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../kernel/core" },
+    { "path": "../../deploy/node" },
+    { "path": "../../observability/agent-discovery" },
+    { "path": "../../observability/agent-procfs" },
+    { "path": "../../observability/debug" },
+    { "path": "../../observability/tracing" }
+  ]
+}

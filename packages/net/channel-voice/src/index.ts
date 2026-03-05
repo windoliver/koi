@@ -6,11 +6,15 @@
  * text, and the response is synthesized back to speech (TTS).
  */
 
+// TTS chunking
+export type { ChunkTtsOptions } from "./chunk-tts-input.js";
+export { chunkTtsInput } from "./chunk-tts-input.js";
 // Config types + validation
-export type { SttConfig, TtsConfig, VoiceChannelConfig } from "./config.js";
+export type { SttConfig, TtsChunkingConfig, TtsConfig, VoiceChannelConfig } from "./config.js";
 export {
   DEFAULT_MAX_CONCURRENT_SESSIONS,
   DEFAULT_ROOM_EMPTY_TIMEOUT_SECONDS,
+  DEFAULT_TTS_CHUNKING,
   validateVoiceConfig,
 } from "./config.js";
 export { descriptor } from "./descriptor.js";
