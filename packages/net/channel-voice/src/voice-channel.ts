@@ -20,7 +20,8 @@ import { createChannelAdapter } from "@koi/channel-base";
 import type { ChannelAdapter, ChannelCapabilities, ChannelStatus } from "@koi/core";
 import type { RetryConfig } from "@koi/errors";
 import { withRetry } from "@koi/errors";
-import type { VoiceChannelConfig } from "./config.js";
+import { chunkTtsInput } from "./chunk-tts-input.js";
+import { DEFAULT_TTS_CHUNKING, type VoiceChannelConfig } from "./config.js";
 import { normalizeTranscript } from "./normalize.js";
 import type { TranscriptEvent, VoicePipeline } from "./pipeline.js";
 import { createLiveKitPipeline } from "./pipeline.js";
@@ -82,6 +83,14 @@ export function createVoiceChannel(
   const pipeline = overrides?.pipeline ?? createLiveKitPipeline(config);
   const debug = config.debug ?? false;
 
+  // Resolve TTS chunking config once at factory time
+  const chunkingConfig =
+    config.ttsChunking === false
+      ? false
+      : config.ttsChunking !== undefined
+        ? { ...DEFAULT_TTS_CHUNKING, ...config.ttsChunking }
+        : DEFAULT_TTS_CHUNKING;
+
   // let requires justification: room manager initialized on connect, used through lifecycle
   let roomManager: RoomManager | undefined;
   // let requires justification: tracks current room name, set by createSession
@@ -137,7 +146,17 @@ export function createVoiceChannel(
       }
 
       const combined = texts.join("\n");
-      await withRetry(() => pipeline.speak(combined), SPEAK_RETRY_CONFIG);
+
+      if (chunkingConfig === false) {
+        // Chunking disabled — original single-speak behavior
+        await withRetry(() => pipeline.speak(combined), SPEAK_RETRY_CONFIG);
+        return;
+      }
+
+      const chunks = chunkTtsInput(combined, chunkingConfig);
+      for (const chunk of chunks) {
+        await withRetry(() => pipeline.speak(chunk), SPEAK_RETRY_CONFIG);
+      }
     },
 
     platformSendStatus: async (status: ChannelStatus) => {

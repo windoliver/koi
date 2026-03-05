@@ -42,6 +42,17 @@ export type TtsConfig =
     };
 
 // ---------------------------------------------------------------------------
+// TTS chunking config
+// ---------------------------------------------------------------------------
+
+export interface TtsChunkingConfig {
+  /** Minimum words before a chunk is emitted. Defaults to 3. */
+  readonly minChunkWords?: number;
+  /** Maximum characters per chunk. Defaults to 200. */
+  readonly maxChunkChars?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Main config interface
 // ---------------------------------------------------------------------------
 
@@ -66,6 +77,8 @@ export interface VoiceChannelConfig {
   readonly onHandlerError?: (err: unknown, message: InboundMessage) => void;
   /** When true, send() buffers while disconnected and flushes on connect(). */
   readonly queueWhenDisconnected?: boolean;
+  /** TTS chunking config. Omit to use defaults. Set to false to disable. */
+  readonly ttsChunking?: TtsChunkingConfig | false;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +87,11 @@ export interface VoiceChannelConfig {
 
 export const DEFAULT_MAX_CONCURRENT_SESSIONS = 10;
 export const DEFAULT_ROOM_EMPTY_TIMEOUT_SECONDS = 300;
+
+export const DEFAULT_TTS_CHUNKING: Readonly<Required<TtsChunkingConfig>> = {
+  minChunkWords: 3,
+  maxChunkChars: 200,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Validation
