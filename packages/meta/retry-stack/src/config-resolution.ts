@@ -3,13 +3,13 @@
  */
 
 import type { SemanticRetryConfig } from "@koi/middleware-semantic-retry";
+import { lookupPreset } from "@koi/preset-resolver";
 import { RETRY_STACK_PRESET_SPECS } from "./presets.js";
 import type { ResolvedRetryStackConfig, RetryStackConfig } from "./types.js";
 
 /** Resolves retry-stack config by merging defaults → preset → user overrides. */
 export function resolveRetryStackConfig(config: RetryStackConfig): ResolvedRetryStackConfig {
-  const preset = config.preset ?? "standard";
-  const spec = RETRY_STACK_PRESET_SPECS[preset];
+  const { preset, spec } = lookupPreset(RETRY_STACK_PRESET_SPECS, config.preset, "standard");
 
   // Merge semantic-retry: preset defaults + user overrides
   const semanticRetry: SemanticRetryConfig = {

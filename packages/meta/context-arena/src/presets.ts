@@ -6,6 +6,7 @@
  * mental model: one call sites all budget decisions.
  */
 
+import { lookupPreset } from "@koi/preset-resolver";
 import type { ContextArenaPreset, PresetBudget, PresetSpec } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -72,7 +73,7 @@ export function computePresetBudget(
   preset: ContextArenaPreset,
   contextWindowSize: number,
 ): PresetBudget {
-  const spec = PRESET_SPECS[preset];
+  const { spec } = lookupPreset(PRESET_SPECS, preset, "balanced");
   return {
     compactorTriggerFraction: spec.triggerFraction,
     compactorSoftTriggerFraction: spec.triggerFraction - spec.softTriggerOffset,

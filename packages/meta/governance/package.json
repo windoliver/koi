@@ -25,6 +25,7 @@
     "@koi/middleware-intent-capsule": "workspace:*",
     "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
+    "@koi/preset-resolver": "workspace:*",
     "@koi/middleware-pii": "workspace:*",
     "@koi/redaction": "workspace:*",
     "@koi/permissions-nexus": "workspace:*",

@@ -20,6 +20,7 @@
     "@koi/middleware-conversation": "workspace:*",
     "@koi/middleware-hot-memory": "workspace:*",
     "@koi/middleware-user-model": "workspace:*",
+    "@koi/preset-resolver": "workspace:*",
     "@koi/snapshot-chain-store": "workspace:*",
     "@koi/soul": "workspace:*",
     "@koi/token-estimator": "workspace:*",

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/preset-resolver": "workspace:*",
     "@koi/errors": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
     "@koi/resolve": "workspace:*"
