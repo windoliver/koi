@@ -1,5 +1,7 @@
 /**
  * Node stack types — config and return types for the full node bundle.
+ *
+ * @module
  */
 
 import type { DiscoveryProviderConfig } from "@koi/agent-discovery";
