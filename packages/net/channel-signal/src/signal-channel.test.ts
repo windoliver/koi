@@ -43,6 +43,7 @@ describe("createSignalChannel", () => {
   describe("contract tests", () => {
     testChannelAdapter({
       createAdapter: () => makeAdapter(),
+      testThreadId: "+1234567890",
     });
   });
 

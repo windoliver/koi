@@ -25,16 +25,47 @@ export interface MockClient {
   };
 }
 
-export function createMockClient(overrides?: Partial<MockClient>): MockClient {
+/** Failure mode configuration for mock Discord Client. */
+export interface MockClientOptions {
+  /** When true, login() rejects with an error. */
+  readonly throwOnConnect?: boolean;
+  /** When true, channel.send() rejects with an error. */
+  readonly failOnSend?: boolean;
+  /** When set, the Nth send() call (1-based) rejects with an error. */
+  readonly rateLimitOnNthCall?: number;
+}
+
+export function createMockClient(
+  overrides?: Partial<MockClient>,
+  options?: MockClientOptions,
+): MockClient {
+  // let justified: tracks call count for rateLimitOnNthCall
+  let sendCount = 0;
   const defaultChannel = {
-    send: mock(async () => ({})),
+    send: mock(async () => {
+      sendCount++;
+      if (options?.failOnSend === true) {
+        throw new Error("Missing Permissions");
+      }
+      if (options?.rateLimitOnNthCall !== undefined && sendCount === options.rateLimitOnNthCall) {
+        throw new Error("You are being rate limited.");
+      }
+      return {};
+    }),
     sendTyping: mock(async () => {}),
     isThread: () => false,
   };
 
   return {
     user: overrides?.user ?? { id: "bot-123", bot: true },
-    login: overrides?.login ?? mock(async () => "token"),
+    login:
+      overrides?.login ??
+      mock(async () => {
+        if (options?.throwOnConnect === true) {
+          throw new Error("TOKEN_INVALID");
+        }
+        return "token";
+      }),
     destroy: overrides?.destroy ?? mock(async () => {}),
     on: overrides?.on ?? mock(() => {}),
     removeAllListeners: overrides?.removeAllListeners ?? mock(() => {}),

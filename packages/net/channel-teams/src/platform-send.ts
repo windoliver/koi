@@ -37,8 +37,9 @@ export function createPlatformSend(
   return async (message: OutboundMessage): Promise<void> => {
     const conversationId = message.threadId;
     if (conversationId === undefined) {
-      // Contract tests send without threadId — silently skip
-      return;
+      throw new Error(
+        "[channel-teams] Cannot send: threadId is required. Echo threadId from InboundMessage.",
+      );
     }
 
     const turnContext = contextStore.get(conversationId);

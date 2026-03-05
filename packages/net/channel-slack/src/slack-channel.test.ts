@@ -142,7 +142,7 @@ describe("createSlackChannel", () => {
   test("send() with empty content does not throw", async () => {
     const { adapter } = createTestAdapter();
     await adapter.connect();
-    await adapter.send({ content: [] });
+    await adapter.send({ content: [], threadId: "C456" });
     await adapter.disconnect();
   });
 

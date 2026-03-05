@@ -128,12 +128,11 @@ describe("createPlatformSend", () => {
     expect(first.length + second.length).toBe(5000);
   });
 
-  test("silently skips when threadId is missing", async () => {
+  test("throws when threadId is undefined", async () => {
     const store = makeStore();
     const send = createPlatformSend(store);
     const msg: OutboundMessage = { content: [{ kind: "text", text: "hello" }] };
-    await send(msg);
-    expect(store.sendActivity).not.toHaveBeenCalled();
+    await expect(send(msg)).rejects.toThrow("threadId is required");
   });
 
   test("silently skips when no turn context found", async () => {
