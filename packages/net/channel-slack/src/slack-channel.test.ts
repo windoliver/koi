@@ -206,6 +206,58 @@ describe("createSlackChannel", () => {
     await adapter.disconnect();
   });
 
+  test("reaction_added events are ACKed", async () => {
+    const webClient = createMockWebClient();
+    const socketClient = createMockSocketClient();
+
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      features: { reactions: true },
+      _webClient: webClient,
+      _socketClient: socketClient,
+    });
+
+    await adapter.connect();
+
+    const ackFn = mock(() => {});
+    socketClient._emit("reaction_added", {
+      event: { type: "reaction_added", user: "U1", reaction: "+1", item: {} },
+      ack: ackFn,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(ackFn).toHaveBeenCalledTimes(1);
+
+    await adapter.disconnect();
+  });
+
+  test("reaction_removed events are ACKed", async () => {
+    const webClient = createMockWebClient();
+    const socketClient = createMockSocketClient();
+
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      features: { reactions: true },
+      _webClient: webClient,
+      _socketClient: socketClient,
+    });
+
+    await adapter.connect();
+
+    const ackFn = mock(() => {});
+    socketClient._emit("reaction_removed", {
+      event: { type: "reaction_removed", user: "U1", reaction: "+1", item: {} },
+      ack: ackFn,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(ackFn).toHaveBeenCalledTimes(1);
+
+    await adapter.disconnect();
+  });
+
   test("media send fallback retries with text warning on failure", async () => {
     // let justified: track calls to fail on the first real send (skip auth.test)
     let sendCallCount = 0;

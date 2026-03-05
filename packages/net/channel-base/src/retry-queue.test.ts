@@ -113,6 +113,54 @@ describe("createRetryQueue", () => {
     expect(order).toEqual([1, 2]);
   });
 
+  test("concurrent enqueue() callers each wait for their own task", async () => {
+    const queue = createRetryQueue();
+    const order: number[] = [];
+
+    const fn1 = async (): Promise<void> => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      order.push(1);
+    };
+    const fn2 = async (): Promise<void> => {
+      order.push(2);
+    };
+
+    // Fire both enqueues concurrently — fn2's promise must NOT resolve before fn2 runs
+    const [, p2Settled] = await Promise.all([
+      queue.enqueue(fn1),
+      queue.enqueue(fn2).then(() => ({ resolved: true, order: [...order] })),
+    ]);
+
+    // fn2 caller must have seen fn2 complete (order includes 2)
+    expect(p2Settled.resolved).toBe(true);
+    expect(p2Settled.order).toContain(2);
+    // Both ran in order
+    expect(order).toEqual([1, 2]);
+  });
+
+  test("concurrent enqueue() propagates errors to the correct caller", async () => {
+    const queue = createRetryQueue({
+      retry: {
+        maxRetries: 0,
+        backoffMultiplier: 2,
+        initialDelayMs: 1,
+        maxBackoffMs: 10,
+        jitter: false,
+      },
+    });
+
+    const p1 = queue.enqueue(async () => {
+      throw new Error("task-1-fail");
+    });
+    const p2 = queue.enqueue(async () => {
+      // This should succeed
+    });
+
+    await expect(p1).rejects.toThrow("task-1-fail");
+    // p2 should resolve normally despite p1 failing
+    await expect(p2).resolves.toBeUndefined();
+  });
+
   test("continues processing after a failed item throws", async () => {
     const queue = createRetryQueue({
       retry: {

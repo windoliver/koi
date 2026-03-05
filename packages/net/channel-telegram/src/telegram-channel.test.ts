@@ -93,6 +93,48 @@ describe("createTelegramChannel — polling mode", () => {
     expect(mockBot.stop).toHaveBeenCalledTimes(1);
   });
 
+  test("reconnect does not cause duplicate event dispatch", async () => {
+    // let justified: accumulates handler invocations across reconnect cycles
+    let handlerCallCount = 0;
+    const mockBot = makeMockBot();
+
+    // Capture registered handlers so we can simulate events
+    const registeredHandlers: ((...args: readonly unknown[]) => void)[] = [];
+    mockBot.on = mock((_event: string, handler: (...args: readonly unknown[]) => void) => {
+      registeredHandlers.push(handler);
+    }) as MockBot["on"];
+
+    const adapter = createTelegramChannel({
+      token: DUMMY_TOKEN,
+      deployment: { mode: "polling" },
+      _bot: mockBot as unknown as Bot<Context>,
+    });
+
+    adapter.onMessage(async () => {
+      handlerCallCount++;
+    });
+
+    // First connect/disconnect cycle
+    await adapter.connect();
+    await adapter.disconnect();
+
+    // Second connect — should not duplicate handlers
+    await adapter.connect();
+
+    // Fire all registered handlers to simulate a single event
+    for (const h of registeredHandlers) {
+      h({ message: { text: "hi", chat: { id: 42 } } });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Without the fix, each connect registers new listeners, so the handler
+    // would fire once per connect cycle (2 times). With the fix, the first
+    // cycle's listeners are deactivated, so only 1 invocation.
+    expect(handlerCallCount).toBeLessThanOrEqual(1);
+
+    await adapter.disconnect();
+  });
+
   test("handleUpdate is not present in polling mode", () => {
     const mockBot = makeMockBot();
     const adapter = createTelegramChannel({

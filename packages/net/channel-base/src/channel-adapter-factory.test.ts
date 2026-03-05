@@ -497,6 +497,23 @@ describe("createChannelAdapter", () => {
       await adapter.disconnect();
     });
 
+    test("connect timeout timer is cleared on successful connect", async () => {
+      // Verify no lingering timers: if the timer leaked, it would reject
+      // with a timeout error after connectTimeoutMs even though connect succeeded.
+      const { adapter } = buildTest(normalizeAll, {
+        connectTimeoutMs: 50,
+        connectDelayMs: 5,
+      });
+      await adapter.connect();
+
+      // Wait longer than the timeout — if the timer leaked, it would fire
+      // and potentially cause unhandled rejections.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // If we get here without unhandled rejection, the timer was cleared.
+      await adapter.disconnect();
+    });
+
     test("connect timeout disabled when connectTimeoutMs is 0", async () => {
       const { adapter } = buildTest(normalizeAll, {
         connectTimeoutMs: 0,
