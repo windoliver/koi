@@ -157,7 +157,6 @@ describe("llm_query tool", () => {
     const tool = createLlmQueryTool({ modelCall, tracker });
 
     await tool.execute({ prompt: "prompt" });
-    // chars/4 for "prompt" (2) + chars/4 for "response" (2) + usage (15) = 19
     expect(tracker.current()).toBeGreaterThan(0);
   });
 });

@@ -78,7 +78,7 @@ const SUBSYSTEM_MAP: Readonly<Record<string, string>> = {
   "engine-loop": "drivers",
   "engine-acp": "drivers",
   "engine-external": "drivers",
-  "engine-rlm": "drivers",
+  "middleware-rlm": "middleware",
   "model-router": "drivers",
   "browser-playwright": "drivers",
 
@@ -238,6 +238,7 @@ const SUBSYSTEM_MAP: Readonly<Record<string, string>> = {
   "context-arena": "meta",
   forge: "meta",
   governance: "meta",
+  "rlm-stack": "meta",
   "sandbox-stack": "meta",
   starter: "meta",
 

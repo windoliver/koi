@@ -2,8 +2,8 @@
  * RLM tool factories — 7 tools for the REPL loop.
  *
  * Each factory returns a Tool-like object with a name and execute function.
- * These are internal to the adapter; they are NOT registered as Koi Tools
- * via the resolver. Instead, the adapter injects them as tool descriptors
+ * These are internal to the middleware; they are NOT registered as Koi Tools
+ * via the resolver. Instead, the REPL loop injects them as tool descriptors
  * into the model request and dispatches tool calls locally.
  */
 

@@ -3,7 +3,7 @@ import type { AgentManifest } from "@koi/core";
 import type { ResolutionContext } from "@koi/resolve";
 import { descriptor } from "./descriptor.js";
 
-/** Minimal context — factory throws before using it. */
+/** Minimal context for factory tests. */
 const STUB_CONTEXT: ResolutionContext = {
   manifestDir: "/tmp",
   manifest: { name: "test" } as AgentManifest,
@@ -12,8 +12,8 @@ const STUB_CONTEXT: ResolutionContext = {
 
 describe("descriptor", () => {
   test("has correct metadata", () => {
-    expect(descriptor.kind).toBe("engine");
-    expect(descriptor.name).toBe("@koi/engine-rlm");
+    expect(descriptor.kind).toBe("middleware");
+    expect(descriptor.name).toBe("@koi/middleware-rlm");
     expect(descriptor.aliases).toContain("rlm");
   });
 
@@ -22,11 +22,13 @@ describe("descriptor", () => {
     expect(descriptor.companionSkills?.length).toBeGreaterThan(0);
   });
 
-  test("factory throws with helpful message", () => {
-    expect(() => descriptor.factory({}, STUB_CONTEXT)).toThrow(/modelCall handler/);
+  test("factory creates middleware", async () => {
+    const mw = await descriptor.factory({}, STUB_CONTEXT);
+    expect(mw.name).toBe("rlm");
+    expect(typeof mw.wrapToolCall).toBe("function");
   });
 
-  test("optionsValidator accepts valid object", () => {
+  test("optionsValidator accepts empty object", () => {
     const result = descriptor.optionsValidator({});
     expect(result.ok).toBe(true);
   });
@@ -40,6 +42,11 @@ describe("descriptor", () => {
 
   test("optionsValidator rejects non-object", () => {
     const result = descriptor.optionsValidator("invalid");
+    expect(result.ok).toBe(false);
+  });
+
+  test("optionsValidator rejects invalid maxIterations", () => {
+    const result = descriptor.optionsValidator({ maxIterations: -1 });
     expect(result.ok).toBe(false);
   });
 });

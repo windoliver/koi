@@ -1,0 +1,72 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/rlm-stack API surface . has stable type surface 1`] = `
+"import { MiddlewareBundle } from '@koi/core';
+import { RlmMiddlewareConfig, RlmScriptRunner } from '@koi/middleware-rlm';
+
+/**
+ * Configuration types for @koi/rlm-stack.
+ */
+
+/**
+ * Configuration for the RLM stack.
+ *
+ * Extends RlmMiddlewareConfig with script execution options.
+ * The \`scriptRunner\` field is NOT included here — it is created
+ * internally by \`createRlmStack\`.
+ */
+interface RlmStackConfig extends Omit<RlmMiddlewareConfig, "scriptRunner"> {
+    /** Execution timeout per script run in milliseconds. Default: 30_000. */
+    readonly scriptTimeoutMs?: number | undefined;
+    /** Maximum host function calls per script execution. Default: 100. */
+    readonly scriptMaxCalls?: number | undefined;
+}
+
+/**
+ * RLM stack factory — wires @koi/code-executor into @koi/middleware-rlm.
+ *
+ * Creates a script runner and passes it to createRlmBundle, returning
+ * a MiddlewareBundle ready for agent assembly.
+ */
+
+/**
+ * Creates an RLM middleware bundle with code-execution mode enabled.
+ *
+ * The model writes JavaScript code blocks that are executed in a QuickJS
+ * WASM sandbox with host functions for input access and sub-LLM queries.
+ *
+ * @example
+ * \`\`\`typescript
+ * const { middleware, providers } = createRlmStack({
+ *   contextWindowTokens: 128_000,
+ *   maxIterations: 30,
+ * });
+ * \`\`\`
+ */
+declare function createRlmStack(config?: RlmStackConfig): MiddlewareBundle;
+
+/**
+ * Script runner adapter — bridges @koi/middleware-rlm's RlmScriptRunner
+ * interface to @koi/code-executor's executeScript function.
+ *
+ * Wraps each host function into a minimal Tool object that executeScript
+ * expects, then maps the ScriptResult back to RlmScriptResult.
+ */
+
+interface ScriptRunnerConfig {
+    /** Default timeout per execution in milliseconds. Default: 30_000. */
+    readonly timeoutMs?: number | undefined;
+    /** Default maximum tool calls per execution. Default: 100. */
+    readonly maxCalls?: number | undefined;
+}
+/**
+ * Creates an RlmScriptRunner backed by @koi/code-executor's executeScript.
+ *
+ * Each call wraps the provided host functions into Tool objects and executes
+ * the code in a QuickJS WASM sandbox.
+ */
+declare function createScriptRunner(config?: ScriptRunnerConfig): RlmScriptRunner;
+
+export { type RlmStackConfig, type ScriptRunnerConfig, createRlmStack, createScriptRunner };
+"
+`;
