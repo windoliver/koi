@@ -36,6 +36,7 @@ export type {
   ChannelIdentity,
   FilesystemSkillSource,
   ForgedSkillSource,
+  ManifestSandboxConfig,
   MiddlewareConfig,
   ModelConfig,
   PermissionConfig,
@@ -731,6 +732,9 @@ export type {
   SandboxAdapterResult,
   SandboxExecOptions,
   SandboxInstance,
+  SandboxProcessHandle,
+  SandboxSpawnOptions,
+  SandboxStdinPipe,
 } from "./sandbox-adapter.js";
 // sandbox executor — code execution in isolation (forge verification contract)
 export type {

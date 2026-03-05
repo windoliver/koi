@@ -74,6 +74,14 @@ interface ExecuteOptions {
     readonly cwd?: string;
     readonly env?: Readonly<Record<string, string>>;
     readonly stdin?: string;
+    /** Override profile timeout. Takes precedence over profile.resources.timeoutMs. */
+    readonly timeoutMs?: number;
+    /** Streaming callback for stdout chunks. */
+    readonly onStdout?: (chunk: string) => void;
+    /** Streaming callback for stderr chunks. */
+    readonly onStderr?: (chunk: string) => void;
+    /** Abort signal — kills the process when aborted. */
+    readonly signal?: AbortSignal;
 }
 declare function execute(profile: SandboxProfile, command: string, args: readonly string[], options?: ExecuteOptions): Promise<Result<SandboxAdapterResult, KoiError>>;
 
@@ -93,6 +101,8 @@ declare function profileForTier(tier: TrustTier): SandboxProfile;
 interface SpawnOptions {
     readonly cwd?: string;
     readonly env?: Readonly<Record<string, string>>;
+    /** Abort signal — kills the process when aborted. */
+    readonly signal?: AbortSignal;
 }
 interface SandboxProcess {
     readonly pid: number;

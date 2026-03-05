@@ -66,4 +66,5 @@ export const SOURCE_PRIORITY: Readonly<Record<ExternalAgentSource, number>> = {
   mcp: 0,
   filesystem: 1,
   path: 2,
+  manifest: 3,
 } as const;

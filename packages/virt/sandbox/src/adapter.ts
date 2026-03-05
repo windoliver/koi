@@ -16,10 +16,14 @@ import type {
   SandboxAdapterResult,
   SandboxExecOptions,
   SandboxInstance,
+  SandboxProcessHandle,
   SandboxProfile,
+  SandboxSpawnOptions,
 } from "@koi/core";
 import type { ExecuteOptions } from "./execute.js";
 import { execute } from "./execute.js";
+import type { SandboxProcess } from "./spawn.js";
+import { spawn } from "./spawn.js";
 
 /**
  * Create an OS-level SandboxAdapter.
@@ -39,10 +43,22 @@ export function createOsAdapter(): SandboxAdapter {
 function toExecuteOptions(options?: SandboxExecOptions): ExecuteOptions | undefined {
   if (options === undefined) return undefined;
   // Build options conditionally to satisfy exactOptionalPropertyTypes
-  const result: { cwd?: string; env?: Readonly<Record<string, string>>; stdin?: string } = {};
+  const result: {
+    cwd?: string;
+    env?: Readonly<Record<string, string>>;
+    stdin?: string;
+    timeoutMs?: number;
+    onStdout?: (chunk: string) => void;
+    onStderr?: (chunk: string) => void;
+    signal?: AbortSignal;
+  } = {};
   if (options.cwd !== undefined) result.cwd = options.cwd;
   if (options.env !== undefined) result.env = options.env;
   if (options.stdin !== undefined) result.stdin = options.stdin;
+  if (options.timeoutMs !== undefined) result.timeoutMs = options.timeoutMs;
+  if (options.onStdout !== undefined) result.onStdout = options.onStdout;
+  if (options.onStderr !== undefined) result.onStderr = options.onStderr;
+  if (options.signal !== undefined) result.signal = options.signal;
   return result;
 }
 
@@ -72,6 +88,45 @@ function createInstance(profile: SandboxProfile): SandboxInstance {
       }
 
       return result.value;
+    },
+
+    spawn: async (
+      command: string,
+      args: readonly string[],
+      options?: SandboxSpawnOptions,
+    ): Promise<SandboxProcessHandle> => {
+      if (destroyed) {
+        throw new Error("SandboxInstance has been destroyed");
+      }
+
+      const spawnResult: Result<SandboxProcess, KoiError> = spawn(profile, command, args, {
+        ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
+        ...(options?.env !== undefined ? { env: options.env } : {}),
+        ...(options?.signal !== undefined ? { signal: options.signal } : {}),
+      });
+
+      if (!spawnResult.ok) {
+        throw new Error(spawnResult.error.message, { cause: spawnResult.error });
+      }
+
+      const proc = spawnResult.value;
+
+      return {
+        pid: proc.pid,
+        stdin: {
+          write: (data: string | Uint8Array): void | Promise<void> => {
+            const result = proc.stdin.write(data);
+            if (result instanceof Promise) {
+              return result.then(() => undefined);
+            }
+          },
+          end: () => proc.stdin.end(),
+        },
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        exited: proc.exited,
+        kill: proc.kill,
+      };
     },
 
     readFile: async (path: string): Promise<Uint8Array> => {

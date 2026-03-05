@@ -1,6 +1,24 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { CloudInstanceConfig, CloudSdkSandbox } from "./cloud-instance.js";
+import type { SandboxInstance } from "@koi/core";
+import type {
+  CloudInstanceConfig,
+  CloudSdkProcessHandle,
+  CloudSdkSandbox,
+} from "./cloud-instance.js";
 import { createCloudInstance } from "./cloud-instance.js";
+
+/** Assert spawn is defined and call it — avoids optional chaining type issues. */
+async function spawnOrFail(
+  instance: SandboxInstance,
+  cmd: string,
+  args: readonly string[],
+  opts?: Parameters<NonNullable<SandboxInstance["spawn"]>>[2],
+): ReturnType<NonNullable<SandboxInstance["spawn"]>> {
+  if (instance.spawn === undefined) {
+    throw new Error("spawn is not defined on instance");
+  }
+  return instance.spawn(cmd, args, opts);
+}
 
 function createMockSdk(overrides?: {
   readonly runResult?: {
@@ -217,5 +235,268 @@ describe("createCloudInstance", () => {
     await instance.destroy();
 
     expect(() => instance.writeFile("/tmp/test", new Uint8Array())).toThrow("destroy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawn() tests — callback→stream bridge
+// ---------------------------------------------------------------------------
+
+function createMockProcessHandle(overrides?: {
+  readonly pid?: number;
+  readonly exitCode?: number;
+  readonly exitError?: Error;
+}): CloudSdkProcessHandle {
+  const pid = overrides?.pid ?? 123;
+  const exitPromise =
+    overrides?.exitError !== undefined
+      ? Promise.reject(overrides.exitError)
+      : Promise.resolve(overrides?.exitCode ?? 0);
+
+  return {
+    pid,
+    sendStdin: mock(() => undefined),
+    closeStdin: mock(() => undefined),
+    exited: exitPromise,
+    kill: mock(() => undefined),
+  };
+}
+
+function createSpawnableSdk(processHandle: CloudSdkProcessHandle): CloudSdkSandbox {
+  return {
+    commands: {
+      run: mock(() => Promise.resolve({ exitCode: 0, stdout: "", stderr: "" })),
+      spawn: mock(
+        (
+          _cmd: string,
+          opts?: {
+            readonly onStdout?: (data: string) => void;
+            readonly onStderr?: (data: string) => void;
+          },
+        ) => {
+          // Simulate some output
+          opts?.onStdout?.("hello from spawn");
+          opts?.onStderr?.("spawn stderr");
+          return Promise.resolve(processHandle);
+        },
+      ),
+    },
+    files: {
+      read: mock(() => Promise.resolve("")),
+      write: mock(() => Promise.resolve()),
+    },
+  };
+}
+
+describe("createCloudInstance spawn", () => {
+  test("spawn is undefined when SDK has no spawn", () => {
+    const config = createMockConfig();
+    const instance = createCloudInstance(config);
+    expect(instance.spawn).toBeUndefined();
+  });
+
+  test("spawn is defined when SDK has spawn", () => {
+    const sdk = createSpawnableSdk(createMockProcessHandle());
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+    expect(instance.spawn).toBeDefined();
+  });
+
+  test("spawn returns SandboxProcessHandle with correct fields", async () => {
+    const procHandle = createMockProcessHandle({ pid: 42 });
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    const handle = await spawnOrFail(instance, "node", ["server.js"]);
+
+    expect(handle.pid).toBe(42);
+    expect(handle.stdin).toBeDefined();
+    expect(handle.stdout).toBeInstanceOf(ReadableStream);
+    expect(handle.stderr).toBeInstanceOf(ReadableStream);
+    expect(typeof handle.kill).toBe("function");
+  });
+
+  test("spawn bridges stdout callback to ReadableStream", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    const handle = await spawnOrFail(instance, "echo", ["test"]);
+
+    // Read from stdout stream — should contain the data from onStdout callback
+    const reader = handle.stdout.getReader();
+    const { value } = await reader.read();
+    reader.releaseLock();
+
+    expect(new TextDecoder().decode(value)).toBe("hello from spawn");
+  });
+
+  test("spawn bridges stderr callback to ReadableStream", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    const handle = await spawnOrFail(instance, "cmd", []);
+
+    const reader = handle.stderr.getReader();
+    const { value } = await reader.read();
+    reader.releaseLock();
+
+    expect(new TextDecoder().decode(value)).toBe("spawn stderr");
+  });
+
+  test("spawn stdin.write delegates to SDK sendStdin", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    const handle = await spawnOrFail(instance, "cat", []);
+
+    handle.stdin.write("input data");
+    expect(procHandle.sendStdin).toHaveBeenCalledWith("input data");
+  });
+
+  test("spawn stdin.write converts Uint8Array to string", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    const handle = await spawnOrFail(instance, "cat", []);
+
+    handle.stdin.write(new TextEncoder().encode("binary input"));
+    expect(procHandle.sendStdin).toHaveBeenCalledWith("binary input");
+  });
+
+  test("spawn stdin.end delegates to SDK closeStdin", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    const handle = await spawnOrFail(instance, "cat", []);
+
+    handle.stdin.end();
+    expect(procHandle.closeStdin).toHaveBeenCalledTimes(1);
+  });
+
+  test("spawn passes cwd and env to SDK", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    await spawnOrFail(instance, "cmd", [], {
+      cwd: "/app",
+      env: { NODE_ENV: "test" },
+    });
+
+    const callArgs = (sdk.commands.spawn as ReturnType<typeof mock>).mock.calls[0];
+    expect(callArgs?.[1]).toMatchObject({
+      cwd: "/app",
+      envs: { NODE_ENV: "test" },
+    });
+  });
+
+  test("spawn throws after destroy", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    await instance.destroy();
+
+    expect(() => spawnOrFail(instance, "cmd", [])).toThrow("destroy");
+  });
+
+  test("spawn rejects when signal is pre-aborted", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(spawnOrFail(instance, "cmd", [], { signal: controller.signal })).rejects.toThrow(
+      "aborted",
+    );
+  });
+
+  test("spawn wires AbortSignal to kill", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    const controller = new AbortController();
+    await spawnOrFail(instance, "cmd", [], { signal: controller.signal });
+
+    controller.abort();
+    expect(procHandle.kill).toHaveBeenCalledWith(9);
+  });
+
+  test("spawn joins command and args with shell escaping", async () => {
+    const procHandle = createMockProcessHandle();
+    const sdk = createSpawnableSdk(procHandle);
+    const instance = createCloudInstance({
+      sdk,
+      classifyError: () => ({ code: "CRASH", message: "err", durationMs: 0 }),
+      destroy: mock(() => Promise.resolve()),
+      name: "test",
+    });
+
+    await spawnOrFail(instance, "node", ["--inspect", "app.js"]);
+
+    const callArgs = (sdk.commands.spawn as ReturnType<typeof mock>).mock.calls[0];
+    expect(callArgs?.[0]).toBe("node --inspect app.js");
   });
 });

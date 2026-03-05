@@ -2,7 +2,13 @@
  * Types for the agent-spawner package — config, failure classification, and spawner contract.
  */
 
-import type { ExternalAgentDescriptor, KoiError, Result, SandboxAdapter } from "@koi/core";
+import type {
+  ExternalAgentDescriptor,
+  KoiError,
+  Result,
+  SandboxAdapter,
+  SandboxProfile,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -20,8 +26,6 @@ export interface AgentSpawnerConfig {
   readonly maxConcurrentDelegations?: number | undefined;
   /** Maximum stdout bytes to capture before truncation. Default: 10 MB. */
   readonly maxOutputBytes?: number | undefined;
-  /** Sandbox idle TTL in milliseconds before auto-destroy. Default: 60_000. */
-  readonly idleTtlMs?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,6 +45,8 @@ export interface SpawnOptions {
   readonly model?: string | undefined;
   /** Per-invocation timeout in milliseconds. */
   readonly timeoutMs?: number | undefined;
+  /** Sandbox profile override — derived from agent manifest. Defaults to a permissive profile. */
+  readonly profile?: SandboxProfile | undefined;
 }
 
 /** Spawns external coding agents inside sandboxed containers. */

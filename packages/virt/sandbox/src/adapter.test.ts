@@ -269,3 +269,216 @@ describe("adapter contract", () => {
     expect(result).toBeInstanceOf(Promise);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SandboxInstance.spawn() — lifecycle test matrix
+// ---------------------------------------------------------------------------
+describe("SandboxInstance.spawn", () => {
+  test("instance exposes spawn as a function", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+    expect(typeof instance.spawn).toBe("function");
+  });
+
+  test("destroy prevents further spawn calls", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+    await instance.destroy();
+    expect(spawnOrFail(instance, "/bin/echo", ["hello"])).rejects.toThrow("destroyed");
+  });
+});
+
+/** Assert spawn is defined and call it — avoids optional chaining in tests. */
+async function spawnOrFail(
+  instance: Awaited<ReturnType<ReturnType<typeof createOsAdapter>["create"]>>,
+  cmd: string,
+  args: readonly string[],
+  opts?: Parameters<NonNullable<typeof instance.spawn>>[2],
+): ReturnType<NonNullable<typeof instance.spawn>> {
+  if (instance.spawn === undefined) {
+    throw new Error("spawn is not defined on instance");
+  }
+  return instance.spawn(cmd, args, opts);
+}
+
+describe.skipIf(SKIP_INTEGRATION)("SandboxInstance.spawn lifecycle", () => {
+  test("returns SandboxProcessHandle with all expected fields", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const handle = await spawnOrFail(instance, "/bin/cat", []);
+
+    expect(typeof handle.pid).toBe("number");
+    expect(handle.pid).toBeGreaterThan(0);
+    expect(handle.stdin).toBeDefined();
+    expect(typeof handle.stdin.write).toBe("function");
+    expect(typeof handle.stdin.end).toBe("function");
+    expect(handle.stdout).toBeInstanceOf(ReadableStream);
+    expect(handle.stderr).toBeInstanceOf(ReadableStream);
+    expect(handle.exited).toBeInstanceOf(Promise);
+    expect(typeof handle.kill).toBe("function");
+
+    handle.kill();
+    await handle.exited;
+    await instance.destroy();
+  });
+
+  test("stdin.write sends data to process stdout via cat", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const handle = await spawnOrFail(instance, "/bin/cat", []);
+
+    handle.stdin.write("hello from spawn\n");
+    handle.stdin.end();
+
+    const output = await new Response(handle.stdout).text();
+    expect(output).toBe("hello from spawn\n");
+
+    await handle.exited;
+    await instance.destroy();
+  });
+
+  test("exited resolves with exit code after process terminates", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const handle = await spawnOrFail(instance, "/bin/sh", ["-c", "exit 42"]);
+    const exitCode = await handle.exited;
+    expect(exitCode).toBe(42);
+
+    await instance.destroy();
+  });
+
+  test("kill terminates the process", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const handle = await spawnOrFail(instance, "/bin/sleep", ["60"]);
+    handle.kill();
+    const exitCode = await handle.exited;
+    // Killed with SIGKILL → exit code 137 (128 + 9)
+    expect(exitCode).toBeGreaterThan(0);
+
+    await instance.destroy();
+  });
+
+  test("stderr stream captures error output", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const handle = await spawnOrFail(instance, "/bin/sh", ["-c", "echo error >&2"]);
+
+    const stderr = await new Response(handle.stderr).text();
+    expect(stderr.trim()).toBe("error");
+
+    await handle.exited;
+    await instance.destroy();
+  });
+
+  test("AbortSignal kills the process", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const controller = new AbortController();
+    const handle = await spawnOrFail(instance, "/bin/sleep", ["60"], {
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    const exitCode = await handle.exited;
+    expect(exitCode).toBeGreaterThan(0);
+
+    await instance.destroy();
+  });
+
+  test("pre-aborted signal rejects spawn immediately", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      spawnOrFail(instance, "/bin/echo", ["should not run"], {
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("aborted");
+
+    await instance.destroy();
+  });
+
+  test("multiple spawns from same instance are independent", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const handleA = await spawnOrFail(instance, "/bin/sh", ["-c", "echo A"]);
+    const handleB = await spawnOrFail(instance, "/bin/sh", ["-c", "echo B"]);
+
+    const [outA, outB] = await Promise.all([
+      new Response(handleA.stdout).text(),
+      new Response(handleB.stdout).text(),
+    ]);
+
+    expect(outA.trim()).toBe("A");
+    expect(outB.trim()).toBe("B");
+
+    await Promise.all([handleA.exited, handleB.exited]);
+    await instance.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SandboxInstance.exec — streaming callbacks
+// ---------------------------------------------------------------------------
+describe.skipIf(SKIP_INTEGRATION)("SandboxInstance.exec streaming", () => {
+  test("onStdout receives output chunks", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const chunks: string[] = [];
+    const result = await instance.exec("/bin/echo", ["streamed"], {
+      onStdout: (chunk) => chunks.push(chunk),
+    });
+
+    expect(result.stdout.trim()).toBe("streamed");
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.join("").trim()).toBe("streamed");
+
+    await instance.destroy();
+  });
+
+  test("onStderr receives error output chunks", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const chunks: string[] = [];
+    const result = await instance.exec("/bin/sh", ["-c", "echo err >&2"], {
+      onStderr: (chunk) => chunks.push(chunk),
+    });
+
+    expect(result.stderr.trim()).toBe("err");
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.join("").trim()).toBe("err");
+
+    await instance.destroy();
+  });
+
+  test("AbortSignal kills exec process", async () => {
+    const adapter = createOsAdapter();
+    const instance = await adapter.create(restrictiveProfile());
+
+    const controller = new AbortController();
+    // Start a long process, then abort
+    setTimeout(() => controller.abort(), 50);
+
+    const result = await instance.exec("/bin/sleep", ["60"], {
+      signal: controller.signal,
+    });
+
+    // Process was killed — should have non-zero exit
+    expect(result.exitCode).toBeGreaterThan(0);
+
+    await instance.destroy();
+  });
+});

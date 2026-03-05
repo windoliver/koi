@@ -17,6 +17,15 @@ export interface E2bCreateOpts {
   readonly metadata?: Readonly<Record<string, string>>;
 }
 
+/** Handle returned by E2B background process spawn. */
+export interface E2bProcessHandle {
+  readonly pid: number;
+  readonly sendStdin: (data: string) => void | Promise<void>;
+  readonly closeStdin: () => void;
+  readonly exited: Promise<number>;
+  readonly kill: (signal?: number) => void;
+}
+
 /** Minimal interface wrapping the E2B SDK sandbox instance. */
 export interface E2bSdkSandbox {
   readonly commands: {
@@ -34,6 +43,21 @@ export interface E2bSdkSandbox {
       readonly stdout: string;
       readonly stderr: string;
     }>;
+    /**
+     * Spawn a long-lived background process with streaming I/O.
+     *
+     * Maps to E2B SDK's `commands.run({ background: true })` which returns
+     * a process handle with pid and stdin access.
+     */
+    readonly spawn?: (
+      cmd: string,
+      opts?: {
+        readonly cwd?: string;
+        readonly envs?: Record<string, string>;
+        readonly onStdout?: (data: string) => void;
+        readonly onStderr?: (data: string) => void;
+      },
+    ) => Promise<E2bProcessHandle>;
   };
   readonly files: {
     readonly read: (path: string) => Promise<string>;
