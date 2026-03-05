@@ -244,7 +244,9 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/manifest": "workspace:*",
         "@koi/validation": "workspace:*",
+        "@koi/variant-selection": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -920,9 +922,11 @@
       "name": "@koi/autonomous",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/catalog": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/harness-scheduler": "workspace:*",
         "@koi/long-running": "workspace:*",
+        "@koi/manifest": "workspace:*",
       },
       "devDependencies": {
         "@koi/snapshot-chain-store": "workspace:*",
@@ -1028,8 +1032,10 @@
         "@koi/exec-approvals": "workspace:*",
         "@koi/filesystem": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-delegation-escalation": "workspace:*",
         "@koi/middleware-governance-backend": "workspace:*",
         "@koi/middleware-guardrails": "workspace:*",
+        "@koi/middleware-intent-capsule": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-pii": "workspace:*",
