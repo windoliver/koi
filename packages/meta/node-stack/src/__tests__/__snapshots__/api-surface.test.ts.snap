@@ -14,6 +14,8 @@ import { ComponentProvider, KoiMiddleware, ProcFs, AgentRegistry } from '@koi/co
 
 /**
  * Node stack types — config and return types for the full node bundle.
+ *
+ * @module
  */
 
 /**
