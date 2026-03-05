@@ -88,4 +88,38 @@ describe("VoicePipeline (mock)", () => {
     unsub();
     unsub(); // should not throw
   });
+
+  test("isSpeaking() returns false initially", () => {
+    const pipeline = createMockVoicePipeline();
+    expect(pipeline.isSpeaking()).toBe(false);
+  });
+
+  test("isSpeaking() returns true after speak()", async () => {
+    const pipeline = createMockVoicePipeline();
+    await pipeline.speak("Hello");
+    expect(pipeline.isSpeaking()).toBe(true);
+  });
+
+  test("interrupt() sets isSpeaking to false", async () => {
+    const pipeline = createMockVoicePipeline();
+    await pipeline.speak("Hello");
+    expect(pipeline.isSpeaking()).toBe(true);
+    pipeline.interrupt();
+    expect(pipeline.isSpeaking()).toBe(false);
+  });
+
+  test("interrupt() while not speaking is no-op", () => {
+    const pipeline = createMockVoicePipeline();
+    pipeline.interrupt(); // should not throw
+    expect(pipeline.isSpeaking()).toBe(false);
+    expect(pipeline.mocks.interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  test("stop() resets isSpeaking to false", async () => {
+    const pipeline = createMockVoicePipeline();
+    await pipeline.speak("Hello");
+    expect(pipeline.isSpeaking()).toBe(true);
+    await pipeline.stop();
+    expect(pipeline.isSpeaking()).toBe(false);
+  });
 });

@@ -97,6 +97,40 @@ export function createVoiceChannel(
   let currentRoom: string | undefined;
   // let requires justification: platform event unsubscribe, acquired on connect
   let unsubTranscript: (() => void) | undefined;
+  // let requires justification: AbortController for current speak, replaced per call, aborted on interrupt
+  let currentSpeakController: AbortController | undefined;
+
+  /** Speak one or more chunks with abort support. Cancels any prior in-flight speak. */
+  const speakWithAbort = async (chunks: readonly string[]): Promise<void> => {
+    // Abort any existing speak before starting a new one
+    currentSpeakController?.abort();
+    const controller = new AbortController();
+    currentSpeakController = controller;
+    try {
+      for (const chunk of chunks) {
+        if (controller.signal.aborted) {
+          throw new DOMException("Speech interrupted", "AbortError");
+        }
+        await withRetry(() => {
+          if (controller.signal.aborted) {
+            throw new DOMException("Speech interrupted", "AbortError");
+          }
+          return pipeline.speak(chunk);
+        }, SPEAK_RETRY_CONFIG);
+      }
+    } catch (e: unknown) {
+      // AbortError is expected during barge-in — swallow it
+      if (e instanceof DOMException && e.name === "AbortError") {
+        return;
+      }
+      throw e;
+    } finally {
+      // Clear controller only if still ours (not replaced by a new speak)
+      if (currentSpeakController === controller) {
+        currentSpeakController = undefined;
+      }
+    }
+  };
 
   const base = createChannelAdapter<TranscriptEvent>({
     name: "voice",
@@ -117,6 +151,10 @@ export function createVoiceChannel(
         unsubTranscript();
         unsubTranscript = undefined;
       }
+
+      // Abort any in-flight speak before stopping pipeline
+      currentSpeakController?.abort();
+      currentSpeakController = undefined;
 
       if (pipeline.isRunning()) {
         await pipeline.stop();
@@ -146,30 +184,28 @@ export function createVoiceChannel(
       }
 
       const combined = texts.join("\n");
-
-      if (chunkingConfig === false) {
-        // Chunking disabled — original single-speak behavior
-        await withRetry(() => pipeline.speak(combined), SPEAK_RETRY_CONFIG);
-        return;
-      }
-
-      const chunks = chunkTtsInput(combined, chunkingConfig);
-      for (const chunk of chunks) {
-        await withRetry(() => pipeline.speak(chunk), SPEAK_RETRY_CONFIG);
-      }
+      const chunks =
+        chunkingConfig === false ? [combined] : chunkTtsInput(combined, chunkingConfig);
+      await speakWithAbort(chunks);
     },
 
     platformSendStatus: async (status: ChannelStatus) => {
       // Only "processing" emits an audio cue — prevents dead air while agent thinks
       if (status.kind === "processing" && pipeline.isRunning()) {
-        const filler = status.detail ?? "one moment";
-        await withRetry(() => pipeline.speak(filler), SPEAK_RETRY_CONFIG);
+        await speakWithAbort([status.detail ?? "one moment"]);
       }
       // "idle" and "error" are no-ops — voice stops naturally
     },
 
     onPlatformEvent: (handler) => {
-      unsubTranscript = pipeline.onTranscript(handler);
+      unsubTranscript = pipeline.onTranscript((event) => {
+        // Barge-in: any transcript while speaking interrupts current TTS
+        if (pipeline.isSpeaking()) {
+          pipeline.interrupt();
+          currentSpeakController?.abort();
+        }
+        handler(event);
+      });
       return () => {
         if (unsubTranscript !== undefined) {
           unsubTranscript();

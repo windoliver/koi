@@ -21,12 +21,15 @@ export interface MockVoicePipeline extends VoicePipeline {
     readonly start: ReturnType<typeof mock>;
     readonly stop: ReturnType<typeof mock>;
     readonly speak: ReturnType<typeof mock>;
+    readonly interrupt: ReturnType<typeof mock>;
   };
 }
 
 export function createMockVoicePipeline(): MockVoicePipeline {
   // let requires justification: mutable running state managed by start/stop
   let running = false;
+  // let requires justification: mutable speaking state managed by speak/interrupt/stop
+  let speaking = false;
   // let requires justification: handler list updated by onTranscript and unsubscribe
   let handlers: readonly ((event: TranscriptEvent) => void)[] = [];
 
@@ -36,9 +39,19 @@ export function createMockVoicePipeline(): MockVoicePipeline {
 
   const stopMock = mock(async (): Promise<void> => {
     running = false;
+    speaking = false;
   });
 
-  const speakMock = mock(async (_text: string): Promise<void> => {});
+  const speakMock = mock(async (_text: string): Promise<void> => {
+    speaking = true;
+    // Note: speaking stays true until interrupt() or stop() is called.
+    // This models the real pipeline where speak() starts playback
+    // and isSpeaking() reflects whether playback is in progress.
+  });
+
+  const interruptMock = mock((): void => {
+    speaking = false;
+  });
 
   const onTranscript = (handler: (event: TranscriptEvent) => void): (() => void) => {
     handlers = [...handlers, handler];
@@ -66,11 +79,14 @@ export function createMockVoicePipeline(): MockVoicePipeline {
     speak: speakMock,
     onTranscript,
     isRunning: () => running,
+    interrupt: interruptMock,
+    isSpeaking: () => speaking,
     emitTranscript,
     mocks: {
       start: startMock,
       stop: stopMock,
       speak: speakMock,
+      interrupt: interruptMock,
     },
   };
 }
