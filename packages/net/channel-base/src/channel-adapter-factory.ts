@@ -9,7 +9,10 @@
  * - Parallel handler dispatch via Promise.allSettled()
  * - Capability-aware block rendering (renderBlocks) before platformSend
  * - Conditional sendStatus inclusion (absent when not supported)
- * - Observability hooks: onHandlerError, onIgnoredEvent
+ * - Observability hooks: onHandlerError, onIgnoredEvent, onNormalizationError
+ * - Connect timeout (connectTimeoutMs)
+ * - Bounded disconnect queue (maxQueueSize, drop-oldest on overflow)
+ * - Health check (lastEventAt tracking)
  *
  * Backpressure note: this factory fires events as they arrive. If the platform
  * sends events faster than handlers can process them, handlers receive calls
@@ -32,6 +35,12 @@ import type {
 } from "@koi/core";
 import { swallowError } from "@koi/errors";
 import { renderBlocks } from "./render-blocks.js";
+
+/** Health status snapshot returned by the optional healthCheck() method. */
+export interface HealthStatus {
+  readonly healthy: boolean;
+  readonly lastEventAt: number;
+}
 
 /**
  * Maps a raw platform event to an InboundMessage, or null to ignore the event.
@@ -116,6 +125,36 @@ export interface ChannelAdapterConfig<E> {
    * When false (default), send() throws if called while disconnected.
    */
   readonly queueWhenDisconnected?: boolean;
+
+  /**
+   * Maximum time in milliseconds to wait for platformConnect() to complete.
+   * If exceeded, connect() rejects with a timeout error.
+   * Set to 0 to disable the timeout. Defaults to 30_000 (30 seconds).
+   */
+  readonly connectTimeoutMs?: number;
+
+  /**
+   * Maximum number of messages to buffer when queueWhenDisconnected is true.
+   * When the queue exceeds this limit, the oldest message is dropped and a
+   * warning is logged. Defaults to 1_000.
+   */
+  readonly maxQueueSize?: number;
+
+  /**
+   * Called when normalize() throws or rejects. Receives the error and the
+   * raw platform event that caused it. The event is still treated as ignored
+   * (null) — handlers are not called.
+   *
+   * If not provided, a warning is logged to console.warn.
+   */
+  readonly onNormalizationError?: (error: unknown, rawEvent: E) => void;
+
+  /**
+   * Timeout in milliseconds for the health check. If no event has been
+   * dispatched within this window, healthCheck() reports unhealthy.
+   * Defaults to 300_000 (5 minutes). Set to 0 to disable staleness detection.
+   */
+  readonly healthTimeoutMs?: number;
 }
 
 /**
@@ -124,6 +163,15 @@ export interface ChannelAdapterConfig<E> {
  * @param config - Platform callbacks and optional observability hooks.
  * @returns A ChannelAdapter satisfying the @koi/core contract.
  */
+/** Default connect timeout: 30 seconds. */
+const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
+
+/** Default max queue size for disconnect buffering. */
+const DEFAULT_MAX_QUEUE_SIZE = 1_000;
+
+/** Default health timeout: 5 minutes. */
+const DEFAULT_HEALTH_TIMEOUT_MS = 300_000;
+
 export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): ChannelAdapter {
   const {
     name,
@@ -139,6 +187,12 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     },
     onIgnoredEvent = (_event: E) => {},
     queueWhenDisconnected = false,
+    connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
+    maxQueueSize = DEFAULT_MAX_QUEUE_SIZE,
+    onNormalizationError = (error: unknown, _rawEvent: E) => {
+      console.warn(`[channel-base] Normalization error in "${name}":`, error);
+    },
+    healthTimeoutMs = DEFAULT_HEALTH_TIMEOUT_MS,
   } = config;
 
   // let requires justification: mutable connection state managed by connect/disconnect lifecycle
@@ -155,39 +209,76 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
   // drained sequentially by connect() when queueWhenDisconnected is true
   let sendQueue: readonly OutboundMessage[] = [];
 
+  // let requires justification: tracks dropped message count for observability
+  let droppedCount = 0;
+
+  // let requires justification: tracks last event dispatch timestamp for health check
+  let lastEventAt = 0;
+
   const dispatchEvent = (event: E): void => {
     // Normalize may be sync or async — always treat as Promise for uniform handling.
-    void Promise.resolve(normalize(event)).then((message) => {
-      if (message === null) {
-        onIgnoredEvent(event);
-        return;
-      }
+    // Wrap in try/catch for sync errors, then .catch for async errors.
+    // let requires justification: normalizeResult may be sync or async
+    let normalizeResult: InboundMessage | null | Promise<InboundMessage | null>;
+    try {
+      normalizeResult = normalize(event);
+    } catch (e: unknown) {
+      onNormalizationError(e, event);
+      return;
+    }
 
-      const currentHandlers = handlers;
-      if (currentHandlers.length === 0) {
-        return;
-      }
+    void Promise.resolve(normalizeResult)
+      .catch((e: unknown) => {
+        onNormalizationError(e, event);
+        return null;
+      })
+      .then((message) => {
+        // Update health tracking on every dispatched event (before null check,
+        // because system events like typing indicators still prove the connection is alive).
+        lastEventAt = Date.now();
 
-      // Parallel dispatch — all handlers run concurrently.
-      // InboundMessage is readonly, so concurrent access is safe.
-      // Promise.allSettled() never rejects, so no unhandled rejection possible.
-      void Promise.allSettled(currentHandlers.map((h) => h(message))).then((results) => {
-        for (const result of results) {
-          if (result.status === "rejected") {
-            // result.reason is typed as any in PromiseRejectedResult; widen to unknown for type safety
-            const reason: unknown = result.reason;
-            onHandlerError(reason, message);
-          }
+        if (message === null) {
+          onIgnoredEvent(event);
+          return;
         }
+
+        const currentHandlers = handlers;
+        if (currentHandlers.length === 0) {
+          return;
+        }
+
+        // Parallel dispatch — all handlers run concurrently.
+        // InboundMessage is readonly, so concurrent access is safe.
+        // Promise.allSettled() never rejects, so no unhandled rejection possible.
+        void Promise.allSettled(currentHandlers.map((h) => h(message))).then((results) => {
+          for (const result of results) {
+            if (result.status === "rejected") {
+              // result.reason is typed as any in PromiseRejectedResult; widen to unknown for type safety
+              const reason: unknown = result.reason;
+              onHandlerError(reason, message);
+            }
+          }
+        });
       });
-    });
   };
 
   const connect = async (): Promise<void> => {
     if (connected) {
       return;
     }
-    await platformConnect();
+
+    // Apply connect timeout if configured (0 = disabled)
+    if (connectTimeoutMs > 0) {
+      const timeout = new Promise<never>((_resolve, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Channel "${name}" connect timed out after ${connectTimeoutMs}ms`));
+        }, connectTimeoutMs);
+      });
+      await Promise.race([platformConnect(), timeout]);
+    } else {
+      await platformConnect();
+    }
+
     unsubPlatform = onPlatformEvent(dispatchEvent);
     connected = true;
 
@@ -196,6 +287,7 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     if (sendQueue.length > 0) {
       const queued = sendQueue;
       sendQueue = [];
+      droppedCount = 0;
       for (const msg of queued) {
         try {
           await platformSend(msg);
@@ -223,6 +315,14 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
 
     if (!connected) {
       if (queueWhenDisconnected) {
+        if (sendQueue.length >= maxQueueSize) {
+          // Drop oldest message to make room
+          sendQueue = sendQueue.slice(1);
+          droppedCount += 1;
+          console.warn(
+            `[channel-base] "${name}" queue full (max=${maxQueueSize}), dropped oldest message (total dropped: ${droppedCount})`,
+          );
+        }
         sendQueue = [...sendQueue, rendered];
         return;
       }
@@ -246,16 +346,29 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     };
   };
 
+  const healthCheck = (): HealthStatus => {
+    if (!connected) {
+      return { healthy: false, lastEventAt };
+    }
+    if (healthTimeoutMs === 0) {
+      // Staleness detection disabled — connected means healthy
+      return { healthy: true, lastEventAt };
+    }
+    const stale = lastEventAt > 0 && Date.now() - lastEventAt > healthTimeoutMs;
+    return { healthy: !stale, lastEventAt };
+  };
+
   // Build the base adapter. sendStatus is conditionally included:
   // if platformSendStatus is not provided, sendStatus is absent from the adapter
   // (not a no-op) so consumers can detect capability via `adapter.sendStatus !== undefined`.
-  const base: ChannelAdapter = {
+  const base: ChannelAdapter & { readonly healthCheck: () => HealthStatus } = {
     name,
     capabilities,
     connect,
     disconnect,
     send,
     onMessage,
+    healthCheck,
   };
 
   if (platformSendStatus !== undefined) {

@@ -26,10 +26,11 @@ function msg(content: OutboundMessage["content"], threadId?: string): OutboundMe
 describe("whatsappSend", () => {
   const JID = "5511999999999@s.whatsapp.net";
 
-  test("silently skips when threadId is undefined", async () => {
+  test("throws when threadId is undefined", async () => {
     const socket = createMockSocket();
-    await whatsappSend(socket, msg([{ kind: "text", text: "hello" }]));
-    expect(socket.calls).toHaveLength(0);
+    await expect(whatsappSend(socket, msg([{ kind: "text", text: "hello" }]))).rejects.toThrow(
+      "threadId is required",
+    );
   });
 
   test("sends text message", async () => {

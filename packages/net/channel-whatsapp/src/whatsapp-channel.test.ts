@@ -231,7 +231,7 @@ describe("createWhatsAppChannel", () => {
   test("send() with empty content does not throw", async () => {
     const { adapter } = createTestAdapter();
     await adapter.connect();
-    await adapter.send({ content: [] });
+    await adapter.send({ content: [], threadId: "5511999999999@s.whatsapp.net" });
     await adapter.disconnect();
   });
 });

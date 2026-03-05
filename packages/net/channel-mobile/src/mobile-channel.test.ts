@@ -27,6 +27,7 @@ describe("createMobileChannel", () => {
   describe("contract tests", () => {
     testChannelAdapter({
       createAdapter: () => makeAdapter(),
+      testThreadId: "mobile:1",
     });
   });
 

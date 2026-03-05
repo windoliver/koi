@@ -1,0 +1,41 @@
+{
+  "name": "@koi/channels",
+  "description": "Channel adapter registry and manifest-driven channel resolution",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/channel-base": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*",
+    "@koi/channel-cli": "workspace:*",
+    "@koi/channel-slack": "workspace:*",
+    "@koi/channel-discord": "workspace:*",
+    "@koi/channel-telegram": "workspace:*",
+    "@koi/channel-teams": "workspace:*",
+    "@koi/channel-email": "workspace:*",
+    "@koi/channel-matrix": "workspace:*",
+    "@koi/channel-signal": "workspace:*",
+    "@koi/channel-whatsapp": "workspace:*",
+    "@koi/channel-voice": "workspace:*",
+    "@koi/channel-mobile": "workspace:*",
+    "@koi/channel-canvas-fallback": "workspace:*",
+    "@koi/channel-chat-sdk": "workspace:*",
+    "@koi/channel-agui": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  }
+}

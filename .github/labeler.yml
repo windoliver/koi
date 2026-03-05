@@ -55,6 +55,7 @@
   - changed-files:
     - any-glob-to-any-file:
       - "packages/**/autonomous/**"
+      - "packages/**/channels/**"
       - "packages/**/cli/**"
       - "packages/**/context-arena/**"
       - "packages/**/forge/**"
@@ -74,6 +75,7 @@
       - "!packages/**/acp-protocol/**"
       - "!packages/**/autonomous/**"
       - "!packages/**/channel-base/**"
+      - "!packages/**/channels/**"
       - "!packages/**/cli/**"
       - "!packages/**/context-arena/**"
       - "!packages/**/core/**"

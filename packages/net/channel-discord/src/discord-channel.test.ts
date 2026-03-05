@@ -66,6 +66,7 @@ function makeAdapter(overrides?: Partial<MockClient>) {
 describe("createDiscordChannel — contract tests", () => {
   testChannelAdapter({
     createAdapter: () => makeAdapter().adapter,
+    testThreadId: "g1:c1",
   });
 });
 

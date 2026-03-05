@@ -24,10 +24,11 @@ function msg(content: OutboundMessage["content"], threadId?: string): OutboundMe
 }
 
 describe("slackSend", () => {
-  test("silently skips when threadId is undefined", async () => {
+  test("throws when threadId is undefined", async () => {
     const api = createMockApi();
-    await slackSend(api, msg([{ kind: "text", text: "hello" }]));
-    expect(api.calls).toHaveLength(0);
+    await expect(slackSend(api, msg([{ kind: "text", text: "hello" }]))).rejects.toThrow(
+      "threadId is required",
+    );
   });
 
   test("sends text message to channel", async () => {

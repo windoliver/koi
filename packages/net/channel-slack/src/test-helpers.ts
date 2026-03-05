@@ -28,13 +28,31 @@ export interface MockWebClient {
   };
 }
 
-export function createMockWebClient(): MockWebClient {
+/** Failure mode configuration for mock WebClient. */
+export interface MockWebClientOptions {
+  /** When true, postMessage rejects with an error. */
+  readonly failOnSend?: boolean;
+  /** When set, the Nth postMessage call (1-based) rejects with a rate_limited error. */
+  readonly rateLimitOnNthCall?: number;
+  /** Custom error message for failOnSend. */
+  readonly sendErrorMessage?: string;
+}
+
+export function createMockWebClient(options?: MockWebClientOptions): MockWebClient {
+  // let justified: tracks call count for rateLimitOnNthCall
+  let callCount = 0;
   return {
     chat: {
-      postMessage: mock(async (_args: Record<string, unknown>) => ({
-        ok: true,
-        ts: "1234567890.123456",
-      })),
+      postMessage: mock(async (_args: Record<string, unknown>) => {
+        callCount++;
+        if (options?.failOnSend === true) {
+          throw new Error(options.sendErrorMessage ?? "not_authed");
+        }
+        if (options?.rateLimitOnNthCall !== undefined && callCount === options.rateLimitOnNthCall) {
+          throw new Error("rate_limited");
+        }
+        return { ok: true, ts: "1234567890.123456" };
+      }),
     },
   };
 }
@@ -52,11 +70,21 @@ export interface MockSocketClient {
   readonly _emit: (event: string, payload: unknown) => void;
 }
 
-export function createMockSocketClient(): MockSocketClient {
+/** Failure mode configuration for mock SocketModeClient. */
+export interface MockSocketClientOptions {
+  /** When true, start() rejects with an error. */
+  readonly throwOnConnect?: boolean;
+}
+
+export function createMockSocketClient(options?: MockSocketClientOptions): MockSocketClient {
   const listeners = new Map<string, ((...args: readonly unknown[]) => void)[]>();
 
   return {
-    start: mock(async () => {}),
+    start: mock(async () => {
+      if (options?.throwOnConnect === true) {
+        throw new Error("websocket_connect_failed");
+      }
+    }),
     disconnect: mock(async () => {}),
     on: (event: string, listener: (...args: readonly unknown[]) => void) => {
       const existing = listeners.get(event) ?? [];

@@ -20,8 +20,9 @@ export function createPlatformSend(
   return async (message: OutboundMessage): Promise<void> => {
     const recipient = message.threadId;
     if (recipient === undefined) {
-      // Contract tests send without threadId — silently skip
-      return;
+      throw new Error(
+        "[channel-signal] Cannot send: threadId is required. Echo threadId from InboundMessage.",
+      );
     }
 
     // Merge all text blocks into a single message body

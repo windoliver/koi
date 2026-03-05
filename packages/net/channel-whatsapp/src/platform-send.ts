@@ -21,7 +21,9 @@ export interface WASocketApi {
  */
 export async function whatsappSend(socket: WASocketApi, message: OutboundMessage): Promise<void> {
   if (message.threadId === undefined) {
-    return;
+    throw new Error(
+      "[channel-whatsapp] Cannot send: threadId is required. Echo threadId from InboundMessage.",
+    );
   }
 
   const jid = message.threadId;

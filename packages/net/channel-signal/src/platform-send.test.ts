@@ -118,11 +118,10 @@ describe("createPlatformSend", () => {
     expect(first.length + second.length).toBe(5000);
   });
 
-  test("silently skips when threadId is missing", async () => {
+  test("throws when threadId is undefined", async () => {
     const proc = makeMockProcess();
     const send = createPlatformSend(proc, "+0987654321");
     const msg: OutboundMessage = { content: [{ kind: "text", text: "hello" }] };
-    await send(msg);
-    expect(proc.send).not.toHaveBeenCalled();
+    await expect(send(msg)).rejects.toThrow("threadId is required");
   });
 });

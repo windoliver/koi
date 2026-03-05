@@ -46,6 +46,7 @@ describe("createMatrixChannel", () => {
   describe("contract tests", () => {
     testChannelAdapter({
       createAdapter: () => makeAdapter().adapter,
+      testThreadId: "!room:matrix.org",
     });
   });
 

@@ -30,7 +30,9 @@ export interface SlackWebApi {
  */
 export async function slackSend(api: SlackWebApi, message: OutboundMessage): Promise<void> {
   if (message.threadId === undefined) {
-    return;
+    throw new Error(
+      "[channel-slack] Cannot send: threadId is required. Echo threadId from InboundMessage.",
+    );
   }
 
   const { channel, threadTs } = parseThreadId(message.threadId);

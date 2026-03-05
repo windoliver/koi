@@ -29,10 +29,11 @@ function makeGetChannel(
 // ---------------------------------------------------------------------------
 
 describe("discordSend — basic", () => {
-  test("silently returns when threadId is missing", async () => {
+  test("throws when threadId is undefined", async () => {
     const channel = createMockChannel();
-    await discordSend(makeGetChannel(channel), { content: [{ kind: "text", text: "hi" }] });
-    expect(channel.send).not.toHaveBeenCalled();
+    await expect(
+      discordSend(makeGetChannel(channel), { content: [{ kind: "text", text: "hi" }] }),
+    ).rejects.toThrow("threadId is required");
   });
 
   test("silently returns when channel is not found", async () => {

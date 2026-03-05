@@ -65,9 +65,9 @@ export async function discordSend(
   message: OutboundMessage,
 ): Promise<void> {
   if (message.threadId === undefined) {
-    // No threadId — silently skip. Contract tests send without threadId.
-    // In production, the agent should always echo threadId from InboundMessage.
-    return;
+    throw new Error(
+      "[channel-discord] Cannot send: threadId is required. Echo threadId from InboundMessage.",
+    );
   }
 
   const channel = getChannel(message.threadId);

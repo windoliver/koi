@@ -15,6 +15,7 @@ describe("createTeamsChannel", () => {
   describe("contract tests", () => {
     testChannelAdapter({
       createAdapter: () => makeAdapter(),
+      testThreadId: "conv-1",
     });
   });
 

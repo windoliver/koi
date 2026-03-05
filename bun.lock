@@ -934,6 +934,31 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/channels": {
+      "name": "@koi/channels",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/channel-agui": "workspace:*",
+        "@koi/channel-canvas-fallback": "workspace:*",
+        "@koi/channel-chat-sdk": "workspace:*",
+        "@koi/channel-cli": "workspace:*",
+        "@koi/channel-discord": "workspace:*",
+        "@koi/channel-email": "workspace:*",
+        "@koi/channel-matrix": "workspace:*",
+        "@koi/channel-mobile": "workspace:*",
+        "@koi/channel-signal": "workspace:*",
+        "@koi/channel-slack": "workspace:*",
+        "@koi/channel-teams": "workspace:*",
+        "@koi/channel-telegram": "workspace:*",
+        "@koi/channel-voice": "workspace:*",
+        "@koi/channel-whatsapp": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/cli": {
       "name": "@koi/cli",
       "version": "0.0.0",
@@ -1581,6 +1606,22 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/net/channel-agui": {
+      "name": "@koi/channel-agui",
+      "version": "0.0.0",
+      "dependencies": {
+        "@ag-ui/core": "0.0.45",
+        "@ag-ui/encoder": "0.0.45",
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/net/channel-base": {
       "name": "@koi/channel-base",
       "version": "0.0.0",
@@ -1961,22 +2002,6 @@
         "@koi/core": "workspace:*",
       },
       "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/observability/agui": {
-      "name": "@koi/agui",
-      "version": "0.0.0",
-      "dependencies": {
-        "@ag-ui/core": "0.0.45",
-        "@ag-ui/encoder": "0.0.45",
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -2992,8 +3017,6 @@
 
     "@koi/agent-procfs": ["@koi/agent-procfs@workspace:packages/observability/agent-procfs"],
 
-    "@koi/agui": ["@koi/agui@workspace:packages/observability/agui"],
-
     "@koi/audit-sink-local": ["@koi/audit-sink-local@workspace:packages/security/audit-sink-local"],
 
     "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/security/audit-sink-nexus"],
@@ -3011,6 +3034,8 @@
     "@koi/capability-verifier": ["@koi/capability-verifier@workspace:packages/security/capability-verifier"],
 
     "@koi/catalog": ["@koi/catalog@workspace:packages/fs/catalog"],
+
+    "@koi/channel-agui": ["@koi/channel-agui@workspace:packages/net/channel-agui"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/net/channel-base"],
 
@@ -3039,6 +3064,8 @@
     "@koi/channel-voice": ["@koi/channel-voice@workspace:packages/net/channel-voice"],
 
     "@koi/channel-whatsapp": ["@koi/channel-whatsapp@workspace:packages/net/channel-whatsapp"],
+
+    "@koi/channels": ["@koi/channels@workspace:packages/meta/channels"],
 
     "@koi/cli": ["@koi/cli@workspace:packages/meta/cli"],
 

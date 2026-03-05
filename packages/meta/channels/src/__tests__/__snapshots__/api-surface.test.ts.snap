@@ -1,0 +1,135 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/channels API surface . has stable type surface 1`] = `
+"import { HealthStatus } from '@koi/channel-base';
+import { ChannelAdapter, ComponentProvider, JsonObject, ChannelConfig } from '@koi/core';
+
+/**
+ * Core types for the @koi/channels L3 meta-package.
+ *
+ * Mirrors the MiddlewareRegistry/MiddlewareFactory pattern from @koi/starter.
+ */
+
+/** Runtime options passed to channel factories during resolution. */
+interface ChannelRuntimeOpts {
+    /** Connect timeout override. Defaults to 30_000ms. */
+    readonly connectTimeoutMs?: number;
+    /** Health check timeout override. Defaults to 300_000ms. */
+    readonly healthTimeoutMs?: number;
+}
+/**
+ * Factory function that creates a ChannelAdapter from manifest config.
+ *
+ * Mirrors MiddlewareFactory from @koi/starter — accepts JSON-serializable
+ * config from a manifest and optional runtime overrides.
+ */
+type ChannelFactory = (config: JsonObject, opts?: ChannelRuntimeOpts) => ChannelAdapter | Promise<ChannelAdapter>;
+/** Registry of named channel factories. */
+interface ChannelRegistry {
+    /** Looks up a factory by channel name. Returns undefined if not registered. */
+    readonly get: (name: string) => ChannelFactory | undefined;
+    /** Returns the set of all registered channel names. */
+    readonly names: () => ReadonlySet<string>;
+}
+/** Channel preset — curated sets of adapters for common deployments. */
+type ChannelPreset = "minimal" | "standard" | "full";
+/** Configuration for createChannelStack(). */
+interface ChannelStackConfig {
+    /** Preset to use as a base set of channels. */
+    readonly preset?: ChannelPreset;
+    /** Explicit channel declarations from the agent manifest. */
+    readonly channels?: readonly ChannelConfig[];
+    /** Custom registry override. Defaults to createDefaultChannelRegistry(). */
+    readonly registry?: ChannelRegistry;
+    /** Connect timeout for all channels. Defaults to 30_000ms. */
+    readonly connectTimeoutMs?: number;
+    /** Health check timeout for all channels. Defaults to 300_000ms. */
+    readonly healthTimeoutMs?: number;
+}
+/** Result of createChannelStack() — a resolved bundle of channel adapters. */
+interface ChannelBundle {
+    /** Map of channel name → resolved adapter. */
+    readonly adapters: ReadonlyMap<string, ChannelAdapter>;
+    /** ComponentProviders for ECS agent assembly. */
+    readonly providers: readonly ComponentProvider[];
+    /** Aggregated health check across all channels. */
+    readonly healthCheck: () => ReadonlyMap<string, HealthStatus>;
+    /** Disconnects all channels and cleans up resources. */
+    readonly dispose: () => Promise<void>;
+}
+
+/**
+ * Channel adapter registry — maps channel names to factory functions.
+ *
+ * Mirrors the MiddlewareRegistry pattern from @koi/starter.
+ * The default registry registers all 14+ built-in channel adapters via
+ * thin shim modules that validate config and delegate to L2 factories.
+ */
+
+/**
+ * Creates a ChannelRegistry from a map of name → factory entries.
+ */
+declare function createChannelRegistry(entries: ReadonlyMap<string, ChannelFactory>): ChannelRegistry;
+/**
+ * Creates the default channel registry with all built-in adapters.
+ *
+ * Each entry delegates to a thin shim that validates config and calls
+ * the L2 adapter factory. Consumers add the L2 channel packages they
+ * actually use to their own package.json — this registry only references
+ * them via devDependencies for type checking and testing.
+ */
+declare function createDefaultChannelRegistry(): ChannelRegistry;
+
+/**
+ * Channel stack factory — resolves manifest channel declarations into
+ * a ChannelBundle with adapters, providers, health check, and dispose.
+ *
+ * This is the main entry point for wiring channels from a manifest.
+ */
+
+/**
+ * Creates a ChannelBundle from a ChannelStackConfig.
+ *
+ * Resolves each manifest channel declaration → ChannelAdapter using the
+ * registry. Returns adapters, ECS ComponentProviders, aggregated health
+ * check, and a dispose function.
+ */
+declare function createChannelStack(config: ChannelStackConfig): Promise<ChannelBundle>;
+
+/**
+ * Config resolution — merges defaults → preset → user overrides.
+ *
+ * Pure function, no side effects. Resolves a ChannelStackConfig into
+ * a normalized form with explicit channel list and runtime options.
+ */
+
+/** Resolved config after merging defaults, preset, and user overrides. */
+interface ResolvedChannelStackConfig {
+    readonly channels: readonly ChannelConfig[];
+    readonly registry: ChannelRegistry | undefined;
+    readonly runtimeOpts: ChannelRuntimeOpts;
+}
+/**
+ * Resolves a ChannelStackConfig into explicit channels + runtime options.
+ *
+ * Resolution order:
+ * 1. If \`channels\` is provided, use it directly (preset is ignored)
+ * 2. If \`preset\` is provided without \`channels\`, expand the preset to
+ *    channel declarations with empty options
+ * 3. If neither, default to "minimal" preset (CLI only)
+ */
+declare function resolveChannelStackConfig(config: ChannelStackConfig): ResolvedChannelStackConfig;
+
+/**
+ * Channel presets — curated sets of adapters for common deployments.
+ *
+ * Presets define which channels are included by name. The actual adapter
+ * configuration still comes from the manifest's channels[] array.
+ */
+
+/** Resolves a preset name to its channel list. */
+declare function resolvePreset(preset: ChannelPreset): readonly string[];
+
+export { type ChannelBundle, type ChannelFactory, type ChannelPreset, type ChannelRegistry, type ChannelRuntimeOpts, type ChannelStackConfig, type ResolvedChannelStackConfig, createChannelRegistry, createChannelStack, createDefaultChannelRegistry, resolveChannelStackConfig, resolvePreset };
+"
+`;
