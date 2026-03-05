@@ -17,6 +17,11 @@ import type { CallIdPairMap } from "./types.js";
  * - assistantByCallId: callId -> assistant message index
  * - orphanToolIndices: tool messages whose callId has no matching assistant
  * - danglingToolUseIndices: assistant messages whose callId has no matching tool result
+ *
+ * **Assumption:** callIds are unique across assistant messages. If a corrupted
+ * history contains duplicate callIds, only the last assistant message for each
+ * callId is tracked — earlier duplicates are silently overwritten. This is
+ * acceptable for best-effort repair on malformed histories.
  */
 export function mapCallIdPairs(messages: readonly InboundMessage[]): CallIdPairMap {
   const assistantByCallId = new Map<string, number>();
