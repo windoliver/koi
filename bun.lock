@@ -1045,6 +1045,21 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/sandbox-cloud": {
+      "name": "@koi/sandbox-cloud",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
+        "@koi/sandbox-cloudflare": "workspace:*",
+        "@koi/sandbox-daytona": "workspace:*",
+        "@koi/sandbox-e2b": "workspace:*",
+        "@koi/sandbox-vercel": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/sandbox-stack": {
       "name": "@koi/sandbox-stack",
       "version": "0.0.0",
@@ -3264,6 +3279,8 @@
     "@koi/resolve": ["@koi/resolve@workspace:packages/fs/resolve"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/virt/sandbox"],
+
+    "@koi/sandbox-cloud": ["@koi/sandbox-cloud@workspace:packages/meta/sandbox-cloud"],
 
     "@koi/sandbox-cloud-base": ["@koi/sandbox-cloud-base@workspace:packages/virt/sandbox-cloud-base"],
 
