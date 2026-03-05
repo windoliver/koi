@@ -1,0 +1,126 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/quality-gate API surface . has stable type surface 1`] = `
+"import { FeedbackLoopConfig, FeedbackLoopHandle } from '@koi/middleware-feedback-loop';
+export { FeedbackLoopConfig, FeedbackLoopHandle, ForgeHealthConfig, RepairStrategy, RetryConfig, ValidationError, ValidationResult, Validator } from '@koi/middleware-feedback-loop';
+import { VerifierConfig, VerifierHandle } from '@koi/middleware-output-verifier';
+export { BUILTIN_CHECKS, DeterministicCheck, JudgeConfig, VerifierAction, VerifierConfig, VerifierHandle, VerifierStats, VerifierVetoEvent, matchesPattern, maxLength, nonEmpty, validJson } from '@koi/middleware-output-verifier';
+import { KoiMiddleware } from '@koi/core';
+
+/**
+ * Budget middleware — caps total model calls per turn.
+ *
+ * Sits at priority 999 (innermost) so every model call passes through it,
+ * including retries from output-verifier and feedback-loop.
+ *
+ * Resets the counter when ctx.turnIndex changes (new turn boundary).
+ */
+
+/**
+ * Creates a budget middleware that caps total model calls per turn.
+ *
+ * The returned middleware maintains mutable per-turn call counters.
+ * Each agent session must use its own instance — do not share across
+ * concurrent sessions. Budget counter auto-resets on turn boundaries.
+ */
+declare function createBudgetMiddleware(maxCalls: number): KoiMiddleware;
+
+/**
+ * Types for the quality-gate meta-package.
+ *
+ * Composes output-verifier and feedback-loop middleware into a
+ * "fast gate → deep validation → retry with feedback" bundle.
+ * Adds a budget middleware to cap total model calls when both retry.
+ */
+
+/** Available quality-gate presets. */
+type QualityGatePreset = "light" | "standard" | "aggressive";
+/** Configuration for the quality-gate bundle. */
+interface QualityGateConfig {
+    /** Preset to apply before user overrides. Default: "standard". */
+    readonly preset?: QualityGatePreset | undefined;
+    /** Output-verifier middleware config overrides. Omit to disable. */
+    readonly verifier?: VerifierConfig | undefined;
+    /** Feedback-loop middleware config overrides. Omit to disable. */
+    readonly feedbackLoop?: FeedbackLoopConfig | undefined;
+    /**
+     * Maximum total model calls per wrapModelCall invocation.
+     * Caps retries across both verifier and feedback-loop.
+     * Set to undefined to disable budget enforcement. Default: 6.
+     */
+    readonly maxTotalModelCalls?: number | undefined;
+}
+/** Shape of a preset specification. Both VerifierConfig and FeedbackLoopConfig
+ *  have all-optional fields, so no Partial<> wrapper is needed. */
+interface QualityGatePresetSpec {
+    readonly verifier?: VerifierConfig | undefined;
+    readonly feedbackLoop?: FeedbackLoopConfig | undefined;
+    readonly maxTotalModelCalls?: number | undefined;
+}
+/** Resolved config after merging defaults → preset → user overrides. */
+interface ResolvedQualityGateConfig {
+    readonly preset: QualityGatePreset;
+    readonly verifier?: VerifierConfig | undefined;
+    readonly feedbackLoop?: FeedbackLoopConfig | undefined;
+    readonly maxTotalModelCalls?: number | undefined;
+}
+/** Introspection metadata for the resolved quality-gate. */
+interface ResolvedQualityGateMeta {
+    readonly preset: QualityGatePreset;
+    readonly middlewareCount: number;
+    readonly verifierEnabled: boolean;
+    readonly feedbackLoopEnabled: boolean;
+    readonly budgetEnabled: boolean;
+}
+/** Handle returned by createQualityGate(). */
+interface QualityGateBundle {
+    /** Middleware array to spread into your agent's middleware chain. */
+    readonly middleware: readonly KoiMiddleware[];
+    /** Output-verifier handle — undefined when verifier is disabled. */
+    readonly verifier: VerifierHandle | undefined;
+    /** Feedback-loop handle — undefined when feedback-loop is disabled. */
+    readonly feedbackLoop: FeedbackLoopHandle | undefined;
+    /** Introspection metadata. */
+    readonly config: ResolvedQualityGateMeta;
+    /** Resets verifier stats. Feedback-loop health persists per session.
+     *  Budget counter auto-resets on turn boundaries and is unaffected by reset(). */
+    readonly reset: () => void;
+}
+
+/**
+ * 3-layer config resolution: defaults → preset → user overrides.
+ */
+
+/** Resolves quality-gate config by merging defaults → preset → user overrides. */
+declare function resolveQualityGateConfig(config: QualityGateConfig): ResolvedQualityGateConfig;
+
+/**
+ * Main factory for the quality-gate meta-package.
+ *
+ * Creates and composes output-verifier, feedback-loop, and (optionally)
+ * budget middleware into a coherent bundle with delegating handles.
+ *
+ * Middleware priority ordering:
+ *   output-verifier (385) → feedback-loop (450) → budget (999)
+ */
+
+/** Creates a quality-gate bundle from the given configuration. */
+declare function createQualityGate(config: QualityGateConfig): QualityGateBundle;
+
+/**
+ * Frozen preset specifications for quality-gate bundles.
+ *
+ * "light"      — deterministic checks only, no feedback-loop, no budget.
+ * "standard"   — deterministic + feedback-loop with moderate retry budget.
+ * "aggressive" — deterministic + feedback-loop with higher retry budget.
+ *
+ * Note: judge config requires a modelCall function from the user.
+ * Presets configure deterministic checks and retry budgets only.
+ */
+
+/** Frozen registry of quality-gate preset specifications. */
+declare const QUALITY_GATE_PRESET_SPECS: Readonly<Record<QualityGatePreset, QualityGatePresetSpec>>;
+
+export { QUALITY_GATE_PRESET_SPECS, type QualityGateBundle, type QualityGateConfig, type QualityGatePreset, type QualityGatePresetSpec, type ResolvedQualityGateConfig, type ResolvedQualityGateMeta, createBudgetMiddleware, createQualityGate, resolveQualityGateConfig };
+"
+`;

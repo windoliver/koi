@@ -1,0 +1,29 @@
+{
+  "name": "@koi/quality-gate",
+  "description": "Output quality assurance middleware bundle for Koi agents",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "@koi/middleware-output-verifier": "workspace:*",
+    "@koi/middleware-feedback-loop": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  }
+}

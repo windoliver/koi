@@ -1,0 +1,105 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/retry-stack API surface . has stable type surface 1`] = `
+"import { FsRollbackConfig, FsRollbackHandle } from '@koi/middleware-fs-rollback';
+export { FsRollbackConfig, FsRollbackHandle } from '@koi/middleware-fs-rollback';
+import { GuidedRetryConfig, GuidedRetryHandle } from '@koi/middleware-guided-retry';
+export { GuidedRetryConfig, GuidedRetryHandle } from '@koi/middleware-guided-retry';
+import { SemanticRetryConfig, SemanticRetryHandle } from '@koi/middleware-semantic-retry';
+export { FailureAnalyzer, FailureClass, FailureClassKind, OnRetryCallback, PromptRewriter, RetryAction, RetryActionKind, RetryRecord, SemanticRetryConfig, SemanticRetryHandle } from '@koi/middleware-semantic-retry';
+import { KoiMiddleware } from '@koi/core';
+
+/**
+ * Types for the retry-stack meta-package.
+ *
+ * Composes semantic-retry, guided-retry, and fs-rollback middleware
+ * into a coherent "diagnose → undo → retry smarter" bundle.
+ */
+
+/** Available retry-stack presets. */
+type RetryStackPreset = "light" | "standard" | "aggressive";
+/** Configuration for the retry-stack bundle. */
+interface RetryStackConfig {
+    /** Preset to apply before user overrides. Default: "standard". */
+    readonly preset?: RetryStackPreset | undefined;
+    /** Semantic-retry middleware config overrides. */
+    readonly semanticRetry?: SemanticRetryConfig | undefined;
+    /** Guided-retry middleware config overrides. */
+    readonly guidedRetry?: GuidedRetryConfig | undefined;
+    /**
+     * Filesystem rollback config. Requires store, chainId, and backend from the user.
+     * Omit to disable fs-rollback entirely.
+     */
+    readonly fsRollback?: FsRollbackConfig | undefined;
+}
+/** Shape of a preset specification — partial config without fs-rollback (requires I/O backends). */
+interface RetryStackPresetSpec {
+    readonly semanticRetry?: Partial<SemanticRetryConfig> | undefined;
+    readonly guidedRetry?: Partial<GuidedRetryConfig> | undefined;
+    /** When true, preset expects the user to provide fsRollback config. */
+    readonly fsRollbackExpected?: boolean | undefined;
+}
+/** Resolved config after merging defaults → preset → user overrides. */
+interface ResolvedRetryStackConfig {
+    readonly preset: RetryStackPreset;
+    readonly semanticRetry: SemanticRetryConfig;
+    readonly guidedRetry?: GuidedRetryConfig | undefined;
+    readonly fsRollback?: FsRollbackConfig | undefined;
+}
+/** Introspection metadata for the resolved retry-stack. */
+interface ResolvedRetryStackMeta {
+    readonly preset: RetryStackPreset;
+    readonly middlewareCount: number;
+    readonly fsRollbackEnabled: boolean;
+}
+/** Handle returned by createRetryStack(). */
+interface RetryStackBundle {
+    /** Middleware array to spread into your agent's middleware chain. */
+    readonly middleware: readonly KoiMiddleware[];
+    /** Semantic-retry handle for records/budget inspection. */
+    readonly semanticRetry: SemanticRetryHandle;
+    /** Guided-retry handle for constraint management. */
+    readonly guidedRetry: GuidedRetryHandle;
+    /** Fs-rollback handle — undefined when fs-rollback is disabled. */
+    readonly fsRollback: FsRollbackHandle | undefined;
+    /** Introspection metadata. */
+    readonly config: ResolvedRetryStackMeta;
+    /** Resets semantic-retry records/budget and guided-retry constraints.
+     *  Fs-rollback state is not reset — snapshot chains are managed externally. */
+    readonly reset: () => void;
+}
+
+/**
+ * 3-layer config resolution: defaults → preset → user overrides.
+ */
+
+/** Resolves retry-stack config by merging defaults → preset → user overrides. */
+declare function resolveRetryStackConfig(config: RetryStackConfig): ResolvedRetryStackConfig;
+
+/**
+ * Main factory for the retry-stack meta-package.
+ *
+ * Creates and composes semantic-retry, guided-retry, and (optionally) fs-rollback
+ * middleware into a coherent bundle with delegating handles.
+ *
+ * Middleware priority ordering:
+ *   fs-rollback (350) → semantic-retry (420) → guided-retry (425)
+ */
+
+/** Creates a retry-stack bundle from the given configuration. */
+declare function createRetryStack(config: RetryStackConfig): RetryStackBundle;
+
+/**
+ * Frozen preset specifications for retry-stack bundles.
+ *
+ * "light"      — minimal: semantic-retry only, low retries, no fs-rollback.
+ * "standard"   — balanced: semantic + guided, moderate retries. fs-rollback if user provides config.
+ * "aggressive" — maximum: semantic + guided, high retries. fs-rollback if user provides config.
+ */
+
+/** Frozen registry of retry-stack preset specifications. */
+declare const RETRY_STACK_PRESET_SPECS: Readonly<Record<RetryStackPreset, RetryStackPresetSpec>>;
+
+export { RETRY_STACK_PRESET_SPECS, type ResolvedRetryStackConfig, type ResolvedRetryStackMeta, type RetryStackBundle, type RetryStackConfig, type RetryStackPreset, type RetryStackPresetSpec, createRetryStack, resolveRetryStackConfig };
+"
+`;
