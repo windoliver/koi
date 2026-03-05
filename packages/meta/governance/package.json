@@ -26,6 +26,7 @@
     "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-pii": "workspace:*",
+    "@koi/redaction": "workspace:*",
     "@koi/permissions-nexus": "workspace:*",
     "@koi/middleware-sanitize": "workspace:*",
     "@koi/scope": "workspace:*",

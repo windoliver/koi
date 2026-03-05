@@ -49,6 +49,12 @@ export type {
 } from "@koi/middleware-permissions";
 export type { PIIConfig } from "@koi/middleware-pii";
 export type { SanitizeMiddlewareConfig } from "@koi/middleware-sanitize";
+export type {
+  RedactionConfig,
+  RedactObjectResult,
+  Redactor,
+  RedactStringResult,
+} from "@koi/redaction";
 // ── Functions ───────────────────────────────────────────────────────────
 export { resolveGovernanceConfig } from "./config-resolution.js";
 export { createGovernanceStack } from "./governance-stack.js";

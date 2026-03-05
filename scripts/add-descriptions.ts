@@ -246,8 +246,6 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Batch and forward audit entries to Nexus server via JSON-RPC with retry",
   "@koi/capability-verifier":
     "Verify HMAC and Ed25519 capability tokens, track session revocation, validate delegation chains",
-  "@koi/collusion-detector":
-    "Detect agent collusion via synchronous moves, variance collapse, concentration, specialization",
   "@koi/delegation":
     "Create monotonically attenuated delegation tokens with scope checking and cascading revocation",
   "@koi/doctor": "Static security analysis of agent manifests aligned with OWASP Agentic Top 10",
@@ -277,8 +275,6 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Forward permission queries to Nexus ReBAC server with typed contract implementations",
   "@koi/redaction":
     "Mask secrets (API keys, credentials, tokens) in logs with 13 built-in pattern detectors",
-  "@koi/reputation":
-    "Calculate weighted trust scores from feedback for pluggable agent reputation backend",
   "@koi/scope":
     "Wrap infrastructure tokens with capability-attenuation scopes (filesystem, browser, credentials, memory)",
   "@koi/security-analyzer":

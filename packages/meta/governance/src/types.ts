@@ -33,6 +33,7 @@ import type { PermissionRules, PermissionsMiddlewareConfig } from "@koi/middlewa
 import type { PIIConfig } from "@koi/middleware-pii";
 import type { SanitizeMiddlewareConfig } from "@koi/middleware-sanitize";
 import type { NexusPermissionBackend, OnGrantHook, OnRevokeHook } from "@koi/permissions-nexus";
+import type { RedactionConfig, Redactor } from "@koi/redaction";
 import type { BrowserDriver } from "@koi/tool-browser";
 
 // ---------------------------------------------------------------------------
@@ -137,6 +138,8 @@ export interface GovernanceStackConfig {
   readonly audit?: AuditMiddlewareConfig | undefined;
   /** PII detection and redaction. Priority 340. */
   readonly pii?: PIIConfig | undefined;
+  /** Secret redaction (API keys, credentials, tokens). Priority 345. */
+  readonly redaction?: Partial<RedactionConfig> | undefined;
   /** Content sanitization. Priority 350. */
   readonly sanitize?: SanitizeMiddlewareConfig | undefined;
   /** Output schema validation. Priority 375. */
@@ -222,4 +225,6 @@ export interface GovernanceBundle {
   readonly sessionStore?: SessionRevocationStore;
   /** Delegation escalation handle — present when `delegationEscalation` is configured. */
   readonly delegationEscalationHandle?: DelegationEscalationHandle;
+  /** Compiled redactor — present when `redaction` is configured. */
+  readonly redactor?: Redactor;
 }
