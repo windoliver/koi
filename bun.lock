@@ -1476,19 +1476,6 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/mm/knowledge-vault": {
-      "name": "@koi/knowledge-vault",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/scope": "workspace:*",
-        "@koi/search-provider": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/mm/memory-fs": {
       "name": "@koi/memory-fs",
       "version": "0.0.0",
@@ -3287,8 +3274,6 @@
     "@koi/ipc-nexus": ["@koi/ipc-nexus@workspace:packages/ipc/ipc-nexus"],
 
     "@koi/ipc-stack": ["@koi/ipc-stack@workspace:packages/meta/ipc-stack"],
-
-    "@koi/knowledge-vault": ["@koi/knowledge-vault@workspace:packages/mm/knowledge-vault"],
 
     "@koi/long-running": ["@koi/long-running@workspace:packages/sched/long-running"],
 

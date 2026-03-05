@@ -208,8 +208,6 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
   // ── MM (memory management) ──────────────────────────────────────────
   "@koi/context":
     "Hydrate agent context from multiple sources at session start and inject as system message",
-  "@koi/knowledge-vault":
-    "Index markdown knowledge bases with BM25 ranking and token-budget-aware selection",
   "@koi/memory-fs":
     "Store and retrieve memories using filesystem-backed categorized fact store with search",
   "@koi/middleware-ace":
