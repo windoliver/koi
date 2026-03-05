@@ -1,6 +1,6 @@
 {
   "name": "@koi/goal-stack",
-  "description": "Goal management stack composing planning, anchor, and reminder middleware",
+  "description": "Goal-directed middleware bundle composing anchor, reminder, and planning middleware",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,9 +12,11 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
     "@koi/middleware-goal-anchor": "workspace:*",
     "@koi/middleware-goal-reminder": "workspace:*",
-    "@koi/middleware-planning": "workspace:*"
+    "@koi/middleware-planning": "workspace:*",
+    "@koi/resolve": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",

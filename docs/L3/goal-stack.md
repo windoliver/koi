@@ -1,240 +1,191 @@
-# @koi/goal-stack — Goal Management Bundle
+# @koi/goal-stack — Goal-Directed Middleware Bundle
 
-Convenience package that composes `@koi/middleware-planning` + `@koi/middleware-goal-anchor` + `@koi/middleware-goal-reminder` into a single `createGoalStack()` call with preset-driven composition.
-
----
-
-## Why It Exists
-
-Koi's goal management is spread across three independent L2 middleware, each handling a different aspect:
-
-| Package | Priority | Role |
-|---------|----------|------|
-| `middleware-goal-reminder` | 330 | Adaptive periodic reminders with drift detection |
-| `middleware-goal-anchor` | 340 | Constant todo checklist on every model call |
-| `middleware-planning` | 450 | `write_plan` tool for structured task tracking |
-
-Without this package:
-
-- **No unified composition point** — `goal-anchor` lived in `@koi/starter`, `planning` in `@koi/cli`, and `goal-reminder` in no L3 bundle at all
-- **Manual wiring** — users must import three packages, configure each independently, and manually pass all middleware to `createKoi`
-- **No coordination** — no presets to express "I want light planning" vs "I want full goal tracking"
-
-This L3 bundle provides:
-
-- **One-call setup** — `createGoalStack()` creates and connects all middleware
-- **Preset-driven composition** — `"light"` / `"standard"` / `"full"` selects which middleware are enabled
-- **Auto-enable on config** — providing a middleware's config enables it regardless of preset
-- **Correct priority ordering** — middleware are always created with their canonical priorities (330, 340, 450)
-
----
+Layer 3 meta-package that composes up to 3 goal-tracking middleware into a
+single `createGoalStack()` call with preset-driven defaults.
 
 ## What This Enables
 
-```
-BEFORE: Manual wiring (3 packages, separate configs)
-═════════════════════════════════════════════════════
+**Intra-session goal persistence for AI agents.** Without goal-stack, agents
+lose track of their objectives as conversations grow — the model's attention
+drifts from the original task, especially in long autonomous runs. Goal-stack
+solves this with three complementary strategies:
 
-import { createGoalReminderMiddleware } from "@koi/middleware-goal-reminder";
-import { createGoalAnchorMiddleware } from "@koi/middleware-goal-anchor";
-import { createPlanMiddleware } from "@koi/middleware-planning";
+- **Goal Anchor** (priority 340) — injects a live todo list on _every_ model
+  call, keeping objectives in the model's most recent attention span
+  (Manus-style attention management)
+- **Goal Reminder** (priority 330) — injects periodic reminders with _adaptive
+  intervals_: doubles the gap when the agent is on-track, resets to base on
+  drift detection
+- **Planning** (priority 450) — provides a `write_plan` tool so agents can
+  create and maintain structured multi-step plans across turns
 
-const reminder = createGoalReminderMiddleware({
-  sources: [{ kind: "manifest", objectives: ["Build feature X"] }],
-  baseInterval: 5,
-  maxInterval: 20,
-});
+Together they prevent goal drift, improve task completion rates, and give
+observability into what the agent thinks it's doing.
 
-const anchor = createGoalAnchorMiddleware({
-  objectives: ["Build feature X", "Write tests"],
-  onComplete: (item) => console.log("Done:", item.text),
-});
+### Key use cases
 
-const plan = createPlanMiddleware({
-  onPlanUpdate: (items) => dashboard.update(items),
-});
+| Scenario | Preset | Why |
+|----------|--------|-----|
+| Interactive chat with structured planning | `minimal` | Planning tool only — no injection overhead |
+| Multi-step task execution | `standard` | All three middleware, moderate reminder frequency |
+| Autonomous long-running agents | `autonomous` | All three middleware, aggressive reminder intervals |
 
-const runtime = await createKoi({
-  manifest,
-  adapter,
-  middleware: [reminder, anchor, plan, ...otherMiddleware],
-});
+### Autonomous agent integration
 
+`@koi/autonomous` accepts an optional `goalStackMiddleware` field, letting
+autonomous agents opt into goal tracking without any L3-to-L3 import:
 
-AFTER: Goal stack (1 import, 1 function call)
-═════════════════════════════════════════════
-
+```typescript
 import { createGoalStack } from "@koi/goal-stack";
+import { createAutonomousAgent } from "@koi/autonomous";
 
-const { middlewares } = createGoalStack({
-  preset: "full",
-  anchor: {
-    objectives: ["Build feature X", "Write tests"],
-    onComplete: (item) => console.log("Done:", item.text),
-  },
-  reminder: {
-    sources: [{ kind: "manifest", objectives: ["Build feature X"] }],
-    baseInterval: 5,
-    maxInterval: 20,
-  },
-  planning: {
-    onPlanUpdate: (items) => dashboard.update(items),
-  },
+const goals = createGoalStack({
+  preset: "autonomous",
+  objectives: ["Implement auth flow", "Write tests", "Deploy to staging"],
 });
 
-const runtime = await createKoi({
-  manifest,
-  adapter,
-  middleware: [...middlewares, ...otherMiddleware],
+const agent = createAutonomousAgent({
+  harness,
+  scheduler,
+  goalStackMiddleware: goals.middlewares, // readonly KoiMiddleware[]
 });
 ```
-
-**Use cases by preset:**
-
-| Preset | Middleware | Best for |
-|--------|-----------|----------|
-| `light` | planning only | Simple agents that need task tracking |
-| `standard` | planning + anchor | Agents with declared objectives that need constant visibility |
-| `full` | planning + anchor + reminder | Long-running agents where drift detection is critical |
-
----
-
-## Architecture
-
-`@koi/goal-stack` is an **L3 meta-package** — it composes L2 packages with zero new logic.
-
-```
-┌──────────────────────────────────────────────────────┐
-│  @koi/goal-stack  (L3)                               │
-│                                                      │
-│  types.ts              ← config, bundle, preset types│
-│  presets.ts            ← GOAL_STACK_PRESET_FLAGS      │
-│  config-resolution.ts  ← resolveGoalStackConfig()    │
-│  goal-stack.ts         ← createGoalStack() factory   │
-│  index.ts              ← public API surface          │
-│                                                      │
-├──────────────────────────────────────────────────────┤
-│  Dependencies                                        │
-│                                                      │
-│  @koi/middleware-goal-reminder (L2)  drift detection  │
-│  @koi/middleware-goal-anchor   (L2)  todo checklist   │
-│  @koi/middleware-planning      (L2)  write_plan tool  │
-│  @koi/core                     (L0)  KoiMiddleware    │
-└──────────────────────────────────────────────────────┘
-```
-
----
 
 ## Quick Start
 
 ```typescript
 import { createGoalStack } from "@koi/goal-stack";
+import { createKoi } from "@koi/engine";
 
-// Minimal — light preset, planning middleware only
-const { middlewares } = createGoalStack();
+// Minimal — planning tool only, no objectives needed
+const { middlewares } = createGoalStack({ preset: "minimal" });
 
-// Standard — planning + todo checklist anchored to every model call
-const standard = createGoalStack({
-  preset: "standard",
-  anchor: { objectives: ["Implement auth", "Write tests", "Update docs"] },
+// Standard — all three middleware, moderate intervals
+const stack = createGoalStack({
+  objectives: ["Build the auth module", "Add unit tests"],
 });
 
-// Full — all three middleware with drift detection
-const full = createGoalStack({
-  preset: "full",
-  anchor: {
-    objectives: ["Implement auth", "Write tests"],
-    onComplete: (item) => console.log("Completed:", item.text),
-  },
-  reminder: {
-    sources: [{ kind: "manifest", objectives: ["Implement auth"] }],
-    baseInterval: 5,
-    maxInterval: 20,
-  },
-  planning: {
-    onPlanUpdate: (plan) => dashboard.refresh(plan),
-  },
+// Autonomous — tighter intervals for long-running agents
+const autonomous = createGoalStack({
+  preset: "autonomous",
+  objectives: ["Implement feature X", "Write integration tests"],
+  anchor: { onComplete: (item) => console.log(`Done: ${item.text}`) },
+  planning: { onPlanUpdate: (plan) => console.log("Plan updated:", plan) },
+});
+
+const runtime = await createKoi({
+  manifest,
+  adapter,
+  middleware: stack.middlewares,
+  providers: stack.providers,
 });
 ```
 
----
+## Middleware Priority Order
+
+| Priority | Middleware | Description |
+|----------|-----------|-------------|
+| 330 | goal-reminder | Adaptive periodic goal injection with drift detection |
+| 340 | goal-anchor | Live todo list injected on every model call |
+| 450 | plan | `write_plan` tool for structured task tracking |
 
 ## Presets
 
-Presets control which middleware are enabled by default. They do **not** supply domain-specific config values (unlike governance presets which provide permission rules, PII strategies, etc.).
+### `minimal`
+
+- Planning tool only
+- No anchor or reminder injection
+- No objectives required
+- Zero runtime overhead on model calls
+
+### `standard` (default)
+
+- All three middleware active
+- Reminder: base interval 5 turns, max 20 turns
+- Objectives required (throws if missing)
+- Default anchor header: `## Current Objectives`
+
+### `autonomous`
+
+- All three middleware active
+- Reminder: base interval 3 turns, max 10 turns (tighter than standard)
+- Objectives required (throws if missing)
+- Designed for long-running agents where drift risk is highest
+
+## Config Resolution
+
+1. **Preset selection**: defaults to `"standard"` if unspecified
+2. **Objectives validation**: anchor/reminder presets require non-empty
+   `objectives` array (error message suggests `"minimal"` preset)
+3. **User overrides**: anchor, reminder, and planning sub-configs override
+   preset defaults
+
+### Override Examples
+
+```typescript
+// Custom reminder sources (replace default manifest source)
+createGoalStack({
+  objectives: ["Task A"],
+  reminder: {
+    sources: [{ kind: "static", text: "Stay focused on the auth module" }],
+    baseInterval: 10,
+    maxInterval: 30,
+  },
+});
+
+// Custom anchor header
+createGoalStack({
+  objectives: ["Task A"],
+  anchor: { header: "## Active Goals" },
+});
+
+// Custom planning priority
+createGoalStack({
+  preset: "minimal",
+  planning: { priority: 500 },
+});
+```
+
+## Return Shape
+
+```typescript
+interface GoalStackBundle {
+  readonly middlewares: readonly KoiMiddleware[];
+  readonly providers: readonly ComponentProvider[];  // always [] — future-proof
+  readonly config: ResolvedGoalStackMeta;
+}
+
+interface ResolvedGoalStackMeta {
+  readonly preset: GoalStackPreset;
+  readonly middlewareCount: number;
+  readonly includesAnchor: boolean;
+  readonly includesReminder: boolean;
+  readonly includesPlanning: boolean;
+}
+```
+
+## Architecture
 
 ```
-light:    planning ✓  anchor ✗  reminder ✗
-standard: planning ✓  anchor ✓  reminder ✗
-full:     planning ✓  anchor ✓  reminder ✓
+@koi/goal-stack (L3)
+  ├── types.ts              — GoalStackConfig, presets, bundle types
+  ├── presets.ts             — GOAL_STACK_PRESET_SPECS (frozen)
+  ├── config-resolution.ts   — preset defaults + objectives validation
+  ├── goal-stack.ts           — createGoalStack() factory
+  └── index.ts               — public API surface + sub-package re-exports
 ```
 
-**Override rule:** Providing a middleware's config always enables it, regardless of preset. For example, passing `anchor` config with `preset: "light"` still enables the anchor middleware.
+Dependencies:
+- L0: `@koi/core` (types)
+- L0u: `@koi/errors`, `@koi/resolve`
+- L2: `@koi/middleware-goal-anchor`, `@koi/middleware-goal-reminder`, `@koi/middleware-planning`
 
-**Validation rule:** If a preset enables a middleware but no config is provided, `createGoalStack` throws with an actionable error message. Planning is exempt since its config is fully optional.
+## Re-exported Types
 
----
+For convenience, `@koi/goal-stack` re-exports key types from its constituent
+packages so consumers don't need direct dependencies:
 
-## Key Types
-
-| Type | Purpose |
-|------|---------|
-| `GoalStackConfig` | Top-level config: preset + per-middleware config |
-| `GoalStackBundle` | Return type — `middlewares` array + `config` metadata |
-| `GoalStackPreset` | `"light" \| "standard" \| "full"` |
-| `GoalStackPresetFlags` | Per-preset boolean flags for each middleware |
-| `ResolvedGoalStackMeta` | Inspection metadata: preset, counts, enabled flags |
-| `ResolvedGoalStackConfig` | Resolved config returned by `resolveGoalStackConfig()` |
-
----
-
-## How the Three Middleware Work Together
-
-Each middleware addresses a different time horizon of goal management:
-
-1. **Planning (priority 450)** — Provides a `write_plan` tool that lets the agent create and maintain a structured task list. The plan persists across turns and is injected into every model call as context. Think of it as the agent's task board.
-
-2. **Goal Anchor (priority 340)** — Injects the declared objectives as a live todo checklist on every model call. Heuristically detects when objectives are completed based on model responses. Think of it as a constant "north star" reminder.
-
-3. **Goal Reminder (priority 330)** — Periodically injects goal reminders with an adaptive interval. Doubles the interval when the agent stays on-task; resets to base interval when drift is detected. Think of it as a guardrail against topic drift in long conversations.
-
-```
-Turn 1  [reminder] ← first reminder injected
-        [anchor]   ← todo checklist: ☐ Build feature ☐ Write tests
-        [plan]     ← agent creates plan via write_plan tool
-
-Turn 2  [anchor]   ← todo checklist (always present)
-        [plan]     ← plan context injected
-
-...
-
-Turn 5  [reminder] ← periodic reminder fires (baseInterval=5)
-        [anchor]   ← todo checklist: ☑ Build feature ☐ Write tests
-        [plan]     ← updated plan
-
-Turn 10 [reminder] ← interval doubled to 10 (no drift detected)
-        [anchor]   ← todo checklist
-        [plan]     ← plan context
-```
-
----
-
-## Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Presets control flags only, not config values | Unlike governance, these middleware require domain-specific data (objectives, sources) that can't be meaningfully defaulted by a preset |
-| Priority is blocked on planning config | Stack ordering (330, 340, 450) is intentional — allowing users to override planning priority could break the composition |
-| No ComponentProviders returned | None of the three middleware produce providers, unlike governance which wires scope providers |
-| Sync factory (not async) | All three L2 factories are synchronous — no I/O at construction time |
-| Validation collects all errors | When multiple configs are missing, all errors are reported in a single throw rather than failing one at a time |
-
----
-
-## Layer Compliance
-
-- [x] `@koi/goal-stack` only imports from L0 (`@koi/core`) and L2 middleware packages
-- [x] `@koi/engine` is devDependency only (used in integration tests)
-- [x] No new logic beyond composition — types, presets, config resolution, and factory
-- [x] All interface properties are `readonly`
-- [x] Listed in `L3_PACKAGES` in `scripts/layers.ts`
+- `TodoItem`, `TodoItemStatus`, `TodoState` — from `@koi/middleware-goal-anchor`
+- `ReminderSource`, `ReminderSessionState` — from `@koi/middleware-goal-reminder`
+- `PlanItem`, `PlanStatus` — from `@koi/middleware-planning`
+- `planningDescriptor` — brick descriptor for registry consumers

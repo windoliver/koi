@@ -1,13 +1,21 @@
 /**
- * @koi/goal-stack — L3 meta-package for goal management middleware.
+ * @koi/goal-stack — Goal-directed middleware bundle (Layer 3)
  *
- * Re-exports only. No new logic.
+ * One-call composition of goal-anchor, goal-reminder, and planning middleware
+ * with preset-driven defaults.
+ *
+ * Usage:
+ * ```typescript
+ * import { createGoalStack } from "@koi/goal-stack";
+ *
+ * const { middlewares, providers, config } = createGoalStack({
+ *   preset: "standard",
+ *   objectives: ["Implement auth flow", "Write unit tests"],
+ * });
+ * ```
  */
 
-// ---------------------------------------------------------------------------
-// Type re-exports from L2 dependencies
-// ---------------------------------------------------------------------------
-
+// ── Types: sub-package re-exports ──────────────────────────────────────
 export type {
   GoalAnchorConfig,
   TodoItem,
@@ -20,29 +28,18 @@ export type {
   ReminderSource,
 } from "@koi/middleware-goal-reminder";
 export type { PlanConfig, PlanItem, PlanStatus } from "@koi/middleware-planning";
-
-// ---------------------------------------------------------------------------
-// Functions
-// ---------------------------------------------------------------------------
-
+// ── Constants: sub-package re-exports ──────────────────────────────────
+export { descriptor as planningDescriptor } from "@koi/middleware-planning";
+// ── Functions ──────────────────────────────────────────────────────────
 export { resolveGoalStackConfig } from "./config-resolution.js";
 export { createGoalStack } from "./goal-stack.js";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-export { GOAL_STACK_PRESET_FLAGS } from "./presets.js";
-
-// ---------------------------------------------------------------------------
-// Bundle types
-// ---------------------------------------------------------------------------
-
+// ── Constants ──────────────────────────────────────────────────────────
+export { GOAL_STACK_PRESET_SPECS } from "./presets.js";
+// ── Types: goal-stack bundle ───────────────────────────────────────────
 export type {
   GoalStackBundle,
   GoalStackConfig,
   GoalStackPreset,
-  GoalStackPresetFlags,
-  ResolvedGoalStackConfig,
+  GoalStackPresetSpec,
   ResolvedGoalStackMeta,
 } from "./types.js";

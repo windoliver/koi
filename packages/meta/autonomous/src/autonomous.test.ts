@@ -255,6 +255,34 @@ describe("createAutonomousAgent", () => {
     expect(mw[2]?.name).toBe("report-mw");
   });
 
+  test("middleware includes goalStackMiddleware entries when provided", () => {
+    const harness = createMockHarness({ middlewareName: "lr-mw" });
+    const scheduler = createMockScheduler();
+    const goalMw1 = createMockMiddleware("goal-reminder");
+    const goalMw2 = createMockMiddleware("goal-anchor");
+    const agent = createAutonomousAgent({
+      harness,
+      scheduler,
+      goalStackMiddleware: [goalMw1, goalMw2],
+    });
+
+    const mw = agent.middleware();
+    expect(mw).toHaveLength(3); // harness + 2 goal-stack
+    expect(mw[0]?.name).toBe("lr-mw");
+    expect(mw[1]?.name).toBe("goal-reminder");
+    expect(mw[2]?.name).toBe("goal-anchor");
+  });
+
+  test("goalStackMiddleware omitted when not provided (existing behavior)", () => {
+    const harness = createMockHarness({ middlewareName: "lr-mw" });
+    const scheduler = createMockScheduler();
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    const mw = agent.middleware();
+    expect(mw).toHaveLength(1);
+    expect(mw[0]?.name).toBe("lr-mw");
+  });
+
   test("middleware returns cached array (same reference)", () => {
     const harness = createMockHarness();
     const scheduler = createMockScheduler();
