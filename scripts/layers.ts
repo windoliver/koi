@@ -71,6 +71,7 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/middleware-preference", // deprecation shim — delegates to @koi/middleware-user-model
   "@koi/quality-gate",
   "@koi/retry-stack",
+  "@koi/rlm-stack",
   "@koi/sandbox-cloud",
   "@koi/sandbox-stack",
   "@koi/starter",

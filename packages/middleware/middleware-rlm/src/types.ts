@@ -1,12 +1,14 @@
 /**
- * Types and configuration for @koi/engine-rlm.
+ * Types and configuration for @koi/middleware-rlm.
  *
  * RLM (Recursive Language Models) virtualizes unbounded input outside the
  * context window and gives the model tools to programmatically examine,
  * chunk, and recursively sub-query it.
+ *
+ * This middleware variant can be composed with any engine adapter.
  */
 
-import type { ModelHandler, ModelStreamHandler, ToolHandler } from "@koi/core";
+import type { JsonObject } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -20,6 +22,8 @@ export const DEFAULT_COMPACTION_THRESHOLD: number = 0.8;
 export const DEFAULT_CONTEXT_WINDOW_TOKENS: number = 100_000;
 export const DEFAULT_MAX_CONCURRENCY: number = 5;
 export const DEFAULT_DEPTH: number = 0;
+export const DEFAULT_PRIORITY: number = 300;
+export const DEFAULT_TIME_BUDGET_MS: number = 300_000; // 5 minutes
 
 /** Maximum chars per `examine` call to prevent accidental full-input reads. */
 export const MAX_EXAMINE_LENGTH: number = 50_000;
@@ -33,8 +37,8 @@ export const MAX_BATCH_PROMPTS: number = 50;
 
 /**
  * Request object passed to the `spawnRlmChild` callback when `rlm_query`
- * is invoked. The consumer (CLI or parent adapter) is responsible for
- * creating a child RLM adapter with these parameters.
+ * is invoked. The consumer is responsible for creating a child RLM with
+ * these parameters.
  */
 export interface RlmSpawnRequest {
   /** The input text for the child RLM agent to process. */
@@ -92,20 +96,83 @@ export interface ChunkDescriptor {
 }
 
 // ---------------------------------------------------------------------------
-// Configuration
+// Script runner (code-execution mode)
 // ---------------------------------------------------------------------------
 
 /**
- * Configuration for the RLM engine adapter.
+ * Script runner interface — implemented by L3 stack (e.g., @koi/rlm-stack).
+ *
+ * Executes JavaScript code in a sandboxed environment with host functions
+ * exposed as synchronous `callTool()` calls from guest code.
  */
-export interface RlmConfig {
-  /** Raw model call terminal — the actual LLM call function. */
-  readonly modelCall: ModelHandler;
-  /** Raw model stream terminal — optional streaming LLM call. */
-  readonly modelStream?: ModelStreamHandler | undefined;
-  /** Raw tool call terminal — optional, falls back to callHandlers. */
-  readonly toolCall?: ToolHandler | undefined;
-  /** Model identifier for root-level calls. */
+export interface RlmScriptRunner {
+  readonly run: (config: RlmScriptRunConfig) => Promise<RlmScriptResult>;
+}
+
+/** Configuration for a single script execution. */
+export interface RlmScriptRunConfig {
+  readonly code: string;
+  readonly hostFns: ReadonlyMap<string, (args: JsonObject) => Promise<unknown> | unknown>;
+  readonly timeoutMs?: number | undefined;
+  readonly maxCalls?: number | undefined;
+}
+
+/** Result from a single script execution. */
+export interface RlmScriptResult {
+  readonly ok: boolean;
+  readonly console: readonly string[];
+  readonly result: unknown;
+  readonly error?: string | undefined;
+  readonly callCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// RLM events (for observability)
+// ---------------------------------------------------------------------------
+
+/** Stop reason for a completed REPL loop. */
+export type RlmStopReason = "completed" | "max_turns" | "interrupted" | "error";
+
+/** Aggregate metrics from a REPL loop run. */
+export interface RlmMetrics {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly turns: number;
+  readonly durationMs: number;
+}
+
+/** Result returned by a completed REPL loop. */
+export interface ReplLoopResult {
+  readonly answer: string;
+  readonly stopReason: RlmStopReason;
+  readonly metrics: RlmMetrics;
+}
+
+/** Discriminated union of events emitted by the REPL loop. */
+export type RlmEvent =
+  | { readonly kind: "turn_start"; readonly turn: number }
+  | { readonly kind: "turn_end"; readonly turn: number }
+  | { readonly kind: "compaction"; readonly turn: number; readonly utilization: number }
+  | { readonly kind: "tool_dispatch"; readonly toolName: string; readonly callId: string }
+  | { readonly kind: "code_exec"; readonly turn: number; readonly ok: boolean }
+  | { readonly kind: "done"; readonly result: ReplLoopResult };
+
+// ---------------------------------------------------------------------------
+// Middleware configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for the RLM middleware.
+ *
+ * Unlike the engine-level RlmConfig, this does not include modelCall /
+ * modelStream / toolCall terminals — the middleware captures the downstream
+ * model handler from `wrapModelCall.next`.
+ */
+export interface RlmMiddlewareConfig {
+  /** Middleware priority. Default: 300 (before model-router). */
+  readonly priority?: number | undefined;
+  /** Model identifier for root-level REPL calls. */
   readonly rootModel?: string | undefined;
   /** Model identifier for sub-calls (llm_query, compaction). */
   readonly subCallModel?: string | undefined;
@@ -127,4 +194,12 @@ export interface RlmConfig {
   readonly spawnRlmChild?: ((req: RlmSpawnRequest) => Promise<RlmSpawnResult>) | undefined;
   /** Current recursion depth. Default: 0. */
   readonly depth?: number | undefined;
+  /** Event callback for observability. */
+  readonly onEvent?: ((event: RlmEvent) => void) | undefined;
+  /**
+   * Script runner for code-execution mode. When provided, the REPL loop
+   * uses code execution (model writes JavaScript) instead of tool dispatch.
+   * Typically created by @koi/rlm-stack which wires @koi/code-executor.
+   */
+  readonly scriptRunner?: RlmScriptRunner | undefined;
 }

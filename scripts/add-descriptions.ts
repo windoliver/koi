@@ -70,8 +70,8 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
   "@koi/engine-loop":
     "Execute pure TypeScript ReAct loop with parallel tool calls and iterative Reason+Act cycles",
   "@koi/engine-pi": "Wrap pi-agent-core with full middleware interposition on model and tool calls",
-  "@koi/engine-rlm":
-    "Virtualize unbounded input outside context window with recursive chunking and sub-querying",
+  "@koi/middleware-rlm":
+    "Virtualize unbounded input as middleware — any engine can process inputs larger than context window",
   "@koi/model-router":
     "Route model calls across multiple LLM providers with retry, fallback, cascade, and circuit breaker",
 
@@ -348,6 +348,8 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Self-extending system for agent composition, verification, integrity attestation, and policy enforcement",
   "@koi/governance":
     "Enterprise compliance stack composing 9 middleware for permissions, approvals, auditing, and guardrails",
+  "@koi/rlm-stack":
+    "Wire code-execution sandbox into RLM middleware for script-based input analysis",
   "@koi/sandbox-stack":
     "One-call factory for sandboxed code execution with timeout guards and pluggable backend adapters",
   "@koi/starter":

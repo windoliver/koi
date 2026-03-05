@@ -117,17 +117,6 @@
         "@sinclair/typebox": "0.34.33",
       },
     },
-    "packages/drivers/engine-rlm": {
-      "name": "@koi/engine-rlm",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/drivers/model-router": {
       "name": "@koi/model-router",
       "version": "0.0.0",
@@ -1158,6 +1147,18 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/rlm-stack": {
+      "name": "@koi/rlm-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/code-executor": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/middleware-rlm": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/sandbox-stack": {
       "name": "@koi/sandbox-stack",
       "version": "0.0.0",
@@ -1355,6 +1356,17 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-rlm": {
+      "name": "@koi/middleware-rlm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -3208,8 +3220,6 @@
 
     "@koi/engine-pi": ["@koi/engine-pi@workspace:packages/drivers/engine-pi"],
 
-    "@koi/engine-rlm": ["@koi/engine-rlm@workspace:packages/drivers/engine-rlm"],
-
     "@koi/errors": ["@koi/errors@workspace:packages/lib/errors"],
 
     "@koi/eval": ["@koi/eval@workspace:packages/observability/eval"],
@@ -3352,6 +3362,8 @@
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/middleware/middleware-report"],
 
+    "@koi/middleware-rlm": ["@koi/middleware-rlm@workspace:packages/middleware/middleware-rlm"],
+
     "@koi/middleware-sandbox": ["@koi/middleware-sandbox@workspace:packages/middleware/middleware-sandbox"],
 
     "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/security/middleware-sanitize"],
@@ -3411,6 +3423,8 @@
     "@koi/resolve": ["@koi/resolve@workspace:packages/fs/resolve"],
 
     "@koi/retry-stack": ["@koi/retry-stack@workspace:packages/meta/retry-stack"],
+
+    "@koi/rlm-stack": ["@koi/rlm-stack@workspace:packages/meta/rlm-stack"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/virt/sandbox"],
 
