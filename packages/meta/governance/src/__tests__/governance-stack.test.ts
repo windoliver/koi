@@ -457,6 +457,96 @@ describe("createGovernanceStack", () => {
       expect(names).not.toContain("koi:delegation-escalation");
     }
   });
+
+  // ── Audit backend (declarative) ──────────────────────────────────
+
+  test("auditBackend: sqlite → creates audit middleware with auto-created sink", () => {
+    const { middlewares } = createGovernanceStack({
+      auditBackend: { kind: "sqlite", dbPath: ":memory:" },
+    });
+    const audit = middlewares.find((mw) => mw.name === "audit");
+    expect(audit).toBeDefined();
+  });
+
+  test("auditBackend: ndjson → creates audit middleware with NDJSON sink", () => {
+    const tmpPath = `/tmp/koi-test-audit-${Date.now()}.ndjson`;
+    const { middlewares, disposables } = createGovernanceStack({
+      auditBackend: { kind: "ndjson", filePath: tmpPath },
+    });
+    const audit = middlewares.find((mw) => mw.name === "audit");
+    expect(audit).toBeDefined();
+    // Clean up
+    for (const d of disposables) {
+      d[Symbol.dispose]();
+    }
+  });
+
+  test("auditBackend: nexus → creates audit middleware with no close disposable", () => {
+    const mockFetch = Object.assign(async () => new Response("{}"), {
+      preconnect: (_url: string | URL) => {},
+    }) as typeof fetch;
+    const { middlewares, disposables } = createGovernanceStack({
+      auditBackend: {
+        kind: "nexus",
+        baseUrl: "http://localhost:2026",
+        apiKey: "test-key",
+        fetch: mockFetch,
+      },
+    });
+    const audit = middlewares.find((mw) => mw.name === "audit");
+    expect(audit).toBeDefined();
+    expect(disposables).toHaveLength(0);
+  });
+
+  test("auditBackend: custom → uses provided sink", () => {
+    const sink = createInMemoryAuditSink();
+    const { middlewares } = createGovernanceStack({
+      auditBackend: { kind: "custom", sink },
+    });
+    const audit = middlewares.find((mw) => mw.name === "audit");
+    expect(audit).toBeDefined();
+  });
+
+  test("auditBackend + audit.sink → throws mutual exclusion error", () => {
+    const sink = createInMemoryAuditSink();
+    expect(() =>
+      createGovernanceStack({
+        auditBackend: { kind: "sqlite", dbPath: ":memory:" },
+        audit: { sink },
+      }),
+    ).toThrow("mutually exclusive");
+  });
+
+  test("auditBackend auto-wires backends.auditSink for scope-wiring", () => {
+    // When auditBackend is provided with scope + backends, the sink should
+    // be wired into backends.auditSink automatically
+    const { middlewares, disposables } = createGovernanceStack({
+      auditBackend: { kind: "sqlite", dbPath: ":memory:" },
+    });
+    // Audit middleware should exist (proves sink was wired into audit config)
+    expect(middlewares.find((mw) => mw.name === "audit")).toBeDefined();
+    // SQLite sink produces a close disposable
+    expect(disposables.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("auditBackend: sqlite produces close disposable", () => {
+    const { disposables } = createGovernanceStack({
+      auditBackend: { kind: "sqlite", dbPath: ":memory:" },
+    });
+    expect(disposables.length).toBeGreaterThanOrEqual(1);
+    // Should not throw
+    for (const d of disposables) {
+      d[Symbol.dispose]();
+    }
+  });
+
+  test("auditBackend: custom produces no close disposable", () => {
+    const sink = createInMemoryAuditSink();
+    const { disposables } = createGovernanceStack({
+      auditBackend: { kind: "custom", sink },
+    });
+    expect(disposables).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

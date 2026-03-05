@@ -1,7 +1,11 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/governance API surface . has stable type surface 1`] = `
-"import { SessionRevocationStore } from '@koi/capability-verifier';
+"import { SqliteAuditSinkConfig, NdjsonAuditSinkConfig } from '@koi/audit-sink-local';
+export { NdjsonAuditSinkConfig, SqliteAuditSinkConfig, createNdjsonAuditSink, createSqliteAuditSink } from '@koi/audit-sink-local';
+import { NexusAuditSinkConfig } from '@koi/audit-sink-nexus';
+export { NexusAuditSinkConfig, createNexusAuditSink, validateNexusAuditSinkConfig } from '@koi/audit-sink-nexus';
+import { SessionRevocationStore } from '@koi/capability-verifier';
 export { SessionRevocationStore } from '@koi/capability-verifier';
 import { DelegationMiddlewareConfig, DelegationManager } from '@koi/delegation';
 export { DelegationMiddlewareConfig, DelegationProviderConfig } from '@koi/delegation';
@@ -25,7 +29,7 @@ import { PIIConfig } from '@koi/middleware-pii';
 export { PIIConfig } from '@koi/middleware-pii';
 import { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
 export { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
-import { FileSystemBackend, CredentialComponent, MemoryComponent, AuditSink, ScopeEnforcer, PermissionBackend, KoiMiddleware, ComponentProvider } from '@koi/core';
+import { AuditSink, FileSystemBackend, CredentialComponent, MemoryComponent, ScopeEnforcer, PermissionBackend, KoiMiddleware, ComponentProvider } from '@koi/core';
 import { NexusPermissionBackend, OnGrantHook, OnRevokeHook } from '@koi/permissions-nexus';
 import { BrowserDriver } from '@koi/tool-browser';
 
@@ -36,6 +40,17 @@ import { BrowserDriver } from '@koi/tool-browser';
  * deployment presets, scope configuration, and the GovernanceBundle return shape.
  */
 
+/** Declarative audit backend selection — auto-creates the AuditSink and wires it into audit middleware + scope backends. */
+type AuditBackendConfig = ({
+    readonly kind: "sqlite";
+} & SqliteAuditSinkConfig) | ({
+    readonly kind: "ndjson";
+} & NdjsonAuditSinkConfig) | ({
+    readonly kind: "nexus";
+} & NexusAuditSinkConfig) | {
+    readonly kind: "custom";
+    readonly sink: AuditSink;
+};
 /** Deployment preset levels for governance stacks. */
 type GovernancePreset = "open" | "standard" | "strict";
 /** Scope configuration for governed capabilities. */
@@ -85,6 +100,11 @@ interface GovernanceStackConfig {
      * Creates a pattern permission backend automatically.
      */
     readonly permissionRules?: PermissionRules | undefined;
+    /**
+     * Declarative audit backend. Auto-creates the AuditSink and wires it
+     * into audit middleware + scope backends. Mutually exclusive with \`audit.sink\`.
+     */
+    readonly auditBackend?: AuditBackendConfig | undefined;
     /** Coarse-grained tool allow/deny/ask rules. Priority 100. */
     readonly permissions?: PermissionsMiddlewareConfig | undefined;
     /** Progressive command allowlisting. Priority 110 (overridden from default). */
@@ -226,6 +246,6 @@ declare function createGovernanceStack(config: GovernanceStackConfig): Governanc
 /** Frozen registry of governance preset specs, keyed by preset name. */
 declare const GOVERNANCE_PRESET_SPECS: Readonly<Record<GovernancePreset, GovernancePresetSpec>>;
 
-export { GOVERNANCE_PRESET_SPECS, type GovernanceBundle, type GovernancePreset, type GovernancePresetSpec, type GovernanceScopeBackends, type GovernanceScopeConfig, type GovernanceStackConfig, type NexusDelegationHooks, type ResolvedGovernanceMeta, createGovernanceStack, resolveGovernanceConfig };
+export { type AuditBackendConfig, GOVERNANCE_PRESET_SPECS, type GovernanceBundle, type GovernancePreset, type GovernancePresetSpec, type GovernanceScopeBackends, type GovernanceScopeConfig, type GovernanceStackConfig, type NexusDelegationHooks, type ResolvedGovernanceMeta, createGovernanceStack, resolveGovernanceConfig };
 "
 `;
