@@ -95,6 +95,8 @@ interface AutonomousAgentParts {
     readonly forgeStore?: ForgeStore | undefined;
     /** Optional health recorder for spawn fitness tracking. */
     readonly healthRecorder?: SpawnHealthRecorder | undefined;
+    /** Optional goal-stack middleware for intra-session goal tracking. */
+    readonly goalStackMiddleware?: readonly KoiMiddleware[] | undefined;
 }
 interface AutonomousAgent {
     /** The underlying harness. */
