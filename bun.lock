@@ -1201,6 +1201,23 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/tool-stack": {
+      "name": "@koi/tool-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/middleware-call-dedup": "workspace:*",
+        "@koi/middleware-call-limits": "workspace:*",
+        "@koi/middleware-degenerate": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
+        "@koi/middleware-tool-audit": "workspace:*",
+        "@koi/middleware-tool-recovery": "workspace:*",
+        "@koi/middleware-tool-selector": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/workspace-stack": {
       "name": "@koi/workspace-stack",
       "version": "0.0.0",
@@ -3497,6 +3514,8 @@
     "@koi/tool-exec": ["@koi/tool-exec@workspace:packages/fs/tool-exec"],
 
     "@koi/tool-squash": ["@koi/tool-squash@workspace:packages/mm/tool-squash"],
+
+    "@koi/tool-stack": ["@koi/tool-stack@workspace:packages/meta/tool-stack"],
 
     "@koi/tools-github": ["@koi/tools-github@workspace:packages/fs/tools-github"],
 
