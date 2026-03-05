@@ -34,6 +34,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/manifest",
   "@koi/name-resolution",
   "@koi/nexus-client",
+  "@koi/redaction",
   "@koi/resolve",
   "@koi/sandbox-cloud-base",
   "@koi/sandbox-wasm",

@@ -26,6 +26,7 @@ const STANDARD: GovernancePresetSpec = Object.freeze({
     ask: Object.freeze(["group:runtime"]),
   }),
   pii: Object.freeze({ strategy: "mask" as const }),
+  redaction: Object.freeze({}),
   sanitize: Object.freeze({ rules: Object.freeze([] as readonly []) }),
   scope: Object.freeze({
     filesystem: Object.freeze({ root: ".", mode: "rw" as const }),
@@ -40,6 +41,7 @@ const STRICT: GovernancePresetSpec = Object.freeze({
     ask: Object.freeze([] as readonly string[]),
   }),
   pii: Object.freeze({ strategy: "redact" as const }),
+  redaction: Object.freeze({}),
   sanitize: Object.freeze({ rules: Object.freeze([] as readonly []) }),
   guardrails: Object.freeze({ rules: Object.freeze([] as readonly []) }),
   scope: Object.freeze({

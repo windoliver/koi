@@ -60,6 +60,7 @@ import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPIIMiddleware } from "@koi/middleware-pii";
 import { createSanitizeMiddleware } from "@koi/middleware-sanitize";
 import { createNexusOnGrant, createNexusOnRevoke } from "@koi/permissions-nexus";
+import { createRedactor } from "@koi/redaction";
 
 import { resolveGovernanceConfig } from "./config-resolution.js";
 import { wireGovernanceScope } from "./scope-wiring.js";
@@ -395,6 +396,7 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     resolved.pii !== undefined
       ? createPIIMiddleware(resolved.pii) // 340
       : undefined,
+    // Note: redaction (345) is not a middleware — it's a standalone Redactor exposed on the bundle.
     resolved.sanitize !== undefined
       ? createSanitizeMiddleware(resolved.sanitize) // 350
       : undefined,
@@ -436,6 +438,10 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     ...approvalRoutingProviders,
   ];
 
+  // Create redactor when redaction config is provided
+  const redactor =
+    resolved.redaction !== undefined ? createRedactor(resolved.redaction) : undefined;
+
   return {
     middlewares,
     providers,
@@ -449,5 +455,6 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     ...(nexusHooks !== undefined ? { nexusHooks } : {}),
     ...(sessionStore !== undefined ? { sessionStore } : {}),
     ...(delegationEscalationHandle !== undefined ? { delegationEscalationHandle } : {}),
+    ...(redactor !== undefined ? { redactor } : {}),
   };
 }

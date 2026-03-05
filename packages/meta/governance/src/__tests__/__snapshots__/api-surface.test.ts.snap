@@ -29,6 +29,8 @@ import { PIIConfig } from '@koi/middleware-pii';
 export { PIIConfig } from '@koi/middleware-pii';
 import { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
 export { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
+import { RedactionConfig, Redactor } from '@koi/redaction';
+export { RedactObjectResult, RedactStringResult, RedactionConfig, Redactor } from '@koi/redaction';
 import { AuditSink, FileSystemBackend, CredentialComponent, MemoryComponent, ScopeEnforcer, PermissionBackend, KoiMiddleware, ComponentProvider } from '@koi/core';
 import { NexusPermissionBackend, OnGrantHook, OnRevokeHook } from '@koi/permissions-nexus';
 import { BrowserDriver } from '@koi/tool-browser';
@@ -123,6 +125,8 @@ interface GovernanceStackConfig {
     readonly audit?: AuditMiddlewareConfig | undefined;
     /** PII detection and redaction. Priority 340. */
     readonly pii?: PIIConfig | undefined;
+    /** Secret redaction (API keys, credentials, tokens). Priority 345. */
+    readonly redaction?: Partial<RedactionConfig> | undefined;
     /** Content sanitization. Priority 350. */
     readonly sanitize?: SanitizeMiddlewareConfig | undefined;
     /** Output schema validation. Priority 375. */
@@ -179,6 +183,8 @@ interface GovernanceBundle {
     readonly sessionStore?: SessionRevocationStore;
     /** Delegation escalation handle — present when \`delegationEscalation\` is configured. */
     readonly delegationEscalationHandle?: DelegationEscalationHandle;
+    /** Compiled redactor — present when \`redaction\` is configured. */
+    readonly redactor?: Redactor;
 }
 
 /**

@@ -1102,6 +1102,7 @@
         "@koi/middleware-pii": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
+        "@koi/redaction": "workspace:*",
         "@koi/scope": "workspace:*",
         "@koi/tool-browser": "workspace:*",
       },
@@ -2302,16 +2303,6 @@
         "@koi/errors": "workspace:*",
       },
     },
-    "packages/security/collusion-detector": {
-      "name": "@koi/collusion-detector",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/security/delegation": {
       "name": "@koi/delegation",
       "version": "0.0.0",
@@ -2493,16 +2484,6 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/security/reputation": {
-      "name": "@koi/reputation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -3164,8 +3145,6 @@
 
     "@koi/code-mode": ["@koi/code-mode@workspace:packages/fs/code-mode"],
 
-    "@koi/collusion-detector": ["@koi/collusion-detector@workspace:packages/security/collusion-detector"],
-
     "@koi/config": ["@koi/config@workspace:packages/kernel/config"],
 
     "@koi/context": ["@koi/context@workspace:packages/mm/context"],
@@ -3405,8 +3384,6 @@
     "@koi/registry-nexus": ["@koi/registry-nexus@workspace:packages/fs/registry-nexus"],
 
     "@koi/registry-sqlite": ["@koi/registry-sqlite@workspace:packages/fs/registry-sqlite"],
-
-    "@koi/reputation": ["@koi/reputation@workspace:packages/security/reputation"],
 
     "@koi/resolve": ["@koi/resolve@workspace:packages/fs/resolve"],
 
