@@ -7,6 +7,7 @@ import type { CanvasAuthenticator, CanvasConfig, CanvasWiring } from "@koi/gatew
 import type { GatewayNexusConfig } from "@koi/gateway-nexus";
 import type { GatewayConfig } from "@koi/gateway-types";
 import type { WebhookAuthenticator, WebhookConfig, WebhookServer } from "@koi/gateway-webhook";
+import type { TracingConfig } from "@koi/tracing";
 
 /**
  * Full gateway stack configuration — core gateway + optional canvas and webhook.
@@ -20,6 +21,8 @@ export interface GatewayStackConfig {
   readonly webhook?: WebhookConfig;
   /** Nexus config for HA state stores. Omit to use in-memory stores. */
   readonly nexus?: GatewayNexusConfig;
+  /** Tracing config. When provided, wraps Nexus fetch with traced fetch. */
+  readonly tracing?: TracingConfig | undefined;
 }
 
 /**

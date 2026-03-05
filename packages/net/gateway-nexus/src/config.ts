@@ -37,8 +37,11 @@ export interface GatewayNexusConfig {
   readonly apiKey: string;
   /** Unique identifier for this gateway instance. Default: crypto.randomUUID(). */
   readonly instanceId?: string | undefined;
-  /** Injectable fetch for testing. Default: globalThis.fetch. */
-  readonly fetch?: typeof globalThis.fetch | undefined;
+  /** Injectable fetch for testing/tracing. Default: globalThis.fetch. */
+  readonly fetch?:
+    | typeof globalThis.fetch
+    | ((input: Request | string | URL, init?: RequestInit) => Promise<Response>)
+    | undefined;
   /** Request timeout in ms. Default: 10_000. */
   readonly timeoutMs?: number | undefined;
   readonly degradation?: Partial<DegradationConfig> | undefined;
