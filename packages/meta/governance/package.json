@@ -1,6 +1,6 @@
 {
   "name": "@koi/governance",
-  "description": "Enterprise compliance stack composing 9 middleware for permissions, approvals, auditing, and guardrails",
+  "description": "Enterprise compliance stack composing 11 middleware for permissions, approvals, auditing, and guardrails",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -17,8 +17,10 @@
     "@koi/exec-approvals": "workspace:*",
     "@koi/filesystem": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
+    "@koi/middleware-delegation-escalation": "workspace:*",
     "@koi/middleware-governance-backend": "workspace:*",
     "@koi/middleware-guardrails": "workspace:*",
+    "@koi/middleware-intent-capsule": "workspace:*",
     "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-pii": "workspace:*",

@@ -13,7 +13,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { PAY_DEPRECATION_WARNING, resolveGovernanceConfig } from "../config-resolution.js";
+import { resolveGovernanceConfig } from "../config-resolution.js";
 
 // Spy on console.warn for pay deprecation tests
 const originalWarn = console.warn;
@@ -108,9 +108,9 @@ describe("resolveGovernanceConfig", () => {
     expect(result.execApprovals).toBeDefined();
   });
 
-  // ── Pay deprecation ──────────────────────────────────────────────────
+  // ── Pay (no longer deprecated) ──────────────────────────────────────
 
-  test("pay triggers deprecation console.warn", () => {
+  test("pay no longer triggers deprecation warning", () => {
     resolveGovernanceConfig({
       pay: {
         tracker: {
@@ -123,12 +123,30 @@ describe("resolveGovernanceConfig", () => {
         budget: 1000,
       },
     });
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0]?.[0]).toBe(PAY_DEPRECATION_WARNING);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  test("no pay → no deprecation warning", () => {
-    resolveGovernanceConfig({});
-    expect(warnSpy).not.toHaveBeenCalled();
+  // ── Pass-through fields ───────────────────────────────────────────
+
+  test("intentCapsule passed through without preset defaults", () => {
+    const resolved = resolveGovernanceConfig({
+      preset: "strict",
+      intentCapsule: { systemPrompt: "My mission." },
+    });
+    expect(resolved.intentCapsule?.systemPrompt).toBe("My mission.");
+  });
+
+  test("delegationEscalation passed through without preset defaults", () => {
+    const config = {
+      channel: { name: "mock", capabilities: {} },
+      isExhausted: () => false,
+      issuerId: "supervisor",
+      monitoredDelegateeIds: [],
+    };
+    const resolved = resolveGovernanceConfig({
+      preset: "strict",
+      delegationEscalation: config as never,
+    });
+    expect(resolved.delegationEscalation).toBeDefined();
   });
 });

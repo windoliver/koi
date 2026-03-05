@@ -207,7 +207,7 @@ describe("delegation bridge in createGovernanceStack", () => {
       createGovernanceStack({
         capabilityRequest: { approvalTimeoutMs: 30_000 },
       }),
-    ).toThrow("capabilityRequest requires delegationBridge");
+    ).toThrow("'capabilityRequest' requires 'delegationBridge'");
   });
 
   // -----------------------------------------------------------------------

@@ -10,15 +10,6 @@ import { GOVERNANCE_PRESET_SPECS } from "./presets.js";
 import type { GovernanceStackConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Deprecation warning emitted when `pay` is provided. */
-export const PAY_DEPRECATION_WARNING: string =
-  "[@koi/governance] 'pay' is deprecated and will be removed in the next major release. " +
-  "Use @koi/middleware-pay directly instead.";
-
-// ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
 
@@ -28,7 +19,7 @@ export const PAY_DEPRECATION_WARNING: string =
  * Validation rules:
  * - `permissions` and `permissionRules` are mutually exclusive (throws)
  * - `execApprovals.onAsk` is optional — auto-wired during agent assembly when parent + mailbox available
- * - `pay` emits a console.warn deprecation notice
+ * - `intentCapsule` and `delegationEscalation` are passed through without preset defaults
  */
 export function resolveGovernanceConfig(config: GovernanceStackConfig): GovernanceStackConfig {
   // 1. Determine preset
@@ -54,12 +45,7 @@ export function resolveGovernanceConfig(config: GovernanceStackConfig): Governan
       ? { backend: createPatternPermissionBackend({ rules: effectivePermissionRules }) }
       : spec.permissions);
 
-  // 5. Pay deprecation warning
-  if (config.pay !== undefined) {
-    console.warn(PAY_DEPRECATION_WARNING);
-  }
-
-  // 6. Merge: user override ?? preset ?? undefined
+  // 5. Merge: user override ?? preset ?? undefined
   return {
     ...config,
     permissions: effectivePermissions,

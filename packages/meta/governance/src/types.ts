@@ -19,8 +19,13 @@ import type {
 import type { DelegationManager, DelegationMiddlewareConfig } from "@koi/delegation";
 import type { ExecApprovalsConfig } from "@koi/exec-approvals";
 import type { AuditMiddlewareConfig } from "@koi/middleware-audit";
+import type {
+  DelegationEscalationConfig,
+  DelegationEscalationHandle,
+} from "@koi/middleware-delegation-escalation";
 import type { GovernanceBackendMiddlewareConfig } from "@koi/middleware-governance-backend";
 import type { GuardrailsConfig } from "@koi/middleware-guardrails";
+import type { IntentCapsuleConfig } from "@koi/middleware-intent-capsule";
 import type { PayMiddlewareConfig } from "@koi/middleware-pay";
 import type { PermissionRules, PermissionsMiddlewareConfig } from "@koi/middleware-permissions";
 import type { PIIConfig } from "@koi/middleware-pii";
@@ -100,10 +105,14 @@ export interface GovernanceStackConfig {
   readonly execApprovals?: ExecApprovalsConfig | undefined;
   /** Delegation grant verification. Priority 120 (overridden from default). */
   readonly delegation?: DelegationMiddlewareConfig | undefined;
+  /** Human escalation on delegatee exhaustion. Priority 130. */
+  readonly delegationEscalation?: DelegationEscalationConfig | undefined;
   /** Pluggable policy evaluation gate. Priority 150. */
   readonly governanceBackend?: GovernanceBackendMiddlewareConfig | undefined;
-  /** @deprecated Use @koi/middleware-pay directly. Will be removed next major. */
+  /** Cost/budget governance. Priority 200. */
   readonly pay?: PayMiddlewareConfig | undefined;
+  /** Cryptographic mandate binding (OWASP ASI01 defense). Priority 290. */
+  readonly intentCapsule?: IntentCapsuleConfig | undefined;
   /** Compliance audit logging. Priority 300. */
   readonly audit?: AuditMiddlewareConfig | undefined;
   /** PII detection and redaction. Priority 340. */
@@ -132,7 +141,7 @@ export interface GovernanceStackConfig {
   // ── Capability request bridge ──────────────────────────────────────────
   /**
    * Capability request bridge: enables pull-model requests between agents.
-   * Requires delegationBridge to also be configured.
+   * Requires `delegationBridge` to also be configured — will throw if missing.
    * Adds a ComponentProvider (priority 101) + KoiMiddleware (priority 125).
    */
   readonly capabilityRequest?:
@@ -152,7 +161,10 @@ export interface GovernanceStackConfig {
  * Presets cannot specify preset, backends, enforcer, or pay.
  */
 export type GovernancePresetSpec = Partial<
-  Omit<GovernanceStackConfig, "preset" | "backends" | "enforcer" | "pay">
+  Omit<
+    GovernanceStackConfig,
+    "preset" | "backends" | "enforcer" | "intentCapsule" | "delegationEscalation"
+  >
 >;
 
 // ---------------------------------------------------------------------------
@@ -164,7 +176,6 @@ export interface ResolvedGovernanceMeta {
   readonly preset: GovernancePreset;
   readonly middlewareCount: number;
   readonly providerCount: number;
-  readonly payDeprecated: boolean;
   readonly scopeEnabled: boolean;
 }
 
@@ -189,4 +200,6 @@ export interface GovernanceBundle {
   readonly nexusHooks?: NexusDelegationHooks;
   /** Session revocation store — present when strict preset auto-wires capability verifier. */
   readonly sessionStore?: SessionRevocationStore;
+  /** Delegation escalation handle — present when `delegationEscalation` is configured. */
+  readonly delegationEscalationHandle?: DelegationEscalationHandle;
 }

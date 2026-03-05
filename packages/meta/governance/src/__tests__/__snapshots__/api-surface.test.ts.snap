@@ -9,10 +9,14 @@ import { ExecApprovalsConfig } from '@koi/exec-approvals';
 export { ExecApprovalsConfig } from '@koi/exec-approvals';
 import { AuditMiddlewareConfig } from '@koi/middleware-audit';
 export { AuditMiddlewareConfig } from '@koi/middleware-audit';
+import { DelegationEscalationConfig, DelegationEscalationHandle } from '@koi/middleware-delegation-escalation';
+export { DelegationEscalationConfig, DelegationEscalationHandle } from '@koi/middleware-delegation-escalation';
 import { GovernanceBackendMiddlewareConfig } from '@koi/middleware-governance-backend';
 export { GovernanceBackendMiddlewareConfig } from '@koi/middleware-governance-backend';
 import { GuardrailsConfig } from '@koi/middleware-guardrails';
 export { GuardrailsConfig } from '@koi/middleware-guardrails';
+import { IntentCapsuleConfig } from '@koi/middleware-intent-capsule';
+export { IntentCapsuleConfig } from '@koi/middleware-intent-capsule';
 import { PayMiddlewareConfig } from '@koi/middleware-pay';
 export { PayMiddlewareConfig } from '@koi/middleware-pay';
 import { PermissionRules, PermissionsMiddlewareConfig } from '@koi/middleware-permissions';
@@ -87,10 +91,14 @@ interface GovernanceStackConfig {
     readonly execApprovals?: ExecApprovalsConfig | undefined;
     /** Delegation grant verification. Priority 120 (overridden from default). */
     readonly delegation?: DelegationMiddlewareConfig | undefined;
+    /** Human escalation on delegatee exhaustion. Priority 130. */
+    readonly delegationEscalation?: DelegationEscalationConfig | undefined;
     /** Pluggable policy evaluation gate. Priority 150. */
     readonly governanceBackend?: GovernanceBackendMiddlewareConfig | undefined;
-    /** @deprecated Use @koi/middleware-pay directly. Will be removed next major. */
+    /** Cost/budget governance. Priority 200. */
     readonly pay?: PayMiddlewareConfig | undefined;
+    /** Cryptographic mandate binding (OWASP ASI01 defense). Priority 290. */
+    readonly intentCapsule?: IntentCapsuleConfig | undefined;
     /** Compliance audit logging. Priority 300. */
     readonly audit?: AuditMiddlewareConfig | undefined;
     /** PII detection and redaction. Priority 340. */
@@ -113,7 +121,7 @@ interface GovernanceStackConfig {
     } | undefined;
     /**
      * Capability request bridge: enables pull-model requests between agents.
-     * Requires delegationBridge to also be configured.
+     * Requires \`delegationBridge\` to also be configured — will throw if missing.
      * Adds a ComponentProvider (priority 101) + KoiMiddleware (priority 125).
      */
     readonly capabilityRequest?: {
@@ -125,13 +133,12 @@ interface GovernanceStackConfig {
  * Partial config without meta-fields, used for preset definitions.
  * Presets cannot specify preset, backends, enforcer, or pay.
  */
-type GovernancePresetSpec = Partial<Omit<GovernanceStackConfig, "preset" | "backends" | "enforcer" | "pay">>;
+type GovernancePresetSpec = Partial<Omit<GovernanceStackConfig, "preset" | "backends" | "enforcer" | "intentCapsule" | "delegationEscalation">>;
 /** Metadata about the resolved governance stack for inspection. */
 interface ResolvedGovernanceMeta {
     readonly preset: GovernancePreset;
     readonly middlewareCount: number;
     readonly providerCount: number;
-    readonly payDeprecated: boolean;
     readonly scopeEnabled: boolean;
 }
 /** Nexus delegation hooks for wiring to DelegationManager. */
@@ -150,6 +157,8 @@ interface GovernanceBundle {
     readonly nexusHooks?: NexusDelegationHooks;
     /** Session revocation store — present when strict preset auto-wires capability verifier. */
     readonly sessionStore?: SessionRevocationStore;
+    /** Delegation escalation handle — present when \`delegationEscalation\` is configured. */
+    readonly delegationEscalationHandle?: DelegationEscalationHandle;
 }
 
 /**
@@ -164,14 +173,14 @@ interface GovernanceBundle {
  * Validation rules:
  * - \`permissions\` and \`permissionRules\` are mutually exclusive (throws)
  * - \`execApprovals.onAsk\` is optional — auto-wired during agent assembly when parent + mailbox available
- * - \`pay\` emits a console.warn deprecation notice
+ * - \`intentCapsule\` and \`delegationEscalation\` are passed through without preset defaults
  */
 declare function resolveGovernanceConfig(config: GovernanceStackConfig): GovernanceStackConfig;
 
 /**
  * createGovernanceStack — enterprise compliance middleware assembly.
  *
- * Composes up to 9 middleware into a single stack with a fixed priority order.
+ * Composes up to 11 middleware into a single stack with a fixed priority order.
  * All fields are optional — include only what your deployment needs.
  *
  * Priority order (lower = outer layer, runs first on request):
@@ -179,8 +188,10 @@ declare function resolveGovernanceConfig(config: GovernanceStackConfig): Governa
  *   110  koi:exec-approvals  (overridden from default 100)
  *   120  koi:delegation      (overridden from default undefined/500)
  *   125  koi:capability-request (pull-model delegation requests)
+ *   130  koi:delegation-escalation (human escalation on delegatee exhaustion)
  *   150  koi:governance-backend
  *   200  koi:pay
+ *   290  koi:intent-capsule  (OWASP ASI01 mandate binding)
  *   300  koi:audit
  *   340  koi:pii
  *   350  koi:sanitize

@@ -4,14 +4,15 @@
  * Unit tests (black-box by name):
  *   - Empty config → open preset permissions middleware
  *   - Single middleware present and named correctly
- *   - All 9 configured → 9 middlewares in correct priority order
- *   - All 8 configured (no pay) → 8 middlewares
+ *   - All 11 configured → 11 middlewares in correct priority order
+ *   - All 10 configured (no pay) → 10 middlewares
  *   - exec-approvals priority overridden to 110
  *   - delegation priority overridden to 120
  *   - Preset: standard → permissions + pii + sanitize
  *   - Preset: strict → permissions + pii + sanitize + guardrails
  *   - Return value includes providers and config metadata
- *   - Pay deprecation warning + still functional
+ *   - intentCapsule configured → middleware at priority 290
+ *   - delegationEscalation configured → middleware at priority 130 + handle on bundle
  *
  * Integration test:
  *   - createGovernanceStack({ audit }) → pass to createKoi + cooperating adapter
@@ -23,12 +24,14 @@ import type {
   AgentManifest,
   AgentMessage,
   AgentMessageInput,
+  ChannelAdapter,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
   EngineInput,
   EngineOutput,
   MailboxComponent,
+  MessageHandler,
   SubsystemToken,
 } from "@koi/core";
 import { agentId, MAILBOX, messageId } from "@koi/core";
@@ -91,6 +94,33 @@ const BASE_MANIFEST: AgentManifest = {
   version: "1.0.0",
   model: { name: "test-model" },
 };
+
+function makeMockChannel(): ChannelAdapter {
+  const handlers: MessageHandler[] = [];
+  return {
+    name: "test-channel",
+    capabilities: {
+      text: true,
+      images: false,
+      files: false,
+      buttons: false,
+      audio: false,
+      video: false,
+      threads: false,
+      supportsA2ui: false,
+    },
+    send: async () => undefined,
+    onMessage: (handler: MessageHandler) => {
+      handlers.push(handler);
+      return () => {
+        const idx = handlers.indexOf(handler);
+        if (idx >= 0) handlers.splice(idx, 1);
+      };
+    },
+    connect: async () => undefined,
+    disconnect: async () => undefined,
+  };
+}
 
 function makePayTracker(): {
   readonly record: () => Promise<undefined>;
@@ -159,9 +189,9 @@ describe("createGovernanceStack", () => {
     expect(names).toContain("koi:governance-backend");
   });
 
-  // ── Full 9-middleware stack ──────────────────────────────────────────────
+  // ── Full 11-middleware stack ──────────────────────────────────────────────
 
-  test("all 9 configured → 9 middlewares", () => {
+  test("all 11 configured → 11 middlewares", () => {
     const sink = createInMemoryAuditSink();
     const { middlewares } = createGovernanceStack({
       permissions: {
@@ -180,6 +210,12 @@ describe("createGovernanceStack", () => {
           revoke: async () => undefined,
         },
         grantStore: new Map(),
+      },
+      delegationEscalation: {
+        channel: makeMockChannel(),
+        isExhausted: () => false,
+        issuerId: agentId("supervisor"),
+        monitoredDelegateeIds: [agentId("worker-1")],
       },
       governanceBackend: { backend: makeAllowGovernanceBackend() },
       pay: {
@@ -187,15 +223,16 @@ describe("createGovernanceStack", () => {
         calculator: { calculate: () => 0 },
         budget: 1000,
       },
+      intentCapsule: { systemPrompt: "Test agent mandate." },
       audit: { sink },
       pii: { strategy: "redact" },
       sanitize: { rules: [] },
       guardrails: { rules: [] },
     });
-    expect(middlewares).toHaveLength(9);
+    expect(middlewares).toHaveLength(11);
   });
 
-  test("all 8 configured without pay → 8 middlewares", () => {
+  test("all 10 configured without pay → 10 middlewares", () => {
     const sink = createInMemoryAuditSink();
     const { middlewares } = createGovernanceStack({
       permissions: {
@@ -214,18 +251,24 @@ describe("createGovernanceStack", () => {
           revoke: async () => undefined,
         },
         grantStore: new Map(),
+      },
+      delegationEscalation: {
+        channel: makeMockChannel(),
+        isExhausted: () => false,
+        issuerId: agentId("supervisor"),
+        monitoredDelegateeIds: [agentId("worker-1")],
       },
       governanceBackend: { backend: makeAllowGovernanceBackend() },
+      intentCapsule: { systemPrompt: "Test agent mandate." },
       audit: { sink },
       pii: { strategy: "redact" },
       sanitize: { rules: [] },
       guardrails: { rules: [] },
     });
-    expect(middlewares).toHaveLength(8);
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect(middlewares).toHaveLength(10);
   });
 
-  test("all 9 ordered by priority ascending", () => {
+  test("all 11 ordered by priority ascending", () => {
     const sink = createInMemoryAuditSink();
     const { middlewares } = createGovernanceStack({
       permissions: {
@@ -244,6 +287,12 @@ describe("createGovernanceStack", () => {
           revoke: async () => undefined,
         },
         grantStore: new Map(),
+      },
+      delegationEscalation: {
+        channel: makeMockChannel(),
+        isExhausted: () => false,
+        issuerId: agentId("supervisor"),
+        monitoredDelegateeIds: [agentId("worker-1")],
       },
       governanceBackend: { backend: makeAllowGovernanceBackend() },
       pay: {
@@ -251,6 +300,7 @@ describe("createGovernanceStack", () => {
         calculator: { calculate: () => 0 },
         budget: 1000,
       },
+      intentCapsule: { systemPrompt: "Test agent mandate." },
       audit: { sink },
       pii: { strategy: "redact" },
       sanitize: { rules: [] },
@@ -316,7 +366,6 @@ describe("createGovernanceStack", () => {
     expect(config.preset).toBe("open");
     expect(config.middlewareCount).toBe(1); // permissions from open
     expect(config.providerCount).toBe(0);
-    expect(config.payDeprecated).toBe(false);
     expect(config.scopeEnabled).toBe(false);
   });
 
@@ -356,41 +405,57 @@ describe("createGovernanceStack", () => {
     expect(strictCount).toBeGreaterThanOrEqual(stdCount);
   });
 
-  // ── Pay deprecation ─────────────────────────────────────────────────
+  // ── Pay (un-deprecated) ─────────────────────────────────────────────
 
-  test("pay deprecated but still functional → 9 middlewares + console.warn", () => {
-    const sink = createInMemoryAuditSink();
-    const { middlewares, config } = createGovernanceStack({
-      permissions: {
-        backend: { check: () => ({ effect: "allow" as const }) },
-      },
-      execApprovals: {
-        rules: { allow: ["*"], deny: [], ask: [] },
-        onAsk: async () => ({ kind: "allow_once" as const }),
-      },
-      delegation: {
-        secret: "test-secret",
-        registry: {
-          isRevoked: async () => false,
-          revoke: async () => undefined,
-        },
-        grantStore: new Map(),
-      },
-      governanceBackend: { backend: makeAllowGovernanceBackend() },
+  test("pay configured → no deprecation warning", () => {
+    createGovernanceStack({
       pay: {
         tracker: makePayTracker(),
         calculator: { calculate: () => 0 },
         budget: 1000,
       },
-      audit: { sink },
-      pii: { strategy: "redact" },
-      sanitize: { rules: [] },
-      guardrails: { rules: [] },
     });
-    expect(middlewares).toHaveLength(9);
-    expect(config.payDeprecated).toBe(true);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0]?.[0]).toContain("deprecated");
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  // ── Intent capsule ─────────────────────────────────────────────────
+
+  test("intentCapsule configured → middleware named 'intent-capsule' at priority 290", () => {
+    const { middlewares } = createGovernanceStack({
+      intentCapsule: { systemPrompt: "Test agent mandate." },
+    });
+    const ic = middlewares.find((mw) => mw.name === "intent-capsule");
+    expect(ic).toBeDefined();
+    expect(ic?.priority).toBe(290);
+  });
+
+  // ── Delegation escalation ─────────────────────────────────────────
+
+  test("delegationEscalation configured → middleware at priority 130 + handle on bundle", () => {
+    const { middlewares, delegationEscalationHandle } = createGovernanceStack({
+      delegationEscalation: {
+        channel: makeMockChannel(),
+        isExhausted: () => false,
+        issuerId: agentId("supervisor"),
+        monitoredDelegateeIds: [agentId("worker-1")],
+      },
+    });
+    const de = middlewares.find((mw) => mw.name === "koi:delegation-escalation");
+    expect(de).toBeDefined();
+    expect(de?.priority).toBe(130);
+    expect(delegationEscalationHandle).toBeDefined();
+    expect(delegationEscalationHandle?.isPending()).toBe(false);
+  });
+
+  // ── Presets exclude new middleware ─────────────────────────────────
+
+  test("presets do NOT include intent-capsule or delegation-escalation", () => {
+    for (const preset of ["open", "standard", "strict"] as const) {
+      const { middlewares } = createGovernanceStack({ preset });
+      const names = middlewares.map((mw) => mw.name);
+      expect(names).not.toContain("intent-capsule");
+      expect(names).not.toContain("koi:delegation-escalation");
+    }
   });
 });
 
