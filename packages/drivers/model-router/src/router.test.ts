@@ -808,5 +808,6 @@ describe("totalEstimatedCost", () => {
 });
 
 // ---------------------------------------------------------------------------
-// cascade strategy — see router-cascade.test.ts for full cascade tests
+// round-robin / weighted strategies — see router-strategy.test.ts
+// cascade strategy — see router-cascade.test.ts
 // ---------------------------------------------------------------------------
