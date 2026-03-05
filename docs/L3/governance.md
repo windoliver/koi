@@ -1,12 +1,12 @@
 # @koi/governance — Enterprise Compliance Bundle
 
-Layer 3 meta-package that assembles up to 11 middleware and 4 scope providers
+Layer 3 meta-package that assembles up to 12 middleware and 4 scope providers
 into a single `createGovernanceStack()` call.
 
 ## What This Enables
 
 **One-line enterprise compliance.** Instead of manually importing, configuring,
-and ordering 11 separate middleware packages, callers get:
+and ordering 12 separate middleware packages, callers get:
 
 - **Deployment presets** (`open`, `standard`, `strict`) with sensible defaults
 - **3-layer config merge**: defaults → preset → user overrides
@@ -81,6 +81,7 @@ const runtime = await createKoi({
 | 300 | audit | observe | Compliance audit logging |
 | 340 | pii | resolve | PII detection and redaction |
 | 350 | sanitize | resolve | Content sanitization |
+| 360 | agent-monitor | observe | Behavioral anomaly detection (ASI10) |
 | 375 | guardrails | resolve | Output schema validation |
 
 ## New Middleware (v0.x)
@@ -209,6 +210,84 @@ SQLite and NDJSON sinks expose a `close()` method that is automatically tracked
 in the bundle's `disposables` array. Call `disposable[Symbol.dispose]()` (or use
 a `using` block) to release file handles on shutdown.
 
+### Agent Monitor + Security Analyzer Pipeline (priority 360)
+
+Implements **OWASP ASI10 (Inadequate Agent-Human Oversight)** defense by
+auto-wiring a detection→classification→enforcement pipeline:
+
+```
+agent-monitor (detects anomalies)
+    ↓ onAnomaly callback
+anomaly collector (buffers per-session)
+    ↓ getRecentAnomalies
+security-analyzer monitor-bridge (elevates risk)
+    ↓ SecurityAnalyzer interface
+exec-approvals (auto-denies critical risk)
+```
+
+**What this enables:**
+
+- **Behavioral anomaly detection** — monitors tool call rates, error spikes,
+  repeated calls, destructive actions, session duration, delegation depth,
+  and 6 more signal types via `@koi/agent-monitor`
+- **Risk-aware approval routing** — when anomalies are detected, the
+  `@koi/security-analyzer` monitor bridge elevates risk classification,
+  causing `exec-approvals` to auto-deny critical-risk tool calls
+- **Zero-config pipeline assembly** — governance auto-creates the anomaly
+  collector, rules analyzer, and monitor bridge when `agentMonitor` and
+  `execApprovals` are both configured. No manual wiring needed.
+- **User callback chaining** — user-provided `onAnomaly` and `onMetrics`
+  callbacks are chained with the governance pipeline, never replaced
+
+**Auto-wiring rules:**
+
+| Config combination | Result |
+|---|---|
+| `agentMonitor` alone | Monitor middleware at 360, no analyzer injection |
+| `agentMonitor` + `execApprovals` | Full pipeline: collector + bridge + injection |
+| `securityAnalyzer` + `execApprovals` | Rules analyzer injected, no bridge |
+| `execApprovals.securityAnalyzer` set | Auto-wiring skipped (user wins) |
+
+```typescript
+// Minimal — standard preset auto-enables monitoring with default thresholds
+const stack = createGovernanceStack({ preset: "standard" });
+
+// Strict preset — tighter thresholds + anomaly-kind filtering
+const strict = createGovernanceStack({
+  preset: "strict",
+  execApprovals: {
+    rules: { allow: ["group:fs_read"], deny: [], ask: ["*"] },
+    onAsk: hitlPrompt,
+  },
+});
+// strict.anomalyCollector is available for external inspection
+
+// Custom — explicit thresholds + user callbacks
+const custom = createGovernanceStack({
+  agentMonitor: {
+    thresholds: { maxToolCallsPerTurn: 8, maxDestructiveCallsPerTurn: 1 },
+    onAnomaly: (signal) => telemetry.track("anomaly", signal),
+    onMetrics: (sessionId, summary) => metrics.record(summary),
+  },
+  securityAnalyzer: {
+    highPatterns: ["rm -rf", "DROP TABLE"],
+    elevateOnAnomalyKinds: ["tool_rate_exceeded", "denied_tool_calls"],
+  },
+  execApprovals: {
+    rules: { allow: [], deny: [], ask: ["*"] },
+    onAsk: hitlPrompt,
+  },
+});
+```
+
+The `anomalyCollector` on the returned `GovernanceBundle` provides:
+- `getRecentAnomalies(sessionId)` — read buffered signals (up to 50 per session)
+- `clearSession(sessionId)` — flush session buffer (auto-called on session end)
+
+**Included in presets:**
+- `standard` — default thresholds (detection only, no risk elevation without exec-approvals)
+- `strict` — tighter thresholds + anomaly-kind filtering for risk elevation
+
 ## Deployment Presets
 
 ### `open` (default)
@@ -222,6 +301,7 @@ a `using` block) to release file handles on shutdown.
 - Permissions: allow fs_read, web, browser, lsp; deny fs_delete; ask runtime
 - PII: mask strategy
 - Sanitize: enabled (empty rules)
+- Agent monitor: default thresholds (detection only)
 - Scope: filesystem (rw) + browser (block private addresses)
 
 ### `strict`
@@ -230,6 +310,8 @@ a `using` block) to release file handles on shutdown.
 - PII: redact strategy
 - Sanitize: enabled
 - Guardrails: enabled
+- Agent monitor: tighter thresholds (10 calls/turn, 1 destructive/turn, 2min max session)
+- Security analyzer: risk elevation on tool_rate_exceeded, denied_tool_calls, irreversible_action_rate, delegation_depth_exceeded
 - Scope: filesystem (ro) + browser (HTTPS only, block private) + credentials + memory
 
 ## Config Resolution
@@ -279,6 +361,10 @@ interface GovernanceBundle {
   readonly nexusHooks?: NexusDelegationHooks;
   readonly sessionStore?: SessionRevocationStore;
   readonly delegationEscalationHandle?: DelegationEscalationHandle;
+  readonly anomalyCollector?: {
+    readonly getRecentAnomalies: (sessionId: string) => readonly AnomalySignalLike[];
+    readonly clearSession: (sessionId: string) => void;
+  };
 }
 
 interface ResolvedGovernanceMeta {
@@ -304,4 +390,4 @@ interface ResolvedGovernanceMeta {
 Dependencies:
 - L0: `@koi/core` (types)
 - L0u: `@koi/scope` (enforcer, scoping)
-- L2: `@koi/audit-sink-local`, `@koi/audit-sink-nexus`, `@koi/filesystem`, `@koi/tool-browser`, 11 middleware packages
+- L2: `@koi/agent-monitor`, `@koi/audit-sink-local`, `@koi/audit-sink-nexus`, `@koi/filesystem`, `@koi/security-analyzer`, `@koi/tool-browser`, 11 middleware packages

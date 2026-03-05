@@ -2,11 +2,11 @@
  * @koi/governance — Enterprise compliance meta-package (Layer 3)
  *
  * One-line enterprise compliance for AI agent deployments.
- * Composes up to 11 middleware + scope providers via createGovernanceStack():
+ * Composes up to 12 middleware + scope providers via createGovernanceStack():
  *
  *   permissions → exec-approvals → delegation → capability-request →
  *   delegation-escalation → governance-backend → pay → intent-capsule →
- *   audit → pii → sanitize → guardrails
+ *   audit → pii → sanitize → agent-monitor → guardrails
  *
  * Supports deployment presets: "open" (default), "standard", "strict".
  *
@@ -22,6 +22,8 @@
  * ```
  */
 
+// ── Types: agent-monitor ──────────────────────────────────────────────
+export type { AgentMonitorConfig, AnomalySignal, SessionMetricsSummary } from "@koi/agent-monitor";
 // ── Types: audit backends ────────────────────────────────────────────────
 export type { NdjsonAuditSinkConfig, SqliteAuditSinkConfig } from "@koi/audit-sink-local";
 // ── Factories: audit backends ────────────────────────────────────────────
@@ -55,6 +57,8 @@ export type {
   Redactor,
   RedactStringResult,
 } from "@koi/redaction";
+// ── Types: security-analyzer ──────────────────────────────────────────
+export type { AnomalySignalLike, RulesAnalyzerConfig } from "@koi/security-analyzer";
 // ── Functions ───────────────────────────────────────────────────────────
 export { resolveGovernanceConfig } from "./config-resolution.js";
 export { createGovernanceStack } from "./governance-stack.js";
@@ -71,4 +75,5 @@ export type {
   GovernanceStackConfig,
   NexusDelegationHooks,
   ResolvedGovernanceMeta,
+  SecurityAnalyzerGovernanceConfig,
 } from "./types.js";
