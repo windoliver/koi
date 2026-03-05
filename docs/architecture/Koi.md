@@ -223,8 +223,8 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 
 Engine *adapters* (Claude, Pi, Loop, custom) are swappable L2 packages. The engine *runtime* (guards, governance) is not — it IS the kernel runtime.
 
-**L0-utility packages** (34 total — canonical list lives in `scripts/layers.ts` → `L0U_PACKAGES`):
-`@koi/acp-protocol`, `@koi/channel-base`, `@koi/crypto-utils`, `@koi/crystallize`, `@koi/dashboard-types`, `@koi/delegation`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/forge-types`, `@koi/gateway-types`, `@koi/git-utils`, `@koi/harness-scheduler`, `@koi/hash`, `@koi/manifest`, `@koi/name-resolution`, `@koi/nexus-client`, `@koi/redaction`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/sandbox-wasm`, `@koi/scope`, `@koi/search-provider`, `@koi/session-repair`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/test-utils`, `@koi/token-estimator`, `@koi/validation`, `@koi/variant-selection`.
+**L0-utility packages** (32 total — canonical list lives in `scripts/layers.ts` → `L0U_PACKAGES`):
+`@koi/acp-protocol`, `@koi/channel-base`, `@koi/crypto-utils`, `@koi/dashboard-types`, `@koi/delegation`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/forge-types`, `@koi/gateway-types`, `@koi/git-utils`, `@koi/harness-scheduler`, `@koi/hash`, `@koi/manifest`, `@koi/name-resolution`, `@koi/nexus-client`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/sandbox-wasm`, `@koi/scope`, `@koi/search-provider`, `@koi/session-repair`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/test-utils`, `@koi/token-estimator`, `@koi/validation`, `@koi/variant-selection`.
 These contain pure utility functions with zero business logic. They depend on `@koi/core` + peer
 L0u packages only, and are importable by both L1 and L2 packages. They do NOT define core
 contracts — they provide shared implementations of common operations (error creation, schema
