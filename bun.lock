@@ -1009,6 +1009,7 @@
       "name": "@koi/context-arena",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/bootstrap": "workspace:*",
         "@koi/context": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/memory-fs": "workspace:*",
@@ -1020,6 +1021,7 @@
         "@koi/middleware-preference": "workspace:*",
         "@koi/middleware-user-model": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/soul": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/tool-squash": "workspace:*",
       },
@@ -1123,6 +1125,30 @@
         "@koi/scratchpad-nexus": "workspace:*",
         "@koi/task-spawn": "workspace:*",
         "@koi/workspace": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/meta/nexus": {
+      "name": "@koi/nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/audit-sink-nexus": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/filesystem-nexus": "workspace:*",
+        "@koi/gateway-nexus": "workspace:*",
+        "@koi/ipc-nexus": "workspace:*",
+        "@koi/name-service-nexus": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+        "@koi/nexus-store": "workspace:*",
+        "@koi/pay-nexus": "workspace:*",
+        "@koi/permissions-nexus": "workspace:*",
+        "@koi/registry-nexus": "workspace:*",
+        "@koi/scheduler-nexus": "workspace:*",
+        "@koi/scratchpad-nexus": "workspace:*",
+        "@koi/search-nexus": "workspace:*",
+        "@koi/workspace-nexus": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -3391,6 +3417,8 @@
     "@koi/name-service": ["@koi/name-service@workspace:packages/net/name-service"],
 
     "@koi/name-service-nexus": ["@koi/name-service-nexus@workspace:packages/net/name-service-nexus"],
+
+    "@koi/nexus": ["@koi/nexus@workspace:packages/meta/nexus"],
 
     "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
 

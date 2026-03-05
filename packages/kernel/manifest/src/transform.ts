@@ -40,6 +40,7 @@ const EXTENSION_FIELDS = [
   "soul",
   "user",
   "scope",
+  "nexus",
 ] as const;
 
 /**

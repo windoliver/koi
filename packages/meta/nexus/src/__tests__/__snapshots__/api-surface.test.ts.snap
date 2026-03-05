@@ -1,0 +1,225 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/nexus API surface . has stable type surface 1`] = `
+"import { AgentId, AgentRegistry, AuditSink, NameServiceBackend, ComponentProvider, KoiMiddleware, Result, KoiError } from '@koi/core';
+import { PayLedger } from '@koi/core/pay-ledger';
+import { NexusClient } from '@koi/nexus-client';
+import { NexusPermissionBackend } from '@koi/permissions-nexus';
+import { NexusSchedulerBackends } from '@koi/scheduler-nexus';
+import { NexusSearch } from '@koi/search-nexus';
+
+/**
+ * Agent namespace path computation and auto-provisioning.
+ *
+ * Computes Nexus storage paths scoped by agentId/groupId,
+ * then provisions them in parallel via best-effort writes.
+ */
+
+/** Computed namespace paths for an agent. */
+interface AgentNamespace {
+    readonly forge: string;
+    readonly events: string;
+    readonly session: string;
+    readonly memory: string;
+    readonly snapshots: string;
+    readonly filesystem: string;
+    readonly mailbox: string;
+}
+/** Computed namespace path for a group. */
+interface GroupNamespace {
+    readonly scratchpad: string;
+}
+/** Computes agent-scoped namespace paths from an agentId. */
+declare function computeAgentNamespace(agentId: AgentId): AgentNamespace;
+/** Computes group-scoped namespace paths from a groupId. */
+declare function computeGroupNamespace(groupId: string): GroupNamespace;
+
+/**
+ * Types for @koi/nexus — L3 composition bundle for Nexus backend wiring.
+ */
+
+/** Shared connection fields used by all Nexus backends. */
+interface NexusConnectionConfig {
+    readonly baseUrl: string;
+    readonly apiKey: string;
+    readonly fetch?: typeof globalThis.fetch | undefined;
+}
+/** Override config for the registry backend. Merged with base connection. */
+interface RegistryOverrides {
+    readonly zoneId?: string | undefined;
+    readonly timeoutMs?: number | undefined;
+    readonly pollIntervalMs?: number | undefined;
+    readonly startupTimeoutMs?: number | undefined;
+    readonly maxEntries?: number | undefined;
+}
+/** Override config for the permissions backend. */
+interface PermissionsOverrides {
+    readonly timeoutMs?: number | undefined;
+}
+/** Override config for the audit sink. */
+interface AuditOverrides {
+    readonly basePath?: string | undefined;
+    readonly batchSize?: number | undefined;
+    readonly flushIntervalMs?: number | undefined;
+}
+/** Override config for the search backend. */
+interface SearchOverrides {
+    readonly timeoutMs?: number | undefined;
+    readonly maxBatchSize?: number | undefined;
+    readonly limit?: number | undefined;
+}
+/** Override config for the scheduler backends. */
+interface SchedulerOverrides {
+    readonly timeoutMs?: number | undefined;
+    readonly visibilityTimeoutMs?: number | undefined;
+}
+/** Override config for the pay ledger. */
+interface PayOverrides {
+    readonly timeoutMs?: number | undefined;
+}
+/** Override config for the name service. */
+interface NameServiceOverrides {
+    readonly pollIntervalMs?: number | undefined;
+    readonly startupTimeoutMs?: number | undefined;
+    readonly maxEntries?: number | undefined;
+}
+/** Override config for gateway (opt-in). */
+interface GatewayOverrides {
+    readonly instanceId?: string | undefined;
+    readonly timeoutMs?: number | undefined;
+}
+/** Override config for workspace (opt-in). */
+interface WorkspaceOverrides {
+    readonly basePath?: string | undefined;
+    readonly baseDir?: string | undefined;
+    readonly timeoutMs?: number | undefined;
+}
+/** Override config for agent-scoped forge store. */
+interface ForgeOverrides {
+    readonly concurrency?: number | undefined;
+}
+/** Override config for agent-scoped event backend. */
+interface EventsOverrides {
+    readonly maxEventsPerStream?: number | undefined;
+    readonly eventTtlMs?: number | undefined;
+}
+/** Override config for agent-scoped session store. */
+interface SessionOverrides {
+    readonly timeoutMs?: number | undefined;
+}
+/** Override config for agent-scoped memory backend. */
+interface MemoryOverrides {
+    readonly timeoutMs?: number | undefined;
+}
+/** Override config for agent-scoped snapshot store. */
+interface SnapshotsOverrides {
+    readonly timeoutMs?: number | undefined;
+}
+/** Override config for agent-scoped filesystem backend. */
+interface FilesystemOverrides {
+    readonly timeoutMs?: number | undefined;
+}
+/** Override config for agent-scoped mailbox. */
+interface MailboxOverrides {
+    readonly delivery?: "sse" | "polling" | undefined;
+    readonly seenCapacity?: number | undefined;
+    readonly pollMinMs?: number | undefined;
+    readonly pollMaxMs?: number | undefined;
+}
+/** Per-backend override map for global backends. Set value to \`false\` to disable. */
+interface GlobalBackendOverrides {
+    readonly registry?: RegistryOverrides | false | undefined;
+    readonly permissions?: PermissionsOverrides | false | undefined;
+    readonly audit?: AuditOverrides | false | undefined;
+    readonly search?: SearchOverrides | false | undefined;
+    readonly scheduler?: SchedulerOverrides | false | undefined;
+    readonly pay?: PayOverrides | false | undefined;
+    readonly nameService?: NameServiceOverrides | false | undefined;
+}
+/** Per-backend override map for agent-scoped backends. */
+interface AgentBackendOverrides {
+    readonly forge?: ForgeOverrides | undefined;
+    readonly events?: EventsOverrides | undefined;
+    readonly session?: SessionOverrides | undefined;
+    readonly memory?: MemoryOverrides | undefined;
+    readonly snapshots?: SnapshotsOverrides | undefined;
+    readonly filesystem?: FilesystemOverrides | undefined;
+    readonly mailbox?: MailboxOverrides | undefined;
+}
+/** Opt-in backend configs (disabled by default). */
+interface OptInOverrides {
+    readonly gateway?: GatewayOverrides | undefined;
+    readonly workspace?: WorkspaceOverrides | undefined;
+}
+/** User-facing config for createNexusStack(). */
+interface NexusStackConfig extends NexusConnectionConfig {
+    /** Per-backend overrides for global (singleton) backends. */
+    readonly overrides?: GlobalBackendOverrides | undefined;
+    /** Per-backend overrides for agent-scoped backends created in attach(). */
+    readonly agentOverrides?: AgentBackendOverrides | undefined;
+    /** Opt-in backends (disabled by default). */
+    readonly optIn?: OptInOverrides | undefined;
+}
+/** The set of eagerly-created global backends. */
+interface NexusGlobalBackends {
+    readonly registry: AgentRegistry | undefined;
+    readonly permissions: NexusPermissionBackend | undefined;
+    readonly audit: AuditSink | undefined;
+    readonly search: NexusSearch | undefined;
+    readonly scheduler: NexusSchedulerBackends | undefined;
+    readonly pay: PayLedger | undefined;
+    readonly nameService: NameServiceBackend | undefined;
+}
+/** Metadata about the resolved Nexus stack composition. */
+interface ResolvedNexusMeta {
+    readonly baseUrl: string;
+    readonly globalBackendCount: number;
+    readonly gatewayEnabled: boolean;
+    readonly workspaceEnabled: boolean;
+}
+/** The composed Nexus stack bundle returned by createNexusStack(). */
+interface NexusBundle {
+    readonly backends: NexusGlobalBackends;
+    readonly providers: readonly ComponentProvider[];
+    readonly middlewares: readonly KoiMiddleware[];
+    readonly client: NexusClient;
+    readonly config: ResolvedNexusMeta;
+    readonly dispose: () => Promise<void>;
+}
+
+/**
+ * Main factory composing all Nexus pieces into a single bundle.
+ *
+ * Creates global backends, agent-scoped provider, and wires disposal.
+ */
+
+/**
+ * Creates a complete Nexus stack from a single config.
+ *
+ * - Validates config at the boundary
+ * - Creates a shared NexusClient
+ * - Initializes global backends in parallel (registry, nameService are async)
+ * - Creates an agent-scoped ComponentProvider
+ * - Returns a bundle with dispose() for full cleanup
+ */
+declare function createNexusStack(config: NexusStackConfig): Promise<NexusBundle>;
+
+/**
+ * Boundary validation for NexusStackConfig.
+ *
+ * Validates required fields and rejects obviously invalid values
+ * before any backends are created.
+ */
+
+/**
+ * Validates a NexusStackConfig at the system boundary.
+ *
+ * Returns a validation error if:
+ * - \`baseUrl\` is missing or empty
+ * - \`apiKey\` is missing or empty
+ */
+declare function validateNexusStackConfig(config: NexusStackConfig): Result<void, KoiError>;
+
+export { type AgentBackendOverrides, type AgentNamespace, type AuditOverrides, type EventsOverrides, type FilesystemOverrides, type ForgeOverrides, type GatewayOverrides, type GlobalBackendOverrides, type GroupNamespace, type MailboxOverrides, type MemoryOverrides, type NameServiceOverrides, type NexusBundle, type NexusConnectionConfig, type NexusGlobalBackends, type NexusStackConfig, type OptInOverrides, type PayOverrides, type PermissionsOverrides, type RegistryOverrides, type ResolvedNexusMeta, type SchedulerOverrides, type SearchOverrides, type SessionOverrides, type SnapshotsOverrides, type WorkspaceOverrides, computeAgentNamespace, computeGroupNamespace, createNexusStack, validateNexusStackConfig };
+"
+`;
