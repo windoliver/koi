@@ -237,6 +237,13 @@ interface ChannelContractOptions {
     readonly injectMessage?: (adapter: ChannelAdapter) => Promise<void>;
     /** Timeout for each test in milliseconds. Defaults to 5_000. */
     readonly timeoutMs?: number;
+    /**
+     * Optional threadId to include in send() contract tests.
+     * Adapters that require threadId for platform send (Slack, Discord, etc.)
+     * should provide a test value here. If omitted, messages are sent without
+     * threadId (suitable for adapters like CLI that don't require it).
+     */
+    readonly testThreadId?: string;
 }
 /**
  * Runs the channel adapter contract test suite.
