@@ -1,6 +1,6 @@
 {
   "name": "@koi/context-arena",
-  "description": "Compose and coordinate all context sources — personality, bootstrap files, conversation, memory — with preset-driven budget allocation",
+  "description": "Compose all context sources — personality, bootstrap, conversation, memory — with budget allocation",
   "version": "0.0.0",
   "private": true,
   "type": "module",
