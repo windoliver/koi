@@ -1,0 +1,96 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-reflex API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { InboundMessage } from '@koi/core/message';
+import { TurnContext, KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+
+/**
+ * Reflex middleware types — rule-based short-circuit for known patterns.
+ */
+
+/**
+ * A single reflex rule that can intercept an inbound message
+ * and return a canned response without hitting the LLM.
+ */
+interface ReflexRule {
+    readonly name: string;
+    readonly match: (message: InboundMessage) => boolean;
+    readonly respond: (message: InboundMessage, ctx: TurnContext) => string;
+    /** Lower = checked first. Default: 100. */
+    readonly priority?: number;
+    /** Per-rule cooldown in milliseconds. Default: 0 (no cooldown). */
+    readonly cooldownMs?: number;
+}
+/** Metrics emitted for each rule evaluation cycle. */
+interface ReflexMetrics {
+    readonly ruleName: string;
+    readonly kind: "hit" | "miss";
+    /** Characters of intercepted request content (hit only). */
+    readonly interceptedContentLength?: number;
+    /** Characters of reflex response (hit only). */
+    readonly responseLength?: number;
+    /** Time spent in rule evaluation (ms). */
+    readonly latencyMs: number;
+}
+
+/**
+ * Reflex middleware configuration and validation.
+ */
+
+interface ReflexMiddlewareConfig {
+    readonly rules: readonly ReflexRule[];
+    /** Master switch. Default: true. */
+    readonly enabled?: boolean | undefined;
+    /** Clock injection for deterministic tests. */
+    readonly now?: (() => number) | undefined;
+    /** Observability callback fired after each evaluation cycle. */
+    readonly onMetrics?: ((metrics: ReflexMetrics) => void) | undefined;
+}
+declare const DEFAULT_PRIORITY = 100;
+declare const DEFAULT_COOLDOWN_MS = 0;
+/**
+ * Validates raw config input into a typed ReflexMiddlewareConfig.
+ */
+declare function validateReflexConfig(config: unknown): Result<ReflexMiddlewareConfig, KoiError>;
+
+/**
+ * BrickDescriptor for @koi/middleware-reflex.
+ *
+ * Enables manifest auto-resolution: validates reflex options
+ * from koi.yaml, then creates the reflex middleware.
+ *
+ * Usage in koi.yaml:
+ *   middleware:
+ *     - name: reflex
+ *       options:
+ *         rules: ...
+ */
+
+/**
+ * Descriptor for reflex middleware.
+ *
+ * Creates a reflex middleware from validated YAML options.
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
+ * Reflex middleware — rule-based short-circuit for known message patterns.
+ *
+ * Intercepts \`wrapModelCall\` and returns canned responses for matching rules,
+ * skipping the LLM entirely. Priority 50 (intercept phase, outermost layer).
+ */
+
+declare function createReflexMiddleware(config: ReflexMiddlewareConfig): KoiMiddleware$1;
+
+/**
+ * Extracts concatenated text from an InboundMessage's content blocks.
+ */
+
+declare function textOf(message: InboundMessage): string;
+
+export { DEFAULT_COOLDOWN_MS, DEFAULT_PRIORITY, type ReflexMetrics, type ReflexMiddlewareConfig, type ReflexRule, createReflexMiddleware, descriptor, textOf, validateReflexConfig };
+"
+`;

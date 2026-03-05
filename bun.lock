@@ -1411,6 +1411,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware/middleware-reflex": {
+      "name": "@koi/middleware-reflex",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware/middleware-report": {
       "name": "@koi/middleware-report",
       "version": "0.0.0",
@@ -3389,6 +3400,8 @@
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/middleware/middleware-planning"],
 
     "@koi/middleware-preference": ["@koi/middleware-preference@workspace:packages/mm/middleware-preference"],
+
+    "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/middleware/middleware-reflex"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/middleware/middleware-report"],
 
