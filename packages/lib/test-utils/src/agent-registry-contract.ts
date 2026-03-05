@@ -327,6 +327,23 @@ export function runAgentRegistryContractTests(
         await registry.register(entry("a2"));
         expect(events).toHaveLength(1); // no new event
       });
+
+      test("throwing listener does not break transition or other listeners", async () => {
+        await registry.register(entry("a1", "created", 0));
+
+        const events: RegistryEvent[] = [];
+        registry.watch(() => {
+          throw new Error("boom");
+        });
+        registry.watch((e) => events.push(e));
+
+        const result = await registry.transition(agentId("a1"), "running", 0, {
+          kind: "assembly_complete",
+        });
+        expect(result.ok).toBe(true);
+        expect(events).toHaveLength(1);
+        expect(events[0]?.kind).toBe("transitioned");
+      });
     });
 
     // -----------------------------------------------------------------------

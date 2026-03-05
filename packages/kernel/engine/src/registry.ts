@@ -20,6 +20,7 @@ import type {
   VisibilityContext,
 } from "@koi/core";
 import { mapRegistryEntryToDescriptor, matchesFilter } from "@koi/core";
+import { createListenerSet } from "@koi/event-delivery";
 import { applyTransition } from "./transitions.js";
 
 // ---------------------------------------------------------------------------
@@ -64,24 +65,21 @@ export type InMemoryRegistry = Omit<
 
 export function createInMemoryRegistry(): InMemoryRegistry {
   const store = new Map<string, RegistryEntry>();
-  let listeners: ReadonlySet<(event: RegistryEvent) => void> = new Set(); // let: replaced on watch/unsubscribe
-
-  function notify(event: RegistryEvent): void {
-    for (const listener of listeners) {
-      listener(event);
-    }
-  }
+  const listeners = createListenerSet<RegistryEvent>({
+    onError: (err) =>
+      console.warn("[registry] listener threw:", err instanceof Error ? err.message : err),
+  });
 
   function register(entry: RegistryEntry): RegistryEntry {
     store.set(entry.agentId, entry);
-    notify({ kind: "registered", entry });
+    listeners.notify({ kind: "registered", entry });
     return entry;
   }
 
   function deregister(id: AgentId): boolean {
     const existed = store.delete(id);
     if (existed) {
-      notify({ kind: "deregistered", agentId: id });
+      listeners.notify({ kind: "deregistered", agentId: id });
     }
     return existed;
   }
@@ -132,7 +130,7 @@ export function createInMemoryRegistry(): InMemoryRegistry {
     };
     store.set(id, updated);
 
-    notify({
+    listeners.notify({
       kind: "transitioned",
       agentId: id,
       from: current.status.phase,
@@ -166,21 +164,17 @@ export function createInMemoryRegistry(): InMemoryRegistry {
     };
     store.set(id, updated);
 
-    notify({ kind: "patched", agentId: id, fields, entry: updated });
+    listeners.notify({ kind: "patched", agentId: id, fields, entry: updated });
 
     return { ok: true, value: updated };
   }
 
   function watch(listener: (event: RegistryEvent) => void): () => void {
-    listeners = new Set([...listeners, listener]);
-    return () => {
-      listeners = new Set([...listeners].filter((l) => l !== listener));
-    };
+    return listeners.subscribe(listener);
   }
 
   async function dispose(): Promise<void> {
     store.clear();
-    listeners = new Set();
   }
 
   function descriptor(id: AgentId): ProcessDescriptor | undefined {

@@ -190,6 +190,22 @@ describe("createChildHandle", () => {
     expect(events[1]?.childId).toBe(agentId("child-1"));
   });
 
+  test("throwing listener does not prevent other listeners from firing", () => {
+    registry.register(entry("child-1", "created", 0));
+
+    const handle = createChildHandle(agentId("child-1"), "worker-1", registry);
+    const events: ChildLifecycleEvent[] = [];
+    handle.onEvent(() => {
+      throw new Error("boom");
+    });
+    handle.onEvent((e) => events.push(e));
+
+    registry.transition(agentId("child-1"), "running", 0, { kind: "assembly_complete" });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe("started");
+  });
+
   test("multiple listeners receive events", () => {
     registry.register(entry("child-1", "created", 0));
 

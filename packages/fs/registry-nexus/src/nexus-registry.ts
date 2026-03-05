@@ -27,6 +27,7 @@ import type {
   VisibilityContext,
 } from "@koi/core";
 import { agentGroupId, agentId, matchesFilter, VALID_TRANSITIONS } from "@koi/core";
+import { createListenerSet } from "@koi/event-delivery";
 import type { NexusRegistryConfig } from "./config.js";
 import { DEFAULT_NEXUS_REGISTRY_CONFIG } from "./config.js";
 import type { NexusAgent } from "./nexus-client.js";
@@ -58,8 +59,10 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   const projection = new Map<string, RegistryEntry>();
   /** Nexus-side generation per agent — separate from Koi generation. */
   const nexusGens = new Map<string, number>();
-  // let: replaced on watch/unsubscribe (immutable-set pattern)
-  let listeners: ReadonlySet<(event: RegistryEvent) => void> = new Set();
+  const listeners = createListenerSet<RegistryEvent>({
+    onError: (err) =>
+      console.warn("[registry-nexus] listener threw:", err instanceof Error ? err.message : err),
+  });
   // let: poll timer handle, cleared on dispose
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   // let: disposed flag to prevent operations after cleanup
@@ -69,11 +72,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   // Internal helpers
   // -------------------------------------------------------------------------
 
-  function notify(event: RegistryEvent): void {
-    for (const listener of listeners) {
-      listener(event);
-    }
-  }
+  const notify = listeners.notify;
 
   /** Map a NexusAgent to a RegistryEntry using metadata for full status. */
   function mapNexusAgentToEntry(agent: NexusAgent): RegistryEntry {
@@ -463,10 +462,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   }
 
   function watch(listener: (event: RegistryEvent) => void): () => void {
-    listeners = new Set([...listeners, listener]);
-    return () => {
-      listeners = new Set([...listeners].filter((l) => l !== listener));
-    };
+    return listeners.subscribe(listener);
   }
 
   async function dispose(): Promise<void> {
@@ -477,7 +473,6 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     }
     projection.clear();
     nexusGens.clear();
-    listeners = new Set();
   }
 
   // -------------------------------------------------------------------------
