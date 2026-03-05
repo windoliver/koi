@@ -306,9 +306,11 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       activeSessions.delete(ctx.sessionId as string);
-      sensorState = {};
-      recallCache = undefined;
-      snapshotCache.invalidate();
+      if (activeSessions.size === 0) {
+        sensorState = {};
+        recallCache = undefined;
+        snapshotCache.invalidate();
+      }
     },
   };
 }

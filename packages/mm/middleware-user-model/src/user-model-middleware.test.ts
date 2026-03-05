@@ -304,6 +304,72 @@ describe("createUserModelMiddleware", () => {
     expect(mockMem.stored).toHaveLength(0);
   });
 
+  test("concurrent sessions: ending one does not wipe state for the other", async () => {
+    // Seed a preference
+    await mockMem.component.store("Use dark mode", { category: "preference" });
+
+    const mw = createUserModelMiddleware({ memory: mockMem.component });
+
+    // Start two sessions
+    await mw.onSessionStart?.(createSessionCtx("sA"));
+    await mw.onSessionStart?.(createSessionCtx("sB"));
+
+    // Populate sensor state via session A
+    const source: import("@koi/core/user-model").SignalSource = {
+      name: "test-sensor",
+      read: () => ({ kind: "sensor", source: "test", values: { brightness: 80 } }),
+    };
+    const mwWithSensor = createUserModelMiddleware({
+      memory: mockMem.component,
+      signalSources: [source],
+      drift: { enabled: false },
+      postAction: { enabled: false },
+    });
+    await mwWithSensor.onSessionStart?.(createSessionCtx("sA"));
+    await mwWithSensor.onSessionStart?.(createSessionCtx("sB"));
+
+    // Read sensors via session A
+    await mwWithSensor.onBeforeTurn?.(createTurnCtx("sA", [createMessage("test")], 0));
+
+    // End session A — session B should still be active
+    await mwWithSensor.onSessionEnd?.(createSessionCtx("sA"));
+
+    // Session B's model call should still have access to sensor data
+    const request = createModelRequest("check brightness");
+    let capturedRequest: ModelRequest | undefined;
+    await mwWithSensor.wrapModelCall?.(
+      createTurnCtx("sB", [createMessage("check brightness")], 0),
+      request,
+      async (req) => {
+        capturedRequest = req;
+        return createModelResponse("ok");
+      },
+    );
+
+    // Should still inject context with sensor data (not wiped)
+    const text =
+      capturedRequest?.messages[0]?.content[0]?.kind === "text"
+        ? capturedRequest.messages[0].content[0].text
+        : "";
+    expect(text).toContain("[User Context]");
+  });
+
+  test("ending the last session clears shared state", async () => {
+    await mockMem.component.store("Use tabs", { category: "preference" });
+
+    const mw = createUserModelMiddleware({ memory: mockMem.component });
+    const sessionCtxA = createSessionCtx("sA");
+    await mw.onSessionStart?.(sessionCtxA);
+    await mw.onSessionEnd?.(sessionCtxA);
+
+    // After last session ends, onBeforeTurn should be a no-op
+    await mw.onBeforeTurn?.(createTurnCtx("sA", [createMessage("anything")], 1));
+    // No new preferences should be stored (session not active)
+    const storedAfter = mockMem.stored.filter((s) => s.category === "preference");
+    // Only the one we seeded at the top
+    expect(storedAfter).toHaveLength(1);
+  });
+
   test("onSessionEnd cleans up state", async () => {
     const mw = createUserModelMiddleware({ memory: mockMem.component });
     const sessionCtx = createSessionCtx("s1");
