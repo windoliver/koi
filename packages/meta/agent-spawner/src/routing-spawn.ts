@@ -82,11 +82,10 @@ export function mapManifestToDescriptor(
 /**
  * Convert ManifestSandboxConfig to SandboxProfile.
  *
- * Defaults: tier = "sandbox", network = deny, empty filesystem/resources.
+ * Defaults: network = deny, empty filesystem/resources.
  */
 export function mapSandboxConfigToProfile(config: ManifestSandboxConfig): SandboxProfile {
   return {
-    tier: "sandbox",
     filesystem: config.filesystem ?? {},
     network: config.network ?? { allow: false },
     resources: config.resources ?? {},
