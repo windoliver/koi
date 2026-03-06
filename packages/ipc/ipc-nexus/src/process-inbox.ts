@@ -38,10 +38,13 @@ export async function processPendingMessages(
 
   for (const envelope of result.value) {
     if (seen.has(envelope.id)) continue;
-    seen.add(envelope.id);
 
     const message = mapNexusToKoi(envelope);
     if (message === undefined) continue;
+
+    // Mark as seen only after successful parse — unmappable messages
+    // remain eligible for retry after a code fix/redeploy.
+    seen.add(envelope.id);
 
     for (const handler of handlers) {
       try {

@@ -78,15 +78,16 @@ export function createWorkspaceProvider(
     },
 
     detach: async (agent: Agent): Promise<void> => {
-      const workspaceId = workspaces.get(agent.pid.id);
-      if (workspaceId === undefined) return;
-
-      workspaces.delete(agent.pid.id);
+      const wsId = workspaces.get(agent.pid.id);
+      if (wsId === undefined) return;
 
       const shouldCleanup = resolveCleanup(resolved.cleanupPolicy, agent);
       if (!shouldCleanup) {
+        // Agent is detaching but workspace is intentionally preserved —
+        // drop the mapping since the agent is gone.
+        workspaces.delete(agent.pid.id);
         console.warn(
-          `[workspace] preserved workspace ${workspaceId} for agent ${agent.pid.id} ` +
+          `[workspace] preserved workspace ${wsId} for agent ${agent.pid.id} ` +
             `(policy=${resolved.cleanupPolicy}, outcome=${agent.terminationOutcome ?? "unknown"})`,
         );
 
@@ -102,7 +103,10 @@ export function createWorkspaceProvider(
         return;
       }
 
-      await disposeWithTimeout(backend, workspaceId, resolved.cleanupTimeoutMs);
+      const disposed = await disposeWithTimeout(backend, wsId, resolved.cleanupTimeoutMs);
+      if (disposed) {
+        workspaces.delete(agent.pid.id);
+      }
     },
   };
 
@@ -126,7 +130,7 @@ async function disposeWithTimeout(
   backend: ValidatedWorkspaceConfig["backend"],
   wsId: WorkspaceId,
   timeoutMs: number,
-): Promise<void> {
+): Promise<boolean> {
   let timerId: ReturnType<typeof setTimeout> | undefined;
 
   // Catch rejections on the dispose promise so that if timeout wins the race,
@@ -149,10 +153,13 @@ async function disposeWithTimeout(
 
   if (raceResult === "timeout") {
     console.warn(`[workspace] dispose for ${wsId} exceeded ${timeoutMs}ms timeout`);
-    return;
+    return false;
   }
 
   if (typeof raceResult === "object" && !raceResult.ok) {
     console.warn(`[workspace] dispose for ${wsId} failed: ${raceResult.error.message}`);
+    return false;
   }
+
+  return true;
 }
