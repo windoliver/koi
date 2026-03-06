@@ -4,14 +4,14 @@
 # Changes here affect ALL packages. Require at least 2 reviews.
 #
 # GitHub branch protection must be configured to:
-#   - Require 2 approving reviews for PRs touching packages/core/
+#   - Require 2 approving reviews for PRs touching packages/kernel/core/
 #   - Require review from code owners (Settings > Branches > Require review from Code Owners)
 #
 # See docs/architecture/Koi.md for layer definitions.
 # Canonical L0u list: scripts/layers.ts → L0U_PACKAGES
 
 # Layer 0 kernel — 2 reviewers enforced via branch protection
-packages/core/ @taofeng
+packages/kernel/core/ @taofeng
 
 # Layer governance — canonical source of truth for layer membership and CI enforcement.
 # Changes here have the same blast radius as L0 changes.
