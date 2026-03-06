@@ -224,13 +224,15 @@ interface PlanAutonomousConfig {
 declare function createPlanAutonomousProvider(config: PlanAutonomousConfig): ComponentProvider;
 
 /**
- * Task tools — dynamic tools for managing autonomous task execution (Decision 7B).
+ * Task tools — dynamic tools for managing autonomous task execution.
  *
  * These tools are registered dynamically via ForgeRuntime when autonomous
  * mode activates, and unregistered when it deactivates:
  * - \`task_complete\`: Mark a task as completed
  * - \`task_update\`: Update a task's description or status
  * - \`task_status\`: Get current task board summary
+ * - \`task_review\`: Accept/reject/revise a completed task's output
+ * - \`task_synthesize\`: Merge all results in dependency order
  */
 
 interface TaskToolsConfig {
@@ -240,6 +242,13 @@ interface TaskToolsConfig {
     readonly completeTask: (taskId: TaskItemId, output: string) => Promise<void>;
     /** Update a task's description. */
     readonly updateTask: (taskId: TaskItemId, description: string) => Promise<void>;
+    /**
+     * Fail a task with a retryable error (for review reject/revise).
+     * Returns the updated snapshot or undefined if not supported.
+     */
+    readonly failTask?: (taskId: TaskItemId, message: string) => Promise<TaskBoardSnapshot | undefined>;
+    /** Maximum characters per task in synthesize output. Default: 5000. */
+    readonly maxOutputPerTask?: number | undefined;
 }
 /**
  * Create task management tools for autonomous execution.
