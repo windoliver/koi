@@ -243,8 +243,8 @@ describe("catalog integration", () => {
     for (const item of middlewarePage.items) {
       expect(item.kind).toBe("middleware");
     }
-    // Should have all 25 middleware packages
-    expect(middlewarePage.items.length).toBe(25);
+    // Should have all 24 middleware packages
+    expect(middlewarePage.items.length).toBe(24);
 
     // All channel entries should have kind "channel"
     for (const item of channelPage.items) {
@@ -300,7 +300,7 @@ describe("catalog integration", () => {
 
   test("bundled entries total count matches expected", async () => {
     // Verify the bundled entries array has the expected total
-    // 25 middleware + 6 channel + 4 engine + 10 sandbox + 3 tool + 21 infra = 69
-    expect(BUNDLED_ENTRIES.length).toBe(69);
+    // 24 middleware + 6 channel + 4 engine + 10 sandbox + 3 tool + 21 infra = 68
+    expect(BUNDLED_ENTRIES.length).toBe(68);
   });
 });

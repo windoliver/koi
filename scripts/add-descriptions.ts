@@ -180,16 +180,12 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Validate model and tool outputs, retry with error feedback, enforce quality gates",
   "@koi/middleware-fs-rollback":
     "Capture filesystem snapshots during tool calls and enable rollback to prior states",
-  "@koi/middleware-goal-anchor":
-    "Inject live todo list tracking objective completion into every model call",
-  "@koi/middleware-goal-reminder":
-    "Periodically inject goal reminders with adaptive intervals based on drift detection",
+  "@koi/middleware-goal":
+    "Goal-directed middleware trio: anchor (todo injection), reminder (adaptive periodic), and planning (write_plan tool)",
   "@koi/middleware-guided-retry":
     "Inject constraint hints into model calls after backtrack or fork events",
   "@koi/middleware-output-verifier":
     "Run deterministic and LLM-as-judge quality checks before delivering model outputs",
-  "@koi/middleware-planning":
-    "Provide write_plan tool for agents to create and maintain structured task plans",
   "@koi/middleware-report":
     "Generate human-readable summaries of autonomous agent run activities and outcomes",
   "@koi/middleware-sandbox":

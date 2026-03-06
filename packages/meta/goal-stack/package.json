@@ -13,9 +13,7 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
-    "@koi/middleware-goal-anchor": "workspace:*",
-    "@koi/middleware-goal-reminder": "workspace:*",
-    "@koi/middleware-planning": "workspace:*",
+    "@koi/middleware-goal": "workspace:*",
     "@koi/resolve": "workspace:*"
   },
   "devDependencies": {

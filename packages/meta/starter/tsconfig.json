@@ -16,7 +16,7 @@
       "path": "../../kernel/manifest"
     },
     {
-      "path": "../../middleware/middleware-goal-anchor"
+      "path": "../../middleware/middleware-goal"
     },
     {
       "path": "../../security/scope"

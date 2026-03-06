@@ -42,7 +42,7 @@
     "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-pii": "workspace:*",
-    "@koi/middleware-planning": "workspace:*",
+    "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-sandbox": "workspace:*",
     "@koi/middleware-sanitize": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
