@@ -39,6 +39,14 @@ describe("createGoalAnchorMiddleware", () => {
     expect(mw.priority).toBe(340);
   });
 
+  test("throws KoiRuntimeError with VALIDATION code on invalid config", () => {
+    expect(() =>
+      createGoalAnchorMiddleware({ objectives: 42 } as unknown as Parameters<
+        typeof createGoalAnchorMiddleware
+      >[0]),
+    ).toThrow(expect.objectContaining({ code: "VALIDATION" }));
+  });
+
   describe("1. onSessionStart initializes todo with all objectives as pending", () => {
     test("all items start as pending", async () => {
       const completed: string[] = [];

@@ -14,6 +14,7 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -48,11 +49,12 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
   const priority = validated.priority ?? DEFAULT_PRIORITY;
   const onPlanUpdate = validated.onPlanUpdate;
 
-  // Closure state — persists across turns
-  // let justified: plan state that changes on each write_plan call
-  let currentPlan: readonly PlanItem[] = [];
-  // let justified: per-turn counter reset in onBeforeTurn
-  let writePlanCallsThisTurn = 0;
+  interface PlanSessionState {
+    readonly currentPlan: readonly PlanItem[];
+    readonly writePlanCallsThisTurn: number;
+  }
+
+  const sessions = new Map<string, PlanSessionState>();
 
   /** Enrich a model request with the plan system message and tool descriptor. */
   function enrichRequest(request: ModelRequest): ModelRequest {
@@ -101,35 +103,59 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
   return {
     name: "plan",
     priority,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => {
-      if (currentPlan.length === 0) {
+
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      sessions.set(ctx.sessionId as string, {
+        currentPlan: [],
+        writePlanCallsThisTurn: 0,
+      });
+    },
+
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      sessions.delete(ctx.sessionId as string);
+    },
+
+    describeCapabilities: (ctx: TurnContext): CapabilityFragment | undefined => {
+      const state = sessions.get(ctx.session.sessionId as string);
+      if (!state) {
         return {
           label: "planning",
           description: "Planning: write_plan tool injected, no active plan",
         };
       }
-      const pending = currentPlan.filter((i) => i.status === "pending").length;
-      const inProgress = currentPlan.filter((i) => i.status === "in_progress").length;
-      const completed = currentPlan.filter((i) => i.status === "completed").length;
+      if (state.currentPlan.length === 0) {
+        return {
+          label: "planning",
+          description: "Planning: write_plan tool injected, no active plan",
+        };
+      }
+      const pending = state.currentPlan.filter((i) => i.status === "pending").length;
+      const inProgress = state.currentPlan.filter((i) => i.status === "in_progress").length;
+      const completed = state.currentPlan.filter((i) => i.status === "completed").length;
       return {
         label: "planning",
-        description: `Plan active: ${String(currentPlan.length)} items (${String(pending)} pending, ${String(inProgress)} in progress, ${String(completed)} completed)`,
+        description: `Plan active: ${String(state.currentPlan.length)} items (${String(pending)} pending, ${String(inProgress)} in progress, ${String(completed)} completed)`,
       };
     },
 
-    async onBeforeTurn(_ctx: TurnContext): Promise<void> {
-      writePlanCallsThisTurn = 0;
+    async onBeforeTurn(ctx: TurnContext): Promise<void> {
+      const sessionId = ctx.session.sessionId as string;
+      const state = sessions.get(sessionId);
+      if (!state) return;
+      sessions.set(sessionId, { ...state, writePlanCallsThisTurn: 0 });
     },
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
+      const state = sessions.get(ctx.session.sessionId as string);
       const enriched = enrichRequest(request);
       const response = await next(enriched);
 
       // Attach current plan to response metadata for observability
+      const currentPlan = state?.currentPlan ?? [];
       const metadata: JsonObject = {
         ...response.metadata,
         currentPlan: currentPlan as unknown as JsonObject,
@@ -147,7 +173,7 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
     },
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
@@ -156,9 +182,19 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
         return next(request);
       }
 
+      const sessionId = ctx.session.sessionId as string;
+      const state = sessions.get(sessionId);
+      if (!state) {
+        return {
+          output: { error: "No active session for plan middleware" },
+          metadata: { planError: true },
+        };
+      }
+
       // Enforce at-most-once per turn
-      writePlanCallsThisTurn += 1;
-      if (writePlanCallsThisTurn > 1) {
+      const callCount = state.writePlanCallsThisTurn + 1;
+      sessions.set(sessionId, { ...state, writePlanCallsThisTurn: callCount });
+      if (callCount > 1) {
         return {
           output: { error: "write_plan can only be called once per response" },
           metadata: { planError: true },
@@ -175,12 +211,12 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
       }
 
       // Atomically replace the plan
-      currentPlan = parsed;
-      onPlanUpdate?.(currentPlan);
+      sessions.set(sessionId, { currentPlan: parsed, writePlanCallsThisTurn: callCount });
+      onPlanUpdate?.(parsed);
 
       return {
-        output: formatPlanSummary(currentPlan),
-        metadata: { currentPlan: currentPlan as unknown as JsonObject },
+        output: formatPlanSummary(parsed),
+        metadata: { currentPlan: parsed as unknown as JsonObject },
       };
     },
   };
