@@ -83,10 +83,18 @@ export function createFsRollbackMiddleware(config: FsRollbackConfig): FsRollback
       // 1. Capture pre-state
       const previousContent = await capturePreState(backend, filePath, maxCaptureSize);
 
-      // 2. Execute the tool
-      const response = await next(request);
+      // 2. Execute the tool — may throw after mutating the file
+      // let: toolError is set in catch, checked after record to decide re-throw
+      let toolError: unknown;
+      // let: response is assigned on success path
+      let response: ToolResponse | undefined;
+      try {
+        response = await next(request);
+      } catch (e: unknown) {
+        toolError = e;
+      }
 
-      // 3. Re-read to get post-state
+      // 3. Re-read to get post-state (file may have been mutated even on failure)
       const postResult = await backend.read(filePath);
       const newContent = postResult.ok ? postResult.value.content : "";
 
@@ -109,7 +117,10 @@ export function createFsRollbackMiddleware(config: FsRollbackConfig): FsRollback
         lastNodeId = putResult.value.nodeId;
       }
 
-      return response;
+      // 6. Re-throw if tool failed
+      if (toolError !== undefined) throw toolError;
+      // response is guaranteed defined when toolError is undefined
+      return response as ToolResponse;
     },
   };
 

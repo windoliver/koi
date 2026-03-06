@@ -345,6 +345,83 @@ describe("createFsRollbackMiddleware", () => {
     expect(handle.middleware.priority).toBe(350);
   });
 
+  test("records rollback entry when tool mutates file then throws", async () => {
+    const store = createInMemorySnapshotChainStore<FileOpRecord>();
+    const backend = createTestBackend();
+    backend.files.set("/tmp/fail.txt", "before");
+
+    const handle = createFsRollbackMiddleware({
+      store,
+      chainId: testChainId,
+      backend,
+    });
+
+    const ctx = createMockTurnContext({ turnIndex: 7 });
+
+    // Tool writes to the file then throws
+    const throwingHandler = async (req: ToolRequest): Promise<ToolResponse> => {
+      const path = req.input.path as string;
+      backend.write(path, "partial-mutation");
+      throw new Error("tool exploded after mutating file");
+    };
+
+    const request: ToolRequest = {
+      toolId: "fs_write",
+      input: { path: "/tmp/fail.txt", content: "partial-mutation" },
+    };
+
+    await expect(handle.middleware.wrapToolCall?.(ctx, request, throwingHandler)).rejects.toThrow(
+      "tool exploded after mutating file",
+    );
+
+    // Despite the throw, a rollback record should have been stored
+    const records = await handle.getRecords();
+    expect(records.ok).toBe(true);
+    if (records.ok) {
+      expect(records.value).toHaveLength(1);
+      const node = records.value[0];
+      expect(node?.data.previousContent).toBe("before");
+      expect(node?.data.newContent).toBe("partial-mutation");
+      expect(node?.data.turnIndex).toBe(7);
+    }
+  });
+
+  test("handles store.put failure gracefully on tool success", async () => {
+    const backend = createTestBackend();
+    backend.files.set("/tmp/put-fail.txt", "original");
+
+    // Create a store that always fails on put
+    const failStore = {
+      ...createInMemorySnapshotChainStore<FileOpRecord>(),
+      put: async () =>
+        ({
+          ok: false,
+          error: { code: "INTERNAL", message: "Store write failed", retryable: false },
+        }) as const,
+    };
+
+    const handle = createFsRollbackMiddleware({
+      store: failStore,
+      chainId: testChainId,
+      backend,
+    });
+
+    const ctx = createMockTurnContext();
+    const toolHandler = async (req: ToolRequest): Promise<ToolResponse> => {
+      const path = req.input.path as string;
+      backend.write(path, "new-content");
+      return { output: { ok: true } };
+    };
+
+    // Should not throw — store.put failure is non-fatal
+    const response = await handle.middleware.wrapToolCall?.(
+      ctx,
+      { toolId: "fs_write", input: { path: "/tmp/put-fail.txt", content: "new-content" } },
+      toolHandler,
+    );
+    expect(response?.output).toEqual({ ok: true });
+  });
+
   describe("describeCapabilities", () => {
     test("is defined on the middleware", () => {
       const store = createInMemorySnapshotChainStore<FileOpRecord>();
