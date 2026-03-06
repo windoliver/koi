@@ -14,6 +14,7 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -48,11 +49,12 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
   const priority = validated.priority ?? DEFAULT_PRIORITY;
   const onPlanUpdate = validated.onPlanUpdate;
 
-  // Closure state — persists across turns
-  // let justified: plan state that changes on each write_plan call
-  let currentPlan: readonly PlanItem[] = [];
-  // let justified: per-turn counter reset in onBeforeTurn
-  let writePlanCallsThisTurn = 0;
+  interface PlanSessionState {
+    readonly currentPlan: readonly PlanItem[];
+    readonly writePlanCallsThisTurn: number;
+  }
+
+  const sessions = new Map<string, PlanSessionState>();
 
   /** Enrich a model request with the plan system message and tool descriptor. */
   function enrichRequest(request: ModelRequest): ModelRequest {
@@ -101,7 +103,21 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
   return {
     name: "plan",
     priority,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => {
+
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      sessions.set(ctx.sessionId as string, {
+        currentPlan: [],
+        writePlanCallsThisTurn: 0,
+      });
+    },
+
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      sessions.delete(ctx.sessionId as string);
+    },
+
+    describeCapabilities: (ctx: TurnContext): CapabilityFragment => {
+      const state = sessions.get(ctx.session.sessionId as string);
+      const currentPlan = state?.currentPlan ?? [];
       if (currentPlan.length === 0) {
         return {
           label: "planning",
@@ -117,12 +133,15 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
       };
     },
 
-    async onBeforeTurn(_ctx: TurnContext): Promise<void> {
-      writePlanCallsThisTurn = 0;
+    async onBeforeTurn(ctx: TurnContext): Promise<void> {
+      const sessionId = ctx.session.sessionId as string;
+      const state = sessions.get(sessionId);
+      if (!state) return;
+      sessions.set(sessionId, { ...state, writePlanCallsThisTurn: 0 });
     },
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
@@ -130,6 +149,8 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
       const response = await next(enriched);
 
       // Attach current plan to response metadata for observability
+      const state = sessions.get(ctx.session.sessionId as string);
+      const currentPlan = state?.currentPlan ?? [];
       const metadata: JsonObject = {
         ...response.metadata,
         currentPlan: currentPlan as unknown as JsonObject,
@@ -147,7 +168,7 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
     },
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
@@ -156,9 +177,15 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
         return next(request);
       }
 
+      const sessionId = ctx.session.sessionId as string;
+      const state = sessions.get(sessionId);
+      const writePlanCallsThisTurn = (state?.writePlanCallsThisTurn ?? 0) + 1;
+
       // Enforce at-most-once per turn
-      writePlanCallsThisTurn += 1;
       if (writePlanCallsThisTurn > 1) {
+        if (state) {
+          sessions.set(sessionId, { ...state, writePlanCallsThisTurn });
+        }
         return {
           output: { error: "write_plan can only be called once per response" },
           metadata: { planError: true },
@@ -168,6 +195,9 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
       // Validate plan input
       const parsed = parsePlanInput(request.input);
       if (typeof parsed === "string") {
+        if (state) {
+          sessions.set(sessionId, { ...state, writePlanCallsThisTurn });
+        }
         return {
           output: { error: parsed },
           metadata: { planError: true },
@@ -175,7 +205,8 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
       }
 
       // Atomically replace the plan
-      currentPlan = parsed;
+      const currentPlan = parsed;
+      sessions.set(sessionId, { currentPlan, writePlanCallsThisTurn });
       onPlanUpdate?.(currentPlan);
 
       return {
