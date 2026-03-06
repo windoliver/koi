@@ -3,7 +3,11 @@
  */
 
 import type { KoiError, Result, SandboxAdapter, SandboxProfile } from "@koi/core";
-import { mountNexusFuse } from "@koi/sandbox-cloud-base";
+import {
+  detectUnsupportedProfileFields,
+  formatUnsupportedProfileError,
+  mountNexusFuse,
+} from "@koi/sandbox-cloud-base";
 import { createDaytonaInstance } from "./instance.js";
 import type { DaytonaAdapterConfig, DaytonaCreateOpts } from "./types.js";
 import { validateDaytonaConfig } from "./validate.js";
@@ -22,6 +26,11 @@ export function createDaytonaAdapter(
     value: {
       name: "daytona",
       create: async (_profile: SandboxProfile) => {
+        const unsupported = detectUnsupportedProfileFields(_profile);
+        if (unsupported !== undefined) {
+          throw new Error(formatUnsupportedProfileError("Daytona", unsupported));
+        }
+
         const opts: DaytonaCreateOpts = {
           apiKey: resolvedConfig.apiKey,
           apiUrl: resolvedConfig.apiUrl,

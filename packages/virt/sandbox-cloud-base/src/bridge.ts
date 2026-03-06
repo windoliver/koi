@@ -47,6 +47,8 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
 
   // Mutable state — instance lifecycle management
   let instance: SandboxInstance | undefined;
+  // let justified: inflight tracks the pending create() to prevent duplicate instance creation
+  let inflightCreate: Promise<SandboxInstance> | undefined;
   let ttlTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
 
@@ -63,11 +65,18 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
     if (disposed) {
       throw new Error("CachedBridge has been disposed");
     }
-    if (instance === undefined) {
-      instance = await config.adapter.create(config.profile);
+    if (instance !== undefined) {
+      return instance;
     }
-    resetTtl();
-    return instance;
+    // Lock: reuse in-flight creation to prevent concurrent duplicate instances
+    if (inflightCreate === undefined) {
+      inflightCreate = config.adapter.create(config.profile).then((inst) => {
+        instance = inst;
+        inflightCreate = undefined;
+        return inst;
+      });
+    }
+    return inflightCreate;
   }
 
   async function destroyInstance(): Promise<void> {
@@ -102,6 +111,10 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
 
         // Execute code via the sandbox instance's exec method
         const result = await inst.exec("sh", ["-c", code], { timeoutMs: effectiveTimeout });
+
+        // Reset TTL after execution completes — not before — to prevent
+        // mid-flight instance destruction on long-running calls.
+        resetTtl();
 
         const durationMs = performance.now() - startTime;
 

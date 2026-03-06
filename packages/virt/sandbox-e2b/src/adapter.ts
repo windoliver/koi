@@ -3,7 +3,11 @@
  */
 
 import type { KoiError, Result, SandboxAdapter, SandboxProfile } from "@koi/core";
-import { mountNexusFuse } from "@koi/sandbox-cloud-base";
+import {
+  detectUnsupportedProfileFields,
+  formatUnsupportedProfileError,
+  mountNexusFuse,
+} from "@koi/sandbox-cloud-base";
 import { createE2bInstance } from "./instance.js";
 import type { E2bAdapterConfig, E2bCreateOpts } from "./types.js";
 import { validateE2bConfig } from "./validate.js";
@@ -25,6 +29,11 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
     value: {
       name: "e2b",
       create: async (_profile: SandboxProfile) => {
+        const unsupported = detectUnsupportedProfileFields(_profile);
+        if (unsupported !== undefined) {
+          throw new Error(formatUnsupportedProfileError("E2B", unsupported));
+        }
+
         const opts: E2bCreateOpts = {
           apiKey: resolvedConfig.apiKey,
           ...(resolvedConfig.template !== undefined ? { template: resolvedConfig.template } : {}),
