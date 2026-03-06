@@ -10,10 +10,11 @@
  * - Network isolation via Seatbelt (macOS) / Bubblewrap (Linux)
  * - Resource limits via ulimit (memory, PIDs)
  *
- * Falls back to in-process `new Function()` for bricks without entry files
- * (backward-compatible with existing behavior).
+ * When no entry file is available, writes code to a temp file and still
+ * executes via subprocess for consistent process-level isolation.
  */
 
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecutionContext, SandboxError, SandboxExecutor, SandboxResult } from "@koi/core";
 
@@ -275,8 +276,6 @@ function classifyError(e: unknown, durationMs: number): SandboxError {
 // Public API
 // ---------------------------------------------------------------------------
 
-type CompiledFn = (input: unknown) => unknown;
-
 export function createSubprocessExecutor(): SandboxExecutor {
   const execute = async (
     code: string,
@@ -381,12 +380,36 @@ export function createSubprocessExecutor(): SandboxExecutor {
       }
     }
 
-    // Fallback: new Function() for bricks without entry files
+    // No entryPath: write code to a temp file and execute in a subprocess.
+    // This ensures process-level isolation even for dependency-free bricks.
     try {
-      const fn = new Function("input", code) as CompiledFn;
-      const result: unknown = await Promise.resolve(fn(input));
-      const durationMs = performance.now() - start;
-      return { ok: true, value: { output: result, durationMs } };
+      const tempId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const tempEntry = join(tmpdir(), `koi-sandbox-${tempId}.ts`);
+
+      // Wrap raw code body in a default-export function so the subprocess
+      // runner can import and invoke it via the standard protocol.
+      const wrapped = `export default function run(input: unknown) {\n${code}\n}\n`;
+      await Bun.write(tempEntry, wrapped);
+
+      try {
+        const tempContext: ExecutionContext = {
+          ...context,
+          entryPath: tempEntry,
+        };
+        return await execute(code, input, timeoutMs, tempContext);
+      } finally {
+        // Best-effort cleanup — don't block on failure
+        Bun.file(tempEntry)
+          .exists()
+          .then((exists) => {
+            if (exists) {
+              return Bun.write(tempEntry, "").then(() =>
+                import("node:fs/promises").then((fs) => fs.unlink(tempEntry)),
+              );
+            }
+          })
+          .catch(() => {});
+      }
     } catch (e: unknown) {
       const durationMs = performance.now() - start;
       return { ok: false, error: classifyError(e, durationMs) };

@@ -43,3 +43,10 @@ export { createStreamCollector } from "./test-streaming.js";
 // Output truncation — byte-limited accumulator
 export type { OutputAccumulator } from "./truncate.js";
 export { createOutputAccumulator, DEFAULT_MAX_OUTPUT_BYTES } from "./truncate.js";
+
+// Profile validation — detect unsupported policies for cloud adapters
+export type { UnsupportedProfileFields } from "./validate-profile.js";
+export {
+  detectUnsupportedProfileFields,
+  formatUnsupportedProfileError,
+} from "./validate-profile.js";

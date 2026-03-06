@@ -27,10 +27,21 @@ export function bridgeToExecutor(bridge: SandboxBridge): SandboxExecutor {
       | { readonly ok: true; readonly value: SandboxResult }
       | { readonly ok: false; readonly error: SandboxError }
     > => {
-      // Coerce input to JsonObject — the bridge expects a record
-      const safeInput: Readonly<Record<string, unknown>> = isJsonObject(input) ? input : {};
+      // Reject non-object input instead of silently coercing to {}.
+      // The SandboxBridge expects JsonObject; callers passing arrays,
+      // strings, or other primitives must be told explicitly.
+      if (!isJsonObject(input)) {
+        return {
+          ok: false,
+          error: {
+            code: "CRASH",
+            message: `SandboxExecutor input must be a plain object, got ${Array.isArray(input) ? "array" : typeof input}`,
+            durationMs: 0,
+          },
+        };
+      }
 
-      const result = await bridge.execute(code, safeInput, { timeoutMs });
+      const result = await bridge.execute(code, input, { timeoutMs });
 
       if (!result.ok) {
         return {

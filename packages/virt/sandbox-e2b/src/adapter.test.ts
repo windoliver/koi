@@ -61,9 +61,9 @@ describe("createE2bAdapter", () => {
     if (!result.ok) return;
 
     const instance = await result.value.create({
-      filesystem: { allowRead: ["/tmp"] },
-      network: { allow: false },
-      resources: { maxMemoryMb: 256, timeoutMs: 10000 },
+      filesystem: {},
+      network: { allow: true },
+      resources: { timeoutMs: 10000 },
     });
 
     const execResult = await instance.exec("echo", ["hello"]);
@@ -85,7 +85,7 @@ describe("createE2bAdapter", () => {
 
     await result.value.create({
       filesystem: {},
-      network: { allow: false },
+      network: { allow: true },
       resources: {},
     });
 
@@ -103,7 +103,7 @@ describe("createE2bAdapter", () => {
 
     await result.value.create({
       filesystem: {},
-      network: { allow: false },
+      network: { allow: true },
       resources: {},
     });
 
@@ -118,7 +118,7 @@ describe("createE2bAdapter", () => {
 
     await result.value.create({
       filesystem: {},
-      network: { allow: false },
+      network: { allow: true },
       resources: {},
     });
 
@@ -136,7 +136,7 @@ describe("createE2bAdapter", () => {
 
     const instance = await result.value.create({
       filesystem: {},
-      network: { allow: false },
+      network: { allow: true },
       resources: {},
       nexusMounts: [{ nexusUrl: "https://nexus.test", apiKey: "nk", mountPath: "/mnt/nexus" }],
     });
@@ -144,5 +144,19 @@ describe("createE2bAdapter", () => {
     // mkdir, nexus-fuse, ls — 3 calls from mountNexusFuse
     expect(sdk.commands.run).toHaveBeenCalledTimes(3);
     expect(instance).toBeDefined();
+  });
+
+  test("throws on unsupported profile policies", async () => {
+    const client = createMockClient();
+    const result = createE2bAdapter({ apiKey: "test-key", client });
+    if (!result.ok) return;
+
+    await expect(
+      result.value.create({
+        filesystem: { denyRead: ["/etc/secrets"] },
+        network: { allow: false },
+        resources: { maxMemoryMb: 256 },
+      }),
+    ).rejects.toThrow("E2B adapter cannot enforce");
   });
 });

@@ -46,7 +46,7 @@ describe("createCloudflareAdapter", () => {
     if (!result.ok) return;
     const instance = await result.value.create({
       filesystem: {},
-      network: { allow: false },
+      network: { allow: true },
       resources: {},
     });
     expect((await instance.exec("echo", ["hi"])).exitCode).toBe(0);
@@ -66,7 +66,7 @@ describe("createCloudflareAdapter", () => {
 
     await result.value.create({
       filesystem: {},
-      network: { allow: false },
+      network: { allow: true },
       resources: {},
     });
 
@@ -81,7 +81,7 @@ describe("createCloudflareAdapter", () => {
 
     await result.value.create({
       filesystem: {},
-      network: { allow: false },
+      network: { allow: true },
       resources: {},
     });
 
@@ -99,7 +99,7 @@ describe("createCloudflareAdapter", () => {
 
     const instance = await result.value.create({
       filesystem: {},
-      network: { allow: false },
+      network: { allow: true },
       resources: {},
       nexusMounts: [{ nexusUrl: "https://nexus.test", apiKey: "nk", mountPath: "/mnt/nexus" }],
     });
@@ -107,5 +107,19 @@ describe("createCloudflareAdapter", () => {
     // mkdir, nexus-fuse, ls — 3 calls from mountNexusFuse
     expect(sdk.commands.run).toHaveBeenCalledTimes(3);
     expect(instance).toBeDefined();
+  });
+
+  test("throws on unsupported profile policies", async () => {
+    const client = createMockClient();
+    const result = createCloudflareAdapter({ apiToken: "token", client });
+    if (!result.ok) return;
+
+    await expect(
+      result.value.create({
+        filesystem: {},
+        network: { allow: false },
+        resources: {},
+      }),
+    ).rejects.toThrow("Cloudflare adapter cannot enforce");
   });
 });

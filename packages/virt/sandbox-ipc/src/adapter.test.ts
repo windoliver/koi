@@ -123,27 +123,41 @@ describe("bridgeToExecutor success mapping", () => {
     });
 
     const executor = bridgeToExecutor(bridge);
+    // null is not a plain object — should return error
     const result = await executor.execute("return null", null, 5000);
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
 
-    expect(result.value.output).toBeNull();
+    expect(result.error.code).toBe("CRASH");
+    expect(result.error.message).toContain("plain object");
   });
 
-  test("coerces non-object input to empty object", async () => {
-    let receivedInput: unknown;
-    const bridge = mockBridge({
-      execute: async (_code, input) => {
-        receivedInput = input;
-        return { ok: true, value: { output: "ok", durationMs: 0, exitCode: 0 } };
-      },
-    });
+  test("rejects non-object input with error", async () => {
+    const bridge = mockBridge();
 
     const executor = bridgeToExecutor(bridge);
-    await executor.execute("return 1", "not an object", 5000);
+    const result = await executor.execute("return 1", "not an object", 5000);
 
-    expect(receivedInput).toEqual({});
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error.code).toBe("CRASH");
+    expect(result.error.message).toContain("plain object");
+    expect(result.error.message).toContain("string");
+  });
+
+  test("rejects array input with error", async () => {
+    const bridge = mockBridge();
+
+    const executor = bridgeToExecutor(bridge);
+    const result = await executor.execute("return 1", [1, 2, 3], 5000);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error.code).toBe("CRASH");
+    expect(result.error.message).toContain("array");
   });
 
   test("passes timeoutMs to bridge options", async () => {

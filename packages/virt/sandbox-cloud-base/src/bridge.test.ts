@@ -306,9 +306,35 @@ describe("createCachedBridge", () => {
 
     expect(result1.ok).toBe(true);
     expect(result2.ok).toBe(true);
-    // Adapter.create may be called twice due to race, but the bridge reuses once resolved
-    // The key invariant: both calls complete successfully
+    // Creation lock ensures adapter.create is called exactly once
+    expect(adapter.create).toHaveBeenCalledTimes(1);
     expect(instance.exec).toHaveBeenCalledTimes(2);
+
+    await bridge.dispose();
+  });
+
+  test("concurrent executes with slow create still create only once", async () => {
+    const instance = createMockInstance();
+    // Simulate slow adapter.create() — 50ms delay
+    const adapter: SandboxAdapter = {
+      name: "slow-mock",
+      create: mock(
+        () => new Promise<SandboxInstance>((resolve) => setTimeout(() => resolve(instance), 50)),
+      ),
+    };
+    const bridge = createCachedBridge({ adapter, profile });
+
+    const [r1, r2, r3] = await Promise.all([
+      bridge.execute("cmd1", {}, 5000),
+      bridge.execute("cmd2", {}, 5000),
+      bridge.execute("cmd3", {}, 5000),
+    ]);
+
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    expect(r3.ok).toBe(true);
+    // Even with slow create, the lock prevents duplicate creation
+    expect(adapter.create).toHaveBeenCalledTimes(1);
 
     await bridge.dispose();
   });

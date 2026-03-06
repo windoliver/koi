@@ -3,7 +3,11 @@
  */
 
 import type { KoiError, Result, SandboxAdapter, SandboxProfile } from "@koi/core";
-import { mountNexusFuse } from "@koi/sandbox-cloud-base";
+import {
+  detectUnsupportedProfileFields,
+  formatUnsupportedProfileError,
+  mountNexusFuse,
+} from "@koi/sandbox-cloud-base";
 import { createCloudflareInstance } from "./instance.js";
 import type { CfCreateOpts, CloudflareAdapterConfig } from "./types.js";
 import { validateCloudflareConfig } from "./validate.js";
@@ -22,6 +26,11 @@ export function createCloudflareAdapter(
     value: {
       name: "cloudflare",
       create: async (_profile: SandboxProfile) => {
+        const unsupported = detectUnsupportedProfileFields(_profile);
+        if (unsupported !== undefined) {
+          throw new Error(formatUnsupportedProfileError("Cloudflare", unsupported));
+        }
+
         const opts: CfCreateOpts = {
           apiToken: resolvedConfig.apiToken,
           ...(resolvedConfig.accountId !== undefined

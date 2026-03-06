@@ -3,6 +3,10 @@
  */
 
 import type { KoiError, Result, SandboxAdapter, SandboxProfile } from "@koi/core";
+import {
+  detectUnsupportedProfileFields,
+  formatUnsupportedProfileError,
+} from "@koi/sandbox-cloud-base";
 import { createVercelInstance } from "./instance.js";
 import type { VercelAdapterConfig, VercelCreateOpts } from "./types.js";
 import { validateVercelConfig } from "./validate.js";
@@ -19,6 +23,11 @@ export function createVercelAdapter(config: VercelAdapterConfig): Result<Sandbox
     value: {
       name: "vercel",
       create: async (_profile: SandboxProfile) => {
+        const unsupported = detectUnsupportedProfileFields(_profile);
+        if (unsupported !== undefined) {
+          throw new Error(formatUnsupportedProfileError("Vercel", unsupported));
+        }
+
         const opts: VercelCreateOpts = {
           apiToken: resolvedConfig.apiToken,
           ...(resolvedConfig.teamId !== undefined ? { teamId: resolvedConfig.teamId } : {}),
