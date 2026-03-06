@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { JsonObject } from "@koi/core/common";
 import type { ToolDescriptor } from "@koi/core/ecs";
+import { sessionId } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
 import type {
   CapabilityFragment,
@@ -8,7 +9,11 @@ import type {
   ModelRequest,
   ModelResponse,
 } from "@koi/core/middleware";
-import { createMockTurnContext, testMiddlewareContract } from "@koi/test-utils";
+import {
+  createMockSessionContext,
+  createMockTurnContext,
+  testMiddlewareContract,
+} from "@koi/test-utils";
 import { createPlanMiddleware } from "./plan-middleware.js";
 import { WRITE_PLAN_TOOL_NAME } from "./plan-tool.js";
 import type { PlanItem } from "./types.js";
@@ -132,7 +137,10 @@ describe("wrapToolCall — write_plan interception", () => {
       capturedPlan = plan;
     };
     const mw = createPlanMiddleware({ onPlanUpdate });
-    const ctx = createMockTurnContext();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+    await mw.onBeforeTurn?.(ctx);
 
     const response = await mw.wrapToolCall?.(
       ctx,
@@ -156,7 +164,9 @@ describe("wrapToolCall — write_plan interception", () => {
 
   test("passes through non-plan tool calls", async () => {
     const mw = createPlanMiddleware();
-    const ctx = createMockTurnContext();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
     const expected = { output: "tool result" };
 
     const response = await mw.wrapToolCall?.(
@@ -169,7 +179,9 @@ describe("wrapToolCall — write_plan interception", () => {
 
   test("rejects second write_plan call in same turn", async () => {
     const mw = createPlanMiddleware();
-    const ctx = createMockTurnContext();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
 
     // Reset per-turn counter
     await mw.onBeforeTurn?.(ctx);
@@ -190,7 +202,9 @@ describe("wrapToolCall — write_plan interception", () => {
 
   test("allows write_plan again after onBeforeTurn resets counter", async () => {
     const mw = createPlanMiddleware();
-    const ctx = createMockTurnContext();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
 
     const input = {
       plan: [{ content: "Step 1", status: "pending" }],
@@ -209,7 +223,9 @@ describe("wrapToolCall — write_plan interception", () => {
 
   test("returns error for invalid plan input", async () => {
     const mw = createPlanMiddleware();
-    const ctx = createMockTurnContext();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
     await mw.onBeforeTurn?.(ctx);
 
     const response = await mw.wrapToolCall?.(
@@ -225,7 +241,9 @@ describe("wrapToolCall — write_plan interception", () => {
 
   test("returns error for plan items with invalid status", async () => {
     const mw = createPlanMiddleware();
-    const ctx = createMockTurnContext();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
     await mw.onBeforeTurn?.(ctx);
 
     const response = await mw.wrapToolCall?.(
@@ -251,7 +269,9 @@ describe("wrapToolCall — write_plan interception", () => {
       lastCapturedPlan = plan;
     };
     const mw = createPlanMiddleware({ onPlanUpdate });
-    const ctx = createMockTurnContext();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
 
     await mw.onBeforeTurn?.(ctx);
     await mw.wrapToolCall?.(
@@ -291,7 +311,9 @@ describe("wrapToolCall — write_plan interception", () => {
 describe("plan persistence across turns", () => {
   test("plan state persists after wrapModelCall", async () => {
     const mw = createPlanMiddleware();
-    const ctx = createMockTurnContext();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
 
     // Turn 1: create plan
     await mw.onBeforeTurn?.(ctx);
@@ -326,7 +348,9 @@ describe("describeCapabilities", () => {
 
   test("returns label 'planning' and description changes based on plan state", async () => {
     const mw = createPlanMiddleware();
-    const ctx = createMockTurnContext();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
 
     // Before any plan is written — no active plan
     const before = mw.describeCapabilities?.(ctx) as CapabilityFragment;
@@ -350,5 +374,117 @@ describe("describeCapabilities", () => {
     const after = mw.describeCapabilities?.(ctx) as CapabilityFragment;
     expect(after.label).toBe("planning");
     expect(after.description).toContain("Plan active");
+  });
+});
+
+describe("session isolation", () => {
+  test("plan from session A is not visible in session B", async () => {
+    const mw = createPlanMiddleware();
+    const sessionA = createMockSessionContext({ sessionId: sessionId("session-a") });
+    const sessionB = createMockSessionContext({ sessionId: sessionId("session-b") });
+    await mw.onSessionStart?.(sessionA);
+    await mw.onSessionStart?.(sessionB);
+
+    const ctxA = createMockTurnContext({ session: sessionA, turnIndex: 0 });
+    await mw.onBeforeTurn?.(ctxA);
+
+    // Write plan in session A
+    await mw.wrapToolCall?.(
+      ctxA,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: {
+          plan: [{ content: "Session A task", status: "in_progress" }],
+        } satisfies JsonObject,
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Session B should have no plan
+    const ctxB = createMockTurnContext({ session: sessionB, turnIndex: 0 });
+    const response = await mw.wrapModelCall?.(ctxB, createRequest("hello"), async () =>
+      createResponse("ok"),
+    );
+    const plan = response?.metadata?.currentPlan as unknown as readonly PlanItem[];
+    expect(plan).toHaveLength(0);
+  });
+
+  test("state is cleaned up after onSessionEnd", async () => {
+    const mw = createPlanMiddleware();
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const ctx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+    await mw.onBeforeTurn?.(ctx);
+
+    // Write plan
+    await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: {
+          plan: [{ content: "Task", status: "pending" }],
+        } satisfies JsonObject,
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // End session
+    await mw.onSessionEnd?.(sessionCtx);
+
+    // After session end, wrapToolCall should return error (no session state)
+    const ctx2 = createMockTurnContext({ session: sessionCtx, turnIndex: 1 });
+    const response = await mw.wrapToolCall?.(
+      ctx2,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: {
+          plan: [{ content: "New task", status: "pending" }],
+        } satisfies JsonObject,
+      },
+      async () => ({ output: "x" }),
+    );
+    expect((response?.output as Record<string, unknown>).error).toBeDefined();
+  });
+
+  test("writePlanCallsThisTurn counter is per-session", async () => {
+    const mw = createPlanMiddleware();
+    const sessionA = createMockSessionContext({ sessionId: sessionId("session-a") });
+    const sessionB = createMockSessionContext({ sessionId: sessionId("session-b") });
+    await mw.onSessionStart?.(sessionA);
+    await mw.onSessionStart?.(sessionB);
+
+    const ctxA = createMockTurnContext({ session: sessionA, turnIndex: 0 });
+    const ctxB = createMockTurnContext({ session: sessionB, turnIndex: 0 });
+    await mw.onBeforeTurn?.(ctxA);
+    await mw.onBeforeTurn?.(ctxB);
+
+    const input = {
+      plan: [{ content: "Step 1", status: "pending" }],
+    } satisfies JsonObject;
+
+    // Use session A's once-per-turn quota
+    const firstA = await mw.wrapToolCall?.(
+      ctxA,
+      { toolId: WRITE_PLAN_TOOL_NAME, input },
+      async () => ({ output: "x" }),
+    );
+    expect(firstA?.output).toContain("Plan updated");
+
+    // Session B should still be able to call write_plan
+    const firstB = await mw.wrapToolCall?.(
+      ctxB,
+      { toolId: WRITE_PLAN_TOOL_NAME, input },
+      async () => ({ output: "x" }),
+    );
+    expect(firstB?.output).toContain("Plan updated");
+
+    // Session A's second call should fail
+    const secondA = await mw.wrapToolCall?.(
+      ctxA,
+      { toolId: WRITE_PLAN_TOOL_NAME, input },
+      async () => ({ output: "x" }),
+    );
+    expect((secondA?.output as Record<string, unknown>).error).toContain("once per response");
   });
 });

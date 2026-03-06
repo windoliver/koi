@@ -17,11 +17,18 @@ import type {
   SessionContext,
   TurnContext,
 } from "@koi/core/middleware";
+import { KoiRuntimeError } from "@koi/errors";
 import type { GoalAnchorConfig } from "./config.js";
+import { validateGoalAnchorConfig } from "./config.js";
 import { createTodoState, detectCompletions, renderTodoBlock } from "./todo.js";
 import type { TodoItem, TodoState } from "./types.js";
 
 export function createGoalAnchorMiddleware(config: GoalAnchorConfig): KoiMiddleware {
+  const validResult = validateGoalAnchorConfig(config);
+  if (!validResult.ok) {
+    throw KoiRuntimeError.from(validResult.error.code, validResult.error.message);
+  }
+
   const header = config.header ?? "## Current Objectives";
   const sessions = new Map<string, TodoState>();
   const hasObjectives = config.objectives.length > 0;

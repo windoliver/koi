@@ -17,7 +17,9 @@ import type {
   SessionContext,
   TurnContext,
 } from "@koi/core/middleware";
+import { KoiRuntimeError } from "@koi/errors";
 import type { GoalReminderConfig } from "./config.js";
+import { validateGoalReminderConfig } from "./config.js";
 import { computeNextInterval, defaultIsDrifting } from "./interval.js";
 import { resolveAllSources } from "./sources.js";
 import type { ReminderSessionState } from "./types.js";
@@ -30,15 +32,23 @@ const INITIAL_STATE_FACTORY = (baseInterval: number): ReminderSessionState => ({
 });
 
 export function createGoalReminderMiddleware(config: GoalReminderConfig): KoiMiddleware {
+  const validResult = validateGoalReminderConfig(config);
+  if (!validResult.ok) {
+    throw KoiRuntimeError.from(validResult.error.code, validResult.error.message);
+  }
+
   const header = config.header ?? "Reminder";
   const baseInterval = config.baseInterval;
   const maxInterval = config.maxInterval;
   const sessions = new Map<string, ReminderSessionState>();
 
   // Extract goal strings for default drift detection
-  const goalStrings: readonly string[] = config.sources.flatMap((s) =>
-    s.kind === "manifest" ? s.objectives : [],
-  );
+  const goalStrings: readonly string[] = config.sources.flatMap((s): readonly string[] => {
+    if (s.kind === "manifest") return s.objectives;
+    if (s.kind === "static") return [s.text];
+    // "dynamic" and "tasks" are resolved at runtime, can't extract statically
+    return [];
+  });
 
   const customIsDrifting = config.isDrifting;
 

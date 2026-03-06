@@ -82,6 +82,16 @@ describe("createGoalReminderMiddleware", () => {
     expect(mw.priority).toBe(330);
   });
 
+  test("throws KoiRuntimeError with VALIDATION code on invalid config", () => {
+    expect(() =>
+      createGoalReminderMiddleware({
+        sources: [],
+        baseInterval: 2,
+        maxInterval: 8,
+      } as unknown as GoalReminderConfig),
+    ).toThrow(expect.objectContaining({ code: "VALIDATION" }));
+  });
+
   test("injects on trigger turns and skips others (baseInterval=2)", async () => {
     const mw = createGoalReminderMiddleware(makeConfig({ baseInterval: 2, maxInterval: 8 }));
     const sessionCtx = createMockSessionContext();
@@ -312,6 +322,76 @@ describe("createGoalReminderMiddleware", () => {
 
     expect(capturedReq).toBeDefined();
     expect(capturedReq?.messages[0]?.senderId).toBe("system:goal-reminder");
+  });
+
+  test("static-only sources contribute to drift detection keywords", async () => {
+    // With static source "use TypeScript strict mode", keywords include "typescript", "strict", "mode"
+    // When messages DON'T contain these keywords → drifting → interval stays at base
+    const mw = createGoalReminderMiddleware(
+      makeConfig({
+        sources: [{ kind: "static", text: "use TypeScript strict mode" }],
+        baseInterval: 2,
+        maxInterval: 16,
+      }),
+    );
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const handler = async (_req: ModelRequest) => makeModelResponse("ok");
+    // Messages say "turn N" which won't match "typescript"/"strict"/"mode"
+    // → defaultIsDrifting returns true → interval stays at 2 (never doubles)
+    const requests = await simulateTurns(mw, sessionCtx, 6, handler);
+
+    // Triggers at turns 1, 3, 5 (0-indexed) because interval stays 2
+    expect(requests[1]?.messages[0]?.senderId).toBe("system:goal-reminder");
+    expect(requests[3]?.messages[0]?.senderId).toBe("system:goal-reminder");
+    expect(requests[5]?.messages[0]?.senderId).toBe("system:goal-reminder");
+  });
+
+  test("mixed manifest+static sources both contribute keywords", async () => {
+    const mw = createGoalReminderMiddleware(
+      makeConfig({
+        sources: [
+          { kind: "manifest", objectives: ["complete the task"] },
+          { kind: "static", text: "follow coding standards" },
+        ],
+        baseInterval: 2,
+        maxInterval: 16,
+      }),
+    );
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const handler = async (_req: ModelRequest) => makeModelResponse("ok");
+    // Messages say "turn N" — won't match "complete", "task", "follow", "coding", "standards"
+    const requests = await simulateTurns(mw, sessionCtx, 4, handler);
+
+    // Drifting → interval stays at 2 → trigger at turn 1, 3
+    expect(requests[1]?.messages[0]?.senderId).toBe("system:goal-reminder");
+    expect(requests[3]?.messages[0]?.senderId).toBe("system:goal-reminder");
+  });
+
+  test("dynamic-only sources yield empty goalStrings (no static keywords)", async () => {
+    const mw = createGoalReminderMiddleware(
+      makeConfig({
+        sources: [{ kind: "dynamic", fetch: () => "dynamic content" }],
+        baseInterval: 2,
+        maxInterval: 16,
+      }),
+    );
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const handler = async (_req: ModelRequest) => makeModelResponse("ok");
+    const requests = await simulateTurns(mw, sessionCtx, 7, handler);
+
+    // goalStrings is empty → defaultIsDrifting returns false → not drifting
+    // → interval doubles: base=2 → trigger at 1, then interval=4 → trigger at 5
+    expect(requests[1]?.messages[0]?.senderId).toBe("system:goal-reminder");
+    // Turn 3 should NOT trigger (interval doubled to 4)
+    expect(requests[3]?.messages[0]?.senderId).not.toBe("system:goal-reminder");
+    // Turn 5 should trigger (1+4=5)
+    expect(requests[5]?.messages[0]?.senderId).toBe("system:goal-reminder");
   });
 
   test("reminder content includes XML tags from sources", async () => {
