@@ -7,9 +7,13 @@
 
 // Catalog integration
 export { discoverSkillCatalogEntries, mapSkillToCatalogEntry } from "./catalog.js";
+// Gating
+export type { GateResult } from "./gate.js";
+export { gateSkills } from "./gate.js";
 // Loader (filesystem)
 export {
   clearSkillCache,
+  clearSkillCacheEntry,
   discoverSkillDirs,
   loadSkill,
   loadSkillBody,
@@ -50,5 +54,8 @@ export type {
 } from "./types.js";
 export { isAtOrAbove, LEVEL_ORDER } from "./types.js";
 // Validate
-export type { ValidatedSkillFrontmatter } from "./validate.js";
+export type { ValidatedSkillFrontmatter, ValidatedSkillRequires } from "./validate.js";
 export { validateSkillFrontmatter } from "./validate.js";
+// Watcher
+export type { SkillWatchEvent, SkillWatcher, SkillWatcherConfig } from "./watcher.js";
+export { createSkillFileWatcher } from "./watcher.js";

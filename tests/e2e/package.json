@@ -45,7 +45,9 @@
     "@koi/ipc-nexus": "workspace:*",
     "@koi/filesystem": "workspace:*",
     "@koi/tool-browser": "workspace:*",
-    "@koi/browser-playwright": "workspace:*"
+    "@koi/browser-playwright": "workspace:*",
+    "@koi/skill-stack": "workspace:*",
+    "@koi/skills": "workspace:*"
   },
   "scripts": {
     "test": "bun test",

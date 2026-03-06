@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, CollectiveMemory, CollectiveMemoryDefaults, CollectiveMemoryEntry, PipelineStep, BrickFitnessMetrics, ToolPolicy, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
+"import { BrickArtifactBase, BrickUpdate, BrickRequires, Result, KoiError, BrickArtifact, CollectiveMemory, CollectiveMemoryDefaults, CollectiveMemoryEntry, PipelineStep, BrickFitnessMetrics, ToolPolicy, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -18,6 +18,26 @@ import { z } from 'zod';
  * in \`updates\` override the corresponding field in \`existing\`.
  */
 declare function applyBrickUpdate<T extends BrickArtifactBase>(existing: T, updates: BrickUpdate): T;
+
+/**
+ * Pure BrickRequires validation — bins, env, platform checks.
+ *
+ * Operates only on L0 types. Extracted from @koi/forge-tools so L2 packages
+ * (like @koi/skills) can validate requirements without importing from peer L2.
+ */
+
+type RequiresViolationKind = "bin" | "env" | "platform";
+interface RequiresViolation {
+    readonly kind: RequiresViolationKind;
+    readonly name: string;
+}
+/**
+ * Validates the subset of BrickRequires that can be checked locally without
+ * tool/agent/package context: bins, env, and platform.
+ *
+ * Returns the first violation found (fail-fast). No requires → always satisfied.
+ */
+declare function validateBrickRequires(requires: BrickRequires | undefined): Result<void, KoiError>;
 
 /**
  * Lightweight type guard for BrickArtifact loaded from storage.
@@ -374,6 +394,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, type PipelineValidation, SEVERITY_ORDER, type SchemaCompatibility, type Severity, type SortBricksOptions, applyBrickUpdate, checkSchemaCompatibility, compactEntries, computeBrickFitness, computeDrift, computeEffectiveTrailStrength, computeMemoryPriority, computeMutationPressure, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, deduplicateEntries, evaluateTrustDecay, findClosestMatch, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, pruneStaleEntries, recordLatency, selectEntriesWithinBudget, severityAtOrAbove, sortBricks, validateBrickArtifact, validatePipeline, validateWith, zodToKoiError };
+export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, type PipelineValidation, type RequiresViolation, type RequiresViolationKind, SEVERITY_ORDER, type SchemaCompatibility, type Severity, type SortBricksOptions, applyBrickUpdate, checkSchemaCompatibility, compactEntries, computeBrickFitness, computeDrift, computeEffectiveTrailStrength, computeMemoryPriority, computeMutationPressure, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, deduplicateEntries, evaluateTrustDecay, findClosestMatch, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, pruneStaleEntries, recordLatency, selectEntriesWithinBudget, severityAtOrAbove, sortBricks, validateBrickArtifact, validateBrickRequires, validatePipeline, validateWith, zodToKoiError };
 "
 `;

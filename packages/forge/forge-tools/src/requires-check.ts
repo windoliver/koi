@@ -18,7 +18,7 @@ export interface NetworkPolicy {
 // Result type
 // ---------------------------------------------------------------------------
 
-type ViolationKind = "bin" | "env" | "tool" | "agent" | "package" | "network";
+type ViolationKind = "bin" | "env" | "tool" | "agent" | "package" | "network" | "platform";
 
 export interface RequiresCheckResult {
   readonly satisfied: boolean;
@@ -108,6 +108,13 @@ export function checkBrickRequires(
   // 6. Network access: brick declares network: true but policy disallows it
   if (requires.network === true && networkPolicy !== undefined && !networkPolicy.allowed) {
     return { satisfied: false, violation: { kind: "network", name: "network" } };
+  }
+
+  // 7. Platform check
+  if (requires.platform !== undefined && requires.platform.length > 0) {
+    if (!requires.platform.includes(process.platform)) {
+      return { satisfied: false, violation: { kind: "platform", name: process.platform } };
+    }
   }
 
   return { satisfied: true };
