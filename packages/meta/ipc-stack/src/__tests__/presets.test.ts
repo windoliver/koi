@@ -4,8 +4,8 @@
  * Verifies:
  *   - All 3 presets are defined and frozen
  *   - "local": messaging=local, delegation=task-spawn
- *   - "cloud": messaging=nexus, delegation=parallel-minions
- *   - "hybrid": messaging=local, delegation=parallel-minions
+ *   - "cloud": messaging=nexus, delegation=task-spawn
+ *   - "hybrid": messaging=local, delegation=task-spawn
  */
 
 import { describe, expect, test } from "bun:test";
@@ -44,8 +44,8 @@ describe("IPC_PRESET_SPECS", () => {
     expect(IPC_PRESET_SPECS.cloud.messaging?.kind).toBe("nexus");
   });
 
-  test("cloud: delegation is parallel-minions", () => {
-    expect(IPC_PRESET_SPECS.cloud.delegation?.kind).toBe("parallel-minions");
+  test("cloud: delegation is task-spawn", () => {
+    expect(IPC_PRESET_SPECS.cloud.delegation?.kind).toBe("task-spawn");
   });
 
   // ── Hybrid preset ────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ describe("IPC_PRESET_SPECS", () => {
     expect(IPC_PRESET_SPECS.hybrid.messaging?.kind).toBe("local");
   });
 
-  test("hybrid: delegation is parallel-minions", () => {
-    expect(IPC_PRESET_SPECS.hybrid.delegation?.kind).toBe("parallel-minions");
+  test("hybrid: delegation is task-spawn", () => {
+    expect(IPC_PRESET_SPECS.hybrid.delegation?.kind).toBe("task-spawn");
   });
 });

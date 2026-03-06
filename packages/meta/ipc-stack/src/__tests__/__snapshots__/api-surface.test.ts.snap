@@ -7,10 +7,6 @@ import { LocalMailboxConfig, MailboxRouter } from '@koi/ipc-local';
 export { LocalMailboxConfig, MailboxRouter } from '@koi/ipc-local';
 import { IpcNexusProviderConfig } from '@koi/ipc-nexus';
 export { IpcNexusProviderConfig } from '@koi/ipc-nexus';
-import { OrchestratorConfig } from '@koi/orchestrator';
-export { OrchestratorConfig } from '@koi/orchestrator';
-import { ParallelMinionsConfig } from '@koi/parallel-minions';
-export { ParallelMinionsConfig } from '@koi/parallel-minions';
 import { LocalScratchpadConfig } from '@koi/scratchpad-local';
 export { LocalScratchpadConfig } from '@koi/scratchpad-local';
 import { ScratchpadNexusProviderConfig } from '@koi/scratchpad-nexus';
@@ -54,12 +50,6 @@ interface IpcStackConfig {
     readonly delegation?: {
         readonly kind: "task-spawn";
         readonly config?: Omit<TaskSpawnConfig, "spawn"> | undefined;
-    } | {
-        readonly kind: "parallel-minions";
-        readonly config?: Omit<ParallelMinionsConfig, "spawn"> | undefined;
-    } | {
-        readonly kind: "orchestrator";
-        readonly config: Omit<OrchestratorConfig, "spawn">;
     } | undefined;
     /** Workspace isolation configuration. */
     readonly workspace?: WorkspaceProviderConfig | undefined;
@@ -87,7 +77,7 @@ type IpcPresetSpec = Partial<Omit<IpcStackConfig, "preset" | "spawn" | "workspac
 interface ResolvedIpcMeta {
     readonly preset: IpcPreset;
     readonly messagingKind: "local" | "nexus" | "none";
-    readonly delegationKind: "task-spawn" | "parallel-minions" | "orchestrator" | "none";
+    readonly delegationKind: "task-spawn" | "none";
     readonly scratchpadKind: "local" | "nexus" | "none";
     readonly workspaceEnabled: boolean;
     readonly federationEnabled: boolean;
@@ -129,7 +119,7 @@ declare function resolveIpcConfig(config: IpcStackConfig): IpcStackConfig;
  *
  * Subsystem composition order:
  *   1. Messaging (local router or nexus provider)
- *   2. Delegation (task-spawn, parallel-minions, or orchestrator)
+ *   2. Delegation (task-spawn)
  *   3. Workspace (optional)
  *   4. Scratchpad (local component or nexus provider + flush middleware)
  *   5. Federation (middleware + optional sync engine)

@@ -34,17 +34,7 @@ export function resolveIpcConfig(config: IpcStackConfig): IpcStackConfig {
     );
   }
 
-  // Validate: orchestrator delegation requires explicit config
   const effectiveDelegation = config.delegation ?? spec.delegation;
-  if (
-    effectiveDelegation?.kind === "orchestrator" &&
-    !("config" in effectiveDelegation && effectiveDelegation.config !== undefined)
-  ) {
-    throw new Error(
-      "[@koi/ipc-stack] Orchestrator delegation requires explicit config. " +
-        "Provide delegation: { kind: 'orchestrator', config: { ... } }.",
-    );
-  }
 
   return {
     ...config,

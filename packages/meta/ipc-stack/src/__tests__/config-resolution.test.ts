@@ -23,14 +23,14 @@ describe("resolveIpcConfig", () => {
 
   // ── Preset selection ────────────────────────────────────────────────
 
-  test("cloud preset sets nexus messaging and parallel-minions delegation", () => {
+  test("cloud preset sets nexus messaging and task-spawn delegation", () => {
     const resolved = resolveIpcConfig({
       spawn: noopSpawn,
       preset: "cloud",
       messaging: { kind: "nexus", config: { agentId: "a1" as never } },
     });
     expect(resolved.messaging?.kind).toBe("nexus");
-    expect(resolved.delegation?.kind).toBe("parallel-minions");
+    expect(resolved.delegation?.kind).toBe("task-spawn");
   });
 
   test("cloud preset without user messaging config throws for nexus", () => {
@@ -39,10 +39,10 @@ describe("resolveIpcConfig", () => {
     );
   });
 
-  test("hybrid preset sets local messaging and parallel-minions delegation", () => {
+  test("hybrid preset sets local messaging and task-spawn delegation", () => {
     const resolved = resolveIpcConfig({ spawn: noopSpawn, preset: "hybrid" });
     expect(resolved.messaging?.kind).toBe("local");
-    expect(resolved.delegation?.kind).toBe("parallel-minions");
+    expect(resolved.delegation?.kind).toBe("task-spawn");
   });
 
   // ── User overrides ──────────────────────────────────────────────────
@@ -61,10 +61,10 @@ describe("resolveIpcConfig", () => {
     const config: IpcStackConfig = {
       spawn: noopSpawn,
       preset: "local",
-      delegation: { kind: "parallel-minions" },
+      delegation: { kind: "task-spawn" },
     };
     const resolved = resolveIpcConfig(config);
-    expect(resolved.delegation?.kind).toBe("parallel-minions");
+    expect(resolved.delegation?.kind).toBe("task-spawn");
   });
 
   // ── Pass-through fields ─────────────────────────────────────────────
@@ -99,14 +99,5 @@ describe("resolveIpcConfig", () => {
         messaging: { kind: "nexus" } as never,
       }),
     ).toThrow(/Nexus messaging requires explicit config/);
-  });
-
-  test("orchestrator delegation without config throws", () => {
-    expect(() =>
-      resolveIpcConfig({
-        spawn: noopSpawn,
-        delegation: { kind: "orchestrator" } as never,
-      }),
-    ).toThrow(/Orchestrator delegation requires explicit config/);
   });
 });
