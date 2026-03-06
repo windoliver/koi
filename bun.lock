@@ -829,6 +829,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/failure-context": {
+      "name": "@koi/failure-context",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/welford-stats": "workspace:*",
+      },
+    },
     "packages/lib/file-resolution": {
       "name": "@koi/file-resolution",
       "version": "0.0.0",
@@ -1465,6 +1473,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/failure-context": "workspace:*",
         "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
@@ -2132,6 +2141,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/failure-context": "workspace:*",
         "@koi/welford-stats": "workspace:*",
       },
       "devDependencies": {
@@ -3257,6 +3267,8 @@
     "@koi/exec-approvals": ["@koi/exec-approvals@workspace:packages/security/exec-approvals"],
 
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/lib/execution-context"],
+
+    "@koi/failure-context": ["@koi/failure-context@workspace:packages/lib/failure-context"],
 
     "@koi/federation": ["@koi/federation@workspace:packages/ipc/federation"],
 

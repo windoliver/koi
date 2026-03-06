@@ -6,6 +6,7 @@
  */
 
 import type { SessionId } from "@koi/core/ecs";
+import type { RunningStats } from "@koi/failure-context";
 
 // ---------------------------------------------------------------------------
 // Anomaly signal
@@ -127,11 +128,7 @@ export interface SessionMetricsSummary {
 }
 
 // ---------------------------------------------------------------------------
-// Latency stats (used by detector)
+// Latency stats (used by detector) — re-exported from @koi/failure-context
 // ---------------------------------------------------------------------------
 
-export interface LatencyStats {
-  readonly count: number;
-  readonly mean: number;
-  readonly stddev: number;
-}
+export type LatencyStats = RunningStats;

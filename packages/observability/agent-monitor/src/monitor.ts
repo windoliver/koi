@@ -20,6 +20,7 @@ import type {
   TurnContext,
 } from "@koi/core/middleware";
 import { swallowError } from "@koi/errors";
+import { computeRunningStats } from "@koi/failure-context";
 import type { WelfordState } from "@koi/welford-stats";
 import { WELFORD_INITIAL, welfordStddev, welfordUpdate } from "@koi/welford-stats";
 import type { AgentMonitorConfig } from "./config.js";
@@ -122,13 +123,8 @@ function buildSummary(
   };
 }
 
-function buildLatencyStats(state: WelfordState): LatencyStats {
-  return {
-    count: state.count,
-    mean: state.mean,
-    stddev: welfordStddev(state),
-  };
-}
+/** Bridge: WelfordState → LatencyStats via computeRunningStats. */
+const buildLatencyStats: (state: WelfordState) => LatencyStats = computeRunningStats;
 
 // ---------------------------------------------------------------------------
 // DRY helper: build a fully-stamped AnomalySignal from a detail + context

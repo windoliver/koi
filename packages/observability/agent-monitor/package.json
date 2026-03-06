@@ -13,6 +13,7 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
+    "@koi/failure-context": "workspace:*",
     "@koi/welford-stats": "workspace:*"
   },
   "devDependencies": {

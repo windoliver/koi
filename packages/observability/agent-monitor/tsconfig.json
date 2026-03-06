@@ -4,5 +4,16 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../lib/failure-context"
+    },
+    {
+      "path": "../../lib/welford-stats"
+    }
+  ]
 }
