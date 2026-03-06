@@ -66,8 +66,7 @@ The context hydrator calls `agent.query<SkillComponent>("skill:")`, finds the ma
 | Package | Skill Name | Tools Covered |
 |---------|-----------|---------------|
 | `@koi/task-spawn` | `task-spawn` | `task` |
-| `@koi/parallel-minions` | `parallel-minions` | `parallel_task` |
-| `@koi/orchestrator` | `orchestrator` | `orchestrate`, `assign_worker`, `review_output`, `synthesize` |
+| `@koi/long-running` | `autonomous` | `plan_autonomous`, `task_complete`, `task_update`, `task_status`, `task_review`, `task_synthesize` |
 | `@koi/code-mode` | `code-mode` | `code_plan_create`, `code_plan_apply`, `code_plan_status` |
 | `@koi/scheduler-provider` | `scheduler` | `sched_submit`, `sched_cancel`, `sched_schedule`, + 6 more |
 | `@koi/tools-web` | `web` | `web_fetch`, `web_search` |
@@ -99,7 +98,7 @@ Two mechanisms exist for shipping skills with packages:
 | **Used by** | Tool providers (ComponentProvider factories) | Engine adapters, channel adapters (BrickDescriptor factories) |
 | **Registration** | Direct — skill goes into agent entity at assembly time | Indirect — skill goes to ForgeStore, then ForgeComponentProvider attaches it |
 | **Requires** | Runtime config (spawn fns, backends, executors) | YAML-resolvable descriptor |
-| **Examples** | task-spawn, orchestrator, filesystem | engine-claude, engine-pi, engine-loop |
+| **Examples** | task-spawn, long-running, filesystem | engine-claude, engine-pi, engine-loop |
 
 Both paths converge: the skill ends up in `agent._components` under a `skill:<name>` key, queryable via `agent.query<SkillComponent>("skill:")`.
 
@@ -117,7 +116,7 @@ interface SingleToolProviderConfig {
 }
 ```
 
-This is a convenience for single-tool providers (task-spawn, parallel-minions). Multi-tool providers (orchestrator, scheduler, code-mode) use manual Map construction and add the skill entry directly.
+This is a convenience for single-tool providers (task-spawn). Multi-tool providers (long-running, scheduler, code-mode) use manual Map construction and add the skill entry directly.
 
 ## Performance
 

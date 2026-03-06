@@ -1,6 +1,6 @@
-# @koi/long-running — Multi-Session Agent Harness for Long-Horizon Tasks
+# @koi/long-running — Multi-Session Agent Harness with Delegation
 
-State manager for agents that operate over hours or days across multiple sessions. Tracks task progress, bridges context between sessions via structured summaries, persists engine state at meaningful boundaries, and captures key artifacts — enabling an agent to pick up exactly where it left off after any session boundary.
+State manager for agents that operate over hours or days across multiple sessions. Tracks task progress, bridges context between sessions, auto-dispatches spawn tasks to worker agents, reconciles external state, and persists engine state at meaningful boundaries — enabling an agent to manage complex multi-agent workflows end-to-end.
 
 ---
 
@@ -8,95 +8,228 @@ State manager for agents that operate over hours or days across multiple session
 
 Single-session agents lose all context when a session ends. Crash recovery (`SessionPersistence`) restores opaque engine state, but it knows nothing about _what the agent was doing_ — which tasks are done, what was learned, or what to work on next.
 
-`@koi/long-running` adds **semantic multi-session management** on top of existing persistence primitives:
+Before the delegation consolidation (#860), multi-agent dispatch was split across 4 packages (`orchestrator`, `parallel-minions`, `task-spawn`, `long-running`) with 11 overlapping tools. This created confusion about which package to use and made it impossible to combine features.
 
-- **Task tracking** — knows which tasks are pending, completed, or failed across sessions
-- **Context bridging** — builds a structured resume prompt from summaries and artifacts so the agent doesn't start blind
-- **Periodic engine state saves** — persists engine state to session record every N turns so crash recovery loses minimal work
-- **Artifact capture** — records notable tool outputs for cross-session continuity
-- **Pinned messages** — resume context is marked `pinned: true` so the compactor never erases it
+`@koi/long-running` now serves as the **single coordination harness** for multi-session agents:
 
-Without this package, every long-running agent would reinvent progress tracking, session handoff, and context reconstruction.
+- **Task tracking** — immutable DAG-based task board with dependency ordering
+- **Delegation bridge** — auto-dispatches `delegation: "spawn"` tasks to worker agents
+- **Reconciler hook** — external reconciliation (cancel/update/add tasks) at configurable cadence
+- **Context bridging** — structured resume prompts from summaries and artifacts
+- **Batch execution** — concurrent dispatch with lane-based concurrency limits
+- **Periodic state saves** — engine state persisted every N turns for crash recovery
+- **7 tools, clear progression** — plan -> dispatch (auto) -> review -> synthesize
+
+---
+
+## What This Enables
+
+### Unified Multi-Agent Orchestration
+
+```
+Agent creates a plan with delegation hints:
+  plan_autonomous → [
+    { id: "research",  delegation: "spawn", agentType: "researcher" },
+    { id: "code",      delegation: "spawn", agentType: "coder", deps: ["research"] },
+    { id: "review",    delegation: "self",  deps: ["code"] },
+  ]
+
+Delegation bridge auto-dispatches:
+  1. "research" is ready + spawn → assign → acquire semaphore → spawn worker
+  2. Worker completes → bridge completes task → cascade check
+  3. "code" is now ready (dep met) → auto-dispatch to coder worker
+  4. "code" completes → "review" is ready but delegation: "self" → agent handles it
+  5. Agent uses task_review + task_synthesize to merge results
+```
+
+### External Reconciliation
+
+```
+Reconciler checks external state every N turns:
+  - GitHub PR merged → cancel "fix-bug" task (no longer needed)
+  - New requirement discovered → add "update-docs" task
+  - Scope changed → update "research" description
+
+Harness applies changes immutably, agent sees updated board.
+```
+
+### Multi-Session Continuity
+
+```
+Session 1                    Session 2                    Session 3
+─────────────────────────    ─────────────────────────    ──────────────
+start(plan)                  resume()                     resume()
+  bridge dispatches spawn      bridge dispatches spawn      all tasks done
+  tasks automatically          tasks automatically          task_synthesize
+  engine state saved @5,10   completeTask("task-2")       → final output
+  completeTask("task-1")
+pause(sessionResult)         pause(sessionResult)
+```
 
 ---
 
 ## Architecture
 
-`@koi/long-running` is an **L2 feature package** — it depends only on L0 (`@koi/core`). Zero external dependencies.
+`@koi/long-running` is an **L2 feature package** — depends on L0 (`@koi/core`) and L0u (`@koi/task-board`).
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  @koi/long-running  (L2)                                          │
 │                                                                    │
-│  types.ts              ← Config, LongRunningHarness interface      │
-│  harness.ts            ← Factory + state machine implementation    │
-│  context-bridge.ts     ← Builds resume context from snapshots      │
-│  checkpoint-policy.ts  ← Engine state save timing + ID generation   │
-│  index.ts              ← Public API surface                        │
+│  Core:                                                             │
+│    types.ts              ← Config, interfaces                      │
+│    harness.ts            ← Factory + state machine                 │
+│    context-bridge.ts     ← Resume context from snapshots           │
+│    checkpoint-policy.ts  ← Engine state save timing                │
+│                                                                    │
+│  Delegation (NEW — #860):                                          │
+│    delegation-bridge.ts  ← Auto-dispatch spawn tasks via SpawnFn   │
+│    lane-semaphore.ts     ← Per-agent-type concurrency limits       │
+│    semaphore.ts          ← FIFO counting semaphore                 │
+│    reconciler-hook.ts    ← External reconciliation with timeout    │
+│                                                                    │
+│  Tools:                                                            │
+│    task-tools.ts         ← task_complete, task_update, task_status, │
+│                            task_review, task_synthesize             │
+│    plan-autonomous-tool.ts ← plan_autonomous                       │
+│                                                                    │
+│  Middleware:                                                       │
+│    inbox-middleware.ts      ← Inbound message handling              │
+│    checkpoint-middleware.ts ← Periodic state saves                  │
+│    thread-compactor.ts     ← Context window management             │
 │                                                                    │
 ├──────────────────────────────────────────────────────────────────  │
 │  Dependencies                                                      │
-│                                                                    │
-│  @koi/core  (L0)   HarnessId, HarnessSnapshot, HarnessStatus,     │
-│                     TaskBoardSnapshot, TaskItemId, TaskResult,      │
-│                     SessionPersistence, EngineInput, EngineState,   │
-│                     Result, KoiError, KoiMiddleware, InboundMessage │
+│    @koi/core  (L0)      types, branded IDs                         │
+│    @koi/task-board (L0u) board, DAG, helpers                       │
 └──────────────────────────────────────────────────────────────────  ┘
 ```
 
 ---
 
-## How It Works
+## Tool Surface (7 tools)
 
-The harness is a **state manager called at session boundaries by Node** — it is not a middleware or engine decorator. It owns the task plan, context summaries, and progress tracking. Engine state lives in `SessionRecord.lastEngineState` via `SessionPersistence` (crash recovery). Harness state lives in `SnapshotChainStore<HarnessSnapshot>` (semantic history).
+| Tool | Phase | Description |
+|------|-------|-------------|
+| `plan_autonomous` | Plan | Create a DAG plan with delegation hints (`"spawn"` or `"self"`) |
+| `task_complete` | Execute | Mark a task done with output |
+| `task_update` | Execute | Revise a task's description |
+| `task_status` | Execute | Check current board state |
+| `task_review` | Review | Accept, reject, or revise a completed task's output |
+| `task_synthesize` | Synthesize | Merge all results in topological (dependency) order |
+| `task` | Dispatch | Single-task delegation (from `@koi/task-spawn`, unchanged) |
+
+Clear progression: **plan -> dispatch (auto) -> review -> synthesize**.
+
+---
+
+## Delegation Bridge
+
+The bridge implements the **Symphony single-authority + claimed-set** pattern for auto-dispatching spawn tasks.
+
+### How It Works
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      External Caller (Node)                        │
-│  "start a multi-day task, pause at session end, resume tomorrow"  │
-└────────────────────────┬─────────────────────────────────────────┘
-                         │
-    start(plan) ─────────┤
-    resume() ────────────┤
-    pause(result) ───────┤
-    completeTask(id) ────┤
-    fail(error) ─────────┤
-    status() ────────────┘
-                         │
-                         ▼
-┌──────────────────────────────────────────────────────────────────┐
-│              @koi/long-running Harness                              │
-│                                                                    │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │                  Phase State Machine                        │  │
-│  │                                                            │  │
-│  │   idle ──start()──> active ──pause()──> suspended          │  │
-│  │                       │                     │              │  │
-│  │                       │ completeTask()       │ resume()     │  │
-│  │                       │ (all done)          │              │  │
-│  │                       ▼                     ▼              │  │
-│  │                   completed             active (again)     │  │
-│  │                                                            │  │
-│  │   active/suspended ──fail()──> failed                      │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                                                                    │
-│  ┌─────────────┐  ┌───────────────┐  ┌────────────────────────┐  │
-│  │ TaskBoard   │  │ Summaries     │  │ KeyArtifacts           │  │
-│  │ pending: 3  │  │ session 1: .. │  │ code_search @ turn 5   │  │
-│  │ done: 2     │  │ session 2: .. │  │ file_write @ turn 12   │  │
-│  └─────────────┘  └───────────────┘  └────────────────────────┘  │
-│                                                                    │
-│  Persistence:                                                      │
-│  ├─ HarnessSnapshot → SnapshotChainStore (semantic history)        │
-│  └─ EngineState     → SessionRecord.lastEngineState (crash recovery)│
-└──────────────────────────────────────────────────────────────────┘
+bridge.dispatchReady(board)
+  │
+  ├── Scan board.ready() for delegation === "spawn" tasks
+  │
+  ├── For each ready spawn task:
+  │   1. Claim: board.assign(taskId, agentId) — prevents duplicate dispatch
+  │   2. Build upstream context from completed dependencies
+  │   3. Acquire semaphore (global + per-lane concurrency)
+  │   4. Spawn worker with DEFERRED delivery policy
+  │   5. On success: board.complete() → release semaphore
+  │   6. On clean failure: board.fail(retryable: true) → immediate retry
+  │   7. On abnormal failure: board.fail() + exponential backoff
+  │
+  └── Cascade: after any completion, re-scan for newly unblocked tasks
+```
+
+### Configuration
+
+```typescript
+interface DelegationBridgeConfig {
+  readonly spawn: SpawnFn;                              // Required — how to spawn workers
+  readonly deliveryPolicy?: DeliveryPolicy;             // Default: { kind: "deferred" }
+  readonly maxConcurrency?: number;                     // Default: 5
+  readonly laneConcurrency?: ReadonlyMap<string, number>; // Per-agentType limits
+  readonly maxOutputPerTask?: number;                   // Default: 5000 chars
+  readonly maxUpstreamContextPerTask?: number;          // Default: 2000 chars
+  readonly onTaskDispatched?: (taskId: TaskItemId) => void;
+  readonly onTaskCompleted?: (taskId: TaskItemId) => void;
+}
+```
+
+### Retry Strategy (Dual)
+
+| Failure type | Behavior |
+|-------------|----------|
+| Clean failure (worker returns `{ ok: false }`) | `board.fail(retryable: true)` — immediate retry if retries < maxRetries |
+| Abnormal failure (spawn throws/timeout) | `board.fail()` + exponential backoff: `min(10s * 2^(retries-1), 5min)` |
+
+### Lane Semaphore
+
+Per-agent-type concurrency limits prevent one type of worker from consuming all slots:
+
+```typescript
+const bridge = createDelegationBridge({
+  spawn,
+  maxConcurrency: 10,
+  laneConcurrency: new Map([
+    ["researcher", 3],  // Max 3 concurrent researcher workers
+    ["coder", 5],       // Max 5 concurrent coder workers
+  ]),
+});
+```
+
+---
+
+## Reconciler Hook
+
+Optional external reconciliation that checks outside state at configurable cadence.
+
+### How It Works
+
+```
+Every N turns (configurable):
+  reconciler.check(boardSnapshot)
+    → returns TaskReconcileAction[]
+    → apply actions in order: cancel > update > add
+    → return updated board
+
+On timeout (default 5s) or error:
+  → proceed without changes (fail-open for liveness)
+```
+
+### Actions
+
+| Action | Effect |
+|--------|--------|
+| `{ kind: "cancel", taskId, reason }` | Marks task as failed with reason |
+| `{ kind: "update", taskId, description }` | Updates task description |
+| `{ kind: "add", task }` | Adds a new task to the board |
+
+### Configuration
+
+```typescript
+const hook = createReconcilerHook({
+  reconciler: {
+    check: async (snapshot) => {
+      // Query external state (GitHub, Jira, etc.)
+      return [{ kind: "cancel", taskId: taskItemId("old-task"), reason: "PR already merged" }];
+    },
+  },
+  intervalTurns: 5,  // Check every 5 turns (default)
+  timeoutMs: 5000,   // Timeout protection (default)
+});
 ```
 
 ---
 
 ## Multi-Session Lifecycle
 
-A typical multi-session workflow:
+### Start -> Pause -> Resume Cycle
 
 ```
 Session 1                    Session 2                    Session 3
@@ -112,64 +245,12 @@ start(plan)                  resume()                     resume()
   │ completeTask("task-1")     │                            │  → phase = completed
   │                            │                            │
 pause(sessionResult)         pause(sessionResult)
-  │                            │
-  │ snapshot v1                │ snapshot v2
-  │ metrics merged             │ metrics merged
-  │ summary appended           │ summary appended
-  │ engine state saved         │ chain pruned
-  │                            │
-  ▼                            ▼
- [suspended]                  [suspended]                  [completed]
 ```
 
 ### Resume Strategy
 
-When `resume()` is called, the harness attempts two strategies in order:
-
-1. **Engine state recovery** — loads the `SessionRecord` and checks `lastEngineState`. If present, returns `{ kind: "resume", state }` so the engine can restore its internal state. This is the "hot" path — cheapest and most accurate.
-
-2. **Context bridge fallback** — if no engine state exists, builds `InboundMessage[]` from the harness snapshot's task board, summaries, and artifacts. Returns `{ kind: "messages", messages }`. Messages are marked `pinned: true` to survive compaction.
-
-```
-resume()
-   │
-   ├── loadSession(lastSessionId)
-   │       │
-   │       ├── session.lastEngineState? → { kind: "resume", state }  ← hot path
-   │       │
-   │       └── no engine state?
-   │               │
-   │               └── buildResumeContext(snapshot)
-   │                       │
-   │                       └── { kind: "messages", messages }  ← cold path
-   │                            (messages are pinned: true)
-   │
-   └── sessionSeq++
-```
-
----
-
-## Middleware Hooks
-
-`harness.createMiddleware()` returns a `KoiMiddleware` named `"long-running-harness"` (priority 50) with three hooks:
-
-### onAfterTurn — Periodic Engine State Saves
-
-Every `softCheckpointInterval` turns (default: 5), persists engine state to `SessionRecord.lastEngineState` via `saveSession()`. If `saveState` callback is provided, captures real engine state; otherwise skips.
-
-```
-Turn 1  2  3  4  5  6  7  8  9  10  11  12  ...
-                  ↑                 ↑
-            saveSession()     saveSession()
-```
-
-### wrapToolCall — Artifact Capture
-
-When a tool's name matches `artifactToolNames`, captures the tool response as a `KeyArtifact`. Artifacts are stored in the snapshot and included in resume context.
-
-### onSessionEnd — Artifact Flush
-
-On session end, flushes any captured artifacts to the harness snapshot. Respects `maxKeyArtifacts` limit (default: 10), keeping the newest.
+1. **Engine state recovery** (hot path) — loads `SessionRecord.lastEngineState`
+2. **Context bridge fallback** (cold path) — builds `InboundMessage[]` from task board, summaries, artifacts. Messages marked `pinned: true` to survive compaction.
 
 ---
 
@@ -177,243 +258,118 @@ On session end, flushes any captured artifacts to the harness snapshot. Respects
 
 ```typescript
 interface LongRunningConfig {
-  readonly harnessId: HarnessId;           // Unique harness identifier
-  readonly agentId: AgentId;               // Agent this harness manages
-  readonly harnessStore: HarnessSnapshotStore;  // DAG store for semantic history
-  readonly sessionPersistence: SessionPersistence; // Crash recovery store
+  readonly harnessId: HarnessId;
+  readonly agentId: AgentId;
+  readonly harnessStore: HarnessSnapshotStore;
+  readonly sessionPersistence: SessionPersistence;
   readonly softCheckpointInterval?: number;     // Default: 5 turns
   readonly maxKeyArtifacts?: number;            // Default: 10
   readonly maxContextTokens?: number;           // Default: 3000
-  readonly artifactToolNames?: readonly string[]; // Tools to capture
-  readonly pruningPolicy?: PruningPolicy;       // Default: { retainCount: 10 }
-  readonly saveState?: SaveStateCallback;       // Capture real engine state
+  readonly artifactToolNames?: readonly string[];
+  readonly pruningPolicy?: PruningPolicy;
+  readonly saveState?: SaveStateCallback;
+  readonly spawn?: SpawnFn;                     // Enables delegation bridge
+  readonly reconciler?: TaskReconciler;         // Enables reconciler hook
+  readonly reconcileIntervalTurns?: number;
+  readonly reconcileTimeoutMs?: number;
 }
 ```
-
-### SaveStateCallback
-
-Optional callback invoked during soft checkpoints to capture real engine state instead of a placeholder:
-
-```typescript
-type SaveStateCallback = () => EngineState | Promise<EngineState>;
-```
-
----
-
-## Context Bridge
-
-The context bridge builds resume prompts from harness snapshots. It operates within a token budget (default: 3000 tokens) and includes content in priority order:
-
-1. **Task plan** (always included) — formatted task board with status icons
-2. **Session summaries** (newest first, up to half remaining budget)
-3. **Key artifacts** (newest first, up to half remaining budget)
-
-```
-## Task Plan
-
-[x] task-1: Set up database schema
-[x] task-2: Implement user authentication
-[ ] task-3: Build API endpoints
-[ ] task-4: Write integration tests
-
-Completed: 2/4
-
-## Previous Session Summaries
-
-Session 2: Implemented JWT auth with refresh tokens. Added bcrypt hashing.
-Session 1: Created PostgreSQL schema with users, sessions, and roles tables.
-
-## Key Artifacts
-
-[code_search @ turn 12]: Found 3 matching files in src/auth/
-[file_write @ turn 8]: Created migrations/001_users.sql
-```
-
-All resume messages are marked `pinned: true` — the compactor middleware will never summarize them away.
 
 ---
 
 ## Examples
 
-### Minimal — Single-Session Task
+### With Delegation Bridge
 
 ```typescript
-import { createLongRunningHarness } from "@koi/long-running";
-import type { LongRunningConfig } from "@koi/long-running";
-import { harnessId, agentId, taskItemId } from "@koi/core";
+import { createTaskBoard } from "@koi/task-board";
+import { createDelegationBridge } from "@koi/long-running";
+import { taskItemId } from "@koi/core";
 
-const config: LongRunningConfig = {
-  harnessId: harnessId("my-harness"),
-  agentId: agentId("agent-1"),
-  harnessStore: mySnapshotStore,
-  sessionPersistence: mySessionPersistence,
-};
+const board = createTaskBoard({ maxRetries: 3 });
+const result = board.addAll([
+  { id: taskItemId("research"), description: "Research topic", dependencies: [], delegation: "spawn", agentType: "researcher" },
+  { id: taskItemId("write"), description: "Write report", dependencies: [taskItemId("research")], delegation: "self" },
+]);
 
-const harness = createLongRunningHarness(config);
-
-// Start with a task plan
-const startResult = await harness.start({
-  items: [
-    {
-      id: taskItemId("task-1"),
-      description: "Implement user auth",
-      dependencies: [],
-      priority: 0,
-      maxRetries: 3,
-      retries: 0,
-      status: "pending",
+if (result.ok) {
+  const bridge = createDelegationBridge({
+    spawn: async (req) => {
+      // Dispatch to worker agent
+      return { ok: true, output: "Research complete." };
     },
-  ],
-  results: [],
-});
+    maxConcurrency: 5,
+    laneConcurrency: new Map([["researcher", 2]]),
+  });
 
-// Mark task complete
-await harness.completeTask(taskItemId("task-1"), {
-  taskId: taskItemId("task-1"),
-  output: "JWT auth implemented",
-  durationMs: 45000,
-});
-
-// harness.status().phase === "completed"
+  const updatedBoard = await bridge.dispatchReady(result.value);
+  // "research" auto-dispatched and completed
+  // "write" now ready but delegation: "self" — handled by agent
+}
 ```
 
-### Multi-Session with Engine Integration
+### With Reconciler
 
 ```typescript
-import { createLongRunningHarness } from "@koi/long-running";
+import { createReconcilerHook } from "@koi/long-running";
+
+const hook = createReconcilerHook({
+  reconciler: {
+    check: async (snapshot) => {
+      const prMerged = await checkGitHubPR("fix-123");
+      if (prMerged) {
+        return [{ kind: "cancel", taskId: taskItemId("fix-123"), reason: "PR already merged" }];
+      }
+      return [];
+    },
+  },
+  intervalTurns: 3,
+});
+
+if (hook.shouldCheck(turnCount)) {
+  board = await hook.reconcile(board);
+}
+```
+
+### Full Pipeline (createKoi)
+
+```typescript
 import { createKoi } from "@koi/engine";
+import { createLoopAdapter } from "@koi/engine-loop";
+import { createTaskTools } from "@koi/long-running";
+import { createTaskBoard } from "@koi/task-board";
 
-const harness = createLongRunningHarness(config);
-
-// --- Session 1 ---
-const startResult = await harness.start(taskPlan);
-if (!startResult.ok) throw new Error(startResult.error.message);
+const board = createTaskBoard({ maxRetries: 3 });
+const tools = createTaskTools({ board, agentId: agentId("orchestrator") });
 
 const runtime = await createKoi({
-  manifest,
-  adapter,
-  middleware: [harness.createMiddleware()],
+  manifest: { name: "orchestrator", version: "0.0.1", model: { name: "claude-haiku" } },
+  adapter: createLoopAdapter({ modelCall, maxTurns: 10 }),
+  tools: tools.descriptors,
 });
 
-// Run with the harness-generated engine input
-for await (const event of runtime.run(startResult.value.engineInput)) {
-  // Process events...
+for await (const event of runtime.run({ kind: "text", text: "Plan and execute the task." })) {
+  // Agent uses plan_autonomous, task_complete, task_review, task_synthesize
 }
-
-// End session — persist state
-await harness.pause({
-  sessionId: startResult.value.sessionId,
-  metrics: { totalTokens: 5000, inputTokens: 3000, outputTokens: 2000, turns: 8, durationMs: 60000 },
-  summary: "Completed database schema setup. Created 3 migration files.",
-});
-
-// --- Session 2 (hours later) ---
-const resumeResult = await harness.resume();
-if (!resumeResult.ok) throw new Error(resumeResult.error.message);
-
-const runtime2 = await createKoi({
-  manifest,
-  adapter,
-  middleware: [harness.createMiddleware()],
-});
-
-for await (const event of runtime2.run(resumeResult.value.engineInput)) {
-  // Agent resumes with full context...
-}
-```
-
-### With SaveState Callback
-
-```typescript
-const harness = createLongRunningHarness({
-  ...config,
-  saveState: async () => adapter.getState(),  // Capture real engine state
-  softCheckpointInterval: 3,                   // Checkpoint every 3 turns
-  artifactToolNames: ["code_search", "file_write", "shell"],
-});
-```
-
-### Handling Failures
-
-```typescript
-try {
-  // Agent encounters unrecoverable error
-} catch (e: unknown) {
-  await harness.fail({
-    code: "EXTERNAL",
-    message: e instanceof Error ? e.message : String(e),
-    retryable: false,
-  });
-  // harness.status().phase === "failed"
-  // harness.status().failureReason === error message
-}
-```
-
-### Testing with In-Memory Stores
-
-```typescript
-import { createLongRunningHarness } from "@koi/long-running";
-import { createInMemorySnapshotChainStore } from "@koi/snapshot-chain-store";
-import { createMockHarness, createMockTaskPlan } from "@koi/test-utils";
-
-// Option A: Real harness with in-memory stores
-const harness = createLongRunningHarness({
-  harnessId: harnessId("test"),
-  agentId: agentId("test-agent"),
-  harnessStore: createInMemorySnapshotChainStore(),
-  sessionPersistence: mockSessionPersistence,
-});
-
-// Option B: Mock harness for unit tests
-const mock = createMockHarness();
-await mock.start(createMockTaskPlan(3));
 ```
 
 ---
 
-## Save Policy
+## Migration from orchestrator / parallel-minions
 
-Two pure functions control periodic engine state save behavior:
+| Before (4 packages, 11 tools) | After (2 packages, 7 tools) |
+|---|---|
+| `@koi/orchestrator` — `orchestrate`, `assign_worker`, `review_output`, `synthesize` | `@koi/long-running` — `plan_autonomous`, `task_review`, `task_synthesize` |
+| `@koi/parallel-minions` — `parallel_task` | Delegation bridge auto-dispatches (no tool needed) |
+| `@koi/long-running` — `task_complete`, `task_update`, `task_status` | Unchanged |
+| `@koi/task-spawn` — `task` | Unchanged |
 
-### shouldSoftCheckpoint
-
-Determines if an engine state save should fire at the current turn:
-
-```typescript
-shouldSoftCheckpoint(turnIndex: 0, interval: 5)  // false (turn 0 never fires)
-shouldSoftCheckpoint(turnIndex: 5, interval: 5)  // true
-shouldSoftCheckpoint(turnIndex: 7, interval: 5)  // false
-shouldSoftCheckpoint(turnIndex: 10, interval: 5) // true
-```
-
-### computeCheckpointId
-
-Generates a deterministic ID from harness, session, and turn:
-
-```typescript
-computeCheckpointId(harnessId("h1"), "session-1", 5)
-// → "h1:session-1:5"
-```
-
----
-
-## Pinned Messages and Compaction
-
-Resume context messages are marked `pinned: true` on `InboundMessage`. The `@koi/middleware-compactor` respects this flag — pinned messages are never included in the compaction head (summarized portion). This ensures harness context survives even aggressive compaction.
-
-```
-Context window during Session 2:
-
-┌──────────────────────────────────────────────────────┐
-│ [pinned] Harness resume context                       │  ← never compacted
-│   Task plan, summaries, artifacts                    │
-│                                                      │
-│ [compactable] Old conversation turns                 │  ← compactor may
-│ ...                                                  │     summarize these
-│                                                      │
-│ [preserved] Recent turns (preserveRecent)            │  ← always kept
-└──────────────────────────────────────────────────────┘
-```
+Key changes:
+- **Board extracted** to `@koi/task-board` (L0u) — reusable by any package
+- **Spawn dispatch is automatic** via delegation bridge — no tool call needed
+- **Concurrency control** via lane semaphore (ported from parallel-minions)
+- **External reconciliation** via reconciler hook (new capability)
+- **`delegation` field on TaskItem** hints whether task is self-handled or spawned
 
 ---
 
@@ -423,74 +379,26 @@ Context window during Session 2:
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-| `createLongRunningHarness(config)` | `LongRunningHarness` | Creates a new harness instance |
+| `createLongRunningHarness(config)` | `LongRunningHarness` | Multi-session harness with full lifecycle |
+| `createDelegationBridge(config)` | `DelegationBridge` | Auto-dispatch spawn tasks |
+| `createReconcilerHook(config)` | `ReconcilerHook` | Cadence-gated external reconciliation |
+| `createTaskTools(config)` | Task tool descriptors | All 5 task tools for agent use |
+| `createAutonomousProvider(config)` | `ComponentProvider` | Registers tools + middleware on agent |
 
-### Harness Methods
+### DelegationBridge Methods
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `start(plan)` | `(TaskBoardSnapshot) → Promise<Result<StartResult, KoiError>>` | Initialize with task plan, transition to active |
-| `resume()` | `() → Promise<Result<ResumeResult, KoiError>>` | Resume from suspended, try engine state then context bridge |
-| `pause(result)` | `(SessionResult) → Promise<Result<void, KoiError>>` | End session, persist snapshot, transition to suspended |
-| `fail(error)` | `(KoiError) → Promise<Result<void, KoiError>>` | Transition to failed with reason |
-| `completeTask(id, result)` | `(TaskItemId, TaskResult) → Promise<Result<void, KoiError>>` | Mark task done; auto-completes if all done |
-| `status()` | `() → HarnessStatus` | Sync read of current phase, tasks, metrics |
-| `createMiddleware()` | `() → KoiMiddleware` | Returns middleware with 3 hooks |
-| `dispose()` | `() → Promise<void>` | Idempotent cleanup, prevents further operations |
+| Method | Description |
+|--------|-------------|
+| `dispatchReady(board)` | Scan and dispatch ready spawn tasks, returns updated board |
+| `abort()` | Abort all in-flight spawns |
+| `inFlightCount()` | Number of currently in-flight spawns |
 
-### Context Bridge
+### ReconcilerHook Methods
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `buildInitialPrompt(plan)` | `(TaskBoardSnapshot) → string` | Formats task plan as text for first session |
-| `buildResumeContext(snapshot, config)` | `(HarnessSnapshot, { maxContextTokens }) → Result<InboundMessage[], KoiError>` | Builds pinned resume messages from snapshot |
-
-### Save Policy
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `shouldSoftCheckpoint(turn, interval)` | `(number, number) → boolean` | Whether to save engine state at this turn |
-| `computeCheckpointId(harness, session, turn)` | `(HarnessId, string, number) → string` | Deterministic save-point ID |
-
-### Types
-
-| Type | Description |
-|------|-------------|
-| `LongRunningConfig` | Full configuration for harness creation |
-| `LongRunningHarness` | Main harness interface with 8 methods |
-| `StartResult` | `{ engineInput, sessionId }` |
-| `ResumeResult` | `{ engineInput, sessionId, engineStateRecovered }` |
-| `SessionResult` | `{ sessionId, engineState?, metrics, summary? }` |
-| `SaveStateCallback` | `() → EngineState \| Promise<EngineState>` |
-| `DEFAULT_LONG_RUNNING_CONFIG` | Default values for optional config fields |
-
-### L0 Types (from @koi/core)
-
-| Type | Description |
-|------|-------------|
-| `HarnessId` | Branded string for harness identity |
-| `HarnessPhase` | `"idle" \| "active" \| "suspended" \| "completed" \| "failed"` |
-| `HarnessSnapshot` | Durable checkpoint: task board, summaries, artifacts, metrics |
-| `HarnessStatus` | Observable status: phase, tasks, metrics, failure reason |
-| `HarnessMetrics` | Accumulated metrics: sessions, turns, tokens, tasks |
-| `ContextSummary` | Per-session narrative with token estimate |
-| `KeyArtifact` | Captured tool output with tool name and turn index |
-| `HarnessSnapshotStore` | `SnapshotChainStore<HarnessSnapshot>` alias |
-| `AgentId` | Branded string for agent identity |
-
----
-
-## Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Harness is a state manager, not middleware | Called at session boundaries by Node — decoupled from engine lifecycle |
-| Snapshot chain (DAG) over flat store | Enables branching, forking, and pruning of harness history |
-| Resume tries engine state first | Hot path is cheapest — avoids LLM summarization when possible |
-| Context bridge messages are `pinned` | Prevents compactor from erasing task plan and summaries |
-| Engine state saves are fire-and-forget | Persistence failures must never block the agent's work |
-| Token budget for context bridge | Prevents resume context from consuming entire context window |
-| `fail()` separate from `pause()` | Failed state is terminal — prevents accidental resume of broken agents |
+| Method | Description |
+|--------|-------------|
+| `shouldCheck(turnCount)` | Whether to reconcile at this turn |
+| `reconcile(board)` | Run reconciler, apply actions, return updated board |
 
 ---
 
@@ -498,15 +406,16 @@ Context window during Session 2:
 
 ```
 L0  @koi/core ──────────────────────────────────────────────────┐
-    HarnessId, HarnessSnapshot, HarnessStatus, HarnessMetrics,   │
-    TaskBoardSnapshot, TaskItemId, TaskResult, SessionPersistence, │
-    EngineInput, EngineState, InboundMessage, KoiMiddleware,       │
-    Result, KoiError                                               │
-                                                                    ▼
-L2  @koi/long-running <─────────────────────────────────────────┘
-    imports from L0 only
+    TaskBoard, TaskItem, TaskItemId, TaskResult, SpawnFn,        │
+    DeliveryPolicy, TaskReconciler, TaskReconcileAction,         │
+    Result, KoiError, KoiMiddleware, AgentId                     │
+                                                                  │
+L0u @koi/task-board ─────────────────────────────────────────────┤
+    createTaskBoard, formatUpstreamContext, topologicalSort       │
+                                                                  ▼
+L2  @koi/long-running <──────────────────────────────────────────┘
+    imports from L0 and L0u only
     x never imports @koi/engine (L1)
     x never imports peer L2 packages
     x zero external dependencies
-    ~ package.json: { "dependencies": { "@koi/core": "workspace:*" } }
 ```

@@ -801,7 +801,7 @@ AgentConditions (flags, not states):  Initialized, Ready, Healthy,
 | **Spawn** | `fork(2)` + `exec(2)` | `SpawnFn` | `Node.dispatch()` via registry |
 | **Scratchpad** | `/dev/shm` / filesystem | `ScratchpadComponent` (CAS) | Nexus `/groups/{groupId}/scratch/` |
 
-Coordination patterns (orchestrator, parallel-minions, task-spawn) **use** these primitives — they're not primitives themselves.
+Coordination patterns (long-running, task-spawn) **use** these primitives — they're not primitives themselves.
 
 ### Communication Patterns
 

@@ -68,7 +68,7 @@ export function createReconcilerHook(config: ReconcilerHookConfig): ReconcilerHo
           const item = currentBoard.get(action.taskId);
           if (item === undefined) break;
           const failResult = currentBoard.fail(action.taskId, {
-            code: "CANCELLED",
+            code: "CONFLICT",
             message: `Reconciler cancelled: ${action.reason}`,
             retryable: false,
           });
