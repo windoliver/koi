@@ -12,11 +12,11 @@ export interface WelfordState {
   readonly m2: number;
 }
 
-export const WELFORD_INITIAL: WelfordState = {
+export const WELFORD_INITIAL: WelfordState = Object.freeze({
   count: 0,
   mean: 0,
   m2: 0,
-};
+});
 
 /**
  * Returns a new WelfordState after incorporating `value`.
@@ -28,6 +28,15 @@ export function welfordUpdate(state: WelfordState, value: number): WelfordState 
   const delta2 = value - mean;
   const m2 = state.m2 + delta * delta2;
   return { count, mean, m2 };
+}
+
+/**
+ * Returns the population variance from WelfordState.
+ * Returns 0 if count < 2 (insufficient data).
+ */
+export function welfordVariance(state: WelfordState): number {
+  if (state.count < 2) return 0;
+  return state.m2 / state.count;
 }
 
 /**

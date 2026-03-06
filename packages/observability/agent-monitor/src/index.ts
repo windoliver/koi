@@ -8,7 +8,7 @@
  * Satisfies the rogue-agents:no-agent-monitor doctor rule (OWASP ASI10).
  * Middleware name: "agent-monitor"
  *
- * Depends on @koi/core and @koi/errors only.
+ * Depends on @koi/core, @koi/errors, and @koi/welford-stats.
  */
 
 export type { AgentMonitorConfig } from "./config.js";

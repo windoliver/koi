@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/welford-stats": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",

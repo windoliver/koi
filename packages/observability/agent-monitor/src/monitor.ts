@@ -20,6 +20,8 @@ import type {
   TurnContext,
 } from "@koi/core/middleware";
 import { swallowError } from "@koi/errors";
+import type { WelfordState } from "@koi/welford-stats";
+import { WELFORD_INITIAL, welfordStddev, welfordUpdate } from "@koi/welford-stats";
 import type { AgentMonitorConfig } from "./config.js";
 import { DEFAULT_THRESHOLDS } from "./config.js";
 import {
@@ -38,8 +40,6 @@ import {
   checkToolRepeat,
   matchesAnyObjective,
 } from "./detector.js";
-import type { WelfordState } from "./latency.js";
-import { WELFORD_INITIAL, welfordStddev, welfordUpdate } from "./latency.js";
 import type { AnomalyDetail, AnomalySignal, LatencyStats, SessionMetricsSummary } from "./types.js";
 
 // ---------------------------------------------------------------------------
