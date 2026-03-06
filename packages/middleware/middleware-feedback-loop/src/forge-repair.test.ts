@@ -83,6 +83,7 @@ function createMockHealthTracker(snapshot?: Record<string, unknown>): ToolHealth
     recordFailure: mock(() => {}),
     getSnapshot: mock(() => (snapshot ?? defaultSnapshot) as never),
     isQuarantined: mock(() => false),
+    isQuarantinedAsync: mock(() => Promise.resolve(false)),
     checkAndQuarantine: mock(() => Promise.resolve(false)),
     checkAndDemote: mock(() => Promise.resolve(false)),
     getAllSnapshots: mock(() => []),

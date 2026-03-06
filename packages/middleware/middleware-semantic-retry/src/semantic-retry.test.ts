@@ -451,6 +451,53 @@ describe("createSemanticRetryMiddleware", () => {
     });
   });
 
+  describe("onSessionStart resets state", () => {
+    test("budget resets to maxRetries on session start", async () => {
+      const handle = createSemanticRetryMiddleware({ maxRetries: 3 });
+
+      // Exhaust some budget
+      await expect(
+        handle.middleware.wrapModelCall?.(
+          mockCtx,
+          baseRequest,
+          createFailingModelHandler(new Error("fail")),
+        ),
+      ).rejects.toThrow();
+      expect(handle.getRetryBudget()).toBe(2);
+
+      // Simulate new session
+      await handle.middleware.onSessionStart?.({} as never);
+
+      expect(handle.getRetryBudget()).toBe(3);
+    });
+
+    test("records and pendingAction are cleared on session start", async () => {
+      const handle = createSemanticRetryMiddleware({ maxRetries: 5 });
+
+      // Generate a failure to create records + pendingAction
+      await expect(
+        handle.middleware.wrapModelCall?.(
+          mockCtx,
+          baseRequest,
+          createFailingModelHandler(new Error("fail")),
+        ),
+      ).rejects.toThrow();
+
+      expect(handle.getRecords()).toHaveLength(1);
+
+      // Simulate new session
+      await handle.middleware.onSessionStart?.({} as never);
+
+      expect(handle.getRecords()).toHaveLength(0);
+
+      // Next model call should be passthrough (no pendingAction)
+      const spy = createSpyModelHandler();
+      await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
+      expect(spy.calls).toHaveLength(1);
+      expect(spy.calls[0]?.messages).toHaveLength(1); // No rewrite injection
+    });
+  });
+
   describe("describeCapabilities", () => {
     test("is defined on the middleware", () => {
       const handle = createSemanticRetryMiddleware({});

@@ -38,7 +38,7 @@ export function recoverToolCalls(
       }
     }
 
-    if (accepted.length === 0) return undefined;
+    if (accepted.length === 0) continue;
 
     // Cap at maxCalls
     const capped = accepted.length > maxCalls ? accepted.slice(0, maxCalls) : accepted;
