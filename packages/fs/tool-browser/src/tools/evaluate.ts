@@ -5,7 +5,7 @@
  * This tool has access to the full page context including cookies and storage.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalTimeout, parseString } from "../parse-args.js";
 
 const MIN_TIMEOUT_MS = 100;
@@ -14,7 +14,7 @@ const MAX_TIMEOUT_MS = 10_000;
 export function createBrowserEvaluateTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -39,7 +39,8 @@ export function createBrowserEvaluateTool(
         required: ["script"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const scriptResult = parseString(args, "script");
       if (!scriptResult.ok) return scriptResult.err;

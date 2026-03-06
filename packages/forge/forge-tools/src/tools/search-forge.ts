@@ -24,7 +24,8 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
     properties: {
       kind: { type: "string" },
       scope: { type: "string" },
-      trustTier: { type: "string" },
+      origin: "primordial",
+      policy: { type: "string" },
       lifecycle: { type: "string" },
       tags: { type: "array", items: { type: "string" } },
       createdBy: { type: "string" },

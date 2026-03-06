@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { ToolRequest } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
 import {
@@ -304,9 +305,8 @@ describe("tool health integration", () => {
       Promise.resolve({
         ok: true as const,
         value: {
-          trustTier: "promoted",
-          lastPromotedAt: 0,
-          lastDemotedAt: 0,
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
         } as never,
       }),
     );
@@ -345,13 +345,13 @@ describe("tool health integration", () => {
     // Verify store update with demoted trust tier
     expect(forgeStore.update).toHaveBeenCalledTimes(1);
     const updateArgs = forgeStore.update.mock.calls[0] as unknown[];
-    expect(updateArgs[1]).toEqual(expect.objectContaining({ trustTier: "verified" }));
+    expect(updateArgs[1]).toEqual(expect.objectContaining({ policy: DEFAULT_SANDBOXED_POLICY }));
 
     // Verify onDemotion callback fired
     expect(onDemotion).toHaveBeenCalledTimes(1);
     const event = (onDemotion.mock.calls[0] as unknown[])?.[0] as Record<string, unknown>;
-    expect(event.from).toBe("promoted");
-    expect(event.to).toBe("verified");
+    expect(event.from).toBe("unsandboxed");
+    expect(event.to).toBe("sandboxed");
     expect(event.reason).toBe("error_rate");
 
     // Verify snapshot recorded

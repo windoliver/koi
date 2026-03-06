@@ -4,7 +4,7 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { AgentDescriptor, SigningBackend, SkillComponent, ToolArtifact } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { signAttestation } from "@koi/forge-integrity";
 import { createInMemoryForgeStore } from "@koi/forge-tools";
 import type { SandboxExecutor } from "@koi/forge-types";
@@ -29,7 +29,8 @@ function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
     name: "test-tool",
     description: "A test tool",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "1.0.0",

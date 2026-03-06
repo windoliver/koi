@@ -119,7 +119,7 @@ describe("createCompanionSkillArtifact", () => {
     expect(artifact.description).toBe("Explains when to use the soul middleware");
     expect(artifact.content).toBe("Use soul middleware when you need persistent memory.");
     expect(artifact.scope).toBe("global");
-    expect(artifact.trustTier).toBe("promoted");
+    expect(artifact.policy.sandbox).toBe(false);
     expect(artifact.lifecycle).toBe("active");
     expect(artifact.version).toBe("0.1.0");
     expect(artifact.usageCount).toBe(0);

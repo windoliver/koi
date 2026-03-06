@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { rawManifestSchema, zodToKoiError } from "../schema.js";
 
 // ---------------------------------------------------------------------------
@@ -191,7 +192,8 @@ describe("rawManifestSchema — forge", () => {
         maxForgeDepth: 2,
         maxForgesPerSession: 10,
         defaultScope: "zone",
-        trustTier: "verified",
+        origin: "primordial",
+        policy: DEFAULT_UNSANDBOXED_POLICY,
         scopePromotion: {
           requireHumanApproval: false,
           minTrustForZone: "sandbox",
@@ -222,8 +224,8 @@ describe("rawManifestSchema — forge", () => {
     expect(parse({ forge: { defaultScope: "cluster" } }).success).toBe(false);
   });
 
-  test("rejects invalid trustTier", () => {
-    expect(parse({ forge: { trustTier: "admin" } }).success).toBe(false);
+  test("rejects invalid defaultPolicy", () => {
+    expect(parse({ forge: { defaultPolicy: "admin" } }).success).toBe(false);
   });
 
   test("rejects forge as string", () => {
@@ -239,7 +241,7 @@ describe("rawManifestSchema — forge", () => {
       expect(forge.maxForgeDepth).toBe(1);
       expect(forge.maxForgesPerSession).toBe(5);
       expect(forge.defaultScope).toBe("agent");
-      expect(forge.trustTier).toBe("sandbox");
+      expect((forge.defaultPolicy as { sandbox: boolean }).sandbox).toBe(true);
     }
   });
 });

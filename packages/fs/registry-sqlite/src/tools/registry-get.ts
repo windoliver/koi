@@ -5,7 +5,7 @@
  * detail levels. Summary omits implementation, inputSchema, files, provenance, fitness.
  */
 
-import type { BrickKind, JsonObject, RegistryComponent, Tool, TrustTier } from "@koi/core";
+import type { BrickKind, JsonObject, RegistryComponent, Tool, ToolPolicy } from "@koi/core";
 import { ALL_BRICK_KINDS } from "@koi/core";
 import { parseEnum, parseOptionalEnum, parseString } from "../parse-args.js";
 import { mapBrickFull, mapBrickSummary } from "./map-brick.js";
@@ -13,7 +13,7 @@ import { mapBrickFull, mapBrickSummary } from "./map-brick.js";
 export function createRegistryGetTool(
   facade: RegistryComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -43,7 +43,8 @@ export function createRegistryGetTool(
         required: ["kind", "name"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
 
     execute: async (args: JsonObject): Promise<unknown> => {
       const kindResult = parseEnum<BrickKind>(args, "kind", [...ALL_BRICK_KINDS]);

@@ -29,7 +29,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createKoi } from "../koi.js";
 
@@ -96,7 +96,8 @@ const ADD_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);

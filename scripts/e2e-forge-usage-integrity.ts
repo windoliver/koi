@@ -1,26 +1,21 @@
 #!/usr/bin/env bun
 /**
  * E2E test script for @koi/forge Phase 2.5 features:
- *   Feature 1 — Usage-based auto-promotion (recordBrickUsage)
+ *   Feature 1 — Usage recording (recordBrickUsage)
  *   Feature 2 — Content integrity verification (verifyBrickIntegrity, loadAndVerify)
  *
  * Validates the full cycle with a real Claude API call:
  *   1. Claude forges a tool via forge_tool
- *   2. We record usage N times → observe auto-promotion sandbox→verified
+ *   2. We record usage N times → observe usage count incrementing
  *   3. We verify content integrity of the forged brick (pass)
  *   4. We tamper the brick → verify integrity catches it (fail)
- *   5. We continue recording usage → observe auto-promotion verified→promoted
- *   6. loadAndVerify returns both brick and integrity result from store
+ *   5. loadAndVerify returns both brick and integrity result from store
  *
  * Usage:
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-forge-usage-integrity.ts
  */
 
-import type {
-  BrickArtifact,
-  ForgeStore,
-  SandboxExecutor,
-} from "../packages/kernel/core/src/index.js";
+import type { BrickArtifact, SandboxExecutor } from "../packages/kernel/core/src/index.js";
 import { createAdversarialVerifiers } from "../packages/meta/forge/src/adversarial-verifiers.js";
 import { createDefaultForgeConfig } from "../packages/meta/forge/src/config.js";
 import { loadAndVerify, verifyBrickIntegrity } from "../packages/meta/forge/src/integrity.js";
@@ -28,7 +23,7 @@ import { createInMemoryForgeStore } from "../packages/meta/forge/src/memory-stor
 import { createForgeToolTool } from "../packages/meta/forge/src/tools/forge-tool.js";
 import type { ForgeDeps } from "../packages/meta/forge/src/tools/shared.js";
 import type { ForgeResult } from "../packages/meta/forge/src/types.js";
-import { computeAutoPromotion, recordBrickUsage } from "../packages/meta/forge/src/usage.js";
+import { recordBrickUsage } from "../packages/meta/forge/src/usage.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
@@ -87,15 +82,8 @@ const executor: SandboxExecutor = {
   },
 };
 
-// Auto-promotion enabled: sandbox→verified at 5, verified→promoted at 10
-// (lower thresholds for E2E speed)
 const config = createDefaultForgeConfig({
   maxForgesPerSession: 50,
-  autoPromotion: {
-    enabled: true,
-    sandboxToVerifiedThreshold: 5,
-    verifiedToPromotedThreshold: 10,
-  },
 });
 
 const verifiers = createAdversarialVerifiers(executor);
@@ -288,7 +276,7 @@ try {
     if (result.ok && result.value !== undefined) {
       forgedBrickId = result.value.id;
       assert("forged brick has ID", forgedBrickId?.startsWith("brick_") ?? false);
-      assert("forged brick starts in sandbox", result.value.trustTier === "sandbox");
+      assert("forged brick has sandbox policy", result.value.policy.sandbox === true);
       console.log(`    Brick ID: ${forgedBrickId}`);
     }
   }
@@ -350,155 +338,32 @@ try {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Test 4: Record usage 5 times → auto-promote sandbox→verified
+// Test 4: Record usage 5 times → usage count increments
 // ═══════════════════════════════════════════════════════════════════════════
 
-console.log("\n[test 4] Record 5 usages → auto-promote sandbox→verified");
+console.log("\n[test 4] Record 5 usages → usage count increments");
 
 try {
-  // Confirm starting state
   const before = await store.load(forgedBrickId);
-  assert(
-    "brick starts in sandbox tier",
-    before.ok === true && before.value.trustTier === "sandbox",
-  );
+  assert("brick loaded", before.ok === true);
   assert("brick starts at usageCount 0", before.ok === true && before.value.usageCount === 0);
 
-  // Record 4 usages — should stay sandbox
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     const r = await recordBrickUsage(store, forgedBrickId, config);
     assert(`usage ${i + 1} recorded`, r.ok === true && r.value.kind === "recorded");
   }
 
-  // Usage 5 should trigger promotion
-  const promoResult = await recordBrickUsage(store, forgedBrickId, config);
-  assert(
-    "usage 5 triggers promotion",
-    promoResult.ok === true && promoResult.value.kind === "promoted",
-  );
-
-  if (promoResult.ok && promoResult.value.kind === "promoted") {
-    assert(
-      "promoted from sandbox to verified",
-      promoResult.value.previousTier === "sandbox" && promoResult.value.newTier === "verified",
-    );
-    console.log(
-      `    ${promoResult.value.previousTier} → ${promoResult.value.newTier} at count ${promoResult.value.newUsageCount}`,
-    );
-  }
-
-  // Verify store state
   const after = await store.load(forgedBrickId);
-  assert("store reflects verified tier", after.ok === true && after.value.trustTier === "verified");
-  assert("store reflects usageCount 5", after.ok === true && after.value.usageCount === 5);
+  assert("usageCount is 5 after 5 recordings", after.ok === true && after.value.usageCount === 5);
 } catch (err: unknown) {
   assert("Test 4 completed", false, err instanceof Error ? err.message : String(err));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Test 5: Record 5 more usages → auto-promote verified→promoted
+// Test 5: loadAndVerify — passes for untampered, fails for tampered
 // ═══════════════════════════════════════════════════════════════════════════
 
-console.log("\n[test 5] Record 5 more usages → auto-promote verified→promoted");
-
-try {
-  // Record usages 6-9 (should stay verified)
-  for (let i = 6; i <= 9; i++) {
-    const r = await recordBrickUsage(store, forgedBrickId, config);
-    assert(`usage ${i} recorded (still verified)`, r.ok === true && r.value.kind === "recorded");
-  }
-
-  // Usage 10 should trigger verified→promoted
-  const promoResult = await recordBrickUsage(store, forgedBrickId, config);
-  assert(
-    "usage 10 triggers promotion",
-    promoResult.ok === true && promoResult.value.kind === "promoted",
-  );
-
-  if (promoResult.ok && promoResult.value.kind === "promoted") {
-    assert(
-      "promoted from verified to promoted",
-      promoResult.value.previousTier === "verified" && promoResult.value.newTier === "promoted",
-    );
-    console.log(
-      `    ${promoResult.value.previousTier} → ${promoResult.value.newTier} at count ${promoResult.value.newUsageCount}`,
-    );
-  }
-
-  // Verify store state
-  const after = await store.load(forgedBrickId);
-  assert("store reflects promoted tier", after.ok === true && after.value.trustTier === "promoted");
-  assert("store reflects usageCount 10", after.ok === true && after.value.usageCount === 10);
-} catch (err: unknown) {
-  assert("Test 5 completed", false, err instanceof Error ? err.message : String(err));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Test 6: Further usage does NOT promote beyond "promoted"
-// ═══════════════════════════════════════════════════════════════════════════
-
-console.log("\n[test 6] Usage beyond 'promoted' stays promoted");
-
-try {
-  const r = await recordBrickUsage(store, forgedBrickId, config);
-  assert(
-    "usage 11 stays recorded (no further promotion)",
-    r.ok === true && r.value.kind === "recorded",
-  );
-
-  const after = await store.load(forgedBrickId);
-  assert("tier stays promoted", after.ok === true && after.value.trustTier === "promoted");
-} catch (err: unknown) {
-  assert("Test 6 completed", false, err instanceof Error ? err.message : String(err));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Test 7: computeAutoPromotion pure function (no store needed)
-// ═══════════════════════════════════════════════════════════════════════════
-
-console.log("\n[test 7] computeAutoPromotion pure function sanity checks");
-
-try {
-  const disabledConfig = {
-    enabled: false,
-    sandboxToVerifiedThreshold: 5,
-    verifiedToPromotedThreshold: 10,
-  };
-  assert(
-    "disabled config → undefined",
-    computeAutoPromotion("sandbox", 100, disabledConfig) === undefined,
-  );
-
-  const enabledConfig = config.autoPromotion;
-  assert(
-    "sandbox at 4 → undefined",
-    computeAutoPromotion("sandbox", 4, enabledConfig) === undefined,
-  );
-  assert(
-    "sandbox at 5 → verified",
-    computeAutoPromotion("sandbox", 5, enabledConfig) === "verified",
-  );
-  assert(
-    "verified at 9 → undefined",
-    computeAutoPromotion("verified", 9, enabledConfig) === undefined,
-  );
-  assert(
-    "verified at 10 → promoted",
-    computeAutoPromotion("verified", 10, enabledConfig) === "promoted",
-  );
-  assert(
-    "promoted at 100 → undefined",
-    computeAutoPromotion("promoted", 100, enabledConfig) === undefined,
-  );
-} catch (err: unknown) {
-  assert("Test 7 completed", false, err instanceof Error ? err.message : String(err));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Test 8: loadAndVerify — passes for untampered, fails for tampered
-// ═══════════════════════════════════════════════════════════════════════════
-
-console.log("\n[test 8] loadAndVerify convenience function");
+console.log("\n[test 5] loadAndVerify convenience function");
 
 try {
   // Untampered — should pass
@@ -517,14 +382,14 @@ try {
     assert("error code is LOAD_FAILED", missing.error.code === "LOAD_FAILED");
   }
 } catch (err: unknown) {
-  assert("Test 8 completed", false, err instanceof Error ? err.message : String(err));
+  assert("Test 5 completed", false, err instanceof Error ? err.message : String(err));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Test 9: recordBrickUsage with nonexistent brick → error
+// Test 6: recordBrickUsage with nonexistent brick → error
 // ═══════════════════════════════════════════════════════════════════════════
 
-console.log("\n[test 9] recordBrickUsage error handling");
+console.log("\n[test 6] recordBrickUsage error handling");
 
 try {
   const result = await recordBrickUsage(store, "brick_does_not_exist", config);
@@ -534,44 +399,7 @@ try {
     assert("error code is LOAD_FAILED", result.error.code === "LOAD_FAILED");
   }
 } catch (err: unknown) {
-  assert("Test 9 completed", false, err instanceof Error ? err.message : String(err));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Test 10: Auto-promotion disabled → no tier change
-// ═══════════════════════════════════════════════════════════════════════════
-
-console.log("\n[test 10] Auto-promotion disabled → no promotion even at threshold");
-
-try {
-  // Create a separate store with a fresh brick
-  const disabledStore: ForgeStore = createInMemoryForgeStore();
-  const disabledConfig = createDefaultForgeConfig(); // autoPromotion.enabled = false by default
-
-  // Manually save a brick at usageCount 4
-  const loadOriginal = await store.load(forgedBrickId);
-  if (loadOriginal.ok) {
-    const freshBrick: BrickArtifact = {
-      ...loadOriginal.value,
-      id: "brick_disabled_test",
-      usageCount: 4,
-      trustTier: "sandbox",
-    };
-    await disabledStore.save(freshBrick);
-
-    // Record usage that would cross threshold if enabled
-    const result = await recordBrickUsage(disabledStore, "brick_disabled_test", disabledConfig);
-    assert("usage recorded (not promoted)", result.ok === true && result.value.kind === "recorded");
-
-    const after = await disabledStore.load("brick_disabled_test");
-    assert(
-      "tier stays sandbox when disabled",
-      after.ok === true && after.value.trustTier === "sandbox",
-    );
-    assert("usageCount incremented to 5", after.ok === true && after.value.usageCount === 5);
-  }
-} catch (err: unknown) {
-  assert("Test 10 completed", false, err instanceof Error ? err.message : String(err));
+  assert("Test 6 completed", false, err instanceof Error ? err.message : String(err));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

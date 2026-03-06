@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifactBase } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { matchesBrickQuery } from "./query.js";
 
@@ -11,7 +11,8 @@ function baseBrick(overrides?: Partial<BrickArtifactBase>): BrickArtifactBase {
     name: "test-brick",
     description: "A test brick",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -36,13 +37,17 @@ describe("matchesBrickQuery", () => {
     expect(matchesBrickQuery(baseBrick({ scope: "agent" }), { scope: "global" })).toBe(false);
   });
 
-  test("filters by trustTier", () => {
-    expect(matchesBrickQuery(baseBrick({ trustTier: "verified" }), { trustTier: "verified" })).toBe(
-      true,
-    );
-    expect(matchesBrickQuery(baseBrick({ trustTier: "sandbox" }), { trustTier: "verified" })).toBe(
-      false,
-    );
+  test("filters by policy", () => {
+    expect(
+      matchesBrickQuery(baseBrick({ origin: "primordial", policy: DEFAULT_UNSANDBOXED_POLICY }), {
+        sandbox: false,
+      }),
+    ).toBe(true);
+    expect(
+      matchesBrickQuery(baseBrick({ origin: "primordial", policy: DEFAULT_SANDBOXED_POLICY }), {
+        sandbox: false,
+      }),
+    ).toBe(false);
   });
 
   test("filters by lifecycle", () => {

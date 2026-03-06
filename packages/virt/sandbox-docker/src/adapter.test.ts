@@ -56,7 +56,6 @@ describe("createDockerAdapter", () => {
     if (!result.ok) return;
 
     const instance = await result.value.create({
-      tier: "sandbox",
       filesystem: { allowRead: ["/tmp"] },
       network: { allow: false },
       resources: { maxMemoryMb: 256, timeoutMs: 10000 },
@@ -77,7 +76,6 @@ describe("createDockerAdapter", () => {
     if (!result.ok) return;
 
     await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: true },
       resources: { maxMemoryMb: 512 },
@@ -99,7 +97,6 @@ describe("createDockerAdapter", () => {
     if (!result.ok) return;
 
     await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},
@@ -117,7 +114,6 @@ describe("createDockerAdapter", () => {
     if (!result.ok) return;
 
     await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: true, allowedHosts: ["api.example.com"] },
       resources: {},

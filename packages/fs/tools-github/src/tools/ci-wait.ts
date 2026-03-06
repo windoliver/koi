@@ -2,7 +2,7 @@
  * Tool factory for `github_ci_wait` — poll CI checks until completion or timeout.
  */
 
-import type { JsonObject, Tool, ToolExecuteOptions, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolExecuteOptions, ToolPolicy } from "@koi/core";
 import { sleep } from "@koi/errors";
 import {
   CI_WAIT_FIELDS,
@@ -31,7 +31,7 @@ const FAILURE_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ERROR
 export function createGithubCiWaitTool(
   executor: GhExecutor,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -59,7 +59,8 @@ export function createGithubCiWaitTool(
         required: ["pr_number"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject, options?: ToolExecuteOptions): Promise<unknown> => {
       const prResult = parsePrNumber(args, "pr_number");
       if (!prResult.ok) return prResult.err;

@@ -2,7 +2,7 @@
  * Tool factory for `browser_press` — presses a keyboard key globally.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalTimeout, parseString } from "../parse-args.js";
 
 const MIN_TIMEOUT_MS = 100;
@@ -11,7 +11,7 @@ const MAX_TIMEOUT_MS = 10_000;
 export function createBrowserPressTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -41,7 +41,8 @@ export function createBrowserPressTool(
         required: ["key"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const keyResult = parseString(args, "key");
       if (!keyResult.ok) return keyResult.err;

@@ -54,7 +54,7 @@ export interface ForgeConfigSection {
   readonly maxForgeDepth: number;
   readonly maxForgesPerSession: number;
   readonly defaultScope: string;
-  readonly defaultTrustTier: string;
+  readonly defaultPolicy: string;
 }
 
 export interface ModelRouterConfigSection {

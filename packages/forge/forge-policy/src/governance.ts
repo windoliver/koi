@@ -2,7 +2,7 @@
  * Governance — depth-aware forge policies and scope promotion checks.
  */
 
-import type { GovernanceController, Result, TrustTier, TrustTransitionCaller } from "@koi/core";
+import type { GovernanceController, Result, ToolPolicy, TrustTransitionCaller } from "@koi/core";
 import { GOVERNANCE_VARIABLES } from "@koi/core";
 import type {
   ForgeConfig,
@@ -18,14 +18,8 @@ import { governanceError } from "@koi/forge-types";
 export type { GovernanceResult } from "@koi/forge-types";
 
 // ---------------------------------------------------------------------------
-// Trust tier ordering (for comparison)
+// Scope ordering (for comparison)
 // ---------------------------------------------------------------------------
-
-export const TRUST_ORDER: Readonly<Record<TrustTier, number>> = {
-  sandbox: 0,
-  verified: 1,
-  promoted: 2,
-} as const;
 
 const SCOPE_ORDER: Readonly<Record<ForgeScope, number>> = {
   agent: 0,
@@ -45,7 +39,7 @@ const DEPTH_0_TOOLS = new Set([
   "forge_edit",
   "search_forge",
   "compose_forge",
-  "promote_forge",
+  "update_forge",
 ]);
 
 /** Depth 1 (sub-agent): limited set */
@@ -54,7 +48,7 @@ const DEPTH_1_TOOLS = new Set([
   "forge_skill",
   "forge_edit",
   "search_forge",
-  "promote_forge",
+  "update_forge",
 ]);
 
 /** Depth 2+ (deeper): search only */
@@ -177,43 +171,20 @@ async function checkGovernanceViaController(
   return { ok: true, value: undefined };
 }
 
+/**
+ * Check scope promotion eligibility.
+ *
+ * Scope promotion is orthogonal to sandbox policy. The only check is
+ * whether human approval is required.
+ */
 export function checkScopePromotion(
   currentScope: ForgeScope,
   targetScope: ForgeScope,
-  trustTier: TrustTier,
   config: ForgeConfig,
 ): Result<GovernanceResult, ForgeError> {
   // No promotion needed if target is same or lower scope
   if (SCOPE_ORDER[targetScope] <= SCOPE_ORDER[currentScope]) {
     return { ok: true, value: { requiresHumanApproval: false } };
-  }
-
-  // Zone promotion
-  if (targetScope === "zone") {
-    const minTrust = config.scopePromotion.minTrustForZone;
-    if (TRUST_ORDER[trustTier] < TRUST_ORDER[minTrust]) {
-      return {
-        ok: false,
-        error: governanceError(
-          "SCOPE_VIOLATION",
-          `Zone promotion requires trust tier "${minTrust}" or higher, got "${trustTier}"`,
-        ),
-      };
-    }
-  }
-
-  // Global promotion
-  if (targetScope === "global") {
-    const minTrust = config.scopePromotion.minTrustForGlobal;
-    if (TRUST_ORDER[trustTier] < TRUST_ORDER[minTrust]) {
-      return {
-        ok: false,
-        error: governanceError(
-          "SCOPE_VIOLATION",
-          `Global promotion requires trust tier "${minTrust}" or higher, got "${trustTier}"`,
-        ),
-      };
-    }
   }
 
   // Check if HITL is required
@@ -231,66 +202,37 @@ export function checkScopePromotion(
 }
 
 // ---------------------------------------------------------------------------
-// Trust tier demotion map (one step down)
-// ---------------------------------------------------------------------------
-
-const TRUST_DEMOTION_TARGET: Readonly<Record<TrustTier, TrustTier | undefined>> = {
-  promoted: "verified",
-  verified: "sandbox",
-  sandbox: undefined, // floor — cannot demote further
-} as const;
-
-// ---------------------------------------------------------------------------
-// Shared trust transition validator
+// Policy change validation
 // ---------------------------------------------------------------------------
 
 /**
- * Validates a trust tier transition.
+ * Validates a policy change.
  *
- * - `caller: "agent"` → blocks demotion (agents can only promote)
- * - `caller: "system"` → allows one-step demotion, blocks skip-demotion
- *
- * Returns `undefined` value when current === target (no-op).
+ * - Unsandboxing (sandbox: true→false) requires HITL unless caller is "system"
+ * - Re-sandboxing (sandbox: false→true) is always allowed
+ * - No change → returns undefined
  */
-export function validateTrustTransition(
-  current: TrustTier,
-  target: TrustTier,
+export function validatePolicyChange(
+  current: ToolPolicy,
+  target: ToolPolicy,
   caller: TrustTransitionCaller,
-): Result<PromoteChange<TrustTier> | undefined, ForgeError> {
-  if (target === current) {
+): Result<PromoteChange<ToolPolicy> | undefined, ForgeError> {
+  if (current.sandbox === target.sandbox) {
     return { ok: true, value: undefined };
   }
 
-  const currentOrder = TRUST_ORDER[current];
-  const targetOrder = TRUST_ORDER[target];
-
-  // Promotion — allowed for both callers
-  if (targetOrder > currentOrder) {
+  // Re-sandboxing (false→true) is always allowed
+  if (target.sandbox) {
     return { ok: true, value: { from: current, to: target } };
   }
 
-  // Demotion — only system caller can demote
+  // Unsandboxing (true→false) — only system caller can unsandbox
   if (caller === "agent") {
     return {
       ok: false,
       error: governanceError(
         "TRUST_DEMOTION_NOT_ALLOWED",
-        `Trust tier demotion not allowed: "${current}" → "${target}"`,
-      ),
-    };
-  }
-
-  // System caller — validate one-step demotion only
-  const expectedTarget = TRUST_DEMOTION_TARGET[current];
-  if (expectedTarget === undefined || target !== expectedTarget) {
-    return {
-      ok: false,
-      error: governanceError(
-        "TRUST_DEMOTION_NOT_ALLOWED",
-        `Trust demotion must be one step: "${current}" → "${target}" is not allowed. ` +
-          (expectedTarget !== undefined
-            ? `Expected: "${current}" → "${expectedTarget}"`
-            : `"${current}" is already at the floor`),
+        "Unsandboxing requires system-level authorization, not agent-level",
       ),
     };
   }

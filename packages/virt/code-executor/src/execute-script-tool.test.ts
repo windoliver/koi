@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JsonObject, Tool } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createExecuteScriptTool } from "./execute-script-tool.js";
 
 const EMPTY_TOOLS = new Map<string, Tool>();
@@ -11,7 +12,8 @@ function createMockTool(name: string, handler?: (args: JsonObject) => unknown): 
       description: `Mock ${name} tool`,
       inputSchema: { type: "object" },
     },
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => {
       if (handler) return handler(args);
       return { result: `${name}-result` };
@@ -23,7 +25,7 @@ describe("createExecuteScriptTool", () => {
   test("has correct descriptor", () => {
     const tool = createExecuteScriptTool(EMPTY_TOOLS);
     expect(tool.descriptor.name).toBe("execute_script");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 
   test("description explains callTool API", () => {

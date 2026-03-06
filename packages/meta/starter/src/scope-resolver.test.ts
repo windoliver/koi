@@ -215,7 +215,7 @@ describe("resolveManifestScope", () => {
         allowedDomains: ["example.com"],
         allowedProtocols: ["https:"],
         blockPrivateAddresses: true,
-        trustTier: "verified",
+        sandbox: false,
       },
     };
     const providers = resolveManifestScope(scopeConfig, {

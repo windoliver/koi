@@ -30,7 +30,7 @@ import type {
   SkillComponent,
   ToolRequest,
 } from "@koi/core";
-import { agentToken, brickId, skillToken, toolToken } from "@koi/core";
+import { agentToken, brickId, DEFAULT_UNSANDBOXED_POLICY, skillToken, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeComponentProvider, createInMemoryForgeStore } from "@koi/forge-tools";
@@ -653,7 +653,8 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
           kind: "middleware",
           description: "Logging middleware",
           implementation: mwImpl,
-          trustTier: "promoted",
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
         }),
         createTestImplementationArtifact({
           id: brickId("ch-slack"),
@@ -661,7 +662,8 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
           kind: "channel",
           description: "Slack channel adapter",
           implementation: chImpl,
-          trustTier: "promoted",
+          origin: "primordial",
+          policy: DEFAULT_UNSANDBOXED_POLICY,
         }),
       ];
 

@@ -2,7 +2,7 @@
  * Tool factory for `browser_tab_close` — closes a browser tab.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalString, parseOptionalTimeout } from "../parse-args.js";
 
 const MIN_TIMEOUT_MS = 100;
@@ -11,7 +11,7 @@ const MAX_TIMEOUT_MS = 10_000;
 export function createBrowserTabCloseTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -33,7 +33,8 @@ export function createBrowserTabCloseTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const tabIdResult = parseOptionalString(args, "tabId");
       if (!tabIdResult.ok) return tabIdResult.err;

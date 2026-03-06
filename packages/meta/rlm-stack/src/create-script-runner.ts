@@ -8,6 +8,7 @@
 
 import { executeScript } from "@koi/code-executor";
 import type { JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { RlmScriptResult, RlmScriptRunConfig, RlmScriptRunner } from "@koi/middleware-rlm";
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,8 @@ function createStubDescriptor(name: string): ToolDescriptor {
 function wrapHostFn(name: string, fn: (args: JsonObject) => Promise<unknown> | unknown): Tool {
   return {
     descriptor: createStubDescriptor(name),
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => fn(args),
   };
 }

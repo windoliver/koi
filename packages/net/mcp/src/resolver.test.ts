@@ -90,7 +90,7 @@ describe("createMcpResolver", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.descriptor.name).toBe("mcp/filesystem/read_file");
-      expect(result.value.trustTier).toBe("promoted");
+      expect(result.value.policy.sandbox).toBe(false);
     }
   });
 

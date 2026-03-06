@@ -15,7 +15,7 @@ import type {
   ForgeScope,
   Result,
   Tool,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
 import { brickId, VALID_LIFECYCLE_TRANSITIONS } from "@koi/core";
 import type { ForgeError, ForgePipeline, PromoteChange, PromoteResult } from "@koi/forge-types";
@@ -32,22 +32,27 @@ function getCheckScopePromotion(deps: ForgeDeps): ForgePipeline["checkScopePromo
   return deps.pipeline.checkScopePromotion;
 }
 
-function getValidateTrustTransition(deps: ForgeDeps): ForgePipeline["validateTrustTransition"] {
+function getValidatePolicyChange(deps: ForgeDeps): ForgePipeline["validatePolicyChange"] {
   if (deps.pipeline === undefined) {
     throw new Error("ForgePipeline is required in @koi/forge-tools");
   }
-  return deps.pipeline.validateTrustTransition;
+  return deps.pipeline.validatePolicyChange;
 }
 
 // ---------------------------------------------------------------------------
 // Zod schema — includes quarantined for remediation path
 // ---------------------------------------------------------------------------
 
+const toolPolicySchema = z.object({
+  sandbox: z.boolean(),
+  capabilities: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
 const promoteForgeInputSchema = z
   .object({
     brickId: z.string(),
     targetScope: z.enum(["agent", "zone", "global"]).optional(),
-    targetTrustTier: z.enum(["sandbox", "verified", "promoted"]).optional(),
+    targetPolicy: toolPolicySchema.optional(),
     targetLifecycle: z
       .enum(["draft", "verifying", "active", "failed", "deprecated", "quarantined"])
       .optional(),
@@ -55,10 +60,10 @@ const promoteForgeInputSchema = z
   .refine(
     (val) =>
       val.targetScope !== undefined ||
-      val.targetTrustTier !== undefined ||
+      val.targetPolicy !== undefined ||
       val.targetLifecycle !== undefined,
     {
-      message: "Must specify at least one of: targetScope, targetTrustTier, targetLifecycle",
+      message: "Must specify at least one of: targetScope, targetPolicy, targetLifecycle",
     },
   );
 
@@ -74,7 +79,14 @@ const PROMOTE_FORGE_CONFIG: ForgeToolConfig = {
     properties: {
       brickId: { type: "string" },
       targetScope: { type: "string", enum: ["agent", "zone", "global"] },
-      targetTrustTier: { type: "string", enum: ["sandbox", "verified", "promoted"] },
+      targetPolicy: {
+        type: "object",
+        properties: {
+          sandbox: { type: "boolean" },
+          capabilities: { type: "object" },
+        },
+        required: ["sandbox"],
+      },
       targetLifecycle: {
         type: "string",
         enum: ["draft", "verifying", "active", "failed", "deprecated", "quarantined"],
@@ -98,13 +110,12 @@ interface ScopeValidation {
 function validateScopeChange(
   current: ForgeScope,
   target: ForgeScope,
-  trustTier: TrustTier,
   deps: ForgeDeps,
 ): Result<ScopeValidation, ForgeError> {
   if (target === current) {
     return { ok: true, value: { change: undefined, requiresHitl: false } };
   }
-  const scopeResult = getCheckScopePromotion(deps)(current, target, trustTier, deps.config);
+  const scopeResult = getCheckScopePromotion(deps)(current, target, deps.config);
   if (!scopeResult.ok) {
     return { ok: false, error: scopeResult.error };
   }
@@ -118,11 +129,11 @@ function validateScopeChange(
 }
 
 function validateTrustChange(
-  current: TrustTier,
-  target: TrustTier,
+  current: ToolPolicy,
+  target: ToolPolicy,
   deps: ForgeDeps,
-): Result<PromoteChange<TrustTier> | undefined, ForgeError> {
-  return getValidateTrustTransition(deps)(current, target, "agent");
+): Result<PromoteChange<ToolPolicy> | undefined, ForgeError> {
+  return getValidatePolicyChange(deps)(current, target, "agent");
 }
 
 function validateLifecycleChange(
@@ -187,7 +198,7 @@ async function promoteForgeHandler(
   let scopeHitlMessage: string | undefined;
 
   if (obj.targetScope !== undefined) {
-    const scopeResult = validateScopeChange(brick.scope, obj.targetScope, brick.trustTier, deps);
+    const scopeResult = validateScopeChange(brick.scope, obj.targetScope, deps);
     if (!scopeResult.ok) {
       return { ok: false, error: scopeResult.error };
     }
@@ -196,14 +207,18 @@ async function promoteForgeHandler(
     scopeHitlMessage = scopeResult.value.hitlMessage;
   }
 
-  // Trust tier — independent of scope HITL
-  let trustChange: PromoteChange<TrustTier> | undefined;
-  if (obj.targetTrustTier !== undefined) {
-    const trustResult = validateTrustChange(brick.trustTier, obj.targetTrustTier, deps);
+  // Policy — independent of scope HITL
+  let policyChange: PromoteChange<ToolPolicy> | undefined;
+  if (obj.targetPolicy !== undefined) {
+    const targetPolicy: ToolPolicy = {
+      sandbox: obj.targetPolicy.sandbox,
+      capabilities: obj.targetPolicy.capabilities ?? {},
+    };
+    const trustResult = validateTrustChange(brick.policy, targetPolicy, deps);
     if (!trustResult.ok) {
       return { ok: false, error: trustResult.error };
     }
-    trustChange = trustResult.value;
+    policyChange = trustResult.value;
   }
 
   // Lifecycle — independent of scope HITL
@@ -229,15 +244,15 @@ async function promoteForgeHandler(
   // --- Apply non-HITL changes (trust + lifecycle always, scope only if not gated) ---
   const hasNonHitlChanges =
     scopeChange !== undefined ||
-    trustChange !== undefined ||
+    policyChange !== undefined ||
     lifecycleChange !== undefined ||
     tagUpdate !== undefined;
 
   if (hasNonHitlChanges) {
     const updates: BrickUpdate = {
       ...(scopeChange !== undefined ? { scope: scopeChange.to } : {}),
-      ...(trustChange !== undefined
-        ? { trustTier: trustChange.to, lastPromotedAt: Date.now() }
+      ...(policyChange !== undefined
+        ? { policy: policyChange.to, lastPromotedAt: Date.now() }
         : {}),
       ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
       ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
@@ -249,8 +264,8 @@ async function promoteForgeHandler(
     if (scopeChange !== undefined && deps.store.promoteAndUpdate !== undefined) {
       // Atomic: scope + metadata in one operation (Issue #404)
       const atomicUpdates: BrickUpdate = {
-        ...(trustChange !== undefined
-          ? { trustTier: trustChange.to, lastPromotedAt: Date.now() }
+        ...(policyChange !== undefined
+          ? { policy: policyChange.to, lastPromotedAt: Date.now() }
           : {}),
         ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
         ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
@@ -290,14 +305,14 @@ async function promoteForgeHandler(
       }
       // Apply remaining non-scope updates if any (includes zone tag assignment)
       const nonScopeUpdates: BrickUpdate = {
-        ...(trustChange !== undefined
-          ? { trustTier: trustChange.to, lastPromotedAt: Date.now() }
+        ...(policyChange !== undefined
+          ? { policy: policyChange.to, lastPromotedAt: Date.now() }
           : {}),
         ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
         ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
       };
       const hasNonScopeUpdates =
-        trustChange !== undefined || lifecycleChange !== undefined || tagUpdate !== undefined;
+        policyChange !== undefined || lifecycleChange !== undefined || tagUpdate !== undefined;
       if (hasNonScopeUpdates) {
         const updateResult = await deps.store.update(typedBrickId, nonScopeUpdates);
         if (!updateResult.ok) {
@@ -347,7 +362,7 @@ async function promoteForgeHandler(
   // Build changes record for the result
   const appliedChanges = {
     ...(scopeChange !== undefined ? { scope: scopeChange } : {}),
-    ...(trustChange !== undefined ? { trustTier: trustChange } : {}),
+    ...(policyChange !== undefined ? { policy: policyChange } : {}),
     ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange } : {}),
   };
 

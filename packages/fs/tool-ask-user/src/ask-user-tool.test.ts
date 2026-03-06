@@ -241,9 +241,9 @@ describe("createAskUserTool", () => {
       expect(tool.descriptor.name).toBe("ask_user");
     });
 
-    it("has trustTier verified", () => {
+    it("has policy verified", () => {
       const tool = createToolWithHandler({ selected: [] });
-      expect(tool.trustTier).toBe("verified");
+      expect(tool.policy.sandbox).toBe(false);
     });
   });
 });

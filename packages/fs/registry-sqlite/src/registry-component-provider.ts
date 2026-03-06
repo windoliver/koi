@@ -18,10 +18,16 @@ import type {
   RegistryComponent,
   SkillRegistryReader,
   Tool,
-  TrustTier,
+  ToolPolicy,
   VersionIndexReader,
 } from "@koi/core";
-import { createServiceProvider, REGISTRY, skillToken, toolToken } from "@koi/core";
+import {
+  createServiceProvider,
+  DEFAULT_UNSANDBOXED_POLICY,
+  REGISTRY,
+  skillToken,
+  toolToken,
+} from "@koi/core";
 import { createRegistrySkillComponent } from "./registry-skill.js";
 import { createRegistryGetTool } from "./tools/registry-get.js";
 import type { OnInstallCallback } from "./tools/registry-install.js";
@@ -38,7 +44,7 @@ export interface RegistryProviderConfig {
   readonly skills: SkillRegistryReader;
   readonly versions: VersionIndexReader;
   /** Trust tier for read tools. Default: "verified". */
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   /** Tool name prefix. Default: "registry". */
   readonly prefix?: string;
   /** Assembly priority. */
@@ -56,7 +62,10 @@ const OPERATIONS = ["search", "get", "list_versions"] as const;
 type RegistryOperation = (typeof OPERATIONS)[number];
 
 const TOOL_FACTORIES: Readonly<
-  Record<RegistryOperation, (backend: RegistryComponent, prefix: string, tier: TrustTier) => Tool>
+  Record<
+    RegistryOperation,
+    (backend: RegistryComponent, prefix: string, policy: ToolPolicy) => Tool
+  >
 > = {
   search: (b, p, t) => createRegistrySearchTool(b, p, t),
   get: (b, p, t) => createRegistryGetTool(b, p, t),
@@ -72,7 +81,7 @@ export function createRegistryProvider(config: RegistryProviderConfig): Componen
     bricks,
     skills,
     versions,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = "registry",
     priority,
     onInstall,
@@ -86,12 +95,17 @@ export function createRegistryProvider(config: RegistryProviderConfig): Componen
     backend,
     operations: OPERATIONS,
     factories: TOOL_FACTORIES,
-    trustTier,
+    policy,
     prefix,
     priority,
     cache: true,
     customTools: (be: RegistryComponent, _agent: Agent) => {
-      const installTool = createRegistryInstallTool(be, prefix, "promoted", onInstall);
+      const installTool = createRegistryInstallTool(
+        be,
+        prefix,
+        DEFAULT_UNSANDBOXED_POLICY,
+        onInstall,
+      );
       const skill = createRegistrySkillComponent();
 
       return [

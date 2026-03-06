@@ -6,10 +6,10 @@
  * and adds the SandboxTier alias.
  */
 
-import type { TrustTier } from "@koi/core";
+import type { ToolPolicy } from "@koi/core";
 
-/** Sandbox-specific alias for the L0 TrustTier. */
-export type SandboxTier = TrustTier;
+/** Sandbox-specific alias for the L0 ToolPolicy. */
+export type SandboxTier = ToolPolicy;
 
 // Sandbox profile — canonical definitions live in @koi/core (L0)
 // Sandbox adapter types — canonical definitions live in @koi/core (L0)

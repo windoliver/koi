@@ -7,7 +7,8 @@
  * descriptions with implementation templates.
  */
 
-import type { ForgeScope, TrustTier } from "@koi/core";
+import type { ForgeScope, ToolOrigin, ToolPolicy } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { computeCrystallizeScore } from "./compute-score.js";
 import { generateCompositeImplementation } from "./generate-composite.js";
 import type { CrystallizationCandidate } from "./types.js";
@@ -23,7 +24,8 @@ export interface CrystallizedToolDescriptor {
   readonly implementation: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly scope: ForgeScope;
-  readonly trustTier: TrustTier;
+  readonly origin: ToolOrigin;
+  readonly policy: ToolPolicy;
   readonly provenance: {
     readonly source: "crystallize";
     readonly ngramKey: string;
@@ -38,7 +40,7 @@ export interface CrystallizeForgeConfig {
   /** Visibility scope for forged tools. */
   readonly scope: ForgeScope;
   /** Trust tier for forged tools. Default: "sandbox". */
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   /** Max tools forged per session. Default: 3. */
   readonly maxForgedPerSession?: number;
   /** Called when a candidate is forged into a tool descriptor. */
@@ -75,7 +77,7 @@ export function createCrystallizeForgeHandler(
 ): CrystallizeForgeHandler {
   const threshold = config.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
   const maxForged = config.maxForgedPerSession ?? DEFAULT_MAX_FORGED_PER_SESSION;
-  const trustTier = config.trustTier ?? "sandbox";
+  const policy = config.policy ?? DEFAULT_SANDBOXED_POLICY;
 
   // Mutable state -- tracks forged descriptors to prevent duplicates
   // justified: encapsulated within factory closure
@@ -104,7 +106,7 @@ export function createCrystallizeForgeHandler(
       const confidence = maxScore > 0 ? score / maxScore : 0;
 
       if (confidence >= threshold) {
-        const descriptor = createDescriptor(candidate, score, config.scope, trustTier);
+        const descriptor = createDescriptor(candidate, score, config.scope, policy);
 
         forgedNames.add(candidate.suggestedName);
         forgedCount += 1;
@@ -133,7 +135,7 @@ function createDescriptor(
   candidate: CrystallizationCandidate,
   score: number,
   scope: ForgeScope,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): CrystallizedToolDescriptor {
   return {
     name: candidate.suggestedName,
@@ -149,7 +151,8 @@ function createDescriptor(
       },
     },
     scope,
-    trustTier,
+    origin: "forged",
+    policy,
     provenance: {
       source: "crystallize",
       ngramKey: candidate.ngram.key,

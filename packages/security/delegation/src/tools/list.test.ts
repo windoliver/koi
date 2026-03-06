@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/core";
+import {
+  agentId,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+} from "@koi/core";
 import { createDelegationManager } from "../delegation-manager.js";
 import { createDelegationListTool } from "./list.js";
 
@@ -22,15 +27,25 @@ describe("createDelegationListTool", () => {
   test("descriptor has correct name and schema", () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
-    const tool = createDelegationListTool(manager, agentId("owner"), "delegation", "verified");
+    const tool = createDelegationListTool(
+      manager,
+      agentId("owner"),
+      "delegation",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
     expect(tool.descriptor.name).toBe("delegation_list");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("returns empty grants list when none exist", async () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
-    const tool = createDelegationListTool(manager, agentId("owner"), "delegation", "verified");
+    const tool = createDelegationListTool(
+      manager,
+      agentId("owner"),
+      "delegation",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
 
     const result = await tool.execute({});
     const output = result as { grants: readonly unknown[] };
@@ -48,7 +63,12 @@ describe("createDelegationListTool", () => {
       permissions: { allow: ["write_file"] },
     });
 
-    const tool = createDelegationListTool(manager, agentId("owner"), "delegation", "verified");
+    const tool = createDelegationListTool(
+      manager,
+      agentId("owner"),
+      "delegation",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
     const result = await tool.execute({});
     const output = result as {
       grants: readonly { id: string; delegateeId: string; scope: unknown }[];
@@ -67,7 +87,12 @@ describe("createDelegationListTool", () => {
       permissions: { allow: ["read_file"] },
     });
 
-    const tool = createDelegationListTool(manager, agentId("owner"), "delegation", "verified");
+    const tool = createDelegationListTool(
+      manager,
+      agentId("owner"),
+      "delegation",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
     const result = await tool.execute({});
     const output = result as { grants: readonly unknown[] };
     expect(output.grants).toHaveLength(0);
@@ -76,7 +101,12 @@ describe("createDelegationListTool", () => {
   test("uses custom prefix", () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
-    const tool = createDelegationListTool(manager, agentId("owner"), "custom", "sandbox");
+    const tool = createDelegationListTool(
+      manager,
+      agentId("owner"),
+      "custom",
+      DEFAULT_SANDBOXED_POLICY,
+    );
     expect(tool.descriptor.name).toBe("custom_list");
   });
 });

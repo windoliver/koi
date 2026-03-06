@@ -35,8 +35,8 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
-import type { TrustTier } from "@koi/core/ecs";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
+import type { ToolPolicy } from "@koi/core/ecs";
 import type { SandboxProfile } from "@koi/core/sandbox-profile";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createSandboxMiddleware } from "@koi/middleware-sandbox";
@@ -107,9 +107,8 @@ function createAdapter(systemPrompt: string): ReturnType<typeof createPiAdapter>
 // Sandbox middleware factory for E2E tests
 // ---------------------------------------------------------------------------
 
-function makeSandboxProfile(tier: TrustTier, timeoutMs: number): SandboxProfile {
+function makeSandboxProfile(_policy: ToolPolicy, timeoutMs: number): SandboxProfile {
   return {
-    tier,
     filesystem: {},
     network: { allow: false },
     resources: { timeoutMs },
@@ -123,10 +122,10 @@ function createTestSandboxMiddleware(opts: {
   readonly onTimeout?: ((toolId: string) => void) | undefined;
 }): KoiMiddleware {
   return createSandboxMiddleware({
-    profileFor: (tier: TrustTier) => makeSandboxProfile(tier, opts.sandboxTimeoutMs),
-    tierFor: () => "sandbox", // All tools are sandbox-tier in these tests
+    profileFor: (policy: ToolPolicy) => makeSandboxProfile(policy, opts.sandboxTimeoutMs),
+    policyFor: () => DEFAULT_SANDBOXED_POLICY, // All tools are sandboxed in these tests
     timeoutGraceMs: opts.graceMs,
-    onSandboxError: (toolId: string, _tier: TrustTier, code: string) => {
+    onSandboxError: (toolId: string, _policy: ToolPolicy, code: string) => {
       if (code === "TIMEOUT") {
         opts.onTimeout?.(toolId);
       }
@@ -151,7 +150,8 @@ const MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);
@@ -176,7 +176,8 @@ function createSignalReporterTool(): {
         "Reports whether a cancellation signal was received. Always call this when asked about signal status.",
       inputSchema: { type: "object", properties: {} },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (_args: unknown, options?: ToolExecuteOptions) => {
       gotSignal = options?.signal !== undefined;
       wasAborted = options?.signal?.aborted === true;
@@ -210,7 +211,8 @@ function createTimedCooperativeTool(): {
         },
       },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (args: Readonly<Record<string, unknown>>, options?: ToolExecuteOptions) => {
       const totalSteps = Number(args.totalSteps ?? 10);
       const signal = options?.signal;
@@ -240,7 +242,8 @@ function createHangingTool(): Tool {
         "A task that hangs forever (for testing). Always use this when asked to run a hanging task.",
       inputSchema: { type: "object", properties: {} },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async () => new Promise(() => {}), // never resolves
   };
 }
@@ -518,12 +521,12 @@ describeE2E("e2e: signal cancellation improvements (Issue #406)", () => {
       }> = [];
 
       const sandbox = createSandboxMiddleware({
-        profileFor: (tier: TrustTier) => makeSandboxProfile(tier, 30_000),
-        tierFor: () => "sandbox",
+        profileFor: (policy: ToolPolicy) => makeSandboxProfile(policy, 30_000),
+        policyFor: () => DEFAULT_SANDBOXED_POLICY,
         timeoutGraceMs: 5_000,
         onSandboxMetrics: (
           toolId: string,
-          _tier: TrustTier,
+          _policy: ToolPolicy,
           durationMs: number,
           _bytes: number,
           truncated: boolean,

@@ -7,7 +7,13 @@ import type {
   SkillComponent,
   Tool,
 } from "@koi/core";
-import { FILESYSTEM, isAttachResult, skillToken, toolToken } from "@koi/core";
+import {
+  DEFAULT_SANDBOXED_POLICY,
+  FILESYSTEM,
+  isAttachResult,
+  skillToken,
+  toolToken,
+} from "@koi/core";
 import type { Retriever, SearchPage } from "@koi/search-provider";
 
 function extractMap(
@@ -73,11 +79,11 @@ describe("createFileSystemProvider", () => {
 
   test("respects custom trust tier", async () => {
     const backend = createMockBackend("local");
-    const provider = createFileSystemProvider({ backend, trustTier: "sandbox" });
+    const provider = createFileSystemProvider({ backend, policy: DEFAULT_SANDBOXED_POLICY });
     const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("fs_read") as string) as Tool;
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 
   test("defaults trust tier to verified", async () => {
@@ -86,7 +92,7 @@ describe("createFileSystemProvider", () => {
     const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("fs_read") as string) as Tool;
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("respects operations filter", async () => {

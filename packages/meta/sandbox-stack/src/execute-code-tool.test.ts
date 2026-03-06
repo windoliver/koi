@@ -49,7 +49,7 @@ describe("createExecuteCodeProvider", () => {
 
     expect(tool.descriptor.name).toBe("execute_code");
     expect(tool.descriptor.description).toContain("sandbox");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 
   test("tool execute delegates to stack.executor on success", async () => {

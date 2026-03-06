@@ -2,13 +2,13 @@
  * Tool factory for `fs_read` — reads file content via a FileSystemBackend.
  */
 
-import type { FileReadOptions, FileSystemBackend, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { FileReadOptions, FileSystemBackend, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalNumber, parseOptionalString, parseString } from "../parse-args.js";
 
 export function createFsReadTool(
   backend: FileSystemBackend,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -25,7 +25,8 @@ export function createFsReadTool(
         required: ["path"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;

@@ -6,6 +6,7 @@
  */
 
 import type { ComponentProvider, ScopeEnforcer } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createFileSystemProvider } from "@koi/filesystem";
 import type { BrowserScope, NavigationSecurityConfig } from "@koi/scope";
 import {
@@ -74,7 +75,9 @@ export function wireGovernanceScope(
 
     const scope: BrowserScope = {
       navigation: nav,
-      ...(bc.trustTier !== undefined ? { trustTier: bc.trustTier } : {}),
+      ...(bc.sandbox !== undefined
+        ? { policy: bc.sandbox ? DEFAULT_SANDBOXED_POLICY : DEFAULT_UNSANDBOXED_POLICY }
+        : {}),
     };
 
     providers.push(createBrowserProvider({ backend: raw, scope }));

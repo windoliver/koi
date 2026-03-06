@@ -13,7 +13,7 @@ import type {
   SkillArtifact,
   ToolArtifact,
 } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { createFactory } from "./factory.js";
 
 // ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ export const DEFAULT_PROVENANCE: ForgeProvenance = {
   },
   verification: {
     passed: true,
-    finalTrustTier: "sandbox",
+    sandbox: true,
     totalDurationMs: 1000,
     stageResults: [
       { stage: "static", passed: true, durationMs: 100 },
@@ -65,7 +65,8 @@ export const createTestToolArtifact: (overrides?: Partial<ToolArtifact>) => Tool
     name: "test-tool",
     description: "A test tool",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -82,7 +83,8 @@ export const createTestSkillArtifact: (overrides?: Partial<SkillArtifact>) => Sk
     name: "test-skill",
     description: "A test skill",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -98,7 +100,8 @@ export const createTestAgentArtifact: (overrides?: Partial<AgentArtifact>) => Ag
     name: "test-agent",
     description: "A test agent",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -115,7 +118,8 @@ export const createTestImplementationArtifact: (
   name: "test-impl",
   description: "A test implementation",
   scope: "agent",
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   lifecycle: "active",
   provenance: DEFAULT_PROVENANCE,
   version: "0.0.1",
@@ -132,7 +136,8 @@ export const createTestCompositeArtifact: (
   name: "test-composite",
   description: "A test composite pipeline",
   scope: "agent",
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   lifecycle: "active",
   provenance: DEFAULT_PROVENANCE,
   version: "0.0.1",

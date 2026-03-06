@@ -27,7 +27,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
@@ -89,7 +89,8 @@ const DEPLOY_TOOL: Tool = {
       required: ["env"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     return JSON.stringify({ deployed: true, env: String(input.env ?? "staging") });
   },
@@ -489,7 +490,8 @@ describeRealLLM("e2e: approval cache with real LLM (createPiAdapter)", () => {
             required: ["city"],
           },
         },
-        trustTier: "sandbox",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
         execute: async (input: Readonly<Record<string, unknown>>) => {
           return JSON.stringify({
             city: String(input.city ?? "unknown"),
@@ -591,7 +593,8 @@ describeRealLLM("e2e: approval cache with real LLM (createPiAdapter)", () => {
             required: ["a", "b"],
           },
         },
-        trustTier: "sandbox",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
         execute: async (input: Readonly<Record<string, unknown>>) => {
           return String(Number(input.a ?? 0) * Number(input.b ?? 0));
         },
@@ -686,7 +689,8 @@ describeRealLLM("e2e: approval cache with real LLM (createPiAdapter)", () => {
             required: ["a", "b"],
           },
         },
-        trustTier: "sandbox",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
         execute: async (input: Readonly<Record<string, unknown>>) => {
           return String(Number(input.a ?? 0) * Number(input.b ?? 0));
         },

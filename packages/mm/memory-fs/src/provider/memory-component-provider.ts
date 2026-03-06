@@ -6,8 +6,8 @@
  * is needed — each FsMemory is already agent-scoped (one baseDir per agent).
  */
 
-import type { Agent, ComponentProvider, SkillComponent, Tool, TrustTier } from "@koi/core";
-import { MEMORY, skillToken, toolToken } from "@koi/core";
+import type { Agent, ComponentProvider, SkillComponent, Tool, ToolPolicy } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, MEMORY, skillToken, toolToken } from "@koi/core";
 import type { FsMemory } from "../types.js";
 import type { MemoryOperation } from "./constants.js";
 import {
@@ -28,7 +28,7 @@ export interface MemoryProviderConfig {
   /** Tool name prefix. Default: "memory". */
   readonly prefix?: string;
   /** Trust tier for all tools. Default: "verified". */
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   /** Subset of operations to expose. Default: all 3. */
   readonly operations?: readonly MemoryOperation[];
   /** Max results for recall tool. Default: 10. */
@@ -42,7 +42,7 @@ export interface MemoryProviderConfig {
 type ToolFactory = (
   memory: FsMemory,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   recallLimit: number,
   searchLimit: number,
 ) => Tool;
@@ -57,7 +57,7 @@ export function createMemoryProvider(config: MemoryProviderConfig): ComponentPro
   const {
     memory,
     baseDir,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = DEFAULT_PREFIX,
     operations = MEMORY_OPERATIONS,
     recallLimit = DEFAULT_RECALL_LIMIT,
@@ -73,7 +73,7 @@ export function createMemoryProvider(config: MemoryProviderConfig): ComponentPro
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
       const toolEntries = operations.map((op) => {
         const factory = TOOL_FACTORIES[op];
-        const tool = factory(memory, prefix, trustTier, recallLimit, searchLimit);
+        const tool = factory(memory, prefix, policy, recallLimit, searchLimit);
         return [toolToken(tool.descriptor.name) as string, tool] as const;
       });
 

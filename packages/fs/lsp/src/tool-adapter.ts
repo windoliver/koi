@@ -6,6 +6,7 @@
  */
 
 import type { JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { LspClient } from "./client.js";
 import type { ServerCapabilities } from "./types.js";
 
@@ -130,7 +131,8 @@ function createTool(
 
   return {
     descriptor,
-    trustTier: "promoted",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute,
   };
 }

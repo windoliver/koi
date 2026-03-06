@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createPlanStore } from "../plan-store.js";
 import { createMockBackend } from "../test-helpers.js";
 import type { PlanPreview, ValidationIssue } from "../types.js";
@@ -8,7 +9,7 @@ describe("createPlanCreateTool", () => {
   test("creates plan for valid create step", async () => {
     const backend = createMockBackend();
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "create", path: "/new.ts", content: "export const x = 1;" }],
@@ -25,7 +26,7 @@ describe("createPlanCreateTool", () => {
       "/src/index.ts": 'export const foo = "bar";',
     });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [
@@ -44,7 +45,7 @@ describe("createPlanCreateTool", () => {
   test("returns validation error for empty steps", async () => {
     const backend = createMockBackend();
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ steps: [] })) as { error: string; code: string };
     expect(result.code).toBe("VALIDATION");
@@ -53,7 +54,7 @@ describe("createPlanCreateTool", () => {
   test("returns validation error for missing steps array", async () => {
     const backend = createMockBackend();
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({})) as { error: string; code: string };
     expect(result.code).toBe("VALIDATION");
@@ -64,7 +65,7 @@ describe("createPlanCreateTool", () => {
       "/f.ts": "hello world",
     });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "edit", path: "/f.ts", edits: [{ oldText: "missing", newText: "x" }] }],
@@ -80,7 +81,7 @@ describe("createPlanCreateTool", () => {
       "/f.ts": "aaa\naaa",
     });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "edit", path: "/f.ts", edits: [{ oldText: "aaa", newText: "bbb" }] }],
@@ -92,7 +93,7 @@ describe("createPlanCreateTool", () => {
   test("new plan discards old plan", async () => {
     const backend = createMockBackend();
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     await tool.execute({ steps: [{ kind: "create", path: "/a.ts", content: "a" }] });
     const firstId = store.get()?.id;
@@ -106,7 +107,7 @@ describe("createPlanCreateTool", () => {
   test("creates plan for valid delete step", async () => {
     const backend = createMockBackend({ "/old.ts": "to be deleted" });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "delete", path: "/old.ts" }],
@@ -123,7 +124,12 @@ describe("createPlanCreateTool", () => {
     const { delete: _del, ...rest } = backend;
     const backendNoDelete = rest as typeof backend;
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backendNoDelete, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(
+      backendNoDelete,
+      store,
+      "code_plan",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
 
     const result = (await tool.execute({
       steps: [{ kind: "delete", path: "/old.ts" }],
@@ -136,7 +142,7 @@ describe("createPlanCreateTool", () => {
   test("creates plan for valid rename step", async () => {
     const backend = createMockBackend({ "/old.ts": "content" });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "rename", path: "/old.ts", to: "/new.ts" }],
@@ -152,7 +158,12 @@ describe("createPlanCreateTool", () => {
     const { rename: _ren, ...rest } = backend;
     const backendNoRename = rest as typeof backend;
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backendNoRename, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(
+      backendNoRename,
+      store,
+      "code_plan",
+      DEFAULT_UNSANDBOXED_POLICY,
+    );
 
     const result = (await tool.execute({
       steps: [{ kind: "rename", path: "/old.ts", to: "/new.ts" }],
@@ -165,7 +176,7 @@ describe("createPlanCreateTool", () => {
   test("returns VALIDATION error for rename step missing 'to'", async () => {
     const backend = createMockBackend({ "/old.ts": "content" });
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "rename", path: "/old.ts" }],
@@ -178,7 +189,7 @@ describe("createPlanCreateTool", () => {
   test("returns error for invalid step kind", async () => {
     const backend = createMockBackend();
     const store = createPlanStore();
-    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+    const tool = createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       steps: [{ kind: "unknown", path: "/f.ts" }],

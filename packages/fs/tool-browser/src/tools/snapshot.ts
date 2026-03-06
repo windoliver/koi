@@ -2,13 +2,13 @@
  * Tool factory for `browser_snapshot` — captures the accessibility tree as [ref=eN] text.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalNumber, parseOptionalString } from "../parse-args.js";
 
 export function createBrowserSnapshotTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -39,7 +39,8 @@ export function createBrowserSnapshotTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const selectorResult = parseOptionalString(args, "selector");
       if (!selectorResult.ok) return selectorResult.err;

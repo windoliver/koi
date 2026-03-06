@@ -17,7 +17,7 @@ import type {
   GovernanceController,
   Result,
   SigningBackend,
-  TrustTier,
+  ToolPolicy,
   TrustTransitionCaller,
 } from "@koi/core";
 import type { ForgeConfig, MutationPressureConfig } from "./config.js";
@@ -42,7 +42,7 @@ import type {
  *
  * Each method corresponds to a capability owned by a different L2 sub-package:
  * - verify → @koi/forge-verifier
- * - checkGovernance, checkMutationPressure, checkScopePromotion, validateTrustTransition → @koi/forge-policy
+ * - checkGovernance, checkMutationPressure, checkScopePromotion, validatePolicyChange → @koi/forge-policy
  * - createProvenance, signAttestation, extractBrickContent → @koi/forge-integrity
  */
 export interface ForgePipeline {
@@ -90,16 +90,15 @@ export interface ForgePipeline {
   readonly checkScopePromotion: (
     currentScope: ForgeScope,
     targetScope: ForgeScope,
-    trustTier: TrustTier,
     config: ForgeConfig,
   ) => Result<GovernanceResult, ForgeError>;
 
-  /** Validate trust tier transitions. */
-  readonly validateTrustTransition: (
-    current: TrustTier,
-    target: TrustTier,
+  /** Validate policy change (e.g., sandbox → unsandboxed requires HITL). */
+  readonly validatePolicyChange: (
+    current: ToolPolicy,
+    target: ToolPolicy,
     caller: TrustTransitionCaller,
-  ) => Result<PromoteChange<TrustTier> | undefined, ForgeError>;
+  ) => Result<PromoteChange<ToolPolicy> | undefined, ForgeError>;
 }
 
 // ---------------------------------------------------------------------------

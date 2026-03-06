@@ -88,9 +88,9 @@ function buildSearchSql(query: ForgeQuery): {
     conditions.push("b.scope = ?");
     params.push(query.scope);
   }
-  if (query.trustTier !== undefined) {
-    conditions.push("b.trust_tier = ?");
-    params.push(query.trustTier);
+  if (query.sandbox !== undefined) {
+    conditions.push("b.sandbox = ?");
+    params.push(query.sandbox ? 1 : 0);
   }
   if (query.lifecycle !== undefined) {
     conditions.push("b.lifecycle = ?");
@@ -141,6 +141,8 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
       string,
       string,
       string,
+      number,
+      string,
       string,
       string,
       number,
@@ -153,8 +155,8 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     ]
   >(
     `INSERT OR REPLACE INTO bricks
-       (id, kind, name, scope, trust_tier, lifecycle, usage_count, created_by, created_at, version, description, data, trail_strength)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, kind, name, scope, sandbox, origin, capabilities_json, lifecycle, usage_count, created_by, created_at, version, description, data, trail_strength)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   /** Extract created_by and created_at from provenance for indexed columns. */
@@ -182,9 +184,9 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
 
   const updateStmt = db.query<
     void,
-    [string, string, string, number, number | null, string, string]
+    [string, number, string, number, number | null, string, string]
   >(
-    `UPDATE bricks SET lifecycle = ?, trust_tier = ?, scope = ?, usage_count = ?, trail_strength = ?, data = ?
+    `UPDATE bricks SET lifecycle = ?, sandbox = ?, scope = ?, usage_count = ?, trail_strength = ?, data = ?
      WHERE id = ?`,
   );
 
@@ -200,7 +202,9 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
       brick.kind,
       brick.name,
       brick.scope,
-      brick.trustTier,
+      brick.policy.sandbox ? 1 : 0,
+      brick.origin,
+      JSON.stringify(brick.policy.capabilities),
       brick.lifecycle,
       brick.usageCount,
       createdBy,
@@ -285,7 +289,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
 
       updateStmt.run(
         updated.lifecycle,
-        updated.trustTier,
+        updated.policy.sandbox ? 1 : 0,
         updated.scope,
         updated.usageCount,
         updated.trailStrength ?? null,

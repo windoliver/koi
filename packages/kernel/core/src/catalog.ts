@@ -35,7 +35,7 @@ export interface CatalogEntry {
   readonly kind: BrickKind;
   readonly source: CatalogSource;
   readonly description: string;
-  readonly trustTier?: "sandbox" | "verified" | "promoted";
+  readonly sandbox?: boolean;
   readonly version?: string;
   readonly tags?: readonly string[];
   /** Composite fitness score in [0, 1]. Undefined if brick has no usage data. */

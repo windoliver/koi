@@ -30,7 +30,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createKoi } from "../koi.js";
 
@@ -114,7 +114,8 @@ function createSignalAwareTool(): {
         properties: {},
       },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (_args: unknown, options?: ToolExecuteOptions) => {
       gotSignal = options?.signal !== undefined;
       wasAborted = options?.signal?.aborted === true;
@@ -160,7 +161,8 @@ function createCooperativeTool(): {
         },
       },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (args: Readonly<Record<string, unknown>>, options?: ToolExecuteOptions) => {
       const totalSteps = Number(args.totalSteps ?? 5);
       const signal = options?.signal;
@@ -212,7 +214,8 @@ const MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);

@@ -1,12 +1,12 @@
 /**
  * Integration tests for non-tool bricks: forge_middleware, forge_channel
- * + requires enforcement + configSchema.
+ * + scope enforcement + configSchema.
  *
  * Covers:
- * 1. Middleware: forge → promote → ComponentProvider loads it
- * 2. Channel: forge → promote → ComponentProvider loads it
- * 3. Trust enforcement: verified middleware skipped by ComponentProvider
- * 4. Trust enforcement after promotion: promoted middleware loaded
+ * 1. Middleware: forge → promote scope → ComponentProvider loads it
+ * 2. Channel: forge → promote scope → ComponentProvider loads it
+ * 3. Sandbox policy: forged middleware has sandbox:false (middleware not sandbox-required)
+ * 4. Lifecycle enforcement: deprecated middleware is skipped by ComponentProvider
  * 5. Zone-scoped filtering for middleware
  * 6. Requires enforcement: brick with missing env skipped by ComponentProvider
  * 7. Config schema: forged middleware with configSchema is stored and retrievable
@@ -69,27 +69,33 @@ function stubAgent(): Agent {
   };
 }
 
-describe("Forge non-tool bricks — integration", () => {
-  test("middleware: forge → promote to promoted → ComponentProvider loads it", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockExecutor();
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = {
-      store,
-      executor,
-      verifiers: [],
-      config,
-      context,
-      pipeline: createForgePipeline(),
-    };
+function createDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
+  const store = createInMemoryForgeStore();
+  const executor = mockExecutor();
+  const context: ForgeContext = {
+    agentId: "agent-int",
+    depth: 0,
+    sessionId: "session-int",
+    forgesThisSession: 0,
+  };
+  return {
+    store,
+    executor,
+    verifiers: [],
+    config: createDefaultForgeConfig({
+      scopePromotion: { requireHumanApproval: false },
+    }),
+    context,
+    pipeline: createForgePipeline(),
+    ...overrides,
+  };
+}
 
-    // Step 1: Forge middleware (starts at "sandbox" trust)
+describe("Forge non-tool bricks — integration", () => {
+  test("middleware: forge → promote scope → ComponentProvider loads it", async () => {
+    const deps = createDeps();
+
+    // Step 1: Forge middleware
     const forgeMw = createForgeMiddlewareTool(deps);
     const forgeResult = (await forgeMw.execute({
       name: "auditMiddleware",
@@ -99,20 +105,19 @@ describe("Forge non-tool bricks — integration", () => {
 
     expect(forgeResult.ok).toBe(true);
     expect(forgeResult.value.kind).toBe("middleware");
-    expect(forgeResult.value.trustTier).toBe("sandbox");
 
-    // Step 2: Promote to "promoted" trust tier
+    // Step 2: Promote scope to zone
     const promoteTool = createPromoteForgeTool(deps);
     const promoteResult = (await promoteTool.execute({
       brickId: forgeResult.value.id,
-      targetTrustTier: "promoted",
+      targetScope: "zone",
     })) as { readonly ok: true; readonly value: PromoteResult };
 
     expect(promoteResult.ok).toBe(true);
     expect(promoteResult.value.applied).toBe(true);
 
-    // Step 3: ComponentProvider should load the promoted middleware
-    const provider = createForgeComponentProvider({ store, executor });
+    // Step 3: ComponentProvider should load the middleware
+    const provider = createForgeComponentProvider({ store: deps.store, executor: deps.executor });
     const components = extractMap(await provider.attach(stubAgent()));
 
     const tok = middlewareToken("auditMiddleware") as string;
@@ -125,24 +130,8 @@ describe("Forge non-tool bricks — integration", () => {
     provider.dispose();
   });
 
-  test("channel: forge → promote to promoted → ComponentProvider loads it", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockExecutor();
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = {
-      store,
-      executor,
-      verifiers: [],
-      config,
-      context,
-      pipeline: createForgePipeline(),
-    };
+  test("channel: forge → promote scope → ComponentProvider loads it", async () => {
+    const deps = createDeps();
 
     // Step 1: Forge channel
     const forgeCh = createForgeChannelTool(deps);
@@ -155,18 +144,18 @@ describe("Forge non-tool bricks — integration", () => {
     expect(forgeResult.ok).toBe(true);
     expect(forgeResult.value.kind).toBe("channel");
 
-    // Step 2: Promote to "promoted"
+    // Step 2: Promote scope to zone
     const promoteTool = createPromoteForgeTool(deps);
     const promoteResult = (await promoteTool.execute({
       brickId: forgeResult.value.id,
-      targetTrustTier: "promoted",
+      targetScope: "zone",
     })) as { readonly ok: true; readonly value: PromoteResult };
 
     expect(promoteResult.ok).toBe(true);
     expect(promoteResult.value.applied).toBe(true);
 
-    // Step 3: ComponentProvider loads the promoted channel
-    const provider = createForgeComponentProvider({ store, executor });
+    // Step 3: ComponentProvider loads the channel
+    const provider = createForgeComponentProvider({ store: deps.store, executor: deps.executor });
     const components = extractMap(await provider.attach(stubAgent()));
 
     const tok = channelToken("slackChannel") as string;
@@ -178,117 +167,60 @@ describe("Forge non-tool bricks — integration", () => {
     provider.dispose();
   });
 
-  test("trust enforcement: middleware at 'verified' is skipped by ComponentProvider", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockExecutor();
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = {
-      store,
-      executor,
-      verifiers: [],
-      config,
-      context,
-      pipeline: createForgePipeline(),
-    };
+  test("sandbox policy: forged middleware is loaded regardless of sandbox status", async () => {
+    const deps = createDeps();
 
-    // Forge middleware (starts at "sandbox")
     const forgeMw = createForgeMiddlewareTool(deps);
     const forgeResult = (await forgeMw.execute({
-      name: "untrustedMw",
-      description: "Middleware without promoted trust",
+      name: "sandboxedMw",
+      description: "Middleware with default sandbox policy",
+      implementation: "return {};",
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(forgeResult.ok).toBe(true);
+    // Forged bricks default to sandbox: true (from ForgeConfig.defaultPolicy)
+    expect(forgeResult.value.policy.sandbox).toBe(true);
+
+    // ComponentProvider loads middleware regardless of sandbox status
+    // (SANDBOX_REQUIRED_BY_KIND.middleware === false, so sandbox check is skipped)
+    const provider = createForgeComponentProvider({ store: deps.store, executor: deps.executor });
+    const components = extractMap(await provider.attach(stubAgent()));
+    expect(components.has(middlewareToken("sandboxedMw") as string)).toBe(true);
+
+    provider.dispose();
+  });
+
+  test("lifecycle enforcement: deprecated middleware is skipped by ComponentProvider", async () => {
+    const deps = createDeps();
+
+    const forgeMw = createForgeMiddlewareTool(deps);
+    const forgeResult = (await forgeMw.execute({
+      name: "deprecatedMw",
+      description: "Middleware that will be deprecated",
       implementation: "return {};",
     })) as { readonly ok: true; readonly value: ForgeResult };
 
     expect(forgeResult.ok).toBe(true);
 
-    // Promote to "verified" (not enough for middleware — needs "promoted")
+    // Deprecate the brick via lifecycle change
     const promoteTool = createPromoteForgeTool(deps);
     await promoteTool.execute({
       brickId: forgeResult.value.id,
-      targetTrustTier: "verified",
+      targetLifecycle: "deprecated",
     });
 
-    // ComponentProvider should skip this middleware
-    const provider = createForgeComponentProvider({ store, executor });
+    // ComponentProvider should skip deprecated middleware
+    const provider = createForgeComponentProvider({ store: deps.store, executor: deps.executor });
     const components = extractMap(await provider.attach(stubAgent()));
-
-    const tok = middlewareToken("untrustedMw") as string;
-    expect(components.has(tok)).toBe(false);
+    expect(components.has(middlewareToken("deprecatedMw") as string)).toBe(false);
 
     provider.dispose();
   });
 
-  test("trust enforcement after promotion: promoted middleware is loaded", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockExecutor();
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = {
-      store,
-      executor,
-      verifiers: [],
-      config,
-      context,
-      pipeline: createForgePipeline(),
-    };
-
-    // Forge middleware (starts at "sandbox")
-    const forgeMw = createForgeMiddlewareTool(deps);
-    const forgeResult = (await forgeMw.execute({
-      name: "trustedMw",
-      description: "Middleware that will be promoted",
-      implementation: "return { afterModel: async (ctx) => ctx };",
-    })) as { readonly ok: true; readonly value: ForgeResult };
-
-    // First: verify middleware at sandbox trust is NOT loaded
-    const provider1 = createForgeComponentProvider({ store, executor });
-    const components1 = extractMap(await provider1.attach(stubAgent()));
-    expect(components1.has(middlewareToken("trustedMw") as string)).toBe(false);
-    provider1.dispose();
-
-    // Now promote to "promoted"
-    const promoteTool = createPromoteForgeTool(deps);
-    await promoteTool.execute({
-      brickId: forgeResult.value.id,
-      targetTrustTier: "promoted",
-    });
-
-    // After promotion: ComponentProvider loads it
-    const provider2 = createForgeComponentProvider({ store, executor });
-    const components2 = extractMap(await provider2.attach(stubAgent()));
-    expect(components2.has(middlewareToken("trustedMw") as string)).toBe(true);
-    provider2.dispose();
-  });
-
   test("zone-scoped middleware only visible to matching zone", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockExecutor();
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig({ defaultScope: "zone" });
-    const deps: ForgeDeps = {
-      store,
-      executor,
-      verifiers: [],
-      config,
-      context,
-      pipeline: createForgePipeline(),
-    };
+    const deps = createDeps({
+      config: createDefaultForgeConfig({ defaultScope: "zone" }),
+    });
 
     // Forge middleware with zone scope + zone tag
     const forgeMw = createForgeMiddlewareTool(deps);
@@ -301,17 +233,10 @@ describe("Forge non-tool bricks — integration", () => {
 
     expect(forgeResult.ok).toBe(true);
 
-    // Promote to "promoted"
-    const promoteTool = createPromoteForgeTool(deps);
-    await promoteTool.execute({
-      brickId: forgeResult.value.id,
-      targetTrustTier: "promoted",
-    });
-
     // ComponentProvider with matching zone sees it
     const providerMatch = createForgeComponentProvider({
-      store,
-      executor,
+      store: deps.store,
+      executor: deps.executor,
       zoneId: "team-alpha",
     });
     const componentsMatch = extractMap(await providerMatch.attach(stubAgent()));
@@ -320,8 +245,8 @@ describe("Forge non-tool bricks — integration", () => {
 
     // ComponentProvider with different zone does NOT see it
     const providerOther = createForgeComponentProvider({
-      store,
-      executor,
+      store: deps.store,
+      executor: deps.executor,
       zoneId: "team-beta",
     });
     const componentsOther = extractMap(await providerOther.attach(stubAgent()));
@@ -330,23 +255,7 @@ describe("Forge non-tool bricks — integration", () => {
   });
 
   test("requires enforcement: brick with missing env is skipped by ComponentProvider", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockExecutor();
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = {
-      store,
-      executor,
-      verifiers: [],
-      config,
-      context,
-      pipeline: createForgePipeline(),
-    };
+    const deps = createDeps();
 
     // Forge middleware with an env requirement that won't be satisfied
     const forgeMw = createForgeMiddlewareTool(deps);
@@ -359,15 +268,8 @@ describe("Forge non-tool bricks — integration", () => {
 
     expect(forgeResult.ok).toBe(true);
 
-    // Promote to "promoted" (sufficient trust for middleware)
-    const promoteTool = createPromoteForgeTool(deps);
-    await promoteTool.execute({
-      brickId: forgeResult.value.id,
-      targetTrustTier: "promoted",
-    });
-
     // ComponentProvider should skip this brick due to unsatisfied requires
-    const provider = createForgeComponentProvider({ store, executor });
+    const provider = createForgeComponentProvider({ store: deps.store, executor: deps.executor });
     const components = extractMap(await provider.attach(stubAgent()));
 
     const tok = middlewareToken("requiresMiddleware") as string;
@@ -377,23 +279,7 @@ describe("Forge non-tool bricks — integration", () => {
   });
 
   test("config schema: forged middleware with configSchema is stored and retrievable", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockExecutor();
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = {
-      store,
-      executor,
-      verifiers: [],
-      config,
-      context,
-      pipeline: createForgePipeline(),
-    };
+    const deps = createDeps();
 
     const forgeMw = createForgeMiddlewareTool(deps);
     const forgeResult = (await forgeMw.execute({
@@ -412,7 +298,7 @@ describe("Forge non-tool bricks — integration", () => {
     expect(forgeResult.ok).toBe(true);
 
     // Load from store and verify configSchema is persisted
-    const loadResult = await store.load(forgeResult.value.id);
+    const loadResult = await deps.store.load(forgeResult.value.id);
     expect(loadResult.ok).toBe(true);
     if (loadResult.ok) {
       expect(loadResult.value.configSchema).toEqual({

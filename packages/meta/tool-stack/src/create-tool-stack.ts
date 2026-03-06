@@ -6,9 +6,10 @@
  *   call-dedup (185) → sandbox (200) → tool-selector (420) → degenerate (460)
  */
 
-import type { TrustTier } from "@koi/core/ecs";
+import type { ToolPolicy } from "@koi/core/ecs";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core/ecs";
 import type { KoiMiddleware } from "@koi/core/middleware";
-import type { ResourceLimits, SandboxProfile } from "@koi/core/sandbox-profile";
+import type { ResourceLimits } from "@koi/core/sandbox-profile";
 import { createCallDedupMiddleware } from "@koi/middleware-call-dedup";
 import { createToolCallLimitMiddleware } from "@koi/middleware-call-limits";
 import { createDegenerateMiddleware } from "@koi/middleware-degenerate";
@@ -32,35 +33,33 @@ function createSandboxFromSimplifiedConfig(config: ToolStackSandboxConfig): KoiM
     timeoutGraceMs,
     skipToolIds,
     perToolTimeouts,
-    tierFor: userTierFor,
+    policyFor: userPolicyFor,
     onSandboxError,
     onSandboxMetrics,
   } = config;
 
   const skipSet = skipToolIds !== undefined ? new Set(skipToolIds) : undefined;
 
-  // skipToolIds takes precedence, then delegate to user's tierFor, then default to "sandbox"
-  const tierFor = (toolId: string): TrustTier | undefined => {
+  // skipToolIds takes precedence, then delegate to user's policyFor, then default to sandboxed
+  const policyFor = (toolId: string): ToolPolicy | undefined => {
     if (skipSet?.has(toolId) === true) {
-      return "promoted";
+      return DEFAULT_UNSANDBOXED_POLICY;
     }
-    if (userTierFor !== undefined) {
-      return userTierFor(toolId);
+    if (userPolicyFor !== undefined) {
+      return userPolicyFor(toolId);
     }
-    return "sandbox";
+    return DEFAULT_SANDBOXED_POLICY;
   };
 
-  const profileFor = (tier: TrustTier): SandboxProfile => {
-    if (tier === "promoted") {
+  const profileFor = (policy: ToolPolicy) => {
+    if (!policy.sandbox) {
       return {
-        tier,
         filesystem: {},
         network: { allow: true },
         resources: {},
       };
     }
     return {
-      tier,
       filesystem: {},
       network: { allow: false },
       resources: { timeoutMs: defaultTimeoutMs },
@@ -76,7 +75,7 @@ function createSandboxFromSimplifiedConfig(config: ToolStackSandboxConfig): KoiM
       : undefined;
 
   return createSandboxMiddleware({
-    tierFor,
+    policyFor,
     profileFor,
     ...(outputLimitBytes !== undefined && { outputLimitBytes }),
     ...(timeoutGraceMs !== undefined && { timeoutGraceMs }),

@@ -2,7 +2,7 @@
  * Tool factory for `browser_tab_focus` — switches focus to a tab.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalTimeout, parseString } from "../parse-args.js";
 
 const MIN_TIMEOUT_MS = 100;
@@ -11,7 +11,7 @@ const MAX_TIMEOUT_MS = 10_000;
 export function createBrowserTabFocusTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -34,7 +34,8 @@ export function createBrowserTabFocusTool(
         required: ["tabId"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const tabIdResult = parseString(args, "tabId");
       if (!tabIdResult.ok) return tabIdResult.err;

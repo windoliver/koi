@@ -1,25 +1,25 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AgentRegistry, VisibilityContext } from "@koi/core";
-import { agentId } from "@koi/core";
+import { agentId, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockRegistry } from "../test-helpers.js";
 import { createDiscoverTool } from "./discover.js";
 
 describe("createDiscoverTool", () => {
   test("has correct descriptor", () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("ipc_discover");
     expect(tool.descriptor.description).toBeTruthy();
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("respects custom prefix", () => {
-    const tool = createDiscoverTool(createMockRegistry(), "msg", "promoted");
+    const tool = createDiscoverTool(createMockRegistry(), "msg", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("msg_discover");
-    expect(tool.trustTier).toBe("promoted");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("returns running agents by default (no args)", async () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       agents: readonly { agentId: string; phase: string }[];
     };
@@ -31,7 +31,7 @@ describe("createDiscoverTool", () => {
   });
 
   test("filters by agentType", async () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ agentType: "worker" })) as {
       agents: readonly { agentId: string; agentType: string }[];
     };
@@ -41,7 +41,7 @@ describe("createDiscoverTool", () => {
   });
 
   test("filters by phase", async () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ phase: "suspended" })) as {
       agents: readonly { agentId: string; phase: string }[];
     };
@@ -51,7 +51,7 @@ describe("createDiscoverTool", () => {
   });
 
   test("filters by both agentType and phase", async () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ agentType: "worker", phase: "running" })) as {
       agents: readonly { agentId: string; agentType: string; phase: string }[];
     };
@@ -62,7 +62,7 @@ describe("createDiscoverTool", () => {
   });
 
   test("returns simplified shape with agentId, agentType, phase, registeredAt", async () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ agentType: "copilot" })) as {
       agents: readonly Record<string, unknown>[];
     };
@@ -78,7 +78,7 @@ describe("createDiscoverTool", () => {
   });
 
   test("returns empty agents array when no matches", async () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ phase: "terminated" })) as {
       agents: readonly unknown[];
     };
@@ -87,7 +87,7 @@ describe("createDiscoverTool", () => {
   });
 
   test("returns validation error for invalid agentType", async () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ agentType: "manager" })) as {
       error: string;
       code: string;
@@ -99,7 +99,7 @@ describe("createDiscoverTool", () => {
   });
 
   test("returns validation error for invalid phase", async () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ phase: "paused" })) as {
       error: string;
       code: string;
@@ -111,7 +111,7 @@ describe("createDiscoverTool", () => {
   });
 
   test("returns validation error for non-string agentType", async () => {
-    const tool = createDiscoverTool(createMockRegistry(), "ipc", "verified");
+    const tool = createDiscoverTool(createMockRegistry(), "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ agentType: 42 })) as {
       error: string;
       code: string;
@@ -130,7 +130,7 @@ describe("createDiscoverTool", () => {
       },
     };
 
-    const tool = createDiscoverTool(failingRegistry, "ipc", "verified");
+    const tool = createDiscoverTool(failingRegistry, "ipc", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as { error: string; code: string };
 
     expect(result.code).toBe("INTERNAL");
@@ -148,7 +148,7 @@ describe("createDiscoverTool", () => {
       const registry: AgentRegistry = { ...baseRegistry, list: listSpy };
 
       const callerId = agentId("caller-agent");
-      const tool = createDiscoverTool(registry, "ipc", "verified", callerId);
+      const tool = createDiscoverTool(registry, "ipc", DEFAULT_UNSANDBOXED_POLICY, callerId);
       await tool.execute({});
 
       expect(listSpy).toHaveBeenCalledTimes(1);
@@ -164,7 +164,7 @@ describe("createDiscoverTool", () => {
       const listSpy = mock(baseRegistry.list);
       const registry: AgentRegistry = { ...baseRegistry, list: listSpy };
 
-      const tool = createDiscoverTool(registry, "ipc", "verified");
+      const tool = createDiscoverTool(registry, "ipc", DEFAULT_UNSANDBOXED_POLICY);
       const result = (await tool.execute({})) as {
         agents: readonly { agentId: string }[];
       };

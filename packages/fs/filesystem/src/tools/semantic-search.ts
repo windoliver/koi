@@ -5,7 +5,7 @@
  * caller supplies a retriever to createFileSystemProvider.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import type { Retriever } from "@koi/search-provider";
 import { parseOptionalNumber, parseString } from "../parse-args.js";
 
@@ -15,7 +15,7 @@ export const DEFAULT_SEMANTIC_SEARCH_LIMIT = 10;
 export function createFsSemanticSearchTool(
   retriever: Retriever,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -37,7 +37,8 @@ export function createFsSemanticSearchTool(
         required: ["query"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const queryResult = parseString(args, "query");
       if (!queryResult.ok) return queryResult.err;

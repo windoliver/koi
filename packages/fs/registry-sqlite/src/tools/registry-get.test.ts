@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifact } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createRegistryGetTool } from "./registry-get.js";
 import { createMockFacade } from "./test-helpers.js";
@@ -11,7 +11,8 @@ const TOOL_ARTIFACT: BrickArtifact = {
   name: "get-test",
   description: "A test tool",
   scope: "agent",
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   lifecycle: "active",
   provenance: DEFAULT_PROVENANCE,
   version: "1.0.0",
@@ -24,7 +25,7 @@ const TOOL_ARTIFACT: BrickArtifact = {
 describe("registry_get tool", () => {
   test("returns NOT_FOUND for missing brick", async () => {
     const facade = createMockFacade();
-    const tool = createRegistryGetTool(facade, "registry", "verified");
+    const tool = createRegistryGetTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ kind: "tool", name: "missing" })) as Record<
       string,
@@ -39,7 +40,7 @@ describe("registry_get tool", () => {
         get: () => ({ ok: true, value: TOOL_ARTIFACT }),
       },
     });
-    const tool = createRegistryGetTool(facade, "registry", "verified");
+    const tool = createRegistryGetTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ kind: "tool", name: "get-test" })) as Record<
       string,
@@ -57,7 +58,7 @@ describe("registry_get tool", () => {
         get: () => ({ ok: true, value: TOOL_ARTIFACT }),
       },
     });
-    const tool = createRegistryGetTool(facade, "registry", "verified");
+    const tool = createRegistryGetTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({
       kind: "tool",
@@ -71,7 +72,7 @@ describe("registry_get tool", () => {
 
   test("returns validation error for missing name", async () => {
     const facade = createMockFacade();
-    const tool = createRegistryGetTool(facade, "registry", "verified");
+    const tool = createRegistryGetTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ kind: "tool" })) as Record<string, unknown>;
     expect(result.code).toBe("VALIDATION");
@@ -79,7 +80,7 @@ describe("registry_get tool", () => {
 
   test("returns validation error for invalid kind", async () => {
     const facade = createMockFacade();
-    const tool = createRegistryGetTool(facade, "registry", "verified");
+    const tool = createRegistryGetTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ kind: "invalid", name: "test" })) as Record<
       string,

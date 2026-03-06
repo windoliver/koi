@@ -263,7 +263,7 @@ describe("e2e-deps: verification pipeline stages", () => {
       expect(result.value.stages).toHaveLength(6);
       const stageNames = result.value.stages.map((s) => s.stage);
       expect(stageNames).toEqual(["static", "format", "resolve", "sandbox", "self_test", "trust"]);
-      expect(result.value.finalTrustTier).toBe("sandbox");
+      expect(result.value.sandbox).toBe(true);
     }
   });
 

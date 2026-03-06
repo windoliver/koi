@@ -2,6 +2,7 @@
  * Ask-user tool factory — creates a Tool that asks users structured questions.
  */
 
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type { Tool, ToolExecuteOptions } from "@koi/core/ecs";
 import type { ElicitationQuestion } from "@koi/core/elicitation";
@@ -31,7 +32,8 @@ export function createAskUserTool(config: AskUserConfig): Tool {
 
   return {
     descriptor: ASK_USER_TOOL_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
 
     async execute(args: JsonObject, options?: ToolExecuteOptions): Promise<unknown> {
       // 1. Validate input

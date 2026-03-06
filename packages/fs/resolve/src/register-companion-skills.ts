@@ -14,6 +14,7 @@ import type {
   Result,
   SkillArtifact,
 } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { computeBrickId } from "@koi/hash";
 
 import type { BrickDescriptor } from "./types.js";
@@ -64,7 +65,7 @@ export function createCompanionSkillArtifact(
     },
     verification: {
       passed: true,
-      finalTrustTier: "promoted",
+      sandbox: false,
       totalDurationMs: 0,
       stageResults: [],
     },
@@ -82,7 +83,8 @@ export function createCompanionSkillArtifact(
     description: skill.description,
     content: skill.content,
     scope: "global",
-    trustTier: "promoted",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     version: "0.1.0",
     tags: [...baseTags, `from:${descriptorName}`, "companion"],

@@ -6,13 +6,13 @@
  * available to any engine with zero engine changes.
  */
 
-import type { Agent, ComponentProvider, SkillComponent, Tool, TrustTier } from "@koi/core";
-import { skillToken, toolToken } from "@koi/core";
+import type { Agent, ComponentProvider, SkillComponent, Tool, ToolPolicy } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, skillToken, toolToken } from "@koi/core";
 import {
   GITHUB_SYSTEM_PROMPT,
   type GithubOperation,
   OPERATIONS,
-  trustTierForOperation,
+  policyForOperation,
 } from "./constants.js";
 import type { GhExecutor } from "./gh-executor.js";
 import { createGithubCiWaitTool } from "./tools/ci-wait.js";
@@ -24,14 +24,14 @@ import { createGithubPrStatusTool } from "./tools/pr-status.js";
 export interface GithubProviderConfig {
   readonly executor: GhExecutor;
   /** Default trust tier for read operations (default: "verified"). */
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   /** Tool name prefix (default: "github"). */
   readonly prefix?: string;
   /** Operations to include (default: all 5). */
   readonly operations?: readonly GithubOperation[];
 }
 
-type ToolFactory = (executor: GhExecutor, prefix: string, trustTier: TrustTier) => Tool;
+type ToolFactory = (executor: GhExecutor, prefix: string, policy: ToolPolicy) => Tool;
 
 const TOOL_FACTORIES: Readonly<Record<GithubOperation, ToolFactory>> = {
   pr_create: createGithubPrCreateTool,
@@ -42,14 +42,19 @@ const TOOL_FACTORIES: Readonly<Record<GithubOperation, ToolFactory>> = {
 };
 
 export function createGithubProvider(config: GithubProviderConfig): ComponentProvider {
-  const { executor, trustTier = "verified", prefix = "github", operations = OPERATIONS } = config;
+  const {
+    executor,
+    policy = DEFAULT_UNSANDBOXED_POLICY,
+    prefix = "github",
+    operations = OPERATIONS,
+  } = config;
 
   return {
     name: `github:${prefix}`,
 
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
       const toolEntries: ReadonlyArray<readonly [string, unknown]> = operations.map((op) => {
-        const tier = trustTierForOperation(op, trustTier);
+        const tier = policyForOperation(op, policy);
         const factory = TOOL_FACTORIES[op];
         const tool = factory(executor, prefix, tier);
         return [toolToken(tool.descriptor.name) as string, tool] as const;

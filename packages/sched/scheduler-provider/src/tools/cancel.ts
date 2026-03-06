@@ -2,14 +2,14 @@
  * Tool factory for `scheduler_cancel` — cancel a scheduled task.
  */
 
-import type { JsonObject, SchedulerComponent, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, SchedulerComponent, Tool, ToolPolicy } from "@koi/core";
 import { taskId } from "@koi/core";
 import { parseString } from "../parse-args.js";
 
 export function createCancelTool(
   component: SchedulerComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -23,7 +23,8 @@ export function createCancelTool(
         required: ["taskId"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const idResult = parseString(args, "taskId");
       if (!idResult.ok) return idResult.err;

@@ -6,8 +6,14 @@
  * available to any engine with zero engine changes.
  */
 
-import type { BrowserDriver, ComponentProvider, Tool, TrustTier } from "@koi/core";
-import { BROWSER, createServiceProvider, skillToken, toolToken } from "@koi/core";
+import type { BrowserDriver, ComponentProvider, Tool, ToolPolicy } from "@koi/core";
+import {
+  BROWSER,
+  createServiceProvider,
+  DEFAULT_UNSANDBOXED_POLICY,
+  skillToken,
+  toolToken,
+} from "@koi/core";
 import type { BrowserScope } from "@koi/scope";
 import { createScopedBrowser } from "@koi/scope";
 import {
@@ -15,7 +21,7 @@ import {
   BROWSER_SKILL_NAME,
   type BrowserOperation,
   EVALUATE_OPERATION,
-  EVALUATE_TRUST_TIER,
+  EVALUATE_POLICY,
   OPERATIONS,
   TRACE_OPERATION_START,
   TRACE_OPERATION_STOP,
@@ -48,13 +54,13 @@ import {
 
 export interface BrowserProviderConfig {
   readonly backend: BrowserDriver;
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   readonly prefix?: string;
   /**
    * Operations to include. Defaults to OPERATIONS (excludes evaluate).
    * To enable evaluate: [...OPERATIONS, "evaluate"]
-   * Note: evaluate always uses EVALUATE_TRUST_TIER ("promoted") regardless
-   * of the trustTier option.
+   * Note: evaluate always uses EVALUATE_POLICY ("promoted") regardless
+   * of the policy option.
    */
   readonly operations?: readonly BrowserOperation[];
   /**
@@ -64,7 +70,7 @@ export interface BrowserProviderConfig {
    * AI-friendly explanation instead of forwarding to the driver.
    *
    * Prefer `scope` for new code — it wraps the entire driver and also
-   * gates evaluate() behind trustTier. `security` is kept for backward
+   * gates evaluate() behind policy. `security` is kept for backward
    * compatibility and applies only to navigate/tab_new tools.
    */
   readonly security?: NavigationSecurityConfig;
@@ -81,7 +87,7 @@ export interface BrowserProviderConfig {
 export type { CompiledNavigationSecurity, NavigationSecurityConfig };
 
 // ---------------------------------------------------------------------------
-// Standard tools — 3-arg factory signature (backend, prefix, trustTier)
+// Standard tools — 3-arg factory signature (backend, prefix, policy)
 // ---------------------------------------------------------------------------
 
 type StandardOperation = Exclude<
@@ -106,7 +112,7 @@ const STANDARD_OPS = new Set<BrowserOperation>([
 ]);
 
 const TOOL_FACTORIES: Readonly<
-  Record<StandardOperation, (driver: BrowserDriver, prefix: string, trustTier: TrustTier) => Tool>
+  Record<StandardOperation, (driver: BrowserDriver, prefix: string, policy: ToolPolicy) => Tool>
 > = {
   snapshot: createBrowserSnapshotTool,
   click: createBrowserClickTool,
@@ -131,13 +137,13 @@ const TOOL_FACTORIES: Readonly<
  * Creates the [key, Tool] entries for non-standard browser operations:
  * - navigate/tab_new: 4th arg (security config)
  * - upload/trace_start/trace_stop: driver-optional (skip if not implemented)
- * - evaluate: uses EVALUATE_TRUST_TIER instead of config trustTier
+ * - evaluate: uses EVALUATE_POLICY instead of config policy
  */
 function createCustomToolEntries(
   ops: readonly BrowserOperation[],
   backend: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   compiledSecurity: CompiledNavigationSecurity | undefined,
 ): ReadonlyArray<readonly [string, Tool]> {
   const entries: Array<readonly [string, Tool]> = [];
@@ -146,22 +152,22 @@ function createCustomToolEntries(
     if (STANDARD_OPS.has(op)) continue;
 
     if (op === "navigate") {
-      const tool = createBrowserNavigateTool(backend, prefix, trustTier, compiledSecurity);
+      const tool = createBrowserNavigateTool(backend, prefix, policy, compiledSecurity);
       entries.push([toolToken(tool.descriptor.name) as string, tool]);
     } else if (op === "tab_new") {
-      const tool = createBrowserTabNewTool(backend, prefix, trustTier, compiledSecurity);
+      const tool = createBrowserTabNewTool(backend, prefix, policy, compiledSecurity);
       entries.push([toolToken(tool.descriptor.name) as string, tool]);
     } else if (op === UPLOAD_OPERATION && backend.upload) {
-      const tool = createBrowserUploadTool(backend, prefix, trustTier);
+      const tool = createBrowserUploadTool(backend, prefix, policy);
       entries.push([toolToken(tool.descriptor.name) as string, tool]);
     } else if (op === TRACE_OPERATION_START && backend.traceStart) {
-      const tool = createBrowserTraceStartTool(backend, prefix, trustTier);
+      const tool = createBrowserTraceStartTool(backend, prefix, policy);
       entries.push([toolToken(tool.descriptor.name) as string, tool]);
     } else if (op === TRACE_OPERATION_STOP && backend.traceStop) {
-      const tool = createBrowserTraceStopTool(backend, prefix, trustTier);
+      const tool = createBrowserTraceStopTool(backend, prefix, policy);
       entries.push([toolToken(tool.descriptor.name) as string, tool]);
     } else if (op === EVALUATE_OPERATION) {
-      const tool = createBrowserEvaluateTool(backend, prefix, EVALUATE_TRUST_TIER);
+      const tool = createBrowserEvaluateTool(backend, prefix, EVALUATE_POLICY);
       entries.push([toolToken(tool.descriptor.name) as string, tool]);
     }
   }
@@ -176,7 +182,7 @@ function createCustomToolEntries(
 export function createBrowserProvider(config: BrowserProviderConfig): ComponentProvider {
   const {
     backend: rawBackend,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = "browser",
     operations = OPERATIONS,
     security,
@@ -203,7 +209,7 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
       operations,
       backend,
       prefix,
-      trustTier,
+      policy,
       compiledSecurity,
     );
     const skillEntry = [skillToken(BROWSER_SKILL_NAME) as string, BROWSER_SKILL] as const;
@@ -227,10 +233,10 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
     backend,
     operations: standardOps,
     factories: TOOL_FACTORIES,
-    trustTier,
+    policy,
     prefix,
     customTools: (b) => [
-      ...createCustomToolEntries(operations, b, prefix, trustTier, compiledSecurity),
+      ...createCustomToolEntries(operations, b, prefix, policy, compiledSecurity),
       [skillToken(BROWSER_SKILL_NAME) as string, BROWSER_SKILL],
     ],
     detach: async (b) => {

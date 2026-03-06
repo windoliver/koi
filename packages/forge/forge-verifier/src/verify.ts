@@ -199,7 +199,7 @@ export async function verify(
     ok: true,
     value: {
       stages,
-      finalTrustTier: trustResult.value.trustTier,
+      sandbox: trustResult.value.sandbox,
       totalDurationMs,
       passed: true,
     },

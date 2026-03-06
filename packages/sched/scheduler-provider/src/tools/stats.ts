@@ -2,12 +2,12 @@
  * Tool factory for `scheduler_stats` — get scheduler statistics.
  */
 
-import type { JsonObject, SchedulerComponent, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, SchedulerComponent, Tool, ToolPolicy } from "@koi/core";
 
 export function createStatsTool(
   component: SchedulerComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -19,7 +19,8 @@ export function createStatsTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (_args: JsonObject): Promise<unknown> => {
       try {
         return await component.stats();

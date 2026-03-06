@@ -48,15 +48,15 @@ export function proposalId(raw: string): ProposalId {
 
 /**
  * The architectural layer targeted by a proposal.
- * Names align with TrustTier vocabulary so submitters can reason about them:
- *   "brick:sandboxed" — tool or skill (TrustTier "sandbox", auto-verified)
- *   "brick:promoted"  — middleware or channel (TrustTier "promoted", HITL required)
+ * Names align with ToolPolicy vocabulary so submitters can reason about them:
+ *   "brick:sandboxed" — tool or skill (ToolPolicy "sandbox", auto-verified)
+ *   "brick:promoted"  — middleware or channel (ToolPolicy "promoted", HITL required)
  *
  * Maps 1:1 to the "Trust Gate by Layer" table in the architecture doc.
  */
 export type ChangeTarget =
-  | "brick:sandboxed" // tool, skill — TrustTier "sandbox", auto verified
-  | "brick:promoted" // middleware, channel — TrustTier "promoted", HITL required
+  | "brick:sandboxed" // tool, skill — ToolPolicy "sandbox", auto verified
+  | "brick:promoted" // middleware, channel — ToolPolicy "promoted", HITL required
   | "bundle_l2" // fork to forge store, shadows bundled L2 — auto
   | "l1_extension" // HITL + full agent test, takes effect at next startup
   | "l1_core" // HITL + full agent test, requires new binary

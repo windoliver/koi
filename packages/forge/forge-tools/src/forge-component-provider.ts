@@ -29,14 +29,14 @@ import {
   agentToken,
   COMPONENT_PRIORITY,
   channelToken,
-  MIN_TRUST_BY_KIND,
   middlewareToken,
+  SANDBOX_REQUIRED_BY_KIND,
   skillToken,
   toolToken,
 } from "@koi/core";
 import { DEFAULT_SANDBOX_TIMEOUT_MS } from "@koi/forge-types";
 import { brickToTool } from "./brick-conversion.js";
-import { meetsMinTrust } from "./brick-resolver.js";
+// meetsMinTrust no longer needed — inline sandbox check
 import { checkBrickRequires } from "./requires-check.js";
 
 // ---------------------------------------------------------------------------
@@ -54,8 +54,8 @@ function attachBrick(
   timeoutMs: number,
 ): BrickAttachEntry | undefined {
   // Trust enforcement (universal — all kinds checked)
-  const minTrust = MIN_TRUST_BY_KIND[brick.kind];
-  if (!meetsMinTrust(brick.trustTier, minTrust)) return undefined;
+  const sandboxRequired = SANDBOX_REQUIRED_BY_KIND[brick.kind];
+  if (sandboxRequired && !brick.policy.sandbox) return undefined;
 
   switch (brick.kind) {
     case "tool": {
@@ -286,7 +286,7 @@ export function createForgeComponentProvider(
       if (result === undefined) {
         skipped.push({
           name: brick.name,
-          reason: `trust tier ${brick.trustTier} below minimum for ${brick.kind}`,
+          reason: `trust tier ${brick.policy} below minimum for ${brick.kind}`,
         });
         continue;
       }

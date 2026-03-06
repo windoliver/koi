@@ -17,7 +17,7 @@ import type {
   SubsystemToken,
   Tool,
 } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import { agentId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -40,7 +40,8 @@ function createMockTool(
       description,
       inputSchema: { type: "object" } as JsonObject,
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => handler(args),
   };
 }

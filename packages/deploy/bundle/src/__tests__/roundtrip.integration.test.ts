@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifact, ForgeStore, ToolArtifact } from "@koi/core";
-import { BUNDLE_FORMAT_VERSION } from "@koi/core";
+import { BUNDLE_FORMAT_VERSION, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { computeBrickId } from "@koi/hash";
 
 import { createBundle } from "../export-bundle.js";
@@ -33,7 +33,7 @@ function createTestProvenance(): ToolArtifact["provenance"] {
     },
     verification: {
       passed: true,
-      finalTrustTier: "verified",
+      sandbox: false,
       totalDurationMs: 1000,
       stageResults: [],
     },
@@ -51,7 +51,8 @@ function createTestBrick(implementation: string): ToolArtifact {
     name: "test-tool",
     description: "A test tool",
     scope: "agent",
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     provenance: createTestProvenance(),
     version: "1.0.0",
@@ -155,8 +156,8 @@ describe("export → serialize → deserialize → import roundtrip", () => {
     );
 
     // 7. Verify trust tier is sandbox in store B
-    expect(loadResult1.value.trustTier).toBe("sandbox");
-    expect(loadResult2.value.trustTier).toBe("sandbox");
+    expect(loadResult1.value.policy.sandbox).toBe(true);
+    expect(loadResult2.value.policy.sandbox).toBe(true);
 
     // 8. Verify provenance source is bundled in store B
     expect(loadResult1.value.provenance.source).toEqual({

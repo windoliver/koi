@@ -14,7 +14,7 @@ function makeConfig(overrides?: Partial<KoiConfig>): KoiConfig {
       maxForgeDepth: 1,
       maxForgesPerSession: 5,
       defaultScope: "agent",
-      defaultTrustTier: "sandbox",
+      defaultPolicy: "sandbox",
     },
     modelRouter: {
       strategy: "fallback",

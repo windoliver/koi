@@ -24,7 +24,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createKoi } from "../koi.js";
 
@@ -90,7 +90,8 @@ const NOTE_TOOL: Tool = {
       required: ["text"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     return `Note saved: ${String(input.text ?? "")}`;
   },
@@ -108,7 +109,8 @@ const LOOKUP_TOOL: Tool = {
       required: ["query"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async () => {
     return JSON.stringify({ answer: "The capital of France is Paris." });
   },

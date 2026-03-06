@@ -8,7 +8,7 @@
 
 import type { BrickComposition } from "./brick-composition.js";
 import type { BrickId } from "./brick-snapshot.js";
-import type { TrustTier } from "./ecs.js";
+import type { ToolOrigin, ToolPolicy } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
 import type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
 import type { ContentMarker, DataClassification, ForgeProvenance } from "./provenance.js";
@@ -198,7 +198,8 @@ export interface BrickArtifactBase {
   readonly name: string;
   readonly description: string;
   readonly scope: ForgeScope;
-  readonly trustTier: TrustTier;
+  readonly origin: ToolOrigin;
+  readonly policy: ToolPolicy;
   readonly lifecycle: BrickLifecycle;
   readonly provenance: ForgeProvenance;
   readonly version: string;
@@ -214,10 +215,6 @@ export interface BrickArtifactBase {
   readonly lastVerifiedAt?: number;
   /** Runtime fitness metrics for discovery ranking. Undefined = never used. */
   readonly fitness?: BrickFitnessMetrics | undefined;
-  /** Epoch ms of last trust tier promotion. Undefined = never promoted. */
-  readonly lastPromotedAt?: number | undefined;
-  /** Epoch ms of last trust tier demotion. Undefined = never demoted. */
-  readonly lastDemotedAt?: number | undefined;
   /** Stigmergic trail strength — decaying signal of collective agent interest. */
   readonly trailStrength?: number | undefined;
   /** Source-file mapping for drift detection. Undefined = no source tracking. */
@@ -295,7 +292,8 @@ export type BrickArtifact =
 export interface ForgeQuery {
   readonly kind?: BrickKind;
   readonly scope?: ForgeScope;
-  readonly trustTier?: TrustTier;
+  /** Filter by sandbox status. Omit to match both sandboxed and unsandboxed bricks. */
+  readonly sandbox?: boolean;
   readonly lifecycle?: BrickLifecycle;
   readonly tags?: readonly string[];
   /** Matches against `provenance.metadata.agentId`. */
@@ -319,7 +317,7 @@ export interface ForgeQuery {
 
 export interface BrickUpdate {
   readonly lifecycle?: BrickLifecycle;
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   readonly scope?: ForgeScope;
   readonly usageCount?: number;
   readonly tags?: readonly string[] | undefined;
@@ -327,10 +325,6 @@ export interface BrickUpdate {
   readonly lastVerifiedAt?: number;
   /** Updated fitness metrics (replaces entire fitness object). */
   readonly fitness?: BrickFitnessMetrics | undefined;
-  /** Epoch ms of last trust tier promotion. */
-  readonly lastPromotedAt?: number | undefined;
-  /** Epoch ms of last trust tier demotion. */
-  readonly lastDemotedAt?: number | undefined;
   /** Updated trail strength. */
   readonly trailStrength?: number | undefined;
   /** Updated drift context (replaces entire drift context object). */
@@ -385,7 +379,7 @@ export interface ForgeStore {
 // ---------------------------------------------------------------------------
 
 /** Describes what changed in the store. */
-export type StoreChangeKind = "saved" | "updated" | "removed" | "promoted" | "demoted";
+export type StoreChangeKind = "saved" | "updated" | "removed" | "promoted" | "quarantined";
 
 /** Notification payload for store mutations. */
 export interface StoreChangeEvent {
@@ -393,9 +387,9 @@ export interface StoreChangeEvent {
   readonly brickId: BrickId;
   /** The scope after the change (if applicable). */
   readonly scope?: ForgeScope;
-  /** Trust tier change details (for "promoted" and "demoted" kinds). */
-  readonly trustChange?: { readonly from: TrustTier; readonly to: TrustTier };
-  /** Human-readable reason for the change (e.g., demotion cause). */
+  /** Policy change details (for "promoted" and "quarantined" kinds). */
+  readonly policyChange?: { readonly from: ToolPolicy; readonly to: ToolPolicy };
+  /** Human-readable reason for the change (e.g., quarantine cause). */
   readonly reason?: string;
 }
 

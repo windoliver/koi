@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { BrickFitnessMetrics, TrustTier } from "@koi/core";
-import { DEFAULT_BRICK_FITNESS } from "@koi/core";
+import type { BrickFitnessMetrics, ToolPolicy } from "@koi/core";
+import {
+  DEFAULT_BRICK_FITNESS,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+} from "@koi/core";
 import { createTestToolArtifact } from "@koi/test-utils";
 import {
   computeBrickFitness,
@@ -219,52 +223,43 @@ describe("computeBrickFitness", () => {
 // ---------------------------------------------------------------------------
 
 describe("evaluateTrustDecay", () => {
-  function createBrickBase(trustTier: TrustTier, fitness: BrickFitnessMetrics | undefined) {
-    return createTestToolArtifact({ trustTier, fitness });
+  function createBrickBase(policy: ToolPolicy, fitness: BrickFitnessMetrics | undefined) {
+    return createTestToolArtifact({ policy, fitness });
   }
 
   test("high fitness + promoted → no demotion", () => {
     const brick = createBrickBase(
-      "promoted",
+      DEFAULT_UNSANDBOXED_POLICY,
       createMetrics({ successCount: 50, errorCount: 0, lastUsedAt: NOW }),
     );
     expect(evaluateTrustDecay(brick, NOW)).toBeUndefined();
   });
 
-  test("low fitness + promoted → verified", () => {
+  test("low fitness + unsandboxed → demoted to sandboxed", () => {
     // 0% success rate → fitness score = 0 which is < 0.3
     const brick = createBrickBase(
-      "promoted",
+      DEFAULT_UNSANDBOXED_POLICY,
       createMetrics({ successCount: 0, errorCount: 50, lastUsedAt: NOW }),
     );
-    expect(evaluateTrustDecay(brick, NOW)).toBe("verified");
-  });
-
-  test("very low fitness + verified → sandbox", () => {
-    // 0% success rate → fitness score = 0 which is < 0.1
-    const brick = createBrickBase(
-      "verified",
-      createMetrics({ successCount: 0, errorCount: 50, lastUsedAt: NOW }),
-    );
-    expect(evaluateTrustDecay(brick, NOW)).toBe("sandbox");
+    expect(evaluateTrustDecay(brick, NOW)).toEqual(DEFAULT_SANDBOXED_POLICY);
   });
 
   test("sandbox → never demoted (floor)", () => {
     const brick = createBrickBase(
-      "sandbox",
+      DEFAULT_SANDBOXED_POLICY,
       createMetrics({ successCount: 0, errorCount: 50, lastUsedAt: NOW }),
     );
     expect(evaluateTrustDecay(brick, NOW)).toBeUndefined();
   });
 
   test("no fitness data → no demotion", () => {
-    const brick = createBrickBase("promoted", undefined);
+    const brick = createBrickBase(DEFAULT_UNSANDBOXED_POLICY, undefined);
     expect(evaluateTrustDecay(brick, NOW)).toBeUndefined();
   });
 
   test("zero usage → no demotion", () => {
     const brick = createBrickBase(
-      "promoted",
+      DEFAULT_UNSANDBOXED_POLICY,
       createMetrics({ successCount: 0, errorCount: 0, lastUsedAt: NOW }),
     );
     expect(evaluateTrustDecay(brick, NOW)).toBeUndefined();
@@ -273,18 +268,18 @@ describe("evaluateTrustDecay", () => {
   test("moderate fitness + promoted → no demotion", () => {
     // 80% success rate with recent usage should give fitness > 0.3
     const brick = createBrickBase(
-      "promoted",
+      DEFAULT_UNSANDBOXED_POLICY,
       createMetrics({ successCount: 80, errorCount: 20, lastUsedAt: NOW }),
     );
     expect(evaluateTrustDecay(brick, NOW)).toBeUndefined();
   });
 
-  test("moderate fitness + verified → no demotion to sandbox", () => {
-    // 50% success rate → fitness ≈ 0.13 which is > 0.1
+  test("moderate fitness + unsandboxed → demoted when below threshold", () => {
+    // 50% success rate → fitness ≈ 0.13 which is < 0.3 demotion threshold
     const brick = createBrickBase(
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
       createMetrics({ successCount: 50, errorCount: 50, lastUsedAt: NOW }),
     );
-    expect(evaluateTrustDecay(brick, NOW)).toBeUndefined();
+    expect(evaluateTrustDecay(brick, NOW)).toEqual(DEFAULT_SANDBOXED_POLICY);
   });
 });

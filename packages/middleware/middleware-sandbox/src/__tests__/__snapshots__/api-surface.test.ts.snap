@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/middleware-sandbox API surface . has stable type surface 1`] = `
-"import { TrustTier } from '@koi/core/ecs';
+"import { ToolPolicy } from '@koi/core/ecs';
 import { Result, KoiError } from '@koi/core/errors';
 import { SandboxProfile, ResourceLimits } from '@koi/core/sandbox-profile';
 import { KoiMiddleware } from '@koi/core';
@@ -16,27 +16,23 @@ import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 declare const DEFAULT_OUTPUT_LIMIT_BYTES = 1048576;
 /** Grace period added to profile timeout (5 s). */
 declare const DEFAULT_TIMEOUT_GRACE_MS = 5000;
-/** Tiers that skip sandbox wrapping entirely. */
-declare const DEFAULT_SKIP_TIERS: readonly TrustTier[];
 interface SandboxMiddlewareConfig {
-    /** Maps trust tier to sandbox profile (required). */
-    readonly profileFor: (tier: TrustTier) => SandboxProfile;
-    /** Resolves tool ID to its trust tier — caller provides ECS closure (required). */
-    readonly tierFor: (toolId: string) => TrustTier | undefined;
+    /** Maps tool policy to sandbox profile (required). */
+    readonly profileFor: (policy: ToolPolicy) => SandboxProfile;
+    /** Resolves tool ID to its policy — caller provides ECS closure (required). */
+    readonly policyFor: (toolId: string) => ToolPolicy | undefined;
     /** Max output bytes before truncation (default: 1_048_576 = 1 MB). */
     readonly outputLimitBytes?: number | undefined;
     /** Grace period added to profile timeout (default: 5_000 ms). */
     readonly timeoutGraceMs?: number | undefined;
-    /** Tiers to skip entirely — fast pass-through (default: ["promoted"]). */
-    readonly skipTiers?: readonly TrustTier[] | undefined;
     /** Per-tool resource limit overrides. */
     readonly perToolOverrides?: ReadonlyMap<string, Partial<ResourceLimits>> | undefined;
-    /** If true, unknown tools (tierFor returns undefined) are treated as sandbox (default: true). */
+    /** If true, unknown tools (policyFor returns undefined) are treated as sandboxed (default: true). */
     readonly failClosedOnLookupError?: boolean | undefined;
     /** Called when middleware detects a sandbox violation (timeout). */
-    readonly onSandboxError?: ((toolId: string, tier: TrustTier, code: string, message: string) => void) | undefined;
+    readonly onSandboxError?: ((toolId: string, policy: ToolPolicy, code: string, message: string) => void) | undefined;
     /** Called after every sandboxed tool execution with metrics. */
-    readonly onSandboxMetrics?: ((toolId: string, tier: TrustTier, durationMs: number, outputBytes: number, truncated: boolean) => void) | undefined;
+    readonly onSandboxMetrics?: ((toolId: string, policy: ToolPolicy, durationMs: number, outputBytes: number, truncated: boolean) => void) | undefined;
 }
 declare function validateConfig(config: unknown): Result<SandboxMiddlewareConfig, KoiError>;
 
@@ -44,12 +40,12 @@ declare function validateConfig(config: unknown): Result<SandboxMiddlewareConfig
  * BrickDescriptor for @koi/middleware-sandbox.
  *
  * Enables manifest auto-resolution: validates sandbox config,
- * then creates the sandbox middleware with default trust tier profiles.
+ * then creates the sandbox middleware with default profiles.
  */
 
 /**
  * Descriptor for sandbox middleware.
- * Uses default trust tier profiles and treats all tools as sandbox tier.
+ * Uses policy.sandbox boolean to determine which profile to apply.
  * Exported for registration with createRegistry().
  */
 declare const descriptor: BrickDescriptor<KoiMiddleware>;
@@ -61,6 +57,6 @@ declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 declare function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMiddleware$1;
 
-export { DEFAULT_OUTPUT_LIMIT_BYTES, DEFAULT_SKIP_TIERS, DEFAULT_TIMEOUT_GRACE_MS, type SandboxMiddlewareConfig, createSandboxMiddleware, descriptor, validateConfig };
+export { DEFAULT_OUTPUT_LIMIT_BYTES, DEFAULT_TIMEOUT_GRACE_MS, type SandboxMiddlewareConfig, createSandboxMiddleware, descriptor, validateConfig };
 "
 `;

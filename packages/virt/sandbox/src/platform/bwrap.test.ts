@@ -3,7 +3,6 @@ import type { SandboxProfile } from "../types.js";
 import { buildBwrapArgs } from "./bwrap.js";
 
 const MINIMAL_PROFILE: SandboxProfile = {
-  tier: "sandbox",
   filesystem: {},
   network: { allow: false },
   resources: {},

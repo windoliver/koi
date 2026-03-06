@@ -2,8 +2,8 @@
  * ECS ComponentProvider for code-mode — discovers FILESYSTEM, attaches 3 tools.
  */
 
-import type { Agent, ComponentProvider, FileSystemBackend, Tool, TrustTier } from "@koi/core";
-import { FILESYSTEM, skillToken, toolToken } from "@koi/core";
+import type { Agent, ComponentProvider, FileSystemBackend, Tool, ToolPolicy } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, FILESYSTEM, skillToken, toolToken } from "@koi/core";
 import { DEFAULT_PREFIX } from "./constants.js";
 import { createPlanStore } from "./plan-store.js";
 import { CODE_MODE_SKILL, CODE_MODE_SKILL_NAME } from "./skill.js";
@@ -14,7 +14,7 @@ import type { ValidationConfig } from "./validation.js";
 import { DEFAULT_VALIDATION_CONFIG } from "./validation.js";
 
 export interface CodeModeProviderConfig {
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   readonly prefix?: string;
   readonly validationConfig?: ValidationConfig;
 }
@@ -25,7 +25,7 @@ export interface CodeModeProviderConfig {
  */
 export function createCodeModeProvider(config: CodeModeProviderConfig = {}): ComponentProvider {
   const {
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = DEFAULT_PREFIX,
     validationConfig = DEFAULT_VALIDATION_CONFIG,
   } = config;
@@ -44,9 +44,9 @@ export function createCodeModeProvider(config: CodeModeProviderConfig = {}): Com
       const store = createPlanStore();
 
       const tools: readonly Tool[] = [
-        createPlanCreateTool(backend, store, prefix, trustTier, validationConfig),
-        createPlanApplyTool(backend, store, prefix, trustTier),
-        createPlanStatusTool(store, prefix, trustTier),
+        createPlanCreateTool(backend, store, prefix, policy, validationConfig),
+        createPlanApplyTool(backend, store, prefix, policy),
+        createPlanStatusTool(store, prefix, policy),
       ];
 
       const entries = tools.map(

@@ -115,11 +115,11 @@ import type {
   ToolDescriptor,
   ToolErrorPayload,
   ToolHandler,
+  ToolPolicy,
   ToolRequest,
   ToolResponse,
   ToolResultPayload,
   TransitionReason,
-  TrustTier,
   TurnContext,
   WebhookComponent,
   WebhookEndpointHealth,
@@ -147,10 +147,10 @@ import {
   governanceContributorToken,
   isToolCallPayload,
   MEMORY,
-  MIN_TRUST_BY_KIND,
   middlewareToken,
   REPUTATION_LEVEL_ORDER,
   RETRYABLE_DEFAULTS,
+  SANDBOX_REQUIRED_BY_KIND,
   SCHEDULER,
   skillToken,
   token,
@@ -165,7 +165,7 @@ import {
 type AssertDefined<T> = T extends undefined ? never : T;
 type _TypeGuard =
   | AssertDefined<JsonObject>
-  | AssertDefined<TrustTier>
+  | AssertDefined<ToolPolicy>
   | AssertDefined<KoiErrorCode>
   | AssertDefined<KoiError>
   | AssertDefined<Result<unknown>>
@@ -210,7 +210,7 @@ type _TypeGuard =
   | AssertDefined<Agent>
   | AssertDefined<ToolDescriptor>
   | AssertDefined<Tool>
-  | AssertDefined<TrustTier>
+  | AssertDefined<ToolPolicy>
   | AssertDefined<SkillMetadata>
   | AssertDefined<ComponentProvider>
   | AssertDefined<MemoryComponent>
@@ -306,7 +306,7 @@ describe("export inventory", () => {
     expect(VALID_TRANSITIONS).toBeDefined();
     expect(DEFAULT_HEALTH_MONITOR_CONFIG).toBeDefined();
     expect(ALL_BRICK_KINDS).toBeDefined();
-    expect(MIN_TRUST_BY_KIND).toBeDefined();
+    expect(SANDBOX_REQUIRED_BY_KIND).toBeDefined();
     expect(COMPONENT_PRIORITY).toBeDefined();
     expect(isToolCallPayload).toBeDefined();
     expect(SCHEDULER).toBeDefined();

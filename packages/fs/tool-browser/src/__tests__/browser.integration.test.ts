@@ -62,9 +62,9 @@ describe("createBrowserProvider (integration)", () => {
     expect(components.has(toolToken("browser_evaluate") as string)).toBe(true);
     // evaluate must use promoted tier regardless of config
     const evalTool = components.get(toolToken("browser_evaluate") as string) as {
-      trustTier: string;
+      policy: { sandbox: boolean };
     };
-    expect(evalTool.trustTier).toBe("promoted");
+    expect(evalTool.policy.sandbox).toBe(false);
   });
 
   test("respects custom prefix", async () => {

@@ -9,7 +9,7 @@ import type {
   SubsystemToken,
   Tool,
 } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import { agentId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import type { CascadingTermination } from "./cascading-termination.js";
 import { createCascadingTermination } from "./cascading-termination.js";
@@ -78,7 +78,8 @@ function mockTool(name: string): Tool {
       description: `Mock tool ${name}`,
       inputSchema: { type: "object" },
     },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (input: unknown) => input,
   };
 }

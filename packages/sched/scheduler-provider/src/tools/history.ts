@@ -5,14 +5,20 @@
  * can only see their own execution history.
  */
 
-import type { JsonObject, SchedulerComponent, TaskHistoryFilter, Tool, TrustTier } from "@koi/core";
+import type {
+  JsonObject,
+  SchedulerComponent,
+  TaskHistoryFilter,
+  Tool,
+  ToolPolicy,
+} from "@koi/core";
 import { DEFAULT_HISTORY_DEFAULT, DEFAULT_HISTORY_LIMIT } from "../constants.js";
 import { parseOptionalEnum, parseOptionalNumber } from "../parse-args.js";
 
 export function createHistoryTool(
   component: SchedulerComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   historyLimit: number = DEFAULT_HISTORY_LIMIT,
   historyDefault: number = DEFAULT_HISTORY_DEFAULT,
 ): Tool {
@@ -40,7 +46,8 @@ export function createHistoryTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const statusResult = parseOptionalEnum(args, "status", ["completed", "failed"] as const);
       if (!statusResult.ok) return statusResult.err;

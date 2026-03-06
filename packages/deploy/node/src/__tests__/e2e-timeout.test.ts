@@ -20,6 +20,7 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { DelegationScope, KoiError, Result, ScopeChecker, Tool } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import {
   DEFAULT_TOOL_CALL_TIMEOUT_MS,
   handleToolCall,
@@ -44,7 +45,8 @@ const describeE2E = E2E_OPTED_IN ? describe : describe.skip;
 function createSlowTool(name: string, delayMs: number, result: unknown = "done"): Tool {
   return {
     descriptor: { name, description: `Sleeps ${String(delayMs)}ms`, inputSchema: {} },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async () => {
       await Bun.sleep(delayMs);
       return result;
@@ -56,7 +58,8 @@ function createSlowTool(name: string, delayMs: number, result: unknown = "done")
 function createHangingTool(name: string): Tool {
   return {
     descriptor: { name, description: "Hangs forever", inputSchema: {} },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: () => new Promise(() => {}),
   };
 }
@@ -65,7 +68,8 @@ function createHangingTool(name: string): Tool {
 function createThrowingTool(name: string, delayMs: number, message: string): Tool {
   return {
     descriptor: { name, description: `Throws after ${String(delayMs)}ms`, inputSchema: {} },
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async () => {
       await Bun.sleep(delayMs);
       throw new Error(message);

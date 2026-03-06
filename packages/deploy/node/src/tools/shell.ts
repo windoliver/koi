@@ -11,6 +11,7 @@
  */
 
 import type { Tool, ToolDescriptor, ToolExecuteOptions } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { getExecutionContext, mapContextToEnv } from "@koi/execution-context";
 
 // ---------------------------------------------------------------------------
@@ -118,7 +119,8 @@ async function readOutput(proc: {
 export function createShellTool(): Tool {
   return {
     descriptor: DESCRIPTOR,
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
 
     async execute(args, options?: ToolExecuteOptions) {
       const signal = options?.signal;

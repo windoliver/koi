@@ -11,9 +11,9 @@ import type {
   Resolver,
   Result,
   SourceBundle,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { DriftChecker } from "@koi/forge-types";
 import { filterByAgentScope, isVisibleToAgent } from "@koi/forge-types";
 import { evaluateTrustDecay } from "@koi/validation";
@@ -52,7 +52,7 @@ const MAX_DECAY_DEMOTIONS_PER_DISCOVER = 5;
 export interface ForgeResolverContext {
   readonly agentId: string;
   /** Called when a brick is demoted due to fitness decay. */
-  readonly onDecayDemotion?: (brickId: string, from: TrustTier, to: TrustTier) => void;
+  readonly onDecayDemotion?: (brickId: string, from: ToolPolicy, to: ToolPolicy) => void;
   /** Called when a decay-related store update or callback throws. */
   readonly onError?: (error: unknown) => void;
   /** Called when discover() returns zero visible bricks. */
@@ -79,14 +79,14 @@ function notFoundError(id: string): Result<never, KoiError> {
 function fireDemotion(
   store: ForgeStore,
   brick: BrickArtifact,
-  targetTier: TrustTier,
-  nowMs: number,
+  targetTier: ToolPolicy,
+  _nowMs: number,
   context: ForgeResolverContext,
 ): void {
   void store
-    .update(brick.id, { trustTier: targetTier, lastDemotedAt: nowMs })
+    .update(brick.id, { policy: targetTier })
     .then(() => {
-      context.onDecayDemotion?.(brick.id, brick.trustTier, targetTier);
+      context.onDecayDemotion?.(brick.id, brick.policy, targetTier);
     })
     .catch((e: unknown) => {
       context.onError?.(e);
@@ -122,8 +122,8 @@ function checkDriftAsync(
       await store.update(brick.id, { driftContext: updatedDriftContext });
 
       // Demote if drift score exceeds threshold — drop to lowest tier
-      if (driftResult.driftScore >= DRIFT_DEMOTION_THRESHOLD && brick.trustTier !== "sandbox") {
-        fireDemotion(store, brick, "sandbox", Date.now(), context);
+      if (driftResult.driftScore >= DRIFT_DEMOTION_THRESHOLD && !brick.policy.sandbox) {
+        fireDemotion(store, brick, DEFAULT_SANDBOXED_POLICY, Date.now(), context);
       }
     })
     .catch((e: unknown) => {

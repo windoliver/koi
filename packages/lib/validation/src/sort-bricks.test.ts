@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifactBase, BrickFitnessMetrics, ForgeQuery } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { sortBricks } from "./sort-bricks.js";
 
 // ---------------------------------------------------------------------------
@@ -16,7 +17,8 @@ function createBrick(name: string, overrides?: Partial<BrickArtifactBase>): Bric
     name,
     description: `Brick ${name}`,
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: {
       buildDefinition: { buildType: "forge/v1", externalParameters: {}, internalParameters: {} },

@@ -6,8 +6,8 @@
  * Demotion lowers trust tier by one step on sustained error rate.
  */
 
-import type { BrickSnapshot, TrustTier } from "@koi/core";
-import { brickId, snapshotId } from "@koi/core";
+import type { BrickSnapshot, ToolPolicy } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, snapshotId } from "@koi/core";
 import type { ForgeHealthConfig } from "./config.js";
 import { computeMergedFitness, shouldFlush } from "./fitness-flush.js";
 import type {
@@ -96,7 +96,7 @@ interface ToolState {
   /** let: timestamp of the most recent record call. */
   lastUpdatedAt: number;
   /** let: cached trust tier (loaded from store on first check, invalidated on demotion). */
-  trustTier: TrustTier | undefined;
+  policy: ToolPolicy | undefined;
   /** let: cached lastPromotedAt from store. */
   lastPromotedAt: number;
   /** let: cached lastDemotedAt from store. */
@@ -113,7 +113,7 @@ function createToolState(ringSize: number): ToolState {
     state: "healthy",
     recentFailures: [],
     lastUpdatedAt: 0,
-    trustTier: undefined,
+    policy: undefined,
     lastPromotedAt: 0,
     lastDemotedAt: 0,
     flushState: {
@@ -189,7 +189,7 @@ export function computeHealthAction(
   quarantineMetrics: ToolHealthMetrics,
   demotionMetrics: ToolHealthMetrics,
   currentState: ToolHealthState,
-  currentTrustTier: TrustTier,
+  isSandboxed: boolean,
   quarantineThreshold: number,
   quarantineWindowSize: number,
   demotionCriteria: DemotionCriteria,
@@ -212,7 +212,7 @@ export function computeHealthAction(
 
   // Demotion check: lower threshold, larger window, more evidence needed
   // Skip if already at floor (sandbox)
-  if (currentTrustTier !== "sandbox") {
+  if (!isSandboxed) {
     // Grace period: don't demote within N ms of a promotion
     const inGracePeriod = now - lastPromotedAt < demotionCriteria.gracePeriodMs;
     // Cooldown: don't demote again within N ms of last demotion
@@ -239,12 +239,6 @@ export function computeHealthAction(
 // ---------------------------------------------------------------------------
 // Trust tier demotion target (one step down)
 // ---------------------------------------------------------------------------
-
-const DEMOTION_TARGET: Readonly<Record<TrustTier, TrustTier | undefined>> = {
-  promoted: "verified",
-  verified: "sandbox",
-  sandbox: undefined,
-} as const;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -340,7 +334,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       qMetrics,
       dMetrics,
       ts.state,
-      ts.trustTier ?? "sandbox",
+      ts.policy?.sandbox ?? true,
       quarantineThreshold,
       quarantineWindowSize,
       demotionCriteria,
@@ -365,16 +359,14 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     };
   }
 
-  /** Load trust tier from forge store and cache it. */
-  async function ensureTrustTier(toolId: string, ts: ToolState): Promise<void> {
-    if (ts.trustTier !== undefined) return;
+  /** Load policy from forge store and cache it. */
+  async function ensurePolicy(toolId: string, ts: ToolState): Promise<void> {
+    if (ts.policy !== undefined) return;
     const resolvedBrickId = config.resolveBrickId(toolId);
     if (resolvedBrickId === undefined) return;
     const loadResult = await config.forgeStore.load(brickId(resolvedBrickId));
     if (loadResult.ok) {
-      ts.trustTier = loadResult.value.trustTier;
-      ts.lastPromotedAt = loadResult.value.lastPromotedAt ?? 0;
-      ts.lastDemotedAt = loadResult.value.lastDemotedAt ?? 0;
+      ts.policy = loadResult.value.policy;
     }
   }
 
@@ -572,11 +564,11 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       if (resolvedBrickId === undefined) return false;
 
       // Ensure we have the trust tier cached
-      await ensureTrustTier(toolId, ts);
-      if (ts.trustTier === undefined) return false;
+      await ensurePolicy(toolId, ts);
+      if (ts.policy === undefined) return false;
 
       // Sandbox is floor — cannot demote further
-      if (ts.trustTier === "sandbox") return false;
+      if (ts.policy?.sandbox === true) return false;
 
       // Direct demotion criteria check (independent of state machine)
       const dMetrics = getDemotionMetrics(ts);
@@ -594,16 +586,15 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         return false;
       }
 
-      // Compute target tier (one step down)
-      const targetTier = DEMOTION_TARGET[ts.trustTier];
-      if (targetTier === undefined) return false;
+      // Binary quarantine: demote to sandboxed policy
+      const targetTier = DEFAULT_SANDBOXED_POLICY;
 
-      const fromTier = ts.trustTier;
+      const fromTierLabel = ts.policy.sandbox ? "sandboxed" : "unsandboxed";
+      const toTierLabel = "sandboxed";
 
-      // Update forge store: trust tier + lastDemotedAt
+      // Update forge store: quarantine via sandboxed policy
       const updateResult = await config.forgeStore.update(brickId(resolvedBrickId), {
-        trustTier: targetTier,
-        lastDemotedAt: now,
+        policy: targetTier,
       });
       if (!updateResult.ok) {
         throw new Error(
@@ -622,8 +613,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
           kind: "demoted",
           actor: "system:health-tracker",
           timestamp: now,
-          fromTier,
-          toTier: targetTier,
+          fromTier: fromTierLabel,
+          toTier: toTierLabel,
           reason: `Error rate ${dMetrics.errorRate.toFixed(2)} exceeded demotion threshold ${String(demotionCriteria.errorRateThreshold)}`,
           errorRate: dMetrics.errorRate,
         },
@@ -639,14 +630,14 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       }
 
       // Update cached state
-      ts.trustTier = targetTier;
+      ts.policy = targetTier;
       ts.lastDemotedAt = now;
 
       // Fire demotion callback
       const demotionEvent: TrustDemotionEvent = {
         brickId: resolvedBrickId,
-        from: fromTier,
-        to: targetTier,
+        from: fromTierLabel,
+        to: toTierLabel,
         reason: "error_rate",
         evidence: {
           errorRate: dMetrics.errorRate,

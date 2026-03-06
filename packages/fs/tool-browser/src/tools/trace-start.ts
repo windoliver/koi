@@ -5,13 +5,13 @@
  * Stop recording with browser_trace_stop to save the .zip file.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalBoolean, parseOptionalString } from "../parse-args.js";
 
 export function createBrowserTraceStartTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -39,7 +39,8 @@ export function createBrowserTraceStartTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const snapshotsResult = parseOptionalBoolean(args, "snapshots");
       if (!snapshotsResult.ok) return snapshotsResult.err;

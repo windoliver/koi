@@ -21,32 +21,29 @@ import type {
   SkillComponent,
   StoreChangeEvent,
   StoreChangeKind,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
-import { MIN_TRUST_BY_KIND } from "@koi/core";
+import { SANDBOX_REQUIRED_BY_KIND } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Trust tier enforcement
 // ---------------------------------------------------------------------------
 
 /** Trust tier ordering: sandbox < verified < promoted. */
-const TRUST_TIER_LEVEL: Readonly<Record<TrustTier, number>> = {
-  sandbox: 0,
-  verified: 1,
-  promoted: 2,
-} as const;
 
 /** Returns true if `actual` meets or exceeds `required` trust tier. */
-export function meetsMinTrust(actual: TrustTier, required: TrustTier): boolean {
-  return TRUST_TIER_LEVEL[actual] >= TRUST_TIER_LEVEL[required];
+export function meetsMinTrust(actual: ToolPolicy, required: ToolPolicy): boolean {
+  return (actual.sandbox ? 0 : 1) >= (required.sandbox ? 0 : 1);
 }
 
-/** Returns true if the brick's trust tier meets the minimum for its kind. */
+/** Returns true if the brick's policy is valid for its kind. */
 export function meetsKindTrust(brick: BrickArtifact): boolean {
   // Composite bricks use outputKind for trust evaluation
   const effectiveKind = brick.kind === "composite" ? brick.outputKind : brick.kind;
-  const minTrust = MIN_TRUST_BY_KIND[effectiveKind];
-  return meetsMinTrust(brick.trustTier, minTrust);
+  const sandboxRequired = SANDBOX_REQUIRED_BY_KIND[effectiveKind];
+  // If sandbox is required for this kind, the policy must have sandbox: true
+  // If sandbox is not required, any policy is valid
+  return !sandboxRequired || brick.policy.sandbox;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +119,7 @@ export interface DeltaInvalidator<V> {
  * - "removed" → delta (only the specific brick needs eviction)
  * - "updated" → delta (only the specific brick needs eviction)
  * - "promoted" → delta (scope/tier changed for specific brick)
- * - "demoted" → delta (trust tier decreased for specific brick)
+ * - "quarantined" → delta (brick quarantined for specific brick)
  */
 export function createDeltaInvalidator<V>(): DeltaInvalidator<V> {
   const classifyEvent = (event: StoreChangeEvent): "full" | "delta" | "none" => {
@@ -134,7 +131,7 @@ export function createDeltaInvalidator<V>(): DeltaInvalidator<V> {
       case "removed":
       case "updated":
       case "promoted":
-      case "demoted":
+      case "quarantined":
         return "delta";
     }
   };

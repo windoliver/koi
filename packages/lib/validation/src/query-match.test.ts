@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifactBase, ForgeQuery } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { matchesBrickQuery } from "./query-match.js";
 
@@ -11,7 +11,8 @@ function createBrickBase(overrides?: Partial<BrickArtifactBase>): BrickArtifactB
     name: "test-tool",
     description: "A test tool for unit tests",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -38,10 +39,10 @@ describe("matchesBrickQuery", () => {
     expect(matchesBrickQuery(brick, { scope: "global" })).toBe(false);
   });
 
-  test("filters by trustTier", () => {
-    const brick = createBrickBase({ trustTier: "verified" });
-    expect(matchesBrickQuery(brick, { trustTier: "verified" })).toBe(true);
-    expect(matchesBrickQuery(brick, { trustTier: "sandbox" })).toBe(false);
+  test("filters by sandbox", () => {
+    const brick = createBrickBase({ policy: DEFAULT_UNSANDBOXED_POLICY });
+    expect(matchesBrickQuery(brick, { sandbox: false })).toBe(true);
+    expect(matchesBrickQuery(brick, { sandbox: true })).toBe(false);
   });
 
   test("filters by lifecycle", () => {
@@ -111,14 +112,14 @@ describe("matchesBrickQuery", () => {
     const brick = createBrickBase({
       kind: "tool",
       scope: "global",
-      trustTier: "promoted",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       tags: ["production"],
     });
     expect(
       matchesBrickQuery(brick, {
         kind: "tool",
         scope: "global",
-        trustTier: "promoted",
+        sandbox: false,
         tags: ["production"],
       }),
     ).toBe(true);
@@ -126,7 +127,7 @@ describe("matchesBrickQuery", () => {
       matchesBrickQuery(brick, {
         kind: "tool",
         scope: "global",
-        trustTier: "sandbox", // mismatch
+        sandbox: true, // mismatch
       }),
     ).toBe(false);
   });

@@ -9,7 +9,7 @@ import type {
   ProcessId,
   SubsystemToken,
 } from "@koi/core";
-import { token } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, token } from "@koi/core";
 import type { CollectiveMemoryContextSource } from "../types.js";
 import {
   createCollectiveMemoryResolver,
@@ -30,7 +30,8 @@ function createMockStore(brick?: Partial<BrickArtifact>): ForgeStore {
     name: "researcher",
     description: "Research agent",
     scope: "session",
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     lifecycle: "active",
     provenance: {} as BrickArtifact["provenance"],
     version: "1.0.0",

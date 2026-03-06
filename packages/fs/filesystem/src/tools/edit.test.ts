@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { FileEdit, FileEditOptions } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createFailingBackend, createMockBackend } from "../test-helpers.js";
 import { createFsEditTool } from "./edit.js";
 
 describe("createFsEditTool", () => {
   test("returns edit result on success", async () => {
-    const tool = createFsEditTool(createMockBackend(), "fs", "verified");
+    const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       path: "/src/index.ts",
       edits: [{ oldText: "foo", newText: "bar" }],
@@ -28,7 +29,7 @@ describe("createFsEditTool", () => {
       },
     };
 
-    const tool = createFsEditTool(backend, "fs", "verified");
+    const tool = createFsEditTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({
       path: "/test",
       edits: [
@@ -55,7 +56,7 @@ describe("createFsEditTool", () => {
       },
     };
 
-    const tool = createFsEditTool(backend, "fs", "verified");
+    const tool = createFsEditTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({
       path: "/test",
       edits: [{ oldText: "x", newText: "y" }],
@@ -66,7 +67,7 @@ describe("createFsEditTool", () => {
   });
 
   test("returns error object on backend failure", async () => {
-    const tool = createFsEditTool(createFailingBackend(), "fs", "verified");
+    const tool = createFsEditTool(createFailingBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       path: "/locked",
       edits: [{ oldText: "a", newText: "b" }],
@@ -77,9 +78,9 @@ describe("createFsEditTool", () => {
   });
 
   test("descriptor has correct name and required fields", () => {
-    const tool = createFsEditTool(createMockBackend(), "nx", "sandbox");
+    const tool = createFsEditTool(createMockBackend(), "nx", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("nx_edit");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
 
     const schema = tool.descriptor.inputSchema as Record<string, unknown>;
     const required = schema.required as readonly string[];
@@ -99,7 +100,7 @@ describe("createFsEditTool", () => {
       },
     };
 
-    const tool = createFsEditTool(backend, "fs", "verified");
+    const tool = createFsEditTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       path: "/a",
       edits: [
@@ -111,7 +112,7 @@ describe("createFsEditTool", () => {
   });
 
   test("returns validation error when edits is not an array", async () => {
-    const tool = createFsEditTool(createMockBackend(), "fs", "verified");
+    const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "/test", edits: "oops" })) as {
       readonly error: string;
       readonly code: string;
@@ -121,7 +122,7 @@ describe("createFsEditTool", () => {
   });
 
   test("returns validation error when path is missing", async () => {
-    const tool = createFsEditTool(createMockBackend(), "fs", "verified");
+    const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ edits: [] })) as {
       readonly error: string;
       readonly code: string;

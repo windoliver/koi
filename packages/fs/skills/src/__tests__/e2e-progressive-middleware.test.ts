@@ -32,7 +32,7 @@ import type {
   ToolResponse,
   TurnTrace,
 } from "@koi/core";
-import { fsSkill, sessionId, skillToken, toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, fsSkill, sessionId, skillToken, toolToken } from "@koi/core";
 import type { CrystallizationCandidate } from "@koi/crystallize";
 import { createCrystallizeForgeHandler, createCrystallizeMiddleware } from "@koi/crystallize";
 import { createKoi } from "@koi/engine";
@@ -127,7 +127,8 @@ const ECHO_TOOL: Tool = {
       required: ["text"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     return String(input.text ?? "");
   },
@@ -146,7 +147,8 @@ const MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     return String(Number(input.a ?? 0) * Number(input.b ?? 0));
   },
@@ -701,7 +703,7 @@ describe("e2e: crystallize -> forge handler pipeline", () => {
     const forgeHandler = createCrystallizeForgeHandler({
       confidenceThreshold: 0.5, // Lower threshold for testing
       scope: "agent",
-      trustTier: "sandbox",
+      policy: DEFAULT_SANDBOXED_POLICY,
       maxForgedPerSession: 3,
       onForged: (descriptor) => {
         forgedDescriptors.push({ name: descriptor.name });
@@ -724,7 +726,7 @@ describe("e2e: crystallize -> forge handler pipeline", () => {
       expect(first?.description).toContain("Auto-crystallized composite");
       expect(first?.implementation).toBeTruthy();
       expect(first?.scope).toBe("agent");
-      expect(first?.trustTier).toBe("sandbox");
+      expect(first?.policy.sandbox).toBe(true);
       expect(first?.provenance.source).toBe("crystallize");
       expect(first?.provenance.occurrences).toBeGreaterThanOrEqual(3);
       expect(first?.provenance.score).toBeGreaterThan(0);

@@ -52,7 +52,7 @@ const forgeConfigSchema = z.object({
   maxForgeDepth: z.number().int().min(0),
   maxForgesPerSession: z.number().int().positive(),
   defaultScope: z.union([z.literal("agent"), z.literal("zone"), z.literal("global")]),
-  defaultTrustTier: z.union([z.literal("sandbox"), z.literal("verified"), z.literal("promoted")]),
+  defaultPolicy: z.union([z.literal("sandbox"), z.literal("verified"), z.literal("promoted")]),
 });
 
 const modelTargetEntrySchema = z.object({

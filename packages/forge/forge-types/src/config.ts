@@ -2,8 +2,8 @@
  * Forge configuration — Zod schema, validation, factory with defaults.
  */
 
-import type { KoiError, Result, TrailConfig, TrustTier } from "@koi/core";
-import { DEFAULT_TRAIL_CONFIG } from "@koi/core";
+import type { KoiError, Result, ToolPolicy, TrailConfig } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_TRAIL_CONFIG } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { z } from "zod";
 import type { ReverificationConfig } from "./reverification.js";
@@ -15,8 +15,6 @@ import type { ForgeScope } from "./types.js";
 
 export interface ScopePromotionConfig {
   readonly requireHumanApproval: boolean;
-  readonly minTrustForZone: TrustTier;
-  readonly minTrustForGlobal: TrustTier;
 }
 
 export interface VerificationConfig {
@@ -27,12 +25,6 @@ export interface VerificationConfig {
   readonly maxBrickSizeBytes: number;
   readonly failFast: boolean;
   readonly maxAutoTestCases: number;
-}
-
-export interface AutoPromotionConfig {
-  readonly enabled: boolean;
-  readonly sandboxToVerifiedThreshold: number;
-  readonly verifiedToPromotedThreshold: number;
 }
 
 export interface DependencyConfig {
@@ -79,10 +71,9 @@ export interface ForgeConfig {
   readonly maxForgeDepth: number;
   readonly maxForgesPerSession: number;
   readonly defaultScope: ForgeScope;
-  readonly defaultTrustTier: TrustTier;
+  readonly defaultPolicy: ToolPolicy;
   readonly scopePromotion: ScopePromotionConfig;
   readonly verification: VerificationConfig;
-  readonly autoPromotion: AutoPromotionConfig;
   readonly dependencies: DependencyConfig;
   readonly format: FormatConfig;
   readonly reverification?: ReverificationConfig;
@@ -95,18 +86,38 @@ export interface ForgeConfig {
 // Zod schemas
 // ---------------------------------------------------------------------------
 
-const trustTierSchema = z.union([
-  z.literal("sandbox"),
-  z.literal("verified"),
-  z.literal("promoted"),
-]);
+const networkCapabilitySchema = z.object({
+  allow: z.boolean(),
+  hosts: z.array(z.string()).optional(),
+});
+
+const filesystemCapabilitySchema = z.object({
+  read: z.array(z.string()).optional(),
+  write: z.array(z.string()).optional(),
+});
+
+const resourceCapabilitySchema = z.object({
+  maxMemoryMb: z.number().int().positive().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  maxPids: z.number().int().positive().optional(),
+  maxOpenFiles: z.number().int().positive().optional(),
+});
+
+const toolCapabilitiesSchema = z.object({
+  network: networkCapabilitySchema.optional(),
+  filesystem: filesystemCapabilitySchema.optional(),
+  resources: resourceCapabilitySchema.optional(),
+});
+
+const toolPolicySchema = z.object({
+  sandbox: z.boolean(),
+  capabilities: toolCapabilitiesSchema,
+});
 
 const forgeScopeSchema = z.union([z.literal("agent"), z.literal("zone"), z.literal("global")]);
 
 const scopePromotionSchema = z.object({
   requireHumanApproval: z.boolean().optional(),
-  minTrustForZone: trustTierSchema.optional(),
-  minTrustForGlobal: trustTierSchema.optional(),
 });
 
 const verificationSchema = z.object({
@@ -117,12 +128,6 @@ const verificationSchema = z.object({
   maxBrickSizeBytes: z.number().int().positive().optional(),
   failFast: z.boolean().optional(),
   maxAutoTestCases: z.number().int().min(0).optional(),
-});
-
-const autoPromotionSchema = z.object({
-  enabled: z.boolean().optional(),
-  sandboxToVerifiedThreshold: z.number().int().positive().optional(),
-  verifiedToPromotedThreshold: z.number().int().positive().optional(),
 });
 
 const dependencySchema = z.object({
@@ -156,10 +161,9 @@ const forgeConfigInputSchema = z.object({
   maxForgeDepth: z.number().int().min(0).optional(),
   maxForgesPerSession: z.number().int().positive().optional(),
   defaultScope: forgeScopeSchema.optional(),
-  defaultTrustTier: trustTierSchema.optional(),
+  defaultPolicy: toolPolicySchema.optional(),
   scopePromotion: scopePromotionSchema.optional(),
   verification: verificationSchema.optional(),
-  autoPromotion: autoPromotionSchema.optional(),
   dependencies: dependencySchema.optional(),
   format: formatSchema.optional(),
   mutationPressure: mutationPressureSchema.optional(),
@@ -171,8 +175,6 @@ const forgeConfigInputSchema = z.object({
 
 const DEFAULT_SCOPE_PROMOTION: ScopePromotionConfig = {
   requireHumanApproval: true,
-  minTrustForZone: "verified",
-  minTrustForGlobal: "promoted",
 } as const;
 
 const DEFAULT_VERIFICATION: VerificationConfig = {
@@ -183,12 +185,6 @@ const DEFAULT_VERIFICATION: VerificationConfig = {
   maxBrickSizeBytes: 50_000,
   failFast: true,
   maxAutoTestCases: 20,
-} as const;
-
-const DEFAULT_AUTO_PROMOTION: AutoPromotionConfig = {
-  enabled: false,
-  sandboxToVerifiedThreshold: 5,
-  verifiedToPromotedThreshold: 20,
 } as const;
 
 const DEFAULT_FORMAT: FormatConfig = {
@@ -220,10 +216,9 @@ const DEFAULT_CONFIG: ForgeConfig = {
   maxForgeDepth: 1,
   maxForgesPerSession: 5,
   defaultScope: "agent",
-  defaultTrustTier: "sandbox",
+  defaultPolicy: DEFAULT_SANDBOXED_POLICY,
   scopePromotion: DEFAULT_SCOPE_PROMOTION,
   verification: DEFAULT_VERIFICATION,
-  autoPromotion: DEFAULT_AUTO_PROMOTION,
   dependencies: DEFAULT_DEPENDENCY,
   format: DEFAULT_FORMAT,
   trail: DEFAULT_TRAIL_CONFIG,
@@ -248,10 +243,6 @@ export function createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): Forg
       overrides.verification !== undefined
         ? { ...DEFAULT_VERIFICATION, ...overrides.verification }
         : DEFAULT_VERIFICATION,
-    autoPromotion:
-      overrides.autoPromotion !== undefined
-        ? { ...DEFAULT_AUTO_PROMOTION, ...overrides.autoPromotion }
-        : DEFAULT_AUTO_PROMOTION,
     dependencies:
       overrides.dependencies !== undefined
         ? { ...DEFAULT_DEPENDENCY, ...overrides.dependencies }
@@ -290,16 +281,12 @@ export function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>
     maxForgeDepth: p.maxForgeDepth ?? DEFAULT_CONFIG.maxForgeDepth,
     maxForgesPerSession: p.maxForgesPerSession ?? DEFAULT_CONFIG.maxForgesPerSession,
     defaultScope: p.defaultScope ?? DEFAULT_CONFIG.defaultScope,
-    defaultTrustTier: p.defaultTrustTier ?? DEFAULT_CONFIG.defaultTrustTier,
+    defaultPolicy: (p.defaultPolicy ?? DEFAULT_CONFIG.defaultPolicy) as ToolPolicy,
     scopePromotion:
       p.scopePromotion !== undefined
         ? {
             requireHumanApproval:
               p.scopePromotion.requireHumanApproval ?? DEFAULT_SCOPE_PROMOTION.requireHumanApproval,
-            minTrustForZone:
-              p.scopePromotion.minTrustForZone ?? DEFAULT_SCOPE_PROMOTION.minTrustForZone,
-            minTrustForGlobal:
-              p.scopePromotion.minTrustForGlobal ?? DEFAULT_SCOPE_PROMOTION.minTrustForGlobal,
           }
         : DEFAULT_SCOPE_PROMOTION,
     verification:
@@ -318,18 +305,6 @@ export function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>
               p.verification.maxAutoTestCases ?? DEFAULT_VERIFICATION.maxAutoTestCases,
           }
         : DEFAULT_VERIFICATION,
-    autoPromotion:
-      p.autoPromotion !== undefined
-        ? {
-            enabled: p.autoPromotion.enabled ?? DEFAULT_AUTO_PROMOTION.enabled,
-            sandboxToVerifiedThreshold:
-              p.autoPromotion.sandboxToVerifiedThreshold ??
-              DEFAULT_AUTO_PROMOTION.sandboxToVerifiedThreshold,
-            verifiedToPromotedThreshold:
-              p.autoPromotion.verifiedToPromotedThreshold ??
-              DEFAULT_AUTO_PROMOTION.verifiedToPromotedThreshold,
-          }
-        : DEFAULT_AUTO_PROMOTION,
     dependencies:
       p.dependencies !== undefined
         ? {

@@ -9,7 +9,7 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryComponent, SkillComponent, Tool } from "@koi/core";
-import { MEMORY, skillToken, toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, MEMORY, skillToken, toolToken } from "@koi/core";
 import { createMockAgent, createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
 import { validateContextConfig } from "../src/config.js";
 import { createContextHydrator } from "../src/hydrator.js";
@@ -78,7 +78,8 @@ describe("Hydration pipeline — end-to-end", () => {
         description: "Search the web",
         inputSchema: { type: "object" },
       },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       async execute() {
         return {};
       },

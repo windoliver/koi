@@ -741,7 +741,7 @@ describe("createComposedCallHandlers", () => {
             toolToken("calc") as string,
             {
               descriptor: { name: "calc", description: "Calculator", inputSchema: {} },
-              trustTier: "sandboxed",
+              policy: "sandboxed",
               execute: async (): Promise<unknown> => 42,
             },
           ],
@@ -753,7 +753,7 @@ describe("createComposedCallHandlers", () => {
                 description: "Web search",
                 inputSchema: { type: "object" },
               },
-              trustTier: "sandboxed",
+              policy: "sandboxed",
               execute: async (): Promise<unknown> => "results",
             },
           ],

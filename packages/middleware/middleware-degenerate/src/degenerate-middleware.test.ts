@@ -7,6 +7,7 @@ import type {
   ToolRequest,
   VariantAttempt,
 } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { createDegenerateMiddleware } from "./degenerate-middleware.js";
 import type { DegenerateMiddlewareConfig } from "./types.js";
 
@@ -26,7 +27,8 @@ function makeBrick(id: string, name: string, fitness: number): BrickArtifact {
     kind: "tool",
     id,
     name,
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     tags: [`capability:search`],
     fitness: {

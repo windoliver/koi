@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { KoiError, Result } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { Retriever, SearchPage } from "@koi/search-provider";
 import { createFsSemanticSearchTool, DEFAULT_SEMANTIC_SEARCH_LIMIT } from "./semantic-search.js";
 
@@ -25,7 +26,7 @@ const SUCCESS_PAGE: SearchPage = {
 describe("createFsSemanticSearchTool", () => {
   test("descriptor has correct name and schema", () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     expect(tool.descriptor.name).toBe("fs_semantic_search");
     expect(tool.descriptor.inputSchema).toEqual({
@@ -47,7 +48,7 @@ describe("createFsSemanticSearchTool", () => {
 
   test("returns mapped results on success", async () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({ query: "authentication" });
     expect(result).toEqual(SUCCESS_PAGE);
@@ -55,7 +56,7 @@ describe("createFsSemanticSearchTool", () => {
 
   test("passes default limit to retriever", async () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     await tool.execute({ query: "auth" });
     expect(retriever.retrieve).toHaveBeenCalledWith({
@@ -66,7 +67,7 @@ describe("createFsSemanticSearchTool", () => {
 
   test("passes explicit limit to retriever", async () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     await tool.execute({ query: "auth", limit: 5 });
     expect(retriever.retrieve).toHaveBeenCalledWith({
@@ -77,7 +78,7 @@ describe("createFsSemanticSearchTool", () => {
 
   test("passes minScore to retriever", async () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     await tool.execute({ query: "auth", minScore: 0.8 });
     expect(retriever.retrieve).toHaveBeenCalledWith({
@@ -94,7 +95,7 @@ describe("createFsSemanticSearchTool", () => {
       retryable: false,
     };
     const retriever = createMockRetriever({ ok: false, error });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({ query: "auth" });
     expect(result).toEqual({ error: "index unavailable", code: "INTERNAL" });
@@ -102,7 +103,7 @@ describe("createFsSemanticSearchTool", () => {
 
   test("returns validation error when query missing", async () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({});
     expect(result).toEqual({ error: "query must be a non-empty string", code: "VALIDATION" });
@@ -110,7 +111,7 @@ describe("createFsSemanticSearchTool", () => {
 
   test("returns validation error when query not string", async () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({ query: 42 });
     expect(result).toEqual({ error: "query must be a non-empty string", code: "VALIDATION" });
@@ -118,7 +119,7 @@ describe("createFsSemanticSearchTool", () => {
 
   test("returns validation error when limit not number", async () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({ query: "auth", limit: "ten" });
     expect(result).toEqual({ error: "limit must be a number", code: "VALIDATION" });
@@ -126,7 +127,7 @@ describe("createFsSemanticSearchTool", () => {
 
   test("returns validation error when minScore not number", async () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "fs", "verified");
+    const tool = createFsSemanticSearchTool(retriever, "fs", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = await tool.execute({ query: "auth", minScore: "high" });
     expect(result).toEqual({ error: "minScore must be a number", code: "VALIDATION" });
@@ -134,9 +135,9 @@ describe("createFsSemanticSearchTool", () => {
 
   test("respects custom prefix", () => {
     const retriever = createMockRetriever({ ok: true, value: SUCCESS_PAGE });
-    const tool = createFsSemanticSearchTool(retriever, "cloud", "sandbox");
+    const tool = createFsSemanticSearchTool(retriever, "cloud", DEFAULT_SANDBOXED_POLICY);
 
     expect(tool.descriptor.name).toBe("cloud_semantic_search");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 });

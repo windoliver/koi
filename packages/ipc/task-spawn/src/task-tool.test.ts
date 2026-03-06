@@ -275,9 +275,9 @@ describe("createTaskTool", () => {
     expect(tool.descriptor.name).toBe("task");
   });
 
-  it("has trustTier 'verified'", async () => {
+  it("has policy 'verified'", async () => {
     const tool = await createTaskTool(createConfig());
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   it("passes abort signal to spawn callback", async () => {

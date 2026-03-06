@@ -2,7 +2,7 @@
  * Tool factory for `browser_screenshot` — captures a screenshot.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalBoolean, parseOptionalNumber, parseOptionalTimeout } from "../parse-args.js";
 
 const MIN_TIMEOUT_MS = 100;
@@ -11,7 +11,7 @@ const MAX_TIMEOUT_MS = 30_000;
 export function createBrowserScreenshotTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -39,7 +39,8 @@ export function createBrowserScreenshotTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const fullPageResult = parseOptionalBoolean(args, "fullPage");
       if (!fullPageResult.ok) return fullPageResult.err;

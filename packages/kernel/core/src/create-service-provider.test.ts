@@ -2,8 +2,15 @@ import { describe, expect, test } from "bun:test";
 import type { AgentManifest } from "./assembly.js";
 import type { ServiceProviderConfig } from "./create-service-provider.js";
 import { createServiceProvider } from "./create-service-provider.js";
-import type { Agent, AttachResult, ProcessId, SubsystemToken, Tool, TrustTier } from "./ecs.js";
-import { agentId, isAttachResult, token, toolToken } from "./ecs.js";
+import type { Agent, AttachResult, ProcessId, SubsystemToken, Tool, ToolPolicy } from "./ecs.js";
+import {
+  agentId,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+  isAttachResult,
+  token,
+  toolToken,
+} from "./ecs.js";
 
 /** Extract ReadonlyMap from attach() result (handles both AttachResult and bare Map). */
 function extractMap(
@@ -56,20 +63,21 @@ type TestOperation = "alpha" | "beta" | "gamma";
 
 const BACKEND_TOKEN = token<MockBackend>("test-backend");
 
-function createMockTool(name: string, prefix: string, tier: TrustTier): Tool {
+function createMockTool(name: string, prefix: string, policy: ToolPolicy): Tool {
   return {
     descriptor: {
       name: `${prefix}_${name}`,
       description: `Mock ${name} tool`,
       inputSchema: { type: "object" },
     },
-    trustTier: tier,
+    origin: "primordial",
+    policy,
     execute: async () => `${name}-result`,
   };
 }
 
 const MOCK_FACTORIES: Readonly<
-  Record<TestOperation, (b: MockBackend, p: string, t: TrustTier) => Tool>
+  Record<TestOperation, (b: MockBackend, p: string, t: ToolPolicy) => Tool>
 > = {
   alpha: (_b, p, t) => createMockTool("alpha", p, t),
   beta: (_b, p, t) => createMockTool("beta", p, t),
@@ -151,12 +159,12 @@ describe("createServiceProvider", () => {
     expect(components.has(toolToken("test_alpha") as string)).toBe(false);
   });
 
-  test("respects custom trust tier", async () => {
-    const provider = createServiceProvider(createTestConfig({ trustTier: "sandbox" }));
+  test("respects custom policy", async () => {
+    const provider = createServiceProvider(createTestConfig({ policy: DEFAULT_SANDBOXED_POLICY }));
     const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("test_alpha") as string) as Tool;
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
   });
 
   test("defaults trust tier to verified", async () => {
@@ -164,7 +172,7 @@ describe("createServiceProvider", () => {
     const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("test_alpha") as string) as Tool;
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   test("forwards priority to provider", () => {
@@ -220,7 +228,7 @@ describe("createServiceProvider — caching", () => {
 
 describe("createServiceProvider — customTools", () => {
   test("appends custom tools alongside standard tools", async () => {
-    const extraTool = createMockTool("extra", "test", "verified");
+    const extraTool = createMockTool("extra", "test", DEFAULT_UNSANDBOXED_POLICY);
     const provider = createServiceProvider(
       createTestConfig({
         customTools: () => [[toolToken("test_extra") as string, extraTool]],
@@ -364,12 +372,12 @@ describe("createServiceProvider — edge cases", () => {
   test("tool factories receive correct arguments", async () => {
     const backend: MockBackend = { name: "arg-check" };
     // let justified: tracking factory invocations
-    let receivedArgs: { backend: MockBackend; prefix: string; tier: TrustTier } | undefined;
+    let receivedArgs: { backend: MockBackend; prefix: string; policy: ToolPolicy } | undefined;
 
-    const factories: Readonly<Record<"alpha", (b: MockBackend, p: string, t: TrustTier) => Tool>> =
+    const factories: Readonly<Record<"alpha", (b: MockBackend, p: string, t: ToolPolicy) => Tool>> =
       {
         alpha: (b, p, t) => {
-          receivedArgs = { backend: b, prefix: p, tier: t };
+          receivedArgs = { backend: b, prefix: p, policy: t };
           return createMockTool("alpha", p, t);
         },
       };
@@ -381,13 +389,13 @@ describe("createServiceProvider — edge cases", () => {
       operations: ["alpha"] as const,
       factories,
       prefix: "my_prefix",
-      trustTier: "promoted",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
     });
 
     await provider.attach(createMockAgent());
 
     expect(receivedArgs?.backend).toBe(backend);
     expect(receivedArgs?.prefix).toBe("my_prefix");
-    expect(receivedArgs?.tier).toBe("promoted");
+    expect(receivedArgs?.policy).toEqual(DEFAULT_UNSANDBOXED_POLICY);
   });
 });

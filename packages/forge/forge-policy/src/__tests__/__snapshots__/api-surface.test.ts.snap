@@ -1,10 +1,10 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-policy API surface . has stable type surface 1`] = `
-"import { DriftChecker, ForgeConfig, ForgeContext, ForgeError, ForgeScope, GovernanceResult, PromoteChange, MutationPressureConfig, ReverificationConfig, AutoPromotionConfig } from '@koi/forge-types';
+"import { DriftChecker, ForgeConfig, ForgeContext, ForgeError, ForgeScope, GovernanceResult, PromoteChange, MutationPressureConfig, ReverificationConfig } from '@koi/forge-types';
 export { DriftCheckResult, DriftChecker, GovernanceResult } from '@koi/forge-types';
 import { changedFilesSince, getHeadCommit } from '@koi/git-utils';
-import { SubsystemToken, GovernanceVariableContributor, ComponentProvider, ForgeStore, StoreChangeNotifier, KoiMiddleware, TrustTier, GovernanceController, Result, TrustTransitionCaller, MutationPressure, BrickId, BrickArtifact } from '@koi/core';
+import { SubsystemToken, GovernanceVariableContributor, ComponentProvider, ForgeStore, StoreChangeNotifier, KoiMiddleware, GovernanceController, Result, ToolPolicy, TrustTransitionCaller, MutationPressure, BrickId, BrickArtifact } from '@koi/core';
 
 /**
  * Drift checker — detects source file staleness for forge bricks.
@@ -101,7 +101,6 @@ declare function createForgeUsageMiddleware(cfg: ForgeUsageMiddlewareConfig): Ko
  * Governance — depth-aware forge policies and scope promotion checks.
  */
 
-declare const TRUST_ORDER: Readonly<Record<TrustTier, number>>;
 /**
  * Check forge governance with optional controller delegation.
  *
@@ -116,16 +115,21 @@ declare const TRUST_ORDER: Readonly<Record<TrustTier, number>>;
  * regardless of controller presence.
  */
 declare function checkGovernance(context: ForgeContext, config: ForgeConfig, toolName?: string | undefined, controller?: GovernanceController | undefined): Result<void, ForgeError> | Promise<Result<void, ForgeError>>;
-declare function checkScopePromotion(currentScope: ForgeScope, targetScope: ForgeScope, trustTier: TrustTier, config: ForgeConfig): Result<GovernanceResult, ForgeError>;
 /**
- * Validates a trust tier transition.
+ * Check scope promotion eligibility.
  *
- * - \`caller: "agent"\` → blocks demotion (agents can only promote)
- * - \`caller: "system"\` → allows one-step demotion, blocks skip-demotion
- *
- * Returns \`undefined\` value when current === target (no-op).
+ * Scope promotion is orthogonal to sandbox policy. The only check is
+ * whether human approval is required.
  */
-declare function validateTrustTransition(current: TrustTier, target: TrustTier, caller: TrustTransitionCaller): Result<PromoteChange<TrustTier> | undefined, ForgeError>;
+declare function checkScopePromotion(currentScope: ForgeScope, targetScope: ForgeScope, config: ForgeConfig): Result<GovernanceResult, ForgeError>;
+/**
+ * Validates a policy change.
+ *
+ * - Unsandboxing (sandbox: true→false) requires HITL unless caller is "system"
+ * - Re-sandboxing (sandbox: false→true) is always allowed
+ * - No change → returns undefined
+ */
+declare function validatePolicyChange(current: ToolPolicy, target: ToolPolicy, caller: TrustTransitionCaller): Result<PromoteChange<ToolPolicy> | undefined, ForgeError>;
 
 /**
  * Mutation pressure check — capability space lookup for forge governance.
@@ -182,8 +186,10 @@ type ReverificationHandler = (brick: BrickArtifact) => Promise<boolean>;
 declare function createReverificationQueue(config: ReverificationConfig, handler: ReverificationHandler): ReverificationQueue;
 
 /**
- * Usage-based auto-promotion — tracks brick usage and promotes trust tier
- * when configurable thresholds are crossed.
+ * Usage recording — tracks brick usage count and fitness metrics.
+ *
+ * Auto-promotion was removed (security risk: auto-unsandboxing).
+ * Policy changes require explicit operator decisions.
  */
 
 interface UsageRecordedResult {
@@ -191,14 +197,7 @@ interface UsageRecordedResult {
     readonly brickId: string;
     readonly newUsageCount: number;
 }
-interface UsagePromotedResult {
-    readonly kind: "promoted";
-    readonly brickId: string;
-    readonly newUsageCount: number;
-    readonly previousTier: TrustTier;
-    readonly newTier: TrustTier;
-}
-type UsageResult = UsageRecordedResult | UsagePromotedResult;
+type UsageResult = UsageRecordedResult;
 /** Optional signal providing success/failure and latency for fitness tracking. */
 interface UsageSignal {
     readonly success: boolean;
@@ -206,21 +205,12 @@ interface UsageSignal {
     readonly timestamp?: number;
 }
 /**
- * Given a brick's current trust tier and its new usage count, returns the
- * tier it should be promoted to — or \`undefined\` if no promotion applies.
- */
-declare function computeAutoPromotion(currentTier: TrustTier, newUsageCount: number, config: AutoPromotionConfig): TrustTier | undefined;
-/**
  * Records a single usage of a brick. Increments \`usageCount\` and, when
- * auto-promotion is enabled and a threshold is crossed, promotes the
- * brick's trust tier.
- *
- * When \`signal\` is provided, also updates fitness metrics (success/error
- * counts, latency, recency). The \`usageCount\` is derived from total
- * fitness calls to stay DRY.
+ * \`signal\` is provided, also updates fitness metrics (success/error
+ * counts, latency, recency).
  */
 declare function recordBrickUsage(store: ForgeStore, brickId: string, config: ForgeConfig, signal?: UsageSignal): Promise<Result<UsageResult, ForgeError>>;
 
-export { type DriftCheckerConfig, FORGE_GOVERNANCE, type ForgeSessionCounterInstance, type ForgeSessionCounterOptions, type ForgeUsageMiddlewareConfig, type MutationPressureResult, type ReverificationHandler, type ReverificationQueue, TRUST_ORDER, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type UsageSignal, checkGovernance, checkMutationPressure, checkScopePromotion, computeAutoPromotion, createDriftChecker, createForgeGovernanceContributor, createForgeSessionCounter, createForgeUsageMiddleware, createReverificationQueue, recordBrickUsage, validateTrustTransition };
+export { type DriftCheckerConfig, FORGE_GOVERNANCE, type ForgeSessionCounterInstance, type ForgeSessionCounterOptions, type ForgeUsageMiddlewareConfig, type MutationPressureResult, type ReverificationHandler, type ReverificationQueue, type UsageRecordedResult, type UsageResult, type UsageSignal, checkGovernance, checkMutationPressure, checkScopePromotion, createDriftChecker, createForgeGovernanceContributor, createForgeSessionCounter, createForgeUsageMiddleware, createReverificationQueue, recordBrickUsage, validatePolicyChange };
 "
 `;

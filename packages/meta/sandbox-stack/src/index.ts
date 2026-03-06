@@ -19,7 +19,6 @@ export type { SandboxMiddlewareConfig } from "@koi/middleware-sandbox";
 export {
   createSandboxMiddleware,
   DEFAULT_OUTPUT_LIMIT_BYTES,
-  DEFAULT_SKIP_TIERS,
   DEFAULT_TIMEOUT_GRACE_MS,
   descriptor as sandboxMiddlewareDescriptor,
   validateConfig as validateSandboxMiddlewareConfig,

@@ -54,7 +54,7 @@ describe("createParallelTool", () => {
   it("returns correct descriptor", () => {
     const tool = createParallelTool(makeConfig());
     expect(tool.descriptor.name).toBe("parallel_task");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
   });
 
   it("executes valid tasks and returns formatted output", async () => {

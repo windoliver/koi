@@ -5,8 +5,8 @@
  * delivery health. No CRUD — registration stays manifest-driven.
  */
 
-import type { ComponentProvider, Tool, TrustTier, WebhookComponent } from "@koi/core";
-import { createServiceProvider, WEBHOOK } from "@koi/core";
+import type { ComponentProvider, Tool, ToolPolicy, WebhookComponent } from "@koi/core";
+import { createServiceProvider, DEFAULT_UNSANDBOXED_POLICY, WEBHOOK } from "@koi/core";
 import type { WebhookOperation } from "./constants.js";
 import { DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
 import { createListTool } from "./tools/list.js";
@@ -14,13 +14,13 @@ import { createStatusTool } from "./tools/status.js";
 
 export interface WebhookProviderConfig {
   readonly webhookComponent: WebhookComponent;
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   readonly prefix?: string;
   readonly operations?: readonly WebhookOperation[];
 }
 
 const TOOL_FACTORIES: Readonly<
-  Record<WebhookOperation, (c: WebhookComponent, p: string, t: TrustTier) => Tool>
+  Record<WebhookOperation, (c: WebhookComponent, p: string, t: ToolPolicy) => Tool>
 > = {
   list: createListTool,
   status: createStatusTool,
@@ -29,7 +29,7 @@ const TOOL_FACTORIES: Readonly<
 export function createWebhookProvider(config: WebhookProviderConfig): ComponentProvider {
   const {
     webhookComponent,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = DEFAULT_PREFIX,
     operations = OPERATIONS,
   } = config;
@@ -40,7 +40,7 @@ export function createWebhookProvider(config: WebhookProviderConfig): ComponentP
     backend: webhookComponent,
     operations,
     factories: TOOL_FACTORIES,
-    trustTier,
+    policy,
     prefix,
   });
 }

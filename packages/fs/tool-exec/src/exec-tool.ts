@@ -2,6 +2,7 @@
  * Exec tool factory — creates a Tool that runs code in a sandboxed executor.
  */
 
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type { Tool, ToolExecuteOptions } from "@koi/core/ecs";
 import type { ExecutionContext } from "@koi/core/sandbox-executor";
@@ -29,7 +30,8 @@ export function createExecTool(config: ExecToolConfig): Tool {
 
   return {
     descriptor: EXEC_TOOL_DESCRIPTOR,
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
 
     async execute(args: JsonObject, _options?: ToolExecuteOptions): Promise<unknown> {
       const code = args.code;

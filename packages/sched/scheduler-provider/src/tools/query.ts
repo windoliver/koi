@@ -8,7 +8,7 @@ import type {
   TaskFilter,
   TaskStatus,
   Tool,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
 import { DEFAULT_QUERY_DEFAULT, DEFAULT_QUERY_LIMIT } from "../constants.js";
 import { parseOptionalEnum, parseOptionalNumber } from "../parse-args.js";
@@ -16,7 +16,7 @@ import { parseOptionalEnum, parseOptionalNumber } from "../parse-args.js";
 export function createQueryTool(
   component: SchedulerComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   queryLimit: number = DEFAULT_QUERY_LIMIT,
   queryDefault: number = DEFAULT_QUERY_DEFAULT,
 ): Tool {
@@ -44,7 +44,8 @@ export function createQueryTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const statusResult = parseOptionalEnum(args, "status", [
         "pending",

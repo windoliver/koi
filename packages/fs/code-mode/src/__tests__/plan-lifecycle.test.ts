@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createPlanStore } from "../plan-store.js";
 import { createMockBackend } from "../test-helpers.js";
 import { createPlanApplyTool } from "../tools/plan-apply.js";
@@ -14,9 +15,9 @@ function createToolset(files: Record<string, string> = {}) {
   const backend = createMockBackend(files);
   const store = createPlanStore();
   return {
-    create: createPlanCreateTool(backend, store, "code_plan", "verified"),
-    apply: createPlanApplyTool(backend, store, "code_plan", "verified"),
-    status: createPlanStatusTool(store, "code_plan", "verified"),
+    create: createPlanCreateTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY),
+    apply: createPlanApplyTool(backend, store, "code_plan", DEFAULT_UNSANDBOXED_POLICY),
+    status: createPlanStatusTool(store, "code_plan", DEFAULT_UNSANDBOXED_POLICY),
     backend,
     store,
   };

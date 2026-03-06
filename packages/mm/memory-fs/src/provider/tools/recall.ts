@@ -2,7 +2,7 @@
  * Tool factory for `memory_recall` — search memories by semantic query.
  */
 
-import type { JsonObject, MemoryComponent, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, MemoryComponent, Tool, ToolPolicy } from "@koi/core";
 import { DEFAULT_RECALL_LIMIT } from "../constants.js";
 import {
   parseOptionalBoolean,
@@ -14,7 +14,7 @@ import {
 export function createMemoryRecallTool(
   component: MemoryComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
   recallLimit: number = DEFAULT_RECALL_LIMIT,
 ): Tool {
   return {
@@ -50,7 +50,8 @@ export function createMemoryRecallTool(
         required: ["query"],
       } satisfies JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const queryResult = parseString(args, "query");
       if (!queryResult.ok) return queryResult.err;

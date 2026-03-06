@@ -2,13 +2,13 @@
  * Tool factory for `scheduler_schedule` — create a recurring cron schedule.
  */
 
-import type { JsonObject, SchedulerComponent, TaskOptions, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, SchedulerComponent, TaskOptions, Tool, ToolPolicy } from "@koi/core";
 import { parseEnum, parseOptionalNumber, parseOptionalString, parseString } from "../parse-args.js";
 
 export function createScheduleTool(
   component: SchedulerComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -42,7 +42,8 @@ export function createScheduleTool(
         required: ["expression", "input", "mode"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const expressionResult = parseString(args, "expression");
       if (!expressionResult.ok) return expressionResult.err;

@@ -15,7 +15,7 @@ import type {
   JsonObject,
   Tool,
 } from "@koi/core";
-import { agentId, handoffId, toolCallId } from "@koi/core";
+import { agentId, DEFAULT_UNSANDBOXED_POLICY, handoffId, toolCallId } from "@koi/core";
 import type { HandoffStore } from "./store.js";
 import { PREPARE_HANDOFF_DESCRIPTOR } from "./types.js";
 import type { PrepareInput } from "./validate.js";
@@ -63,7 +63,8 @@ export interface CreatePrepareToolConfig {
 export function createPrepareTool(config: CreatePrepareToolConfig): Tool {
   return {
     descriptor: PREPARE_HANDOFF_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
 
     async execute(args: JsonObject): Promise<unknown> {
       const validation = validatePrepareInput(args);

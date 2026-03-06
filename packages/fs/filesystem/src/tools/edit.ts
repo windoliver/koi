@@ -8,14 +8,14 @@ import type {
   FileSystemBackend,
   JsonObject,
   Tool,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
 import { parseArray, parseOptionalBoolean, parseString } from "../parse-args.js";
 
 export function createFsEditTool(
   backend: FileSystemBackend,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -45,7 +45,8 @@ export function createFsEditTool(
         required: ["path", "edits"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;

@@ -9,6 +9,7 @@
  */
 
 import type { JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { ScriptResult } from "./execute-script.js";
 import { executeScript } from "./execute-script.js";
 
@@ -68,7 +69,8 @@ export function createExecuteScriptTool(tools: ReadonlyMap<string, Tool>): Tool 
 
   return {
     descriptor,
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (args: JsonObject): Promise<unknown> => {
       const code = typeof args.code === "string" ? args.code : undefined;
       if (code === undefined) {

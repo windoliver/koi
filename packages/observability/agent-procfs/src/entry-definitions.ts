@@ -89,7 +89,7 @@ export const PROCFS_ENTRIES: readonly EntryDefinition[] = [
         token: token as string,
         name: tool.descriptor.name,
         description: tool.descriptor.description,
-        trustTier: tool.trustTier,
+        policy: tool.policy,
       }));
     },
     list: (ctx) => {

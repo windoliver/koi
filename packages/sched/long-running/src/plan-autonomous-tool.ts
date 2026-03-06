@@ -7,7 +7,7 @@
  */
 
 import type { ComponentProvider, JsonObject, TaskBoardSnapshot, TaskItemId } from "@koi/core";
-import { createSingleToolProvider, taskItemId } from "@koi/core";
+import { createSingleToolProvider, DEFAULT_UNSANDBOXED_POLICY, taskItemId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -133,7 +133,8 @@ export function createPlanAutonomousProvider(config: PlanAutonomousConfig): Comp
           "then docs runs last. Progress is checkpointed automatically and survives interruptions.",
         inputSchema: PLAN_AUTONOMOUS_SCHEMA,
       },
-      trustTier: "verified",
+      origin: "primordial",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       execute: async (args: JsonObject): Promise<unknown> => {
         const tasks = validateTasks(args.tasks);
         if (tasks.length === 0) {

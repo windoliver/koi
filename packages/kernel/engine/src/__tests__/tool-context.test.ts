@@ -14,7 +14,7 @@ import type {
   ModelResponse,
   ToolResponse,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, toolToken } from "@koi/core";
 import { getExecutionContext, type ToolExecutionContext } from "@koi/execution-context";
 import { createKoi } from "../koi.js";
 
@@ -101,7 +101,8 @@ function contextCapturingTool(
                 description: `Test tool: ${name}`,
                 inputSchema: {},
               },
-              trustTier: "verified" as const,
+              origin: "primordial",
+              policy: DEFAULT_UNSANDBOXED_POLICY,
               execute: async (_input: unknown) => {
                 const ctx = getExecutionContext();
                 if (ctx !== undefined) {

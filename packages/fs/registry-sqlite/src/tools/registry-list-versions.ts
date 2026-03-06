@@ -10,7 +10,7 @@ import type {
   JsonObject,
   RegistryComponent,
   Tool,
-  TrustTier,
+  ToolPolicy,
   VersionEntry,
 } from "@koi/core";
 import { ALL_BRICK_KINDS } from "@koi/core";
@@ -19,7 +19,7 @@ import { parseEnum, parseString } from "../parse-args.js";
 export function createRegistryListVersionsTool(
   facade: RegistryComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -43,7 +43,8 @@ export function createRegistryListVersionsTool(
         required: ["name", "kind"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
 
     execute: async (args: JsonObject): Promise<unknown> => {
       const nameResult = parseString(args, "name");

@@ -7,7 +7,7 @@ import type {
   SubsystemToken,
   Tool,
 } from "@koi/core";
-import { agentId, isAttachResult, toolToken } from "@koi/core";
+import { agentId, DEFAULT_UNSANDBOXED_POLICY, isAttachResult, toolToken } from "@koi/core";
 import { createCodeExecutorProvider } from "./provider.js";
 
 /** Extract ReadonlyMap from attach() result (handles both AttachResult and bare Map). */
@@ -38,7 +38,8 @@ function createMockTool(name: string): Tool {
       description: `Mock ${name} tool`,
       inputSchema: { type: "object" },
     },
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async () => `${name}-result`,
   };
 }

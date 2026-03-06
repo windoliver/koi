@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AttachResult, Tool } from "@koi/core";
-import { isAttachResult, toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, isAttachResult, toolToken } from "@koi/core";
 
 function extractMap(
   result: AttachResult | ReadonlyMap<string, unknown>,
@@ -60,13 +60,13 @@ describe("createCodeModeProvider", () => {
   test("uses custom trust tier", async () => {
     const backend = createMockBackend();
     const agent = createMockAgent(backend);
-    const provider = createCodeModeProvider({ trustTier: "sandbox" });
+    const provider = createCodeModeProvider({ policy: DEFAULT_SANDBOXED_POLICY });
 
     const components = extractMap(await provider.attach(agent));
     const tool = components.get(toolToken(`${DEFAULT_PREFIX}_create`) as string) as
       | Tool
       | undefined;
-    expect(tool?.trustTier).toBe("sandbox");
+    expect(tool?.policy.sandbox).toBe(true);
   });
 
   test("provider name is code-mode", () => {

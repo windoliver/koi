@@ -27,7 +27,7 @@ import type {
   ModelStreamHandler,
   Tool,
 } from "@koi/core";
-import { chainId, toolToken } from "@koi/core";
+import { chainId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import type { MemoryComponent, SessionId } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
 import { createKoi } from "@koi/engine";
@@ -419,7 +419,8 @@ describeE2E("e2e: squash tool through full createKoi + Pi stack", () => {
             required: ["a", "b"],
           },
         },
-        trustTier: "sandbox",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
         execute: async (input) => String(Number(input.a ?? 0) * Number(input.b ?? 0)),
       };
 

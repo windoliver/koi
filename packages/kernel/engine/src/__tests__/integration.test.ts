@@ -12,7 +12,7 @@ import type {
   ModelResponse,
   ModelStreamHandler,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createKoi } from "../koi.js";
 
 // ---------------------------------------------------------------------------
@@ -681,7 +681,8 @@ describe("HITL approval lifecycle integration", () => {
                 description: "A tool needing review",
                 inputSchema: {},
               },
-              trustTier: "verified" as const,
+              origin: "primordial",
+              policy: DEFAULT_UNSANDBOXED_POLICY,
               execute: executeMock,
             },
           ],

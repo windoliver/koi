@@ -31,7 +31,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createCascadingTermination } from "../cascading-termination.js";
 import { createKoi } from "../koi.js";
@@ -106,7 +106,8 @@ const MULTIPLY_TOOL: Tool = {
       required: ["a", "b"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     const a = Number(input.a ?? 0);
     const b = Number(input.b ?? 0);
@@ -126,7 +127,8 @@ const ECHO_TOOL: Tool = {
       required: ["message"],
     },
   },
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   execute: async (input: Readonly<Record<string, unknown>>) => {
     return String(input.message ?? "");
   },

@@ -45,7 +45,6 @@ describe("createDaytonaAdapter", () => {
     const result = createDaytonaAdapter({ apiKey: "key", client: createMockClient(sdk) });
     if (!result.ok) return;
     const instance = await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},
@@ -64,7 +63,6 @@ describe("createDaytonaAdapter", () => {
     });
     if (!result.ok) return;
     await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},
@@ -86,7 +84,6 @@ describe("createDaytonaAdapter", () => {
     if (!result.ok) return;
 
     await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},
@@ -102,7 +99,6 @@ describe("createDaytonaAdapter", () => {
     if (!result.ok) return;
 
     await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},
@@ -121,7 +117,6 @@ describe("createDaytonaAdapter", () => {
     if (!result.ok) return;
 
     const instance = await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},

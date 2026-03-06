@@ -2,7 +2,7 @@
  * Tool factory for `browser_console` — reads buffered console messages from the current page.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import {
   parseOptionalBoolean,
   parseOptionalConsoleLevels,
@@ -15,7 +15,7 @@ const MAX_LIMIT = 200;
 export function createBrowserConsoleTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -44,7 +44,8 @@ export function createBrowserConsoleTool(
         },
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const levelsResult = parseOptionalConsoleLevels(args, "levels");
       if (!levelsResult.ok) return levelsResult.err;

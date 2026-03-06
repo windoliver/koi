@@ -27,8 +27,7 @@ export type { GovernanceResult } from "./governance.js";
 export {
   checkGovernance,
   checkScopePromotion,
-  TRUST_ORDER,
-  validateTrustTransition,
+  validatePolicyChange,
 } from "./governance.js";
 // mutation pressure — capability space protection
 export type { MutationPressureResult } from "./mutation-pressure-check.js";
@@ -36,11 +35,10 @@ export { checkMutationPressure } from "./mutation-pressure-check.js";
 // reverification queue — bounded concurrency re-verification
 export type { ReverificationHandler, ReverificationQueue } from "./reverification-queue.js";
 export { createReverificationQueue } from "./reverification-queue.js";
-// usage — brick usage tracking and auto-promotion
+// usage — brick usage tracking
 export type {
-  UsagePromotedResult,
   UsageRecordedResult,
   UsageResult,
   UsageSignal,
 } from "./usage.js";
-export { computeAutoPromotion, recordBrickUsage } from "./usage.js";
+export { recordBrickUsage } from "./usage.js";

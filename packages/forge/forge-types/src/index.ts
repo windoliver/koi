@@ -7,7 +7,6 @@
 
 // config — ForgeConfig, sub-configs, validation, factory
 export type {
-  AutoPromotionConfig,
   DependencyConfig,
   ForgeConfig,
   FormatConfig,

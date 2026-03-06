@@ -89,7 +89,7 @@ describe("LocalResolver", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.descriptor.name).toBe("calculator");
-        expect(result.value.trustTier).toBe("sandbox");
+        expect(result.value.policy.sandbox).toBe(true);
       }
     });
 

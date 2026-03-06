@@ -2,13 +2,13 @@
  * Tool factory for `fs_write` — writes content to a file via a FileSystemBackend.
  */
 
-import type { FileSystemBackend, FileWriteOptions, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { FileSystemBackend, FileWriteOptions, JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { parseOptionalBoolean, parseString } from "../parse-args.js";
 
 export function createFsWriteTool(
   backend: FileSystemBackend,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -31,7 +31,8 @@ export function createFsWriteTool(
         required: ["path", "content"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;

@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { SchedulerStats } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockSchedulerComponent } from "../test-helpers.js";
 import { createStatsTool } from "./stats.js";
 
 describe("createStatsTool", () => {
   test("returns scheduler stats", async () => {
     const component = createMockSchedulerComponent();
-    const tool = createStatsTool(component, "scheduler", "verified");
+    const tool = createStatsTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as SchedulerStats;
 
     expect(result.pending).toBe(1);
@@ -24,7 +25,7 @@ describe("createStatsTool", () => {
         throw new Error("stats unavailable");
       },
     };
-    const tool = createStatsTool(component, "scheduler", "verified");
+    const tool = createStatsTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly error: string;
       readonly code: string;
@@ -36,9 +37,9 @@ describe("createStatsTool", () => {
 
   test("descriptor has correct name and empty required", () => {
     const component = createMockSchedulerComponent();
-    const tool = createStatsTool(component, "sched", "sandbox");
+    const tool = createStatsTool(component, "sched", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("sched_stats");
-    expect(tool.trustTier).toBe("sandbox");
+    expect(tool.policy.sandbox).toBe(true);
 
     const schema = tool.descriptor.inputSchema as Record<string, unknown>;
     const required = schema.required as readonly string[];

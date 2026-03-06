@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BrowserDriver, KoiError, Result } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createScopedBrowser } from "./scoped-browser.js";
 
 // ---------------------------------------------------------------------------
@@ -108,33 +109,33 @@ describe("createScopedBrowser", () => {
     expect(r).toHaveProperty("ok", true);
   });
 
-  test("evaluate blocks when trustTier is not promoted", () => {
+  test("evaluate blocks when policy is sandboxed", () => {
     const driver = createMockDriver();
     const scoped = createScopedBrowser(driver, {
       navigation: {},
-      trustTier: "verified",
+      policy: DEFAULT_SANDBOXED_POLICY,
     });
     const r = scoped.evaluate("alert(1)") as Result<unknown, KoiError>;
     expect(isErr(r)).toBe(true);
     if (isErr(r)) {
       expect(r.error.code).toBe("PERMISSION");
-      expect(r.error.message).toContain("promoted");
+      expect(r.error.message).toContain("unsandboxed");
     }
     expect(driver.evaluatedScripts).toHaveLength(0);
   });
 
-  test("evaluate blocks when trustTier is undefined (defaults to non-promoted)", () => {
+  test("evaluate blocks when policy is undefined (defaults to non-promoted)", () => {
     const driver = createMockDriver();
     const scoped = createScopedBrowser(driver, { navigation: {} });
     const r = scoped.evaluate("alert(1)") as Result<unknown, KoiError>;
     expect(isErr(r)).toBe(true);
   });
 
-  test("evaluate passes when trustTier is promoted", () => {
+  test("evaluate passes when policy is unsandboxed", () => {
     const driver = createMockDriver();
     const scoped = createScopedBrowser(driver, {
       navigation: {},
-      trustTier: "promoted",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
     });
     const r = scoped.evaluate("return 42");
     expect(r).toHaveProperty("ok", true);

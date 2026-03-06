@@ -2,14 +2,14 @@
  * Tool factory for `scheduler_resume` — resume a paused recurring schedule.
  */
 
-import type { JsonObject, SchedulerComponent, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, SchedulerComponent, Tool, ToolPolicy } from "@koi/core";
 import { scheduleId } from "@koi/core";
 import { parseString } from "../parse-args.js";
 
 export function createResumeTool(
   component: SchedulerComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -23,7 +23,8 @@ export function createResumeTool(
         required: ["scheduleId"],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const idResult = parseString(args, "scheduleId");
       if (!idResult.ok) return idResult.err;

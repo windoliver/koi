@@ -36,7 +36,7 @@ interface RawForge {
   readonly maxForgeDepth?: number | undefined;
   readonly maxForgesPerSession?: number | undefined;
   readonly defaultScope?: "agent" | "zone" | "global" | undefined;
-  readonly trustTier?: "sandbox" | "verified" | "promoted" | undefined;
+  readonly sandbox?: boolean | undefined;
   readonly scopePromotion?: RawScopePromotion | undefined;
 }
 
@@ -310,8 +310,11 @@ const outboundWebhookSchema = z.object({
 /** Array of outbound webhook configs. */
 const outboundWebhooksSchema = z.array(outboundWebhookSchema);
 
-/** Trust tier values used in forge config and scope. */
-const trustTierSchema = z.enum(["sandbox", "verified", "promoted"]);
+/** Tool policy schema (sandbox boolean + capabilities). */
+const toolPolicySchema = z.object({
+  sandbox: z.boolean().default(true),
+  capabilities: z.record(z.string(), z.unknown()).default({}),
+});
 
 /** Forge governance config. */
 const forgeSchema = z.object({
@@ -319,12 +322,10 @@ const forgeSchema = z.object({
   maxForgeDepth: z.number().int().nonnegative().default(1),
   maxForgesPerSession: z.number().int().positive().default(5),
   defaultScope: z.enum(["agent", "zone", "global"]).default("agent"),
-  trustTier: trustTierSchema.default("sandbox"),
+  defaultPolicy: toolPolicySchema.default({ sandbox: true, capabilities: {} }),
   scopePromotion: z
     .object({
       requireHumanApproval: z.boolean().default(true),
-      minTrustForZone: trustTierSchema.default("verified"),
-      minTrustForGlobal: trustTierSchema.default("promoted"),
     })
     .optional(),
 });
@@ -389,7 +390,7 @@ const scopeSchema = z.object({
       allowedProtocols: z.array(z.string()).optional(),
       allowedDomains: z.array(z.string()).optional(),
       blockPrivateAddresses: z.boolean().optional(),
-      trustTier: trustTierSchema.optional(),
+      sandbox: z.boolean().optional(),
     })
     .optional(),
   credentials: z
@@ -412,7 +413,7 @@ interface RawScope {
         readonly allowedProtocols?: readonly string[] | undefined;
         readonly allowedDomains?: readonly string[] | undefined;
         readonly blockPrivateAddresses?: boolean | undefined;
-        readonly trustTier?: "sandbox" | "verified" | "promoted" | undefined;
+        readonly sandbox?: boolean | undefined;
       }
     | undefined;
   readonly credentials?: { readonly keyPattern: string } | undefined;

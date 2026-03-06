@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { validateBrickArtifact } from "./brick-validation.js";
 
@@ -9,7 +10,8 @@ function validTool(): Record<string, unknown> {
     name: "test-tool",
     description: "A test tool",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
@@ -117,8 +119,8 @@ describe("validateBrickArtifact", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("rejects invalid trustTier", () => {
-    const result = validateBrickArtifact({ ...validTool(), trustTier: "invalid" }, "test-source");
+  test("rejects invalid policy", () => {
+    const result = validateBrickArtifact({ ...validTool(), policy: "invalid" }, "test-source");
     expect(result.ok).toBe(false);
   });
 

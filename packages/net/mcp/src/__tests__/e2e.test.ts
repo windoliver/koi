@@ -276,7 +276,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
 
     const tool = mapMcpToolToKoi(echoInfo, manager, "e2e-server");
     expect(tool.descriptor.name).toBe("mcp/e2e-server/echo");
-    expect(tool.trustTier).toBe("promoted");
+    expect(tool.policy.sandbox).toBe(false);
 
     const result = await tool.execute({ message: "E2E test" });
     expect(result).toEqual([{ type: "text", text: "E2E test" }]);

@@ -17,7 +17,14 @@ import type {
   SkillSearchQuery,
   SkillVersion,
 } from "@koi/core";
-import { brickId, conflict, DEFAULT_SKILL_SEARCH_LIMIT, notFound, validation } from "@koi/core";
+import {
+  brickId,
+  conflict,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_SKILL_SEARCH_LIMIT,
+  notFound,
+  validation,
+} from "@koi/core";
 import type { BrickRequires, SkillArtifact } from "@koi/core/brick-store";
 import { DEFAULT_PROVENANCE } from "./brick-artifacts.js";
 
@@ -191,7 +198,8 @@ export function createInMemorySkillRegistry(): SkillRegistryBackend {
       name: record.name,
       description: record.description,
       scope: "global",
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       lifecycle: "active",
       provenance: DEFAULT_PROVENANCE,
       version: versionRecord.version,

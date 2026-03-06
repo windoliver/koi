@@ -12,7 +12,7 @@
  * 7. Return structured metrics
  */
 
-import { chainId } from "@koi/core";
+import { chainId, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type { Tool, ToolExecuteOptions } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
@@ -99,7 +99,8 @@ export function createSquashTool(
 ): Tool {
   return {
     descriptor: SQUASH_TOOL_DESCRIPTOR,
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
 
     async execute(args: JsonObject, options?: ToolExecuteOptions): Promise<SquashResult> {
       // 1. Validate input

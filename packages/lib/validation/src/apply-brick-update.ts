@@ -20,14 +20,12 @@ export function applyBrickUpdate<T extends BrickArtifactBase>(
   return {
     ...existing,
     ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
-    ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
+    ...(updates.policy !== undefined ? { policy: updates.policy } : {}),
     ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
     ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
     ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
     ...(updates.lastVerifiedAt !== undefined ? { lastVerifiedAt: updates.lastVerifiedAt } : {}),
     ...(updates.fitness !== undefined ? { fitness: updates.fitness } : {}),
-    ...(updates.lastPromotedAt !== undefined ? { lastPromotedAt: updates.lastPromotedAt } : {}),
-    ...(updates.lastDemotedAt !== undefined ? { lastDemotedAt: updates.lastDemotedAt } : {}),
     ...(updates.trailStrength !== undefined ? { trailStrength: updates.trailStrength } : {}),
     ...(updates.driftContext !== undefined ? { driftContext: updates.driftContext } : {}),
     ...(updates.collectiveMemory !== undefined

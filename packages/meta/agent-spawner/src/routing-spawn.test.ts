@@ -149,9 +149,8 @@ describe("mapManifestToDescriptor", () => {
 // ---------------------------------------------------------------------------
 
 describe("mapSandboxConfigToProfile", () => {
-  test("defaults tier to sandbox, network to deny", () => {
+  test("defaults network to deny", () => {
     const profile = mapSandboxConfigToProfile({});
-    expect(profile.tier).toBe("sandbox");
     expect(profile.network).toEqual({ allow: false });
     expect(profile.filesystem).toEqual({});
     expect(profile.resources).toEqual({});
@@ -324,7 +323,6 @@ describe("createRoutingSpawnFn", () => {
     expect(prompt).toBe("fix the bug");
 
     // Profile
-    expect(options.profile.tier).toBe("sandbox");
     expect(options.profile.filesystem).toEqual({ allowRead: ["/code"] });
     expect(options.profile.network).toEqual({ allow: true });
     expect(options.profile.resources).toEqual({ timeoutMs: 60_000 });

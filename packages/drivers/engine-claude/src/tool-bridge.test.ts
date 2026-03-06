@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent, JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { ToolRegistry } from "./tool-bridge.js";
 import {
   createToolBridgeMcpServer,
@@ -14,7 +15,8 @@ import {
 function createMockTool(descriptor: ToolDescriptor, executeResult: unknown = "ok"): Tool {
   return {
     descriptor,
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     execute: async (_args: JsonObject) => executeResult,
   };
 }
@@ -134,7 +136,8 @@ describe("executeBridgedTool", () => {
     const tools = new Map<string, Tool>();
     tools.set("echo", {
       descriptor: { name: "echo", description: "Echo back", inputSchema: { type: "object" } },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async (args: JsonObject) => `Echo: ${String(args.text)}`,
     });
 
@@ -165,7 +168,8 @@ describe("executeBridgedTool", () => {
     const tools = new Map<string, Tool>();
     tools.set("failing", {
       descriptor: { name: "failing", description: "Always fails", inputSchema: { type: "object" } },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async () => {
         throw new Error("Tool exploded");
       },
@@ -190,7 +194,8 @@ describe("executeBridgedTool", () => {
         description: "Returns JSON",
         inputSchema: { type: "object" },
       },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async () => ({ key: "value", count: 42 }),
     });
 
@@ -212,7 +217,8 @@ describe("executeBridgedTool", () => {
         description: "Throws string",
         inputSchema: { type: "object" },
       },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async () => {
         throw "raw string error";
       },

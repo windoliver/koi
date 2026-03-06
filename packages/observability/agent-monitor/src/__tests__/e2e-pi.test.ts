@@ -38,7 +38,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
 import type { SessionId } from "@koi/core/ecs";
 import type { KoiRuntime } from "@koi/engine";
 import { createKoi } from "@koi/engine";
@@ -165,7 +165,8 @@ function buildProvider(tools: readonly ToolSpec[]): ComponentProvider {
       for (const spec of tools) {
         const tool: Tool = {
           descriptor: spec.descriptor,
-          trustTier: "sandbox",
+          origin: "primordial",
+          policy: DEFAULT_SANDBOXED_POLICY,
           execute: spec.execute,
         };
         map.set(toolToken(spec.descriptor.name) as string, tool);

@@ -26,7 +26,16 @@ import type {
   ToolDescriptor,
   WorkspaceComponent,
 } from "@koi/core";
-import { agentId, ENV, MAILBOX, messageId, SCRATCHPAD, WORKSPACE } from "@koi/core";
+import {
+  agentId,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_UNSANDBOXED_POLICY,
+  ENV,
+  MAILBOX,
+  messageId,
+  SCRATCHPAD,
+  WORKSPACE,
+} from "@koi/core";
 import type { EntryContext } from "../entry-definitions.js";
 import { PROCFS_ENTRIES } from "../entry-definitions.js";
 import { createEntriesFromDefinitions } from "../entry-factory.js";
@@ -104,12 +113,14 @@ function createFullAgent(): Agent {
   const tool1: Tool = {
     descriptor: createToolDescriptor("search", "Search the web"),
     execute: () => Promise.resolve({ output: "result" }),
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
   };
   const tool2: Tool = {
     descriptor: createToolDescriptor("write_file", "Write a file"),
     execute: () => Promise.resolve({ output: "ok" }),
-    trustTier: "verified",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
   };
 
   // Middleware
@@ -293,8 +304,8 @@ describe("procfs entry content", () => {
     expect(result).toHaveLength(2);
     expect(result).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "search", trustTier: "sandbox" }),
-        expect.objectContaining({ name: "write_file", trustTier: "verified" }),
+        expect.objectContaining({ name: "search", policy: DEFAULT_SANDBOXED_POLICY }),
+        expect.objectContaining({ name: "write_file", policy: DEFAULT_UNSANDBOXED_POLICY }),
       ]),
     );
   });

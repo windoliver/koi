@@ -45,7 +45,6 @@ describe("createCloudflareAdapter", () => {
     const result = createCloudflareAdapter({ apiToken: "token", client: createMockClient(sdk) });
     if (!result.ok) return;
     const instance = await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},
@@ -66,7 +65,6 @@ describe("createCloudflareAdapter", () => {
     if (!result.ok) return;
 
     await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},
@@ -82,7 +80,6 @@ describe("createCloudflareAdapter", () => {
     if (!result.ok) return;
 
     await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},
@@ -101,7 +98,6 @@ describe("createCloudflareAdapter", () => {
     if (!result.ok) return;
 
     const instance = await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},

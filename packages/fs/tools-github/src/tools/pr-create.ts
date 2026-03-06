@@ -2,7 +2,7 @@
  * Tool factory for `github_pr_create` — create a pull request.
  */
 
-import type { JsonObject, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
 import { PR_CREATE_FIELDS } from "../constants.js";
 import type { GhExecutor } from "../gh-executor.js";
 import { parseOptionalBoolean, parseOptionalString } from "../parse-args.js";
@@ -11,7 +11,7 @@ import { mapErrorResult, parseGhJson } from "../parse-gh-error.js";
 export function createGithubPrCreateTool(
   executor: GhExecutor,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -35,7 +35,8 @@ export function createGithubPrCreateTool(
         },
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const titleResult = parseOptionalString(args, "title");
       if (!titleResult.ok) return titleResult.err;

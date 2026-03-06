@@ -1,12 +1,12 @@
 /**
  * Forge type aliases — extension points for the self-extension system.
  *
- * TrustTier lives in ecs.ts (used by Tool interface).
+ * ToolPolicy lives in ecs.ts (used by Tool interface).
  * These are additional L0 types used by @koi/forge (L2).
  *
- * Exception: VALID_LIFECYCLE_TRANSITIONS is a pure readonly data constant
- * derived from L0 type definitions, codifying architecture-doc invariants
- * with zero logic.
+ * Exception: VALID_LIFECYCLE_TRANSITIONS and SANDBOX_REQUIRED_BY_KIND are
+ * pure readonly data constants derived from L0 type definitions, codifying
+ * architecture-doc invariants with zero logic.
  */
 
 /** Visibility scope of a forged brick. */
@@ -100,16 +100,54 @@ export const ALL_BRICK_KINDS: readonly BrickKind[] = [
 export const MAX_PIPELINE_STEPS = 20;
 
 /**
- * Minimum trust tier required per brick kind.
+ * Whether sandboxing is required per brick kind.
  *
- * - sandbox: tool, skill, agent, composite (sandboxed execution)
- * - promoted: middleware, channel (full interposition)
+ * - true: tool, skill, agent, composite (must run sandboxed)
+ * - false: middleware, channel (full interposition, no sandbox)
  */
-export const MIN_TRUST_BY_KIND: Readonly<Record<BrickKind, import("./ecs.js").TrustTier>> = {
-  tool: "sandbox",
-  skill: "sandbox",
-  agent: "sandbox",
-  middleware: "promoted",
-  channel: "promoted",
-  composite: "sandbox",
+export const SANDBOX_REQUIRED_BY_KIND: Readonly<Record<BrickKind, boolean>> = {
+  tool: true,
+  skill: true,
+  agent: true,
+  middleware: false,
+  channel: false,
+  composite: true,
 } as const;
+
+/** Validation result from validatePolicyForKind. */
+export type PolicyValidationResult =
+  | { readonly valid: true }
+  | { readonly valid: false; readonly reason: string };
+
+/**
+ * Validates that a ToolPolicy is compatible with a BrickKind.
+ *
+ * Rules:
+ * - Middleware/channel cannot have sandbox: true (they need full interposition)
+ * - Resources with timeoutMs: 0 are invalid (must be positive or omitted)
+ *
+ * Pure function — no side effects.
+ */
+export function validatePolicyForKind(
+  policy: import("./ecs.js").ToolPolicy,
+  kind: BrickKind,
+): PolicyValidationResult {
+  // Middleware and channels cannot be sandboxed
+  if (policy.sandbox && !SANDBOX_REQUIRED_BY_KIND[kind]) {
+    return {
+      valid: false,
+      reason: `${kind} cannot have sandbox: true — middleware and channels require full interposition`,
+    };
+  }
+
+  // Validate resource limits if present
+  const timeout = policy.capabilities.resources?.timeoutMs;
+  if (timeout !== undefined && timeout <= 0) {
+    return {
+      valid: false,
+      reason: `resources.timeoutMs must be positive, got ${String(timeout)}`,
+    };
+  }
+
+  return { valid: true };
+}

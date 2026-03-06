@@ -6,7 +6,7 @@
  */
 
 import type { ComponentProvider, JsonObject, Tool, ToolExecuteOptions } from "@koi/core";
-import { createSingleToolProvider } from "@koi/core";
+import { createSingleToolProvider, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { SandboxStack } from "./types.js";
 
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
@@ -41,7 +41,8 @@ export function createExecuteCodeProvider(stack: SandboxStack): ComponentProvide
           required: ["code"],
         },
       },
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       execute: async (args: JsonObject, _options?: ToolExecuteOptions): Promise<unknown> => {
         const code = typeof args.code === "string" ? args.code : String(args.code);
         const input = args.input ?? null;

@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, CollectiveMemory, CollectiveMemoryDefaults, CollectiveMemoryEntry, PipelineStep, BrickFitnessMetrics, TrustTier, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
+"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, CollectiveMemory, CollectiveMemoryDefaults, CollectiveMemoryEntry, PipelineStep, BrickFitnessMetrics, ToolPolicy, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -180,7 +180,7 @@ declare const DEFAULT_DECAY_THRESHOLDS: DecayThresholds;
  *
  * Does NOT demote bricks with zero usage (no evidence = no demotion).
  */
-declare function evaluateTrustDecay(brick: BrickArtifactBase, nowMs: number, config?: Partial<FitnessScoringConfig>, thresholds?: Partial<DecayThresholds>): TrustTier | undefined;
+declare function evaluateTrustDecay(brick: BrickArtifactBase, nowMs: number, config?: Partial<FitnessScoringConfig>, thresholds?: Partial<DecayThresholds>): ToolPolicy | undefined;
 
 /**
  * Bounded sorted-sample buffer for percentile estimation.

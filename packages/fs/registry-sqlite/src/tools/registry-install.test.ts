@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifact, KoiError, Result, SkillArtifact } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createRegistryInstallTool } from "./registry-install.js";
 import { createMockFacade } from "./test-helpers.js";
@@ -11,7 +11,8 @@ const TOOL_ARTIFACT: BrickArtifact = {
   name: "install-test",
   description: "A test tool",
   scope: "agent",
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   lifecycle: "active",
   provenance: DEFAULT_PROVENANCE,
   version: "1.0.0",
@@ -27,7 +28,8 @@ const SKILL_ARTIFACT: SkillArtifact = {
   name: "install-skill",
   description: "A test skill",
   scope: "agent",
-  trustTier: "sandbox",
+  origin: "primordial",
+  policy: DEFAULT_SANDBOXED_POLICY,
   lifecycle: "active",
   provenance: DEFAULT_PROVENANCE,
   version: "1.0.0",
@@ -39,7 +41,7 @@ const SKILL_ARTIFACT: SkillArtifact = {
 describe("registry_install tool", () => {
   test("returns NOT_FOUND for missing artifact", async () => {
     const facade = createMockFacade();
-    const tool = createRegistryInstallTool(facade, "registry", "promoted");
+    const tool = createRegistryInstallTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ kind: "tool", name: "missing" })) as Record<
       string,
@@ -55,7 +57,12 @@ describe("registry_install tool", () => {
       },
     });
     const onInstall = async (): Promise<Result<void, KoiError>> => ({ ok: true, value: undefined });
-    const tool = createRegistryInstallTool(facade, "registry", "promoted", onInstall);
+    const tool = createRegistryInstallTool(
+      facade,
+      "registry",
+      DEFAULT_UNSANDBOXED_POLICY,
+      onInstall,
+    );
 
     const result = (await tool.execute({ kind: "tool", name: "install-test" })) as Record<
       string,
@@ -76,7 +83,12 @@ describe("registry_install tool", () => {
       ok: false,
       error: { code: "INTERNAL", message: "Install failed", retryable: false },
     });
-    const tool = createRegistryInstallTool(facade, "registry", "promoted", onInstall);
+    const tool = createRegistryInstallTool(
+      facade,
+      "registry",
+      DEFAULT_UNSANDBOXED_POLICY,
+      onInstall,
+    );
 
     const result = (await tool.execute({ kind: "tool", name: "install-test" })) as Record<
       string,
@@ -92,7 +104,7 @@ describe("registry_install tool", () => {
         get: () => ({ ok: true, value: TOOL_ARTIFACT }),
       },
     });
-    const tool = createRegistryInstallTool(facade, "registry", "promoted");
+    const tool = createRegistryInstallTool(facade, "registry", DEFAULT_UNSANDBOXED_POLICY);
 
     const result = (await tool.execute({ kind: "tool", name: "install-test" })) as Record<
       string,
@@ -110,7 +122,12 @@ describe("registry_install tool", () => {
       },
     });
     const onInstall = async (): Promise<Result<void, KoiError>> => ({ ok: true, value: undefined });
-    const tool = createRegistryInstallTool(facade, "registry", "promoted", onInstall);
+    const tool = createRegistryInstallTool(
+      facade,
+      "registry",
+      DEFAULT_UNSANDBOXED_POLICY,
+      onInstall,
+    );
 
     const result = (await tool.execute({ kind: "skill", name: "install-skill" })) as Record<
       string,

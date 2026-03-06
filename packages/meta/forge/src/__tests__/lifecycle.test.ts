@@ -63,7 +63,7 @@ describe("Forge lifecycle — end-to-end", () => {
     expect(toolResult.ok).toBe(true);
     expect(toolResult.value.kind).toBe("tool");
     expect(toolResult.value.name).toBe("adder");
-    expect(toolResult.value.trustTier).toBe("sandbox");
+    expect(toolResult.value.policy.sandbox).toBe(true);
     expect(toolResult.value.lifecycle).toBe("active");
     expect(toolResult.value.verificationReport.passed).toBe(true);
     expect(toolResult.value.verificationReport.stages).toHaveLength(6);

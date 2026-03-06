@@ -17,9 +17,9 @@ import type {
   DelegationVerifyResult,
   PermissionBackend,
   Tool,
-  TrustTier,
+  ToolPolicy,
 } from "@koi/core";
-import { DELEGATION } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY, DELEGATION } from "@koi/core";
 import type { DelegationManager } from "./delegation-manager.js";
 import { createDelegationCheckTool } from "./tools/check.js";
 import type { DelegationOperation } from "./tools/constants.js";
@@ -39,7 +39,7 @@ export interface DelegationProviderConfig {
   /** Tool name prefix. Defaults to "delegation". */
   readonly prefix?: string;
   /** Trust tier for delegation tools. Defaults to "verified". */
-  readonly trustTier?: TrustTier;
+  readonly policy?: ToolPolicy;
   /** When false, attach() returns empty map. Defaults to true. */
   readonly enabled?: boolean;
   /** Optional permission backend — enables the permission_check tool. */
@@ -55,7 +55,7 @@ export function createDelegationProvider(config: DelegationProviderConfig): Comp
     manager,
     operations = OPERATIONS,
     prefix = DEFAULT_PREFIX,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
     enabled = true,
     permissionBackend,
   } = config;
@@ -75,17 +75,17 @@ export function createDelegationProvider(config: DelegationProviderConfig): Comp
       const ops = new Set(operations);
 
       if (ops.has("grant")) {
-        const tool: Tool = createDelegationGrantTool(manager, ownerAgentId, prefix, trustTier);
+        const tool: Tool = createDelegationGrantTool(manager, ownerAgentId, prefix, policy);
         components.set(`tool:${tool.descriptor.name}`, tool);
       }
 
       if (ops.has("revoke")) {
-        const tool: Tool = createDelegationRevokeTool(manager, prefix, trustTier);
+        const tool: Tool = createDelegationRevokeTool(manager, prefix, policy);
         components.set(`tool:${tool.descriptor.name}`, tool);
       }
 
       if (ops.has("list")) {
-        const tool: Tool = createDelegationListTool(manager, ownerAgentId, prefix, trustTier);
+        const tool: Tool = createDelegationListTool(manager, ownerAgentId, prefix, policy);
         components.set(`tool:${tool.descriptor.name}`, tool);
       }
 
@@ -95,7 +95,7 @@ export function createDelegationProvider(config: DelegationProviderConfig): Comp
           permissionBackend,
           ownerAgentId,
           prefix,
-          trustTier,
+          policy,
         );
         components.set(`tool:${tool.descriptor.name}`, tool);
       }

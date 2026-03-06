@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { MemoryRecallOptions } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createMockMemoryComponent } from "../test-helpers.js";
 import { createMemoryRecallTool } from "./recall.js";
 
 describe("createMemoryRecallTool", () => {
   test("returns results for valid query", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ query: "dark mode" })) as {
       readonly results: readonly unknown[];
       readonly count: number;
@@ -20,7 +21,7 @@ describe("createMemoryRecallTool", () => {
 
   test("uses default limit of 10", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ query: "test" });
 
     const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
@@ -29,7 +30,7 @@ describe("createMemoryRecallTool", () => {
 
   test("respects custom limit", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ query: "test", limit: 5 });
 
     const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
@@ -38,7 +39,7 @@ describe("createMemoryRecallTool", () => {
 
   test("clamps limit to max", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified", 10);
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY, 10);
     await tool.execute({ query: "test", limit: 999 });
 
     const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
@@ -47,7 +48,7 @@ describe("createMemoryRecallTool", () => {
 
   test("passes tier filter when specified", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ query: "test", tier: "hot" });
 
     const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
@@ -56,7 +57,7 @@ describe("createMemoryRecallTool", () => {
 
   test("omits tierFilter when not specified", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ query: "test" });
 
     const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
@@ -65,7 +66,7 @@ describe("createMemoryRecallTool", () => {
 
   test("passes graph_expand and max_hops to component.recall()", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ query: "test", graph_expand: true, max_hops: 3 });
 
     const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
@@ -75,7 +76,7 @@ describe("createMemoryRecallTool", () => {
 
   test("omits graphExpand and maxHops when not provided", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ query: "test" });
 
     const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
@@ -85,7 +86,7 @@ describe("createMemoryRecallTool", () => {
 
   test("returns validation error when graph_expand is not boolean", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       query: "test",
       graph_expand: "yes",
@@ -97,7 +98,7 @@ describe("createMemoryRecallTool", () => {
 
   test("returns validation error when query missing", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as {
       readonly error: string;
       readonly code: string;
@@ -109,7 +110,7 @@ describe("createMemoryRecallTool", () => {
 
   test("returns validation error for invalid tier", async () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({
       query: "test",
       tier: "invalid",
@@ -126,7 +127,7 @@ describe("createMemoryRecallTool", () => {
         throw new Error("index corrupted");
       },
     };
-    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const tool = createMemoryRecallTool(component, "memory", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ query: "test" })) as {
       readonly error: string;
       readonly code: string;
@@ -138,7 +139,7 @@ describe("createMemoryRecallTool", () => {
 
   test("descriptor has correct name", () => {
     const component = createMockMemoryComponent();
-    const tool = createMemoryRecallTool(component, "mem", "sandbox");
+    const tool = createMemoryRecallTool(component, "mem", DEFAULT_SANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("mem_recall");
   });
 });

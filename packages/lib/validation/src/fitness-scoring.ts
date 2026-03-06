@@ -8,7 +8,8 @@
  *   successRate^exponent × recencyDecay × usageNorm × latencyFactor
  */
 
-import type { BrickArtifactBase, BrickFitnessMetrics, TrustTier } from "@koi/core";
+import type { BrickArtifactBase, BrickFitnessMetrics, ToolPolicy } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { computePercentile } from "./latency-sampler.js";
 
 // ---------------------------------------------------------------------------
@@ -114,7 +115,7 @@ export function evaluateTrustDecay(
   nowMs: number,
   config?: Partial<FitnessScoringConfig>,
   thresholds?: Partial<DecayThresholds>,
-): TrustTier | undefined {
+): ToolPolicy | undefined {
   // No fitness data = no evidence = no demotion
   if (brick.fitness === undefined) return undefined;
 
@@ -124,12 +125,8 @@ export function evaluateTrustDecay(
   const score = computeBrickFitness(brick.fitness, nowMs, config);
   const decay: DecayThresholds = { ...DEFAULT_DECAY_THRESHOLDS, ...thresholds };
 
-  if (brick.trustTier === "promoted" && score < decay.promotedDemotionThreshold) {
-    return "verified";
-  }
-
-  if (brick.trustTier === "verified" && score < decay.verifiedDemotionThreshold) {
-    return "sandbox";
+  if (!brick.policy.sandbox && score < decay.promotedDemotionThreshold) {
+    return DEFAULT_SANDBOXED_POLICY;
   }
 
   // sandbox is floor — never demote further

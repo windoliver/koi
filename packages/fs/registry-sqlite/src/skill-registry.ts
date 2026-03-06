@@ -21,7 +21,14 @@ import type {
   SkillSearchQuery,
   SkillVersion,
 } from "@koi/core";
-import { brickId, conflict, DEFAULT_SKILL_SEARCH_LIMIT, notFound, validation } from "@koi/core";
+import {
+  brickId,
+  conflict,
+  DEFAULT_SANDBOXED_POLICY,
+  DEFAULT_SKILL_SEARCH_LIMIT,
+  notFound,
+  validation,
+} from "@koi/core";
 import { wrapSqlite } from "@koi/sqlite-utils";
 import type { RegistrySqliteConfig } from "./config.js";
 import { resolveDb } from "./config.js";
@@ -80,7 +87,7 @@ const REGISTRY_PROVENANCE: ForgeProvenance = {
   },
   verification: {
     passed: true,
-    finalTrustTier: "sandbox",
+    sandbox: true,
     totalDurationMs: 0,
     stageResults: [],
   },
@@ -500,7 +507,8 @@ export function createSqliteSkillRegistry(config: RegistrySqliteConfig): SqliteS
       name: skill.name,
       description: skill.description,
       scope: "global",
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       lifecycle: "active",
       provenance: REGISTRY_PROVENANCE,
       version: versionRow.version,

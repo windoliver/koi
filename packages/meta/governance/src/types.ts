@@ -70,7 +70,7 @@ export interface GovernanceScopeConfig {
         readonly allowedProtocols?: readonly string[] | undefined;
         readonly allowedDomains?: readonly string[] | undefined;
         readonly blockPrivateAddresses?: boolean | undefined;
-        readonly trustTier?: "sandbox" | "verified" | "promoted" | undefined;
+        readonly sandbox?: boolean | undefined;
       }
     | undefined;
   readonly credentials?: { readonly keyPattern: string } | undefined;

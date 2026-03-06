@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { checkGovernance } from "@koi/forge-policy";
 import type { ForgeDeps } from "@koi/forge-tools";
 import { createForgeToolTool, createInMemoryForgeStore } from "@koi/forge-tools";
@@ -169,11 +169,9 @@ describe("Edge case 6: Scope promotion without HITL when required", () => {
     const config = createDefaultForgeConfig({
       scopePromotion: {
         requireHumanApproval: true,
-        minTrustForZone: "sandbox",
-        minTrustForGlobal: "sandbox",
       },
     });
-    const result = checkScopePromotion("agent", "zone", "sandbox", config);
+    const result = checkScopePromotion("agent", "zone", config);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.requiresHumanApproval).toBe(true);
@@ -190,7 +188,8 @@ describe("Edge case 7: Concurrent forge attempts — no shared state corruption"
       name: `tool-${i}`,
       description: `Tool ${i}`,
       scope: "agent" as const,
-      trustTier: "sandbox" as const,
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       lifecycle: "active" as const,
       provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
@@ -221,7 +220,8 @@ describe("Edge case 8: Duplicate brick name in same scope", () => {
       name: "duplicate",
       description: "First",
       scope: "agent",
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       lifecycle: "active",
       provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
@@ -337,7 +337,8 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
       name: "myTool",
       description: "A tool",
       scope: "agent",
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       lifecycle: "active",
       provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
@@ -364,7 +365,8 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
       name: "myTool",
       description: "A tool",
       scope: "agent",
-      trustTier: "sandbox",
+      origin: "primordial",
+      policy: DEFAULT_SANDBOXED_POLICY,
       lifecycle: "draft",
       provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",

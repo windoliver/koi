@@ -4,7 +4,6 @@ import { profileToDockerOpts } from "./profile-to-opts.js";
 
 function createProfile(overrides?: Partial<SandboxProfile>): SandboxProfile {
   return {
-    tier: "sandbox",
     filesystem: {},
     network: { allow: false },
     resources: {},

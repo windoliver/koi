@@ -37,7 +37,7 @@ export interface ManifestBrowserScope {
   readonly allowedProtocols?: readonly string[] | undefined;
   readonly allowedDomains?: readonly string[] | undefined;
   readonly blockPrivateAddresses?: boolean | undefined;
-  readonly trustTier?: "sandbox" | "verified" | "promoted" | undefined;
+  readonly sandbox?: boolean | undefined;
 }
 
 /** Credentials scope: key glob pattern filter. */

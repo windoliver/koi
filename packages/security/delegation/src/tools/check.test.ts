@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { PermissionBackend } from "@koi/core";
-import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/core";
+import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createDelegationManager } from "../delegation-manager.js";
 import { createDelegationCheckTool } from "./check.js";
 
@@ -28,11 +28,11 @@ describe("createDelegationCheckTool", () => {
       undefined,
       agentId("owner"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
 
     expect(tool.descriptor.name).toBe("delegation_check");
-    expect(tool.trustTier).toBe("verified");
+    expect(tool.policy.sandbox).toBe(false);
     expect(tool.descriptor.inputSchema).toHaveProperty("required");
   });
 
@@ -51,7 +51,7 @@ describe("createDelegationCheckTool", () => {
       undefined,
       agentId("owner"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
     const result = await tool.execute({
       grantId: grantResult.value.id,
@@ -71,7 +71,7 @@ describe("createDelegationCheckTool", () => {
       undefined,
       agentId("owner"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
     const result = await tool.execute({
       grantId: "nonexistent-grant",
@@ -102,7 +102,7 @@ describe("createDelegationCheckTool", () => {
       backend,
       agentId("owner"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
     const result = await tool.execute({
       grantId: grantResult.value.id,
@@ -133,7 +133,7 @@ describe("createDelegationCheckTool", () => {
       backend,
       agentId("owner"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
     const result = await tool.execute({
       grantId: grantResult.value.id,
@@ -152,7 +152,7 @@ describe("createDelegationCheckTool", () => {
       undefined,
       agentId("owner"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
 
     await expect(tool.execute({ permission: "read_file" })).rejects.toThrow("grantId");
@@ -166,7 +166,7 @@ describe("createDelegationCheckTool", () => {
       undefined,
       agentId("owner"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
 
     await expect(tool.execute({ grantId: "some-id" })).rejects.toThrow("permission");

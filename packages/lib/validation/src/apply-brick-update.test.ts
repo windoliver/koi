@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifactBase, BrickFitnessMetrics, BrickUpdate } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { applyBrickUpdate } from "./apply-brick-update.js";
 
 // ---------------------------------------------------------------------------
@@ -13,7 +14,8 @@ function createBrick(overrides?: Partial<BrickArtifactBase>): BrickArtifactBase 
     name: "test-brick",
     description: "A test brick",
     scope: "agent",
-    trustTier: "sandbox",
+    origin: "primordial",
+    policy: DEFAULT_SANDBOXED_POLICY,
     lifecycle: "active",
     provenance: {
       buildDefinition: { buildType: "forge/v1", externalParameters: {}, internalParameters: {} },
@@ -66,10 +68,10 @@ describe("applyBrickUpdate", () => {
     expect(result.lifecycle).toBe("deprecated");
   });
 
-  test("updates trustTier", () => {
-    const brick = createBrick({ trustTier: "sandbox" });
-    const result = applyBrickUpdate(brick, { trustTier: "verified" });
-    expect(result.trustTier).toBe("verified");
+  test("updates policy", () => {
+    const brick = createBrick({ policy: DEFAULT_SANDBOXED_POLICY });
+    const result = applyBrickUpdate(brick, { policy: DEFAULT_UNSANDBOXED_POLICY });
+    expect(result.policy.sandbox).toBe(false);
   });
 
   test("updates scope", () => {
@@ -109,20 +111,6 @@ describe("applyBrickUpdate", () => {
     expect(result.fitness).toEqual(fitness);
   });
 
-  test("updates lastPromotedAt", () => {
-    const brick = createBrick();
-    const now = Date.now();
-    const result = applyBrickUpdate(brick, { lastPromotedAt: now });
-    expect(result.lastPromotedAt).toBe(now);
-  });
-
-  test("updates lastDemotedAt", () => {
-    const brick = createBrick();
-    const now = Date.now();
-    const result = applyBrickUpdate(brick, { lastDemotedAt: now });
-    expect(result.lastDemotedAt).toBe(now);
-  });
-
   test("updates trailStrength", () => {
     const brick = createBrick();
     const result = applyBrickUpdate(brick, { trailStrength: 0.75 });
@@ -145,14 +133,14 @@ describe("applyBrickUpdate", () => {
   // ---------------------------------------------------------------------------
 
   test("applies multiple fields at once", () => {
-    const brick = createBrick({ usageCount: 0, trustTier: "sandbox" });
+    const brick = createBrick({ usageCount: 0, policy: DEFAULT_SANDBOXED_POLICY });
     const result = applyBrickUpdate(brick, {
       usageCount: 5,
-      trustTier: "verified",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       lifecycle: "deprecated",
     });
     expect(result.usageCount).toBe(5);
-    expect(result.trustTier).toBe("verified");
+    expect(result.policy.sandbox).toBe(false);
     expect(result.lifecycle).toBe("deprecated");
     // Unmodified fields preserved
     expect(result.name).toBe("test-brick");
@@ -166,19 +154,19 @@ describe("applyBrickUpdate", () => {
   test("undefined fields in update do not override existing values", () => {
     const brick = createBrick({
       usageCount: 5,
-      trustTier: "verified",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
       tags: ["keep"],
     });
     // Intentionally pass undefined values to verify conditional-spread ignores them.
     // Use double cast because exactOptionalPropertyTypes forbids explicit undefined.
     const updates = {
       usageCount: undefined,
-      trustTier: undefined,
+      policy: undefined,
       tags: undefined,
     } as unknown as BrickUpdate;
     const result = applyBrickUpdate(brick, updates);
     expect(result.usageCount).toBe(5);
-    expect(result.trustTier).toBe("verified");
+    expect(result.policy.sandbox).toBe(false);
     expect(result.tags).toEqual(["keep"]);
   });
 

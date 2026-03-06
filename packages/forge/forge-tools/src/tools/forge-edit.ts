@@ -15,7 +15,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { applyEdit } from "@koi/edit-match";
 import type { ForgeError, ForgeInput, ForgePipeline } from "@koi/forge-types";
 import { staticError, storeError } from "@koi/forge-types";
@@ -378,7 +378,8 @@ export function createForgeEditTool(deps: ForgeDeps): Tool {
 
   return {
     descriptor: FORGE_EDIT_DESCRIPTOR,
-    trustTier: "promoted",
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
     execute,
   };
 }

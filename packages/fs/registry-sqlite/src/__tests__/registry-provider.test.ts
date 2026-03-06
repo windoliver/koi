@@ -151,7 +151,7 @@ describe("createRegistryProvider", () => {
     const components = (await provider.attach(agent)) as ReadonlyMap<string, unknown>;
 
     const installTool = extractToolFromMap(components, "registry_install");
-    expect(installTool.trustTier).toBe("promoted");
+    expect(installTool.policy.sandbox).toBe(false);
   });
 
   test("read tools use verified trust tier by default", async () => {
@@ -164,9 +164,9 @@ describe("createRegistryProvider", () => {
     const getTool = extractToolFromMap(components, "registry_get");
     const versionsTool = extractToolFromMap(components, "registry_list_versions");
 
-    expect(searchTool.trustTier).toBe("verified");
-    expect(getTool.trustTier).toBe("verified");
-    expect(versionsTool.trustTier).toBe("verified");
+    expect(searchTool.policy.sandbox).toBe(false);
+    expect(getTool.policy.sandbox).toBe(false);
+    expect(versionsTool.policy.sandbox).toBe(false);
   });
 
   test("custom prefix applies to all tool names", async () => {

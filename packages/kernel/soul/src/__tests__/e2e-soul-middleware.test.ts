@@ -22,6 +22,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import type { CreateSoulOptions } from "../config.js";
@@ -369,7 +370,8 @@ describeE2E("e2e: @koi/soul through createKoi + createPiAdapter", () => {
             required: ["a", "b"],
           },
         },
-        trustTier: "sandbox" as const,
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
         execute: async (input: Readonly<Record<string, unknown>>) => {
           const a = Number(input.a ?? 0);
           const b = Number(input.b ?? 0);

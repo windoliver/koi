@@ -45,7 +45,6 @@ describe("createVercelAdapter", () => {
     const result = createVercelAdapter({ apiToken: "token", client: createMockClient(sdk) });
     if (!result.ok) return;
     const instance = await result.value.create({
-      tier: "sandbox",
       filesystem: {},
       network: { allow: false },
       resources: {},

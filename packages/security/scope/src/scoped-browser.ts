@@ -27,13 +27,13 @@ import {
 
 export interface CompiledBrowserScope {
   readonly navigation: CompiledNavigationSecurity;
-  readonly trustTier: BrowserScope["trustTier"];
+  readonly policy: BrowserScope["policy"];
 }
 
 export function compileBrowserScope(scope: BrowserScope): CompiledBrowserScope {
   return {
     navigation: compileNavigationSecurity(scope.navigation),
-    trustTier: scope.trustTier,
+    policy: scope.policy,
   };
 }
 
@@ -143,13 +143,12 @@ export function createScopedBrowser(driver: BrowserDriver, scope: BrowserScope):
     },
 
     evaluate(script, options) {
-      if (compiled.trustTier !== "promoted") {
+      if (compiled.policy?.sandbox !== false) {
         return {
           ok: false,
           error: permission(
-            `evaluate() was blocked: requires trust tier "promoted" but scope has ` +
-              `"${compiled.trustTier ?? "verified"}". ` +
-              `Only promoted agents may execute arbitrary JavaScript in the browser.`,
+            `evaluate() was blocked: requires unsandboxed policy but tool is sandboxed. ` +
+              `Only unsandboxed agents may execute arbitrary JavaScript in the browser.`,
           ),
         } satisfies Result<never, KoiError>;
       }

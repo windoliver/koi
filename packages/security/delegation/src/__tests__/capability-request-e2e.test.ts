@@ -17,7 +17,14 @@ import type {
   SessionContext,
   TurnContext,
 } from "@koi/core";
-import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG, DELEGATION, MAILBOX, messageId } from "@koi/core";
+import {
+  agentId,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  DEFAULT_UNSANDBOXED_POLICY,
+  DELEGATION,
+  MAILBOX,
+  messageId,
+} from "@koi/core";
 import { createCapabilityRequestBridge } from "../capability-request-bridge.js";
 import { createDelegationManager } from "../delegation-manager.js";
 import { createDelegationRequestTool } from "../tools/request.js";
@@ -190,7 +197,7 @@ describe("capability request E2E", () => {
       childMailbox,
       agentId("child"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
 
     const resultPromise = requestTool.execute({
@@ -223,7 +230,7 @@ describe("capability request E2E", () => {
       childMailbox,
       agentId("child"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
     const resultPromise = requestTool.execute({
       targetAgentId: "parent",
@@ -273,7 +280,7 @@ describe("capability request E2E", () => {
       grandchildMailbox,
       agentId("grandchild"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
     const resultPromise = requestTool.execute({
       targetAgentId: "child",
@@ -310,7 +317,7 @@ describe("capability request E2E", () => {
       childMailbox,
       agentId("child"),
       "delegation",
-      "verified",
+      DEFAULT_UNSANDBOXED_POLICY,
     );
     const result = (await requestTool.execute({
       targetAgentId: "nonexistent",

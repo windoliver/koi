@@ -3,7 +3,8 @@
  * error classification, and observability for sandboxed tool execution.
  */
 
-import type { TrustTier } from "@koi/core/ecs";
+import type { ToolPolicy } from "@koi/core/ecs";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core/ecs";
 import type {
   CapabilityFragment,
   KoiMiddleware,
@@ -14,11 +15,7 @@ import type {
 } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
 import type { SandboxMiddlewareConfig } from "./config.js";
-import {
-  DEFAULT_OUTPUT_LIMIT_BYTES,
-  DEFAULT_SKIP_TIERS,
-  DEFAULT_TIMEOUT_GRACE_MS,
-} from "./config.js";
+import { DEFAULT_OUTPUT_LIMIT_BYTES, DEFAULT_TIMEOUT_GRACE_MS } from "./config.js";
 
 /** Default timeout when profile does not specify one (30 s). */
 const FALLBACK_TIMEOUT_MS = 30_000;
@@ -32,17 +29,14 @@ const decoder = new TextDecoder("utf-8", { fatal: false });
 export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMiddleware {
   const {
     profileFor,
-    tierFor,
+    policyFor,
     outputLimitBytes = DEFAULT_OUTPUT_LIMIT_BYTES,
     timeoutGraceMs = DEFAULT_TIMEOUT_GRACE_MS,
-    skipTiers = DEFAULT_SKIP_TIERS,
     perToolOverrides,
     failClosedOnLookupError = true,
     onSandboxError,
     onSandboxMetrics,
   } = config;
-
-  const skipSet = new Set(skipTiers);
 
   const capabilityFragment: CapabilityFragment = {
     label: "sandbox",
@@ -61,23 +55,23 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      // 1. Resolve trust tier
-      const resolvedTier = tierFor(request.toolId);
-      const tier: TrustTier | undefined =
-        resolvedTier ?? (failClosedOnLookupError ? "sandbox" : undefined);
+      // 1. Resolve policy
+      const resolvedPolicy = policyFor(request.toolId);
+      const policy: ToolPolicy | undefined =
+        resolvedPolicy ?? (failClosedOnLookupError ? DEFAULT_SANDBOXED_POLICY : undefined);
 
       // Unknown tool + fail-open → pass through
-      if (tier === undefined) {
+      if (policy === undefined) {
         return next(request);
       }
 
-      // 2. Fast path for skip tiers (promoted by default)
-      if (skipSet.has(tier)) {
+      // 2. Fast path for unsandboxed tools
+      if (!policy.sandbox) {
         return next(request);
       }
 
       // 3. Resolve effective timeout
-      const profile = profileFor(tier);
+      const profile = profileFor(policy);
       const overrides = perToolOverrides?.get(request.toolId);
       const effectiveTimeoutMs =
         overrides?.timeoutMs ?? profile.resources.timeoutMs ?? FALLBACK_TIMEOUT_MS;
@@ -93,7 +87,6 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
           : timeoutSignal;
 
       // Fast-path: throw immediately if composed signal is already aborted
-      // (matches the three-layer defense pattern in executeWithSignal)
       effectiveSignal.throwIfAborted();
 
       // Thread composed signal to downstream middleware/tool
@@ -123,7 +116,7 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
         const bytes = encoded.byteLength;
         const truncated = bytes > outputLimitBytes;
 
-        onSandboxMetrics?.(request.toolId, tier, durationMs, bytes, truncated);
+        onSandboxMetrics?.(request.toolId, policy, durationMs, bytes, truncated);
 
         if (truncated) {
           const truncatedJson =
@@ -142,20 +135,14 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
       } catch (error: unknown) {
         const durationMs = Math.round(performance.now() - start);
 
-        // Discriminate our timeout from other errors. We check timeoutSignal
-        // specifically (not effectiveSignal) to distinguish sandbox timeout from
-        // upstream cancellation. There is a negligible TOCTOU window where the
-        // signal could abort between the throw and this check, but the worst case
-        // is mis-classifying an upstream abort as a timeout — acceptable for
-        // observability purposes.
         if (timeoutSignal.aborted) {
           const message = `Tool "${request.toolId}" exceeded sandbox timeout (${String(totalTimeoutMs)}ms)`;
-          onSandboxError?.(request.toolId, tier, "TIMEOUT", message);
+          onSandboxError?.(request.toolId, policy, "TIMEOUT", message);
           throw KoiRuntimeError.from("TIMEOUT", message, {
             cause: error,
             context: {
               toolId: request.toolId,
-              tier,
+              sandbox: policy.sandbox,
               durationMs,
               timeoutMs: totalTimeoutMs,
             },

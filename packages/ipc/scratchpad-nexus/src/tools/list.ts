@@ -2,13 +2,13 @@
  * Tool factory for scratchpad_list — list files in the shared scratchpad.
  */
 
-import type { JsonObject, ScratchpadComponent, Tool, TrustTier } from "@koi/core";
+import type { JsonObject, ScratchpadComponent, Tool, ToolPolicy } from "@koi/core";
 import { agentId } from "@koi/core";
 
 export function createListTool(
   component: ScratchpadComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -23,7 +23,8 @@ export function createListTool(
         },
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       const entries = await component.list({
         ...(typeof args.glob === "string" ? { glob: args.glob } : {}),

@@ -5,12 +5,12 @@
  * Returns the absolute path to the .zip trace file.
  */
 
-import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
+import type { BrowserDriver, JsonObject, Tool, ToolPolicy } from "@koi/core";
 
 export function createBrowserTraceStopTool(
   driver: BrowserDriver,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -25,7 +25,8 @@ export function createBrowserTraceStopTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (_args: JsonObject): Promise<unknown> => {
       const traceStop = driver.traceStop;
       if (!traceStop) {

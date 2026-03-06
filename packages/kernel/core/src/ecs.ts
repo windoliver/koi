@@ -211,10 +211,68 @@ export interface Agent {
 }
 
 // ---------------------------------------------------------------------------
-// Trust tiers
+// Tool origin — where a tool came from
 // ---------------------------------------------------------------------------
 
-export type TrustTier = "sandbox" | "verified" | "promoted";
+/** How a tool entered the system: bundled at build time, operator-installed, or agent-forged. */
+export type ToolOrigin = "primordial" | "operator" | "forged";
+
+// ---------------------------------------------------------------------------
+// Tool capabilities — capability-based policy
+// ---------------------------------------------------------------------------
+
+/** Network access capability — deny-by-default, allow specific hosts. */
+export interface NetworkCapability {
+  readonly allow: boolean;
+  readonly hosts?: readonly string[];
+}
+
+/** Filesystem access capability — read/write path allowlists. */
+export interface FilesystemCapability {
+  readonly read?: readonly string[];
+  readonly write?: readonly string[];
+}
+
+/** OS-level resource limits for sandboxed execution. */
+export interface ResourceCapability {
+  readonly maxMemoryMb?: number;
+  readonly timeoutMs?: number;
+  readonly maxPids?: number;
+  readonly maxOpenFiles?: number;
+}
+
+/** Declared capabilities for a tool — what it is allowed to access. */
+export interface ToolCapabilities {
+  readonly network?: NetworkCapability;
+  readonly filesystem?: FilesystemCapability;
+  readonly resources?: ResourceCapability;
+}
+
+/** Policy controlling how a tool executes: sandbox isolation + declared capabilities. */
+export interface ToolPolicy {
+  readonly sandbox: boolean;
+  readonly capabilities: ToolCapabilities;
+}
+
+// ---------------------------------------------------------------------------
+// Default tool policies (L0 exception: pure readonly data constants)
+// ---------------------------------------------------------------------------
+
+/** Default policy for sandboxed tools — no network, limited filesystem, resource caps. */
+export const DEFAULT_SANDBOXED_POLICY: ToolPolicy = {
+  sandbox: true,
+  capabilities: {
+    network: { allow: false },
+    filesystem: { read: ["/usr", "/bin", "/lib", "/etc", "/tmp"], write: ["/tmp/koi-sandbox-*"] },
+    resources: { maxMemoryMb: 512, timeoutMs: 30_000, maxPids: 64, maxOpenFiles: 256 },
+  },
+} as const;
+
+/** Default policy for unsandboxed tools — no restrictions. */
+export const DEFAULT_UNSANDBOXED_POLICY: ToolPolicy = {
+  sandbox: false,
+  capabilities: {},
+} as const;
 
 // ---------------------------------------------------------------------------
 // Tool & Skill
@@ -234,7 +292,8 @@ export interface ToolExecuteOptions {
 
 export interface Tool {
   readonly descriptor: ToolDescriptor;
-  readonly trustTier: TrustTier;
+  readonly origin: ToolOrigin;
+  readonly policy: ToolPolicy;
   readonly execute: (args: JsonObject, options?: ToolExecuteOptions) => Promise<unknown>;
 }
 

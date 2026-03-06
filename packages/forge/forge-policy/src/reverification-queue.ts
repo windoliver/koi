@@ -85,7 +85,7 @@ export function createReverificationQueue(
         return false;
       }
       // Sandbox bricks are never re-verified
-      if (brick.trustTier === "sandbox") {
+      if (brick.policy.sandbox === true) {
         return false;
       }
 

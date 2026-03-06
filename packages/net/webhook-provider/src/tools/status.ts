@@ -2,12 +2,12 @@
  * Tool factory for `webhook_status` — get health status of webhook endpoints.
  */
 
-import type { JsonObject, Tool, TrustTier, WebhookComponent } from "@koi/core";
+import type { JsonObject, Tool, ToolPolicy, WebhookComponent } from "@koi/core";
 
 export function createStatusTool(
   component: WebhookComponent,
   prefix: string,
-  trustTier: TrustTier,
+  policy: ToolPolicy,
 ): Tool {
   return {
     descriptor: {
@@ -24,7 +24,8 @@ export function createStatusTool(
         required: [],
       } as JsonObject,
     },
-    trustTier,
+    origin: "primordial",
+    policy,
     execute: async (args: JsonObject): Promise<unknown> => {
       try {
         const allEndpoints = await component.health();

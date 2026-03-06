@@ -3,20 +3,20 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { TrustTier } from "@koi/core/ecs";
+import type { ToolPolicy } from "@koi/core/ecs";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core/ecs";
 import type { SandboxProfile } from "@koi/core/sandbox-profile";
 import { validateConfig } from "./config.js";
 
 const stubProfile: SandboxProfile = {
-  tier: "sandbox",
   filesystem: {},
   network: { allow: false },
   resources: { timeoutMs: 100 },
 };
 
 const validConfig = {
-  profileFor: (_tier: TrustTier) => stubProfile,
-  tierFor: (_toolId: string) => "sandbox" as const,
+  profileFor: (_policy: ToolPolicy) => stubProfile,
+  policyFor: (_toolId: string) => DEFAULT_SANDBOXED_POLICY as ToolPolicy | undefined,
 };
 
 describe("validateConfig", () => {
@@ -30,7 +30,6 @@ describe("validateConfig", () => {
       ...validConfig,
       outputLimitBytes: 512,
       timeoutGraceMs: 1000,
-      skipTiers: ["promoted"],
       perToolOverrides: new Map(),
       failClosedOnLookupError: false,
       onSandboxError: () => {},
@@ -59,7 +58,7 @@ describe("validateConfig", () => {
   });
 
   it("rejects missing profileFor", () => {
-    const result = validateConfig({ tierFor: validConfig.tierFor });
+    const result = validateConfig({ policyFor: validConfig.policyFor });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("profileFor");
@@ -74,19 +73,19 @@ describe("validateConfig", () => {
     }
   });
 
-  it("rejects missing tierFor", () => {
+  it("rejects missing policyFor", () => {
     const result = validateConfig({ profileFor: validConfig.profileFor });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.message).toContain("tierFor");
+      expect(result.error.message).toContain("policyFor");
     }
   });
 
-  it("rejects non-function tierFor", () => {
-    const result = validateConfig({ ...validConfig, tierFor: 42 });
+  it("rejects non-function policyFor", () => {
+    const result = validateConfig({ ...validConfig, policyFor: 42 });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.message).toContain("tierFor");
+      expect(result.error.message).toContain("policyFor");
     }
   });
 
@@ -127,22 +126,6 @@ describe("validateConfig", () => {
   it("accepts zero timeoutGraceMs", () => {
     const result = validateConfig({ ...validConfig, timeoutGraceMs: 0 });
     expect(result.ok).toBe(true);
-  });
-
-  it("rejects non-array skipTiers", () => {
-    const result = validateConfig({ ...validConfig, skipTiers: "promoted" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.message).toContain("skipTiers");
-    }
-  });
-
-  it("rejects skipTiers with invalid tier values", () => {
-    const result = validateConfig({ ...validConfig, skipTiers: ["sandbox", "invalid-tier"] });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.message).toContain("valid TrustTier");
-    }
   });
 
   it("rejects non-boolean failClosedOnLookupError", () => {

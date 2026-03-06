@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { FileListOptions } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { createFailingBackend, createMockBackend } from "../test-helpers.js";
 import { createFsListTool } from "./list.js";
 
 describe("createFsListTool", () => {
   test("returns list result on success", async () => {
-    const tool = createFsListTool(createMockBackend(), "fs", "verified");
+    const tool = createFsListTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "/src" })) as {
       readonly entries: readonly { readonly path: string; readonly kind: string }[];
       readonly truncated: boolean;
@@ -30,7 +31,7 @@ describe("createFsListTool", () => {
       },
     };
 
-    const tool = createFsListTool(backend, "fs", "verified");
+    const tool = createFsListTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ path: "/src", recursive: true, glob: "*.ts" });
 
     expect(receivedOptions).toEqual({ recursive: true, glob: "*.ts" });
@@ -49,14 +50,14 @@ describe("createFsListTool", () => {
       },
     };
 
-    const tool = createFsListTool(backend, "fs", "verified");
+    const tool = createFsListTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ path: "/src" });
 
     expect(receivedOptions).toEqual({});
   });
 
   test("returns error object on backend failure", async () => {
-    const tool = createFsListTool(createFailingBackend(), "fs", "verified");
+    const tool = createFsListTool(createFailingBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "/nonexistent" })) as {
       readonly error: string;
       readonly code: string;
@@ -67,9 +68,9 @@ describe("createFsListTool", () => {
   });
 
   test("descriptor has correct name and required fields", () => {
-    const tool = createFsListTool(createMockBackend(), "s3", "promoted");
+    const tool = createFsListTool(createMockBackend(), "s3", DEFAULT_UNSANDBOXED_POLICY);
     expect(tool.descriptor.name).toBe("s3_list");
-    expect(tool.trustTier).toBe("promoted");
+    expect(tool.policy.sandbox).toBe(false);
 
     const schema = tool.descriptor.inputSchema as Record<string, unknown>;
     const required = schema.required as readonly string[];
@@ -91,7 +92,7 @@ describe("createFsListTool", () => {
       },
     };
 
-    const tool = createFsListTool(backend, "fs", "verified");
+    const tool = createFsListTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "/src" })) as {
       readonly entries: readonly { readonly path: string }[];
     };
@@ -99,7 +100,7 @@ describe("createFsListTool", () => {
   });
 
   test("returns validation error when path is missing", async () => {
-    const tool = createFsListTool(createMockBackend(), "fs", "verified");
+    const tool = createFsListTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({})) as { readonly error: string; readonly code: string };
     expect(result.code).toBe("VALIDATION");
     expect(result.error).toContain("path");

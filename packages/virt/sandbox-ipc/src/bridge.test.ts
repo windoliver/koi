@@ -13,7 +13,6 @@ import type { BridgeConfig, CommandBuilder, IpcProcess, SpawnFn } from "./types.
 // ---------------------------------------------------------------------------
 
 const TEST_PROFILE: BridgeConfig["profile"] = {
-  tier: "sandbox",
   filesystem: {
     allowRead: ["/usr", "/bin", "/lib", "/etc", "/tmp"],
     allowWrite: ["/tmp/koi-sandbox-*"],

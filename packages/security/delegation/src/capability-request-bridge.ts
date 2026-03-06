@@ -27,10 +27,16 @@ import type {
   KoiMiddleware,
   MailboxComponent,
   PermissionConfig,
-  TrustTier,
+  ToolPolicy,
   TurnContext,
 } from "@koi/core";
-import { DELEGATION, MAILBOX, messageId, agentId as toAgentId } from "@koi/core";
+import {
+  DEFAULT_UNSANDBOXED_POLICY,
+  DELEGATION,
+  MAILBOX,
+  messageId,
+  agentId as toAgentId,
+} from "@koi/core";
 import {
   CAPABILITY_REQUEST_TYPE,
   CAPABILITY_RESPONSE_STATUS,
@@ -56,7 +62,7 @@ export interface CapabilityRequestBridgeConfig {
   /** Tool name prefix. Default: "delegation". */
   readonly prefix?: string | undefined;
   /** Trust tier for the request tool. Default: "verified". */
-  readonly trustTier?: TrustTier | undefined;
+  readonly policy?: ToolPolicy | undefined;
 }
 
 export interface CapabilityRequestBridge {
@@ -196,7 +202,7 @@ export function createCapabilityRequestBridge(
     approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS,
     maxForwardDepth = MAX_FORWARD_DEPTH,
     prefix = DEFAULT_PREFIX,
-    trustTier = "verified",
+    policy = DEFAULT_UNSANDBOXED_POLICY,
   } = config;
 
   // Shared closure state (provider ↔ middleware) — cleaned up on detach
@@ -252,7 +258,7 @@ export function createCapabilityRequestBridge(
       });
 
       // Attach delegation_request tool
-      const requestTool = createDelegationRequestTool(mailbox, ownerAgentId, prefix, trustTier);
+      const requestTool = createDelegationRequestTool(mailbox, ownerAgentId, prefix, policy);
       components.set(`tool:${requestTool.descriptor.name}`, requestTool);
 
       return components;

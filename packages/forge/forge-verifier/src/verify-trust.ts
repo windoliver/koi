@@ -2,7 +2,7 @@
  * Stage 4: Trust tier assignment — determines the trust level for a forged brick.
  */
 
-import type { Result, TrustTier } from "@koi/core";
+import type { Result, ToolPolicy } from "@koi/core";
 import type {
   ForgeConfig,
   ForgeError,
@@ -38,8 +38,7 @@ export function assignTrust(
 
   // Trust never exceeds "verified" via automated pipeline
   // "promoted" requires human-in-the-loop
-  const tier: TrustTier =
-    config.defaultTrustTier === "promoted" ? "verified" : config.defaultTrustTier;
+  const policy: ToolPolicy = config.defaultPolicy;
 
   const durationMs = performance.now() - start;
   return {
@@ -48,7 +47,7 @@ export function assignTrust(
       stage: "trust",
       passed: true,
       durationMs,
-      trustTier: tier,
+      sandbox: policy.sandbox,
     },
   };
 }
