@@ -46,10 +46,24 @@ describe("createVercelAdapter", () => {
     if (!result.ok) return;
     const instance = await result.value.create({
       filesystem: {},
-      network: { allow: false },
+      network: { allow: true },
       resources: {},
     });
     expect((await instance.exec("echo", ["hi"])).exitCode).toBe(0);
     await instance.destroy();
+  });
+
+  test("throws on unsupported profile policies", async () => {
+    const client = createMockClient();
+    const result = createVercelAdapter({ apiToken: "token", client });
+    if (!result.ok) return;
+
+    await expect(
+      result.value.create({
+        filesystem: {},
+        network: { allow: false },
+        resources: {},
+      }),
+    ).rejects.toThrow("Vercel adapter cannot enforce");
   });
 });
