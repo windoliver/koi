@@ -288,6 +288,14 @@ export type {
 } from "./delegation.js";
 // delegation — runtime values
 export { DEFAULT_CIRCUIT_BREAKER_CONFIG, delegationId, isPermissionSubset } from "./delegation.js";
+// delivery — delivery policy for spawned child agents
+export type {
+  DeferredDeliveryPolicy,
+  DeliveryPolicy,
+  OnDemandDeliveryPolicy,
+  StreamingDeliveryPolicy,
+} from "./delivery.js";
+export { DEFAULT_DELIVERY_POLICY, isDeliveryPolicy } from "./delivery.js";
 // diagnostic provider — vendor-neutral code diagnostics contract
 export type {
   DiagnosticItem,

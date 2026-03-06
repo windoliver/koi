@@ -4,6 +4,7 @@
  * L2 — imports from @koi/core only.
  */
 
+import type { DeliveryPolicy } from "@koi/core";
 import type { AgentManifest } from "@koi/core/assembly";
 import type { AgentId, ToolDescriptor } from "@koi/core/ecs";
 import type { KoiError, Result } from "@koi/core/errors";
@@ -26,6 +27,8 @@ export interface TaskSpawnRequest {
   readonly agentName: string;
   readonly manifest: AgentManifest;
   readonly signal: AbortSignal;
+  /** Delivery policy override for this spawn. */
+  readonly delivery?: DeliveryPolicy | undefined;
 }
 
 /** Result returned by the spawn callback. */

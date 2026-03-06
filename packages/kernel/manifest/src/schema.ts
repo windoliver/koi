@@ -128,6 +128,14 @@ export interface RawManifest {
   readonly deploy?: RawDeploy | undefined;
   readonly scope?: RawScope | undefined;
   readonly degeneracy?: Readonly<Record<string, RawDegeneracyConfig>> | undefined;
+  readonly delivery?:
+    | { readonly kind: "streaming" }
+    | {
+        readonly kind: "deferred";
+        readonly inboxMode?: "collect" | "followup" | "steer" | undefined;
+      }
+    | { readonly kind: "on_demand" }
+    | undefined;
   readonly nexus?: { readonly url?: string | undefined } | undefined;
   readonly [key: string]: unknown;
 }
@@ -368,6 +376,18 @@ const degeneracyConfigSchema = z
 /** Record of capability name → degeneracy config. */
 const degeneracySchema = z.record(z.string(), degeneracyConfigSchema);
 
+// ── Delivery policy schema ──
+
+/** Delivery policy for spawned child agents. */
+const deliveryPolicySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("streaming") }),
+  z.object({
+    kind: z.literal("deferred"),
+    inboxMode: z.enum(["collect", "followup", "steer"]).optional(),
+  }),
+  z.object({ kind: z.literal("on_demand") }),
+]);
+
 // ── Nexus schema ──
 
 /** Nexus backend connection config in the manifest. */
@@ -450,6 +470,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     deploy: deploySchema.optional(),
     scope: scopeSchema.optional(),
     degeneracy: degeneracySchema.optional(),
+    delivery: deliveryPolicySchema.optional(),
     nexus: nexusSchema.optional(),
   })
   .passthrough();

@@ -6,6 +6,7 @@ import type { BrickId } from "./brick-snapshot.js";
 import type { JsonObject } from "./common.js";
 import type { DegeneracyConfig } from "./degeneracy.js";
 import type { DelegationConfig } from "./delegation.js";
+import type { DeliveryPolicy } from "./delivery.js";
 import type { FilesystemPolicy, NetworkPolicy, ResourceLimits } from "./sandbox-profile.js";
 import type { SupervisionConfig } from "./supervision.js";
 import type { OutboundWebhookConfig } from "./webhook.js";
@@ -185,4 +186,10 @@ export interface AgentManifest {
    * tasks always pool regardless of this flag.
    */
   readonly reuse?: boolean | undefined;
+  /**
+   * Default delivery policy for this agent when spawned as a child.
+   * Controls how the child's results flow back to the parent.
+   * Can be overridden per-spawn via SpawnRequest.delivery.
+   */
+  readonly delivery?: DeliveryPolicy | undefined;
 }

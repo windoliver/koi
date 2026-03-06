@@ -52,6 +52,26 @@ describe("mapSpawnToMinion", () => {
     }
   });
 
+  test("passes delivery through to unified SpawnRequest", async () => {
+    let captured: SpawnRequest | undefined;
+    const unified: SpawnFn = async (req: SpawnRequest) => {
+      captured = req;
+      return { ok: true as const, output: "ok" };
+    };
+
+    const minion = mapSpawnToMinion(unified);
+    await minion({
+      description: "task",
+      agentName: "worker",
+      manifest: { name: "worker", version: "0.1.0", model: { name: "test-model" } },
+      signal: AbortSignal.timeout(5000),
+      taskIndex: 0,
+      delivery: { kind: "on_demand" },
+    });
+
+    expect(captured?.delivery).toEqual({ kind: "on_demand" });
+  });
+
   test("passes taskIndex through to unified SpawnRequest", async () => {
     let captured: SpawnRequest | undefined;
     const unified: SpawnFn = async (req: SpawnRequest) => {

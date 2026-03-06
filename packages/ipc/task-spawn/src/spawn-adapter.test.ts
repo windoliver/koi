@@ -25,6 +25,25 @@ describe("mapSpawnToTask", () => {
     }
   });
 
+  test("passes delivery through to unified SpawnRequest", async () => {
+    let captured: SpawnRequest | undefined;
+    const unified: UnifiedSpawnFn = async (req: SpawnRequest) => {
+      captured = req;
+      return { ok: true as const, output: "ok" };
+    };
+
+    const taskSpawn = mapSpawnToTask(unified);
+    await taskSpawn({
+      description: "run analysis",
+      agentName: "analyst",
+      manifest: { name: "analyst", version: "0.1.0", model: { name: "test-model" } },
+      signal: AbortSignal.timeout(5000),
+      delivery: { kind: "deferred" },
+    });
+
+    expect(captured?.delivery).toEqual({ kind: "deferred" });
+  });
+
   test("maps failed spawn result (KoiError → string)", async () => {
     const unified: UnifiedSpawnFn = async (_req: SpawnRequest) => ({
       ok: false as const,

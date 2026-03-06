@@ -4,6 +4,7 @@
  * L2 — imports from @koi/core only.
  */
 
+import type { DeliveryPolicy } from "@koi/core";
 import type { AgentManifest } from "@koi/core/assembly";
 import type { ToolDescriptor } from "@koi/core/ecs";
 
@@ -25,6 +26,8 @@ export interface MinionSpawnRequest {
   readonly signal: AbortSignal;
   /** Correlation index for matching result to task. */
   readonly taskIndex: number;
+  /** Delivery policy override for this spawn. */
+  readonly delivery?: DeliveryPolicy | undefined;
 }
 
 /** Result returned by the spawn callback. */

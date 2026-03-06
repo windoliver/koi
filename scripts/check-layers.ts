@@ -80,6 +80,7 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   "process-descriptor.ts",
   "nexus-path.ts",
   "forge-types.ts",
+  "delivery.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

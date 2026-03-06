@@ -13,6 +13,7 @@ import type {
   ChannelStatus,
   ChildHandle,
   ComponentProvider,
+  DeliveryPolicy,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -444,13 +445,20 @@ export interface SpawnChildOptions {
    * Defaults to 5000ms.
    */
   readonly gracePeriodMs?: number | undefined;
+  /**
+   * Delivery policy override for this spawn.
+   * Takes precedence over manifest.delivery when resolving the effective policy.
+   */
+  readonly delivery?: DeliveryPolicy | undefined;
 }
 
 /**
  * Result of spawning a child agent.
  * The caller decides whether to run the child synchronously or asynchronously.
+ *
+ * Named SpawnChildResult to disambiguate from L0's SpawnResult (unified spawn outcome).
  */
-export interface SpawnResult {
+export interface SpawnChildResult {
   /** The child's KoiRuntime. Caller invokes `runtime.run()` to start execution. */
   readonly runtime: KoiRuntime;
   /** Lifecycle handle for monitoring the child. Fires events on start/terminate. */
