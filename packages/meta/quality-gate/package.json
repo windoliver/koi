@@ -14,7 +14,8 @@
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
     "@koi/middleware-output-verifier": "workspace:*",
-    "@koi/middleware-feedback-loop": "workspace:*"
+    "@koi/middleware-feedback-loop": "workspace:*",
+    "@koi/preset-resolver": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

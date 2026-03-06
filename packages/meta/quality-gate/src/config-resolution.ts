@@ -4,13 +4,13 @@
 
 import type { FeedbackLoopConfig } from "@koi/middleware-feedback-loop";
 import type { VerifierConfig } from "@koi/middleware-output-verifier";
+import { lookupPreset } from "@koi/preset-resolver";
 import { QUALITY_GATE_PRESET_SPECS } from "./presets.js";
 import type { QualityGateConfig, ResolvedQualityGateConfig } from "./types.js";
 
 /** Resolves quality-gate config by merging defaults → preset → user overrides. */
 export function resolveQualityGateConfig(config: QualityGateConfig): ResolvedQualityGateConfig {
-  const preset = config.preset ?? "standard";
-  const spec = QUALITY_GATE_PRESET_SPECS[preset];
+  const { preset, spec } = lookupPreset(QUALITY_GATE_PRESET_SPECS, config.preset, "standard");
 
   // Verifier: user override ?? preset default ?? undefined
   const verifier: VerifierConfig | undefined =

@@ -2,11 +2,9 @@
  * Config resolution for goal stack — applies preset defaults and validates.
  */
 
+import { lookupPreset } from "@koi/preset-resolver";
 import { GOAL_STACK_PRESET_SPECS } from "./presets.js";
 import type { GoalStackConfig, GoalStackPreset } from "./types.js";
-
-/** Default preset when none specified. */
-const DEFAULT_PRESET: GoalStackPreset = "standard";
 
 /** Resolved internal config with preset applied. */
 export interface ResolvedGoalStackConfig {
@@ -22,8 +20,7 @@ export interface ResolvedGoalStackConfig {
  * suggesting the "minimal" preset when objectives are missing.
  */
 export function resolveGoalStackConfig(config: GoalStackConfig): ResolvedGoalStackConfig {
-  const preset = config.preset ?? DEFAULT_PRESET;
-  const spec = GOAL_STACK_PRESET_SPECS[preset];
+  const { preset, spec } = lookupPreset(GOAL_STACK_PRESET_SPECS, config.preset, "standard");
 
   const needsObjectives = spec.includeAnchor || spec.includeReminder;
   const hasObjectives = config.objectives !== undefined && config.objectives.length > 0;

@@ -1,6 +1,6 @@
 {
-  "name": "@koi/config",
-  "description": "Provide runtime policy configuration with hot-reload, validation, and engine integration",
+  "name": "@koi/preset-resolver",
+  "description": "Generic 3-layer config resolution: defaults → preset → user overrides",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,16 +10,11 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {},
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
-  },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/preset-resolver": "workspace:*",
-    "@koi/validation": "workspace:*",
-    "zod": "4.3.6"
   }
 }

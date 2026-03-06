@@ -5,6 +5,7 @@
  */
 
 import { createPatternPermissionBackend } from "@koi/middleware-permissions";
+import { lookupPreset } from "@koi/preset-resolver";
 
 import { GOVERNANCE_PRESET_SPECS } from "./presets.js";
 import type { GovernanceStackConfig } from "./types.js";
@@ -23,8 +24,7 @@ import type { GovernanceStackConfig } from "./types.js";
  */
 export function resolveGovernanceConfig(config: GovernanceStackConfig): GovernanceStackConfig {
   // 1. Determine preset
-  const preset = config.preset ?? "open";
-  const spec = GOVERNANCE_PRESET_SPECS[preset];
+  const { preset, spec } = lookupPreset(GOVERNANCE_PRESET_SPECS, config.preset, "open");
 
   // 2. Validate mutual exclusion: permissions XOR permissionRules
   if (config.permissions !== undefined && config.permissionRules !== undefined) {
@@ -48,6 +48,7 @@ export function resolveGovernanceConfig(config: GovernanceStackConfig): Governan
   // 5. Merge: user override ?? preset ?? undefined
   return {
     ...config,
+    preset,
     permissions: effectivePermissions,
     execApprovals: effectiveExecApprovals,
     delegation: config.delegation ?? spec.delegation,

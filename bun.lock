@@ -726,6 +726,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/preset-resolver": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -866,6 +867,10 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+    },
+    "packages/lib/preset-resolver": {
+      "name": "@koi/preset-resolver",
+      "version": "0.0.0",
     },
     "packages/lib/shutdown": {
       "name": "@koi/shutdown",
@@ -1022,6 +1027,7 @@
         "@koi/middleware-conversation": "workspace:*",
         "@koi/middleware-hot-memory": "workspace:*",
         "@koi/middleware-user-model": "workspace:*",
+        "@koi/preset-resolver": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/soul": "workspace:*",
         "@koi/token-estimator": "workspace:*",
@@ -1070,6 +1076,7 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
+        "@koi/preset-resolver": "workspace:*",
         "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
@@ -1099,6 +1106,7 @@
         "@koi/middleware-pii": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
+        "@koi/preset-resolver": "workspace:*",
         "@koi/redaction": "workspace:*",
         "@koi/scope": "workspace:*",
         "@koi/security-analyzer": "workspace:*",
@@ -1121,6 +1129,7 @@
         "@koi/ipc-nexus": "workspace:*",
         "@koi/orchestrator": "workspace:*",
         "@koi/parallel-minions": "workspace:*",
+        "@koi/preset-resolver": "workspace:*",
         "@koi/scratchpad-local": "workspace:*",
         "@koi/scratchpad-nexus": "workspace:*",
         "@koi/task-spawn": "workspace:*",
@@ -1177,6 +1186,7 @@
         "@koi/errors": "workspace:*",
         "@koi/middleware-feedback-loop": "workspace:*",
         "@koi/middleware-output-verifier": "workspace:*",
+        "@koi/preset-resolver": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1190,6 +1200,7 @@
         "@koi/middleware-fs-rollback": "workspace:*",
         "@koi/middleware-guided-retry": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
+        "@koi/preset-resolver": "workspace:*",
       },
       "devDependencies": {
         "@koi/snapshot-chain-store": "workspace:*",
@@ -3414,6 +3425,8 @@
     "@koi/pay-nexus": ["@koi/pay-nexus@workspace:packages/fs/pay-nexus"],
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
+
+    "@koi/preset-resolver": ["@koi/preset-resolver@workspace:packages/lib/preset-resolver"],
 
     "@koi/quality-gate": ["@koi/quality-gate@workspace:packages/meta/quality-gate"],
 

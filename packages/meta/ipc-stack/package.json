@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/preset-resolver": "workspace:*",
     "@koi/federation": "workspace:*",
     "@koi/ipc-local": "workspace:*",
     "@koi/ipc-nexus": "workspace:*",

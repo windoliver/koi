@@ -4,6 +4,7 @@
  * Validates required fields and resolves preset defaults.
  */
 
+import { lookupPreset } from "@koi/preset-resolver";
 import { IPC_PRESET_SPECS } from "./presets.js";
 import type { IpcStackConfig } from "./types.js";
 
@@ -19,8 +20,7 @@ import type { IpcStackConfig } from "./types.js";
  * - Orchestrator delegation without config throws (requires spawn wiring config)
  */
 export function resolveIpcConfig(config: IpcStackConfig): IpcStackConfig {
-  const preset = config.preset ?? "local";
-  const spec = IPC_PRESET_SPECS[preset];
+  const { preset, spec } = lookupPreset(IPC_PRESET_SPECS, config.preset, "local");
 
   // Validate: nexus messaging requires explicit config
   const effectiveMessaging = config.messaging ?? spec.messaging;
