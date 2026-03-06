@@ -6,14 +6,14 @@
  *   task board + delegation bridge + reconciler + task tools + createKoi
  *   with a scripted model that drives tool calls through the engine.
  *
- * Tier 2: Real Anthropic API — validates createKoi + createLoopAdapter
+ * Tier 2: Real LLM API via OpenRouter — validates createKoi + createLoopAdapter
  *   produce correct events with a live LLM call.
  *
  * Tier 3: Full stack — delegation bridge dispatches spawn tasks,
  *   reconciler modifies the board, and results flow through createKoi.
  *
- * Gated on ANTHROPIC_API_KEY + E2E_TESTS=1 for Tier 2.
- * Tier 1 and Tier 3 always run (no API key needed).
+ * Gated on OPENROUTER_API_KEY + E2E_TESTS=1 for Tier 2+3.
+ * Tier 1 always runs (no API key needed).
  *
  * Run:
  *   E2E_TESTS=1 bun test tests/e2e/e2e-delegation-consolidation.test.ts
@@ -40,7 +40,7 @@ import type {
 import { agentId, taskItemId } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
-import { createAnthropicAdapter } from "@koi/model-router";
+import { createOpenRouterAdapter } from "@koi/model-router";
 import { createTaskBoard } from "@koi/task-board";
 import { createDelegationBridge } from "../../packages/sched/long-running/src/delegation-bridge.js";
 import { createReconcilerHook } from "../../packages/sched/long-running/src/reconciler-hook.js";
@@ -50,21 +50,24 @@ import { createTaskTools } from "../../packages/sched/long-running/src/task-tool
 // Environment gate
 // ---------------------------------------------------------------------------
 
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
-const HAS_ANTHROPIC = ANTHROPIC_KEY.length > 0;
-const E2E_ENABLED = HAS_ANTHROPIC && process.env.E2E_TESTS === "1";
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY ?? "";
+const HAS_OPENROUTER = OPENROUTER_KEY.length > 0;
+const E2E_ENABLED = HAS_OPENROUTER && process.env.E2E_TESTS === "1";
 const describeE2E = E2E_ENABLED ? describe : describe.skip;
 
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = "anthropic/claude-3.5-haiku";
 const TIMEOUT = 60_000;
 
 // let justified: lazy singleton — avoids creating adapter when skipped
-let anthropic: ReturnType<typeof createAnthropicAdapter> | undefined;
-function getAdapter(): ReturnType<typeof createAnthropicAdapter> {
-  if (anthropic === undefined) {
-    anthropic = createAnthropicAdapter({ apiKey: ANTHROPIC_KEY });
+let openrouter: ReturnType<typeof createOpenRouterAdapter> | undefined;
+function getAdapter(): ReturnType<typeof createOpenRouterAdapter> {
+  if (openrouter === undefined) {
+    openrouter = createOpenRouterAdapter({
+      apiKey: OPENROUTER_KEY,
+      appName: "koi-e2e-delegation",
+    });
   }
-  return anthropic;
+  return openrouter;
 }
 
 const realModelCall = (request: ModelRequest): Promise<ModelResponse> =>
@@ -824,10 +827,10 @@ describe("Tier 1: delegation consolidation — component integration", () => {
 });
 
 // ===========================================================================
-// TIER 2: Real Anthropic API
+// TIER 2: Real LLM API via OpenRouter
 // ===========================================================================
 
-describeE2E("Tier 2: delegation consolidation — real Anthropic API", () => {
+describeE2E("Tier 2: delegation consolidation — real LLM via OpenRouter", () => {
   test(
     "createKoi + createLoopAdapter produces done event with real LLM",
     async () => {
@@ -933,7 +936,7 @@ describeE2E("Tier 2: delegation consolidation — real Anthropic API", () => {
 
 describeE2E("Tier 3: full stack — delegation bridge + reconciler + real LLM", () => {
   test(
-    "spawn dispatch + reconciler + createKoi with real Anthropic call",
+    "spawn dispatch + reconciler + createKoi with real LLM via OpenRouter",
     async () => {
       // Build a task board with spawn + self tasks
       const board = createTaskBoard({ maxRetries: 2 });
