@@ -77,6 +77,7 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
   const runtime = createForgeRuntime({
     store: config.store,
     executor: config.executor,
+    dependencyConfig: config.forgeConfig.dependencies,
     ...(config.signer !== undefined ? { signer: config.signer } : {}),
   });
 

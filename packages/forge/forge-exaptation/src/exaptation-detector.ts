@@ -69,8 +69,8 @@ export function createExaptationDetector(config: ExaptationConfig): ExaptationHa
   // let: monotonically increasing signal counter for unique IDs
   let signalCounter = 0;
 
-  // let: most recent model response text, captured by wrapModelCall
-  let lastModelResponseText = "";
+  // Session-keyed model response text, captured by wrapModelCall
+  const lastModelResponseBySession = new Map<string, string>();
 
   // -------------------------------------------------------------------------
   // Internal helpers
@@ -205,17 +205,19 @@ export function createExaptationDetector(config: ExaptationConfig): ExaptationHa
     priority: 465,
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const response = await next(request);
 
-      // Capture model response text for the next wrapToolCall
-      lastModelResponseText =
-        typeof response.content === "string" && response.content.length > 0
-          ? truncateToWords(response.content, maxWords)
-          : "";
+      // Capture model response text keyed by session for the next wrapToolCall
+      const sid = ctx.session.sessionId;
+      if (typeof response.content === "string" && response.content.length > 0) {
+        lastModelResponseBySession.set(sid, truncateToWords(response.content, maxWords));
+      } else {
+        lastModelResponseBySession.set(sid, "");
+      }
 
       // Cache tool descriptions from the request if available
       if (request.tools !== undefined) {
@@ -238,13 +240,14 @@ export function createExaptationDetector(config: ExaptationConfig): ExaptationHa
       const agentId = ctx.session.agentId;
 
       // Observe intent before executing the tool call
+      const modelResponseText = lastModelResponseBySession.get(ctx.session.sessionId) ?? "";
       const descriptionTokens = toolDescriptionCache.get(toolId);
-      if (descriptionTokens !== undefined && lastModelResponseText.length > 0) {
-        const contextTokens = tokenize(lastModelResponseText);
+      if (descriptionTokens !== undefined && modelResponseText.length > 0) {
+        const contextTokens = tokenize(modelResponseText);
         const divergence = computeJaccardDistance(descriptionTokens, contextTokens);
 
         const observation: UsagePurposeObservation = {
-          contextText: lastModelResponseText,
+          contextText: modelResponseText,
           agentId,
           divergenceScore: divergence,
           observedAt: clock(),

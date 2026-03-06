@@ -31,7 +31,7 @@ function createMockSessionContext(): unknown {
 }
 
 function createMockTurnContext(): unknown {
-  return { turnIndex: 0 };
+  return { turnIndex: 0, session: { sessionId: "test-session" } };
 }
 
 // ---------------------------------------------------------------------------

@@ -74,14 +74,7 @@ function triggerKey(trigger: ForgeTrigger): string {
 // ---------------------------------------------------------------------------
 
 function extractResponseText(response: ModelResponse): string {
-  if (!Array.isArray(response.content)) return "";
-  const parts: string[] = [];
-  for (const block of response.content as readonly Record<string, unknown>[]) {
-    if (typeof block.text === "string") {
-      parts.push(block.text);
-    }
-  }
-  return parts.join(" ");
+  return typeof response.content === "string" ? response.content : "";
 }
 
 // ---------------------------------------------------------------------------

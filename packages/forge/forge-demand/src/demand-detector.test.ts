@@ -19,9 +19,10 @@ function createToolRequest(toolId: string): {
 
 function createModelResponse(text: string): ModelResponse {
   return {
-    content: [{ kind: "text", text }],
+    content: text,
+    model: "test-model",
     usage: { inputTokens: 0, outputTokens: 0 },
-  } as unknown as ModelResponse;
+  };
 }
 
 function createSuccessToolResponse(): ToolResponse {
