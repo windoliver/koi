@@ -10,6 +10,7 @@
  */
 
 import type { AgentManifest } from "./assembly.js";
+import type { DeliveryPolicy } from "./delivery.js";
 import type { AgentId } from "./ecs.js";
 import type { KoiError } from "./errors.js";
 import type { TaskItemId } from "./task-board.js";
@@ -39,6 +40,11 @@ export interface SpawnRequest {
   readonly taskId?: TaskItemId | undefined;
   /** Target agent ID for copilot routing. */
   readonly agentId?: AgentId | undefined;
+  /**
+   * Delivery policy override for this spawn.
+   * Takes precedence over manifest.delivery.
+   */
+  readonly delivery?: DeliveryPolicy | undefined;
 }
 
 // ---------------------------------------------------------------------------

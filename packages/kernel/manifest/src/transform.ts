@@ -8,6 +8,7 @@ import type {
   ChannelConfig,
   ChannelIdentity,
   DegeneracyConfig,
+  DeliveryPolicy,
   JsonObject,
   MiddlewareConfig,
   ModelConfig,
@@ -289,6 +290,7 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
     ...(raw.degeneracy !== undefined
       ? { degeneracy: raw.degeneracy as Readonly<Record<string, DegeneracyConfig>> }
       : {}),
+    ...(raw.delivery !== undefined ? { delivery: raw.delivery as DeliveryPolicy } : {}),
   };
 
   return manifest;

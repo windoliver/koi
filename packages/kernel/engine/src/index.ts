@@ -40,6 +40,9 @@ export type { ConcurrencyGuardConfig } from "./concurrency-guard.js";
 export { createConcurrencyGuard, DEFAULT_CONCURRENCY_GUARD_CONFIG } from "./concurrency-guard.js";
 export type { ConcurrencySemaphore } from "./concurrency-semaphore.js";
 export { createConcurrencySemaphore } from "./concurrency-semaphore.js";
+// delivery policy
+export type { ApplyDeliveryPolicyConfig, DeliveryHandle } from "./delivery-policy.js";
+export { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js";
 // dispose
 export { disposeAll } from "./dispose.js";
 // eviction policies
@@ -129,9 +132,9 @@ export type {
   LoopDetectionKind,
   LoopWarningInfo,
   SpawnChildOptions,
+  SpawnChildResult,
   SpawnInheritanceConfig,
   SpawnPolicy,
-  SpawnResult,
   SpawnWarningInfo,
 } from "./types.js";
 export {

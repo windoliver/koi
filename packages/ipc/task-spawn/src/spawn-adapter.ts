@@ -21,6 +21,7 @@ export function mapSpawnToTask(spawn: UnifiedSpawnFn): TaskSpawnFn {
       agentName: request.agentName,
       manifest: request.manifest,
       signal: request.signal,
+      ...(request.delivery !== undefined ? { delivery: request.delivery } : {}),
     });
 
     if (result.ok) {

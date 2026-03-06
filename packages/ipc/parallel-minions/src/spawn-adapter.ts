@@ -22,6 +22,7 @@ export function mapSpawnToMinion(spawn: SpawnFn): MinionSpawnFn {
       manifest: request.manifest,
       signal: request.signal,
       taskIndex: request.taskIndex,
+      ...(request.delivery !== undefined ? { delivery: request.delivery } : {}),
     });
 
     if (result.ok) {

@@ -328,6 +328,26 @@ describe("createRoutingSpawnFn", () => {
     expect(options.profile.resources).toEqual({ timeoutMs: 60_000 });
   });
 
+  test("passes delivery field through to default spawn", async () => {
+    let captured: SpawnRequest | undefined;
+    const defaultSpawn: SpawnFn = mock(async (req: SpawnRequest): Promise<SpawnResult> => {
+      captured = req;
+      return { ok: true, output: "ok" };
+    });
+    const agentSpawner = createMockAgentSpawner({ ok: true, value: "unused" });
+
+    const routingSpawn = createRoutingSpawnFn({ defaultSpawn, agentSpawner });
+
+    await routingSpawn(
+      createSpawnRequest({
+        manifest: createManifest(),
+        delivery: { kind: "deferred" },
+      }),
+    );
+
+    expect(captured?.delivery).toEqual({ kind: "deferred" });
+  });
+
   test("passes request unchanged to default spawn", async () => {
     const defaultSpawn = createMockDefaultSpawn();
     const agentSpawner = createMockAgentSpawner({ ok: true, value: "unused" });

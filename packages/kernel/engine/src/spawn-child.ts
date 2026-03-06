@@ -29,7 +29,7 @@ import { computeChildDelegationScope } from "./compute-delegation-scope.js";
 import { createInheritedChannel } from "./inherited-channel.js";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
 import { createKoi } from "./koi.js";
-import type { KoiRuntime, SpawnChildOptions, SpawnResult } from "./types.js";
+import type { KoiRuntime, SpawnChildOptions, SpawnChildResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Noop child handle — used when no registry is provided
@@ -54,7 +54,7 @@ function createNoopChildHandle(childId: AgentId, name: string): ChildHandle {
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function spawnChildAgent(options: SpawnChildOptions): Promise<SpawnResult> {
+export async function spawnChildAgent(options: SpawnChildOptions): Promise<SpawnChildResult> {
   // 1. Acquire ledger slot (tree-wide process count)
   //    Long-lived — released on child termination, not on tool call completion.
   //    Fan-out (short-lived) is handled by the spawn guard middleware.
