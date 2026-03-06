@@ -43,11 +43,12 @@ function createFailingStream(error: Error): AsyncIterable<EngineEvent> {
 function createMockChildPid(): ProcessId {
   return {
     id: agentId("child-1"),
+    name: "child-1",
     type: "worker",
     parentId: agentId("parent-1"),
     depth: 1,
     createdAt: Date.now(),
-  } as ProcessId;
+  } as unknown as ProcessId;
 }
 
 function createMockEngineOutput(text: string): EngineOutput {
@@ -214,7 +215,9 @@ describe("applyDeliveryPolicy — deferred", () => {
     await requireRunChild(handle)(dummyInput);
 
     expect(inbox.items.length).toBe(1);
-    expect(inbox.items[0].content).toBe("final output");
+    const item = inbox.items[0];
+    expect(item).toBeDefined();
+    expect(item?.content).toBe("final output");
   });
 
   test("pushes to inbox with correct mode from policy", async () => {
@@ -229,7 +232,8 @@ describe("applyDeliveryPolicy — deferred", () => {
 
     await requireRunChild(handle)(dummyInput);
 
-    expect(inbox.items[0].mode).toBe("followup");
+    const item = inbox.items[0];
+    expect(item?.mode).toBe("followup");
   });
 
   test("uses collect mode by default", async () => {
@@ -244,7 +248,8 @@ describe("applyDeliveryPolicy — deferred", () => {
 
     await requireRunChild(handle)(dummyInput);
 
-    expect(inbox.items[0].mode).toBe("collect");
+    const item = inbox.items[0];
+    expect(item?.mode).toBe("collect");
   });
 
   test("handles inbox full (logs warning, no throw)", async () => {
@@ -354,7 +359,9 @@ describe("applyDeliveryPolicy — on_demand", () => {
     await requireRunChild(handle)(dummyInput);
 
     expect(store.reports.length).toBe(1);
-    expect(store.reports[0].summary).toBe("analysis complete");
+    const report0 = store.reports[0];
+    expect(report0).toBeDefined();
+    expect(report0?.summary).toBe("analysis complete");
   });
 
   test("populates RunReport metrics from engine output", async () => {
@@ -370,11 +377,12 @@ describe("applyDeliveryPolicy — on_demand", () => {
     await requireRunChild(handle)(dummyInput);
 
     const report = store.reports[0];
-    expect(report.cost.inputTokens).toBe(50);
-    expect(report.cost.outputTokens).toBe(50);
-    expect(report.cost.totalTokens).toBe(100);
-    expect(report.duration.durationMs).toBe(500);
-    expect(report.duration.totalTurns).toBe(1);
+    expect(report).toBeDefined();
+    expect(report?.cost.inputTokens).toBe(50);
+    expect(report?.cost.outputTokens).toBe(50);
+    expect(report?.cost.totalTokens).toBe(100);
+    expect(report?.duration.durationMs).toBe(500);
+    expect(report?.duration.totalTurns).toBe(1);
   });
 
   test("handles ReportStore.put() failure (rethrows with cause)", async () => {
