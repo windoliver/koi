@@ -10,6 +10,7 @@
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -23,9 +24,8 @@ export function createTurnAckMiddleware(config?: TurnAckConfig): KoiMiddleware {
   const onError =
     config?.onError ?? ((e: unknown) => console.warn("TurnAck: sendStatus failed", e));
 
-  // Per-turn state: AbortController for debounce cleanup
-  // let justified: mutable state reset per turn for debounce timer lifecycle
-  let turnAbort: AbortController | undefined;
+  // Per-session AbortControllers keyed by sessionId
+  const turnAborts = new Map<string, AbortController>();
 
   const capabilityFragment: CapabilityFragment = {
     label: "turn-ack",
@@ -42,10 +42,13 @@ export function createTurnAckMiddleware(config?: TurnAckConfig): KoiMiddleware {
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
       if (ctx.sendStatus === undefined) return;
 
-      // Clean up any previous turn's abort controller
-      turnAbort?.abort();
-      turnAbort = new AbortController();
-      const { signal } = turnAbort;
+      const sid = ctx.session.sessionId as string;
+
+      // Clean up any previous turn's abort controller for this session
+      turnAborts.get(sid)?.abort();
+      const controller = new AbortController();
+      turnAborts.set(sid, controller);
+      const { signal } = controller;
       const sendStatus = ctx.sendStatus;
       const turnIndex = ctx.turnIndex;
 
@@ -58,14 +61,22 @@ export function createTurnAckMiddleware(config?: TurnAckConfig): KoiMiddleware {
     },
 
     async onAfterTurn(ctx: TurnContext): Promise<void> {
-      // Abort any pending debounce timer
-      turnAbort?.abort();
-      turnAbort = undefined;
+      const sid = ctx.session.sessionId as string;
+
+      // Abort any pending debounce timer for this session
+      turnAborts.get(sid)?.abort();
+      turnAborts.delete(sid);
 
       if (ctx.sendStatus === undefined) return;
 
       // Fire-and-forget idle status
       ctx.sendStatus({ kind: "idle", turnIndex: ctx.turnIndex }).catch((e: unknown) => onError(e));
+    },
+
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      const sid = ctx.sessionId as string;
+      turnAborts.get(sid)?.abort();
+      turnAborts.delete(sid);
     },
 
     async wrapToolCall(

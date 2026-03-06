@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { ModelChunk, ModelResponse, RunReport } from "@koi/core";
+import { sessionId as toSessionId } from "@koi/core";
 import { agentId, runId, sessionId } from "@koi/core/ecs";
 import {
   createMockModelStreamHandler,
@@ -431,5 +432,183 @@ describe("createReportMiddleware", () => {
     await runSession(handle, { turns: 1 });
     const report = handle.getReport();
     expect(report).toBeDefined();
+  });
+
+  describe("session isolation", () => {
+    test("session A not affected by session B start/end", async () => {
+      const { middleware } = handle;
+      const sidA = toSessionId("session-A");
+      const sidB = toSessionId("session-B");
+      const sessionCtxA = createMockSessionContext({ sessionId: sidA });
+      const sessionCtxB = createMockSessionContext({ sessionId: sidB });
+
+      // Start session A and record an action
+      await middleware.onSessionStart?.(sessionCtxA);
+      const turnCtxA = createMockTurnContext({
+        turnIndex: 0,
+        session: {
+          sessionId: sidA,
+          runId: runId("run-A"),
+          agentId: "agent-A",
+          metadata: {},
+        },
+      });
+      const spy = createSpyModelHandler({
+        usage: { inputTokens: 500, outputTokens: 250 },
+      });
+      await middleware.wrapModelCall?.(
+        turnCtxA,
+        { messages: [], model: "test-model" },
+        spy.handler,
+      );
+      await middleware.onAfterTurn?.(turnCtxA);
+
+      // Start AND end session B — must not wipe session A
+      await middleware.onSessionStart?.(sessionCtxB);
+      await middleware.onSessionEnd?.(sessionCtxB);
+
+      // Session A should still have its data
+      const progress = handle.getProgress();
+      expect(progress.totalActions).toBe(1);
+      expect(progress.inputTokens).toBe(500);
+
+      // Now end session A
+      await middleware.onSessionEnd?.(sessionCtxA);
+      const report = handle.getReport();
+      expect(report).toBeDefined();
+      if (report) {
+        expect(report.actions).toHaveLength(1);
+        expect(report.cost.inputTokens).toBe(500);
+      }
+    });
+
+    test("getReport returns last completed session report", async () => {
+      const { middleware } = handle;
+
+      // Session 1
+      const sid1 = toSessionId("session-1");
+      const sctx1 = createMockSessionContext({ sessionId: sid1 });
+      await middleware.onSessionStart?.(sctx1);
+      const turnCtx1 = createMockTurnContext({
+        turnIndex: 0,
+        session: {
+          sessionId: sid1,
+          runId: runId("run-1"),
+          agentId: "agent-1",
+          metadata: {},
+        },
+      });
+      const spy1 = createSpyModelHandler();
+      await middleware.wrapModelCall?.(
+        turnCtx1,
+        { messages: [], model: "test-model" },
+        spy1.handler,
+      );
+      await middleware.onAfterTurn?.(turnCtx1);
+      await middleware.onSessionEnd?.(sctx1);
+      const report1 = handle.getReport();
+      expect(report1?.actions).toHaveLength(1);
+
+      // Session 2 — two model calls
+      const sid2 = toSessionId("session-2");
+      const sctx2 = createMockSessionContext({ sessionId: sid2 });
+      await middleware.onSessionStart?.(sctx2);
+      const turnCtx2 = createMockTurnContext({
+        turnIndex: 0,
+        session: {
+          sessionId: sid2,
+          runId: runId("run-2"),
+          agentId: "agent-2",
+          metadata: {},
+        },
+      });
+      const spy2 = createSpyModelHandler();
+      await middleware.wrapModelCall?.(
+        turnCtx2,
+        { messages: [], model: "test-model" },
+        spy2.handler,
+      );
+      await middleware.wrapModelCall?.(
+        turnCtx2,
+        { messages: [], model: "test-model" },
+        spy2.handler,
+      );
+      await middleware.onAfterTurn?.(turnCtx2);
+      await middleware.onSessionEnd?.(sctx2);
+
+      // getReport should return session 2's report
+      const report2 = handle.getReport();
+      expect(report2?.actions).toHaveLength(2);
+    });
+
+    test("state cleaned up after session end", async () => {
+      const { middleware } = handle;
+      const sessionCtx = createMockSessionContext();
+      await middleware.onSessionStart?.(sessionCtx);
+      await middleware.onSessionEnd?.(sessionCtx);
+
+      // getProgress should return zeroes (no active session)
+      const progress = handle.getProgress();
+      expect(progress.totalActions).toBe(0);
+      expect(progress.elapsedMs).toBe(0);
+    });
+  });
+
+  describe("streaming usage fallback", () => {
+    test("captures tokens from done.response.usage when no usage chunks", async () => {
+      const chunks: readonly ModelChunk[] = [
+        { kind: "text_delta", delta: "hello " },
+        { kind: "text_delta", delta: "world" },
+        {
+          kind: "done",
+          response: {
+            content: "hello world",
+            model: "test-model",
+            usage: { inputTokens: 300, outputTokens: 150 },
+          },
+        },
+      ];
+
+      await runSession(handle, {
+        turns: 1,
+        stream: true,
+        streamChunks: chunks,
+      });
+      const report = handle.getReport();
+      expect(report).toBeDefined();
+      if (!report) return;
+
+      expect(report.cost.inputTokens).toBe(300);
+      expect(report.cost.outputTokens).toBe(150);
+      expect(report.cost.totalTokens).toBe(450);
+    });
+
+    test("usage chunks take precedence over done.response.usage", async () => {
+      const chunks: readonly ModelChunk[] = [
+        { kind: "text_delta", delta: "hello" },
+        { kind: "usage", inputTokens: 200, outputTokens: 100 },
+        {
+          kind: "done",
+          response: {
+            content: "hello",
+            model: "test-model",
+            usage: { inputTokens: 200, outputTokens: 100 },
+          },
+        },
+      ];
+
+      await runSession(handle, {
+        turns: 1,
+        stream: true,
+        streamChunks: chunks,
+      });
+      const report = handle.getReport();
+      expect(report).toBeDefined();
+      if (!report) return;
+
+      // Should use usage chunk values, not done.response.usage
+      expect(report.cost.inputTokens).toBe(200);
+      expect(report.cost.outputTokens).toBe(100);
+    });
   });
 });

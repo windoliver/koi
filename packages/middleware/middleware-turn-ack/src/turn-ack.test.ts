@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ChannelStatus, ToolRequest, ToolResponse, TurnContext } from "@koi/core";
-import { createMockTurnContext } from "@koi/test-utils";
+import { runId, sessionId } from "@koi/core";
+import { createMockSessionContext, createMockTurnContext } from "@koi/test-utils";
 import { createTurnAckMiddleware } from "./turn-ack.js";
 
 /** Typed sendStatus mock matching the ChannelStatus signature. */
@@ -257,6 +258,84 @@ describe("createTurnAckMiddleware", () => {
       expect(result?.description).toBe(
         "Turn status: processing after 100ms debounce, idle on completion, per-tool status updates",
       );
+    });
+  });
+
+  describe("session isolation", () => {
+    test("concurrent sessions: starting turn B does not cancel session A debounce", async () => {
+      const sendStatusA = mockSendStatus();
+      const sendStatusB = mockSendStatus();
+      const mw = createTurnAckMiddleware({ debounceMs: 50 });
+
+      const sidA = sessionId("session-A");
+      const sidB = sessionId("session-B");
+
+      const ctxA = createMockTurnContext({
+        turnIndex: 0,
+        sendStatus: sendStatusA,
+        session: {
+          sessionId: sidA,
+          runId: runId("run-A"),
+          agentId: "agent-A",
+          metadata: {},
+        },
+      });
+
+      const ctxB = createMockTurnContext({
+        turnIndex: 0,
+        sendStatus: sendStatusB,
+        session: {
+          sessionId: sidB,
+          runId: runId("run-B"),
+          agentId: "agent-B",
+          metadata: {},
+        },
+      });
+
+      // Start session A turn
+      await mw.onBeforeTurn?.(ctxA);
+      // Start session B turn — must NOT cancel session A's debounce
+      await mw.onBeforeTurn?.(ctxB);
+
+      // Wait for both debounces to fire
+      await delay(80);
+
+      // Both sessions should have received "processing"
+      expect(sendStatusA).toHaveBeenCalledTimes(1);
+      expect(sendStatusA.mock.calls[0]?.[0]).toEqual({ kind: "processing", turnIndex: 0 });
+      expect(sendStatusB).toHaveBeenCalledTimes(1);
+      expect(sendStatusB.mock.calls[0]?.[0]).toEqual({ kind: "processing", turnIndex: 0 });
+
+      // Complete both turns
+      await mw.onAfterTurn?.(ctxA);
+      await mw.onAfterTurn?.(ctxB);
+    });
+
+    test("onSessionEnd cleans up abort controller", async () => {
+      const sendStatus = mockSendStatus();
+      const mw = createTurnAckMiddleware({ debounceMs: 50 });
+
+      const sid = sessionId("session-cleanup");
+      const ctx = createMockTurnContext({
+        turnIndex: 0,
+        sendStatus,
+        session: {
+          sessionId: sid,
+          runId: runId("run-cleanup"),
+          agentId: "agent-cleanup",
+          metadata: {},
+        },
+      });
+
+      await mw.onBeforeTurn?.(ctx);
+      // End session immediately — should abort the debounce timer
+      await mw.onSessionEnd?.(createMockSessionContext({ sessionId: sid }));
+
+      // Wait past debounce
+      await delay(100);
+
+      // No "processing" should have been sent (aborted by onSessionEnd)
+      expect(sendStatus).toHaveBeenCalledTimes(0);
     });
   });
 });

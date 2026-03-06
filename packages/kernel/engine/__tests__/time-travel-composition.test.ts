@@ -23,16 +23,20 @@ import type {
   TurnContext,
   TurnTrace,
 } from "@koi/core";
-import { chainId } from "@koi/core";
+import { chainId, sessionId } from "@koi/core";
 import { createEventTraceMiddleware } from "@koi/middleware-event-trace";
 import { createFsRollbackMiddleware } from "@koi/middleware-fs-rollback";
 import { createGuidedRetryMiddleware } from "@koi/middleware-guided-retry";
 import { createInMemorySnapshotChainStore } from "@koi/snapshot-chain-store";
 import {
+  createMockSessionContext,
   createMockTurnContext,
   createSpyModelHandler,
   createSpyToolHandler,
 } from "@koi/test-utils";
+
+/** Default session ID used by createMockTurnContext / createMockSessionContext. */
+const SID = sessionId("session-test-1");
 
 // ---------------------------------------------------------------------------
 // Inline compose helpers -- same as middleware-composition.test.ts (avoids L2 -> L1 import)
@@ -242,13 +246,14 @@ describe("Time-travel middleware -- rollback + trace correlation", () => {
       store: fsStore,
       chainId: chainId("fs"),
       backend,
-      getEventIndex: () => eventTrace.currentEventIndex(),
+      getEventIndex: () => eventTrace.currentEventIndex(SID),
     });
 
     // Simulate a turn with a file write
     const ctx = createMockTurnContext({ turnIndex: 0 });
 
-    // onBeforeTurn
+    // Start session + turn
+    await eventTrace.middleware.onSessionStart?.(createMockSessionContext());
     await eventTrace.middleware.onBeforeTurn?.(ctx);
 
     // Tool call through composed chain
@@ -269,7 +274,7 @@ describe("Time-travel middleware -- rollback + trace correlation", () => {
     if (!fsRecords.ok) return;
     expect(fsRecords.value.length).toBeGreaterThan(0);
 
-    const traceResult = await eventTrace.getTurnTrace(0);
+    const traceResult = await eventTrace.getTurnTrace(SID, 0);
     expect(traceResult.ok).toBe(true);
     if (!traceResult.ok) return;
     expect(traceResult.value).toBeDefined();
@@ -399,7 +404,7 @@ describe("Time-travel middleware -- full scenario", () => {
       store: fsStore,
       chainId: chainId("fs"),
       backend,
-      getEventIndex: () => eventTrace.currentEventIndex(),
+      getEventIndex: () => eventTrace.currentEventIndex(SID),
     });
 
     const guidedRetry = createGuidedRetryMiddleware({});
@@ -414,6 +419,9 @@ describe("Time-travel middleware -- full scenario", () => {
     const toolChain = composeToolChain(sorted, toolSpy.handler);
     const modelSpy = createSpyModelHandler();
     const modelChain = composeModelChain(sorted, modelSpy.handler);
+
+    // Start session
+    await eventTrace.middleware.onSessionStart?.(createMockSessionContext());
 
     // --- Turn 0: update config.json ---
     const ctx0 = createMockTurnContext({ turnIndex: 0 });
@@ -493,10 +501,10 @@ describe("Time-travel middleware -- full scenario", () => {
     expect(lastModelCall.messages.length).toBeGreaterThan(0);
 
     // Verify event trace has complete history
-    const trace0 = await eventTrace.getTurnTrace(0);
-    const trace1 = await eventTrace.getTurnTrace(1);
-    const trace2 = await eventTrace.getTurnTrace(2);
-    const trace3 = await eventTrace.getTurnTrace(3);
+    const trace0 = await eventTrace.getTurnTrace(SID, 0);
+    const trace1 = await eventTrace.getTurnTrace(SID, 1);
+    const trace2 = await eventTrace.getTurnTrace(SID, 2);
+    const trace3 = await eventTrace.getTurnTrace(SID, 3);
 
     expect(trace0.ok && trace0.value !== undefined).toBe(true);
     expect(trace1.ok && trace1.value !== undefined).toBe(true);

@@ -21,11 +21,19 @@ import type {
 } from "@koi/core";
 import { agentId as toAgentId } from "@koi/core/ecs";
 import { swallowError } from "@koi/errors";
+import type { Accumulator } from "./accumulator.js";
 import { createAccumulator } from "./accumulator.js";
 import type { ProgressSnapshot, ReportConfig, ReportData } from "./config.js";
 import { DEFAULT_MAX_ACTIONS, DEFAULT_SUMMARIZER_TIMEOUT_MS } from "./config.js";
 import { mapReportToMarkdown } from "./formatters.js";
 import type { ReportHandle } from "./types.js";
+
+/** Per-session mutable state for the report middleware. */
+interface ReportSessionState {
+  readonly accumulator: Accumulator;
+  readonly startedAt: number;
+  readonly turnCount: number;
+}
 
 function generateTemplateSummary(
   totalActions: number,
@@ -48,29 +56,34 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
   const maxActions = config.maxActions ?? DEFAULT_MAX_ACTIONS;
   const summarizerTimeoutMs = config.summarizerTimeoutMs ?? DEFAULT_SUMMARIZER_TIMEOUT_MS;
   const formatter = config.formatter ?? mapReportToMarkdown;
-  const accumulator = createAccumulator(maxActions);
-
-  let startedAt = 0;
-  let turnCount = 0;
-  let report: RunReport | undefined;
+  const sessions = new Map<string, ReportSessionState>();
+  let lastReport: RunReport | undefined;
 
   const middleware: KoiMiddleware = {
     name: "report",
     priority: 275,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => {
-      const snap = accumulator.snapshot();
+    describeCapabilities: (ctx: TurnContext): CapabilityFragment => {
+      const state = sessions.get(ctx.session.sessionId as string);
+      if (!state) {
+        return {
+          label: "report",
+          description: "Run report tracking: no active session",
+        };
+      }
+      const snap = state.accumulator.snapshot();
       const tokens = snap.inputTokens + snap.outputTokens;
       return {
         label: "report",
-        description: `Run report tracking: ${String(snap.totalActions)} actions, ${String(tokens)} tokens, ${String(snap.issues.length)} issues across ${String(turnCount)} turns`,
+        description: `Run report tracking: ${String(snap.totalActions)} actions, ${String(tokens)} tokens, ${String(snap.issues.length)} issues across ${String(state.turnCount)} turns`,
       };
     },
 
-    async onSessionStart(_ctx: SessionContext): Promise<void> {
-      startedAt = Date.now();
-      turnCount = 0;
-      accumulator.reset();
-      report = undefined;
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      sessions.set(ctx.sessionId as string, {
+        accumulator: createAccumulator(maxActions),
+        startedAt: Date.now(),
+        turnCount: 0,
+      });
     },
 
     async wrapModelCall(
@@ -78,6 +91,9 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
+      const state = sessions.get(ctx.session.sessionId as string);
+      if (!state) return next(request);
+
       const callStart = Date.now();
       let response: ModelResponse | undefined;
       let error: unknown;
@@ -87,7 +103,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
         return response;
       } catch (e: unknown) {
         error = e;
-        accumulator.recordIssue({
+        state.accumulator.recordIssue({
           severity: "critical",
           message: e instanceof Error ? e.message : String(e),
           turnIndex: ctx.turnIndex,
@@ -105,9 +121,9 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
           errorMessage: error instanceof Error ? error.message : undefined,
           tokenUsage: response?.usage,
         };
-        accumulator.recordAction(action);
+        state.accumulator.recordAction(action);
         if (response?.usage) {
-          accumulator.addTokens(response.usage.inputTokens, response.usage.outputTokens);
+          state.accumulator.addTokens(response.usage.inputTokens, response.usage.outputTokens);
         }
       }
     },
@@ -117,6 +133,12 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
+      const state = sessions.get(ctx.session.sessionId as string);
+      if (!state) {
+        yield* next(request);
+        return;
+      }
+
       const callStart = Date.now();
       let error: unknown;
       let streamInputTokens = 0;
@@ -128,11 +150,21 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
             streamInputTokens += chunk.inputTokens;
             streamOutputTokens += chunk.outputTokens;
           }
+          // Capture usage from done.response as fallback
+          if (
+            chunk.kind === "done" &&
+            chunk.response.usage &&
+            streamInputTokens === 0 &&
+            streamOutputTokens === 0
+          ) {
+            streamInputTokens = chunk.response.usage.inputTokens;
+            streamOutputTokens = chunk.response.usage.outputTokens;
+          }
           yield chunk;
         }
       } catch (e: unknown) {
         error = e;
-        accumulator.recordIssue({
+        state.accumulator.recordIssue({
           severity: "critical",
           message: e instanceof Error ? e.message : String(e),
           turnIndex: ctx.turnIndex,
@@ -141,7 +173,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
         throw e;
       } finally {
         const durationMs = Date.now() - callStart;
-        accumulator.recordAction({
+        state.accumulator.recordAction({
           kind: "model_call",
           name: request.model ?? "unknown",
           turnIndex: ctx.turnIndex,
@@ -157,7 +189,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
               : undefined,
         });
         if (streamInputTokens > 0 || streamOutputTokens > 0) {
-          accumulator.addTokens(streamInputTokens, streamOutputTokens);
+          state.accumulator.addTokens(streamInputTokens, streamOutputTokens);
         }
       }
     },
@@ -167,6 +199,9 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
+      const state = sessions.get(ctx.session.sessionId as string);
+      if (!state) return next(request);
+
       const callStart = Date.now();
       let error: unknown;
 
@@ -175,7 +210,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
         return response;
       } catch (e: unknown) {
         error = e;
-        accumulator.recordIssue({
+        state.accumulator.recordIssue({
           severity: "warning",
           message: `Tool ${request.toolId} failed: ${e instanceof Error ? e.message : String(e)}`,
           turnIndex: ctx.turnIndex,
@@ -184,7 +219,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
         throw e;
       } finally {
         const durationMs = Date.now() - callStart;
-        accumulator.recordAction({
+        state.accumulator.recordAction({
           kind: "tool_call",
           name: request.toolId,
           turnIndex: ctx.turnIndex,
@@ -195,19 +230,26 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
       }
     },
 
-    async onAfterTurn(_ctx: TurnContext): Promise<void> {
-      turnCount += 1;
+    async onAfterTurn(ctx: TurnContext): Promise<void> {
+      const state = sessions.get(ctx.session.sessionId as string);
+      if (!state) return;
+
+      const newTurnCount = state.turnCount + 1;
+      sessions.set(ctx.session.sessionId as string, {
+        ...state,
+        turnCount: newTurnCount,
+      });
 
       if (config.onProgress) {
-        const snap = accumulator.snapshot();
+        const snap = state.accumulator.snapshot();
         const progress: ProgressSnapshot = {
-          turnIndex: turnCount - 1,
+          turnIndex: newTurnCount - 1,
           totalActions: snap.totalActions,
           inputTokens: snap.inputTokens,
           outputTokens: snap.outputTokens,
           totalTokens: snap.inputTokens + snap.outputTokens,
           issueCount: snap.issues.length,
-          elapsedMs: Date.now() - startedAt,
+          elapsedMs: Date.now() - state.startedAt,
           truncated: snap.truncated,
         };
         try {
@@ -222,15 +264,18 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
+      const state = sessions.get(ctx.sessionId as string);
+      if (!state) return;
+
       const completedAt = Date.now();
-      const snap = accumulator.snapshot();
-      const durationMs = completedAt - startedAt;
+      const snap = state.accumulator.snapshot();
+      const durationMs = completedAt - state.startedAt;
 
       const duration = {
-        startedAt,
+        startedAt: state.startedAt,
         completedAt,
         durationMs,
-        totalTurns: turnCount,
+        totalTurns: state.turnCount,
         totalActions: snap.totalActions,
         truncated: snap.truncated,
       };
@@ -292,7 +337,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
           });
           summary = generateTemplateSummary(
             snap.totalActions,
-            turnCount,
+            state.turnCount,
             durationMs,
             snap.inputTokens,
             snap.outputTokens,
@@ -303,7 +348,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
       } else {
         summary = generateTemplateSummary(
           snap.totalActions,
-          turnCount,
+          state.turnCount,
           durationMs,
           snap.inputTokens,
           snap.outputTokens,
@@ -312,7 +357,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
         recommendations = [];
       }
 
-      report = {
+      lastReport = {
         agentId: toAgentId(ctx.agentId),
         sessionId: ctx.sessionId,
         runId: ctx.runId,
@@ -328,8 +373,8 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
 
       if (config.onReport) {
         try {
-          const formatted = formatter(report);
-          await config.onReport(report, formatted);
+          const formatted = formatter(lastReport);
+          await config.onReport(lastReport, formatted);
         } catch (e: unknown) {
           swallowError(e, {
             package: "middleware-report",
@@ -337,22 +382,40 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
           });
         }
       }
+
+      // Clean up session state
+      sessions.delete(ctx.sessionId as string);
     },
   };
 
   return {
     middleware,
-    getReport: (): RunReport | undefined => report,
+    getReport: (): RunReport | undefined => lastReport,
     getProgress: (): ProgressSnapshot => {
-      const snap = accumulator.snapshot();
+      // Return snapshot from the most recent active session, or zeroes
+      const entries = [...sessions.values()];
+      const state = entries.length > 0 ? entries[entries.length - 1] : undefined;
+      if (!state) {
+        return {
+          turnIndex: 0,
+          totalActions: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          issueCount: 0,
+          elapsedMs: 0,
+          truncated: false,
+        };
+      }
+      const snap = state.accumulator.snapshot();
       return {
-        turnIndex: turnCount > 0 ? turnCount - 1 : 0,
+        turnIndex: state.turnCount > 0 ? state.turnCount - 1 : 0,
         totalActions: snap.totalActions,
         inputTokens: snap.inputTokens,
         outputTokens: snap.outputTokens,
         totalTokens: snap.inputTokens + snap.outputTokens,
         issueCount: snap.issues.length,
-        elapsedMs: startedAt > 0 ? Date.now() - startedAt : 0,
+        elapsedMs: state.startedAt > 0 ? Date.now() - state.startedAt : 0,
         truncated: snap.truncated,
       };
     },

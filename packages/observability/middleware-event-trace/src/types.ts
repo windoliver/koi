@@ -8,6 +8,7 @@ import type {
   KoiError,
   KoiMiddleware,
   Result,
+  SessionId,
   SnapshotChainStore,
   TraceEvent,
   TurnTrace,
@@ -27,13 +28,16 @@ export interface EventTraceConfig {
 export interface EventTraceHandle {
   /** The middleware instance to register with the engine. */
   readonly middleware: KoiMiddleware;
-  /** Retrieve the TurnTrace for a specific turn index. */
-  readonly getTurnTrace: (turnIndex: number) => Promise<Result<TurnTrace | undefined, KoiError>>;
+  /** Retrieve the TurnTrace for a specific session and turn index. */
+  readonly getTurnTrace: (
+    sessionId: SessionId,
+    turnIndex: number,
+  ) => Promise<Result<TurnTrace | undefined, KoiError>>;
   /** Retrieve all trace events between two cursors (inclusive). */
   readonly getEventsBetween: (
     from: EventCursor,
     to: EventCursor,
   ) => Promise<Result<readonly TraceEvent[], KoiError>>;
-  /** Return the next event index that would be assigned. */
-  readonly currentEventIndex: () => number;
+  /** Return the next event index that would be assigned for the given session. */
+  readonly currentEventIndex: (sessionId: SessionId) => number;
 }
