@@ -72,7 +72,8 @@ describe("demand pipeline integration", () => {
 
     const ctx = createMockTurnContext();
     const response = {
-      content: [{ kind: "text", text: "I don't have a tool for image compression." }],
+      content: "I don't have a tool for image compression.",
+      model: "test-model",
       usage: { inputTokens: 10, outputTokens: 20 },
     };
     const next = async () => response;

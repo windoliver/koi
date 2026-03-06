@@ -17,6 +17,7 @@ import type {
   ForgeScope,
   ForgeStore,
   KoiMiddleware,
+  SessionContext,
   ToolArtifact,
   ToolPolicy,
   TurnContext,
@@ -203,7 +204,7 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
 
   const forgeHandler = createCrystallizeForgeHandler(forgeHandlerConfig);
 
-  // justified: mutable counters encapsulated within factory closure
+  // justified: mutable counters reset per session via onSessionStart
   let lastForgedCount = 0;
   let demandForgedCount = 0;
   const demandBudget = config.demandBudget ?? DEFAULT_FORGE_BUDGET;
@@ -344,6 +345,13 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
   return {
     name: "auto-forge",
     priority: 960, // After crystallize middleware (950)
+
+    async onSessionStart(_ctx: SessionContext): Promise<void> {
+      // Reset per-session counters so each session gets its own budget
+      forgeHandler.resetForSession();
+      lastForgedCount = 0;
+      demandForgedCount = 0;
+    },
 
     async onAfterTurn(_ctx: TurnContext): Promise<void> {
       // --- Existing: process crystallization candidates ---

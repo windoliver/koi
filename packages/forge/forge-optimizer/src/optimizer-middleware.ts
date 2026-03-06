@@ -53,19 +53,20 @@ export function createOptimizerMiddleware(config: OptimizerMiddlewareConfig): Ko
     clock: config.clock,
   });
 
-  let lastResults: readonly OptimizationResult[] = [];
+  const resultsBySession = new Map<string, readonly OptimizationResult[]>();
 
   return {
     name: "forge-optimizer",
     priority: 990, // Late — runs after all other middleware
 
-    async onSessionEnd(_ctx: SessionContext): Promise<void> {
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
       const results = await optimizer.sweep();
-      lastResults = results;
+      resultsBySession.set(ctx.sessionId, results);
       config.onSweepComplete?.(results);
     },
 
-    describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
+    describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
+      const lastResults = resultsBySession.get(ctx.session.sessionId) ?? [];
       if (lastResults.length === 0) return undefined;
 
       const deprecated = lastResults.filter((r) => r.action === "deprecate").length;

@@ -55,6 +55,8 @@ export interface CrystallizeForgeHandler {
     now: number,
   ) => readonly CrystallizedToolDescriptor[];
   readonly getForgedCount: () => number;
+  /** Reset per-session counters. Call on session start. */
+  readonly resetForSession: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +126,10 @@ export function createCrystallizeForgeHandler(
   return {
     handleCandidates,
     getForgedCount: () => forgedCount,
+    resetForSession: () => {
+      forgedCount = 0;
+      forgedNames.clear();
+    },
   };
 }
 
