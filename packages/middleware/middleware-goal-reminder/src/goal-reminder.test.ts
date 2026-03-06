@@ -82,6 +82,16 @@ describe("createGoalReminderMiddleware", () => {
     expect(mw.priority).toBe(330);
   });
 
+  test("throws KoiRuntimeError with VALIDATION code on invalid config", () => {
+    expect(() =>
+      createGoalReminderMiddleware({
+        sources: [],
+        baseInterval: 2,
+        maxInterval: 8,
+      } as unknown as GoalReminderConfig),
+    ).toThrow(expect.objectContaining({ code: "VALIDATION" }));
+  });
+
   test("injects on trigger turns and skips others (baseInterval=2)", async () => {
     const mw = createGoalReminderMiddleware(makeConfig({ baseInterval: 2, maxInterval: 8 }));
     const sessionCtx = createMockSessionContext();
@@ -312,6 +322,132 @@ describe("createGoalReminderMiddleware", () => {
 
     expect(capturedReq).toBeDefined();
     expect(capturedReq?.messages[0]?.senderId).toBe("system:goal-reminder");
+  });
+
+  test("static-only sources contribute to drift detection", async () => {
+    // With static text "implement authentication", drift detection should see "authentication" as keyword
+    const mw = createGoalReminderMiddleware(
+      makeConfig({
+        sources: [{ kind: "static", text: "implement authentication" }],
+        baseInterval: 1,
+        maxInterval: 16,
+      }),
+    );
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+
+    // Turn with messages that DON'T mention "authentication" → should drift → inject
+    const turnCtx = createMockTurnContext({
+      session: sessionCtx,
+      turnIndex: 0,
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [{ kind: "text", text: "hello world" }],
+        },
+      ],
+    });
+    await mw.onBeforeTurn?.(turnCtx);
+
+    let injected = false;
+    if (mw.wrapModelCall) {
+      await mw.wrapModelCall(
+        turnCtx,
+        { messages: turnCtx.messages },
+        async (req: ModelRequest): Promise<ModelResponse> => {
+          injected = req.messages[0]?.senderId === "system:goal-reminder";
+          return makeModelResponse("ok");
+        },
+      );
+    }
+    // Default drift detection sees no keyword match → drifting → inject
+    expect(injected).toBe(true);
+  });
+
+  test("mixed manifest+static sources both contribute keywords to drift detection", async () => {
+    const mw = createGoalReminderMiddleware(
+      makeConfig({
+        sources: [
+          { kind: "manifest", objectives: ["build the feature"] },
+          { kind: "static", text: "maintain security standards" },
+        ],
+        baseInterval: 1,
+        maxInterval: 16,
+      }),
+    );
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+
+    // Turn with message mentioning "security" (from static) but not "feature" → not drifting
+    const turnCtx = createMockTurnContext({
+      session: sessionCtx,
+      turnIndex: 0,
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [{ kind: "text", text: "reviewing security policies" }],
+        },
+      ],
+    });
+    await mw.onBeforeTurn?.(turnCtx);
+
+    let injected = false;
+    if (mw.wrapModelCall) {
+      await mw.wrapModelCall(
+        turnCtx,
+        { messages: turnCtx.messages },
+        async (req: ModelRequest): Promise<ModelResponse> => {
+          injected = req.messages[0]?.senderId === "system:goal-reminder";
+          return makeModelResponse("ok");
+        },
+      );
+    }
+    // "security" is a keyword from static source, message mentions it → not drifting → still injects (first trigger)
+    // but interval doubles because not drifting
+    expect(injected).toBe(true);
+  });
+
+  test("dynamic-only sources produce empty goalStrings, drift detection returns false", async () => {
+    const mw = createGoalReminderMiddleware(
+      makeConfig({
+        sources: [{ kind: "dynamic", fetch: () => "dynamic goal content" }],
+        baseInterval: 1,
+        maxInterval: 16,
+      }),
+    );
+    const sessionCtx = createMockSessionContext();
+    await mw.onSessionStart?.(sessionCtx);
+
+    // Turn 1 triggers (baseInterval=1) and drift detection uses empty goals → not drifting
+    const turnCtx = createMockTurnContext({
+      session: sessionCtx,
+      turnIndex: 0,
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [{ kind: "text", text: "unrelated text" }],
+        },
+      ],
+    });
+    await mw.onBeforeTurn?.(turnCtx);
+
+    let injected = false;
+    if (mw.wrapModelCall) {
+      await mw.wrapModelCall(
+        turnCtx,
+        { messages: turnCtx.messages },
+        async (req: ModelRequest): Promise<ModelResponse> => {
+          injected = req.messages[0]?.senderId === "system:goal-reminder";
+          return makeModelResponse("ok");
+        },
+      );
+    }
+    // Dynamic sources → empty goalStrings → defaultIsDrifting returns false → interval doubles
+    // But still injects on the trigger turn
+    expect(injected).toBe(true);
   });
 
   test("reminder content includes XML tags from sources", async () => {

@@ -11,7 +11,8 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",
