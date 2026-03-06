@@ -856,6 +856,13 @@
       "name": "@koi/preset-resolver",
       "version": "0.0.0",
     },
+    "packages/lib/session-state": {
+      "name": "@koi/session-state",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/shutdown": {
       "name": "@koi/shutdown",
       "version": "0.0.0",
@@ -3504,6 +3511,8 @@
     "@koi/self-test": ["@koi/self-test@workspace:packages/observability/self-test"],
 
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
+
+    "@koi/session-state": ["@koi/session-state@workspace:packages/lib/session-state"],
 
     "@koi/session-store": ["@koi/session-store@workspace:packages/mm/session-store"],
 
