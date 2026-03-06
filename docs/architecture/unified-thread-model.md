@@ -152,9 +152,8 @@ L2  @koi/long-running    createCheckpointMiddleware()
                          createAutonomousProvider()
                          createThreadCompactor()
 
-L2  @koi/parallel-minions  mapSpawnToMinion()
-    @koi/task-spawn         mapSpawnToTask()
-    @koi/orchestrator       mapSpawnToWorker()
+L2  @koi/task-spawn         mapSpawnToTask()
+    @koi/long-running       createDelegationBridge() — auto-dispatch spawn tasks
 
 L3  @koi/autonomous      Extended createAutonomousAgent() — wires everything
 ```

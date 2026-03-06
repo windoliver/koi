@@ -25,8 +25,6 @@ export type {
 } from "@koi/federation";
 export type { LocalMailboxConfig, MailboxRouter } from "@koi/ipc-local";
 export type { IpcNexusProviderConfig } from "@koi/ipc-nexus";
-export type { OrchestratorConfig } from "@koi/orchestrator";
-export type { ParallelMinionsConfig } from "@koi/parallel-minions";
 export type { LocalScratchpadConfig } from "@koi/scratchpad-local";
 export type { ScratchpadNexusProviderConfig } from "@koi/scratchpad-nexus";
 export type { TaskSpawnConfig } from "@koi/task-spawn";

@@ -300,7 +300,7 @@ describe("catalog integration", () => {
 
   test("bundled entries total count matches expected", async () => {
     // Verify the bundled entries array has the expected total
-    // 24 middleware + 6 channel + 4 engine + 10 sandbox + 3 tool + 21 infra = 68
-    expect(BUNDLED_ENTRIES.length).toBe(68);
+    // 24 middleware + 6 channel + 4 engine + 10 sandbox + 3 tool + 19 infra = 66
+    expect(BUNDLED_ENTRIES.length).toBe(66);
   });
 });

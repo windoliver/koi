@@ -16,8 +16,6 @@
     "@koi/federation": "workspace:*",
     "@koi/ipc-local": "workspace:*",
     "@koi/ipc-nexus": "workspace:*",
-    "@koi/orchestrator": "workspace:*",
-    "@koi/parallel-minions": "workspace:*",
     "@koi/scratchpad-local": "workspace:*",
     "@koi/scratchpad-nexus": "workspace:*",
     "@koi/task-spawn": "workspace:*",

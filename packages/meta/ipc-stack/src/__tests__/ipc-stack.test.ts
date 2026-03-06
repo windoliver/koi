@@ -73,7 +73,7 @@ describe("createIpcStack — cloud preset", () => {
     expect(names).toContain("ipc-nexus");
   });
 
-  test("includes parallel-minions provider", () => {
+  test("includes task-spawn provider", () => {
     const bundle = createIpcStack({
       spawn: noopSpawn,
       preset: "cloud",
@@ -83,7 +83,7 @@ describe("createIpcStack — cloud preset", () => {
       },
     });
     const names = bundle.providers.map((p) => p.name);
-    expect(names).toContain("parallel-minions");
+    expect(names).toContain("task-spawn");
   });
 
   test("metadata reflects cloud preset", () => {
@@ -97,7 +97,7 @@ describe("createIpcStack — cloud preset", () => {
     });
     expect(bundle.config.preset).toBe("cloud");
     expect(bundle.config.messagingKind).toBe("nexus");
-    expect(bundle.config.delegationKind).toBe("parallel-minions");
+    expect(bundle.config.delegationKind).toBe("task-spawn");
   });
 });
 
@@ -106,14 +106,14 @@ describe("createIpcStack — cloud preset", () => {
 // ---------------------------------------------------------------------------
 
 describe("createIpcStack — hybrid preset", () => {
-  test("has local router + parallel-minions provider", () => {
+  test("has local router + task-spawn provider", () => {
     const bundle = createIpcStack({
       spawn: noopSpawn,
       preset: "hybrid",
     });
     expect(bundle.router).toBeDefined();
     const names = bundle.providers.map((p) => p.name);
-    expect(names).toContain("parallel-minions");
+    expect(names).toContain("task-spawn");
   });
 
   test("metadata reflects hybrid preset", () => {
@@ -123,7 +123,7 @@ describe("createIpcStack — hybrid preset", () => {
     });
     expect(bundle.config.preset).toBe("hybrid");
     expect(bundle.config.messagingKind).toBe("local");
-    expect(bundle.config.delegationKind).toBe("parallel-minions");
+    expect(bundle.config.delegationKind).toBe("task-spawn");
   });
 });
 
@@ -132,20 +132,6 @@ describe("createIpcStack — hybrid preset", () => {
 // ---------------------------------------------------------------------------
 
 describe("createIpcStack — user overrides", () => {
-  test("local preset + orchestrator delegation override", () => {
-    const bundle = createIpcStack({
-      spawn: noopSpawn,
-      preset: "local",
-      delegation: {
-        kind: "orchestrator",
-        config: {},
-      },
-    });
-    const names = bundle.providers.map((p) => p.name);
-    expect(names).toContain("orchestrator");
-    expect(bundle.config.delegationKind).toBe("orchestrator");
-  });
-
   test("explicit no messaging overrides preset", () => {
     const config: IpcStackConfig = {
       spawn: noopSpawn,

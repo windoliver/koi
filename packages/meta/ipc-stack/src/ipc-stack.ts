@@ -6,7 +6,7 @@
  *
  * Subsystem composition order:
  *   1. Messaging (local router or nexus provider)
- *   2. Delegation (task-spawn, parallel-minions, or orchestrator)
+ *   2. Delegation (task-spawn)
  *   3. Workspace (optional)
  *   4. Scratchpad (local component or nexus provider + flush middleware)
  *   5. Federation (middleware + optional sync engine)
@@ -19,8 +19,6 @@ import { createFederationMiddleware, createSyncEngine } from "@koi/federation";
 import type { MailboxRouter } from "@koi/ipc-local";
 import { createLocalMailboxRouter } from "@koi/ipc-local";
 import { createIpcNexusProvider } from "@koi/ipc-nexus";
-import { createOrchestratorProvider, mapSpawnToWorker } from "@koi/orchestrator";
-import { createParallelMinionsProvider, mapSpawnToMinion } from "@koi/parallel-minions";
 import { createLocalScratchpad } from "@koi/scratchpad-local";
 import { createScratchpadNexusProvider } from "@koi/scratchpad-nexus";
 import { createTaskSpawnProvider, mapSpawnToTask } from "@koi/task-spawn";
@@ -80,24 +78,6 @@ export function createIpcStack(config: IpcStackConfig): IpcBundle {
       const provider = createTaskSpawnProvider({
         ...delegation.config,
         spawn: taskSpawn,
-      });
-      providers.push(provider);
-    } else if (delegation.kind === "parallel-minions") {
-      const minionSpawn = mapSpawnToMinion(config.spawn);
-      const provider = createParallelMinionsProvider({
-        ...delegation.config,
-        spawn: minionSpawn,
-      });
-      providers.push(provider);
-    } else if (delegation.kind === "orchestrator") {
-      const workerSpawn = mapSpawnToWorker(
-        config.spawn,
-        "orchestrator",
-        delegation.config.maxUpstreamContextPerTask,
-      );
-      const provider = createOrchestratorProvider({
-        ...delegation.config,
-        spawn: workerSpawn,
       });
       providers.push(provider);
     }

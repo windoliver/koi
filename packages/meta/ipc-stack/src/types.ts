@@ -13,8 +13,6 @@ import type {
 } from "@koi/federation";
 import type { LocalMailboxConfig, MailboxRouter } from "@koi/ipc-local";
 import type { IpcNexusProviderConfig } from "@koi/ipc-nexus";
-import type { OrchestratorConfig } from "@koi/orchestrator";
-import type { ParallelMinionsConfig } from "@koi/parallel-minions";
 import type { LocalScratchpadConfig } from "@koi/scratchpad-local";
 import type { ScratchpadNexusProviderConfig } from "@koi/scratchpad-nexus";
 import type { TaskSpawnConfig } from "@koi/task-spawn";
@@ -56,11 +54,6 @@ export interface IpcStackConfig {
   /** Delegation subsystem configuration. */
   readonly delegation?:
     | { readonly kind: "task-spawn"; readonly config?: Omit<TaskSpawnConfig, "spawn"> | undefined }
-    | {
-        readonly kind: "parallel-minions";
-        readonly config?: Omit<ParallelMinionsConfig, "spawn"> | undefined;
-      }
-    | { readonly kind: "orchestrator"; readonly config: Omit<OrchestratorConfig, "spawn"> }
     | undefined;
 
   // ── Workspace ─────────────────────────────────────────────────────────
@@ -105,7 +98,7 @@ export type IpcPresetSpec = Partial<
 export interface ResolvedIpcMeta {
   readonly preset: IpcPreset;
   readonly messagingKind: "local" | "nexus" | "none";
-  readonly delegationKind: "task-spawn" | "parallel-minions" | "orchestrator" | "none";
+  readonly delegationKind: "task-spawn" | "none";
   readonly scratchpadKind: "local" | "nexus" | "none";
   readonly workspaceEnabled: boolean;
   readonly federationEnabled: boolean;

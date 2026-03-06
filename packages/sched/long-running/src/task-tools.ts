@@ -1,15 +1,25 @@
 /**
- * Task tools — dynamic tools for managing autonomous task execution (Decision 7B).
+ * Task tools — dynamic tools for managing autonomous task execution.
  *
  * These tools are registered dynamically via ForgeRuntime when autonomous
  * mode activates, and unregistered when it deactivates:
  * - `task_complete`: Mark a task as completed
  * - `task_update`: Update a task's description or status
  * - `task_status`: Get current task board summary
+ * - `task_review`: Accept/reject/revise a completed task's output
+ * - `task_synthesize`: Merge all results in dependency order
  */
 
 import type { JsonObject, TaskBoardSnapshot, TaskItemId, Tool, ToolDescriptor } from "@koi/core";
 import { DEFAULT_UNSANDBOXED_POLICY, taskItemId } from "@koi/core";
+import {
+  createTaskBoard,
+  isRecord,
+  parseEnumField,
+  parseStringField,
+  snapshotToItemsMap,
+  topologicalSort,
+} from "@koi/task-board";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +32,16 @@ export interface TaskToolsConfig {
   readonly completeTask: (taskId: TaskItemId, output: string) => Promise<void>;
   /** Update a task's description. */
   readonly updateTask: (taskId: TaskItemId, description: string) => Promise<void>;
+  /**
+   * Fail a task with a retryable error (for review reject/revise).
+   * Returns the updated snapshot or undefined if not supported.
+   */
+  readonly failTask?: (
+    taskId: TaskItemId,
+    message: string,
+  ) => Promise<TaskBoardSnapshot | undefined>;
+  /** Maximum characters per task in synthesize output. Default: 5000. */
+  readonly maxOutputPerTask?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +107,164 @@ const TASK_STATUS_DESCRIPTOR: ToolDescriptor = {
     properties: {},
   },
 };
+
+const TASK_REVIEW_DESCRIPTOR: ToolDescriptor = {
+  name: "task_review",
+  description:
+    "Review a completed task's output. Verdict: 'accept' to keep the result, " +
+    "'reject' to fail and retry from scratch, 'revise' to retry with feedback. " +
+    "The task will be re-queued for retry if retries remain.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "The id of the completed task to review.",
+      },
+      verdict: {
+        type: "string",
+        description: "One of: 'accept', 'reject', 'revise'.",
+      },
+      feedback: {
+        type: "string",
+        description: "Optional feedback for reject/revise — included in the retry context.",
+      },
+    },
+    required: ["task_id", "verdict"],
+  },
+};
+
+const TASK_SYNTHESIZE_DESCRIPTOR: ToolDescriptor = {
+  name: "task_synthesize",
+  description:
+    "Synthesize all completed task results into a final output. " +
+    "Results are ordered by dependency (topological order). Use this " +
+    "after all tasks are done to produce a unified summary.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      format: {
+        type: "string",
+        description: "Output format: 'summary' (default), 'detailed', or 'structured'.",
+      },
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Review executor
+// ---------------------------------------------------------------------------
+
+function executeTaskReview(raw: JsonObject, config: TaskToolsConfig): string | Promise<string> {
+  if (!isRecord(raw)) return "Input must be a non-null object";
+
+  const taskIdResult = parseStringField(raw, "task_id");
+  if (typeof taskIdResult === "object") return taskIdResult.error;
+
+  const verdictResult = parseEnumField(raw, "verdict", ["accept", "reject", "revise"] as const);
+  if (typeof verdictResult === "object") return verdictResult.error;
+
+  const id = taskItemId(taskIdResult);
+  const board = config.getTaskBoard();
+  const item = board.items.find((i) => i.id === id);
+
+  if (item === undefined) {
+    return `Task not found: ${taskIdResult}`;
+  }
+
+  if (verdictResult === "accept") {
+    return `Task ${taskIdResult} accepted.`;
+  }
+
+  // For reject/revise, fail the task with retryable error
+  if (config.failTask === undefined) {
+    return `Review not supported: failTask callback not configured.`;
+  }
+
+  const feedback = typeof raw.feedback === "string" ? raw.feedback : undefined;
+  const message =
+    verdictResult === "reject"
+      ? `Rejected: ${feedback ?? "no feedback"}`
+      : `Revision needed: ${feedback ?? "no feedback"}`;
+
+  return Promise.resolve(config.failTask(id, message)).then((updatedBoard) => {
+    if (updatedBoard === undefined) {
+      return `Cannot ${verdictResult} task ${taskIdResult}: operation failed.`;
+    }
+
+    const updated = updatedBoard.items.find((i) => i.id === id);
+    if (updated?.status === "pending") {
+      return `Task ${taskIdResult} ${verdictResult}ed — queued for retry (attempt ${updated.retries}/${updated.maxRetries}).${feedback ? ` Feedback: ${feedback}` : ""}`;
+    }
+
+    return `Task ${taskIdResult} ${verdictResult}ed — retries exhausted, marked as failed.${feedback ? ` Feedback: ${feedback}` : ""}`;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Synthesize executor
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MAX_OUTPUT_PER_TASK = 5000;
+
+function executeTaskSynthesize(raw: JsonObject, config: TaskToolsConfig): string {
+  const board = config.getTaskBoard();
+  const liveBoard = createTaskBoard(undefined, board);
+  const results = liveBoard.completed();
+
+  if (results.length === 0) {
+    return "No completed tasks to synthesize.";
+  }
+
+  const maxOutput = config.maxOutputPerTask ?? DEFAULT_MAX_OUTPUT_PER_TASK;
+
+  // Build result lookup
+  const resultMap = new Map(results.map((r) => [r.taskId, r] as const));
+
+  // Get items map for topological sort
+  const itemsMap = snapshotToItemsMap(liveBoard);
+  const sorted = topologicalSort(itemsMap);
+  const orderedIds = sorted.filter((id) => resultMap.has(id));
+
+  // Parse format
+  const format =
+    isRecord(raw) &&
+    (raw.format === "summary" || raw.format === "detailed" || raw.format === "structured")
+      ? raw.format
+      : "summary";
+
+  const sections: string[] = [];
+  for (const id of orderedIds) {
+    const item = liveBoard.get(id);
+    const taskResult = resultMap.get(id);
+    const output = taskResult?.output ?? "";
+    const truncated =
+      output.length > maxOutput ? `${output.slice(0, maxOutput)}... (truncated)` : output;
+
+    const header = item !== undefined ? `## ${id}: ${item.description}` : `## ${id}`;
+    const parts: string[] = [`${header}\n${truncated}`];
+
+    if (taskResult?.artifacts !== undefined && taskResult.artifacts.length > 0) {
+      const artLines = taskResult.artifacts.map((a) => `- ${a.kind}: ${a.uri}`);
+      parts.push(`\n### Artifacts\n${artLines.join("\n")}`);
+    }
+
+    if (taskResult?.warnings !== undefined && taskResult.warnings.length > 0) {
+      parts.push(`\n### Warnings\n${taskResult.warnings.map((w) => `- ${w}`).join("\n")}`);
+    }
+
+    if (taskResult?.decisions !== undefined && taskResult.decisions.length > 0) {
+      const decLines = taskResult.decisions.map(
+        (d) => `- [${d.agentId}] ${d.action}: ${d.reasoning}`,
+      );
+      parts.push(`\n### Decisions\n${decLines.join("\n")}`);
+    }
+
+    sections.push(parts.join(""));
+  }
+
+  return `# Synthesis (${format}) — ${results.length} task(s)\n\n${sections.join("\n\n")}`;
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -160,5 +338,25 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
     },
   };
 
-  return [taskComplete, taskUpdate, taskStatus];
+  const taskReview: Tool = {
+    descriptor: TASK_REVIEW_DESCRIPTOR,
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
+    execute: async (args: JsonObject): Promise<unknown> => {
+      const result = await executeTaskReview(args, config);
+      return { message: result };
+    },
+  };
+
+  const taskSynthesize: Tool = {
+    descriptor: TASK_SYNTHESIZE_DESCRIPTOR,
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
+    execute: async (args: JsonObject): Promise<unknown> => {
+      const result = executeTaskSynthesize(args, config);
+      return { message: result };
+    },
+  };
+
+  return [taskComplete, taskUpdate, taskStatus, taskReview, taskSynthesize];
 }

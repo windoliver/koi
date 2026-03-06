@@ -19,12 +19,12 @@ const LOCAL: IpcPresetSpec = Object.freeze({
 
 const CLOUD: IpcPresetSpec = Object.freeze({
   messaging: Object.freeze({ kind: "nexus" as const }),
-  delegation: Object.freeze({ kind: "parallel-minions" as const }),
+  delegation: Object.freeze({ kind: "task-spawn" as const }),
 });
 
 const HYBRID: IpcPresetSpec = Object.freeze({
   messaging: Object.freeze({ kind: "local" as const }),
-  delegation: Object.freeze({ kind: "parallel-minions" as const }),
+  delegation: Object.freeze({ kind: "task-spawn" as const }),
 });
 
 // ---------------------------------------------------------------------------
