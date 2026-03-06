@@ -467,20 +467,6 @@ const INFRASTRUCTURE_ENTRIES: readonly CatalogEntry[] = [
     tags: ["model", "routing", "multi-provider", "optimization"],
   },
   {
-    name: "bundled:@koi/orchestrator",
-    kind: "tool",
-    source: "bundled",
-    description: "Agent orchestration for coordinating multi-agent workflows",
-    tags: ["orchestrator", "multi-agent", "workflow", "coordination"],
-  },
-  {
-    name: "bundled:@koi/parallel-minions",
-    kind: "tool",
-    source: "bundled",
-    description: "Parallel task execution with fan-out and fan-in patterns",
-    tags: ["parallel", "fan-out", "concurrency", "task-execution"],
-  },
-  {
     name: "bundled:@koi/redaction",
     kind: "tool",
     source: "bundled",

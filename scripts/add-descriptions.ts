@@ -159,8 +159,6 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
   "@koi/ipc-local": "Route messages between in-process agents using in-memory mailbox dispatch",
   "@koi/ipc-nexus":
     "Enable agent messaging via Nexus REST API with subscriptions and inbox listing",
-  "@koi/orchestrator": "Orchestrate DAG-based task boards with worker assignment and checkpointing",
-  "@koi/parallel-minions": "Delegate fan-out/fan-in tasks to subagents with concurrency strategies",
   "@koi/scratchpad-local": "Store versioned files with CAS and TTL in in-memory scratchpad",
   "@koi/scratchpad-nexus":
     "Persist agent scratchpad state across zones via Nexus group-scoped storage",

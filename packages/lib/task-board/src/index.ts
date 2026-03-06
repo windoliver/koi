@@ -1,7 +1,7 @@
 /**
  * @koi/task-board — Immutable TaskBoard with DAG validation (L0u).
  *
- * Extracted from @koi/orchestrator for reuse across delegation packages.
+ * Task board utilities for delegation packages.
  */
 
 export { createTaskBoard } from "./board.js";

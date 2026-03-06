@@ -621,30 +621,6 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/ipc/orchestrator": {
-      "name": "@koi/orchestrator",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/ipc/parallel-minions": {
-      "name": "@koi/parallel-minions",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/ipc/scratchpad-local": {
       "name": "@koi/scratchpad-local",
       "version": "0.0.0",
@@ -1145,8 +1121,6 @@
         "@koi/federation": "workspace:*",
         "@koi/ipc-local": "workspace:*",
         "@koi/ipc-nexus": "workspace:*",
-        "@koi/orchestrator": "workspace:*",
-        "@koi/parallel-minions": "workspace:*",
         "@koi/preset-resolver": "workspace:*",
         "@koi/scratchpad-local": "workspace:*",
         "@koi/scratchpad-nexus": "workspace:*",
@@ -2740,7 +2714,6 @@
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/node": "workspace:*",
-        "@koi/orchestrator": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/sandbox-executor": "workspace:*",
         "@koi/soul": "workspace:*",
@@ -3438,10 +3411,6 @@
     "@koi/node": ["@koi/node@workspace:packages/deploy/node"],
 
     "@koi/node-stack": ["@koi/node-stack@workspace:packages/meta/node-stack"],
-
-    "@koi/orchestrator": ["@koi/orchestrator@workspace:packages/ipc/orchestrator"],
-
-    "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/ipc/parallel-minions"],
 
     "@koi/pay-local": ["@koi/pay-local@workspace:packages/fs/pay-local"],
 
