@@ -71,6 +71,8 @@ function inputToItem(input: TaskItemInput, defaultMaxRetries: number): TaskItem 
     retries: 0,
     status: "pending",
     metadata: input.metadata,
+    delegation: input.delegation,
+    agentType: input.agentType,
   };
 }
 

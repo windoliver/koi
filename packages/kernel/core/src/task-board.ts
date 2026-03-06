@@ -52,6 +52,10 @@ export interface TaskItemInput {
   readonly priority?: number | undefined;
   readonly maxRetries?: number | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  /** Delegation hint: "self" = current agent, "spawn" = delegate to worker. */
+  readonly delegation?: "self" | "spawn" | undefined;
+  /** Agent type hint for worker selection when delegation = "spawn". */
+  readonly agentType?: string | undefined;
 }
 
 /** A task item on the board with full state. */
@@ -66,6 +70,10 @@ export interface TaskItem {
   readonly assignedTo?: AgentId | undefined;
   readonly error?: KoiError | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  /** Delegation hint: "self" = current agent, "spawn" = delegate to worker. */
+  readonly delegation?: "self" | "spawn" | undefined;
+  /** Agent type hint for worker selection when delegation = "spawn". */
+  readonly agentType?: string | undefined;
 }
 
 /** Result produced by a completed task. */
@@ -121,6 +129,21 @@ export interface TaskBoardConfig {
 export const DEFAULT_TASK_BOARD_CONFIG: TaskBoardConfig = Object.freeze({
   maxRetries: 3,
 });
+
+// ---------------------------------------------------------------------------
+// Reconciler types
+// ---------------------------------------------------------------------------
+
+/** Action returned by a TaskReconciler check. */
+export type TaskReconcileAction =
+  | { readonly kind: "cancel"; readonly taskId: TaskItemId; readonly reason: string }
+  | { readonly kind: "update"; readonly taskId: TaskItemId; readonly description: string }
+  | { readonly kind: "add"; readonly task: TaskItemInput };
+
+/** External reconciler that checks board state against an outside source of truth. */
+export interface TaskReconciler {
+  readonly check: (board: TaskBoardSnapshot) => Promise<readonly TaskReconcileAction[]>;
+}
 
 // ---------------------------------------------------------------------------
 // TaskBoard interface

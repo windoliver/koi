@@ -896,6 +896,8 @@ export type {
   TaskItemInput,
   TaskItemPatch,
   TaskItemStatus,
+  TaskReconcileAction,
+  TaskReconciler,
   TaskResult,
 } from "./task-board.js";
 // task-board — runtime values (branded constructor + defaults)
