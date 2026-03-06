@@ -123,8 +123,8 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
         return next(request);
       }
 
-      // --- Quarantine check (forged tools only) ---
-      if (healthTracker?.isQuarantined(toolId)) {
+      // --- Quarantine check (forged tools only, async to survive session boundaries) ---
+      if (healthTracker !== undefined && (await healthTracker.isQuarantinedAsync(toolId))) {
         const snapshot = healthTracker.getSnapshot(toolId);
         const feedback: ForgeToolErrorFeedback = {
           error: `Tool "${toolId}" has been quarantined due to excessive failures`,

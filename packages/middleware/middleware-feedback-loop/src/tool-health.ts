@@ -32,6 +32,8 @@ export interface ToolHealthTracker {
   readonly recordFailure: (toolId: string, latencyMs: number, error: string) => void;
   readonly getSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
   readonly isQuarantined: (toolId: string) => boolean;
+  /** Async quarantine check — falls back to ForgeStore when tool isn't in local map. */
+  readonly isQuarantinedAsync: (toolId: string) => Promise<boolean>;
   readonly checkAndQuarantine: (toolId: string) => Promise<boolean>;
   readonly checkAndDemote: (toolId: string) => Promise<boolean>;
   readonly getAllSnapshots: () => readonly ToolHealthSnapshot[];
@@ -511,6 +513,29 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     isQuarantined(toolId: string): boolean {
       const ts = tools.get(toolId);
       return ts !== undefined && ts.state === "quarantined";
+    },
+
+    async isQuarantinedAsync(toolId: string): Promise<boolean> {
+      // Fast path: check in-memory state first
+      const ts = tools.get(toolId);
+      if (ts !== undefined) return ts.state === "quarantined";
+
+      // Fallback: check ForgeStore for persisted quarantine (lifecycle === "failed")
+      const resolvedBrickId = config.resolveBrickId(toolId);
+      if (resolvedBrickId === undefined) return false;
+
+      try {
+        const loadResult = await config.forgeStore.load(brickId(resolvedBrickId));
+        if (loadResult.ok && loadResult.value.lifecycle === "failed") {
+          // Pre-populate local state so subsequent sync checks work
+          const localTs = getOrCreate(toolId);
+          localTs.state = "quarantined";
+          return true;
+        }
+      } catch (_e: unknown) {
+        // Store unavailable — conservatively allow the tool
+      }
+      return false;
     },
 
     async checkAndQuarantine(toolId: string): Promise<boolean> {

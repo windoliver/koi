@@ -478,6 +478,40 @@ describe("ToolHealthTracker", () => {
     expect(tracker.getSnapshot("t")?.state).toBe("degraded");
   });
 
+  test("isQuarantinedAsync returns true from ForgeStore when tool not in local map", async () => {
+    const forgeStore = createMockForgeStore({ lifecycle: "failed" });
+
+    const tracker = createToolHealthTracker(createTestConfig({ forgeStore }));
+
+    // Tool was never recorded locally — local map is empty
+    expect(tracker.isQuarantined("forged-tool-1")).toBe(false);
+
+    // Async check hits ForgeStore and discovers lifecycle === "failed"
+    const result = await tracker.isQuarantinedAsync("forged-tool-1");
+    expect(result).toBe(true);
+
+    // After async load, sync check should now also return true
+    expect(tracker.isQuarantined("forged-tool-1")).toBe(true);
+  });
+
+  test("isQuarantinedAsync returns false when ForgeStore has no failed lifecycle", async () => {
+    const forgeStore = createMockForgeStore({ lifecycle: "active" });
+
+    const tracker = createToolHealthTracker(createTestConfig({ forgeStore }));
+
+    const result = await tracker.isQuarantinedAsync("forged-tool-1");
+    expect(result).toBe(false);
+    expect(tracker.isQuarantined("forged-tool-1")).toBe(false);
+  });
+
+  test("isQuarantinedAsync returns false for non-forged tools", async () => {
+    const tracker = createToolHealthTracker(createTestConfig());
+
+    // "regular-tool" doesn't resolve to a brick ID
+    const result = await tracker.isQuarantinedAsync("regular-tool");
+    expect(result).toBe(false);
+  });
+
   test("injectable clock is used for timestamps", () => {
     // let: incrementing clock
     let time = 5000;
