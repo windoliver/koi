@@ -4,8 +4,8 @@
  * L2 — imports from @koi/core only.
  */
 
+import type { DeliveryPolicy } from "@koi/core";
 import type { AgentManifest } from "@koi/core/assembly";
-import type { DeliveryPolicy } from "@koi/core/delivery";
 import type { ToolDescriptor } from "@koi/core/ecs";
 
 // Re-export L0 agent resolver types for convenience

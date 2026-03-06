@@ -4,8 +4,8 @@
  * L2 — imports from @koi/core only.
  */
 
+import type { DeliveryPolicy } from "@koi/core";
 import type { AgentManifest } from "@koi/core/assembly";
-import type { DeliveryPolicy } from "@koi/core/delivery";
 import type { AgentId, ToolDescriptor } from "@koi/core/ecs";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
