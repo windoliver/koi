@@ -14,6 +14,7 @@ import type {
   KoiMiddleware,
   ModelRequest,
   ModelResponse,
+  SessionContext,
   ToolRequest,
   ToolResponse,
   TurnContext,
@@ -208,6 +209,12 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
   const middleware: KoiMiddleware = {
     name: MIDDLEWARE_NAME,
     priority: MIDDLEWARE_PRIORITY,
+
+    async onSessionStart(_ctx: SessionContext): Promise<void> {
+      records = [];
+      pendingAction = undefined;
+      budget = maxRetries;
+    },
 
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
       label: "semantic-retry",
