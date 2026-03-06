@@ -47,6 +47,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/skill-scanner",
   "@koi/snapshot-chain-store",
   "@koi/sqlite-utils",
+  "@koi/task-board",
   "@koi/test-utils",
   "@koi/token-estimator",
   "@koi/validation",

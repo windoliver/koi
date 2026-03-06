@@ -892,6 +892,16 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/task-board": {
+      "name": "@koi/task-board",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/lib/test-utils": {
       "name": "@koi/test-utils",
       "version": "0.0.0",
@@ -3529,6 +3539,8 @@
     "@koi/store-fs": ["@koi/store-fs@workspace:packages/fs/store-fs"],
 
     "@koi/store-sqlite": ["@koi/store-sqlite@workspace:packages/fs/store-sqlite"],
+
+    "@koi/task-board": ["@koi/task-board@workspace:packages/lib/task-board"],
 
     "@koi/task-spawn": ["@koi/task-spawn@workspace:packages/ipc/task-spawn"],
 
