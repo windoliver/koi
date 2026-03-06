@@ -44,7 +44,7 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   name: "@koi/middleware-semantic-retry",
   aliases: ["semantic-retry"],
   optionsValidator: validateSemanticRetryDescriptorOptions,
-  factory(options): KoiMiddleware {
+  factory(options: Record<string, unknown>): KoiMiddleware {
     const maxRetries = typeof options.maxRetries === "number" ? options.maxRetries : undefined;
 
     const config: Record<string, unknown> = {};
