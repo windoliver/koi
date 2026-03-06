@@ -65,7 +65,9 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
       // Look up remote client
       const remoteClient = remoteClients.get(targetZoneId);
       if (remoteClient === undefined) {
-        return makeErrorResponse(request, "unknown_zone", `Unknown target zone: ${targetZoneId}`);
+        throw new Error(
+          `Federation error: Unknown target zone: ${targetZoneId} (tool=${request.toolId})`,
+        );
       }
 
       // Notify delegation callback
@@ -81,32 +83,12 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
       });
 
       if (!result.ok) {
-        return makeErrorResponse(
-          request,
-          "remote_error",
-          `Remote zone ${targetZoneId} failed: ${result.error.message}`,
+        throw new Error(
+          `Federation error: Remote zone ${targetZoneId} failed: ${result.error.message} (tool=${request.toolId})`,
         );
       }
 
       return result.value;
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makeErrorResponse(request: ToolRequest, reason: string, message: string): ToolResponse {
-  return {
-    output: null,
-    metadata: {
-      error: {
-        code: "EXTERNAL",
-        message: `Federation error: ${message} (tool=${request.toolId})`,
-        retryable: false,
-        reason,
-      },
     },
   };
 }

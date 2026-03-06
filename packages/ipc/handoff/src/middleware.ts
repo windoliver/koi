@@ -21,9 +21,6 @@ import type { HandoffMiddlewareConfig } from "./types.js";
  * 3. Transitions envelope status from pending -> injected
  */
 export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMiddleware {
-  // let justified: mutable closure flag for first-turn detection (Decision #7)
-  let injected = false;
-
   return {
     name: "koi:handoff",
     priority: 400,
@@ -41,15 +38,14 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
     },
 
     wrapModelCall: async (_ctx: TurnContext, request: ModelRequest, next: ModelHandler) => {
-      if (injected) return next(request);
-
       const result = await config.store.findPendingForAgent(config.agentId);
       if (!result.ok) return next(request);
       const envelope = result.value;
       if (envelope === undefined) return next(request);
 
-      // First model call: inject summary
-      injected = true;
+      // Only inject envelopes still in "pending" status — already-injected envelopes are skipped,
+      // but new handoffs (with fresh "pending" status) will be injected correctly
+      if (envelope.status !== "pending") return next(request);
       await config.store.transition(envelope.id, envelope.status, "injected");
 
       config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });
@@ -64,11 +60,6 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      if (injected) {
-        yield* next(request);
-        return;
-      }
-
       const result = await config.store.findPendingForAgent(config.agentId);
       if (!result.ok) {
         yield* next(request);
@@ -80,8 +71,11 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
         return;
       }
 
-      // First model call: inject summary (streaming path)
-      injected = true;
+      // Only inject envelopes still in "pending" status
+      if (envelope.status !== "pending") {
+        yield* next(request);
+        return;
+      }
       await config.store.transition(envelope.id, envelope.status, "injected");
 
       config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });

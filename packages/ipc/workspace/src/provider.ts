@@ -81,10 +81,9 @@ export function createWorkspaceProvider(
       const workspaceId = workspaces.get(agent.pid.id);
       if (workspaceId === undefined) return;
 
-      workspaces.delete(agent.pid.id);
-
       const shouldCleanup = resolveCleanup(resolved.cleanupPolicy, agent);
       if (!shouldCleanup) {
+        // Preserve mapping so workspace can still be found for retry/inspection
         console.warn(
           `[workspace] preserved workspace ${workspaceId} for agent ${agent.pid.id} ` +
             `(policy=${resolved.cleanupPolicy}, outcome=${agent.terminationOutcome ?? "unknown"})`,
@@ -103,6 +102,9 @@ export function createWorkspaceProvider(
       }
 
       await disposeWithTimeout(backend, workspaceId, resolved.cleanupTimeoutMs);
+
+      // Delete mapping only after disposal completes — preserves retry ability on failure
+      workspaces.delete(agent.pid.id);
     },
   };
 

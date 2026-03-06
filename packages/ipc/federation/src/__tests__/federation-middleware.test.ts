@@ -73,18 +73,17 @@ describe("createFederationMiddleware", () => {
     expect(result?.output).toBe("local");
   });
 
-  test("returns EXTERNAL error for unknown zone", async () => {
+  test("throws on unknown zone", async () => {
     const request = createRequest();
     const ctx = createCtx("zone-unknown");
     const next = mock(() =>
       Promise.resolve({ output: "local", metadata: {} } satisfies ToolResponse),
     );
 
-    const result = await middleware.wrapToolCall?.(ctx as never, request, next);
+    await expect(middleware.wrapToolCall?.(ctx as never, request, next)).rejects.toThrow(
+      "Unknown target zone: zone-unknown",
+    );
     expect(next).not.toHaveBeenCalled();
-    const error = (result?.metadata as Record<string, unknown>)?.error as Record<string, unknown>;
-    expect(error?.code).toBe("EXTERNAL");
-    expect(error?.reason).toBe("unknown_zone");
   });
 
   test("routes to remote zone on valid targetZoneId", async () => {
@@ -98,7 +97,7 @@ describe("createFederationMiddleware", () => {
     expect(result?.output).toBe("remote-result");
   });
 
-  test("returns error metadata on remote failure", async () => {
+  test("throws on remote failure", async () => {
     remoteClient.rpcMock.mockImplementation(() =>
       Promise.resolve({
         ok: false,
@@ -110,10 +109,9 @@ describe("createFederationMiddleware", () => {
     const ctx = createCtx("zone-b");
     const next = mock(() => Promise.resolve({ output: "local" } satisfies ToolResponse));
 
-    const result = await middleware.wrapToolCall?.(ctx as never, request, next);
-    const error = (result?.metadata as Record<string, unknown>)?.error as Record<string, unknown>;
-    expect(error?.code).toBe("EXTERNAL");
-    expect(error?.reason).toBe("remote_error");
+    await expect(middleware.wrapToolCall?.(ctx as never, request, next)).rejects.toThrow(
+      "Remote zone zone-b failed: Timed out",
+    );
   });
 
   test("calls onDelegated when routing to remote zone", async () => {

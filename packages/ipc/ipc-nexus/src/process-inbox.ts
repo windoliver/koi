@@ -38,21 +38,30 @@ export async function processPendingMessages(
 
   for (const envelope of result.value) {
     if (seen.has(envelope.id)) continue;
-    seen.add(envelope.id);
 
     const message = mapNexusToKoi(envelope);
-    if (message === undefined) continue;
+    if (message === undefined) {
+      // Permanently unmappable (unknown kind) — mark seen to avoid re-processing
+      seen.add(envelope.id);
+      continue;
+    }
 
+    // let justified: tracks whether all handlers succeeded
+    let allHandlersOk = true;
     for (const handler of handlers) {
       try {
         await handler(message);
       } catch (_err: unknown) {
-        // Handler errors must not crash the polling loop.
-        // Logging would be added by middleware/telemetry at a higher layer.
+        // Handler error — don't mark as seen so message is retried on next poll.
+        allHandlersOk = false;
+        break;
       }
     }
 
-    processed += 1;
+    if (allHandlersOk) {
+      seen.add(envelope.id);
+      processed += 1;
+    }
   }
 
   return processed;

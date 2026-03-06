@@ -98,6 +98,8 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
   let timerId: ReturnType<typeof setTimeout> | undefined;
   // let: set to true on dispose to stop polling
   let disposed = false;
+  // let justified: in-flight guard prevents concurrent syncAll() from overlapping
+  let inflightSync: Promise<void> | undefined;
 
   /** Sync a single remote zone. Returns the number of new events processed. */
   async function syncZone(remoteId: string, client: SyncClient): Promise<number> {
@@ -169,12 +171,24 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
     }
   }
 
+  /** Run syncAll with in-flight guard to prevent concurrent overlapping syncs. */
+  async function guardedSyncAll(): Promise<void> {
+    if (inflightSync !== undefined) {
+      await inflightSync;
+      return;
+    }
+    inflightSync = syncAll().finally(() => {
+      inflightSync = undefined;
+    });
+    await inflightSync;
+  }
+
   /** Schedule the next poll cycle. */
   function scheduleNext(): void {
     if (disposed) return;
     timerId = setTimeout(() => {
       if (disposed) return;
-      syncAll()
+      guardedSyncAll()
         .catch(() => {
           // Sync failures are transient (network, Nexus down).
           // Adaptive polling backs off on next empty cycle.
@@ -190,7 +204,7 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
 
   return {
     sync: async () => {
-      await syncAll();
+      await guardedSyncAll();
     },
 
     getCursor: (remoteZoneId) => {

@@ -145,7 +145,7 @@ describe("HandoffMiddleware", () => {
       expect(events[0]?.kind).toBe("handoff:injected");
     });
 
-    test("does not inject on second call (closure flag)", async () => {
+    test("does not inject same envelope twice (per-envelope tracking)", async () => {
       store.put(createTestEnvelope());
       const mw = makeMiddleware();
       const ctx = createMockTurnContext();
@@ -153,7 +153,7 @@ describe("HandoffMiddleware", () => {
       // First call — injects
       await mw.wrapModelCall?.(ctx, createMockModelRequest(), async () => MOCK_RESPONSE);
 
-      // Second call — passes through
+      // Second call with same envelope — passes through
       let passedRequest: ModelRequest | undefined;
       const request2 = createMockModelRequest();
       await mw.wrapModelCall?.(ctx, request2, async (req) => {
@@ -162,6 +162,37 @@ describe("HandoffMiddleware", () => {
       });
 
       expect(passedRequest?.messages.length).toBe(1); // No system message prepended
+    });
+
+    test("injects again when a new handoff envelope arrives", async () => {
+      store.put(createTestEnvelope());
+      const mw = makeMiddleware();
+      const ctx = createMockTurnContext();
+
+      // First handoff — injects and transitions to "injected"
+      await mw.wrapModelCall?.(ctx, createMockModelRequest(), async () => MOCK_RESPONSE);
+      expect(events).toHaveLength(1);
+
+      // Complete the first handoff lifecycle (accepted → no longer pending)
+      store.transition(handoffId("hoff-1"), "injected", "accepted");
+
+      // Simulate a second handoff with a different envelope ID
+      store.put(
+        createTestEnvelope({
+          id: handoffId("hoff-2"),
+          phase: { completed: "Report generated", next: "Review findings" },
+        }),
+      );
+
+      // Second handoff — should also inject (new pending envelope)
+      let passedRequest: ModelRequest | undefined;
+      await mw.wrapModelCall?.(ctx, createMockModelRequest(), async (req) => {
+        passedRequest = req;
+        return MOCK_RESPONSE;
+      });
+
+      expect(passedRequest?.messages.length).toBe(2); // System message prepended
+      expect(events).toHaveLength(2);
     });
 
     test("passes through when no pending envelope", async () => {

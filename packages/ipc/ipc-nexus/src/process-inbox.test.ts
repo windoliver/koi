@@ -89,20 +89,20 @@ describe("processPendingMessages", () => {
     expect(seen.has("msg-1")).toBe(true);
   });
 
-  test("handler errors do not crash the loop", async () => {
+  test("handler errors do not crash the loop but skip failed messages", async () => {
     const client = createMockClient([ENVELOPE_A, ENVELOPE_B]);
     const throwingHandler = mock(() => {
       throw new Error("handler boom");
     });
-    const goodHandler = mock(() => {});
-    const handlers = new Set<MessageHandler>([throwingHandler, goodHandler]);
+    const handlers = new Set<MessageHandler>([throwingHandler]);
     const seen = new Set<string>();
 
     const count = await processPendingMessages(client, "b", handlers, seen, 50);
 
-    // Both messages processed despite handler errors
-    expect(count).toBe(2);
-    expect(goodHandler).toHaveBeenCalledTimes(2);
+    // Failed messages are not marked seen — will be retried on next poll
+    expect(count).toBe(0);
+    expect(seen.has("msg-1")).toBe(false);
+    expect(seen.has("msg-2")).toBe(false);
   });
 
   test("returns 0 when listInbox fails", async () => {

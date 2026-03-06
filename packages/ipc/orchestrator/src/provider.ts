@@ -21,16 +21,11 @@ import { DEFAULT_ORCHESTRATOR_CONFIG } from "./types.js";
  * but the "current board" reference updates on each mutation.
  */
 export function createOrchestratorProvider(config: OrchestratorConfig): ComponentProvider {
-  // let justified: mutable cache (set once on first attach)
-  let cached: ReadonlyMap<string, unknown> | undefined;
-
   return {
     name: "orchestrator",
 
     async attach(_agent: Agent): Promise<ReadonlyMap<string, unknown>> {
-      if (cached !== undefined) return cached;
-
-      // Mutable holder for the current immutable board
+      // Per-agent state: each attach() gets a fresh board, controller, and tools
       // let justified: board reference changes on each mutation
       let currentBoard: TaskBoard = createTaskBoard({
         maxRetries: config.maxRetries ?? DEFAULT_ORCHESTRATOR_CONFIG.maxRetries,
@@ -82,8 +77,7 @@ export function createOrchestratorProvider(config: OrchestratorConfig): Componen
 
       components.set(skillToken(ORCHESTRATOR_SKILL_NAME) as string, ORCHESTRATOR_SKILL);
 
-      cached = components;
-      return cached;
+      return components;
     },
   };
 }

@@ -34,11 +34,13 @@ describe("createOrchestratorProvider", () => {
     expect(components.has("skill:orchestrator")).toBe(true);
   });
 
-  test("attach is idempotent (returns cached result)", async () => {
+  test("attach returns fresh state per agent (no shared state)", async () => {
     const provider = createOrchestratorProvider(config);
     const first = extractMap(await provider.attach(mockAgent));
-    const second = extractMap(await provider.attach(mockAgent));
-    expect(first).toBe(second);
+    const second = extractMap(await provider.attach(createMockAgent()));
+    // Different map instances — each agent gets its own board, controller, and tools
+    expect(first).not.toBe(second);
+    expect(first.size).toBe(second.size);
   });
 
   test("tool components have execute methods", async () => {

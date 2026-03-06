@@ -159,8 +159,6 @@ export function createGitWorktreeBackend(
         };
       }
 
-      tracked.delete(wsId);
-
       // Remove worktree (try force first, then non-force)
       const removeResult = await runGit(
         ["worktree", "remove", "--force", entry.worktreePath],
@@ -181,6 +179,9 @@ export function createGitWorktreeBackend(
           `[workspace] Failed to delete branch ${entry.branchName}: ${branchResult.error.message}`,
         );
       }
+
+      // Delete metadata only after cleanup succeeds — preserves retry ability on failure
+      tracked.delete(wsId);
 
       return { ok: true, value: undefined };
     },
