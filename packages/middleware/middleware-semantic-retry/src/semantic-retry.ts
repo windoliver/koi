@@ -18,6 +18,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { trimToRecent } from "@koi/failure-context";
 import { createDefaultFailureAnalyzer } from "./default-analyzer.js";
 import { createDefaultPromptRewriter } from "./default-rewriter.js";
 import type {
@@ -87,11 +88,6 @@ function createFallbackAction(error: unknown): RetryAction {
 // ---------------------------------------------------------------------------
 // Internal helpers (extracted to keep functions < 50 lines)
 // ---------------------------------------------------------------------------
-
-function trimRecords(records: readonly RetryRecord[], maxSize: number): readonly RetryRecord[] {
-  if (records.length <= maxSize) return records;
-  return records.slice(records.length - maxSize);
-}
 
 /** Classify with timeout + error fallback. Returns class and whether fallback was used. */
 async function classifyWithFallback(
@@ -200,7 +196,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
       actionTaken: action,
       succeeded: false,
     };
-    records = trimRecords([...records, record], maxHistorySize);
+    records = trimToRecent([...records, record], maxHistorySize);
     pendingAction = action;
     onRetry?.(record);
   }

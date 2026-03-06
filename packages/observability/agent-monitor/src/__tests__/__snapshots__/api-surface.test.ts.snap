@@ -3,6 +3,7 @@
 exports[`@koi/agent-monitor API surface . has stable type surface 1`] = `
 "import { SessionId } from '@koi/core/ecs';
 import { Result, KoiError } from '@koi/core/errors';
+import { RunningStats } from '@koi/failure-context';
 import { KoiMiddleware } from '@koi/core/middleware';
 
 /**
@@ -107,11 +108,7 @@ interface SessionMetricsSummary {
     readonly meanOutputTokens: number;
     readonly outputTokenStddev: number;
 }
-interface LatencyStats {
-    readonly count: number;
-    readonly mean: number;
-    readonly stddev: number;
-}
+type LatencyStats = RunningStats;
 
 /**
  * AgentMonitorConfig and validation.

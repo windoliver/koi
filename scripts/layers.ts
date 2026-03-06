@@ -26,6 +26,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/errors",
   "@koi/event-delivery",
   "@koi/execution-context",
+  "@koi/failure-context",
   "@koi/file-resolution",
   "@koi/forge-types",
   "@koi/gateway-types",

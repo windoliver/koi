@@ -10,10 +10,7 @@
       "path": "../../kernel/core"
     },
     {
-      "path": "../../lib/failure-context"
-    },
-    {
-      "path": "../../fs/resolve"
+      "path": "../welford-stats"
     }
   ]
 }
