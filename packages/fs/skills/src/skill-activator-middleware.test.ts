@@ -37,6 +37,8 @@ function createMockProvider(
       };
     }),
     getLevel: (name: string) => levels.get(name),
+    mount: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
+    unmount: mock(() => {}),
     promoteCalls,
   };
 }

@@ -101,11 +101,11 @@ export interface ProgressiveSkillProvider extends ComponentProvider {
   /** Query the current load level for a skill. Returns undefined if skill not found. */
   readonly getLevel: (name: string) => SkillLoadLevel | undefined;
   /** Hot-mount a skill at runtime. Loads at "body" level and runs security scan. */
-  readonly mount?: (
+  readonly mount: (
     skill: SkillConfig,
     basePath: string,
     onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void,
   ) => Promise<Result<void, KoiError>>;
   /** Hot-unmount a skill by name. */
-  readonly unmount?: (name: string) => void;
+  readonly unmount: (name: string) => void;
 }

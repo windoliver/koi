@@ -347,7 +347,7 @@ describe("ProgressiveSkillProvider.mount", () => {
     await provider.attach(stubAgent);
 
     const skill = fsSkill("code-review", "./valid-skill");
-    const result = await provider.mount?.(skill, FIXTURES);
+    const result = await provider.mount(skill, FIXTURES);
     expect(result.ok).toBe(true);
     expect(provider.getLevel("code-review")).toBe("body");
 
@@ -366,7 +366,7 @@ describe("ProgressiveSkillProvider.mount", () => {
     await provider.attach(stubAgent);
 
     const skill = fsSkill("code-review", "./valid-skill");
-    const result = await provider.mount?.(skill, FIXTURES);
+    const result = await provider.mount(skill, FIXTURES);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -385,7 +385,7 @@ describe("ProgressiveSkillProvider.mount", () => {
       name: "forged-skill",
       source: { kind: "forged" as const, brickId: "sha256:abc" as never },
     };
-    const result = await provider.mount?.(skill, FIXTURES);
+    const result = await provider.mount(skill, FIXTURES);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("filesystem");
@@ -403,7 +403,7 @@ describe("ProgressiveSkillProvider.mount", () => {
     const unsub = provider.watch?.((event) => events.push(event));
 
     const skill = fsSkill("code-review", "./valid-skill");
-    await provider.mount?.(skill, FIXTURES);
+    await provider.mount(skill, FIXTURES);
 
     expect(events).toHaveLength(1);
     expect(events[0]?.kind).toBe("attached");
@@ -419,7 +419,7 @@ describe("ProgressiveSkillProvider.mount", () => {
     await provider.attach(stubAgent);
 
     const skill = fsSkill("missing", "./nonexistent");
-    const result = await provider.mount?.(skill, FIXTURES);
+    const result = await provider.mount(skill, FIXTURES);
     expect(result.ok).toBe(false);
   });
 
@@ -432,7 +432,7 @@ describe("ProgressiveSkillProvider.mount", () => {
     await provider.attach(stubAgent);
 
     const skill = fsSkill("code-review", "./valid-skill");
-    await provider.mount?.(skill, FIXTURES, (name, _findings) => {
+    await provider.mount(skill, FIXTURES, (name, _findings) => {
       findings.push({ name });
     });
 
@@ -452,8 +452,8 @@ describe("ProgressiveSkillProvider.mount", () => {
     const skill2 = fsSkill("minimal", "./minimal-skill");
 
     const [r1, r2] = await Promise.all([
-      provider.mount?.(skill1, FIXTURES),
-      provider.mount?.(skill2, FIXTURES),
+      provider.mount(skill1, FIXTURES),
+      provider.mount(skill2, FIXTURES),
     ]);
 
     expect(r1.ok).toBe(true);
@@ -471,7 +471,7 @@ describe("ProgressiveSkillProvider.unmount", () => {
     });
     await provider.attach(stubAgent);
 
-    provider.unmount?.("code-review");
+    provider.unmount("code-review");
     expect(provider.getLevel("code-review")).toBeUndefined();
 
     const attachResult = await provider.attach(stubAgent);
@@ -493,7 +493,7 @@ describe("ProgressiveSkillProvider.unmount", () => {
     const events: ComponentEvent[] = [];
     const unsub = provider.watch?.((event) => events.push(event));
 
-    provider.unmount?.("code-review");
+    provider.unmount("code-review");
 
     expect(events).toHaveLength(1);
     expect(events[0]?.kind).toBe("detached");

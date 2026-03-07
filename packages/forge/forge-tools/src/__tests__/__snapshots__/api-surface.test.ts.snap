@@ -279,7 +279,7 @@ declare function createInMemoryForgeStore(): ForgeStore;
 interface NetworkPolicy {
     readonly allowed: boolean;
 }
-type ViolationKind = "bin" | "env" | "tool" | "agent" | "package" | "network";
+type ViolationKind = "bin" | "env" | "tool" | "agent" | "package" | "network" | "platform";
 interface RequiresCheckResult {
     readonly satisfied: boolean;
     readonly violation?: {

@@ -73,11 +73,11 @@ export function createSkillStack(config: SkillStackConfig): SkillStackBundle {
           case "added":
           case "changed": {
             const skill = fsSkill(event.name, event.dirPath);
-            void provider.mount?.(skill, basePath, findingCallback);
+            void provider.mount(skill, basePath, findingCallback);
             break;
           }
           case "removed": {
-            provider.unmount?.(event.name);
+            provider.unmount(event.name);
             break;
           }
         }
@@ -99,7 +99,7 @@ export function createSkillStack(config: SkillStackConfig): SkillStackBundle {
           name,
           source: { kind: "forged", brickId: name as never },
         };
-        void provider.mount?.(skill, basePath, findingCallback);
+        void provider.mount(skill, basePath, findingCallback);
       }
     });
     disposables.push(() => forgeUnsub?.());
@@ -119,21 +119,11 @@ export function createSkillStack(config: SkillStackConfig): SkillStackBundle {
 
   // mount/unmount proxy
   const mount = (skill: SkillConfig): Promise<Result<void, KoiError>> => {
-    if (provider.mount === undefined) {
-      return Promise.resolve({
-        ok: false as const,
-        error: {
-          code: "INTERNAL" as const,
-          message: "Provider does not support mount",
-          retryable: false,
-        },
-      });
-    }
     return provider.mount(skill, basePath, findingCallback);
   };
 
   const unmount = (name: string): void => {
-    provider.unmount?.(name);
+    provider.unmount(name);
   };
 
   const dispose = (): void => {
