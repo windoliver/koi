@@ -32,6 +32,8 @@ interface ManagedAgent {
   readonly pid: ProcessId;
   readonly manifest: AgentManifest;
   readonly engine: EngineAdapter;
+  /** Providers attached during dispatch — stored for detach on termination. */
+  readonly providers: readonly ComponentProvider[];
   state: ProcessState;
   turnCount: number;
   lastActivityMs: number;
@@ -191,6 +193,11 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
         if (agents.has(agentId)) {
           managed.state = "terminated";
           managed.exitCode = 130; // POSIX convention: 128 + signal index
+          // Detach component providers — best-effort, fire-and-forget
+          const detachSnapshot = toAgentSnapshot(managed);
+          for (const provider of managed.providers) {
+            void provider.detach?.(detachSnapshot)?.catch(() => {});
+          }
           agents.delete(agentId);
           emit("agent_terminated", { agentId, exitCode: 130 });
         }
@@ -239,6 +246,7 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
         pid,
         manifest,
         engine,
+        providers,
         state: "created",
         turnCount: 0,
         lastActivityMs: Date.now(),
@@ -246,13 +254,36 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
         components: new Map(),
       };
 
-      // Attach components from providers (async — providers may perform I/O)
+      // Attach components from providers (async — providers may perform I/O).
+      // On failure, rollback any already-attached providers then return error.
       const snapshot = toAgentSnapshot(managed);
+      const attached: ComponentProvider[] = [];
       for (const provider of providers) {
-        const result = await provider.attach(snapshot);
-        const components = isAttachResult(result) ? result.components : result;
-        for (const [key, value] of components) {
-          managed.components.set(key, value);
+        try {
+          const result = await provider.attach(snapshot);
+          attached.push(provider);
+          const components = isAttachResult(result) ? result.components : result;
+          for (const [key, value] of components) {
+            managed.components.set(key, value);
+          }
+        } catch (e: unknown) {
+          // Rollback: detach any providers that already attached successfully
+          for (const prev of attached) {
+            try {
+              await prev.detach?.(snapshot);
+            } catch (_detachErr: unknown) {
+              // Best-effort cleanup — detach failure must not mask the original error
+            }
+          }
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL",
+              message: `Provider "${provider.name}" failed to attach: ${e instanceof Error ? e.message : String(e)}`,
+              retryable: RETRYABLE_DEFAULTS.INTERNAL,
+              context: { agentId: pid.id, provider: provider.name },
+            },
+          };
         }
       }
 
@@ -280,6 +311,12 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
       managed.state = "terminated";
       managed.exitCode = exitCode;
       agents.delete(agentId);
+
+      // Detach component providers — best-effort, fire-and-forget
+      const detachSnapshot = toAgentSnapshot(managed);
+      for (const provider of managed.providers) {
+        void provider.detach?.(detachSnapshot)?.catch(() => {});
+      }
 
       // Dispose engine adapter if supported
       void managed.engine.dispose?.().catch(() => {
@@ -359,6 +396,13 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
     terminateAll() {
       for (const [agentId, managed] of agents) {
         managed.state = "terminated";
+
+        // Detach component providers — best-effort, fire-and-forget
+        const detachSnapshot = toAgentSnapshot(managed);
+        for (const provider of managed.providers) {
+          void provider.detach?.(detachSnapshot)?.catch(() => {});
+        }
+
         void managed.engine.dispose?.().catch(() => {});
         emit("agent_terminated", { agentId });
       }

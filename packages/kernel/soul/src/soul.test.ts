@@ -681,7 +681,37 @@ describe("createSoulMiddleware — wrapToolCall auto-reload", () => {
     }
   });
 
-  test("does NOT reload for non-fs_write tool calls", async () => {
+  test("auto-reloads after prefixed write tool (e.g. nx_write) to tracked file", async () => {
+    await writeFile(join(tmpDir, "SOUL.md"), "Original soul");
+
+    const mw = await createSoulMiddleware({ soul: "SOUL.md", basePath: tmpDir });
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    const request: ModelRequest = {
+      messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }],
+    };
+
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    if (spy.calls[0]?.messages[0]?.content[0]?.kind === "text") {
+      expect(spy.calls[0].messages[0].content[0].text).toContain("Original soul");
+    }
+
+    // Simulate nx_write to SOUL.md (custom prefix)
+    await writeFile(join(tmpDir, "SOUL.md"), "Updated via nx_write");
+    const soulPath = join(tmpDir, "SOUL.md");
+
+    const toolNext = async (_req: import("@koi/core").ToolRequest) => ({
+      output: { ok: true },
+    });
+    await mw.wrapToolCall?.(ctx, { toolId: "nx_write", input: { path: soulPath } }, toolNext);
+
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    if (spy.calls[1]?.messages[0]?.content[0]?.kind === "text") {
+      expect(spy.calls[1].messages[0].content[0].text).toContain("Updated via nx_write");
+    }
+  });
+
+  test("does NOT reload for non-write tool calls", async () => {
     await writeFile(join(tmpDir, "SOUL.md"), "Original");
 
     const mw = await createSoulMiddleware({ soul: "SOUL.md", basePath: tmpDir });

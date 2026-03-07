@@ -18,6 +18,7 @@ import type {
   SessionTranscript,
   TextBlock,
   TranscriptEntry,
+  TranscriptEntryRole,
 } from "@koi/core";
 import { transcriptEntryId } from "@koi/core";
 
@@ -56,6 +57,15 @@ function extractText(blocks: readonly ContentBlock[]): string {
     .join("\n");
 }
 
+/** Map an InboundMessage senderId to the appropriate transcript entry role. */
+function mapSenderIdToRole(senderId: string): TranscriptEntryRole {
+  const lower = senderId.toLowerCase();
+  if (lower.includes("assistant")) return "assistant";
+  if (lower.includes("tool")) return "tool_result";
+  if (lower.includes("system")) return "system";
+  return "user";
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -82,11 +92,11 @@ export function createTranscriptingEngine(
     if (input.kind === "text") {
       fireAppend([createEntry("user", input.text)]);
     } else if (input.kind === "messages") {
-      const userEntries = input.messages
-        .map((msg) => ({ text: extractText(msg.content) }))
+      const entries = input.messages
+        .map((msg) => ({ text: extractText(msg.content), role: mapSenderIdToRole(msg.senderId) }))
         .filter(({ text }) => text.length > 0)
-        .map(({ text }) => createEntry("user", text));
-      fireAppend(userEntries);
+        .map(({ text, role }) => createEntry(role, text));
+      fireAppend(entries);
     }
     // kind === "resume" — no user entry (engine state restore)
 

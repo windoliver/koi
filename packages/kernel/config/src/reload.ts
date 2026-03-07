@@ -3,6 +3,8 @@
  */
 
 import type { ConfigStore, ConfigUnsubscribe, KoiConfig, KoiError, Result } from "@koi/core";
+import type { ProcessIncludesOptions } from "./include.js";
+import type { LoadConfigOptions } from "./loader.js";
 import { loadConfig } from "./loader.js";
 import { deepMerge } from "./merge.js";
 import { validateKoiConfig } from "./schema.js";
@@ -65,6 +67,8 @@ export interface CreateConfigManagerOptions {
   readonly initial?: Partial<KoiConfig>;
   /** Environment variables for interpolation. */
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Options for `$include` directive processing. */
+  readonly includes?: ProcessIncludesOptions | undefined;
   /** Called when a watch-triggered reload fails (parse/validation error). */
   readonly onReloadError?: (error: KoiError) => void;
 }
@@ -86,8 +90,13 @@ export function createConfigManager(options: CreateConfigManagerOptions): Config
 
   const store: WritableConfigStore<KoiConfig> = createConfigStore(initialConfig);
 
+  const loaderOptions: LoadConfigOptions = {
+    env: options.env,
+    includes: options.includes,
+  };
+
   const reload = async (): Promise<Result<KoiConfig, KoiError>> => {
-    const loaded = await loadConfig(options.filePath, { env: options.env });
+    const loaded = await loadConfig(options.filePath, loaderOptions);
     if (!loaded.ok) {
       return loaded;
     }

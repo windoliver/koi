@@ -173,14 +173,15 @@ declare function createPersonaWatchedPaths(personaMap: ReadonlyMap<string, Cache
 /**
  * Extended middleware with a \`reload()\` method for HITL-approved soul updates.
  *
- * Automatically reloads when \`fs_write\` targets a tracked soul/identity/user file
- * (the write must pass through the middleware chain, including permissions/HITL).
+ * Automatically reloads when any \`*_write\` tool (e.g. \`fs_write\`, \`nx_write\`)
+ * targets a tracked soul/identity/user file (the write must pass through the
+ * middleware chain, including permissions/HITL).
  * Manual \`reload()\` is also available for programmatic use.
  */
 interface SoulMiddleware extends KoiMiddleware$1 {
     /**
      * Re-resolves all soul, identity, and user content from original source paths.
-     * Called automatically after successful \`fs_write\` to tracked files.
+     * Called automatically after successful \`*_write\` tool call to tracked files.
      * Can also be called manually after HITL-approved writes.
      * Updates the running middleware atomically — takes effect on next model call.
      */
@@ -196,8 +197,8 @@ declare function enrichRequest(request: ModelRequest, soulMessage: InboundMessag
  * identity, and user context into model calls as a system message prefix.
  *
  * Returns \`SoulMiddleware\` — a \`KoiMiddleware\` with \`reload()\` and auto-reload
- * via \`wrapToolCall\`. When \`fs_write\` targets a tracked file and succeeds
- * (meaning it passed permissions/HITL), the middleware auto-reloads.
+ * via \`wrapToolCall\`. When any \`*_write\` tool targets a tracked file and
+ * succeeds (meaning it passed permissions/HITL), the middleware auto-reloads.
  *
  * Content is resolved at factory time and cached in the closure.
  * User content can optionally be refreshed per-call with \`refreshUser: true\`.
