@@ -21,8 +21,9 @@ import type { HandoffMiddlewareConfig } from "./types.js";
  * 3. Transitions envelope status from pending -> injected
  */
 export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMiddleware {
-  // let justified: mutable closure flag for first-turn detection (Decision #7)
-  let injected = false;
+  // let justified: tracks which envelope ID was injected so a new handoff
+  // for the same agent resets injection (fixes single-fire bug).
+  let injectedEnvelopeId: string | undefined;
 
   return {
     name: "koi:handoff",
@@ -41,15 +42,16 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
     },
 
     wrapModelCall: async (_ctx: TurnContext, request: ModelRequest, next: ModelHandler) => {
-      if (injected) return next(request);
-
       const result = await config.store.findPendingForAgent(config.agentId);
       if (!result.ok) return next(request);
       const envelope = result.value;
       if (envelope === undefined) return next(request);
 
-      // First model call: inject summary
-      injected = true;
+      // Already injected for this envelope — skip
+      if (injectedEnvelopeId === envelope.id) return next(request);
+
+      // First model call for this envelope: inject summary
+      injectedEnvelopeId = envelope.id;
       await config.store.transition(envelope.id, envelope.status, "injected");
 
       config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });
@@ -64,11 +66,6 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      if (injected) {
-        yield* next(request);
-        return;
-      }
-
       const result = await config.store.findPendingForAgent(config.agentId);
       if (!result.ok) {
         yield* next(request);
@@ -80,8 +77,14 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
         return;
       }
 
-      // First model call: inject summary (streaming path)
-      injected = true;
+      // Already injected for this envelope — skip
+      if (injectedEnvelopeId === envelope.id) {
+        yield* next(request);
+        return;
+      }
+
+      // First model call for this envelope: inject summary (streaming path)
+      injectedEnvelopeId = envelope.id;
       await config.store.transition(envelope.id, envelope.status, "injected");
 
       config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });

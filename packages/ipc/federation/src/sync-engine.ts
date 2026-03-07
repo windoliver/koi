@@ -98,6 +98,8 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
   let timerId: ReturnType<typeof setTimeout> | undefined;
   // let: set to true on dispose to stop polling
   let disposed = false;
+  // let: in-flight guard — prevents overlapping syncAll() calls
+  let syncing = false;
 
   /** Sync a single remote zone. Returns the number of new events processed. */
   async function syncZone(remoteId: string, client: SyncClient): Promise<number> {
@@ -137,35 +139,42 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
     return newEvents.length;
   }
 
-  /** Sync all remote zones in parallel. */
+  /** Sync all remote zones in parallel. Guarded against overlapping calls. */
   async function syncAll(): Promise<void> {
-    const results = await Promise.allSettled(
-      [...remoteClients.entries()].map(([remoteId, client]) => syncZone(remoteId, client)),
-    );
+    if (syncing) return;
+    syncing = true;
 
-    const totalEvents = results.reduce(
-      (sum, r) => sum + (r.status === "fulfilled" ? r.value : 0),
-      0,
-    );
+    try {
+      const results = await Promise.allSettled(
+        [...remoteClients.entries()].map(([remoteId, client]) => syncZone(remoteId, client)),
+      );
 
-    // Adaptive polling
-    if (totalEvents > 0) {
-      // Events found → halve interval (floor = minPollIntervalMs)
-      currentInterval = Math.max(minPollIntervalMs, Math.floor(currentInterval / 2));
-    } else {
-      // No events → double interval (cap = maxPollIntervalMs)
-      currentInterval = Math.min(maxPollIntervalMs, currentInterval * 2);
-    }
+      const totalEvents = results.reduce(
+        (sum, r) => sum + (r.status === "fulfilled" ? r.value : 0),
+        0,
+      );
 
-    // Vector clock pruning
-    const cutoffAt = Date.now() - clockPruneAfterMs;
-    const activeMap: Record<string, number> = {};
-    for (const [id, time] of lastActiveTimes) {
-      activeMap[id] = time;
-    }
-    for (const [id, cursor] of cursors) {
-      const prunedClock = pruneClock(cursor.vectorClock, activeMap, cutoffAt);
-      cursors.set(id, { ...cursor, vectorClock: prunedClock });
+      // Adaptive polling
+      if (totalEvents > 0) {
+        // Events found → halve interval (floor = minPollIntervalMs)
+        currentInterval = Math.max(minPollIntervalMs, Math.floor(currentInterval / 2));
+      } else {
+        // No events → double interval (cap = maxPollIntervalMs)
+        currentInterval = Math.min(maxPollIntervalMs, currentInterval * 2);
+      }
+
+      // Vector clock pruning
+      const cutoffAt = Date.now() - clockPruneAfterMs;
+      const activeMap: Record<string, number> = {};
+      for (const [id, time] of lastActiveTimes) {
+        activeMap[id] = time;
+      }
+      for (const [id, cursor] of cursors) {
+        const prunedClock = pruneClock(cursor.vectorClock, activeMap, cutoffAt);
+        cursors.set(id, { ...cursor, vectorClock: prunedClock });
+      }
+    } finally {
+      syncing = false;
     }
   }
 

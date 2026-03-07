@@ -159,8 +159,6 @@ export function createGitWorktreeBackend(
         };
       }
 
-      tracked.delete(wsId);
-
       // Remove worktree (try force first, then non-force)
       const removeResult = await runGit(
         ["worktree", "remove", "--force", entry.worktreePath],
@@ -171,6 +169,11 @@ export function createGitWorktreeBackend(
         const fallback = await runGit(["worktree", "remove", entry.worktreePath], repoPath);
         if (!fallback.ok) return fallback;
       }
+
+      // Worktree removed — safe to drop tracking entry.
+      // If branch deletion below fails, we still consider the workspace disposed
+      // (branch cleanup is non-fatal).
+      tracked.delete(wsId);
 
       // Delete the branch
       const branchResult = await runGit(["branch", "-D", entry.branchName], repoPath);
