@@ -92,7 +92,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   let pending: Promise<void> = Promise.resolve();
 
   const unsubscribers = channels.map((ch) =>
-    ch.onMessage((inbound) => {
+    ch.onMessage(async (inbound) => {
       pending = pending.then(async () => {
         const text = extractTextFromBlocks(inbound.content);
         if (text.trim() === "") return;
@@ -115,6 +115,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
           process.stderr.write(`Channel "${ch.name}" error: ${message}\n`);
         }
       });
+      await pending;
     }),
   );
 
