@@ -176,7 +176,10 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): Scratchpad
         }
       }
 
-      // Check file count limit (only for new entries)
+      // Check file count limit (only for new entries); sweep expired first to avoid false rejections
+      if (!existingValid) {
+        sweep();
+      }
       if (!existingValid && entries.size >= SCRATCHPAD_DEFAULTS.MAX_FILES_PER_GROUP) {
         return {
           ok: false,

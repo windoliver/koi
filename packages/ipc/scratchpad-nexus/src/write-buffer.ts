@@ -58,12 +58,15 @@ export function createWriteBuffer(
   async function flush(): Promise<void> {
     if (buffer.size === 0) return;
 
-    // Snapshot and clear to avoid re-entrancy issues
+    // Snapshot to avoid re-entrancy issues
     const entries = [...buffer.entries()];
+    const failed: Array<[ScratchpadPath, BufferedWrite]> = [];
+
+    // Clear before persisting so concurrent adds go into a fresh buffer
     buffer.clear();
 
-    for (const [, write] of entries) {
-      await client.write(
+    for (const [path, write] of entries) {
+      const result = await client.write(
         groupId,
         authorId,
         write.path,
@@ -72,6 +75,16 @@ export function createWriteBuffer(
         write.ttlSeconds,
         write.metadata,
       );
+      if (!result.ok) {
+        failed.push([path, write]);
+      }
+    }
+
+    // Re-buffer failed writes so they are retried on the next flush
+    for (const [path, write] of failed) {
+      if (!buffer.has(path)) {
+        buffer.set(path, write);
+      }
     }
   }
 

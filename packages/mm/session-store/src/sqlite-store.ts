@@ -281,7 +281,7 @@ export function createSqliteSessionPersistence(
       }
 
       db.transaction(() => {
-        deletePendingFramesByAgentStmt.run(agentRow.agentId);
+        deletePendingFramesStmt.run(sid);
         deleteSessionStmt.run(sid);
       })();
 
