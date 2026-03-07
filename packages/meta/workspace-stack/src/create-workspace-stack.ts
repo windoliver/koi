@@ -12,14 +12,15 @@
  *   2. Create shared NexusClient
  *   3. Create raw Nexus filesystem backend
  *   4. If permissions enabled: create scope enforcer
- *   5. If search enabled: create retriever
+ *   5. If search enabled: create scope-filtered retriever
  */
 
-import type { AgentId } from "@koi/core";
+import type { AgentId, KoiError, Result } from "@koi/core";
 import { createNexusFileSystem } from "@koi/filesystem-nexus";
 import { createNexusClient } from "@koi/nexus-client";
 import { createNexusPermissionBackend, createNexusScopeEnforcer } from "@koi/permissions-nexus";
 import { createNexusSearch } from "@koi/search-nexus";
+import type { Retriever, SearchPage, SearchQuery } from "@koi/search-provider";
 import type { WorkspaceStackBundle, WorkspaceStackConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -45,6 +46,50 @@ function validateConfig(config: WorkspaceStackConfig): void {
   if (!config.agentId) {
     throw new Error("WorkspaceStackConfig.agentId is required");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Scope-filtered retriever
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a retriever with a post-filter that removes results outside `scopeRoot`.
+ *
+ * The Nexus search REST API does not support path-prefix scoping at the query
+ * level, so we filter on the client side using `metadata.path`. Results whose
+ * `metadata.path` does not start with `scopeRoot` are dropped. The returned
+ * `total` is adjusted to reflect the filtered set.
+ *
+ * Exported for testing — not part of the public API.
+ */
+export function createScopedRetriever(inner: Retriever, scopeRoot: string): Retriever {
+  // Ensure the prefix ends with "/" so "/agents/a" doesn't match "/agents/ab/…"
+  const prefix = scopeRoot.endsWith("/") ? scopeRoot : `${scopeRoot}/`;
+
+  return {
+    retrieve: async (query: SearchQuery): Promise<Result<SearchPage, KoiError>> => {
+      const result = await inner.retrieve(query);
+      if (!result.ok) {
+        return result;
+      }
+
+      const page = result.value;
+      const filtered = page.results.filter((r) => {
+        const path = r.metadata.path;
+        return typeof path === "string" && (path === scopeRoot || path.startsWith(prefix));
+      });
+
+      return {
+        ok: true,
+        value: {
+          results: filtered,
+          total: filtered.length,
+          hasMore: page.hasMore,
+          ...(page.cursor !== undefined ? { cursor: page.cursor } : {}),
+        },
+      };
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -82,14 +127,18 @@ export function createWorkspaceStack(config: WorkspaceStackConfig): WorkspaceSta
     : undefined;
 
   // 4. Search retriever (optional, default: enabled)
+  //    Scoped via post-filter on metadata.path to match the filesystem scopeRoot.
   const searchEnabled = config.search?.enabled !== false;
   const retriever = searchEnabled
-    ? createNexusSearch({
-        baseUrl: config.nexusBaseUrl,
-        apiKey: config.nexusApiKey,
-        fetchFn: config.fetch,
-        ...(config.search?.minScore !== undefined ? { minScore: config.search.minScore } : {}),
-      }).retriever
+    ? createScopedRetriever(
+        createNexusSearch({
+          baseUrl: config.nexusBaseUrl,
+          apiKey: config.nexusApiKey,
+          fetchFn: config.fetch,
+          ...(config.search?.minScore !== undefined ? { minScore: config.search.minScore } : {}),
+        }).retriever,
+        scopeRoot,
+      )
     : undefined;
 
   return {

@@ -6,9 +6,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { KoiError, Result } from "@koi/core";
 import { agentId } from "@koi/core";
+import type { Retriever, SearchPage, SearchQuery, SearchResult } from "@koi/search-provider";
 import { createFakeNexusFetch } from "@koi/test-utils";
-import { createWorkspaceStack } from "./create-workspace-stack.js";
+import { createScopedRetriever, createWorkspaceStack } from "./create-workspace-stack.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -208,5 +210,172 @@ describe("createWorkspaceStack", () => {
         agentId: TEST_AGENT_ID,
       }),
     ).toThrow("nexusApiKey");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createScopedRetriever
+// ---------------------------------------------------------------------------
+
+function makeResult(path: string, score = 0.9): SearchResult {
+  return {
+    id: `${path}:0`,
+    score,
+    content: "some content",
+    source: "nexus",
+    metadata: { path },
+  };
+}
+
+function createMockRetriever(results: readonly SearchResult[]): Retriever {
+  return {
+    retrieve: async (_query: SearchQuery): Promise<Result<SearchPage, KoiError>> => ({
+      ok: true,
+      value: {
+        results,
+        total: results.length,
+        hasMore: false,
+      },
+    }),
+  };
+}
+
+describe("createScopedRetriever", () => {
+  test("filters results outside scopeRoot", async () => {
+    const inner = createMockRetriever([
+      makeResult("/agents/a/workspace/file.txt"),
+      makeResult("/agents/b/workspace/file.txt"),
+      makeResult("/agents/a/workspace/sub/deep.txt"),
+    ]);
+
+    const scoped = createScopedRetriever(inner, "/agents/a/workspace");
+    const result = await scoped.retrieve({ text: "test", limit: 10 });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.results.length).toBe(2);
+      const paths = result.value.results.map((r) => r.metadata.path);
+      expect(paths).toContain("/agents/a/workspace/file.txt");
+      expect(paths).toContain("/agents/a/workspace/sub/deep.txt");
+      expect(paths).not.toContain("/agents/b/workspace/file.txt");
+      expect(result.value.total).toBe(2);
+    }
+  });
+
+  test("does not match paths that share a prefix but differ at boundary", async () => {
+    const inner = createMockRetriever([
+      makeResult("/agents/ab/workspace/file.txt"),
+      makeResult("/agents/a/workspace/file.txt"),
+    ]);
+
+    const scoped = createScopedRetriever(inner, "/agents/a/workspace");
+    const result = await scoped.retrieve({ text: "test", limit: 10 });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.results.length).toBe(1);
+      expect(result.value.results[0]?.metadata.path).toBe("/agents/a/workspace/file.txt");
+    }
+  });
+
+  test("allows exact scopeRoot match", async () => {
+    const inner = createMockRetriever([makeResult("/agents/a/workspace")]);
+
+    const scoped = createScopedRetriever(inner, "/agents/a/workspace");
+    const result = await scoped.retrieve({ text: "test", limit: 10 });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.results.length).toBe(1);
+    }
+  });
+
+  test("returns empty results when none match scope", async () => {
+    const inner = createMockRetriever([
+      makeResult("/other/path/file.txt"),
+      makeResult("/different/root/file.txt"),
+    ]);
+
+    const scoped = createScopedRetriever(inner, "/agents/a/workspace");
+    const result = await scoped.retrieve({ text: "test", limit: 10 });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.results.length).toBe(0);
+      expect(result.value.total).toBe(0);
+    }
+  });
+
+  test("passes through errors from inner retriever", async () => {
+    const errorRetriever: Retriever = {
+      retrieve: async (): Promise<Result<SearchPage, KoiError>> => ({
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message: "Search unavailable",
+          retryable: false,
+        },
+      }),
+    };
+
+    const scoped = createScopedRetriever(errorRetriever, "/agents/a/workspace");
+    const result = await scoped.retrieve({ text: "test", limit: 10 });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBe("Search unavailable");
+    }
+  });
+
+  test("preserves cursor and hasMore from inner result", async () => {
+    const inner: Retriever = {
+      retrieve: async (): Promise<Result<SearchPage, KoiError>> => ({
+        ok: true,
+        value: {
+          results: [makeResult("/agents/a/workspace/file.txt")],
+          total: 5,
+          hasMore: true,
+          cursor: "next-page",
+        },
+      }),
+    };
+
+    const scoped = createScopedRetriever(inner, "/agents/a/workspace");
+    const result = await scoped.retrieve({ text: "test", limit: 10 });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.hasMore).toBe(true);
+      expect(result.value.cursor).toBe("next-page");
+    }
+  });
+
+  test("skips results with missing or non-string metadata.path", async () => {
+    const inner = createMockRetriever([
+      {
+        id: "no-path:0",
+        score: 0.9,
+        content: "no path",
+        source: "nexus",
+        metadata: {},
+      },
+      {
+        id: "num-path:0",
+        score: 0.9,
+        content: "numeric path",
+        source: "nexus",
+        metadata: { path: 42 },
+      },
+      makeResult("/agents/a/workspace/valid.txt"),
+    ]);
+
+    const scoped = createScopedRetriever(inner, "/agents/a/workspace");
+    const result = await scoped.retrieve({ text: "test", limit: 10 });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.results.length).toBe(1);
+      expect(result.value.results[0]?.metadata.path).toBe("/agents/a/workspace/valid.txt");
+    }
   });
 });

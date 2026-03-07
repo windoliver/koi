@@ -87,28 +87,35 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     await ch.connect();
   }
 
+  // let justified: serial queue prevents concurrent runtime.run() calls
+  // (runtime enforces single-flight and throws on overlap)
+  let pending: Promise<void> = Promise.resolve();
+
   const unsubscribers = channels.map((ch) =>
     ch.onMessage(async (inbound) => {
-      const text = extractTextFromBlocks(inbound.content);
-      if (text.trim() === "") return;
+      pending = pending.then(async () => {
+        const text = extractTextFromBlocks(inbound.content);
+        if (text.trim() === "") return;
 
-      const input: EngineInput = { kind: "text", text };
-      const blocks: ContentBlock[] = [];
+        const input: EngineInput = { kind: "text", text };
+        const blocks: ContentBlock[] = [];
 
-      try {
-        for await (const event of runtime.run(input)) {
-          if (event.kind === "text_delta") {
-            blocks.push({ kind: "text", text: event.delta });
+        try {
+          for await (const event of runtime.run(input)) {
+            if (event.kind === "text_delta") {
+              blocks.push({ kind: "text", text: event.delta });
+            }
           }
-        }
 
-        if (blocks.length > 0) {
-          await ch.send({ content: blocks });
+          if (blocks.length > 0) {
+            await ch.send({ content: blocks });
+          }
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`Channel "${ch.name}" error: ${message}\n`);
         }
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`Channel "${ch.name}" error: ${message}\n`);
-      }
+      });
+      await pending;
     }),
   );
 

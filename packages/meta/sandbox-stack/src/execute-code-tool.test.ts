@@ -94,4 +94,93 @@ describe("createExecuteCodeProvider", () => {
     const callArgs = (stack.executor.execute as ReturnType<typeof mock>).mock.calls[0];
     expect(callArgs?.[2]).toBe(30_000);
   });
+
+  test("tool schema does not include language parameter", async () => {
+    const stack = createMockStack();
+    const provider = createExecuteCodeProvider(stack);
+    const result = await provider.attach({} as Parameters<typeof provider.attach>[0]);
+    const map = result as ReadonlyMap<string, unknown>;
+    const tool = map.get("tool:execute_code") as Tool;
+
+    const props = (tool.descriptor.inputSchema as { readonly properties: Record<string, unknown> })
+      .properties;
+    expect(props).not.toHaveProperty("language");
+    expect(props).toHaveProperty("code");
+    expect(props).toHaveProperty("input");
+    expect(props).toHaveProperty("timeoutMs");
+  });
+
+  test("output is truncated when it exceeds maxOutputBytes", async () => {
+    const longOutput = "x".repeat(200);
+    const stack = createMockStack(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: { output: longOutput, durationMs: 10 } satisfies SandboxResult,
+      }),
+    );
+    const provider = createExecuteCodeProvider(stack, { maxOutputBytes: 50 });
+    const result = await provider.attach({} as Parameters<typeof provider.attach>[0]);
+    const map = result as ReadonlyMap<string, unknown>;
+    const tool = map.get("tool:execute_code") as Tool;
+
+    const output = (await tool.execute({ code: "big" })) as { readonly output: string };
+
+    expect(output.output).toContain("[output truncated");
+    expect(output.output).toContain("50 byte limit");
+    expect(output.output.length).toBeLessThan(longOutput.length);
+  });
+
+  test("output is not truncated when within maxOutputBytes", async () => {
+    const shortOutput = "hello";
+    const stack = createMockStack(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: { output: shortOutput, durationMs: 10 } satisfies SandboxResult,
+      }),
+    );
+    const provider = createExecuteCodeProvider(stack, { maxOutputBytes: 1000 });
+    const result = await provider.attach({} as Parameters<typeof provider.attach>[0]);
+    const map = result as ReadonlyMap<string, unknown>;
+    const tool = map.get("tool:execute_code") as Tool;
+
+    const output = (await tool.execute({ code: "small" })) as { readonly output: string };
+
+    expect(output.output).toBe("hello");
+  });
+
+  test("non-string output is not truncated", async () => {
+    const objectOutput = { data: [1, 2, 3] };
+    const stack = createMockStack(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: { output: objectOutput, durationMs: 10 } satisfies SandboxResult,
+      }),
+    );
+    const provider = createExecuteCodeProvider(stack, { maxOutputBytes: 5 });
+    const result = await provider.attach({} as Parameters<typeof provider.attach>[0]);
+    const map = result as ReadonlyMap<string, unknown>;
+    const tool = map.get("tool:execute_code") as Tool;
+
+    const output = (await tool.execute({ code: "obj" })) as { readonly output: unknown };
+
+    expect(output.output).toEqual({ data: [1, 2, 3] });
+  });
+
+  test("default maxOutputBytes is 10 MB when options not provided", async () => {
+    const output = "y".repeat(1000);
+    const stack = createMockStack(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: { output, durationMs: 10 } satisfies SandboxResult,
+      }),
+    );
+    const provider = createExecuteCodeProvider(stack);
+    const result = await provider.attach({} as Parameters<typeof provider.attach>[0]);
+    const map = result as ReadonlyMap<string, unknown>;
+    const tool = map.get("tool:execute_code") as Tool;
+
+    const res = (await tool.execute({ code: "test" })) as { readonly output: string };
+
+    expect(res.output).toBe(output);
+  });
 });

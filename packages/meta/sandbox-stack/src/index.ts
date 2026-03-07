@@ -59,6 +59,7 @@ export type { CloudSandboxConfig, CloudSandboxProvider } from "./cloud-types.js"
 export { createCloudSandbox } from "./create-cloud-sandbox.js";
 // ── Stack composition (original sandbox-stack) ──────────────────────────
 export { createSandboxStack } from "./create-sandbox-stack.js";
+export type { ExecuteCodeProviderOptions } from "./execute-code-tool.js";
 export { createExecuteCodeProvider } from "./execute-code-tool.js";
 export { createTimeoutGuardedExecutor } from "./timeout-guard.js";
 export type { SandboxStack, SandboxStackConfig } from "./types.js";

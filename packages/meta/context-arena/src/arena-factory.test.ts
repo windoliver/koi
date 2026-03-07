@@ -10,7 +10,7 @@ import type {
   SnapshotNode,
   ThreadStore,
 } from "@koi/core";
-import type { MemoryComponent, SessionId } from "@koi/core/ecs";
+import type { MemoryComponent, RunId, SessionId } from "@koi/core/ecs";
 import type { KoiError, Result } from "@koi/core/errors";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelHandler } from "@koi/core/middleware";
@@ -260,6 +260,128 @@ describe("createContextArena memory wiring", () => {
     expect(bundle.middleware).toHaveLength(5);
     const umMw = bundle.middleware.find((mw) => mw.name === "user-model");
     expect(umMw).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// User-scoped memory isolation — middleware uses per-user memory, not singleton
+// ---------------------------------------------------------------------------
+
+describe("createContextArena user-scoped memory", () => {
+  const tmpDirs: string[] = [];
+
+  afterAll(async () => {
+    await Promise.all(tmpDirs.map((d) => rm(d, { recursive: true, force: true })));
+  });
+
+  async function makeTmpDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "koi-arena-scoped-"));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  test("userScoped adds session-binding middleware at priority 0", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir }, userScoped: true },
+      }),
+    );
+
+    const bindingMw = bundle.middleware.find((mw) => mw.name === "koi:session-binding");
+    expect(bindingMw).toBeDefined();
+    expect(bindingMw?.priority).toBe(0);
+  });
+
+  test("userScoped middleware count includes session-binding", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir }, userScoped: true },
+      }),
+    );
+
+    // session-binding (0) + squash (220) + compactor (225) + context-editing (250)
+    // + hot-memory (310) + user-model (415)
+    expect(bundle.middleware).toHaveLength(6);
+    const priorities = bundle.middleware.map((mw) => mw.priority);
+    expect(priorities).toEqual([0, 220, 225, 250, 310, 415]);
+  });
+
+  test("non-scoped path has no session-binding middleware", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir } },
+      }),
+    );
+
+    const bindingMw = bundle.middleware.find((mw) => mw.name === "koi:session-binding");
+    expect(bindingMw).toBeUndefined();
+    // squash + compactor + context-editing + hot-memory + user-model = 5
+    expect(bundle.middleware).toHaveLength(5);
+  });
+
+  test("userScoped still produces user-scoped memory provider", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir }, userScoped: true },
+      }),
+    );
+
+    // squash provider + memory provider
+    expect(bundle.providers).toHaveLength(2);
+  });
+
+  test("explicit config.memory overrides scoped proxy", async () => {
+    const dir = await makeTmpDir();
+    const explicitMemory = {
+      store: mock(() => Promise.resolve()),
+      recall: mock(() => Promise.resolve([])),
+    } as unknown as MemoryComponent;
+
+    const bundle = await createContextArena(
+      baseConfig({
+        memory: explicitMemory,
+        memoryFs: { config: { baseDir: dir }, userScoped: true },
+      }),
+    );
+
+    // No session-binding when config.memory overrides the proxy
+    const bindingMw = bundle.middleware.find((mw) => mw.name === "koi:session-binding");
+    expect(bindingMw).toBeUndefined();
+  });
+
+  test("session-binding middleware sets userId on session start", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir }, userScoped: true },
+      }),
+    );
+
+    const bindingMw = bundle.middleware.find((mw) => mw.name === "koi:session-binding");
+    expect(bindingMw).toBeDefined();
+
+    // onSessionStart should exist and not throw
+    expect(bindingMw?.onSessionStart).toBeDefined();
+    await bindingMw?.onSessionStart?.({
+      agentId: "test",
+      sessionId: "s1" as SessionId,
+      runId: "r1" as RunId,
+      userId: "user-123",
+      metadata: {},
+    });
+
+    // onSessionEnd should exist and not throw
+    expect(bindingMw?.onSessionEnd).toBeDefined();
+    await bindingMw?.onSessionEnd?.({
+      agentId: "test",
+      sessionId: "s1" as SessionId,
+      runId: "r1" as RunId,
+      metadata: {},
+    });
   });
 });
 

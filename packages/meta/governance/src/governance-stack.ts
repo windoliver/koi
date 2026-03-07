@@ -117,8 +117,16 @@ function createApprovalRoutingProvider(
   // Late-binding onAsk — resolves the correct handler per agent at call time.
   // Falls back to user's original onAsk, then to deny_once.
   const dynamicOnAsk = async (req: ExecApprovalRequest): Promise<ProgressiveDecision> => {
+    if (agentHandlers.size > 1) {
+      console.warn(
+        `[koi:governance] dynamicOnAsk: ${agentHandlers.size} agent handlers registered but ` +
+          `ExecApprovalRequest carries no agent identity — routing to first handler is ambiguous. ` +
+          `Agent IDs in map: ${[...agentHandlers.keys()].join(", ")}. ` +
+          `Consider using a separate governance stack per agent.`,
+      );
+    }
     // In 1:1 model, the map has one entry. Use the first handler found.
-    // This is safe: the governance stack is created per-agent in Koi's architecture.
+    // When multiple handlers exist, this is ambiguous (warned above).
     for (const handler of agentHandlers.values()) {
       return handler(req);
     }
