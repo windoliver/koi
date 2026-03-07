@@ -11,17 +11,19 @@ import type {
   BreakpointOptions,
   BreakpointPredicate,
   DebugEvent,
+  DebugSessionId,
   EngineEvent,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ToolCallId,
   ToolHandler,
   ToolRequest,
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { breakpointId } from "@koi/core";
+import { breakpointId, toolCallId } from "@koi/core";
 import { matchesBreakpoint } from "./breakpoint-matcher.js";
 import { DEBUG_MIDDLEWARE_NAME, DEBUG_MIDDLEWARE_PRIORITY } from "./constants.js";
 import type { EventRingBuffer } from "./event-ring-buffer.js";
@@ -62,6 +64,8 @@ export interface DebugController {
   readonly pausedEvent: () => EngineEvent | undefined;
   /** Get the breakpoint that caused the pause (if any). */
   readonly pausedBreakpointId: () => BreakpointId | undefined;
+  /** Set the debug session ID (called by DebugSession after construction). */
+  readonly setSessionId: (id: DebugSessionId) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +78,12 @@ export interface DebugMiddlewareResult {
 }
 
 /** Create a debug middleware with controller interface. */
-export function createDebugMiddleware(eventBuffer: EventRingBuffer): DebugMiddlewareResult {
+export function createDebugMiddleware(
+  eventBuffer: EventRingBuffer,
+  sessionId?: DebugSessionId,
+): DebugMiddlewareResult {
+  // let justified: session ID may be set after construction via setSessionId
+  let debugSessId: DebugSessionId = sessionId ?? ("" as DebugSessionId);
   // let justified: mutable active flag
   let active = false;
 
@@ -125,7 +134,7 @@ export function createDebugMiddleware(eventBuffer: EventRingBuffer): DebugMiddle
 
           emitDebugEvent({
             kind: "breakpoint_hit",
-            debugSessionId: "" as ReturnType<typeof import("@koi/core").debugSessionId>,
+            debugSessionId: debugSessId,
             breakpointId: bpId,
             turnIndex: currentTurnIndex,
             event,
@@ -139,7 +148,7 @@ export function createDebugMiddleware(eventBuffer: EventRingBuffer): DebugMiddle
 
           emitDebugEvent({
             kind: "paused",
-            debugSessionId: "" as ReturnType<typeof import("@koi/core").debugSessionId>,
+            debugSessionId: debugSessId,
             breakpointId: bpId,
             turnIndex: currentTurnIndex,
           });
@@ -153,7 +162,7 @@ export function createDebugMiddleware(eventBuffer: EventRingBuffer): DebugMiddle
 
           emitDebugEvent({
             kind: "resumed",
-            debugSessionId: "" as ReturnType<typeof import("@koi/core").debugSessionId>,
+            debugSessionId: debugSessId,
           });
 
           // Only hit one breakpoint per event
@@ -178,14 +187,14 @@ export function createDebugMiddleware(eventBuffer: EventRingBuffer): DebugMiddle
       };
     },
 
-    onBeforeTurn: async (_ctx: TurnContext): Promise<void> => {
+    onBeforeTurn: async (ctx: TurnContext): Promise<void> => {
       if (!active) return;
-      await processEvent({ kind: "turn_start", turnIndex: currentTurnIndex });
+      await processEvent({ kind: "turn_start", turnIndex: ctx.turnIndex });
     },
 
-    onAfterTurn: async (_ctx: TurnContext): Promise<void> => {
+    onAfterTurn: async (ctx: TurnContext): Promise<void> => {
       if (!active) return;
-      await processEvent({ kind: "turn_end", turnIndex: currentTurnIndex });
+      await processEvent({ kind: "turn_end", turnIndex: ctx.turnIndex });
     },
 
     wrapToolCall: async (
@@ -195,17 +204,19 @@ export function createDebugMiddleware(eventBuffer: EventRingBuffer): DebugMiddle
     ): Promise<ToolResponse> => {
       if (!active) return next(request);
 
+      const callId: ToolCallId = toolCallId(crypto.randomUUID());
+
       await processEvent({
         kind: "tool_call_start",
         toolName: request.toolId,
-        callId: "" as ReturnType<typeof import("@koi/core").toolCallId>,
+        callId,
       });
 
       const response = await next(request);
 
       await processEvent({
         kind: "tool_call_end",
-        callId: "" as ReturnType<typeof import("@koi/core").toolCallId>,
+        callId,
         result: response.output,
       });
 
@@ -281,6 +292,9 @@ export function createDebugMiddleware(eventBuffer: EventRingBuffer): DebugMiddle
     eventBuffer: () => eventBuffer,
     pausedEvent: () => pausedEvt,
     pausedBreakpointId: () => pausedBpId,
+    setSessionId: (sid: DebugSessionId) => {
+      debugSessId = sid;
+    },
   };
 
   return { middleware, controller };

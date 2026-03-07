@@ -50,8 +50,9 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
   let detached = false;
   const attachedSince = new Date().toISOString();
 
-  // Activate the middleware
+  // Activate the middleware and bind session ID for event correlation
   controller.activate();
+  controller.setSessionId(id);
 
   // Emit attached event
   const listeners = new Set<(event: DebugEvent) => void>();
@@ -153,12 +154,34 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
       });
     },
 
-    step: (_options?: StepOptions) => {
+    step: (options?: StepOptions) => {
       const check = assertPaused();
       if (!check.ok) return check;
 
-      // Release the gate to allow one step
+      const count = options?.count ?? 1;
+      const until = options?.until;
+
+      if (until !== undefined) {
+        // Install a one-shot breakpoint for the "until" predicate, then resume
+        controller.addBreakpoint(until, { once: true, label: "step-until" });
+      } else if (count > 1) {
+        // Install a one-shot breakpoint at the target turn index
+        const targetTurn = controller.turnIndex() + count;
+        controller.addBreakpoint(
+          { kind: "turn", turnIndex: targetTurn },
+          { once: true, label: "step-target" },
+        );
+      }
+
+      // Release the gate to allow execution
       controller.releaseGate();
+
+      emitToSession({
+        kind: "step_completed",
+        debugSessionId: id,
+        turnIndex: controller.turnIndex(),
+      });
+
       return { ok: true, value: undefined };
     },
 

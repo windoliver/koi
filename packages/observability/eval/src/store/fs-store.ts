@@ -89,12 +89,27 @@ async function listRunMetas(baseDir: string, evalName: string): Promise<readonly
 
     for (const file of summaryFiles) {
       try {
+        const runId = file.replace(".summary.json", "");
         const content = await Bun.file(join(dir, file)).text();
         const summary = JSON.parse(content) as EvalSummary;
+
+        // Attempt to read timestamp from the full run file
+        let timestamp = "";
+        try {
+          const runFile = Bun.file(join(dir, `${runId}.json`));
+          if (await runFile.exists()) {
+            const runContent = await runFile.text();
+            const run = JSON.parse(runContent) as { readonly timestamp?: string };
+            timestamp = run.timestamp ?? "";
+          }
+        } catch {
+          // Fall back to empty timestamp if run file is missing/corrupted
+        }
+
         metas.push({
-          id: file.replace(".summary.json", ""),
+          id: runId,
           name: evalName,
-          timestamp: "",
+          timestamp,
           passRate: summary.passRate,
           taskCount: summary.taskCount,
         });
