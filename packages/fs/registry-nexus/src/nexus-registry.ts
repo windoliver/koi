@@ -26,7 +26,7 @@ import type {
   TransitionReason,
   VisibilityContext,
 } from "@koi/core";
-import { agentGroupId, agentId, matchesFilter, VALID_TRANSITIONS } from "@koi/core";
+import { agentGroupId, agentId, matchesFilter, VALID_TRANSITIONS, zoneId } from "@koi/core";
 import { createListenerSet } from "@koi/event-delivery";
 import type { NexusRegistryConfig } from "./config.js";
 import { DEFAULT_NEXUS_REGISTRY_CONFIG } from "./config.js";
@@ -101,12 +101,19 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     const spawner = typeof metadata.spawner === "string" ? agentId(metadata.spawner) : undefined;
     const groupIdValue =
       typeof metadata.groupId === "string" ? agentGroupId(metadata.groupId) : undefined;
+    const zoneIdValue =
+      typeof agent.zone_id === "string"
+        ? zoneId(agent.zone_id)
+        : typeof metadata.zoneId === "string"
+          ? zoneId(metadata.zoneId)
+          : undefined;
 
     return {
       ...base,
       ...(parentId !== undefined ? { parentId } : {}),
       ...(spawner !== undefined ? { spawner } : {}),
       ...(groupIdValue !== undefined ? { groupId: groupIdValue } : {}),
+      ...(zoneIdValue !== undefined ? { zoneId: zoneIdValue } : {}),
     };
   }
 
@@ -219,7 +226,11 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       agent_id: entry.agentId,
       name: entry.agentId,
       metadata: mergedMetadata,
-      ...(config.zoneId !== undefined ? { zone_id: config.zoneId } : {}),
+      ...(entry.zoneId !== undefined
+        ? { zone_id: entry.zoneId }
+        : config.zoneId !== undefined
+          ? { zone_id: config.zoneId }
+          : {}),
     });
 
     if (!registerResult.ok) {
@@ -242,21 +253,29 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       "CONNECTED",
       currentNexusGen,
     );
-    if (connectedResult.ok) {
-      currentNexusGen = connectedResult.value.generation ?? currentNexusGen + 1;
+    if (!connectedResult.ok) {
+      throw new Error(
+        `Failed to transition agent ${entry.agentId} to CONNECTED in Nexus: ${connectedResult.error.message}`,
+        { cause: connectedResult.error },
+      );
     }
+    currentNexusGen = connectedResult.value.generation ?? currentNexusGen + 1;
 
     // If target is not CONNECTED, do a second transition
-    if (targetNexusState !== "CONNECTED" && connectedResult.ok) {
+    if (targetNexusState !== "CONNECTED") {
       const targetResult = await nexusTransition(
         config,
         entry.agentId,
         targetNexusState,
         currentNexusGen,
       );
-      if (targetResult.ok) {
-        currentNexusGen = targetResult.value.generation ?? currentNexusGen + 1;
+      if (!targetResult.ok) {
+        throw new Error(
+          `Failed to transition agent ${entry.agentId} to ${targetNexusState} in Nexus: ${targetResult.error.message}`,
+          { cause: targetResult.error },
+        );
       }
+      currentNexusGen = targetResult.value.generation ?? currentNexusGen + 1;
     }
 
     // Store in local projection with Koi generation (from entry)
@@ -376,8 +395,12 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       ...statusMetadata,
     });
 
-    // Update Nexus gen after metadata update if it advanced
-    if (updateResult.ok && updateResult.value.generation !== undefined) {
+    if (!updateResult.ok) {
+      return { ok: false, error: updateResult.error };
+    }
+
+    // Update Nexus gen after metadata update
+    if (updateResult.value.generation !== undefined) {
       nexusGens.set(id, updateResult.value.generation);
     }
 
@@ -431,6 +454,9 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     }
     if (fields.metadata !== undefined) {
       Object.assign(nexusMeta, fields.metadata);
+    }
+    if (fields.zoneId !== undefined) {
+      nexusMeta.zoneId = fields.zoneId;
     }
 
     const updateResult = await nexusUpdateMetadata(config, id, nexusMeta);

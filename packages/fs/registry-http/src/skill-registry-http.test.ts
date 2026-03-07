@@ -55,14 +55,13 @@ describe("search", () => {
     expect(page.items[0]?.id).toBe(skillId("skill-1"));
   });
 
-  test("returns empty page on network failure", async () => {
+  test("throws on network failure", async () => {
     const fetchFn = createMockFetch(() => {
       throw new Error("Network error");
     });
     const registry = createSkillRegistryHttp(createConfig(fetchFn));
 
-    const page = await registry.search({ text: "test" });
-    expect(page.items).toHaveLength(0);
+    await expect(registry.search({ text: "test" })).rejects.toThrow("Skill registry search failed");
   });
 
   test("passes query parameters correctly", async () => {

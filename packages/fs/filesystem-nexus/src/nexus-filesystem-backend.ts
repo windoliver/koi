@@ -65,7 +65,19 @@ function computeFullPath(basePath: string, userPath: string): Result<string, Koi
   }
 
   // Normalize backslash separators and decode percent-encoded sequences
-  const normalized = decodeURIComponent(userPath.replace(/\\/g, "/"));
+  let normalized: string;
+  try {
+    normalized = decodeURIComponent(userPath.replace(/\\/g, "/"));
+  } catch {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `Path contains malformed percent-encoding: '${userPath}'`,
+        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      },
+    };
+  }
 
   // Strip leading slash to avoid double-slash when joining
   const normalizedUser = normalized.startsWith("/") ? normalized.slice(1) : normalized;
