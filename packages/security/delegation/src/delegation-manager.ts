@@ -375,6 +375,13 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
       }
     }
 
+    // Check grant expiry before cache — a cached "allowed" must not be
+    // served after the grant's TTL has elapsed.
+    if (storedGrant.expiresAt <= Date.now()) {
+      emit({ kind: "delegation:denied", grantId, toolId, reason: "expired" });
+      return { ok: false, reason: "expired" };
+    }
+
     // Fast path — return cached result if available
     const cached = verifyCache.get(grantId, toolId);
     if (cached === true) {

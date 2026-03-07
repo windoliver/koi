@@ -45,13 +45,17 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
 
   // Internal mutable state — encapsulated in closure, never exposed.
   // `let` justified: buffer is swapped atomically on flush; timer/flushing are lifecycle flags.
+  // `entrySeq` justified: monotonic counter to prevent path collisions when multiple
+  // events of the same kind occur in the same turn within the same millisecond.
   let buffer: AuditEntry[] = [];
   let timer: ReturnType<typeof setInterval> | undefined;
   let flushing = false;
+  let entrySeq = 0;
 
   function computeEntryPath(entry: AuditEntry): string {
     const safeSessionId = entry.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    return `${basePath}/${safeSessionId}/${entry.timestamp}-${entry.turnIndex}-${entry.kind}.json`;
+    const seq = entrySeq++;
+    return `${basePath}/${safeSessionId}/${entry.timestamp}-${entry.turnIndex}-${entry.kind}-${seq}.json`;
   }
 
   async function writeEntry(entry: AuditEntry, path: string): Promise<void> {

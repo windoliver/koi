@@ -59,6 +59,14 @@ export function createNexusRevocationRegistry(
       }
     }
 
+    // Fail-closed: any ID missing from the response is treated as revoked.
+    // Prevents partial Nexus responses from silently allowing access.
+    for (const id of ids) {
+      if (!resultMap.has(id)) {
+        resultMap.set(id, true);
+      }
+    }
+
     return resultMap;
   };
 
