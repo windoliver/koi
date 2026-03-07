@@ -33,22 +33,7 @@ jobs:
           # Full history required for Turborepo git range detection.
           fetch-depth: 0
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: ${{ runner.os }}-bun-
-
-      - name: Turborepo cache
-        uses: rharkor/caching-for-turbo@v2.3.11
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - uses: ./.github/actions/setup
 
       - name: Check layer boundaries
         run: bun run check:layers

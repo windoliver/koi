@@ -1,0 +1,23 @@
+name: Setup Bun & Turborepo
+description: Install Bun, restore caches, and install dependencies. Requires checkout first.
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    - name: Cache Bun dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.bun/install/cache
+        key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+        restore-keys: ${{ runner.os }}-bun-
+
+    - name: Turborepo cache
+      uses: rharkor/caching-for-turbo@v2.3.11
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
