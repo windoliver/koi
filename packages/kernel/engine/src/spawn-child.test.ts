@@ -10,17 +10,17 @@ import type {
   Tool,
 } from "@koi/core";
 import { agentId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
+import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
+import type { CascadingTermination, InMemoryRegistry, ProcessTree } from "@koi/engine-reconcile";
+import {
+  createCascadingTermination,
+  createInMemoryRegistry,
+  createProcessTree,
+} from "@koi/engine-reconcile";
 import { KoiRuntimeError } from "@koi/errors";
-import type { CascadingTermination } from "./cascading-termination.js";
-import { createCascadingTermination } from "./cascading-termination.js";
-import type { ProcessTree } from "./process-tree.js";
-import { createProcessTree } from "./process-tree.js";
-import type { InMemoryRegistry } from "./registry.js";
-import { createInMemoryRegistry } from "./registry.js";
 import { spawnChildAgent } from "./spawn-child.js";
 import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type { SpawnChildOptions } from "./types.js";
-import { DEFAULT_SPAWN_POLICY } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers

@@ -48,7 +48,9 @@ export function createCascadingTermination(
     }
 
     // Inline BFS with copilot subtree pruning
-    void cascadeTerminate(registry, tree, event.agentId);
+    void cascadeTerminate(registry, tree, event.agentId).catch((err: unknown) => {
+      console.error(`[cascading-termination] cascade failed for agent "${event.agentId}"`, err);
+    });
   });
 
   return {

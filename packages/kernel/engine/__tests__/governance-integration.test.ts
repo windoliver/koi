@@ -29,12 +29,14 @@ import {
   sessionId,
   turnId,
 } from "@koi/core";
+import type { GovernanceControllerBuilder } from "@koi/engine-reconcile";
+import {
+  createGovernanceExtension,
+  createGovernanceProvider,
+  createGovernanceReconciler,
+} from "@koi/engine-reconcile";
 import { KoiRuntimeError } from "@koi/errors";
 import { AgentEntity } from "../src/agent-entity.js";
-import type { GovernanceControllerBuilder } from "../src/governance-controller.js";
-import { createGovernanceExtension } from "../src/governance-extension.js";
-import { createGovernanceProvider } from "../src/governance-provider.js";
-import { createGovernanceReconciler } from "../src/governance-reconciler.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

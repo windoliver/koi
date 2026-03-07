@@ -26,13 +26,13 @@ import type {
   LoopDetectionConfig,
   LoopWarningInfo,
   SpawnPolicy,
-} from "./types.js";
+} from "./guard-types.js";
 import {
   DEFAULT_ITERATION_LIMITS,
   DEFAULT_LOOP_DETECTION,
   DEFAULT_SPAWN_POLICY,
   DEFAULT_SPAWN_TOOL_IDS,
-} from "./types.js";
+} from "./guard-types.js";
 
 // ---------------------------------------------------------------------------
 // Shared validation helper

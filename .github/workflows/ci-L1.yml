@@ -1,16 +1,20 @@
 name: CI (L1 — Engine)
-# Triggered when the kernel runtime (engine) changes.
-# L1 is the single runtime layer — changes affect all agent loops.
+# Triggered when any L1 kernel runtime package changes.
+# L1 is the runtime layer — changes affect all agent loops.
 # Runs layer checks + scoped build/test for engine and its dependents.
 on:
   push:
     branches: [main]
     paths:
       - "packages/kernel/engine/**"
+      - "packages/kernel/engine-compose/**"
+      - "packages/kernel/engine-reconcile/**"
   pull_request:
     branches: [main]
     paths:
       - "packages/kernel/engine/**"
+      - "packages/kernel/engine-compose/**"
+      - "packages/kernel/engine-reconcile/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

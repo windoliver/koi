@@ -111,7 +111,7 @@ describe("registry.patch()", () => {
     registry.register(e);
 
     const events: RegistryEvent[] = []; // let justified: collecting events
-    registry.watch((event) => {
+    registry.watch((event: RegistryEvent) => {
       events.push(event);
     });
 

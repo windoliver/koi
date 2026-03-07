@@ -7,7 +7,6 @@
 
 import type {
   AgentId,
-  AgentRegistry,
   KoiError,
   PatchableRegistryFields,
   ProcessDescriptor,
@@ -21,43 +20,12 @@ import type {
 } from "@koi/core";
 import { mapRegistryEntryToDescriptor, matchesFilter } from "@koi/core";
 import { createListenerSet } from "@koi/event-delivery";
+
+// Re-export the type so colocated tests can import { InMemoryRegistry } from "./registry.js"
+export type { InMemoryRegistry } from "./governance-types.js";
+
+import type { InMemoryRegistry } from "./governance-types.js";
 import { applyTransition } from "./transitions.js";
-
-// ---------------------------------------------------------------------------
-// Public type (for test imports)
-// ---------------------------------------------------------------------------
-
-/**
- * In-memory registry narrows all `T | Promise<T>` returns to sync `T`.
- * Omit base method signatures to prevent TypeScript union widening,
- * then re-declare with sync-only return types.
- */
-export type InMemoryRegistry = Omit<
-  AgentRegistry,
-  "register" | "deregister" | "lookup" | "list" | "transition" | "patch"
-> & {
-  readonly register: (entry: RegistryEntry) => RegistryEntry;
-  readonly deregister: (agentId: AgentId) => boolean;
-  readonly lookup: (agentId: AgentId) => RegistryEntry | undefined;
-  readonly list: (
-    filter?: RegistryFilter,
-    visibility?: VisibilityContext,
-  ) => readonly RegistryEntry[];
-  readonly transition: (
-    agentId: AgentId,
-    targetPhase: ProcessState,
-    expectedGeneration: number,
-    reason: TransitionReason,
-  ) => Result<RegistryEntry, KoiError>;
-  readonly patch: (
-    agentId: AgentId,
-    fields: PatchableRegistryFields,
-  ) => Result<RegistryEntry, KoiError>;
-  /** Manually trigger flush of any buffered heartbeats. */
-  readonly flush: () => void;
-  /** Return a read-only ProcessDescriptor snapshot for an agent. */
-  readonly descriptor: (agentId: AgentId) => ProcessDescriptor | undefined;
-};
 
 // ---------------------------------------------------------------------------
 // Factory

@@ -28,9 +28,9 @@ import type {
   ToolResponse,
 } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
+import type { DepthToolRule } from "@koi/engine-compose";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createKoi } from "../koi.js";
-import type { DepthToolRule } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate

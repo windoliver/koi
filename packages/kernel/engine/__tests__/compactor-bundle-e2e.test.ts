@@ -19,12 +19,11 @@ import type {
 import { DEFAULT_SANDBOXED_POLICY, GOVERNANCE, GOVERNANCE_VARIABLES, toolToken } from "@koi/core";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
+import type { GovernanceConfig, GovernanceControllerBuilder } from "@koi/engine-reconcile";
 import type { CompactorBundle } from "@koi/middleware-compactor";
 import { createAnthropicAdapter } from "@koi/model-router";
 import { createMockTurnContext } from "@koi/test-utils";
-import type { GovernanceControllerBuilder } from "../src/governance-controller.js";
 import { createKoi } from "../src/koi.js";
-import type { GovernanceConfig } from "../src/types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate

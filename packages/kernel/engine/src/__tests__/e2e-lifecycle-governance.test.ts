@@ -32,15 +32,17 @@ import type {
   ToolResponse,
 } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
+import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
 import { createPiAdapter } from "@koi/engine-pi";
-import { createCascadingTermination } from "../cascading-termination.js";
+import type { InMemoryRegistry } from "@koi/engine-reconcile";
+import {
+  createCascadingTermination,
+  createInMemoryRegistry,
+  createProcessTree,
+} from "@koi/engine-reconcile";
 import { createKoi } from "../koi.js";
-import { createProcessTree } from "../process-tree.js";
-import type { InMemoryRegistry } from "../registry.js";
-import { createInMemoryRegistry } from "../registry.js";
 import { spawnChildAgent } from "../spawn-child.js";
 import { createInMemorySpawnLedger } from "../spawn-ledger.js";
-import { DEFAULT_SPAWN_POLICY } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate

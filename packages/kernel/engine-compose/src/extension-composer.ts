@@ -18,8 +18,8 @@ import type {
 } from "@koi/core";
 import { EXTENSION_PRIORITY } from "@koi/core";
 import { needsRepair, repairSession } from "@koi/session-repair";
+import type { IterationLimits, LoopDetectionConfig, SpawnPolicy } from "./guard-types.js";
 import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
-import type { IterationLimits, LoopDetectionConfig, SpawnPolicy } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Significant transitions (validator is called)

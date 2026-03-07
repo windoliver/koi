@@ -716,6 +716,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/engine-compose": "workspace:*",
+        "@koi/engine-reconcile": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/event-delivery": "workspace:*",
         "@koi/execution-context": "workspace:*",
@@ -744,6 +746,25 @@
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/test-utils": "workspace:*",
         "@koi/webhook-provider": "workspace:*",
+      },
+    },
+    "packages/kernel/engine-compose": {
+      "name": "@koi/engine-compose",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/session-repair": "workspace:*",
+      },
+    },
+    "packages/kernel/engine-reconcile": {
+      "name": "@koi/engine-reconcile",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
       },
     },
     "packages/kernel/manifest": {
@@ -3256,11 +3277,15 @@
 
     "@koi/engine-claude": ["@koi/engine-claude@workspace:packages/drivers/engine-claude"],
 
+    "@koi/engine-compose": ["@koi/engine-compose@workspace:packages/kernel/engine-compose"],
+
     "@koi/engine-external": ["@koi/engine-external@workspace:packages/drivers/engine-external"],
 
     "@koi/engine-loop": ["@koi/engine-loop@workspace:packages/drivers/engine-loop"],
 
     "@koi/engine-pi": ["@koi/engine-pi@workspace:packages/drivers/engine-pi"],
+
+    "@koi/engine-reconcile": ["@koi/engine-reconcile@workspace:packages/kernel/engine-reconcile"],
 
     "@koi/errors": ["@koi/errors@workspace:packages/lib/errors"],
 

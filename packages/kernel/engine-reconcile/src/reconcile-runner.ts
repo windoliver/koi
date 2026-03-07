@@ -270,17 +270,21 @@ export function createReconcileRunner(deps: {
     }
 
     // Async registry (rare — network-backed)
-    void listed.then((entries) => {
-      if (disposed) return;
-      const now = clock.now();
-      for (const e of entries) {
-        const lastTime = lastReconciledAt.get(e.agentId);
-        if (lastTime !== undefined && now - lastTime < config.minReconcileIntervalMs) {
-          continue;
+    void listed
+      .then((entries) => {
+        if (disposed) return;
+        const now = clock.now();
+        for (const e of entries) {
+          const lastTime = lastReconciledAt.get(e.agentId);
+          if (lastTime !== undefined && now - lastTime < config.minReconcileIntervalMs) {
+            continue;
+          }
+          queue.enqueue(e.agentId);
         }
-        queue.enqueue(e.agentId);
-      }
-    });
+      })
+      .catch((err: unknown) => {
+        console.error("[reconcile-runner] drift sweep async list failed", err);
+      });
   }
 
   // ---------------------------------------------------------------------------
@@ -353,12 +357,16 @@ export function createReconcileRunner(deps: {
     }
 
     // Async registry (rare — network-backed)
-    void listed.then((entries) => {
-      if (disposed) return;
-      for (const e of entries) {
-        queue.enqueue(e.agentId);
-      }
-    });
+    void listed
+      .then((entries) => {
+        if (disposed) return;
+        for (const e of entries) {
+          queue.enqueue(e.agentId);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error("[reconcile-runner] async list failed", err);
+      });
   }
 
   function sweep(): void {

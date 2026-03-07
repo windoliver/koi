@@ -56,7 +56,11 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/welford-stats",
 ]);
 
-export const L1_PACKAGES: ReadonlySet<string> = new Set(["@koi/engine"]);
+export const L1_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/engine",
+  "@koi/engine-compose",
+  "@koi/engine-reconcile",
+]);
 
 /**
  * Meta-packages that bundle L0 + L1 + L2 — no new logic, only re-exports / orchestration.

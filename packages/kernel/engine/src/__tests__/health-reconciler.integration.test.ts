@@ -14,11 +14,12 @@ import type {
   RegistryEntry,
 } from "@koi/core";
 import { agentId } from "@koi/core";
-import type { InMemoryHealthMonitor } from "../health-monitor.js";
-import { createHealthMonitor } from "../health-monitor.js";
-import { createHealthReconciler } from "../health-reconciler.js";
-import type { InMemoryRegistry } from "../registry.js";
-import { createInMemoryRegistry } from "../registry.js";
+import type { InMemoryHealthMonitor, InMemoryRegistry } from "@koi/engine-reconcile";
+import {
+  createHealthMonitor,
+  createHealthReconciler,
+  createInMemoryRegistry,
+} from "@koi/engine-reconcile";
 
 // ---------------------------------------------------------------------------
 // Helpers

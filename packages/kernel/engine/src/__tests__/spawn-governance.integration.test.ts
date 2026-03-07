@@ -15,8 +15,8 @@ import type {
   EngineOutput,
   ToolResponse,
 } from "@koi/core";
+import type { SpawnWarningInfo } from "@koi/engine-compose";
 import { createKoi } from "../koi.js";
-import type { SpawnWarningInfo } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers

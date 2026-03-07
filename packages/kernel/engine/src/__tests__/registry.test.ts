@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ProcessState, RegistryEntry, RegistryEvent } from "@koi/core";
 import { agentId } from "@koi/core";
+import type { InMemoryRegistry } from "@koi/engine-reconcile";
+import { createInMemoryRegistry } from "@koi/engine-reconcile";
 import { runAgentRegistryContractTests } from "@koi/test-utils";
-import type { InMemoryRegistry } from "../registry.js";
-import { createInMemoryRegistry } from "../registry.js";
 
 // ---------------------------------------------------------------------------
 // Shared contract suite
