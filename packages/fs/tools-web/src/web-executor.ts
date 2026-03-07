@@ -165,7 +165,16 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
       options?: WebFetchOptions,
     ): Promise<Result<WebFetchResult, KoiError>> => {
       const method = options?.method ?? "GET";
-      const cacheKey = `${method}:${url}`;
+      // Normalize URL to canonical form to prevent cache key collisions
+      // from semantically identical URLs with different encodings
+      const normalizedUrl = (() => {
+        try {
+          return new URL(url).href;
+        } catch {
+          return url;
+        }
+      })();
+      const cacheKey = `${method}:${normalizedUrl}`;
 
       // Check cache (GET/HEAD only)
       if (fetchCache !== undefined && (method === "GET" || method === "HEAD")) {

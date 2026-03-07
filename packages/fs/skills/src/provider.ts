@@ -7,6 +7,10 @@
  *
  * Uses parallel loading via Promise.allSettled for initial attach, and fires
  * ComponentEvent notifications on promote() for downstream consumers.
+ *
+ * Single-agent design: the provider caches results from the first attach() and
+ * binds ComponentEvents to that agent's ID. Create a separate provider instance
+ * per agent if multi-agent use is needed.
  */
 
 import { resolve } from "node:path";
@@ -181,7 +185,16 @@ export function createSkillComponentProvider(
   // -------------------------------------------------------------------
 
   const attach = async (agent: Agent): Promise<AttachResult> => {
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      // Warn if a different agent re-uses this single-agent provider
+      const incomingId = agent.pid?.id ?? agentId("unknown");
+      if (attachedAgentId !== incomingId && (attachedAgentId as string) !== "unknown") {
+        throw new Error(
+          `SkillProvider is single-agent: already attached to ${attachedAgentId as string}, cannot attach to ${incomingId as string}. Create a separate provider per agent.`,
+        );
+      }
+      return cached;
+    }
 
     // Defensive: extract AgentId from pid.id if available, fallback for minimal stubs
     attachedAgentId = agent.pid?.id ?? agentId("unknown");
