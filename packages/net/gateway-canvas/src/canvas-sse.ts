@@ -12,7 +12,7 @@ import type { KoiError, Result } from "@koi/core";
 // ---------------------------------------------------------------------------
 
 export interface SseEvent {
-  /** Monotonic event ID for Last-Event-ID reconnection. */
+  /** Monotonic event ID. Note: replay from Last-Event-ID is not supported; reconnections are live-only. */
   readonly id: string;
   /** Event type: "updated" | "deleted". */
   readonly event: string;

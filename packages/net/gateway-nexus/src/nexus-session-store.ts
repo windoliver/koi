@@ -101,7 +101,7 @@ export function createNexusSessionStore(
           return { ok: false, error: notFound(id, `Session not found: ${id}`) };
         }
         degradation = recordFailure(degradation, degradationConfig);
-        return { ok: false, error: notFound(id, `Session not found: ${id}`) };
+        return { ok: false, error: r.error };
       })();
     },
 

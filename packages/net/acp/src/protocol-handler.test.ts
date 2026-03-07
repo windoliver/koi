@@ -37,6 +37,12 @@ function parseResponse(json: string): { id: unknown; result?: unknown; error?: u
   return JSON.parse(json) as { id: unknown; result?: unknown; error?: unknown };
 }
 
+/** Extract sessionId from a session/new response. */
+function extractSessionId(transport: { readonly sent: string[] }, index: number): string {
+  const r = parseResponse(transport.sent[index] as string);
+  return (r.result as { sessionId: string }).sessionId;
+}
+
 describe("handleInitialize", () => {
   test("returns agent capabilities on valid initialize", () => {
     const transport = createMockTransport();
@@ -131,6 +137,7 @@ describe("handleSessionPrompt", () => {
 
     handler.handleInitialize(1, { protocolVersion: 1 });
     handler.handleSessionNew(2, { cwd: "/test" });
+    const sessionId = extractSessionId(transport, 1);
 
     // Set up a slow event streamer
     handler.setEventStreamer(async function* () {
@@ -146,7 +153,7 @@ describe("handleSessionPrompt", () => {
     });
 
     const p1 = handler.handleSessionPrompt(3, {
-      sessionId: "sess_1",
+      sessionId,
       prompt: [{ type: "text", text: "first" }],
     });
 
@@ -154,7 +161,7 @@ describe("handleSessionPrompt", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     await handler.handleSessionPrompt(4, {
-      sessionId: "sess_1",
+      sessionId,
       prompt: [{ type: "text", text: "second" }],
     });
 
@@ -172,7 +179,8 @@ describe("handleSessionPrompt", () => {
 
     handler.handleInitialize(1, { protocolVersion: 1 });
     handler.handleSessionNew(2, { cwd: "/test" });
-    await handler.handleSessionPrompt(3, { sessionId: "sess_1" });
+    const sessionId = extractSessionId(transport, 1);
+    await handler.handleSessionPrompt(3, { sessionId });
 
     const response = parseResponse(transport.sent[2] as string);
     expect(response.error).toBeDefined();
@@ -184,6 +192,7 @@ describe("handleSessionPrompt", () => {
 
     handler.handleInitialize(1, { protocolVersion: 1 });
     handler.handleSessionNew(2, { cwd: "/test" });
+    const sessionId = extractSessionId(transport, 1);
 
     handler.setEventStreamer(async function* () {
       yield { kind: "text_delta" as const, delta: "Hello" };
@@ -198,7 +207,7 @@ describe("handleSessionPrompt", () => {
     });
 
     await handler.handleSessionPrompt(3, {
-      sessionId: "sess_1",
+      sessionId,
       prompt: [{ type: "text", text: "test" }],
     });
 

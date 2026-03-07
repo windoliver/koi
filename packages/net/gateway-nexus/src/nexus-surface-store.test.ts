@@ -50,16 +50,37 @@ function createMockClient(): {
   readonly setResponse: (r: Result<unknown, KoiError>) => void;
 } {
   const calls: Array<{ readonly method: string; readonly params: Record<string, unknown> }> = [];
-  let nextResponse: Result<unknown, KoiError> = { ok: true, value: null };
+  const defaultResponse: Result<unknown, KoiError> = { ok: true, value: null };
+  // let: override response set by caller — bypasses automatic NOT_FOUND
+  let overrideResponse: Result<unknown, KoiError> | undefined;
+  // Track written/deleted paths so reads of unwritten paths return NOT_FOUND
+  const written = new Set<string>();
 
   return {
     client: createTestNexusClient(async (method, params) => {
       calls.push({ method, params });
-      return nextResponse;
+      const path = (params as { readonly path?: string }).path;
+      if (method === "write" && path !== undefined) {
+        written.add(path);
+      }
+      if (method === "delete" && path !== undefined) {
+        written.delete(path);
+      }
+      // If caller set an override, use it for all calls until reset
+      if (overrideResponse !== undefined) {
+        return overrideResponse;
+      }
+      if (method === "read" && path !== undefined && !written.has(path)) {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
+        };
+      }
+      return defaultResponse;
     }),
     calls,
     setResponse: (r: Result<unknown, KoiError>) => {
-      nextResponse = r;
+      overrideResponse = r;
     },
   };
 }
@@ -184,20 +205,23 @@ describe("NexusSurfaceStore", () => {
     if (!r.ok) expect(r.error.code).toBe("NOT_FOUND");
   });
 
-  test("delete removes surface from cache", () => {
+  test("delete removes surface from cache", async () => {
     handle.store.create("s1", "content");
     const r = handle.store.delete("s1");
-    expect(r).toEqual({ ok: true, value: true });
-    expect(handle.store.has("s1")).toEqual({ ok: true, value: false });
+    expect(await r).toEqual({ ok: true, value: true });
+    // Wait for fire-and-forget Nexus delete to settle
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(await handle.store.has("s1")).toEqual({ ok: true, value: false });
   });
 
-  test("delete returns false for non-existent surface", () => {
-    const r = handle.store.delete("missing");
-    expect(r).toEqual({ ok: true, value: false });
+  test("delete returns false for non-existent surface", async () => {
+    const r = await handle.store.delete("missing");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBe(false);
   });
 
-  test("has checks local cache", () => {
-    expect(handle.store.has("s1")).toEqual({ ok: true, value: false });
+  test("has checks local cache", async () => {
+    expect(await handle.store.has("s1")).toEqual({ ok: true, value: false });
     handle.store.create("s1", "content");
     expect(handle.store.has("s1")).toEqual({ ok: true, value: true });
   });
@@ -209,7 +233,7 @@ describe("NexusSurfaceStore", () => {
     expect(handle.store.size()).toBe(2);
   });
 
-  test("LRU eviction when at capacity", () => {
+  test("LRU eviction when at capacity", async () => {
     const handle2 = createNexusSurfaceStore({
       client: mock.client,
       config: {
@@ -227,7 +251,9 @@ describe("NexusSurfaceStore", () => {
     handle2.store.create("s3", "third");
 
     expect(handle2.store.size()).toBe(2);
-    expect(handle2.store.has("s2")).toEqual({ ok: true, value: false });
+    // s2 was evicted from local cache but still exists in Nexus
+    // has() falls through to Nexus and finds it there
+    expect(await handle2.store.has("s2")).toEqual({ ok: true, value: true });
     expect(handle2.store.has("s1")).toEqual({ ok: true, value: true });
     expect(handle2.store.has("s3")).toEqual({ ok: true, value: true });
 

@@ -127,7 +127,7 @@ export function createNexusSurfaceStore(
           return { ok: false, error: notFound(id, `Surface not found: ${id}`) };
         }
         degradation = recordFailure(degradation, degradationConfig);
-        return { ok: false, error: notFound(id, `Surface not found: ${id}`) };
+        return { ok: false, error: r.error };
       })();
     },
 
@@ -160,10 +160,24 @@ export function createNexusSurfaceStore(
       id: string,
       content: string,
       expectedHash: string | undefined,
-    ): Result<SurfaceEntry, KoiError> {
+    ): Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>> {
       const existing = cache.get(id);
       if (existing === undefined) {
-        return { ok: false, error: notFound(id, `Surface not found: ${id}`) };
+        // Cache miss — fetch from Nexus before giving up
+        return (async (): Promise<Result<SurfaceEntry, KoiError>> => {
+          const r = await readJson<SurfaceEntry>(client, nexusPath(id));
+          if (r.ok) {
+            degradation = recordSuccess(degradation);
+            cache.set(id, r.value);
+            touchAccess(id);
+            return store.update(id, content, expectedHash) as Result<SurfaceEntry, KoiError>;
+          }
+          if (r.error.code === "NOT_FOUND") {
+            return { ok: false, error: notFound(id, `Surface not found: ${id}`) };
+          }
+          degradation = recordFailure(degradation, degradationConfig);
+          return { ok: false, error: r.error };
+        })();
       }
       if (expectedHash !== undefined && expectedHash !== existing.contentHash) {
         return {
@@ -191,7 +205,7 @@ export function createNexusSurfaceStore(
     delete(id: string): Result<boolean, KoiError> {
       const existed = cache.delete(id);
       accessOrder.delete(id);
-      // Immediate Nexus delete
+      // Always attempt Nexus delete — ensures multi-instance consistency
       void deleteJson(client, nexusPath(id))
         .then((r) => {
           if (r.ok) {
@@ -206,8 +220,25 @@ export function createNexusSurfaceStore(
       return { ok: true, value: existed };
     },
 
-    has(id: string): Result<boolean, KoiError> {
-      return { ok: true, value: cache.has(id) };
+    has(id: string): Result<boolean, KoiError> | Promise<Result<boolean, KoiError>> {
+      if (cache.has(id)) {
+        return { ok: true, value: true };
+      }
+      // Cache miss — check Nexus
+      return (async (): Promise<Result<boolean, KoiError>> => {
+        const r = await readJson<SurfaceEntry>(client, nexusPath(id));
+        if (r.ok) {
+          degradation = recordSuccess(degradation);
+          cache.set(id, r.value);
+          touchAccess(id);
+          return { ok: true, value: true };
+        }
+        if (r.error.code === "NOT_FOUND") {
+          return { ok: true, value: false };
+        }
+        degradation = recordFailure(degradation, degradationConfig);
+        return { ok: false, error: r.error };
+      })();
     },
 
     size(): number {

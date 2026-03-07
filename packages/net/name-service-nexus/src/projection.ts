@@ -6,7 +6,7 @@
  * for downstream notification.
  */
 
-import type { ForgeScope, NameChangeEvent, NameRecord } from "@koi/core";
+import type { ForgeScope, NameBinding, NameChangeEvent, NameRecord } from "@koi/core";
 import { compositeKey } from "@koi/name-resolution";
 import type { NexusNameRecord } from "./nexus-rpc.js";
 import { mapNexusBinding } from "./nexus-rpc.js";
@@ -47,6 +47,37 @@ export function mapNexusRecord(nexusRecord: NexusNameRecord): NameRecord | undef
     expiresAt: nexusRecord.expires_at,
     registeredBy: nexusRecord.registered_by,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Comparison helpers
+// ---------------------------------------------------------------------------
+
+/** Check if two NameBindings are equivalent. */
+function bindingsEqual(a: NameBinding, b: NameBinding): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "agent" && b.kind === "agent") return a.agentId === b.agentId;
+  if (a.kind === "brick" && b.kind === "brick") {
+    return a.brickId === b.brickId && a.brickKind === b.brickKind;
+  }
+  return false;
+}
+
+/** Check if two alias arrays are equivalent (order-insensitive). */
+function aliasesEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const setA = new Set(a);
+  return b.every((alias) => setA.has(alias));
+}
+
+/** Check if a record has changed compared to its existing projection entry. */
+function recordChanged(existing: NameRecord, incoming: NameRecord): boolean {
+  return (
+    existing.expiresAt !== incoming.expiresAt ||
+    !bindingsEqual(existing.binding, incoming.binding) ||
+    !aliasesEqual(existing.aliases, incoming.aliases) ||
+    existing.registeredBy !== incoming.registeredBy
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -93,17 +124,19 @@ export function applyList(
         scope: record.scope,
         binding: record.binding,
       });
-    } else if (existing.expiresAt !== record.expiresAt) {
-      // TTL changed — treat as renewal
+    } else if (recordChanged(existing, record)) {
+      // Record changed — update projection and aliases
+      removeAliases(projection, existing);
       projection.records.set(key, record);
+      insertAliases(projection, record);
+      const bindingChanged = !bindingsEqual(existing.binding, record.binding);
       events.push({
-        kind: "renewed",
+        kind: bindingChanged ? "registered" : "renewed",
         name: record.name,
         scope: record.scope,
         binding: record.binding,
       });
     }
-    // Otherwise: no change, skip
   }
 
   // Detect removed records
@@ -183,10 +216,15 @@ function insertAliases(projection: NameProjection, record: NameRecord): void {
   }
 }
 
-/** Remove a record and its alias mappings from the projection. */
-function removeRecord(projection: NameProjection, key: string, record: NameRecord): void {
+/** Remove alias mappings for a record from the projection. */
+function removeAliases(projection: NameProjection, record: NameRecord): void {
   for (const alias of record.aliases) {
     projection.aliases.delete(compositeKey(record.scope, alias));
   }
+}
+
+/** Remove a record and its alias mappings from the projection. */
+function removeRecord(projection: NameProjection, key: string, record: NameRecord): void {
+  removeAliases(projection, record);
   projection.records.delete(key);
 }
