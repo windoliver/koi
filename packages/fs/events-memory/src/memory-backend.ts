@@ -114,7 +114,8 @@ export function createInMemoryEventBackend(config?: EventBackendConfig): EventBa
     readStream: (streamId, fromSequence) => {
       const stream = streams.get(streamId);
       if (stream === undefined) return [];
-      return stream.filter((e) => e.sequence > fromSequence);
+      const live = liveEvents(stream);
+      return live.filter((e) => e.sequence > fromSequence);
     },
     removeDeadLetter: () => true,
   });

@@ -196,6 +196,16 @@ export function createLocalPayLedger(config: LocalPayLedgerConfig): PayLedger & 
       reservations.delete(reservationId);
 
       const committed = actualAmount !== undefined ? parseFloat(actualAmount) : state.amount;
+      if (!Number.isFinite(committed) || committed < 0) {
+        throw new Error(
+          `commit: actualAmount must be a non-negative finite number, got "${String(actualAmount)}"`,
+        );
+      }
+      if (committed > state.amount) {
+        throw new Error(
+          `commit: actualAmount (${String(committed)}) exceeds reservation amount (${String(state.amount)})`,
+        );
+      }
       const returned = state.amount - committed;
 
       reserved -= state.amount;
@@ -223,8 +233,8 @@ export function createLocalPayLedger(config: LocalPayLedgerConfig): PayLedger & 
 
     meter(amount: string, _eventType?: string): PayMeterResult {
       const numAmount = parseFloat(amount);
-      if (!Number.isFinite(numAmount)) {
-        throw new Error(`meter: amount must be a finite number, got "${amount}"`);
+      if (!Number.isFinite(numAmount) || numAmount < 0) {
+        throw new Error(`meter: amount must be a non-negative finite number, got "${amount}"`);
       }
       available -= numAmount;
       appendEntry("meter", numAmount, null, null, _eventType ?? null);

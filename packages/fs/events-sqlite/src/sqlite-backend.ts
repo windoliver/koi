@@ -255,7 +255,12 @@ export function createSqliteEventBackend(config: SqliteEventBackendConfig = {}):
       Number.MAX_SAFE_INTEGER,
       Number.MAX_SAFE_INTEGER,
     );
-    return rows.map(mapRowToEnvelope);
+    const envelopes = rows.map(mapRowToEnvelope);
+    if (eventTtlMs !== undefined) {
+      const cutoff = ttlCutoff();
+      return envelopes.filter((e) => e.timestamp > cutoff);
+    }
+    return envelopes;
   }
 
   function ttlCutoff(): number {

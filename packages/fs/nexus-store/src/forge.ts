@@ -73,7 +73,11 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
   async function readBrick(id: BrickId): Promise<Result<BrickArtifact, KoiError>> {
     const readResult = await client.rpc<string>("read", { path: brickPath(id) });
     if (!readResult.ok) {
-      if (readResult.error.code === "EXTERNAL" || readResult.error.code === "NOT_FOUND") {
+      if (
+        readResult.error.code === "NOT_FOUND" ||
+        (readResult.error.code === "EXTERNAL" &&
+          readResult.error.message.toLowerCase().includes("not found"))
+      ) {
         return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
       }
       return readResult;
@@ -117,11 +121,26 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
     });
     if (!globResult.ok) return globResult;
 
+    // let justified: accumulates first infrastructure error from parallel reads
+    let infrastructureError: KoiError | undefined;
+
     const bricks = await batchMap(
       globResult.value,
       async (path): Promise<BrickArtifact | undefined> => {
+        if (infrastructureError !== undefined) return undefined;
         const readResult = await client.rpc<string>("read", { path });
-        if (!readResult.ok) return undefined;
+        if (!readResult.ok) {
+          // File may have been deleted between glob and read — treat as skip
+          const msg = readResult.error.message.toLowerCase();
+          if (
+            readResult.error.code === "NOT_FOUND" ||
+            (readResult.error.code === "EXTERNAL" && msg.includes("not found"))
+          ) {
+            return undefined;
+          }
+          infrastructureError = readResult.error;
+          return undefined;
+        }
         try {
           const parsed: unknown = JSON.parse(readResult.value);
           const validated = validateBrickArtifact(parsed, `nexus:search:${path}`);
@@ -133,6 +152,10 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
       },
       concurrency,
     );
+
+    if (infrastructureError !== undefined) {
+      return { ok: false, error: infrastructureError };
+    }
 
     const validBricks = bricks.filter((b): b is BrickArtifact => b !== undefined);
     const filtered = validBricks.filter((brick) => matchesBrickQuery(brick, query));

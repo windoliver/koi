@@ -2,7 +2,7 @@
  * HTTP-backed SkillRegistryBackend implementation.
  *
  * Reads are cache-first with LRU + TTL. Write operations always require network.
- * Search fails open (returns empty page on network failure).
+ * Search propagates network failures to the caller.
  */
 
 import type {
@@ -68,9 +68,10 @@ export function createSkillRegistryHttp(config: RegistryHttpConfig): SkillRegist
 
     const result = await httpRequest<SkillPage>(client, "GET", path);
 
-    // Fail open: return empty page on network failure
     if (!result.ok) {
-      return { items: [] };
+      throw new Error(`Skill registry search failed: ${result.error.message}`, {
+        cause: result.error,
+      });
     }
 
     // Cache individual entries from search results
