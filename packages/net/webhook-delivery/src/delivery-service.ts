@@ -92,6 +92,33 @@ export function createWebhookDeliveryService(
     return cb;
   }
 
+  /** Persist a terminal delivery failure to an auditable event stream. */
+  function recordDeadLetter(
+    webhook: OutboundWebhookConfig,
+    envelope: EventEnvelope,
+    errorMessage: string,
+    attempts: number,
+  ): void {
+    deps.eventBackend.append(`dlq:webhook:${deps.agentId}`, {
+      type: "webhook.dead_letter",
+      data: {
+        id: generateUlid(),
+        webhookUrl: webhook.url,
+        event: envelope,
+        error: errorMessage,
+        attempts,
+        deadLetteredAt: Date.now(),
+      } satisfies {
+        readonly id: string;
+        readonly webhookUrl: string;
+        readonly event: EventEnvelope;
+        readonly error: string;
+        readonly attempts: number;
+        readonly deadLetteredAt: number;
+      },
+    });
+  }
+
   /**
    * Delivers a single webhook with retry logic.
    */
@@ -99,6 +126,7 @@ export function createWebhookDeliveryService(
     webhook: OutboundWebhookConfig,
     payload: WebhookPayload,
     body: string,
+    envelope: EventEnvelope,
     attempt: number = 0,
   ): Promise<void> {
     const cb = getCircuitBreaker(webhook.url);
@@ -144,6 +172,7 @@ export function createWebhookDeliveryService(
     if (result.statusCode === 410) {
       lastErrors.set(webhook.url, "410 Gone — permanent failure");
       logger?.warn(`Webhook endpoint ${webhook.url} returned 410 Gone — permanent failure`);
+      recordDeadLetter(webhook, envelope, "410 Gone — permanent failure", attempt + 1);
       return;
     }
 
@@ -154,6 +183,7 @@ export function createWebhookDeliveryService(
       logger?.warn(
         `Webhook delivery to ${webhook.url} failed after ${config.maxRetries} retries: ${result.error}`,
       );
+      recordDeadLetter(webhook, envelope, result.error, attempt + 1);
       return;
     }
 
@@ -161,7 +191,7 @@ export function createWebhookDeliveryService(
     const delay = computeBackoff(attempt, config.retryConfig);
     const timer = setTimeout(() => {
       activeTimers.delete(timer);
-      void deliverWithRetry(webhook, payload, body, attempt + 1).catch((err: unknown) => {
+      void deliverWithRetry(webhook, payload, body, envelope, attempt + 1).catch((err: unknown) => {
         logger?.warn(`Webhook retry failed: ${String(err)}`);
       });
     }, delay);
@@ -195,7 +225,7 @@ export function createWebhookDeliveryService(
         continue;
       }
 
-      void deliverWithRetry(webhook, payload, body).catch((err: unknown) => {
+      void deliverWithRetry(webhook, payload, body, event).catch((err: unknown) => {
         logger?.warn(`Webhook delivery error: ${String(err)}`);
       });
     }

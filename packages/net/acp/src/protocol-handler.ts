@@ -67,7 +67,7 @@ export interface ProtocolHandler {
 // Factory
 // ---------------------------------------------------------------------------
 
-// let: counter for generating session IDs
+// let: counter for generating unique session IDs
 let sessionCounter = 0;
 
 export function createProtocolHandler(
@@ -160,6 +160,18 @@ export function createProtocolHandler(
           readonly prompt?: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
         }
       | undefined;
+
+    // Validate caller-provided sessionId matches the active session
+    if (p?.sessionId !== undefined && p.sessionId !== session.sessionId) {
+      transport.send(
+        buildErrorResponse(
+          id,
+          RPC_ERROR_CODES.INVALID_REQUEST,
+          `Session ID mismatch: expected ${session.sessionId}, got ${p.sessionId}`,
+        ),
+      );
+      return;
+    }
 
     if (p?.prompt === undefined || !Array.isArray(p.prompt)) {
       transport.send(

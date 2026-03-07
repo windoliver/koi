@@ -138,7 +138,12 @@ export function createWebhookServer(
             payload,
           };
 
-          dispatcher(session, frame);
+          try {
+            dispatcher(session, frame);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
+          }
 
           return jsonResponse(200, { ok: true, frameId });
         },

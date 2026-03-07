@@ -3,6 +3,10 @@
  *
  * Lazily caches agent.query("tool:") results and invalidates on
  * ForgeStore change events for hot-reload of newly forged tools.
+ *
+ * Limitation: only ForgeStore.watch() triggers automatic invalidation.
+ * Tools added through other mechanisms (dynamic attachment, middleware)
+ * require an explicit `invalidate()` call to become visible to MCP clients.
  */
 
 import type { Agent, ForgeStore, JsonObject, Tool, ToolDescriptor } from "@koi/core";

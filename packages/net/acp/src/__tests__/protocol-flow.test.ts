@@ -230,11 +230,13 @@ describe("protocol flow — error paths", () => {
     startReceiveLoops(client, server, protocol, tracker);
 
     await tracker.sendRequest("initialize", { protocolVersion: 1 }, 5000);
-    await tracker.sendRequest("session/new", { cwd: "/test" }, 5000);
+    const sessionResult = (await tracker.sendRequest("session/new", { cwd: "/test" }, 5000)) as {
+      sessionId: string;
+    };
 
     const result = (await tracker.sendRequest(
       "session/prompt",
-      { sessionId: "sess_1", prompt: [{ type: "text", text: "test" }] },
+      { sessionId: sessionResult.sessionId, prompt: [{ type: "text", text: "test" }] },
       10000,
     )) as { stopReason: string };
     expect(result.stopReason).toBe("error");
@@ -267,12 +269,19 @@ describe("protocol flow — cancel", () => {
     startReceiveLoops(client, server, protocol, tracker);
 
     await tracker.sendRequest("initialize", { protocolVersion: 1 }, 5000);
-    await tracker.sendRequest("session/new", { cwd: "/test" }, 5000);
+    const cancelSessionResult = (await tracker.sendRequest(
+      "session/new",
+      { cwd: "/test" },
+      5000,
+    )) as { sessionId: string };
 
     // Start prompt and cancel after a brief delay
     const promptPromise = tracker.sendRequest(
       "session/prompt",
-      { sessionId: "sess_1", prompt: [{ type: "text", text: "test" }] },
+      {
+        sessionId: cancelSessionResult.sessionId,
+        prompt: [{ type: "text", text: "test" }],
+      },
       10000,
     );
 
