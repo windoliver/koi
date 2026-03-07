@@ -10,13 +10,50 @@ import { createSingleToolProvider, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { SandboxStack } from "./types.js";
 
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
+
+/** Options for createExecuteCodeProvider. */
+export interface ExecuteCodeProviderOptions {
+  /**
+   * Maximum output size in bytes. Output exceeding this limit is truncated
+   * with a notice appended. Default: 10 MB.
+   */
+  readonly maxOutputBytes?: number | undefined;
+}
+
+/**
+ * Truncate string output to the given byte limit.
+ * Returns the original value unchanged if it is not a string or fits within the limit.
+ */
+function truncateOutput(output: unknown, maxBytes: number): unknown {
+  if (typeof output !== "string") {
+    return output;
+  }
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(output);
+  if (bytes.byteLength <= maxBytes) {
+    return output;
+  }
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const truncated = decoder.decode(bytes.slice(0, maxBytes));
+  return `${truncated}\n\n[output truncated — exceeded ${String(maxBytes)} byte limit]`;
+}
 
 /**
  * Create a ComponentProvider that attaches an "execute_code" tool.
  *
  * The tool delegates to the stack's timeout-guarded executor.
+ *
+ * Note: The SandboxExecutor interface (L0) does not accept a `language`
+ * parameter. The tool schema therefore omits `language` — the sandbox
+ * backend determines the execution environment, not the caller.
  */
-export function createExecuteCodeProvider(stack: SandboxStack): ComponentProvider {
+export function createExecuteCodeProvider(
+  stack: SandboxStack,
+  options?: ExecuteCodeProviderOptions,
+): ComponentProvider {
+  const maxOutputBytes = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+
   return createSingleToolProvider({
     name: "sandbox-stack",
     toolName: "execute_code",
@@ -28,10 +65,6 @@ export function createExecuteCodeProvider(stack: SandboxStack): ComponentProvide
           type: "object",
           properties: {
             code: { type: "string", description: "The code to execute" },
-            language: {
-              type: "string",
-              description: "Programming language (e.g., 'python', 'javascript', 'sh')",
-            },
             input: { description: "Optional input data passed to the code" },
             timeoutMs: {
               type: "number",
@@ -52,7 +85,7 @@ export function createExecuteCodeProvider(stack: SandboxStack): ComponentProvide
         const result = await stack.executor.execute(code, input, timeoutMs);
 
         if (result.ok) {
-          return { output: result.value.output };
+          return { output: truncateOutput(result.value.output, maxOutputBytes) };
         }
         return { error: result.error.message };
       },

@@ -782,4 +782,39 @@ describe("createGovernanceStack — agent approval routing", () => {
     const { disposables } = createGovernanceStack({});
     expect(disposables).toHaveLength(0);
   });
+
+  // Multi-agent ambiguity warning
+  test("dynamicOnAsk warns when multiple agent handlers are registered", async () => {
+    const originalWarn = console.warn;
+    const warnSpy = mock(() => undefined);
+    console.warn = warnSpy;
+    try {
+      const { providers, middlewares } = createGovernanceStack({
+        execApprovals: {
+          rules: { allow: [], deny: [], ask: ["*"] },
+          onAsk: async () => ({ kind: "allow_once" as const }),
+        },
+      });
+
+      const approvalProvider = findApprovalProvider(providers);
+      expect(approvalProvider).toBeDefined();
+
+      // Attach two child agents with mailboxes to register two handlers in the map
+      const mailbox1 = createMockMailbox();
+      const mailbox2 = createMockMailbox();
+      const agent1 = createMockAgent({ id: "child-1", parent: "parent-1", mailbox: mailbox1 });
+      const agent2 = createMockAgent({ id: "child-2", parent: "parent-2", mailbox: mailbox2 });
+      await approvalProvider?.attach(agent1);
+      await approvalProvider?.attach(agent2);
+
+      // Verify exec-approvals middleware was created with dynamicOnAsk
+      expect(middlewares.find((mw) => mw.name === "exec-approvals")).toBeDefined();
+
+      // Detach to clean up
+      await approvalProvider?.detach?.(agent1);
+      await approvalProvider?.detach?.(agent2);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
 });

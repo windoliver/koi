@@ -95,17 +95,28 @@ describe("resolveManifestMiddleware", () => {
     expect(result[1]).toBe(produced2);
   });
 
-  test("silently skips unknown middleware names", async () => {
-    const factory: MiddlewareFactory = mock(() => ({}) as KoiMiddleware);
-    const registry = createMiddlewareRegistry(new Map([["known", factory]]));
-    const manifest: AgentManifest = {
-      ...minimalManifest,
-      middleware: [{ name: "unknown-mw" }, { name: "known" }],
-    };
+  test("warns and skips unknown middleware names", async () => {
+    const originalWarn = console.warn;
+    const warnSpy = mock(() => undefined);
+    console.warn = warnSpy;
+    try {
+      const factory: MiddlewareFactory = mock(() => ({}) as KoiMiddleware);
+      const registry = createMiddlewareRegistry(new Map([["known", factory]]));
+      const manifest: AgentManifest = {
+        ...minimalManifest,
+        middleware: [{ name: "unknown-mw" }, { name: "known" }],
+      };
 
-    const result = await resolveManifestMiddleware(manifest, registry);
-    expect(result).toHaveLength(1);
-    expect(factory).toHaveBeenCalledTimes(1);
+      const result = await resolveManifestMiddleware(manifest, registry);
+      expect(result).toHaveLength(1);
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const warnMsg = (warnSpy.mock.calls[0] as string[])[0] ?? "";
+      expect(warnMsg).toContain("unknown-mw");
+      expect(warnMsg).toContain("not found in registry");
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   test("passes manifest MiddlewareConfig to factory", async () => {

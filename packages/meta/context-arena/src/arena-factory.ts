@@ -7,13 +7,14 @@
 
 import type { ContextHydratorMiddleware } from "@koi/context";
 import { createContextHydrator } from "@koi/context";
-import type { Agent } from "@koi/core/ecs";
-import type { ModelHandler } from "@koi/core/middleware";
-import type { MergeHandler } from "@koi/memory-fs";
+import type { Agent, MemoryComponent } from "@koi/core/ecs";
+import type { KoiMiddleware, ModelHandler, SessionContext } from "@koi/core/middleware";
+import type { MergeHandler, UserScopedMemory } from "@koi/memory-fs";
 import {
   createFsMemory,
   createKeywordCategoryInferrer,
   createMemoryProvider,
+  createUserScopedMemory,
   createUserScopedMemoryProvider,
 } from "@koi/memory-fs";
 import {
@@ -58,10 +59,78 @@ function createDefaultMergeHandler(summarizer: ModelHandler): MergeHandler {
   };
 }
 
+// ---------------------------------------------------------------------------
+// User-scoped memory proxy — delegates to per-user FsMemory at call time.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mutable userId binding for the user-scoped memory proxy.
+ *
+ * Updated by the session-binding middleware on each onSessionStart.
+ */
+interface UserIdBinding {
+  /** let justified: mutable userId updated per-session by binding middleware. */
+  userId: string | undefined;
+}
+
+/**
+ * Creates a delegating MemoryComponent that resolves to the correct per-user
+ * FsMemory instance at call time.
+ *
+ * When no userId is bound (e.g. before first session), falls back to the
+ * shared instance — matching the provider's fallback behavior.
+ */
+function createScopedMemoryProxy(
+  scopedMemory: UserScopedMemory,
+  binding: UserIdBinding,
+): MemoryComponent {
+  async function resolve(): Promise<MemoryComponent> {
+    const uid = binding.userId;
+    const mem =
+      uid !== undefined && uid.length > 0
+        ? await scopedMemory.getOrCreate(uid)
+        : await scopedMemory.getShared();
+    return mem.component;
+  }
+
+  return {
+    recall: async (query, options) => {
+      const mem = await resolve();
+      return mem.recall(query, options);
+    },
+    store: async (content, options) => {
+      const mem = await resolve();
+      return mem.store(content, options);
+    },
+  };
+}
+
+/**
+ * Creates a zero-overhead middleware that binds the active userId from
+ * SessionContext into the shared binding object. Must run before any
+ * memory-dependent middleware in the chain (priority 0 — earliest possible).
+ */
+function createSessionBindingMiddleware(binding: UserIdBinding): KoiMiddleware {
+  return {
+    name: "koi:session-binding",
+    priority: 0,
+
+    describeCapabilities: () => undefined,
+
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      binding.userId = ctx.userId;
+    },
+
+    async onSessionEnd(_ctx: SessionContext): Promise<void> {
+      binding.userId = undefined;
+    },
+  };
+}
+
 /**
  * Creates a fully wired context arena bundle with coordinated budget allocation.
  *
- * Middleware ordering in the returned array: conversation (100, opt-in) → squash (220) → compactor (225) → context-editing (250) → hot-memory (310, opt-in) → user-model (415, opt-in).
+ * Middleware ordering in the returned array: session-binding (0, user-scoped only) → conversation (100, opt-in) → squash (220) → compactor (225) → context-editing (250) → hot-memory (310, opt-in) → user-model (415, opt-in).
  * Priority is owned by L2 packages — arena just returns them in priority order.
  *
  * @param config - User-facing configuration with required summarizer, sessionId, and getMessages
@@ -115,9 +184,12 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
         }
       : undefined;
 
-  // Create early so squash + compactor can share the component
+  // Create early so squash + compactor can share the component.
+  // When userScoped is enabled, skip the singleton — per-user instances are created lazily
+  // via a delegating proxy so middleware reads/writes the correct user-scoped memory.
+  const isUserScoped = config.memoryFs?.userScoped === true;
   const fsMemory =
-    effectiveFsConfig !== undefined
+    effectiveFsConfig !== undefined && !isUserScoped
       ? await createFsMemory({
           ...effectiveFsConfig,
           retriever: config.memoryFs?.retriever ?? effectiveFsConfig.retriever,
@@ -125,9 +197,27 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
         })
       : undefined;
 
-  // Single effective memory for fact extraction — explicit config.memory overrides fsMemory.
+  // When userScoped, create a delegating proxy that resolves per-user memory at call time.
+  // The binding is mutated by the session-binding middleware on each onSessionStart.
+  const userIdBinding: UserIdBinding = { userId: undefined };
+  const scopedMemory =
+    isUserScoped && effectiveFsConfig !== undefined
+      ? createUserScopedMemory({
+          baseDir: effectiveFsConfig.baseDir,
+          maxCachedUsers: config.memoryFs?.maxCachedUsers,
+          memoryConfig: effectiveFsConfig,
+        })
+      : undefined;
+  const scopedProxy =
+    scopedMemory !== undefined ? createScopedMemoryProxy(scopedMemory, userIdBinding) : undefined;
+
+  // Single effective memory for fact extraction — explicit config.memory overrides fsMemory / proxy.
   // When both are provided, fsMemory provider (tools) still attaches for recall/search.
-  const effectiveMemory = config.memory ?? fsMemory?.component;
+  const effectiveMemory = config.memory ?? scopedProxy ?? fsMemory?.component;
+
+  // Session-binding middleware is only needed when the scoped proxy is actually in use
+  // (i.e., not overridden by an explicit config.memory).
+  const needsSessionBinding = scopedProxy !== undefined && config.memory === undefined;
 
   // --- Always-on: squash provider + middleware ---
   const squashBundle = createSquashProvider(
@@ -207,7 +297,14 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
       : undefined;
 
   // --- Middleware in priority order ---
+  // When user-scoped, prepend session-binding middleware (priority 0) to set the
+  // active userId before any memory-dependent middleware runs.
+  const sessionBindingMiddleware = needsSessionBinding
+    ? createSessionBindingMiddleware(userIdBinding)
+    : undefined;
+
   const middleware = [
+    ...(sessionBindingMiddleware !== undefined ? [sessionBindingMiddleware] : []),
     ...(conversationMiddleware !== undefined ? [conversationMiddleware] : []),
     squashBundle.middleware,
     compactorMiddleware,

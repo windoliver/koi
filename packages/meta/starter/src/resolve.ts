@@ -1,8 +1,9 @@
 /**
  * resolveManifestMiddleware — instantiates middleware declared in a manifest.
  *
- * Skips unknown names (no registry entry) silently. Callers are responsible
- * for validating that all required middleware are present before createKoi().
+ * Logs a warning for unknown names (no registry entry) and skips them.
+ * Callers are responsible for validating that all required middleware are
+ * present before createKoi().
  *
  * Async because some middleware factories (e.g. createSoulMiddleware) are async.
  */
@@ -12,7 +13,7 @@ import type { MiddlewareRegistry, RuntimeOpts } from "./registry.js";
 
 /**
  * Instantiate all middleware declared in manifest.middleware[] using the registry.
- * Unknown middleware names are silently skipped; instantiation order matches manifest order.
+ * Unknown middleware names emit a console.warn and are skipped; instantiation order matches manifest order.
  *
  * Pass the result to `createKoi({ middleware: resolvedMiddleware })`.
  */
@@ -28,6 +29,11 @@ export async function resolveManifestMiddleware(
     const factory = registry.get(mwConfig.name);
     if (factory !== undefined) {
       result.push(await factory(mwConfig, opts));
+    } else {
+      console.warn(
+        `[koi:starter] resolveManifestMiddleware: middleware "${mwConfig.name}" not found in registry — skipping. ` +
+          `Registered names: ${[...registry.names()].join(", ") || "(none)"}`,
+      );
     }
   }
   return result;
