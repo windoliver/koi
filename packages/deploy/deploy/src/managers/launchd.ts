@@ -90,15 +90,26 @@ export function createLaunchdManager(system: boolean, logDir: string): ServiceMa
       await writeFile(filePath, content, { mode: 0o644 });
 
       // Bootstrap the service
-      await exec(["launchctl", "bootstrap", domain, filePath]);
+      const bootstrapResult = await exec(["launchctl", "bootstrap", domain, filePath]);
+      if (bootstrapResult.exitCode !== 0) {
+        throw new Error(`Failed to bootstrap ${serviceName}: ${bootstrapResult.stderr}`);
+      }
     },
 
     async uninstall(serviceName) {
       const label = resolveLaunchdLabel(serviceName.replace(/^koi-/, ""));
       const filePath = join(serviceDir, `${label}.plist`);
 
-      // Bootout ignores if not loaded
-      await exec(["launchctl", "bootout", `${domain}/${label}`]);
+      // Bootout — tolerate errors when the service is already unloaded
+      const bootoutResult = await exec(["launchctl", "bootout", `${domain}/${label}`]);
+      if (bootoutResult.exitCode !== 0) {
+        const isBenign =
+          bootoutResult.stderr.includes("not found") ||
+          bootoutResult.stderr.includes("could not find service");
+        if (!isBenign) {
+          throw new Error(`Failed to bootout ${serviceName}: ${bootoutResult.stderr}`);
+        }
+      }
 
       try {
         await unlink(filePath);

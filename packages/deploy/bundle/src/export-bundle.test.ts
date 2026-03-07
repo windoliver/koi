@@ -180,6 +180,29 @@ describe("createBundle", () => {
     expect(result.error.code).toBe("NOT_FOUND");
   });
 
+  test("propagates store I/O errors instead of masking as NOT_FOUND", async () => {
+    const brick = createTestBrick();
+    const failingStore: ForgeStore = {
+      save: async () => ({ ok: true, value: undefined }),
+      load: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "Disk read failure", retryable: false },
+      }),
+      search: async () => ({ ok: true, value: [] }),
+      remove: async () => ({ ok: true, value: undefined }),
+      update: async () => ({ ok: true, value: undefined }),
+      exists: async () => ({ ok: true, value: false }),
+    };
+    const config = makeConfig({ brickIds: [brick.id], store: failingStore });
+
+    const result = await createBundle(config);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INTERNAL");
+    expect(result.error.message).toBe("Disk read failure");
+  });
+
   test("deduplicates brick IDs silently", async () => {
     const brick = createTestBrick();
     const store = createTestStore([brick]);

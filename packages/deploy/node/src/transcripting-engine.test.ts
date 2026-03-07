@@ -340,6 +340,51 @@ describe("createTranscriptingEngine", () => {
     expect(collected[2]).toStrictEqual(events[2]);
   });
 
+  test("messages input maps senderId to correct transcript role", async () => {
+    const events: readonly EngineEvent[] = [{ kind: "turn_end", turnIndex: 0 }];
+    const transcript = createMockTranscript();
+    const wrapped = createTranscriptingEngine(createMockEngine(events), {
+      sessionId: testSessionId,
+      transcript,
+    });
+
+    const messagesInput: EngineInput = {
+      kind: "messages",
+      messages: [
+        {
+          content: [{ kind: "text", text: "user says hi" }],
+          senderId: "user-123",
+          timestamp: Date.now(),
+        },
+        {
+          content: [{ kind: "text", text: "assistant reply" }],
+          senderId: "assistant-bot",
+          timestamp: Date.now(),
+        },
+        {
+          content: [{ kind: "text", text: "tool output" }],
+          senderId: "tool-search",
+          timestamp: Date.now(),
+        },
+        {
+          content: [{ kind: "text", text: "system prompt" }],
+          senderId: "system",
+          timestamp: Date.now(),
+        },
+      ],
+    };
+
+    await collectEvents(wrapped, messagesInput);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const append = transcript.appended[0];
+    expect(append?.entries).toHaveLength(4);
+    expect(append?.entries[0]?.role).toBe("user");
+    expect(append?.entries[1]?.role).toBe("assistant");
+    expect(append?.entries[2]?.role).toBe("tool_result");
+    expect(append?.entries[3]?.role).toBe("system");
+  });
+
   test("delegates optional properties to inner", () => {
     const inner = createMockEngine([]);
     const transcript = createMockTranscript();

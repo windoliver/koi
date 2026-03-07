@@ -38,7 +38,7 @@ export async function createBundle(
   // 3. Load all bricks in parallel
   const loadResults = await Promise.all(uniqueIds.map((id) => config.store.load(brickId(id))));
 
-  // 4. Collect bricks, fail on missing
+  // 4. Collect bricks, fail on missing — propagate non-NOT_FOUND errors immediately
   const bricks: BrickArtifact[] = [];
   const missingIds: string[] = [];
 
@@ -46,6 +46,10 @@ export async function createBundle(
     const result = loadResults[i];
     if (result === undefined) continue;
     if (!result.ok) {
+      // Propagate store/I/O errors (INTERNAL, TIMEOUT, etc.) without masking as NOT_FOUND
+      if (result.error.code !== "NOT_FOUND") {
+        return { ok: false, error: result.error };
+      }
       const id = uniqueIds[i];
       if (id !== undefined) {
         missingIds.push(id);

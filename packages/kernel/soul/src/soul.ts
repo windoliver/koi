@@ -35,14 +35,15 @@ import { createAllWatchedPaths, createSoulMessage, generateMetaInstructionText }
 /**
  * Extended middleware with a `reload()` method for HITL-approved soul updates.
  *
- * Automatically reloads when `fs_write` targets a tracked soul/identity/user file
- * (the write must pass through the middleware chain, including permissions/HITL).
+ * Automatically reloads when any `*_write` tool (e.g. `fs_write`, `nx_write`)
+ * targets a tracked soul/identity/user file (the write must pass through the
+ * middleware chain, including permissions/HITL).
  * Manual `reload()` is also available for programmatic use.
  */
 export interface SoulMiddleware extends KoiMiddleware {
   /**
    * Re-resolves all soul, identity, and user content from original source paths.
-   * Called automatically after successful `fs_write` to tracked files.
+   * Called automatically after successful `*_write` tool call to tracked files.
    * Can also be called manually after HITL-approved writes.
    * Updates the running middleware atomically — takes effect on next model call.
    */
@@ -143,8 +144,8 @@ async function createState(options: CreateSoulOptions): Promise<SoulState> {
  * identity, and user context into model calls as a system message prefix.
  *
  * Returns `SoulMiddleware` — a `KoiMiddleware` with `reload()` and auto-reload
- * via `wrapToolCall`. When `fs_write` targets a tracked file and succeeds
- * (meaning it passed permissions/HITL), the middleware auto-reloads.
+ * via `wrapToolCall`. When any `*_write` tool targets a tracked file and
+ * succeeds (meaning it passed permissions/HITL), the middleware auto-reloads.
  *
  * Content is resolved at factory time and cached in the closure.
  * User content can optionally be refreshed per-call with `refreshUser: true`.
@@ -204,7 +205,7 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
         (refreshUser ? ", user context refreshed per call" : "") +
         (selfModify && state.metaInstructionText.length > 0 ? ", self-modification enabled" : "") +
         (state.watchedPaths.size > 0
-          ? `, auto-reload on fs_write to ${String(state.watchedPaths.size)} tracked file(s)`
+          ? `, auto-reload on *_write to ${String(state.watchedPaths.size)} tracked file(s)`
           : ""),
     }),
 
@@ -217,8 +218,9 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
     ): Promise<ToolResponse> {
       const response = await next(request);
 
-      // Auto-reload after successful fs_write to a tracked file
-      if (request.toolId === "fs_write" && state.watchedPaths.size > 0) {
+      // Auto-reload after successful write tool targeting a tracked file.
+      // Write tools follow the `${prefix}_write` naming convention (e.g. fs_write, nx_write).
+      if (request.toolId.endsWith("_write") && state.watchedPaths.size > 0) {
         const writtenPath = typeof request.input.path === "string" ? request.input.path : undefined;
         if (writtenPath !== undefined && state.watchedPaths.has(writtenPath)) {
           await reload().catch((err: unknown) => console.error("[soul] reload failed:", err));

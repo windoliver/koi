@@ -50,9 +50,15 @@ export function createSystemdManager(system: boolean): ServiceManager {
       await writeFile(filePath, content, { mode: 0o644 });
 
       // Reload systemd so it picks up the new unit
-      await exec(["systemctl", ...userFlag, "daemon-reload"]);
+      const reloadResult = await exec(["systemctl", ...userFlag, "daemon-reload"]);
+      if (reloadResult.exitCode !== 0) {
+        throw new Error(`Failed to reload systemd daemon: ${reloadResult.stderr}`);
+      }
       // Enable the service to start on boot
-      await exec(["systemctl", ...userFlag, "enable", serviceName]);
+      const enableResult = await exec(["systemctl", ...userFlag, "enable", serviceName]);
+      if (enableResult.exitCode !== 0) {
+        throw new Error(`Failed to enable ${serviceName}: ${enableResult.stderr}`);
+      }
 
       // For user services: enable lingering so the service survives logout
       if (!system) {
@@ -64,7 +70,16 @@ export function createSystemdManager(system: boolean): ServiceManager {
     },
 
     async uninstall(serviceName) {
-      await exec(["systemctl", ...userFlag, "disable", serviceName]);
+      const disableResult = await exec(["systemctl", ...userFlag, "disable", serviceName]);
+      if (disableResult.exitCode !== 0) {
+        // Tolerate "not found" errors when the service is already removed
+        const isBenign =
+          disableResult.stderr.includes("not found") ||
+          disableResult.stderr.includes("No such file");
+        if (!isBenign) {
+          throw new Error(`Failed to disable ${serviceName}: ${disableResult.stderr}`);
+        }
+      }
       const filePath = join(serviceDir, `${serviceName}.service`);
       try {
         await unlink(filePath);
@@ -75,7 +90,10 @@ export function createSystemdManager(system: boolean): ServiceManager {
           throw new Error(`Failed to remove service file ${filePath}`, { cause: e });
         }
       }
-      await exec(["systemctl", ...userFlag, "daemon-reload"]);
+      const reloadResult = await exec(["systemctl", ...userFlag, "daemon-reload"]);
+      if (reloadResult.exitCode !== 0) {
+        throw new Error(`Failed to reload systemd daemon: ${reloadResult.stderr}`);
+      }
     },
 
     async start(serviceName) {

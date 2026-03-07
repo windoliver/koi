@@ -4,7 +4,7 @@
  * Sequence: detect platform → resolve paths → generate template → install → verify health.
  */
 
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createLaunchdManager } from "./managers/launchd.js";
 import { createSystemdManager } from "./managers/systemd.js";
 import type { ServiceManager } from "./managers/types.js";
@@ -15,6 +15,7 @@ import {
   type Platform,
   resolveLaunchdLabel,
   resolveLogDir,
+  resolveServiceDir,
   resolveServiceName,
 } from "./platform.js";
 import { generateLaunchdPlist } from "./templates/launchd.js";
@@ -57,6 +58,7 @@ export async function installService(config: InstallConfig): Promise<InstallResu
 
   let serviceContent: string;
   let manager: ServiceManager;
+  let serviceFilePath: string;
 
   if (platform === "linux") {
     serviceContent = generateSystemdUnit({
@@ -74,6 +76,7 @@ export async function installService(config: InstallConfig): Promise<InstallResu
       user: undefined, // systemd user services don't need User=
     });
     manager = createSystemdManager(system);
+    serviceFilePath = join(resolveServiceDir("linux", system), `${serviceName}.service`);
   } else {
     const label = resolveLaunchdLabel(config.agentName);
     serviceContent = generateLaunchdPlist({
@@ -89,6 +92,7 @@ export async function installService(config: InstallConfig): Promise<InstallResu
       envFile,
     });
     manager = createLaunchdManager(system, logDir);
+    serviceFilePath = join(resolveServiceDir("darwin", system), `${label}.plist`);
   }
 
   // Install and start
@@ -97,10 +101,48 @@ export async function installService(config: InstallConfig): Promise<InstallResu
 
   const healthUrl = `http://localhost:${port}/health`;
 
+  // Best-effort health check: retry a few times with a short delay
+  await verifyHealth(healthUrl);
+
   return {
     platform,
     serviceName,
-    serviceFilePath: manifestPath,
+    serviceFilePath,
     healthUrl,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Health verification
+// ---------------------------------------------------------------------------
+
+const HEALTH_MAX_RETRIES = 3;
+const HEALTH_RETRY_DELAY_MS = 1_000;
+const HEALTH_TIMEOUT_MS = 5_000;
+
+/**
+ * Best-effort health verification after service start.
+ * Retries up to {@link HEALTH_MAX_RETRIES} times with a delay between attempts.
+ * Failures are intentionally swallowed — the service may not expose HTTP yet,
+ * or it may need more time to become ready.
+ */
+async function verifyHealth(url: string): Promise<void> {
+  for (let attempt = 0; attempt < HEALTH_MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+      });
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // Network error or timeout — retry after delay
+    }
+
+    if (attempt < HEALTH_MAX_RETRIES - 1) {
+      await new Promise((resolve) => setTimeout(resolve, HEALTH_RETRY_DELAY_MS));
+    }
+  }
+  // All retries exhausted — proceed silently.
+  // The caller can run `koi doctor` for detailed diagnostics.
 }
