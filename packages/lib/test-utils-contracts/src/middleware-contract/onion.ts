@@ -16,7 +16,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
-import { createMockTurnContext } from "../contexts.js";
+import { createMockTurnContext } from "@koi/test-utils-mocks";
 
 export interface OnionTestOptions {
   readonly createMiddleware: () => KoiMiddleware | Promise<KoiMiddleware>;

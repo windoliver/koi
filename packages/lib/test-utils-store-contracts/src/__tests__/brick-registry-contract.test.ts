@@ -3,8 +3,8 @@
  */
 
 import { describe } from "bun:test";
+import { createInMemoryBrickRegistry } from "@koi/test-utils-mocks";
 import { testBrickRegistryContract } from "../brick-registry-contract.js";
-import { createInMemoryBrickRegistry } from "../in-memory-brick-registry.js";
 
 describe("InMemoryBrickRegistry", () => {
   testBrickRegistryContract({

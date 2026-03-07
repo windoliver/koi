@@ -13,8 +13,7 @@ import type {
   SkillRegistryChangeEvent,
 } from "@koi/core";
 import { skillId } from "@koi/core";
-import { assertKoiError } from "./assert-koi-error.js";
-import { assertErr, assertOk } from "./assert-result.js";
+import { assertErr, assertKoiError, assertOk } from "@koi/test-utils-mocks";
 
 // ---------------------------------------------------------------------------
 // Options

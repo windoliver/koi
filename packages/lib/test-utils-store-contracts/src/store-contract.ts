@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickFitnessMetrics, ForgeStore, StoreChangeEvent } from "@koi/core";
 import { brickId } from "@koi/core";
-import { createTestSkillArtifact, createTestToolArtifact } from "./brick-artifacts.js";
+import { createTestSkillArtifact, createTestToolArtifact } from "@koi/test-utils-mocks";
 
 function createBrick(overrides?: Partial<Parameters<typeof createTestToolArtifact>[0]>) {
   return createTestToolArtifact({

@@ -9,8 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import type { VersionChangeEvent, VersionIndexBackend } from "@koi/core";
 import { brickId, publisherId } from "@koi/core";
-import { assertKoiError } from "./assert-koi-error.js";
-import { assertErr, assertOk } from "./assert-result.js";
+import { assertErr, assertKoiError, assertOk } from "@koi/test-utils-mocks";
 
 // ---------------------------------------------------------------------------
 // Options

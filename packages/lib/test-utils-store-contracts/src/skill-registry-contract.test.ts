@@ -4,8 +4,8 @@
  */
 
 import { describe } from "bun:test";
+import { createInMemorySkillRegistry } from "@koi/test-utils-mocks";
 import { testSkillRegistryContract } from "./skill-registry-contract.js";
-import { createInMemorySkillRegistry } from "./skill-registry-memory.js";
 
 describe("SkillRegistryBackend (in-memory)", () => {
   testSkillRegistryContract({

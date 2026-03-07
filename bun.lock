@@ -912,6 +912,33 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/gateway-types": "workspace:*",
+        "@koi/test-utils-contracts": "workspace:*",
+        "@koi/test-utils-mocks": "workspace:*",
+        "@koi/test-utils-store-contracts": "workspace:*",
+      },
+    },
+    "packages/lib/test-utils-contracts": {
+      "name": "@koi/test-utils-contracts",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/test-utils-mocks": "workspace:*",
+      },
+    },
+    "packages/lib/test-utils-mocks": {
+      "name": "@koi/test-utils-mocks",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/test-utils-store-contracts": {
+      "name": "@koi/test-utils-store-contracts",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
+        "@koi/test-utils-mocks": "workspace:*",
       },
     },
     "packages/lib/validation": {
@@ -3568,6 +3595,12 @@
     "@koi/task-spawn": ["@koi/task-spawn@workspace:packages/ipc/task-spawn"],
 
     "@koi/test-utils": ["@koi/test-utils@workspace:packages/lib/test-utils"],
+
+    "@koi/test-utils-contracts": ["@koi/test-utils-contracts@workspace:packages/lib/test-utils-contracts"],
+
+    "@koi/test-utils-mocks": ["@koi/test-utils-mocks@workspace:packages/lib/test-utils-mocks"],
+
+    "@koi/test-utils-store-contracts": ["@koi/test-utils-store-contracts@workspace:packages/lib/test-utils-store-contracts"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
 

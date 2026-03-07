@@ -18,7 +18,7 @@ import type {
   TaskResult,
 } from "@koi/core";
 import { taskItemId } from "@koi/core";
-import { assertErr, assertOk } from "./assert-result.js";
+import { assertErr, assertOk } from "@koi/test-utils-mocks";
 
 // ---------------------------------------------------------------------------
 // Session result shape (avoid depending on L2)
