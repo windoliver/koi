@@ -1,0 +1,29 @@
+{
+  "name": "@koi/skill-stack",
+  "description": "Compose skill providers with progressive loading, gating, hot-plug, and file watching",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/skill-scanner": "workspace:*",
+    "@koi/skills": "workspace:*",
+    "@koi/validation": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  }
+}

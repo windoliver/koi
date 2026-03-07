@@ -26,7 +26,7 @@ import type {
 } from "@koi/core";
 import { agentId, COMPONENT_PRIORITY, skillToken } from "@koi/core";
 import type { ScanFinding } from "@koi/skill-scanner";
-import { loadSkill, resolveSecurePath } from "./loader.js";
+import { clearSkillCacheEntry, loadSkill, resolveSecurePath } from "./loader.js";
 import { loadForgeSkill } from "./loader-forge.js";
 import type {
   ProgressiveSkillProvider,
@@ -376,6 +376,167 @@ export function createSkillComponentProvider(
     };
   };
 
+  // -------------------------------------------------------------------
+  // mount/unmount — hot-plug serialization via promise chain
+  // -------------------------------------------------------------------
+
+  // let: pending promise chain ensures serialized mount/unmount execution
+  let pending = Promise.resolve();
+  // let: true while an async mount is in-flight — unmount defers to chain only when needed
+  let mountInFlight = false;
+
+  const mountImpl = async (
+    skill: SkillConfig,
+    mountBasePath: string,
+    mountFindingCallback?: (name: string, findings: readonly ScanFinding[]) => void,
+  ): Promise<Result<void, KoiError>> => {
+    // Reject duplicate names
+    if (levels.has(skill.name)) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `Skill "${skill.name}" is already mounted`,
+          retryable: false,
+          context: { reason: "duplicate", name: skill.name },
+        },
+      };
+    }
+
+    // Only filesystem sources supported for hot-mount
+    if (skill.source.kind !== "filesystem") {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `Hot-mount only supports filesystem skills, got "${skill.source.kind}"`,
+          retryable: false,
+          context: { reason: "unsupported_source", kind: skill.source.kind },
+        },
+      };
+    }
+
+    const resolvedDir = resolve(mountBasePath, skill.source.path);
+    const secureResult = await resolveSecurePath(resolvedDir, mountBasePath);
+    if (!secureResult.ok) {
+      return { ok: false, error: secureResult.error };
+    }
+
+    const securePath = secureResult.value;
+
+    // Clear cache to force fresh load
+    clearSkillCacheEntry(securePath);
+
+    const findingCb =
+      mountFindingCallback !== undefined
+        ? (findings: readonly ScanFinding[]) => mountFindingCallback(skill.name, findings)
+        : undefined;
+
+    // Load at "body" level (Decision 14A — enables security scan)
+    const loadResult = await loadSkill(securePath, "body", findingCb);
+    if (!loadResult.ok) {
+      return {
+        ok: false,
+        error: {
+          ...loadResult.error,
+          context: { ...loadResult.error.context, reason: "load_failed" },
+        },
+      };
+    }
+
+    const entry = loadResult.value;
+    const component = buildSkillComponent(entry);
+    const tokenKey: string = skillToken(entry.name);
+
+    if (components !== undefined) {
+      components.set(tokenKey, component);
+    }
+    levels.set(entry.name, "body");
+    skillSources.set(entry.name, skill.source);
+    resolvedPaths.set(entry.name, securePath);
+
+    // Update cached — remove from skipped if was previously skipped
+    if (cached !== undefined) {
+      const filteredSkipped = cached.skipped.filter((s) => s.name !== skill.name);
+      cached = { components: cached.components, skipped: filteredSkipped };
+    }
+
+    // Fire ComponentEvent
+    const event: ComponentEvent = {
+      kind: "attached",
+      agentId: attachedAgentId,
+      componentKey: tokenKey,
+    };
+    for (const listener of listeners) {
+      listener(event);
+    }
+
+    return { ok: true, value: undefined };
+  };
+
+  const mount = (
+    skill: SkillConfig,
+    mountBasePath: string,
+    mountFindingCallback?: (name: string, findings: readonly ScanFinding[]) => void,
+  ): Promise<Result<void, KoiError>> => {
+    mountInFlight = true;
+    const op = pending.then(() => mountImpl(skill, mountBasePath, mountFindingCallback));
+    pending = op.then(
+      () => {
+        mountInFlight = false;
+      },
+      () => {
+        mountInFlight = false;
+      },
+    );
+    return op;
+  };
+
+  const unmountImpl = (name: string): void => {
+    const tokenKey: string = skillToken(name);
+    const securePath = resolvedPaths.get(name);
+
+    if (components !== undefined) {
+      components.delete(tokenKey);
+    }
+    levels.delete(name);
+    skillSources.delete(name);
+    resolvedPaths.delete(name);
+
+    // Clear cache entry
+    if (securePath !== undefined) {
+      clearSkillCacheEntry(securePath);
+    }
+
+    // Update cached — add to skipped with reason
+    if (cached !== undefined) {
+      const newSkipped = [...cached.skipped, { name, reason: "unmounted" }];
+      cached = { components: cached.components, skipped: newSkipped };
+    }
+
+    // Fire ComponentEvent
+    const event: ComponentEvent = {
+      kind: "detached",
+      agentId: attachedAgentId,
+      componentKey: tokenKey,
+    };
+    for (const listener of listeners) {
+      listener(event);
+    }
+  };
+
+  const unmount = (name: string): void => {
+    if (mountInFlight) {
+      // Serialize with in-flight mount to prevent races on shared state
+      pending = pending.then(() => {
+        unmountImpl(name);
+      });
+    } else {
+      // No mount in-flight — run synchronously for immediate observable effects
+      unmountImpl(name);
+    }
+  };
+
   return {
     name: "@koi/skills",
     priority: COMPONENT_PRIORITY.BUNDLED,
@@ -383,5 +544,7 @@ export function createSkillComponentProvider(
     watch,
     promote,
     getLevel,
+    mount,
+    unmount,
   };
 }

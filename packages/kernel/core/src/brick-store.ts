@@ -49,6 +49,8 @@ export interface BrickRequires {
   readonly packages?: Readonly<Record<string, string>>;
   /** Whether this brick requires network access at runtime. Default: false (no network). */
   readonly network?: boolean;
+  /** OS platforms where this brick can run (e.g., "darwin", "linux", "win32"). Empty = all. */
+  readonly platform?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------

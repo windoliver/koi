@@ -4,7 +4,8 @@
  * Three levels: metadata (frontmatter only), body (+ markdown), bundled (+ scripts/references).
  */
 
-import type { ComponentProvider, KoiError, Result } from "@koi/core";
+import type { ComponentProvider, KoiError, Result, SkillConfig } from "@koi/core";
+import type { ScanFinding } from "@koi/skill-scanner";
 
 /** Discriminant for progressive loading depth. */
 export type SkillLoadLevel = "metadata" | "body" | "bundled";
@@ -93,10 +94,18 @@ export interface IncludeResolutionOptions {
 // Progressive provider
 // ---------------------------------------------------------------------------
 
-/** Extended ComponentProvider with dynamic level promotion. */
+/** Extended ComponentProvider with dynamic level promotion and hot-plug. */
 export interface ProgressiveSkillProvider extends ComponentProvider {
   /** Promote a skill to a higher load level. No-op if already at target level. */
   readonly promote: (name: string, targetLevel?: SkillLoadLevel) => Promise<Result<void, KoiError>>;
   /** Query the current load level for a skill. Returns undefined if skill not found. */
   readonly getLevel: (name: string) => SkillLoadLevel | undefined;
+  /** Hot-mount a skill at runtime. Loads at "body" level and runs security scan. */
+  readonly mount: (
+    skill: SkillConfig,
+    basePath: string,
+    onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void,
+  ) => Promise<Result<void, KoiError>>;
+  /** Hot-unmount a skill by name. */
+  readonly unmount: (name: string) => void;
 }

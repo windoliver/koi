@@ -1230,6 +1230,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/skill-stack": {
+      "name": "@koi/skill-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/skill-scanner": "workspace:*",
+        "@koi/skills": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/starter": {
       "name": "@koi/starter",
       "version": "0.0.0",
@@ -2717,6 +2730,8 @@
         "@koi/node": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/sandbox-executor": "workspace:*",
+        "@koi/skill-stack": "workspace:*",
+        "@koi/skills": "workspace:*",
         "@koi/soul": "workspace:*",
         "@koi/task-board": "workspace:*",
         "@koi/test-utils": "workspace:*",
@@ -3495,6 +3510,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/fs/skill-scanner"],
+
+    "@koi/skill-stack": ["@koi/skill-stack@workspace:packages/meta/skill-stack"],
 
     "@koi/skills": ["@koi/skills@workspace:packages/fs/skills"],
 

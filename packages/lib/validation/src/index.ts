@@ -7,6 +7,11 @@
  */
 
 export { applyBrickUpdate } from "./apply-brick-update.js";
+export {
+  type RequiresViolation,
+  type RequiresViolationKind,
+  validateBrickRequires,
+} from "./brick-requires.js";
 export { validateBrickArtifact } from "./brick-validation.js";
 export {
   compactEntries,

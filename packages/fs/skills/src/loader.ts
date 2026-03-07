@@ -46,6 +46,14 @@ export function clearSkillCache(): void {
   skillCache.clear();
 }
 
+/**
+ * Clears a single cache entry by directory path.
+ * Used by hot-mount to force a fresh load after file changes.
+ */
+export function clearSkillCacheEntry(dirPath: string): void {
+  skillCache.delete(dirPath);
+}
+
 // ---------------------------------------------------------------------------
 // Security: path traversal protection
 // ---------------------------------------------------------------------------

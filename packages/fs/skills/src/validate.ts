@@ -13,6 +13,12 @@ import { z } from "zod";
 // Validated output type
 // ---------------------------------------------------------------------------
 
+export interface ValidatedSkillRequires {
+  readonly bins?: readonly string[];
+  readonly env?: readonly string[];
+  readonly platform?: readonly string[];
+}
+
 export interface ValidatedSkillFrontmatter {
   readonly name: string;
   readonly description: string;
@@ -21,6 +27,7 @@ export interface ValidatedSkillFrontmatter {
   readonly metadata?: Readonly<Record<string, string>>;
   readonly allowedTools?: readonly string[];
   readonly includes?: readonly string[];
+  readonly requires?: ValidatedSkillRequires;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +69,13 @@ const skillFrontmatterSchema = z.object({
       z.string().regex(INCLUDE_PATH_RE, "Include path must be a relative path (./... or ../..)"),
     )
     .optional(),
+  requires: z
+    .object({
+      bins: z.array(z.string()).optional(),
+      env: z.array(z.string()).optional(),
+      platform: z.array(z.string()).optional(),
+    })
+    .optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -82,7 +96,7 @@ export function validateSkillFrontmatter(
     return { ok: false, error: zodToKoiError(result.error, "Skill frontmatter validation failed") };
   }
 
-  const { name, description, license, compatibility, metadata, includes } = result.data;
+  const { name, description, license, compatibility, metadata, includes, requires } = result.data;
   const allowedToolsRaw = result.data["allowed-tools"];
 
   // Parse allowed-tools: space-delimited string → array
@@ -99,6 +113,15 @@ export function validateSkillFrontmatter(
     ...(metadata !== undefined ? { metadata } : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),
     ...(includes !== undefined ? { includes } : {}),
+    ...(requires !== undefined
+      ? {
+          requires: {
+            ...(requires.bins !== undefined ? { bins: requires.bins } : {}),
+            ...(requires.env !== undefined ? { env: requires.env } : {}),
+            ...(requires.platform !== undefined ? { platform: requires.platform } : {}),
+          },
+        }
+      : {}),
   };
 
   return { ok: true, value: validated };
