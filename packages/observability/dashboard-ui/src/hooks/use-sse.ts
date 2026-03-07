@@ -12,6 +12,7 @@ import type { DashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
 import { isAgentEvent } from "@koi/dashboard-types";
 import type { QueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { getDashboardConfig } from "../lib/dashboard-config.js";
 import { createSseClient } from "../lib/sse-client.js";
 import { useAgentsStore } from "../stores/agents-store.js";
 import { useConnectionStore } from "../stores/connection-store.js";
@@ -48,8 +49,9 @@ export function useSse(queryClient: QueryClient): void {
   const setConnectionStatus = useConnectionStore((s) => s.setStatus);
 
   useEffect(() => {
+    const { apiPath } = getDashboardConfig();
     const client = createSseClient({
-      url: "/dashboard/api/events",
+      url: `${apiPath}/events`,
       onBatch: (batch: DashboardEventBatch) => {
         for (const event of batch.events) {
           handleEvent(event, queryClient);

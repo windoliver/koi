@@ -11,7 +11,9 @@ import type {
   DashboardSystemMetrics,
 } from "@koi/dashboard-types";
 
-const API_BASE = "/dashboard/api";
+import { getDashboardConfig } from "./dashboard-config.js";
+
+const API_BASE = getDashboardConfig().apiPath;
 
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);

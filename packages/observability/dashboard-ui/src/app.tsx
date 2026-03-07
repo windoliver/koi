@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { PageShell } from "./components/layout/page-shell.js";
 import { AgentsPage } from "./pages/agents-page.js";
 import { useSse } from "./hooks/use-sse.js";
+import { getDashboardConfig } from "./lib/dashboard-config.js";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,9 +20,10 @@ function SseProvider({ children }: { readonly children: React.ReactNode }): Reac
 }
 
 export function App(): React.ReactElement {
+  const { basePath } = getDashboardConfig();
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename="/dashboard">
+      <BrowserRouter basename={basePath}>
         <SseProvider>
           <Routes>
             <Route element={<PageShell />}>

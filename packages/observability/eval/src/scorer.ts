@@ -29,7 +29,7 @@ export function computeSummary(
     meanScore: mean(allScores),
     latencyP50Ms: computePercentile(allLatencies, 50),
     latencyP95Ms: computePercentile(allLatencies, 95),
-    totalCostUsd: 0,
+    totalCostUsd: trials.reduce((sum, t) => sum + (t.metrics.costUsd ?? 0), 0),
     byTask,
   };
 }

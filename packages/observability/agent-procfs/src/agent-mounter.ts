@@ -62,7 +62,19 @@ export function createAgentMounter(config: AgentMounterConfig): AgentMounter {
     }
   }
 
-  // Watch for registry changes
+  // Hydrate with agents that already exist in the registry
+  void (async () => {
+    try {
+      const existing = await registry.list();
+      for (const entry of existing) {
+        mountAgent(entry.agentId);
+      }
+    } catch {
+      // Best-effort — if list() fails, we still get future events via watch()
+    }
+  })();
+
+  // Watch for future registry changes
   const unsubscribe = registry.watch((event) => {
     switch (event.kind) {
       case "registered":

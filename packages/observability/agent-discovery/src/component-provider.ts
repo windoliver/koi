@@ -40,7 +40,10 @@ export function createDiscoveryProvider(config?: DiscoveryProviderConfig): Compo
     name: "agent-discovery",
 
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
+      // Snapshot is bounded-stale (cache TTL). The discover_agents tool
+      // always calls discovery.discover() for fresh results.
       const agents = await discovery.discover();
+
       return new Map<string, unknown>([
         [toolToken(tool.descriptor.name) as string, tool],
         [EXTERNAL_AGENTS as string, agents],
