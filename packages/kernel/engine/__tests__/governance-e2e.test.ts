@@ -21,10 +21,9 @@ import { describe, expect, test } from "bun:test";
 import type { EngineEvent, EngineOutput, GovernanceSnapshot, ModelRequest } from "@koi/core";
 import { GOVERNANCE, GOVERNANCE_VARIABLES } from "@koi/core";
 import { createLoopAdapter } from "@koi/engine-loop";
+import type { GovernanceConfig, GovernanceControllerBuilder } from "@koi/engine-reconcile";
 import { createAnthropicAdapter } from "@koi/model-router";
-import type { GovernanceControllerBuilder } from "../src/governance-controller.js";
 import { createKoi } from "../src/koi.js";
-import type { GovernanceConfig } from "../src/types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate

@@ -1,12 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  CreateKoiOptions,
-  IterationLimits,
-  KoiRuntime,
-  LoopDetectionConfig,
-  SpawnPolicy,
-} from "./types.js";
-import { DEFAULT_ITERATION_LIMITS, DEFAULT_LOOP_DETECTION, DEFAULT_SPAWN_POLICY } from "./types.js";
+import type { IterationLimits, LoopDetectionConfig, SpawnPolicy } from "@koi/engine-compose";
+import {
+  DEFAULT_ITERATION_LIMITS,
+  DEFAULT_LOOP_DETECTION,
+  DEFAULT_SPAWN_POLICY,
+} from "@koi/engine-compose";
+import type { CreateKoiOptions, KoiRuntime } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // IterationLimits

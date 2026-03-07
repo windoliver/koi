@@ -16,15 +16,14 @@ import type {
   SupervisionConfig,
 } from "@koi/core";
 import { agentId } from "@koi/core";
-import { createCascadingTermination } from "../cascading-termination.js";
-import type { FakeClock } from "../clock.js";
-import { createFakeClock } from "../clock.js";
-import type { ProcessTree } from "../process-tree.js";
-import { createProcessTree } from "../process-tree.js";
-import type { InMemoryRegistry } from "../registry.js";
-import { createInMemoryRegistry } from "../registry.js";
-import type { SpawnChildFn } from "../supervision-reconciler.js";
-import { createSupervisionReconciler } from "../supervision-reconciler.js";
+import type { FakeClock, InMemoryRegistry, ProcessTree, SpawnChildFn } from "@koi/engine-reconcile";
+import {
+  createCascadingTermination,
+  createFakeClock,
+  createInMemoryRegistry,
+  createProcessTree,
+  createSupervisionReconciler,
+} from "@koi/engine-reconcile";
 
 // ---------------------------------------------------------------------------
 // Helpers

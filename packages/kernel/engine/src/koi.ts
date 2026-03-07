@@ -37,22 +37,22 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { agentId, INBOX, runId, sessionId, toolToken, turnId } from "@koi/core";
-import { KoiRuntimeError } from "@koi/errors";
-import { runWithExecutionContext } from "@koi/execution-context";
-import { AgentEntity } from "./agent-entity.js";
-import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import {
-  createTerminalHandlers,
+  composeExtensions,
+  createDefaultGuardExtension,
   injectCapabilities,
   recomposeChains,
   resolveActiveMiddleware,
   runSessionHooks,
   runTurnHooks,
-} from "./compose.js";
+} from "@koi/engine-compose";
+import { createGovernanceExtension, createGovernanceProvider } from "@koi/engine-reconcile";
+import { KoiRuntimeError } from "@koi/errors";
+import { runWithExecutionContext } from "@koi/execution-context";
+import { AgentEntity } from "./agent-entity.js";
+import { createBrickRequiresExtension } from "./brick-requires-extension.js";
+import { createTerminalHandlers } from "./compose-bridge.js";
 import { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
-import { composeExtensions, createDefaultGuardExtension } from "./extension-composer.js";
-import { createGovernanceExtension } from "./governance-extension.js";
-import { createGovernanceProvider } from "./governance-provider.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
@@ -402,10 +402,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 forgedDescriptorsCache = d;
                 toolsAccessor?.updateForged(d);
               })
-              .catch((_err: unknown) => {
-                // Stale cache is graceful degradation — descriptor
-                // refresh failure is non-fatal; next turn boundary
-                // will retry via refreshForgeState.
+              .catch((err: unknown) => {
+                console.warn("[koi] forge descriptor refresh failed", err);
               });
             // Set dirty flag for turn-boundary middleware recomposition
             forgeStateDirty = true;

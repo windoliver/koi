@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ProcessState, RegistryEntry } from "@koi/core";
 import { AGENT_SIGNALS, agentGroupId, agentId } from "@koi/core";
+import type { InMemoryRegistry } from "@koi/engine-reconcile";
+import { createInMemoryRegistry } from "@koi/engine-reconcile";
 import { listByGroup, signalGroup } from "./group-operations.js";
-import type { InMemoryRegistry } from "./registry.js";
-import { createInMemoryRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentStatus, ProcessState, TransitionReason } from "@koi/core";
 import { VALID_TRANSITIONS } from "@koi/core";
-import type { TransitionInput } from "../transitions.js";
-import { applyTransition, validateTransition } from "../transitions.js";
+import type { TransitionInput } from "@koi/engine-reconcile";
+import { applyTransition, validateTransition } from "@koi/engine-reconcile";
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -215,13 +215,20 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         released = true;
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
-        void childRuntime.dispose();
+        void Promise.resolve(childRuntime.dispose()).catch((err: unknown) => {
+          console.error(`[spawn-child] dispose failed for child "${childPid.id}"`, err);
+        });
 
         // Revoke auto-delegation grant on child termination (best-effort)
         if (childGrantId !== undefined && parentHasDelegation) {
           const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
           if (parentDel !== undefined) {
-            void parentDel.revoke(childGrantId, false);
+            void Promise.resolve(parentDel.revoke(childGrantId, false)).catch((err: unknown) => {
+              console.error(
+                `[spawn-child] delegation revoke failed for child "${childPid.id}"`,
+                err,
+              );
+            });
           }
         }
       }

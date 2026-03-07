@@ -13,7 +13,7 @@ import type {
   HealthSnapshot,
   HealthStatus,
 } from "@koi/core";
-import type { InMemoryRegistry } from "./registry.js";
+import type { InMemoryRegistry } from "./governance-types.js";
 
 // ---------------------------------------------------------------------------
 // Public type

@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { agentId } from "@koi/core";
-import type { InMemoryHealthMonitor } from "../health-monitor.js";
-import { createHealthMonitor } from "../health-monitor.js";
-import type { InMemoryRegistry } from "../registry.js";
-import { createInMemoryRegistry } from "../registry.js";
+import type { InMemoryHealthMonitor, InMemoryRegistry } from "@koi/engine-reconcile";
+import { createHealthMonitor, createInMemoryRegistry } from "@koi/engine-reconcile";
 
 // ---------------------------------------------------------------------------
 // Helpers

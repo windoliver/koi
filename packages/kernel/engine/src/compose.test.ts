@@ -18,14 +18,11 @@ import {
   toolToken,
   turnId,
 } from "@koi/core";
-import { AgentEntity } from "./agent-entity.js";
 import {
   collectCapabilities,
   composeModelChain,
   composeModelStreamChain,
   composeToolChain,
-  createComposedCallHandlers,
-  createTerminalHandlers,
   formatCapabilityMessage,
   injectCapabilities,
   recomposeChains,
@@ -33,7 +30,9 @@ import {
   runSessionHooks,
   runTurnHooks,
   sortMiddlewareByPhase,
-} from "./compose.js";
+} from "@koi/engine-compose";
+import { AgentEntity } from "./agent-entity.js";
+import { createComposedCallHandlers, createTerminalHandlers } from "./compose-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers

@@ -9,7 +9,7 @@
 import type { Agent, ComponentProvider } from "@koi/core";
 import { COMPONENT_PRIORITY, GOVERNANCE } from "@koi/core";
 import { createGovernanceController } from "./governance-controller.js";
-import type { GovernanceConfig } from "./types.js";
+import type { GovernanceConfig } from "./governance-types.js";
 
 export function createGovernanceProvider(
   config?: Partial<GovernanceConfig> | undefined,

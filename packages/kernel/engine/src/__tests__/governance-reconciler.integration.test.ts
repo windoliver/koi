@@ -19,10 +19,8 @@ import type {
   SubsystemToken,
 } from "@koi/core";
 import { agentId, GOVERNANCE } from "@koi/core";
-import type { AgentLookup } from "../governance-reconciler.js";
-import { createGovernanceReconciler } from "../governance-reconciler.js";
-import type { InMemoryRegistry } from "../registry.js";
-import { createInMemoryRegistry } from "../registry.js";
+import type { AgentLookup, InMemoryRegistry } from "@koi/engine-reconcile";
+import { createGovernanceReconciler, createInMemoryRegistry } from "@koi/engine-reconcile";
 
 // ---------------------------------------------------------------------------
 // Helpers

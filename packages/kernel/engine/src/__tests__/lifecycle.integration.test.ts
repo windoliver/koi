@@ -8,12 +8,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { EvictionCandidate, RegistryEvent } from "@koi/core";
 import { agentId } from "@koi/core";
+import type { InMemoryHealthMonitor, InMemoryRegistry } from "@koi/engine-reconcile";
+import {
+  createHealthMonitor,
+  createInMemoryRegistry,
+  lruPolicy,
+  qosPolicy,
+} from "@koi/engine-reconcile";
 import { disposeAll } from "../dispose.js";
-import { lruPolicy, qosPolicy } from "../eviction-policies.js";
-import type { InMemoryHealthMonitor } from "../health-monitor.js";
-import { createHealthMonitor } from "../health-monitor.js";
-import type { InMemoryRegistry } from "../registry.js";
-import { createInMemoryRegistry } from "../registry.js";
 
 // ---------------------------------------------------------------------------
 // Shared setup

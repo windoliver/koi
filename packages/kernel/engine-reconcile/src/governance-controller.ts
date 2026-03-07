@@ -19,9 +19,9 @@ import type {
 } from "@koi/core";
 import { GOVERNANCE_VARIABLES } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
+import type { GovernanceConfig } from "./governance-types.js";
+import { createDefaultGovernanceConfig } from "./governance-types.js";
 import { createRollingWindow } from "./rolling-window.js";
-import type { GovernanceConfig } from "./types.js";
-import { createDefaultGovernanceConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Builder interface (L1-only, not exported to L0)

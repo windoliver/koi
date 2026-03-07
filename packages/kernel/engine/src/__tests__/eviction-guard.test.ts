@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { EvictionCandidate } from "@koi/core";
 import { agentId } from "@koi/core";
-import { lruPolicy, qosPolicy } from "../eviction-policies.js";
+import { lruPolicy, qosPolicy } from "@koi/engine-reconcile";
 
 // ---------------------------------------------------------------------------
 // Helpers

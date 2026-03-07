@@ -16,7 +16,7 @@ import type {
   TerminationOutcome,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, isAttachResult, mapStopReasonToOutcome } from "@koi/core";
-import type { TransitionValidator } from "./extension-composer.js";
+import type { TransitionValidator } from "@koi/engine-compose";
 import type { AgentLifecycle, LifecycleEvent } from "./lifecycle.js";
 import { createLifecycle, transition } from "./lifecycle.js";
 

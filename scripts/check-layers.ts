@@ -95,10 +95,13 @@ export function isL0Violation(specifier: string): boolean {
 
 /**
  * Returns true if the import specifier is a violation in an L2 source file.
- * L2 non-test source must not import from L1 (@koi/engine).
+ * L2 non-test source must not import from any L1 package.
  */
 export function isL2Violation(specifier: string): boolean {
-  return specifier === "@koi/engine" || specifier.startsWith("@koi/engine/");
+  if (!specifier.startsWith("@koi/")) return false;
+  const parts = specifier.split("/");
+  const basePkg = `${parts[0] ?? ""}/${parts[1] ?? ""}`;
+  return L1_PACKAGES.has(basePkg);
 }
 
 /**
@@ -386,9 +389,9 @@ async function main(): Promise<void> {
         return [];
       }
 
-      // --- L1: may depend on L0 + L0u ---
+      // --- L1: may depend on L0 + L0u + L1 (Turborepo catches cycles) ---
       if (L1_PACKAGES.has(pkg.name)) {
-        const allowedL1 = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
+        const allowedL1 = new Set([...L0_PACKAGES, ...L0U_PACKAGES, ...L1_PACKAGES]);
         const badDeps = koiDeps.filter((d) => !allowedL1.has(d));
         if (badDeps.length > 0) {
           return [

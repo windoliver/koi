@@ -178,7 +178,12 @@ export function createSupervisionReconciler(deps: {
     const result = deps.registry.transition(childId, "terminated", entry.status.generation, reason);
     if (isPromise(result)) {
       // Fire and forget for async registries
-      void result;
+      void (result as Promise<unknown>).catch((err: unknown) => {
+        console.error(
+          `[supervision-reconciler] async terminate failed for child "${childId}"`,
+          err,
+        );
+      });
       return true;
     }
     return result.ok;

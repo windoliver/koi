@@ -25,13 +25,14 @@ import type {
 } from "@koi/core";
 import { agentId } from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
-import type { InMemoryHealthMonitor } from "../health-monitor.js";
-import { createHealthMonitor } from "../health-monitor.js";
+import type { InMemoryHealthMonitor, ReconcileRunner } from "@koi/engine-reconcile";
+import {
+  createHealthMonitor,
+  createInMemoryRegistry,
+  createReconcileRunner,
+  createTimeoutReconciler,
+} from "@koi/engine-reconcile";
 import { createKoi } from "../koi.js";
-import type { ReconcileRunner } from "../reconcile-runner.js";
-import { createReconcileRunner } from "../reconcile-runner.js";
-import { createInMemoryRegistry } from "../registry.js";
-import { createTimeoutReconciler } from "../timeout-reconciler.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate

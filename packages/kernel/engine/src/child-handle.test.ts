@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { ChildLifecycleEvent, ProcessState, RegistryEntry } from "@koi/core";
 import { AGENT_SIGNALS, agentId } from "@koi/core";
+import type { InMemoryRegistry } from "@koi/engine-reconcile";
+import { createInMemoryRegistry } from "@koi/engine-reconcile";
 import { createChildHandle } from "./child-handle.js";
-import type { InMemoryRegistry } from "./registry.js";
-import { createInMemoryRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
