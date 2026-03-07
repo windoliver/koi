@@ -61,14 +61,17 @@ const mockModelHandler = async (request: {
 };
 
 mock.module("../resolve-agent.js", () => ({
-  resolveAgent: () =>
-    Promise.resolve({
+  resolveAgent: async () => {
+    const { createLoopAdapter } = await import("@koi/engine-loop");
+    return {
       ok: true,
       value: {
         middleware: [],
         model: mockModelHandler,
+        engine: createLoopAdapter({ modelCall: mockModelHandler }),
       },
-    }),
+    };
+  },
   formatResolutionError: (error: { readonly message: string }) =>
     `Resolution error: ${error.message}\n`,
 }));
@@ -155,7 +158,7 @@ describe("runStart — dry-run mode", () => {
     const output = stderrChunks.join("");
     expect(output).toContain("Manifest: test-agent v0.1.0");
     expect(output).toContain("Model: anthropic:claude-sonnet-4-5-20250929");
-    expect(output).toContain("Engine: loop");
+    expect(output).toContain("Engine: pi");
     expect(output).toContain("Dry run complete.");
 
     // Should NOT connect the channel in dry-run mode
@@ -409,7 +412,7 @@ describe("runStart — REPL message handling", () => {
     const output = stderrChunks.join("");
     // Verbose mode should print agent info and metrics
     expect(output).toContain("Agent: test-agent v0.1.0");
-    expect(output).toContain("Engine: loop");
+    expect(output).toContain("Engine: pi");
     expect(output).toContain("turn(s)");
     expect(output).toContain("tokens");
   });
