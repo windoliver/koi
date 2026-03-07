@@ -1,0 +1,36 @@
+name: CI (L1 — Engine)
+# Triggered when the kernel runtime (engine) changes.
+# L1 is the single runtime layer — changes affect all agent loops.
+# Runs layer checks + scoped build/test for engine and its dependents.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/kernel/engine/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/kernel/engine/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-l1-engine:
+    name: L1 — Engine build & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+
+      - name: Lint (Biome)
+        run: bun run check
+
+      - name: Check layer boundaries
+        run: bun run check:layers
+
+      - name: Build & test engine + dependents
+        run: bunx turbo run build test --filter='@koi/engine...'
