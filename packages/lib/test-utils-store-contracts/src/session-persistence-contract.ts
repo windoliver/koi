@@ -384,29 +384,38 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       }
     });
 
-    test("removeSession cascades pending frames by agentId across sessions", async () => {
+    test("removeSession only clears pending frames for the removed session", async () => {
       const store = createStore();
       const aid = agentId("agent-cascade");
       // Two sessions for the same agent
       await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), agentId: aid }));
       await store.saveSession(makeSessionRecord({ sessionId: sessionId("s2"), agentId: aid }));
-      // Pending frames on s2 belong to the same agent
+      // Pending frames on both sessions
       await store.savePendingFrame(
         makePendingFrame({
           frameId: "f1",
+          sessionId: sessionId("s1"),
+          agentId: aid,
+          orderIndex: 0,
+        }),
+      );
+      await store.savePendingFrame(
+        makePendingFrame({
+          frameId: "f2",
           sessionId: sessionId("s2"),
           agentId: aid,
           orderIndex: 0,
         }),
       );
 
-      // Remove s1 — should cascade pending frames for agent across ALL sessions
+      // Remove s1 — should only clear s1's frames, not s2's
       await store.removeSession("s1");
 
       const loadResult = await store.loadPendingFrames("s2");
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
-        expect(loadResult.value.length).toBe(0);
+        expect(loadResult.value.length).toBe(1);
+        expect(loadResult.value[0]?.frameId).toBe("f2");
       }
     });
 
