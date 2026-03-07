@@ -48,7 +48,7 @@ export function createCompositeVerifier(config: CompositeVerifierConfig): Capabi
     if (config.cache !== undefined) {
       const cached = config.cache.get(token.id, context.toolId);
       if (cached !== undefined) {
-        if (token.expiresAt <= Date.now()) {
+        if (token.expiresAt <= (context.now ?? Date.now())) {
           config.cache.evict(token.id);
           return { ok: false, reason: "expired" };
         }
