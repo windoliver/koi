@@ -491,7 +491,7 @@ export function createContextHydrator(options: ContextHydratorOptions): ContextH
       state.hydration = toCache(result);
     },
 
-    onSessionEnd() {
+    async onSessionEnd() {
       state.hydration = undefined;
     },
 
