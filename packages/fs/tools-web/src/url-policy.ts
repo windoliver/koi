@@ -1,5 +1,11 @@
 /**
  * URL policy — blocks SSRF targets (private IPs, metadata endpoints, localhost).
+ *
+ * Limitation: checks are string-based pattern matching on the URL. This does NOT
+ * protect against DNS rebinding attacks where a domain initially resolves to a
+ * public IP (passing the check) then rebinds to a private IP during the actual
+ * fetch. A full mitigation would require pre-flight DNS resolution and IP
+ * validation, which is not implemented here.
  */
 
 // ---------------------------------------------------------------------------

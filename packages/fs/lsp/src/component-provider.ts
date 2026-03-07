@@ -3,6 +3,11 @@
  *
  * Async factory that connects to all LSP servers in parallel, negotiates
  * capabilities, and wraps supported operations as Koi Tool components.
+ *
+ * Single-agent design: LSP clients are shared across all attached agents.
+ * Detach closes all LSP clients, so only the last agent should trigger
+ * detach. Create a separate provider instance per agent if multi-agent
+ * use is needed.
  */
 
 import type { Agent, ComponentProvider, KoiError } from "@koi/core";
@@ -174,13 +179,20 @@ export async function createLspComponentProvider(
     }
   }
 
+  // let: ref-count for safe client disposal — only close when last agent detaches
+  let refCount = 0;
+
   const provider: ComponentProvider = {
     name: "lsp",
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
+      refCount++;
       return allTools;
     },
     detach: async (_agent: Agent): Promise<void> => {
-      await Promise.all(clients.map((c) => c.close()));
+      refCount--;
+      if (refCount <= 0) {
+        await Promise.all(clients.map((c) => c.close()));
+      }
     },
   };
 

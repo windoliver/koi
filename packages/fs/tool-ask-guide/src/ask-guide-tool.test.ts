@@ -94,8 +94,9 @@ describe("createAskGuideTool", () => {
     expect(output.truncated).toBe(true);
   });
 
-  test("includes at least one result even if it exceeds budget", async () => {
-    // Single large result exceeds budget but should still be included
+  test("includes at least one result even if it exceeds budget but flags truncated", async () => {
+    // Single large result exceeds budget — included to avoid empty response,
+    // but truncated flag is set so callers know the budget was exceeded.
     const results: readonly GuideSearchResult[] = [
       { title: "Big Result", content: "x".repeat(500) },
     ];
@@ -107,7 +108,7 @@ describe("createAskGuideTool", () => {
     };
 
     expect(output.results).toHaveLength(1);
-    expect(output.truncated).toBe(false);
+    expect(output.truncated).toBe(true);
   });
 
   // -------------------------------------------------------------------------

@@ -3,7 +3,15 @@
  *
  * Wraps a TaskScheduler into a SchedulerComponent with pinned agentId,
  * then exposes 9 tools for agent interaction. The agentId is captured at
- * attach() time — agents can only schedule/cancel their own tasks.
+ * attach() time.
+ *
+ * Ownership enforcement:
+ * - submit/schedule: agentId is pinned — agents can only create work for themselves.
+ * - query/history: agentId filter is injected — agents only see their own tasks.
+ * - cancel: ownership verified via query before cancellation.
+ * - unschedule/pause/resume: NOT ownership-verified. The TaskScheduler L0 contract
+ *   does not expose schedule lookup by ID. ScheduleIds are opaque ULIDs returned
+ *   by schedule(), making cross-agent collisions improbable.
  */
 
 import type {
@@ -60,6 +68,8 @@ export interface SchedulerProviderConfig {
 /**
  * Creates a SchedulerComponent that wraps TaskScheduler with a pinned agentId.
  * The agentId is captured from the agent at attach() time.
+ *
+ * cancel() verifies task ownership via query before allowing cancellation.
  */
 function createSchedulerComponentForAgent(
   scheduler: TaskScheduler,
@@ -72,7 +82,12 @@ function createSchedulerComponentForAgent(
       options?: TaskOptions,
     ): TaskId | Promise<TaskId> => scheduler.submit(pinnedAgentId, input, mode, options),
 
-    cancel: (id: TaskId): boolean | Promise<boolean> => scheduler.cancel(id),
+    cancel: async (id: TaskId): Promise<boolean> => {
+      // Verify the task belongs to this agent before cancelling
+      const tasks = await scheduler.query({ agentId: pinnedAgentId });
+      if (!tasks.some((t) => t.id === id)) return false;
+      return scheduler.cancel(id);
+    },
 
     schedule: (
       expression: string,

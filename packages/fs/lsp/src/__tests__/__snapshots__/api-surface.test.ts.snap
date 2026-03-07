@@ -232,6 +232,11 @@ declare function createLspClientPool(config: LspClientPoolConfig): LspClientPool
  *
  * Async factory that connects to all LSP servers in parallel, negotiates
  * capabilities, and wraps supported operations as Koi Tool components.
+ *
+ * Single-agent design: LSP clients are shared across all attached agents.
+ * Detach closes all LSP clients, so only the last agent should trigger
+ * detach. Create a separate provider instance per agent if multi-agent
+ * use is needed.
  */
 
 interface LspServerFailure {

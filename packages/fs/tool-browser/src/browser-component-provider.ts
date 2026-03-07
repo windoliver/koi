@@ -4,9 +4,14 @@
  * Both engine-claude and engine-pi discover tools via `agent.query<Tool>("tool:")`.
  * This provider creates Tool components from a BrowserDriver, making them
  * available to any engine with zero engine changes.
+ *
+ * Single-agent design: this provider shares a single BrowserDriver backend.
+ * Attaching multiple agents would share browser state (tabs, cookies) and
+ * detaching any agent would dispose the backend for all. Create a separate
+ * provider instance per agent if multi-agent use is needed.
  */
 
-import type { BrowserDriver, ComponentProvider, Tool, ToolPolicy } from "@koi/core";
+import type { Agent, AgentId, BrowserDriver, ComponentProvider, Tool, ToolPolicy } from "@koi/core";
 import {
   BROWSER,
   createServiceProvider,
@@ -198,6 +203,26 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
   const compiledSecurity: CompiledNavigationSecurity | undefined =
     scope === undefined && security !== undefined ? compileNavigationSecurity(security) : undefined;
 
+  // let: ref-count for safe backend disposal — only dispose when last agent detaches
+  let refCount = 0;
+  // let: track attached agent for single-agent safety check
+  let attachedAgent: AgentId | undefined;
+
+  function guardAttach(agent: Agent): void {
+    refCount++;
+    if (attachedAgent === undefined) {
+      attachedAgent = agent.pid.id;
+    }
+  }
+
+  async function guardDetach(): Promise<void> {
+    refCount--;
+    if (refCount <= 0) {
+      attachedAgent = undefined;
+      if (backend.dispose) await backend.dispose();
+    }
+  }
+
   // Split operations into standard (handled by createServiceProvider factories)
   // and custom (handled by customTools hook).
   const standardOps = operations.filter((op): op is StandardOperation => STANDARD_OPS.has(op));
@@ -220,14 +245,18 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
     ]);
     return {
       name: `browser:${backend.name}`,
-      attach: async () => components,
-      detach: async () => {
-        if (backend.dispose) await backend.dispose();
+      attach: async (agent: Agent) => {
+        guardAttach(agent);
+        return components;
+      },
+      detach: async (_agent: Agent) => {
+        await guardDetach();
       },
     };
   }
 
-  return createServiceProvider({
+  // Wrap createServiceProvider to add ref-counting for backend disposal
+  const inner = createServiceProvider({
     name: `browser:${backend.name}`,
     singletonToken: BROWSER,
     backend,
@@ -239,8 +268,17 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
       ...createCustomToolEntries(operations, b, prefix, policy, compiledSecurity),
       [skillToken(BROWSER_SKILL_NAME) as string, BROWSER_SKILL],
     ],
-    detach: async (b) => {
-      if (b.dispose) await b.dispose();
-    },
   });
+
+  return {
+    name: inner.name,
+    ...(inner.priority !== undefined ? { priority: inner.priority } : {}),
+    attach: async (agent: Agent) => {
+      guardAttach(agent);
+      return inner.attach(agent);
+    },
+    detach: async (_agent: Agent) => {
+      await guardDetach();
+    },
+  };
 }

@@ -81,6 +81,11 @@ export function createAskGuideTool(config: AskGuideConfig): Tool {
         usedTokens += resultTokens;
       }
 
+      // Flag budget exceeded even when the first result alone overflows
+      if (usedTokens > maxTokens) {
+        truncated = true;
+      }
+
       return {
         results: accumulated,
         totalFound: searchResults.length,
