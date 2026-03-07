@@ -91,6 +91,17 @@ interface LoadResult {
 }
 
 /**
+ * Extracts the engine name from a loaded manifest's engine field.
+ *
+ * The manifest engine field can be:
+ * - \`undefined\` → defaults to \`"pi"\`
+ * - a \`string\` → the engine name directly
+ * - an \`object\` with \`{ name: string }\` → \`name\` property
+ */
+
+declare function getEngineName(manifest: LoadedManifest): string;
+
+/**
  * Main loader — reads, interpolates, parses, validates, and transforms koi.yaml manifests.
  */
 
@@ -115,6 +126,6 @@ declare function loadManifest(filePath: string, env?: Readonly<Record<string, st
  */
 declare function loadManifestFromString(yaml: string, env?: Readonly<Record<string, string | undefined>>): Result<LoadResult, KoiError>;
 
-export { type DeployConfig, type LoadResult, type LoadedManifest, type ManifestBrowserScope, type ManifestCredentialsScope, type ManifestFileSystemScope, type ManifestMemoryScope, type ManifestScopeConfig, type ManifestWarning, type SoulUserConfig, loadManifest, loadManifestFromString };
+export { type DeployConfig, type LoadResult, type LoadedManifest, type ManifestBrowserScope, type ManifestCredentialsScope, type ManifestFileSystemScope, type ManifestMemoryScope, type ManifestScopeConfig, type ManifestWarning, type SoulUserConfig, getEngineName, loadManifest, loadManifestFromString };
 "
 `;

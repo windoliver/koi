@@ -15,14 +15,14 @@
     "@koi/core": "workspace:*",
     "@koi/middleware-sandbox": "workspace:*",
     "@koi/sandbox-cloud-base": "workspace:*",
+    "@koi/sandbox-executor": "workspace:*"
+  },
+  "devDependencies": {
     "@koi/sandbox-cloudflare": "workspace:*",
     "@koi/sandbox-daytona": "workspace:*",
     "@koi/sandbox-docker": "workspace:*",
     "@koi/sandbox-e2b": "workspace:*",
-    "@koi/sandbox-executor": "workspace:*",
-    "@koi/sandbox-vercel": "workspace:*"
-  },
-  "devDependencies": {
+    "@koi/sandbox-vercel": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

@@ -1,0 +1,204 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`koi API surface . has stable type surface 1`] = `
+"export { Agent, AgentManifest, AgentStatus, ChannelAdapter, ComponentProvider, ContentBlock, EngineAdapter, EngineEvent, EngineInput, EngineOutput, EngineState, JsonObject, KoiError, KoiMiddleware, ModelHandler, ModelRequest, ModelResponse, Result, SubsystemToken, ToolHandler } from '@koi/core';
+export { createKoi } from '@koi/engine';
+export { BuiltinCallbacks, ConfiguredKoiOptions, LocalBackends, LocalBackendsConfig, MiddlewareFactory, MiddlewareRegistry, RuntimeOpts, ScopeBackends, createConfiguredKoi, createDefaultRegistry, createLocalBackends, createMiddlewareRegistry, resolveManifestMiddleware, resolveManifestScope } from '@koi/starter';
+export { DeployConfig, LoadResult, LoadedManifest, ManifestWarning, getEngineName, loadManifest, loadManifestFromString } from '@koi/manifest';
+export { PiAdapterConfig, createPiAdapter } from '@koi/engine-pi';
+import '@koi/autonomous';
+import '@koi/channels';
+import '@koi/cli';
+import '@koi/context-arena';
+import '@koi/forge';
+import '@koi/gateway-stack';
+import '@koi/goal-stack';
+import '@koi/governance';
+import '@koi/ipc-stack';
+import '@koi/handoff';
+import '@koi/name-service';
+import '@koi/nexus';
+import '@koi/node-stack';
+import '@koi/quality-gate';
+import '@koi/retry-stack';
+import '@koi/rlm-stack';
+import '@koi/sandbox-stack';
+import '@koi/skill-stack';
+import '@koi/tool-stack';
+import '@koi/workspace-stack';
+import '@koi/agent-spawner';
+import '@koi/mcp';
+import '@koi/mcp-server';
+import '@koi/tools-web';
+import '@koi/tools-github';
+import '@koi/tool-ask-user';
+import '@koi/tool-ask-guide';
+import '@koi/tool-exec';
+import '@koi/code-mode';
+import '@koi/config';
+import '@koi/scheduler';
+import '@koi/scheduler-provider';
+import '@koi/session-store';
+import '@koi/search';
+import '@koi/search-brave';
+import '@koi/eval';
+import '@koi/verified-loop';
+import '@koi/self-test';
+import '@koi/doctor';
+import '@koi/middleware-event-trace';
+import '@koi/middleware-collective-memory';
+import '@koi/middleware-report';
+import '@koi/middleware-reflex';
+import '@koi/middleware-event-rules';
+import '@koi/dashboard-api';
+import '@koi/webhook-delivery';
+import '@koi/webhook-provider';
+import '@koi/transcript';
+import '@koi/bundle';
+"
+`;
+
+exports[`koi API surface ./autonomous has stable type surface 1`] = `
+"export * from '@koi/autonomous';
+"
+`;
+
+exports[`koi API surface ./channels has stable type surface 1`] = `
+"export * from '@koi/channels';
+"
+`;
+
+exports[`koi API surface ./cli has stable type surface 1`] = `
+"export * from '@koi/cli';
+"
+`;
+
+exports[`koi API surface ./context-arena has stable type surface 1`] = `
+"export * from '@koi/context-arena';
+"
+`;
+
+exports[`koi API surface ./forge has stable type surface 1`] = `
+"export * from '@koi/forge';
+"
+`;
+
+exports[`koi API surface ./gateway has stable type surface 1`] = `
+"export * from '@koi/gateway-stack';
+"
+`;
+
+exports[`koi API surface ./goals has stable type surface 1`] = `
+"export * from '@koi/goal-stack';
+"
+`;
+
+exports[`koi API surface ./governance has stable type surface 1`] = `
+"export * from '@koi/governance';
+"
+`;
+
+exports[`koi API surface ./ipc has stable type surface 1`] = `
+"export * from '@koi/ipc-stack';
+export * from '@koi/handoff';
+export * from '@koi/name-service';
+"
+`;
+
+exports[`koi API surface ./nexus has stable type surface 1`] = `
+"export * from '@koi/nexus';
+"
+`;
+
+exports[`koi API surface ./node has stable type surface 1`] = `
+"export * from '@koi/node-stack';
+"
+`;
+
+exports[`koi API surface ./quality has stable type surface 1`] = `
+"export * from '@koi/quality-gate';
+"
+`;
+
+exports[`koi API surface ./retry has stable type surface 1`] = `
+"export * from '@koi/retry-stack';
+"
+`;
+
+exports[`koi API surface ./rlm has stable type surface 1`] = `
+"export * from '@koi/rlm-stack';
+"
+`;
+
+exports[`koi API surface ./sandbox has stable type surface 1`] = `
+"export * from '@koi/sandbox-stack';
+"
+`;
+
+exports[`koi API surface ./skills has stable type surface 1`] = `
+"export * from '@koi/skill-stack';
+"
+`;
+
+exports[`koi API surface ./tool-stack has stable type surface 1`] = `
+"export * from '@koi/tool-stack';
+"
+`;
+
+exports[`koi API surface ./workspace has stable type surface 1`] = `
+"export * from '@koi/workspace-stack';
+"
+`;
+
+exports[`koi API surface ./spawner has stable type surface 1`] = `
+"export * from '@koi/agent-spawner';
+"
+`;
+
+exports[`koi API surface ./tools has stable type surface 1`] = `
+"export * from '@koi/mcp';
+export { McpServer, McpServerConfig as McpServerInstanceConfig, ToolCache, ToolCacheConfig, ToolCacheEntry, createMcpServer, createStdioServerTransport, createToolCache, registerHandlers } from '@koi/mcp-server';
+export { DEFAULT_CACHE_TTL_MS, DEFAULT_MAX_BODY_CHARS, DEFAULT_MAX_CACHE_ENTRIES, DEFAULT_PREFIX as WEB_DEFAULT_PREFIX, DEFAULT_TIMEOUT_MS as WEB_DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS as WEB_MAX_TIMEOUT_MS, OPERATIONS as WEB_OPERATIONS, READ_OPERATIONS as WEB_READ_OPERATIONS, WEB_SKILL, WEB_SKILL_CONTENT, WEB_SKILL_NAME, WEB_SYSTEM_PROMPT, WebExecutor, WebExecutorConfig, WebFetchOptions, WebFetchResult, WebOperation, WebProviderConfig, WebSearchOptions, WebSearchResult, createWebExecutor, createWebFetchTool, createWebProvider, createWebSearchTool, htmlToMarkdown, isBlockedUrl, stripHtml } from '@koi/tools-web';
+export { DEFAULT_CI_POLL_INTERVAL_MS, DEFAULT_CI_TIMEOUT_MS, DEFAULT_PREFIX as GITHUB_DEFAULT_PREFIX, OPERATIONS as GITHUB_OPERATIONS, READ_OPERATIONS as GITHUB_READ_OPERATIONS, GITHUB_SYSTEM_PROMPT, WRITE_OPERATIONS as GITHUB_WRITE_OPERATIONS, GhExecuteOptions, GhExecutor, GhExecutorConfig, GithubOperation, GithubProviderConfig, MAX_CI_TIMEOUT_MS, MERGE_STRATEGIES, MIN_CI_POLL_INTERVAL_MS, MergeStrategy, MockGhResponse, REVIEW_ACTIONS, REVIEW_EVENTS, ReviewAction, ReviewEvent, createGhExecutor, createGithubCiWaitTool, createGithubPrCreateTool, createGithubPrMergeTool, createGithubPrReviewTool, createGithubPrStatusTool, createGithubProvider, isRecord, mapErrorResult, parseGhError, parseGhJson } from '@koi/tools-github';
+export * from '@koi/tool-ask-user';
+export * from '@koi/tool-ask-guide';
+export { DEFAULT_TIMEOUT_MS as EXEC_DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS as EXEC_MAX_TIMEOUT_MS, EXEC_SKILL, EXEC_SKILL_CONTENT, EXEC_SKILL_NAME, EXEC_TOOL_DESCRIPTOR, ExecToolConfig, createExecProvider, createExecTool } from '@koi/tool-exec';
+export * from '@koi/code-mode';
+"
+`;
+
+exports[`koi API surface ./infra has stable type surface 1`] = `
+"export * from '@koi/config';
+export * from '@koi/scheduler';
+export * from '@koi/scheduler-provider';
+export * from '@koi/session-store';
+export * from '@koi/search';
+export { BraveSearchConfig, BraveSearchFn, BraveSearchOptions, BraveSearchResult, DEFAULT_BRAVE_BASE_URL, DEFAULT_BRAVE_TIMEOUT_MS, descriptor as braveSearchDescriptor, createBraveSearch } from '@koi/search-brave';
+"
+`;
+
+exports[`koi API surface ./safety has stable type surface 1`] = `
+"export * from '@koi/eval';
+export * from '@koi/verified-loop';
+export * from '@koi/self-test';
+export * from '@koi/doctor';
+"
+`;
+
+exports[`koi API surface ./middleware has stable type surface 1`] = `
+"export * from '@koi/middleware-event-trace';
+export * from '@koi/middleware-collective-memory';
+export { CostProvider, CostSnapshot, ProgressCallback, ProgressSnapshot, ReportCallback, ReportConfig, ReportData, ReportFormatter, ReportHandle, ReportSummarizer, createReportMiddleware, mapReportToJson, mapReportToMarkdown, descriptor as reportDescriptor, validateReportConfig } from '@koi/middleware-report';
+export { DEFAULT_COOLDOWN_MS, DEFAULT_PRIORITY, ReflexMetrics, ReflexMiddlewareConfig, ReflexRule, createReflexMiddleware, descriptor as reflexDescriptor, textOf, validateReflexConfig } from '@koi/middleware-reflex';
+export { ActionContext, ActionType, CompiledPredicate, CompiledRule, CompiledRuleset, EventRulesConfig, LogLevel, MatchPredicates, MatchValue, NumericOperator, RawAction, RawCondition, RawEventRulesConfig, RawRule, RegexOperator, ResolvedAction, RuleEngine, RuleEvalResult, RuleEvent, RuleEventType, RuleLogger, createEventRulesMiddleware, createRuleEngine, descriptor as eventRulesDescriptor, executeActions, interpolate, loadRulesFromFile, loadRulesFromString, parseDuration, validateEventRulesConfig } from '@koi/middleware-event-rules';
+"
+`;
+
+exports[`koi API surface ./observability has stable type surface 1`] = `
+"export * from '@koi/dashboard-api';
+export * from '@koi/webhook-delivery';
+export * from '@koi/webhook-provider';
+export * from '@koi/transcript';
+export * from '@koi/bundle';
+"
+`;

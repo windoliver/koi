@@ -70,6 +70,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
  * L3 packages may depend on any layer.
  */
 export const L3_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/agent-spawner",
   "@koi/autonomous",
   "@koi/channels",
   "@koi/cli",
@@ -90,3 +91,9 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/tool-stack",
   "@koi/workspace-stack",
 ]);
+
+/**
+ * L4 — single distributable package that absorbs all L3 + orphaned L2.
+ * Published as the unscoped `koi` package.
+ */
+export const L4_PACKAGES: ReadonlySet<string> = new Set(["koi"]);

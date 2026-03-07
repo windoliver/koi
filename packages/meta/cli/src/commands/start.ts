@@ -15,8 +15,8 @@ import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, ContentBlock, EngineEvent, EngineInput } from "@koi/core";
 import { createKoi } from "@koi/engine";
-import { createLoopAdapter } from "@koi/engine-loop";
-import { loadManifest } from "@koi/manifest";
+import { createPiAdapter } from "@koi/engine-pi";
+import { getEngineName, loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
@@ -90,16 +90,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
 
   // 3. DRY RUN: If --dry-run, print manifest and exit
-  const engineName =
-    typeof manifest.engine === "string"
-      ? manifest.engine
-      : manifest.engine !== undefined &&
-          typeof manifest.engine === "object" &&
-          manifest.engine !== null &&
-          "name" in manifest.engine &&
-          typeof manifest.engine.name === "string"
-        ? manifest.engine.name
-        : "loop";
+  const engineName = getEngineName(manifest);
 
   if (flags.dryRun) {
     process.stderr.write(`Manifest: ${manifest.name} v${manifest.version}\n`);
@@ -117,8 +108,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
     process.exit(EXIT_CONFIG);
   }
 
-  // 5. ASSEMBLE: Use resolved engine or fall back to loop adapter
-  const adapter = resolved.value.engine ?? createLoopAdapter({ modelCall: resolved.value.model });
+  // 5. ASSEMBLE: Use resolved engine or fall back to pi adapter
+  const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources

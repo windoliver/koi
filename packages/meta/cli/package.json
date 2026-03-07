@@ -51,9 +51,7 @@
     "@koi/middleware-turn-ack": "workspace:*",
     "@koi/model-router": "workspace:*",
     "@koi/resolve": "workspace:*",
+    "@koi/engine-pi": "workspace:*",
     "@koi/shutdown": "workspace:*"
-  },
-  "devDependencies": {
-    "@koi/engine-pi": "workspace:*"
   }
 }

@@ -36,15 +36,11 @@ export {
   createCachedBridge,
   createCloudInstance,
 } from "@koi/sandbox-cloud-base";
-// ── Adapter factories + config types ────────────────────────────────────
+// ── Cloud adapter shims (lazy-loaded — install the provider package to use) ──
 export type { CloudflareAdapterConfig } from "@koi/sandbox-cloudflare";
-export { createCloudflareAdapter } from "@koi/sandbox-cloudflare";
 export type { DaytonaAdapterConfig } from "@koi/sandbox-daytona";
-export { createDaytonaAdapter } from "@koi/sandbox-daytona";
 export type { DockerAdapterConfig } from "@koi/sandbox-docker";
-export { createDockerAdapter } from "@koi/sandbox-docker";
 export type { E2bAdapterConfig } from "@koi/sandbox-e2b";
-export { createE2bAdapter } from "@koi/sandbox-e2b";
 // ── Sandbox executor ────────────────────────────────────────────────────
 export type { SandboxPlatform } from "@koi/sandbox-executor";
 export {
@@ -53,7 +49,11 @@ export {
   detectSandboxPlatform,
 } from "@koi/sandbox-executor";
 export type { VercelAdapterConfig } from "@koi/sandbox-vercel";
-export { createVercelAdapter } from "@koi/sandbox-vercel";
+export { createCloudflareAdapterShim as createCloudflareAdapter } from "./adapters/cloudflare.js";
+export { createDaytonaAdapterShim as createDaytonaAdapter } from "./adapters/daytona.js";
+export { createDockerAdapterShim as createDockerAdapter } from "./adapters/docker.js";
+export { createE2bAdapterShim as createE2bAdapter } from "./adapters/e2b.js";
+export { createVercelAdapterShim as createVercelAdapter } from "./adapters/vercel.js";
 export type { CloudSandboxConfig, CloudSandboxProvider } from "./cloud-types.js";
 // ── Cloud dispatch ──────────────────────────────────────────────────────
 export { createCloudSandbox } from "./create-cloud-sandbox.js";
