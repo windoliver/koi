@@ -73,18 +73,17 @@ describe("createFederationMiddleware", () => {
     expect(result?.output).toBe("local");
   });
 
-  test("returns EXTERNAL error for unknown zone", async () => {
+  test("throws for unknown zone", async () => {
     const request = createRequest();
     const ctx = createCtx("zone-unknown");
     const next = mock(() =>
       Promise.resolve({ output: "local", metadata: {} } satisfies ToolResponse),
     );
 
-    const result = await middleware.wrapToolCall?.(ctx as never, request, next);
+    await expect(middleware.wrapToolCall?.(ctx as never, request, next)).rejects.toThrow(
+      /unknown target zone/i,
+    );
     expect(next).not.toHaveBeenCalled();
-    const error = (result?.metadata as Record<string, unknown>)?.error as Record<string, unknown>;
-    expect(error?.code).toBe("EXTERNAL");
-    expect(error?.reason).toBe("unknown_zone");
   });
 
   test("routes to remote zone on valid targetZoneId", async () => {
@@ -98,22 +97,22 @@ describe("createFederationMiddleware", () => {
     expect(result?.output).toBe("remote-result");
   });
 
-  test("returns error metadata on remote failure", async () => {
+  test("throws on remote failure with cause", async () => {
+    const remoteError = { code: "TIMEOUT", message: "Timed out", retryable: true };
     remoteClient.rpcMock.mockImplementation(() =>
-      Promise.resolve({
-        ok: false,
-        error: { code: "TIMEOUT", message: "Timed out", retryable: true },
-      }),
+      Promise.resolve({ ok: false, error: remoteError }),
     );
 
     const request = createRequest();
     const ctx = createCtx("zone-b");
     const next = mock(() => Promise.resolve({ output: "local" } satisfies ToolResponse));
 
-    const result = await middleware.wrapToolCall?.(ctx as never, request, next);
-    const error = (result?.metadata as Record<string, unknown>)?.error as Record<string, unknown>;
-    expect(error?.code).toBe("EXTERNAL");
-    expect(error?.reason).toBe("remote_error");
+    const err = await middleware
+      .wrapToolCall?.(ctx as never, request, next)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/remote call failed/i);
+    expect((err as Error).cause).toEqual(remoteError);
   });
 
   test("calls onDelegated when routing to remote zone", async () => {
