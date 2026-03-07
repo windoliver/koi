@@ -53,12 +53,8 @@ export function createInMemorySessionPersistence(): SessionPersistence {
       return { ok: false, error: notFound(sessionId, `Session not found: ${sessionId}`) };
     }
     sessions.delete(sessionId);
-    // Cascade pending frames by agentId (across all sessions for this agent)
-    for (const [sid, frames] of pendingFramesBySession) {
-      if (frames[0]?.agentId === record.agentId) {
-        pendingFramesBySession.delete(sid);
-      }
-    }
+    // Clear pending frames for this session only
+    pendingFramesBySession.delete(sessionId);
     return { ok: true, value: undefined };
   };
 

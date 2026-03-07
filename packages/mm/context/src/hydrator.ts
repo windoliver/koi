@@ -491,6 +491,10 @@ export function createContextHydrator(options: ContextHydratorOptions): ContextH
       state.hydration = toCache(result);
     },
 
+    async onSessionEnd() {
+      state.hydration = undefined;
+    },
+
     async onBeforeTurn(ctx) {
       const currentHydration = state.hydration;
       if (currentHydration === undefined || !shouldRefresh(config.refreshInterval, ctx.turnIndex)) {

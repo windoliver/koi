@@ -115,31 +115,19 @@ export function createNexusSessionStore(config: NexusSessionStoreConfig): Sessio
     const segCheck = validatePathSegment(sid, "Session ID");
     if (!segCheck.ok) return segCheck;
 
-    // Load session first to verify it exists and get agentId for cascading
+    // Verify session exists
     const sessionResult = await readJson<SessionRecord>(sessionPath(sid));
     if (!sessionResult.ok) {
       return { ok: false, error: notFound(sid, `Session not found: ${sid}`) };
     }
 
-    const aid = sessionResult.value.agentId;
-
-    // Cascade: delete pending frames for ALL sessions of the same agent
-    const allSessions = await client.rpc<readonly string[]>("glob", {
-      pattern: `${basePath}/records/*.json`,
+    // Delete pending frames for this session only
+    const frameGlob = await client.rpc<readonly string[]>("glob", {
+      pattern: `${basePath}/pending/${sid}/*.json`,
     });
-    if (allSessions.ok) {
-      for (const p of allSessions.value) {
-        const r = await readJson<SessionRecord>(p);
-        if (!r.ok || r.value.agentId !== aid) continue;
-        const otherSid = r.value.sessionId;
-        const otherFrameGlob = await client.rpc<readonly string[]>("glob", {
-          pattern: `${basePath}/pending/${otherSid}/*.json`,
-        });
-        if (otherFrameGlob.ok) {
-          for (const fp of otherFrameGlob.value) {
-            await client.rpc<null>("delete", { path: fp });
-          }
-        }
+    if (frameGlob.ok) {
+      for (const fp of frameGlob.value) {
+        await client.rpc<null>("delete", { path: fp });
       }
     }
 

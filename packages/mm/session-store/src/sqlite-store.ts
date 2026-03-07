@@ -222,8 +222,6 @@ export function createSqliteSessionPersistence(
 
   const deletePendingFramesStmt = db.prepare("DELETE FROM pending_frames WHERE sessionId = ?");
 
-  const deletePendingFramesByAgentStmt = db.prepare("DELETE FROM pending_frames WHERE agentId = ?");
-
   const selectAllPendingFramesStmt = db.query<PendingFrameRow, []>(
     "SELECT * FROM pending_frames ORDER BY sessionId, orderIndex ASC",
   );
@@ -281,7 +279,7 @@ export function createSqliteSessionPersistence(
       }
 
       db.transaction(() => {
-        deletePendingFramesByAgentStmt.run(agentRow.agentId);
+        deletePendingFramesStmt.run(sid);
         deleteSessionStmt.run(sid);
       })();
 
