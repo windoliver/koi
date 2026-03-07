@@ -44,10 +44,14 @@ export function createCompositeVerifier(config: CompositeVerifierConfig): Capabi
   const ed25519Verifier = createEd25519Verifier(config.scopeChecker);
 
   function verify(token: CapabilityToken, context: VerifyContext): CapabilityVerifyResult {
-    // Check cache first
+    // Check cache first — but only return cached result if token hasn't expired
     if (config.cache !== undefined) {
       const cached = config.cache.get(token.id, context.toolId);
       if (cached !== undefined) {
+        if (token.expiresAt <= (context.now ?? Date.now())) {
+          config.cache.evict(token.id);
+          return { ok: false, reason: "expired" };
+        }
         return cached;
       }
     }

@@ -59,6 +59,13 @@ export function createNexusRevocationRegistry(
       }
     }
 
+    // Fail-closed: any requested IDs missing from the response are treated as revoked
+    for (const id of ids) {
+      if (!resultMap.has(id)) {
+        resultMap.set(id, true);
+      }
+    }
+
     return resultMap;
   };
 

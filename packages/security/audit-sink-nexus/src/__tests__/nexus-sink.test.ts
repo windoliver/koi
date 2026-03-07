@@ -174,7 +174,10 @@ describe("NexusAuditSink", () => {
       );
       await sink.flush?.();
 
-      expect(tracking.writtenPaths()).toEqual(["/audit/sess-xyz/1700000000000-5-tool_call.json"]);
+      expect(tracking.writtenPaths()).toHaveLength(1);
+      expect(tracking.writtenPaths()[0]).toMatch(
+        /^\/audit\/sess-xyz\/1700000000000-5-tool_call-\d+\.json$/,
+      );
     });
 
     test("uses custom basePath", async () => {

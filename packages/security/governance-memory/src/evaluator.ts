@@ -78,7 +78,6 @@ export function createMemoryEvaluator(config: GovernanceMemoryConfig): MemoryEva
   function fetchAnomalies(request: PolicyRequest): readonly AnomalySignalLike[] {
     if (config.getRecentAnomalies === undefined) return [];
     try {
-      // Use agentId as sessionId proxy — callers bind appropriately
       return config.getRecentAnomalies(request.agentId);
     } catch (_e: unknown) {
       // Fail-open: anomaly bridge errors must not block governance

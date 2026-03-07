@@ -87,6 +87,15 @@ export function createNexusPermissionBackend(
       return queries.map(() => deny);
     }
 
+    // Fail-closed: if server returns fewer results than queries, deny all
+    if (result.value.results.length !== queries.length) {
+      const deny: PermissionDecision = {
+        effect: "deny",
+        reason: `Nexus batch response cardinality mismatch: expected ${queries.length}, got ${result.value.results.length}`,
+      };
+      return queries.map(() => deny);
+    }
+
     return result.value.results.map((r) =>
       r.allowed
         ? { effect: "allow" as const }
