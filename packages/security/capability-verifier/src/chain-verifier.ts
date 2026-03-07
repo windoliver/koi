@@ -98,9 +98,9 @@ export async function verifyChain(
     const token = chain[i];
     if (token === undefined) continue;
 
-    // Check revocation
+    // Check revocation — fail-closed: missing entries treated as revoked
     const tokenId = token.id as unknown as DelegationId;
-    if (revokedMap.get(tokenId) === true) {
+    if (revokedMap.get(tokenId) !== false) {
       return { ok: false, reason: "revoked" };
     }
 

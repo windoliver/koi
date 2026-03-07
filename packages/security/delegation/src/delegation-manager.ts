@@ -321,16 +321,6 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
   ): Promise<readonly DelegationId[]> {
     const revokedIds = await revokeGrant(id, revocationRegistry, grantIndex, cascade);
 
-    // Remove from store, index, and cache
-    for (const revokedId of revokedIds) {
-      verifyCache.invalidate(revokedId);
-      const revokedGrant = grantStore.get(revokedId);
-      if (revokedGrant !== undefined) {
-        grantIndex.removeGrant(revokedGrant);
-        grantStore.delete(revokedId);
-      }
-    }
-
     emit({
       kind: "delegation:revoked",
       grantId: id,
@@ -338,12 +328,27 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
       revokedIds,
     });
 
-    // Fire onRevoke hook — best-effort, don't undo revocation on failure
+    // Fire onRevoke hook BEFORE store deletion so hooks can still look up
+    // grant data (e.g., Nexus tuple cleanup needs grant scope to map tuples).
+    // The grants are already marked as revoked in the registry, so concurrent
+    // verify() calls will fail at the revocation check.
     if (onRevokeHook !== undefined) {
-      try {
-        await onRevokeHook(id, cascade);
-      } catch (_hookError: unknown) {
-        // Best-effort: revocation is the safety operation, never roll it back
+      for (const revokedId of revokedIds) {
+        try {
+          await onRevokeHook(revokedId, cascade);
+        } catch (_hookError: unknown) {
+          // Best-effort: revocation is the safety operation, never roll it back
+        }
+      }
+    }
+
+    // Remove from store, index, and cache (after hooks have run)
+    for (const revokedId of revokedIds) {
+      verifyCache.invalidate(revokedId);
+      const revokedGrant = grantStore.get(revokedId);
+      if (revokedGrant !== undefined) {
+        grantIndex.removeGrant(revokedGrant);
+        grantStore.delete(revokedId);
       }
     }
 
@@ -373,6 +378,19 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
         });
         return { ok: false, reason: "session_expired" };
       }
+    }
+
+    // Expiry check runs BEFORE verify cache — a cached "allowed" must not
+    // be served after the grant's TTL has elapsed.
+    if (storedGrant.expiresAt <= Date.now()) {
+      verifyCache.invalidate(grantId);
+      emit({
+        kind: "delegation:denied",
+        grantId,
+        toolId,
+        reason: "expired",
+      });
+      return { ok: false, reason: "expired" };
     }
 
     // Fast path — return cached result if available

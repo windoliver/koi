@@ -92,8 +92,8 @@ export interface GovernanceMemoryConfig {
   readonly complianceCapacity?: number | undefined;
   /** Per-agent ring buffer capacity for violations. Default: 1_000. */
   readonly violationCapacity?: number | undefined;
-  /** Bridge callback to fetch recent anomalies from agent monitor. Fail-open on error. */
-  readonly getRecentAnomalies?: ((sessionId: string) => readonly AnomalySignalLike[]) | undefined;
+  /** Bridge callback to fetch recent anomalies from agent monitor. Keyed by agent ID. Fail-open on error. */
+  readonly getRecentAnomalies?: ((agentId: string) => readonly AnomalySignalLike[]) | undefined;
   /** Anomaly kinds that trigger severity elevation. */
   readonly elevateOnAnomalyKinds?: readonly string[] | undefined;
   /** Policy fingerprint for compliance records. */
