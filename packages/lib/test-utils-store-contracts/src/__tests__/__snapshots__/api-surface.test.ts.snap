@@ -1,0 +1,344 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/test-utils-store-contracts API surface . has stable type surface 1`] = `
+"import { AuditSink, AuditEntry, BrickRegistryBackend, EventBackend, FileSystemBackend, MailboxComponent, RegistryEntry, AgentId, ProcessState, VisibilityContext, TransitionReason, Result, KoiError, RegistryEvent, ScheduleStore, TaskStore, ScratchpadComponent, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore, ThreadStore, TranscriptEntry, SessionTranscript, VersionIndexBackend, WorkspaceBackend } from '@koi/core';
+import { NodeRegistry, SessionStore, SurfaceStore } from '@koi/gateway-types';
+import { PayLedger } from '@koi/core/pay-ledger';
+
+/**
+ * Reusable contract test suite for AuditSink implementations.
+ *
+ * Accepts a factory that returns an AuditSink (sync or async).
+ * Each test creates a fresh instance for isolation.
+ */
+
+/**
+ * Factory result must include a way to read back logged entries.
+ * The \`getEntries\` function returns all entries stored by the sink.
+ */
+interface AuditSinkContractOptions {
+    readonly createSink: () => {
+        readonly sink: AuditSink;
+        readonly getEntries: () => readonly AuditEntry[] | Promise<readonly AuditEntry[]>;
+    } | Promise<{
+        readonly sink: AuditSink;
+        readonly getEntries: () => readonly AuditEntry[] | Promise<readonly AuditEntry[]>;
+    }>;
+}
+/**
+ * Run the AuditSink contract test suite against any implementation.
+ */
+declare function runAuditSinkContractTests(options: AuditSinkContractOptions): void;
+
+/**
+ * Brick registry contract test suite.
+ *
+ * Validates that any BrickRegistryBackend implementation satisfies the L0 contract.
+ * Usage: import { testBrickRegistryContract } from "@koi/test-utils" and call it
+ * inside a describe() block with a factory function.
+ */
+
+interface BrickRegistryContractOptions {
+    readonly createRegistry: () => BrickRegistryBackend | Promise<BrickRegistryBackend>;
+}
+/**
+ * Runs the brick registry contract test suite.
+ *
+ * Call this inside a \`describe()\` block. It registers tests that verify
+ * the registry satisfies all L0 contract invariants.
+ */
+declare function testBrickRegistryContract(options: BrickRegistryContractOptions): void;
+
+/**
+ * Reusable contract test suite for EventBackend implementations.
+ *
+ * Accepts a factory that returns an EventBackend (sync or async).
+ * Each test creates a fresh backend instance for isolation.
+ */
+
+/**
+ * Run the EventBackend contract test suite against any implementation.
+ *
+ * The factory can return sync or async. Called once per test for isolation.
+ */
+declare function runEventBackendContractTests(createBackend: () => EventBackend | Promise<EventBackend>): void;
+
+/**
+ * Reusable contract test suite for FileSystemBackend implementations.
+ *
+ * Accepts a factory that returns a FileSystemBackend (sync or async).
+ * Each test creates a fresh backend instance for isolation.
+ *
+ * Pattern: same shape as runForgeStoreContractTests in store-contract.ts.
+ */
+
+/**
+ * Run the FileSystemBackend contract test suite against any implementation.
+ *
+ * The factory can return sync or async — async factories are useful for
+ * implementations that need setup (e.g., temp directory, Nexus connection).
+ */
+declare function runFileSystemBackendContractTests(createBackend: () => FileSystemBackend | Promise<FileSystemBackend>): void;
+
+/**
+ * Reusable contract test suite for any NodeRegistry implementation.
+ *
+ * Call \`runNodeRegistryContractTests(factory)\` with a factory that
+ * creates a fresh registry per test group.
+ */
+
+declare function runNodeRegistryContractTests(createRegistry: () => NodeRegistry | Promise<NodeRegistry>): void;
+
+/**
+ * Reusable contract test suite for any SessionStore implementation.
+ *
+ * Call \`runSessionStoreContractTests(factory)\` with a factory that
+ * creates a fresh store per test group.
+ */
+
+declare function runSessionStoreContractTests(createStore: () => SessionStore | Promise<SessionStore>): void;
+
+/**
+ * Reusable contract test suite for any SurfaceStore implementation.
+ *
+ * Call \`runSurfaceStoreContractTests(factory)\` with a factory that
+ * creates a fresh store per test group.
+ */
+
+declare function runSurfaceStoreContractTests(createStore: () => SurfaceStore | Promise<SurfaceStore>): void;
+
+/**
+ * Reusable contract test suite for MailboxComponent implementations.
+ *
+ * Accepts a factory that returns a MailboxComponent (sync or async).
+ * Each test creates a fresh instance for isolation.
+ */
+
+/**
+ * Run the MailboxComponent contract test suite against any implementation.
+ *
+ * The factory should return a mailbox configured for a specific agent.
+ */
+declare function runMailboxContractTests(createMailbox: () => MailboxComponent | Promise<MailboxComponent>): void;
+
+/**
+ * Reusable contract test suite for memory AgentRegistry implementations.
+ *
+ * Validates both standard AgentRegistry behavior and event-sourcing invariants:
+ * - Events are persisted and readable from the backend
+ * - rebuild() produces identical state to the original
+ * - Concurrent transitions respect optimistic concurrency
+ *
+ * Accepts a factory that returns a registry + its underlying EventBackend.
+ */
+
+/** Registry with a rebuild method for memory registry tests. */
+interface MemoryRegistryForTest {
+    readonly register: (entry: RegistryEntry) => RegistryEntry | Promise<RegistryEntry>;
+    readonly deregister: (agentId: AgentId) => boolean | Promise<boolean>;
+    readonly lookup: (agentId: AgentId) => RegistryEntry | undefined | Promise<RegistryEntry | undefined>;
+    readonly list: (filter?: {
+        readonly phase?: ProcessState;
+    }, visibility?: VisibilityContext) => readonly RegistryEntry[] | Promise<readonly RegistryEntry[]>;
+    readonly transition: (agentId: AgentId, targetPhase: ProcessState, expectedGeneration: number, reason: TransitionReason) => Result<RegistryEntry, KoiError> | Promise<Result<RegistryEntry, KoiError>>;
+    readonly watch: (listener: (event: RegistryEvent) => void) => () => void;
+    readonly rebuild: () => Promise<void>;
+    readonly [Symbol.asyncDispose]: () => PromiseLike<void>;
+}
+interface MemoryRegistryTestContext {
+    readonly registry: MemoryRegistryForTest;
+    readonly backend: EventBackend;
+}
+/**
+ * Run the memory AgentRegistry contract test suite.
+ *
+ * The factory should return a fresh registry + backend pair for each test.
+ */
+declare function runMemoryRegistryContractTests(createContext: () => MemoryRegistryTestContext | Promise<MemoryRegistryTestContext>): void;
+
+/**
+ * Reusable contract test suite for Nexus namespace store adapters.
+ *
+ * Tests unified namespace conventions: agent isolation, group sharing,
+ * glob boundaries, and path generation consistency.
+ *
+ * Accepts a factory that returns a NexusStoreAdapter (a minimal interface
+ * for read/write/delete/glob operations on a Nexus-like namespace).
+ */
+
+/**
+ * Minimal adapter interface that any Nexus-backed store must implement
+ * for namespace contract testing. Maps directly to Nexus filesystem ops.
+ */
+interface NexusStoreAdapter {
+    /** Write content to a path. */
+    readonly write: (path: string, content: string) => Promise<Result<void, KoiError>>;
+    /** Read content from a path. Returns NOT_FOUND error if missing. */
+    readonly read: (path: string) => Promise<Result<string, KoiError>>;
+    /** Delete a path. */
+    readonly remove: (path: string) => Promise<Result<void, KoiError>>;
+    /** Glob for paths matching a pattern. */
+    readonly glob: (pattern: string) => Promise<Result<readonly string[], KoiError>>;
+}
+/**
+ * Run the Nexus namespace contract test suite against any adapter.
+ *
+ * Tests namespace conventions from issue #750:
+ * - Agent isolation: writes to agent A don't appear in agent B's reads
+ * - Group sharing: writes to group path readable by group members
+ * - Glob boundary enforcement
+ * - Path structure consistency
+ */
+declare function runNexusStoreContractTests(createAdapter: () => NexusStoreAdapter | Promise<NexusStoreAdapter>): void;
+
+/**
+ * Reusable contract test suite for PayLedger implementations.
+ *
+ * Accepts a factory that returns a PayLedger (sync or async).
+ * Each test creates a fresh instance for isolation.
+ */
+
+/**
+ * Run the PayLedger contract test suite against any implementation.
+ *
+ * The factory should return a ledger pre-configured with an initial budget
+ * of "1000" credits and an agentId of "agent-1".
+ */
+declare function runPayLedgerContractTests(createLedger: () => PayLedger | Promise<PayLedger>): void;
+
+/**
+ * Reusable contract test suites for TaskStore and ScheduleStore implementations.
+ *
+ * Validates that any implementation (SQLite, Nexus, in-memory) satisfies
+ * the L0 contracts with consistent behavior across save/load/query/update.
+ */
+
+declare function runTaskStoreContractTests(createStore: () => TaskStore | Promise<TaskStore>, cleanup?: () => void | Promise<void>): void;
+declare function runScheduleStoreContractTests(createStore: () => ScheduleStore | Promise<ScheduleStore>, cleanup?: () => void | Promise<void>): void;
+
+/**
+ * Reusable contract test suite for ScratchpadComponent implementations.
+ *
+ * Accepts a factory that returns a ScratchpadComponent (sync or async).
+ * Each test creates a fresh instance for isolation.
+ */
+
+/**
+ * Run the ScratchpadComponent contract test suite against any implementation.
+ *
+ * The factory should return a scratchpad pre-configured with a groupId and authorId.
+ */
+declare function runScratchpadContractTests(createScratchpad: () => ScratchpadComponent | Promise<ScratchpadComponent>): void;
+
+/**
+ * Reusable contract test suite for any SessionPersistence implementation.
+ *
+ * Call \`runSessionPersistenceContractTests(factory)\` with a factory that
+ * creates a fresh store per test group.
+ */
+
+declare function runSessionPersistenceContractTests(createStore: () => SessionPersistence): void;
+
+/**
+ * Skill registry contract test suite.
+ *
+ * Validates that any SkillRegistryBackend implementation satisfies the L0 contract.
+ * Usage: import { testSkillRegistryContract } from "@koi/test-utils" and call it
+ * inside a describe() block with a factory function.
+ */
+
+interface SkillRegistryContractOptions {
+    readonly createRegistry: () => SkillRegistryBackend | Promise<SkillRegistryBackend>;
+}
+/**
+ * Runs the skill registry contract test suite.
+ *
+ * Call this inside a \`describe()\` block. It registers tests that verify
+ * the registry satisfies all L0 contract invariants.
+ */
+declare function testSkillRegistryContract(options: SkillRegistryContractOptions): void;
+
+/**
+ * Reusable contract test suite for any SnapshotChainStore<T> implementation.
+ *
+ * Call \`runSnapshotChainStoreContractTests(createStore, createData, createDifferentData)\`
+ * with factories that create a fresh store and test data per test group.
+ */
+
+declare function runSnapshotChainStoreContractTests<T>(createStore: () => SnapshotChainStore<T> | Promise<SnapshotChainStore<T>>, createData: () => T, createDifferentData: () => T): void;
+
+/**
+ * Reusable contract test suite for ForgeStore implementations.
+ *
+ * Accepts a factory that returns a ForgeStore (sync or async).
+ * Each test creates a fresh store instance for isolation.
+ */
+
+/**
+ * Run the ForgeStore contract test suite against any implementation.
+ *
+ * The factory can be sync or async — async factories are useful for
+ * filesystem/database stores that need setup (e.g., temp directory creation).
+ */
+declare function runForgeStoreContractTests(createStore: () => ForgeStore | Promise<ForgeStore>): void;
+
+/**
+ * Reusable contract test suite for ThreadStore implementations (Decision 10C).
+ *
+ * Validates: round-trip, idempotency (CONFLICT on duplicate ID),
+ * missing thread, listMessages ordering/limit, and close idempotency.
+ */
+
+declare function runThreadStoreContractTests(createStore: () => ThreadStore | Promise<ThreadStore>): void;
+
+/**
+ * Reusable contract test suite for any SessionTranscript implementation.
+ *
+ * Call \`runSessionTranscriptContractTests(factory)\` with a factory that
+ * creates a fresh store per test group.
+ */
+
+/**
+ * Create a transcript entry with sensible defaults. Overrides merge on top.
+ * Uses timestamp + random suffix for uniqueness — no module-level mutable state.
+ */
+declare function makeTranscriptEntry(overrides?: Partial<TranscriptEntry>): TranscriptEntry;
+declare function runSessionTranscriptContractTests(createStore: () => SessionTranscript): void;
+
+/**
+ * VersionIndex contract test suite.
+ *
+ * Validates that any VersionIndexBackend implementation satisfies the L0 contract.
+ * Usage: import { testVersionIndexContract } from "@koi/test-utils" and call it
+ * inside a describe() block with a factory function.
+ */
+
+interface VersionIndexContractOptions {
+    readonly createIndex: () => VersionIndexBackend | Promise<VersionIndexBackend>;
+}
+/**
+ * Runs the VersionIndex contract test suite.
+ *
+ * Call this inside a \`describe()\` block. It registers tests that verify
+ * the index satisfies all L0 contract invariants.
+ */
+declare function testVersionIndexContract(options: VersionIndexContractOptions): void;
+
+/**
+ * Contract test suite for WorkspaceBackend implementations.
+ *
+ * Validates that any backend implementation satisfies the WorkspaceBackend
+ * contract defined in @koi/core. Use this in backend-specific test files
+ * to ensure behavioral consistency across git, docker, nexus, etc.
+ */
+
+/**
+ * Run the standard WorkspaceBackend contract tests.
+ *
+ * @param createBackend - Factory that returns a fresh backend for each test.
+ */
+declare function runWorkspaceBackendContractTests(createBackend: () => WorkspaceBackend | Promise<WorkspaceBackend>): void;
+
+export { type AuditSinkContractOptions, type BrickRegistryContractOptions, type MemoryRegistryForTest, type MemoryRegistryTestContext, type NexusStoreAdapter, type SkillRegistryContractOptions, type VersionIndexContractOptions, makeTranscriptEntry, runAuditSinkContractTests, runEventBackendContractTests, runFileSystemBackendContractTests, runForgeStoreContractTests, runMailboxContractTests, runMemoryRegistryContractTests, runNexusStoreContractTests, runNodeRegistryContractTests, runPayLedgerContractTests, runScheduleStoreContractTests, runScratchpadContractTests, runSessionPersistenceContractTests, runSessionStoreContractTests, runSessionTranscriptContractTests, runSnapshotChainStoreContractTests, runSurfaceStoreContractTests, runTaskStoreContractTests, runThreadStoreContractTests, runWorkspaceBackendContractTests, testBrickRegistryContract, testSkillRegistryContract, testVersionIndexContract };
+"
+`;

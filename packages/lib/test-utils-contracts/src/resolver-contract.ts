@@ -8,7 +8,7 @@
 
 import { expect, test } from "bun:test";
 import type { Resolver } from "@koi/core/resolver";
-import { assertKoiError } from "./assert-koi-error.js";
+import { assertKoiError } from "@koi/test-utils-mocks";
 
 export interface ResolverContractOptions<TMeta, TFull> {
   /** Factory that creates a fresh resolver instance for each test. */

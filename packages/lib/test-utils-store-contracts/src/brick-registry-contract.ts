@@ -8,8 +8,12 @@
 
 import { describe, expect, test } from "bun:test";
 import type { BrickRegistryBackend, BrickRegistryChangeEvent } from "@koi/core";
-import { assertErr, assertOk } from "./assert-result.js";
-import { createTestSkillArtifact, createTestToolArtifact } from "./brick-artifacts.js";
+import {
+  assertErr,
+  assertOk,
+  createTestSkillArtifact,
+  createTestToolArtifact,
+} from "@koi/test-utils-mocks";
 
 // ---------------------------------------------------------------------------
 // Options

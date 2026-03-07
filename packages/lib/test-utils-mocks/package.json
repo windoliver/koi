@@ -1,6 +1,6 @@
 {
-  "name": "@koi/test-utils",
-  "description": "Provide mock agents, contract test suites, and spy utilities for testing",
+  "name": "@koi/test-utils-mocks",
+  "description": "Mock factories and spy helpers for Koi testing",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,11 +11,7 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/gateway-types": "workspace:*",
-    "@koi/test-utils-mocks": "workspace:*",
-    "@koi/test-utils-store-contracts": "workspace:*",
-    "@koi/test-utils-contracts": "workspace:*"
+    "@koi/core": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

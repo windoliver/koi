@@ -6,7 +6,7 @@
 
 import { expect, test } from "bun:test";
 import type { KoiMiddleware, SessionContext, TurnContext } from "@koi/core/middleware";
-import { createMockSessionContext, createMockTurnContext } from "../contexts.js";
+import { createMockSessionContext, createMockTurnContext } from "@koi/test-utils-mocks";
 
 export interface LifecycleTestOptions {
   readonly createMiddleware: () => KoiMiddleware | Promise<KoiMiddleware>;
