@@ -103,6 +103,12 @@ function validateKindFields(data: Record<string, unknown>, source: string): Resu
       break;
     case "composite":
       if (!Array.isArray(data.steps)) return fail("composite missing 'steps' array", source);
+      for (let i = 0; i < data.steps.length; i++) {
+        const step = data.steps[i];
+        if (!isRecord(step)) return fail(`composite steps[${String(i)}] is not an object`, source);
+        if (!isNonEmptyString((step as Record<string, unknown>).brickId))
+          return fail(`composite steps[${String(i)}] missing 'brickId'`, source);
+      }
       if (!isRecord(data.exposedInput))
         return fail("composite missing 'exposedInput' object", source);
       if (!isRecord(data.exposedOutput))

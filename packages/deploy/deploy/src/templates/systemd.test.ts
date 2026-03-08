@@ -26,10 +26,10 @@ describe("generateSystemdUnit", () => {
     expect(output).toContain("Description=Koi Agent - my-agent");
   });
 
-  it("uses correct ExecStart command", () => {
+  it("uses correct ExecStart command with quoted paths", () => {
     const output = generateSystemdUnit(BASE_CONFIG);
     expect(output).toContain(
-      "ExecStart=/usr/local/bin/bun /app/node_modules/.bin/koi serve --manifest /app/koi.yaml --port 9100",
+      'ExecStart="/usr/local/bin/bun" "/app/node_modules/.bin/koi" serve --manifest "/app/koi.yaml" --port 9100',
     );
   });
 

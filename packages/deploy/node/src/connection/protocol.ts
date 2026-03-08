@@ -16,6 +16,8 @@ import type { NodeFrame, NodeFrameKind } from "../types.js";
 const VALID_FRAME_KINDS: ReadonlySet<string> = new Set<NodeFrameKind>([
   "agent:dispatch",
   "agent:message",
+  "agent:signal",
+  "agent:signal_group",
   "agent:status",
   "agent:terminate",
   "node:auth",

@@ -186,10 +186,8 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
   const frameCounters = createFrameCounters();
   const dedup = createFrameDeduplicator();
 
-  // Forward transport events to node-level listeners
-  const unsubTransport = transport.onEvent((event) => {
-    emit(event.type, event.data);
-  });
+  // let: registered in start(), cleaned up in stop(), re-registered on restart
+  let unsubTransport: () => void = () => {};
 
   // -- Shared: outbound frame sender ----------------------------------------
 
@@ -288,6 +286,10 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
       async start() {
         if (currentState === "connected" || currentState === "starting") return;
         currentState = "starting";
+
+        // (Re-)register event forwarding — survives stop → start cycles
+        unsubTransport();
+        unsubTransport = transport.onEvent((event) => emit(event.type, event.data));
 
         const connectPromise = transport.connect().then(() => {
           transport.send({
@@ -459,50 +461,63 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
     // let: set during start(), used during stop()
     let shutdown: ShutdownHandler | undefined;
 
-    // Forward host events to node-level listeners
-    const unsubHost = host.onEvent((event) => emit(event.type, event.data));
+    // let: registered in start(), cleaned up in stop(), re-registered on restart
+    let unsubHost: () => void = () => {};
+    let unsubReconnect: () => void = () => {};
+    let unsubTerminal: () => void = () => {};
 
-    // Reconnect replay for full mode
-    const unsubReconnect = transport.onEvent((event) => {
-      if (event.type === "reconnected" && deliveryMgr !== undefined) {
-        void (async () => {
-          try {
-            for (const agent of host.list()) {
-              const sid = sessionByAgent.get(agent.pid.id);
-              if (sid !== undefined) {
-                await deliveryMgr.replayPendingFrames(sid);
+    /** Register full-mode event forwarding listeners. Safe to call multiple times. */
+    function registerFullModeListeners(): void {
+      // Tear down previous registrations (no-op on first call)
+      unsubHost();
+      unsubReconnect();
+      unsubTerminal();
+
+      // Forward host events to node-level listeners
+      unsubHost = host.onEvent((event) => emit(event.type, event.data));
+
+      // Reconnect replay for full mode
+      unsubReconnect = transport.onEvent((event) => {
+        if (event.type === "reconnected" && deliveryMgr !== undefined) {
+          void (async () => {
+            try {
+              for (const agent of host.list()) {
+                const sid = sessionByAgent.get(agent.pid.id);
+                if (sid !== undefined) {
+                  await deliveryMgr.replayPendingFrames(sid);
+                }
               }
+            } catch (e: unknown) {
+              emit("agent_crashed", { reason: "Reconnect replay failed", error: e });
             }
-          } catch (e: unknown) {
-            emit("agent_crashed", { reason: "Reconnect replay failed", error: e });
-          }
-        })();
-      }
-    });
-
-    // Send a one-shot terminal status frame immediately when an agent terminates,
-    // so the gateway can resolve waitForAgent() without waiting for the next cycle.
-    const unsubTerminal = host.onEvent((event) => {
-      if (event.type === "agent_terminated") {
-        const data = event.data as { agentId: string; exitCode: number } | undefined;
-        if (data?.agentId !== undefined) {
-          const payload: AgentStatusPayload = {
-            agentId: data.agentId,
-            state: "terminated",
-            turnCount: 0,
-            lastActivityMs: Date.now(),
-            exitCode: data.exitCode,
-          };
-          sendFrame({
-            nodeId,
-            agentId: data.agentId,
-            correlationId: generateCorrelationId(nodeId),
-            kind: "agent:status",
-            payload: { agents: [payload] },
-          });
+          })();
         }
-      }
-    });
+      });
+
+      // Send a one-shot terminal status frame immediately when an agent terminates,
+      // so the gateway can resolve waitForAgent() without waiting for the next cycle.
+      unsubTerminal = host.onEvent((event) => {
+        if (event.type === "agent_terminated") {
+          const data = event.data as { agentId: string; exitCode: number } | undefined;
+          if (data?.agentId !== undefined) {
+            const payload: AgentStatusPayload = {
+              agentId: data.agentId,
+              state: "terminated",
+              turnCount: 0,
+              lastActivityMs: Date.now(),
+              exitCode: data.exitCode,
+            };
+            sendFrame({
+              nodeId,
+              agentId: data.agentId,
+              correlationId: generateCorrelationId(nodeId),
+              kind: "agent:status",
+              payload: { agents: [payload] },
+            });
+          }
+        }
+      });
+    }
 
     // Wire inbound frame handler — full mode handles agent frames + tool_call
     transport.onFrame((frame) => {
@@ -619,15 +634,24 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
             await result.engine.loadState(session.lastEngineState);
           }
 
+          // Wrap with transcript decorator if transcript store is available
+          const effectiveEngine =
+            deps?.transcript !== undefined
+              ? createTranscriptingEngine(result.engine, {
+                  sessionId: toSessionId(session.sessionId),
+                  transcript: deps.transcript,
+                })
+              : result.engine;
+
           const dispatchResult = await host.dispatch(
             result.pid,
             session.manifestSnapshot,
-            result.engine,
+            effectiveEngine,
             result.providers ?? [],
           );
 
           if (dispatchResult.ok) {
-            engines.set(result.pid.id, result.engine);
+            engines.set(result.pid.id, effectiveEngine);
             sessionByAgent.set(result.pid.id, session.sessionId);
             if (deliveryMgr !== undefined && pendingFrames.has(session.sessionId)) {
               await deliveryMgr.replayPendingFrames(session.sessionId);
@@ -669,6 +693,11 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
       async start() {
         if (currentState === "connected" || currentState === "starting") return;
         currentState = "starting";
+
+        // (Re-)register event forwarding — survives stop → start cycles
+        unsubTransport();
+        unsubTransport = transport.onEvent((event) => emit(event.type, event.data));
+        registerFullModeListeners();
 
         const connectPromise = transport.connect().then(() => {
           transport.send({
@@ -797,17 +826,52 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
         if (result.ok) {
           engines.set(pid.id, effectiveEngine);
           sessionByAgent.set(pid.id, sid);
+
+          // Persist session for crash recovery
+          if (deps?.sessionStore !== undefined) {
+            const counters = frameCounters.get(pid.id);
+            const record: SessionRecord = {
+              sessionId: toSessionId(sid),
+              agentId: pid.id,
+              manifestSnapshot: manifest,
+              seq: counters.seq,
+              remoteSeq: counters.remoteSeq,
+              connectedAt: Date.now(),
+              lastPersistedAt: Date.now(),
+              metadata: {},
+            };
+            const saveResult = await deps.sessionStore.saveSession(record);
+            if (!saveResult.ok) {
+              emit("agent_crashed", {
+                agentId: pid.id,
+                reason: "Failed to persist session",
+                error: saveResult.error,
+              });
+            }
+          }
         }
         return result;
       },
 
       terminate(agentId) {
+        const sid = sessionByAgent.get(agentId);
         const result = host.terminate(agentId);
         if (result.ok) {
           engines.delete(agentId);
           sessionByAgent.delete(agentId);
           frameCounters.remove(agentId);
           inbox.clear(agentId);
+
+          // Remove persisted session (fire-and-forget — terminate is sync)
+          if (deps?.sessionStore !== undefined && sid !== undefined) {
+            void Promise.resolve(deps.sessionStore.removeSession(sid)).catch((e: unknown) => {
+              emit("agent_crashed", {
+                agentId,
+                reason: "Failed to remove persisted session",
+                error: e,
+              });
+            });
+          }
         }
         return result;
       },
