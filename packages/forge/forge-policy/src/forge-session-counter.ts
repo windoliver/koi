@@ -58,6 +58,9 @@ export function createForgeSessionCounter(
 
   const readForgeCount = (): number => count;
   const incrementForgeCount = (delta: number): void => {
+    if (delta < 0) {
+      throw new Error(`incrementForgeCount: delta must be non-negative, got ${String(delta)}`);
+    }
     count += delta;
   };
 

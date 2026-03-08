@@ -68,8 +68,9 @@ describe("executePipeline", () => {
     expect(result.value).toBe("save-result");
     expect(calls).toHaveLength(3);
     expect(calls[0]?.args).toBe("initial-args");
-    expect(calls[1]?.args).toBe("fetch-result");
-    expect(calls[2]?.args).toBe("parse-result");
+    // Non-object step results are wrapped as { value } for downstream JsonObject consumers
+    expect(calls[1]?.args).toEqual({ value: "fetch-result" });
+    expect(calls[2]?.args).toEqual({ value: "parse-result" });
   });
 
   test("returns empty result for empty pipeline", async () => {

@@ -14,6 +14,11 @@ export { createMemoryStoreChangeNotifier } from '@koi/validation';
  * the loaded brick artifacts for reuse by callers (e.g. trust propagation).
  */
 
+/** Optional visibility context for brick access checks. */
+interface AssembleVisibility {
+    readonly agentId: string;
+    readonly zoneId?: string | undefined;
+}
 interface AssembleManifestOptions {
     readonly name: string;
     readonly description: string;
@@ -24,7 +29,7 @@ interface AssembleManifestResult {
     readonly manifestYaml: string;
     readonly loadedBricks: readonly BrickArtifact[];
 }
-declare function assembleManifest(brickIds: readonly string[], store: ForgeStore, options: AssembleManifestOptions): Promise<Result<AssembleManifestResult, ForgeError>>;
+declare function assembleManifest(brickIds: readonly string[], store: ForgeStore, options: AssembleManifestOptions, visibility?: AssembleVisibility): Promise<Result<AssembleManifestResult, ForgeError>>;
 
 /**
  * Brick → Tool conversion — shared utility for converting ToolArtifact bricks
@@ -224,6 +229,7 @@ declare function createForgeRegistrySync(config: ForgeRegistrySyncConfig): () =>
 
 interface ForgeResolverContext {
     readonly agentId: string;
+    readonly zoneId?: string | undefined;
     /** Called when a brick is demoted due to fitness decay. */
     readonly onDecayDemotion?: (brickId: string, from: ToolPolicy, to: ToolPolicy) => void;
     /** Called when a decay-related store update or callback throws. */

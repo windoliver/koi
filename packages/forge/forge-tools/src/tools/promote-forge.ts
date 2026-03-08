@@ -181,7 +181,7 @@ async function promoteForgeHandler(
     };
   }
 
-  if (!isVisibleToAgent(loadResult.value, deps.context.agentId)) {
+  if (!isVisibleToAgent(loadResult.value, deps.context.agentId, deps.context.zoneId)) {
     return {
       ok: false,
       error: storeError("LOAD_FAILED", `Brick not found: ${obj.brickId}`),

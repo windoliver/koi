@@ -22,7 +22,8 @@ import type {
   ToolPolicy,
   TurnContext,
 } from "@koi/core";
-import { brickId, DEFAULT_FORGE_BUDGET, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
+import { DEFAULT_FORGE_BUDGET, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
+import { computeBrickId } from "@koi/hash";
 import type { CrystallizedToolDescriptor } from "./forge-handler.js";
 import { createCrystallizeForgeHandler } from "./forge-handler.js";
 import type { CrystallizationCandidate, CrystallizeHandle } from "./types.js";
@@ -103,7 +104,7 @@ const DEFAULT_CONFIDENCE_THRESHOLD = 0.9;
 
 /** Map a CrystallizedToolDescriptor to a ToolArtifact for storage. */
 function mapDescriptorToBrick(descriptor: CrystallizedToolDescriptor, now: number): ToolArtifact {
-  const id = brickId(`crystallize:${descriptor.provenance.ngramKey}:${String(now)}`);
+  const id = computeBrickId("tool", descriptor.implementation);
   const provenance: ForgeProvenance = {
     source: {
       origin: "forged",
@@ -135,7 +136,7 @@ function mapDescriptorToBrick(descriptor: CrystallizedToolDescriptor, now: numbe
     },
     classification: "public",
     contentMarkers: [],
-    contentHash: `crystallize:${descriptor.provenance.ngramKey}:${String(now)}`,
+    contentHash: id,
   };
 
   return {
@@ -259,7 +260,8 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
    */
   async function processDemandForge(signal: ForgeDemandSignal): Promise<void> {
     const now = clock();
-    const id = brickId(`demand:${signal.trigger.kind}:${String(now)}`);
+    const implementation = `// Pioneer stub — demand-triggered for: ${signal.trigger.kind}`;
+    const id = computeBrickId("tool", implementation);
     const triggerDesc =
       signal.trigger.kind === "repeated_failure"
         ? signal.trigger.toolName
@@ -306,7 +308,7 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       },
       classification: "public",
       contentMarkers: [],
-      contentHash: `demand:${signal.id}:${String(now)}`,
+      contentHash: id,
     };
 
     const brick: ToolArtifact = {
@@ -322,7 +324,7 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       version: "0.1.0",
       tags: ["demand-forged", "pioneer"],
       usageCount: 0,
-      implementation: `// Pioneer stub — demand-triggered for: ${signal.trigger.kind}`,
+      implementation,
       inputSchema: {},
     };
 

@@ -19,7 +19,7 @@ import type {
 } from "@koi/core";
 import { brickId, DEFAULT_SANDBOXED_POLICY, MAX_PIPELINE_STEPS } from "@koi/core";
 import type { ForgeError, ForgePipeline, ForgeResult } from "@koi/forge-types";
-import { staticError, storeError } from "@koi/forge-types";
+import { isVisibleToAgent, staticError, storeError } from "@koi/forge-types";
 import { computePipelineBrickId } from "@koi/hash";
 import { validatePipeline } from "@koi/validation";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
@@ -110,6 +110,16 @@ async function composeForgeHandler(
     }
     // justified: mutable local array being constructed, not shared state
     bricks.push(result.value);
+  }
+
+  // Visibility check — reject bricks the caller cannot see
+  for (const brick of bricks) {
+    if (!isVisibleToAgent(brick, deps.context.agentId, deps.context.zoneId)) {
+      return {
+        ok: false,
+        error: storeError("LOAD_FAILED", `Brick not found: ${brick.id}`),
+      };
+    }
   }
 
   // Build pipeline steps with extracted ports

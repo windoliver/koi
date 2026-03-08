@@ -20,7 +20,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/hash": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

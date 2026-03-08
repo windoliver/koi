@@ -10,9 +10,11 @@ import type {
   CapabilityFragment,
   ExaptationSignal,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -231,6 +233,36 @@ export function createExaptationDetector(config: ExaptationConfig): ExaptationHa
       return response;
     },
 
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      const chunks: string[] = [];
+      for await (const chunk of next(request)) {
+        if (chunk.kind === "text_delta") {
+          chunks.push(chunk.delta);
+        }
+        yield chunk;
+      }
+
+      const responseText = chunks.join("");
+      const sid = ctx.session.sessionId;
+      if (responseText.length > 0) {
+        lastModelResponseBySession.set(sid, truncateToWords(responseText, maxWords));
+      } else {
+        lastModelResponseBySession.set(sid, "");
+      }
+
+      if (request.tools !== undefined) {
+        for (const tool of request.tools) {
+          if (tool.description.length > 0) {
+            getOrCacheTokens(tool.name, tool.description);
+          }
+        }
+      }
+    },
+
     async wrapToolCall(
       ctx: TurnContext,
       request: ToolRequest,
@@ -242,7 +274,11 @@ export function createExaptationDetector(config: ExaptationConfig): ExaptationHa
       // Observe intent before executing the tool call
       const modelResponseText = lastModelResponseBySession.get(ctx.session.sessionId) ?? "";
       const descriptionTokens = toolDescriptionCache.get(toolId);
-      if (descriptionTokens !== undefined && modelResponseText.length > 0) {
+      if (
+        descriptionTokens !== undefined &&
+        descriptionTokens.size > 0 &&
+        modelResponseText.length > 0
+      ) {
         const contextTokens = tokenize(modelResponseText);
         const divergence = computeJaccardDistance(descriptionTokens, contextTokens);
 

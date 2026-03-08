@@ -75,7 +75,7 @@ export function detectCapabilityGap(
     const match = pattern.exec(responseText);
     if (match !== null) {
       const capability = match[0];
-      const count = (gapCounts.get(capability) ?? 0) + 1;
+      const count = gapCounts.get(capability) ?? 0;
       if (count >= threshold) {
         return {
           kind: "capability_gap",

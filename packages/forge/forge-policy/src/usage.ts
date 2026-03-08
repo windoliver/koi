@@ -86,9 +86,10 @@ export async function recordBrickUsage(
     signal !== undefined
       ? computeUpdatedFitness(brick.fitness ?? DEFAULT_BRICK_FITNESS, signal)
       : undefined;
+  // Ensure usageCount never decreases — take the max of fitness-derived and incremented values
   const newUsageCount =
     updatedFitness !== undefined
-      ? updatedFitness.successCount + updatedFitness.errorCount
+      ? Math.max(updatedFitness.successCount + updatedFitness.errorCount, brick.usageCount + 1)
       : brick.usageCount + 1;
 
   // Trail strength reinforcement (stigmergic coordination)

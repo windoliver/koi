@@ -66,7 +66,12 @@ export async function executePipeline(
       };
     }
 
-    const input = i === 0 ? firstToolArgs : partialResults[i - 1];
+    const rawInput = i === 0 ? firstToolArgs : partialResults[i - 1];
+    // Wrap non-object results for downstream steps that expect JsonObject
+    const input =
+      i === 0 || (typeof rawInput === "object" && rawInput !== null && !Array.isArray(rawInput))
+        ? rawInput
+        : { value: rawInput };
 
     try {
       const result = await ctx.executor(step.toolId, input);
