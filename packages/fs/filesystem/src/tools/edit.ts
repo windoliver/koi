@@ -55,13 +55,24 @@ export function createFsEditTool(
       const dryRunResult = parseOptionalBoolean(args, "dryRun");
       if (!dryRunResult.ok) return dryRunResult.err;
 
-      const edits: readonly FileEdit[] = editsResult.value.map((e) => {
-        const entry = e as Record<string, unknown>;
-        return {
-          oldText: typeof entry.oldText === "string" ? entry.oldText : "",
-          newText: typeof entry.newText === "string" ? entry.newText : "",
-        };
-      });
+      const edits: readonly FileEdit[] = [];
+      for (let i = 0; i < editsResult.value.length; i++) {
+        const entry = editsResult.value[i] as Record<string, unknown>;
+        if (typeof entry.oldText !== "string") {
+          return {
+            error: `edits[${String(i)}].oldText must be a string, got ${typeof entry.oldText}`,
+          };
+        }
+        if (typeof entry.newText !== "string") {
+          return {
+            error: `edits[${String(i)}].newText must be a string, got ${typeof entry.newText}`,
+          };
+        }
+        (edits as FileEdit[]).push({
+          oldText: entry.oldText,
+          newText: entry.newText,
+        });
+      }
 
       const options: FileEditOptions = {
         ...(dryRunResult.value !== undefined && { dryRun: dryRunResult.value }),
