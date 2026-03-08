@@ -12,7 +12,7 @@
  */
 
 import type { ContentBlock, EngineInput } from "@koi/core";
-import { heartbeat } from "@temporalio/activity";
+import { ApplicationFailure, heartbeat } from "@temporalio/activity";
 import type { EngineCache } from "../engine-cache.js";
 import { mapKoiErrorToApplicationFailure } from "../temporal-errors.js";
 import type { AgentStateRefs, AgentTurnInput, AgentTurnResult } from "../types.js";
@@ -72,6 +72,7 @@ export function createActivities(deps: ActivityDeps): {
     async runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
       const turnId = `turn:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`;
       const blocks: ContentBlock[] = [];
+      // TODO: Wire spawnChild based on engine spawn events (currently always undefined)
       let spawnChild: AgentTurnResult["spawnChild"];
 
       try {
@@ -144,12 +145,12 @@ export function createActivities(deps: ActivityDeps): {
           context: { turnId, agentId: input.agentId },
         });
 
-        // Re-throw as a structured error that Temporal understands
-        throw Object.assign(new Error(payload.message), {
-          name: "ApplicationFailure",
+        // Throw a real Temporal ApplicationFailure so metadata round-trips correctly
+        throw ApplicationFailure.create({
+          message: payload.message,
           type: payload.type,
           nonRetryable: payload.nonRetryable,
-          details: payload.details,
+          details: [...payload.details],
         });
       }
     },

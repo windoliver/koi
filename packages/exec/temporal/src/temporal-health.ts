@@ -272,13 +272,17 @@ export function createTemporalHealthMonitor(
 // Default health check
 // ---------------------------------------------------------------------------
 
-/** Temporal UI/HTTP port is typically gRPC port + 1000 (7233 → 8233). */
-const TEMPORAL_HTTP_HEALTH_PORT = 7243;
+/** Temporal dev server exposes HTTP API on gRPC port + 1000 by convention. */
+const TEMPORAL_HTTP_PORT_OFFSET = 1000;
 
 async function defaultHealthCheck(url: string, timeoutMs: number): Promise<boolean> {
   try {
-    const httpUrl = url.replace(/:\d+$/, `:${TEMPORAL_HTTP_HEALTH_PORT}`);
-    const response = await fetch(`${httpUrl}/health`, {
+    // Extract port from URL (e.g., "localhost:7233" → 7233) and add offset for HTTP API
+    const portMatch = url.match(/:(\d+)$/);
+    const grpcPort = portMatch !== null ? Number.parseInt(portMatch[1] ?? "7233", 10) : 7233;
+    const httpPort = grpcPort + TEMPORAL_HTTP_PORT_OFFSET;
+    const host = url.replace(/:\d+$/, "");
+    const response = await fetch(`http://${host}:${httpPort}/api/v1/namespaces`, {
       signal: AbortSignal.timeout(timeoutMs),
     });
     return response.ok;

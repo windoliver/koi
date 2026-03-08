@@ -100,6 +100,11 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
   const pendingMessages: IncomingMessage[] = [];
   let shutdownRequested = false;
 
+  // Seed with initial message if provided (cron schedules, Continue-As-New)
+  if (config.initialMessage !== undefined) {
+    pendingMessages.push(config.initialMessage);
+  }
+
   // -- Signal handlers -------------------------------------------------------
 
   // Mutable array is required here — Temporal signal handlers must push
@@ -211,18 +216,21 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
  * Does NOT connect to Nexus independently (same as today's worker semantics).
  */
 export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<AgentTurnResult> {
-  // Worker processes a single "turn" — the task assigned by the parent
+  // Worker processes a single "turn" — the task assigned by the parent.
+  // Uses initialMessage from parent if provided; otherwise synthesizes an init message.
+  const message = config.initialMessage ?? {
+    id: `worker-init:${config.agentId}`,
+    senderId: config.parentAgentId,
+    content: [],
+    // Date.now() is safe in Temporal's sandbox — it's part of the
+    // deterministic API that Temporal patches to replay correctly.
+    timestamp: Date.now(),
+  };
+
   const input: AgentTurnInput = {
     agentId: config.agentId,
     sessionId: config.sessionId,
-    message: {
-      id: `worker-init:${config.agentId}`,
-      senderId: config.parentAgentId,
-      content: [],
-      // Date.now() is safe in Temporal's sandbox — it's part of the
-      // deterministic API that Temporal patches to replay correctly.
-      timestamp: Date.now(),
-    },
+    message,
     stateRefs: config.stateRefs,
     gatewayUrl: undefined,
   };

@@ -33,7 +33,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
-    "test:integration": "TEMPORAL_INTEGRATION=true bun test src/__tests__/integration.test.ts",
-    "test:e2e": "TEMPORAL_E2E=true bun test src/__tests__/e2e.test.ts"
+    "test:integration": "TEMPORAL_INTEGRATION=true bun test src/__tests__/bun-compat.gate.test.ts",
+    "test:e2e": "TEMPORAL_E2E=true bun test src/__tests__/e2e-openrouter.test.ts"
   }
 }

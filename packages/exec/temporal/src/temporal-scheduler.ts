@@ -36,6 +36,34 @@ function toScheduleId(id: string): ScheduleId {
   return id as ScheduleId;
 }
 
+/**
+ * Convert EngineInput to a content array suitable for IncomingMessage.
+ * Handles all three EngineInput kinds: text, messages, resume.
+ */
+function mapEngineInputToContent(
+  input: EngineInput,
+): readonly { readonly kind: "text"; readonly text: string }[] {
+  switch (input.kind) {
+    case "text":
+      return [{ kind: "text", text: input.text }];
+    case "messages": {
+      // Flatten all InboundMessage content blocks into text content
+      const texts: { readonly kind: "text"; readonly text: string }[] = [];
+      for (const msg of input.messages) {
+        for (const block of msg.content) {
+          if (block.kind === "text") {
+            texts.push({ kind: "text", text: block.text });
+          }
+        }
+      }
+      return texts;
+    }
+    case "resume":
+      // Resume has no new user message content
+      return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -164,20 +192,28 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       tasks.set(id, task);
       emit({ kind: "task:submitted", task });
 
+      // Build IncomingMessage content from EngineInput (all kinds)
+      const content = mapEngineInputToContent(input);
+
       // Start a Temporal Workflow for this task
       const handle = await config.client.workflow.start(config.workflowType, {
         taskQueue: config.taskQueue,
         workflowId: id,
         args: [{ agentId, sessionId: id, stateRefs: { lastTurnId: undefined, turnsProcessed: 0 } }],
+        // Honour delayMs via Temporal's native start delay
+        ...(options?.delayMs !== undefined ? { startDelay: `${options.delayMs}ms` } : {}),
       });
 
       // Signal the workflow with the task input
       await config.client.workflow.signal(handle.workflowId, "message", {
         id: `task:${id}`,
         senderId: "scheduler",
-        content: input.kind === "messages" ? input.messages : [],
+        content,
         timestamp: now,
       });
+
+      // Transition to running after the workflow is signaled
+      tasks.set(id, { ...task, status: "running" });
 
       return id;
     },
@@ -218,6 +254,16 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
       schedules.set(id, schedule);
 
+      // Build initial message so the cron-started workflow has work to do
+      // (without this, the workflow would block waiting for a signal)
+      const content = mapEngineInputToContent(input);
+      const initialMessage = {
+        id: `sched:${id}:${Date.now()}`,
+        senderId: "scheduler",
+        content,
+        timestamp: Date.now(),
+      };
+
       await config.client.schedule.create(id, {
         spec: { cronExpressions: [expression] },
         action: {
@@ -225,7 +271,12 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           workflowType: config.workflowType,
           taskQueue: config.taskQueue,
           args: [
-            { agentId, sessionId: id, stateRefs: { lastTurnId: undefined, turnsProcessed: 0 } },
+            {
+              agentId,
+              sessionId: id,
+              stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+              initialMessage,
+            },
           ],
         },
       });

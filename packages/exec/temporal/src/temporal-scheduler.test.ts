@@ -40,7 +40,12 @@ function createTestConfig(client: TemporalClientLike): TemporalSchedulerConfig {
 }
 
 const AGENT_ID = "agent-1" as AgentId;
-const ENGINE_INPUT: EngineInput = { messages: [] } as unknown as EngineInput;
+const TEXT_INPUT: EngineInput = { kind: "text", text: "hello" } as unknown as EngineInput;
+const MESSAGES_INPUT: EngineInput = {
+  kind: "messages",
+  messages: [{ content: [{ kind: "text", text: "from message" }], senderId: "u1", timestamp: 1 }],
+} as unknown as EngineInput;
+const RESUME_INPUT: EngineInput = { kind: "resume", state: {} } as unknown as EngineInput;
 
 // ---------------------------------------------------------------------------
 // submit
@@ -51,7 +56,7 @@ describe("submit", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    const id = await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
 
     expect(typeof id).toBe("string");
     expect(id).toContain("task:");
@@ -61,7 +66,7 @@ describe("submit", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
 
     expect(client.workflow.start).toHaveBeenCalledTimes(1);
   });
@@ -70,7 +75,7 @@ describe("submit", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "dispatch");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
 
     expect(client.workflow.signal).toHaveBeenCalledTimes(1);
   });
@@ -81,7 +86,7 @@ describe("submit", () => {
     const events: unknown[] = [];
     scheduler.watch((e) => events.push(e));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
 
     expect(events).toHaveLength(1);
     expect((events[0] as { kind: string }).kind).toBe("task:submitted");
@@ -91,7 +96,7 @@ describe("submit", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn", { priority: 1 });
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", { priority: 1 });
 
     const tasks = await scheduler.query({ agentId: AGENT_ID });
     expect(tasks[0]?.priority).toBe(1);
@@ -101,10 +106,64 @@ describe("submit", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
 
     const tasks = await scheduler.query({});
     expect(tasks[0]?.priority).toBe(5);
+  });
+
+  test("converts text EngineInput to content array in signal", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+
+    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
+    const payload = signalArgs?.[2] as { content: readonly unknown[] };
+    expect(payload.content).toEqual([{ kind: "text", text: "hello" }]);
+  });
+
+  test("converts messages EngineInput to content array in signal", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, MESSAGES_INPUT, "spawn");
+
+    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
+    const payload = signalArgs?.[2] as { content: readonly unknown[] };
+    expect(payload.content).toEqual([{ kind: "text", text: "from message" }]);
+  });
+
+  test("converts resume EngineInput to empty content array", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, RESUME_INPUT, "spawn");
+
+    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
+    const payload = signalArgs?.[2] as { content: readonly unknown[] };
+    expect(payload.content).toEqual([]);
+  });
+
+  test("passes startDelay when delayMs is set", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", { delayMs: 5000 });
+
+    const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0];
+    const options = startArgs?.[1] as Record<string, unknown>;
+    expect(options.startDelay).toBe("5000ms");
+  });
+
+  test("transitions task to running after signal", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("running");
   });
 });
 
@@ -117,7 +176,7 @@ describe("cancel", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    const id = await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     const result = await scheduler.cancel(id);
 
     expect(result).toBe(true);
@@ -139,7 +198,7 @@ describe("cancel", () => {
     const events: unknown[] = [];
     scheduler.watch((e) => events.push(e));
 
-    const id = await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     await scheduler.cancel(id);
 
     const cancelEvents = events.filter((e) => (e as { kind: string }).kind === "task:cancelled");
@@ -152,15 +211,23 @@ describe("cancel", () => {
 // ---------------------------------------------------------------------------
 
 describe("schedule", () => {
-  test("creates a Temporal schedule", async () => {
+  test("creates a Temporal schedule with initialMessage", async () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    const id = await scheduler.schedule("0 0 * * *", AGENT_ID, ENGINE_INPUT, "spawn");
+    const id = await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
 
     expect(typeof id).toBe("string");
     expect(id).toContain("sched:");
     expect(client.schedule.create).toHaveBeenCalledTimes(1);
+
+    // Verify initialMessage is passed in workflow args
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const options = createArgs?.[1] as { action: { args: readonly [Record<string, unknown>] } };
+    const workflowConfig = options.action.args[0];
+    expect(workflowConfig).toHaveProperty("initialMessage");
+    const msg = workflowConfig.initialMessage as { content: readonly unknown[] };
+    expect(msg.content).toEqual([{ kind: "text", text: "hello" }]);
   });
 
   test("emits schedule:created event", async () => {
@@ -169,7 +236,7 @@ describe("schedule", () => {
     const events: unknown[] = [];
     scheduler.watch((e) => events.push(e));
 
-    await scheduler.schedule("*/5 * * * *", AGENT_ID, ENGINE_INPUT, "dispatch");
+    await scheduler.schedule("*/5 * * * *", AGENT_ID, TEXT_INPUT, "dispatch");
 
     const createEvents = events.filter((e) => (e as { kind: string }).kind === "schedule:created");
     expect(createEvents).toHaveLength(1);
@@ -179,7 +246,7 @@ describe("schedule", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    const id = await scheduler.schedule("0 0 * * *", AGENT_ID, ENGINE_INPUT, "spawn");
+    const id = await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
     const result = await scheduler.unschedule(id);
 
     expect(result).toBe(true);
@@ -205,7 +272,7 @@ describe("pause / resume", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    const id = await scheduler.schedule("0 0 * * *", AGENT_ID, ENGINE_INPUT, "spawn");
+    const id = await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
     const result = await scheduler.pause(id);
 
     expect(result).toBe(true);
@@ -216,7 +283,7 @@ describe("pause / resume", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    const id = await scheduler.schedule("0 0 * * *", AGENT_ID, ENGINE_INPUT, "spawn");
+    const id = await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
     await scheduler.pause(id);
     const result = await scheduler.resume(id);
 
@@ -243,8 +310,8 @@ describe("query / stats", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "dispatch");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
 
     const allTasks = await scheduler.query({});
     expect(allTasks).toHaveLength(2);
@@ -257,23 +324,24 @@ describe("query / stats", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
 
     const limited = await scheduler.query({ limit: 2 });
     expect(limited).toHaveLength(2);
   });
 
-  test("stats reflects task counts", async () => {
+  test("stats reflects running task counts after submit", async () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
-    await scheduler.schedule("0 0 * * *", AGENT_ID, ENGINE_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
 
     const s = await scheduler.stats();
-    expect(s.pending).toBe(1);
+    // Tasks transition to "running" after signal
+    expect(s.running).toBe(1);
     expect(s.activeSchedules).toBe(1);
   });
 
@@ -297,11 +365,11 @@ describe("watch", () => {
     const events: unknown[] = [];
     const unsub = scheduler.watch((e) => events.push(e));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     expect(events).toHaveLength(1);
 
     unsub();
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     expect(events).toHaveLength(1); // No new events
   });
 });
@@ -315,7 +383,7 @@ describe("dispose", () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     await scheduler[Symbol.asyncDispose]();
 
     const remaining = await scheduler.query({});

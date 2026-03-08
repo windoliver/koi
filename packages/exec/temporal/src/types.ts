@@ -17,6 +17,8 @@ export interface AgentWorkflowConfig {
   readonly sessionId: SessionId;
   /** Lightweight state refs — NO data, only pointers to external stores. */
   readonly stateRefs: AgentStateRefs;
+  /** Initial message to process on startup (used by cron schedules). */
+  readonly initialMessage?: IncomingMessage | undefined;
 }
 
 /**
@@ -116,6 +118,8 @@ export interface WorkerWorkflowConfig {
   readonly sessionId: SessionId;
   readonly parentAgentId: AgentId;
   readonly stateRefs: AgentStateRefs;
+  /** Initial message from the parent agent (task payload). */
+  readonly initialMessage?: IncomingMessage | undefined;
 }
 
 // ---------------------------------------------------------------------------
