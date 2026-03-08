@@ -49,7 +49,18 @@ export { createDaytonaAdapterShim as createDaytonaAdapter } from "./adapters/day
 export { createDockerAdapterShim as createDockerAdapter } from "./adapters/docker.js";
 export { createE2bAdapterShim as createE2bAdapter } from "./adapters/e2b.js";
 export { createVercelAdapterShim as createVercelAdapter } from "./adapters/vercel.js";
-export type { CloudSandboxConfig, CloudSandboxProvider } from "./cloud-types.js";
+export type {
+  CloudflareAdapterConfig,
+  CloudflareR2Mount,
+  CloudSandboxConfig,
+  CloudSandboxProvider,
+  DaytonaAdapterConfig,
+  DaytonaVolumeMount,
+  DockerAdapterConfig,
+  E2bAdapterConfig,
+  E2bBucketMount,
+  VercelAdapterConfig,
+} from "./cloud-types.js";
 // ── Cloud dispatch ──────────────────────────────────────────────────────
 export { createCloudSandbox } from "./create-cloud-sandbox.js";
 // ── Stack composition (original sandbox-stack) ──────────────────────────
