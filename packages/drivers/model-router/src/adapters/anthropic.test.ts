@@ -78,6 +78,174 @@ describe("toAnthropicRequest", () => {
     const result = toAnthropicRequest(request);
     expect(result.messages).toHaveLength(2);
   });
+
+  test("preserves assistant role from senderId", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hi there!" }],
+          senderId: "assistant",
+          timestamp: 1,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Follow up" }],
+          senderId: "user",
+          timestamp: 2,
+        },
+      ],
+    };
+
+    const result = toAnthropicRequest(request);
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0]?.role).toBe("user");
+    expect(result.messages[1]?.role).toBe("assistant");
+    expect(result.messages[2]?.role).toBe("user");
+  });
+
+  test("extracts system messages to top-level system parameter", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "You are helpful." }],
+          senderId: "system",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 1,
+        },
+      ],
+    };
+
+    const result = toAnthropicRequest(request);
+    expect(result.system).toBe("You are helpful.");
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]?.role).toBe("user");
+    expect(result.messages[0]?.content).toBe("Hello");
+  });
+
+  test("joins multiple system messages with double newline", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "System prompt 1" }],
+          senderId: "system",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Capabilities info" }],
+          senderId: "system:capabilities",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 1,
+        },
+      ],
+    };
+
+    const result = toAnthropicRequest(request);
+    expect(result.system).toBe("System prompt 1\n\nCapabilities info");
+    expect(result.messages).toHaveLength(1);
+  });
+
+  test("omits system parameter when no system messages present", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 0,
+        },
+      ],
+    };
+
+    const result = toAnthropicRequest(request);
+    expect(result.system).toBeUndefined();
+  });
+
+  test("preserves image blocks as structured content with URL source", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [
+            { kind: "text" as const, text: "What is this?" },
+            { kind: "image" as const, url: "https://example.com/cat.png" },
+          ],
+          senderId: "user",
+          timestamp: 0,
+        },
+      ],
+    };
+
+    const result = toAnthropicRequest(request);
+    const content = result.messages[0]?.content;
+    expect(Array.isArray(content)).toBe(true);
+    if (Array.isArray(content)) {
+      expect(content).toHaveLength(2);
+      expect(content[0]).toEqual({ type: "text", text: "What is this?" });
+      expect(content[1]).toEqual({
+        type: "image",
+        source: { type: "url", url: "https://example.com/cat.png" },
+      });
+    }
+  });
+
+  test("converts base64 data URL images to base64 source format", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [
+            {
+              kind: "image" as const,
+              url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==",
+            },
+          ],
+          senderId: "user",
+          timestamp: 0,
+        },
+      ],
+    };
+
+    const result = toAnthropicRequest(request);
+    const content = result.messages[0]?.content;
+    expect(Array.isArray(content)).toBe(true);
+    if (Array.isArray(content)) {
+      expect(content[0]).toEqual({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/png",
+          data: "iVBORw0KGgoAAAANSUhEUg==",
+        },
+      });
+    }
+  });
+
+  test("returns plain string for text-only content", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [
+            { kind: "text" as const, text: "Part 1" },
+            { kind: "text" as const, text: " Part 2" },
+          ],
+          senderId: "user",
+          timestamp: 0,
+        },
+      ],
+    };
+
+    const result = toAnthropicRequest(request);
+    expect(result.messages[0]?.content).toBe("Part 1 Part 2");
+  });
 });
 
 describe("fromAnthropicResponse", () => {

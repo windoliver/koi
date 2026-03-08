@@ -41,6 +41,10 @@ engine:
 - \`args\` (string[]): Arguments passed to the command
 - \`cwd\` (string): Working directory for the agent process
 - \`timeoutMs\` (number): Timeout for the agent process
+- \`env\` (Record<string, string>): Extra environment variables for the agent process
+- \`clientCapabilities\` (object): Capabilities to advertise in the initialize request
+- \`clientInfo\` (object): Client info sent in the initialize request
+- \`sessionNewParams\` (object): Extra parameters merged into every session/new request
 
 ## When NOT to use
 - For direct model API access (use \`pi\` instead)
@@ -48,6 +52,15 @@ engine:
 - For simple tasks that don't need a full coding agent (use \`loop\`)
 `,
 };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): value is Readonly<Record<string, string>> {
+  if (!isPlainObject(value)) return false;
+  return Object.values(value).every((v) => typeof v === "string");
+}
 
 function validateAcpEngineOptions(input: unknown): Result<Record<string, unknown>, KoiError> {
   const base = validateRequiredDescriptorOptions(input, "ACP engine");
@@ -91,6 +104,19 @@ export const descriptor: BrickDescriptor<EngineAdapter> = {
       ...(Array.isArray(options.args) ? { args: options.args as readonly string[] } : {}),
       ...(typeof options.cwd === "string" ? { cwd: options.cwd } : {}),
       ...(typeof options.timeoutMs === "number" ? { timeoutMs: options.timeoutMs } : {}),
+      ...(isStringRecord(options.env) ? { env: options.env } : {}),
+      ...(isPlainObject(options.clientCapabilities)
+        ? {
+            clientCapabilities:
+              options.clientCapabilities as AcpAdapterConfig["clientCapabilities"],
+          }
+        : {}),
+      ...(isPlainObject(options.clientInfo)
+        ? { clientInfo: options.clientInfo as AcpAdapterConfig["clientInfo"] }
+        : {}),
+      ...(isPlainObject(options.sessionNewParams)
+        ? { sessionNewParams: options.sessionNewParams as AcpAdapterConfig["sessionNewParams"] }
+        : {}),
     };
 
     return createAcpAdapter(config);

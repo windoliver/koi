@@ -135,9 +135,12 @@ export function assistantEventToModelChunk(event: AssistantMessageEvent): ModelC
 
     case "error":
       return {
-        kind: "usage",
-        inputTokens: event.error.usage.input,
-        outputTokens: event.error.usage.output,
+        kind: "error",
+        message: event.error.errorMessage ?? "Model provider error",
+        usage: {
+          inputTokens: event.error.usage.input,
+          outputTokens: event.error.usage.output,
+        },
       };
 
     // start, text_start, text_end, thinking_start, thinking_end → no ModelChunk equivalent
@@ -200,6 +203,7 @@ export function createModelStreamTerminal(): ModelStreamHandler {
     let text = "";
     let inputTokens = 0;
     let outputTokens = 0;
+    let errorChunk: ModelChunk | undefined;
     const modelId = request.model ?? "unknown";
 
     for await (const event of eventStream) {
@@ -212,8 +216,20 @@ export function createModelStreamTerminal(): ModelStreamHandler {
           inputTokens = chunk.inputTokens;
           outputTokens = chunk.outputTokens;
         }
+        if (chunk.kind === "error") {
+          if (chunk.usage) {
+            inputTokens = chunk.usage.inputTokens;
+            outputTokens = chunk.usage.outputTokens;
+          }
+          errorChunk = chunk;
+        }
         yield chunk;
       }
+    }
+
+    // Don't emit done after an error — the error chunk signals failure
+    if (errorChunk !== undefined) {
+      return;
     }
 
     yield {
@@ -243,6 +259,8 @@ export function createModelCallTerminal(streamTerminal: ModelStreamHandler): Mod
           inputTokens = chunk.inputTokens;
           outputTokens = chunk.outputTokens;
           break;
+        case "error":
+          throw new Error(chunk.message);
         case "done":
           return chunk.response;
       }

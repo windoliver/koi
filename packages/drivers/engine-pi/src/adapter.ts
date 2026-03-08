@@ -12,7 +12,7 @@ import { Agent as PiAgent } from "@mariozechner/pi-agent-core";
 import type { Message, UserMessage } from "@mariozechner/pi-ai";
 import { getModel, streamSimple } from "@mariozechner/pi-ai";
 import { AsyncQueue, createEventSubscriber } from "./event-bridge.js";
-import { engineInputToPrompt, PI_CAPABILITIES } from "./message-map.js";
+import { engineInputToHistory, engineInputToPrompt, PI_CAPABILITIES } from "./message-map.js";
 import { createMetricsAccumulator } from "./metrics.js";
 import { createModelCallTerminal, createModelStreamTerminal } from "./model-terminal.js";
 import { createBridgeStreamFn } from "./stream-bridge.js";
@@ -137,6 +137,11 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
 
       const subscriber = createEventSubscriber(queue, metrics, toolNameMap);
 
+      // Seed pi Agent with conversation history from the EngineInput.
+      // For "messages" inputs, this preserves prior user/assistant/tool-result
+      // messages so the model sees full context — not just the latest prompt string.
+      const historyMessages = engineInputToHistory(input);
+
       // Build pi Agent options immutably with conditional spread.
       // Captures transformContext in a local const to satisfy TypeScript narrowing in closures.
       const transformContext = config.transformContext;
@@ -147,7 +152,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
           thinkingLevel:
             config.thinkingLevel === "off" ? "minimal" : (config.thinkingLevel ?? "minimal"),
           tools: [...agentTools],
-          messages: [],
+          messages: [...historyMessages],
           isStreaming: false,
           streamMessage: null,
           pendingToolCalls: new Set(),

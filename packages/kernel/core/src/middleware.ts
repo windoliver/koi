@@ -68,6 +68,11 @@ export type ModelChunk =
   | { readonly kind: "tool_call_delta"; readonly callId: ToolCallId; readonly delta: string }
   | { readonly kind: "tool_call_end"; readonly callId: ToolCallId }
   | { readonly kind: "usage"; readonly inputTokens: number; readonly outputTokens: number }
+  | {
+      readonly kind: "error";
+      readonly message: string;
+      readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
+    }
   | { readonly kind: "done"; readonly response: ModelResponse };
 
 export type ModelStreamHandler = (request: ModelRequest) => AsyncIterable<ModelChunk>;

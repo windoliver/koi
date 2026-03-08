@@ -127,6 +127,70 @@ export function engineInputToPrompt(input: EngineInput): string {
   }
 }
 
+/**
+ * Extract history messages from an EngineInput, converted to pi Message format.
+ *
+ * - "text": no history — the prompt string is the only input.
+ * - "messages": returns all messages except the last non-assistant message
+ *   (which becomes the prompt string via engineInputToPrompt). This preserves
+ *   conversation history, tool results, and attachments for the pi Agent's
+ *   initial context.
+ * - "resume": returns all messages from the resume state, converted to pi format.
+ */
+export function engineInputToHistory(input: EngineInput): readonly Message[] {
+  switch (input.kind) {
+    case "text":
+      return [];
+    case "messages": {
+      // Find the index of the last non-assistant message (the one used as prompt).
+      // Everything before it is history that must be preserved.
+      let lastUserIndex = -1;
+      for (let i = input.messages.length - 1; i >= 0; i--) {
+        const msg = input.messages[i];
+        if (msg && msg.senderId !== "assistant") {
+          const mapped = mapContentBlocksForEngine(msg.content, PI_CAPABILITIES);
+          const textBlock = mapped.find((c) => c.kind === "text");
+          if (textBlock?.kind === "text") {
+            lastUserIndex = i;
+            break;
+          }
+        }
+      }
+      if (lastUserIndex <= 0) return [];
+      // Convert all messages before the prompt message to pi format
+      return input.messages.slice(0, lastUserIndex).map(inboundToPiMessage);
+    }
+    case "resume": {
+      // For resume, convert all available messages in the state to pi format.
+      // The adapter calls piAgent.continue() instead of prompt(), so all
+      // messages become history context.
+      if (
+        typeof input.state.data !== "object" ||
+        input.state.data === null ||
+        !("messages" in input.state.data)
+      ) {
+        return [];
+      }
+      const record = input.state.data as Record<string, unknown>;
+      if (!Array.isArray(record.messages)) return [];
+      // Filter to structurally valid InboundMessages, then convert
+      return record.messages.filter(isInboundLike).map(inboundToPiMessage);
+    }
+  }
+}
+
+/**
+ * Structural check for InboundMessage shape — used by engineInputToHistory
+ * to filter unknown state data before conversion.
+ */
+function isInboundLike(value: unknown): value is InboundMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const r = value as Record<string, unknown>;
+  return (
+    Array.isArray(r.content) && typeof r.senderId === "string" && typeof r.timestamp === "number"
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Anthropic document content — passthrough via pi-ai SDK
 // ---------------------------------------------------------------------------

@@ -79,6 +79,106 @@ describe("toOpenAIRequest", () => {
     expect(result.messages[0]?.content).toBe("First message");
     expect(result.messages[1]?.content).toBe("Second message");
   });
+
+  test("preserves assistant role from senderId", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hi there!" }],
+          senderId: "assistant",
+          timestamp: 1,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Follow up" }],
+          senderId: "user",
+          timestamp: 2,
+        },
+      ],
+    };
+
+    const result = toOpenAIRequest(request);
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0]?.role).toBe("user");
+    expect(result.messages[1]?.role).toBe("assistant");
+    expect(result.messages[2]?.role).toBe("user");
+  });
+
+  test("maps system senderId to system role", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "You are helpful." }],
+          senderId: "system",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Context info" }],
+          senderId: "system:capabilities",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 1,
+        },
+      ],
+    };
+
+    const result = toOpenAIRequest(request);
+    expect(result.messages[0]?.role).toBe("system");
+    expect(result.messages[1]?.role).toBe("system");
+    expect(result.messages[2]?.role).toBe("user");
+  });
+
+  test("preserves image blocks as structured content", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [
+            { kind: "text" as const, text: "What is this?" },
+            { kind: "image" as const, url: "https://example.com/cat.png" },
+          ],
+          senderId: "user",
+          timestamp: 0,
+        },
+      ],
+    };
+
+    const result = toOpenAIRequest(request);
+    const content = result.messages[0]?.content;
+    expect(Array.isArray(content)).toBe(true);
+    if (Array.isArray(content)) {
+      expect(content).toHaveLength(2);
+      expect(content[0]).toEqual({ type: "text", text: "What is this?" });
+      expect(content[1]).toEqual({
+        type: "image_url",
+        image_url: { url: "https://example.com/cat.png" },
+      });
+    }
+  });
+
+  test("returns plain string for text-only content", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [
+            { kind: "text" as const, text: "Part 1" },
+            { kind: "text" as const, text: " Part 2" },
+          ],
+          senderId: "user",
+          timestamp: 0,
+        },
+      ],
+    };
+
+    const result = toOpenAIRequest(request);
+    expect(result.messages[0]?.content).toBe("Part 1 Part 2");
+  });
 });
 
 describe("fromOpenAIResponse", () => {

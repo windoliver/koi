@@ -233,7 +233,7 @@ describe("assistantEventToModelChunk", () => {
     expect(chunk).toEqual({ kind: "usage", inputTokens: 100, outputTokens: 50 });
   });
 
-  test("maps error to usage", () => {
+  test("maps error to error chunk with usage", () => {
     const errMsg = makePartialMessage({
       usage: {
         input: 30,
@@ -243,13 +243,41 @@ describe("assistantEventToModelChunk", () => {
         totalTokens: 35,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
+      errorMessage: "rate limit exceeded",
     });
     const chunk = assistantEventToModelChunk({
       type: "error",
       reason: "error",
       error: errMsg,
     });
-    expect(chunk).toEqual({ kind: "usage", inputTokens: 30, outputTokens: 5 });
+    expect(chunk).toEqual({
+      kind: "error",
+      message: "rate limit exceeded",
+      usage: { inputTokens: 30, outputTokens: 5 },
+    });
+  });
+
+  test("maps error with no errorMessage to default message", () => {
+    const errMsg = makePartialMessage({
+      usage: {
+        input: 10,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 10,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    });
+    const chunk = assistantEventToModelChunk({
+      type: "error",
+      reason: "error",
+      error: errMsg,
+    });
+    expect(chunk).toEqual({
+      kind: "error",
+      message: "Model provider error",
+      usage: { inputTokens: 10, outputTokens: 0 },
+    });
   });
 
   test("returns undefined for start event", () => {
@@ -393,6 +421,38 @@ describe("createModelStreamTerminal", () => {
     const usageChunk = chunks.find((c) => c.kind === "usage");
     expect(usageChunk).toEqual({ kind: "usage", inputTokens: 100, outputTokens: 50 });
   });
+
+  test("emits error chunk and no done chunk on provider error", async () => {
+    const streamTerminal = createModelStreamTerminal();
+    const errMsg = makePartialMessage({
+      usage: {
+        input: 15,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 15,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      errorMessage: "overloaded",
+    });
+    const events: AssistantMessageEvent[] = [
+      { type: "text_delta", contentIndex: 0, delta: "partial", partial: makePartialMessage() },
+      { type: "error", reason: "error", error: errMsg },
+    ];
+
+    const request = makeRequest({ callBoundStream: createMockBoundStream(events) });
+    const chunks = await collectChunks(streamTerminal(request));
+
+    const errorChunk = chunks.find((c) => c.kind === "error");
+    expect(errorChunk).toEqual({
+      kind: "error",
+      message: "overloaded",
+      usage: { inputTokens: 15, outputTokens: 0 },
+    });
+
+    const doneChunk = chunks.find((c) => c.kind === "done");
+    expect(doneChunk).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -456,5 +516,33 @@ describe("createModelCallTerminal", () => {
 
     expect(response.content).toBe("");
     expect(response.usage?.inputTokens).toBe(20);
+  });
+
+  test("throws on provider error instead of returning empty response", async () => {
+    const streamTerminal = createModelStreamTerminal();
+    const callTerminal = createModelCallTerminal(streamTerminal);
+
+    const errMsg = makePartialMessage({
+      usage: {
+        input: 10,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 10,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      errorMessage: "service unavailable",
+    });
+
+    const events: AssistantMessageEvent[] = [{ type: "error", reason: "error", error: errMsg }];
+
+    const request = makeRequest({ callBoundStream: createMockBoundStream(events) });
+
+    try {
+      await callTerminal(request);
+      expect(true).toBe(false); // should have thrown
+    } catch (e: unknown) {
+      expect((e as Error).message).toBe("service unavailable");
+    }
   });
 });

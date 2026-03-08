@@ -38,6 +38,8 @@ export interface TerminalRegistry {
   readonly waitForExit: (params: TerminalSessionParams) => Promise<TerminalWaitForExitResult>;
   readonly kill: (params: TerminalSessionParams) => Promise<null>;
   readonly release: (params: TerminalSessionParams) => Promise<null>;
+  /** Kill and release all managed terminals. Safe to call multiple times. */
+  readonly releaseAll: () => void;
 }
 
 const DEFAULT_OUTPUT_BYTE_LIMIT = 1_048_576 as const; // 1 MiB
@@ -170,5 +172,16 @@ export function createTerminalRegistry(): TerminalRegistry {
     return null;
   }
 
-  return { create, output, waitForExit, kill, release };
+  function releaseAll(): void {
+    for (const [, terminal] of terminals) {
+      try {
+        terminal.proc.kill();
+      } catch {
+        // Process may have already exited — safe to ignore
+      }
+    }
+    terminals.clear();
+  }
+
+  return { create, output, waitForExit, kill, release, releaseAll };
 }

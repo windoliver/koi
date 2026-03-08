@@ -117,7 +117,7 @@ function createPartialBuilder(initial: AssistantMessage): PartialBuilder {
           }
           break;
 
-        // usage, done — handled by the pump loop, not content
+        // usage, error, done — handled by the pump loop, not content
         default:
           break;
       }
@@ -184,6 +184,9 @@ export function modelChunkToAssistantEvent(
 
     case "usage":
       return undefined; // usage tracked separately
+
+    case "error":
+      return undefined; // handled by the pump loop
 
     case "done":
       return { type: "done", reason: "stop", message: partial };
@@ -290,6 +293,22 @@ export function createBridgeStreamFn(
           if (chunk.kind === "usage") {
             inputTokens = chunk.inputTokens;
             outputTokens = chunk.outputTokens;
+          }
+
+          // Handle error chunk — propagate as pi-ai error event, not done
+          if (chunk.kind === "error") {
+            if (chunk.usage) {
+              inputTokens = chunk.usage.inputTokens;
+              outputTokens = chunk.usage.outputTokens;
+            }
+            const errMessage: AssistantMessage = {
+              ...builder.finalize(inputTokens, outputTokens),
+              stopReason: "error",
+              errorMessage: chunk.message,
+            };
+            stream.push({ type: "error", reason: "error", error: errMessage });
+            stream.end(errMessage);
+            return;
           }
 
           // Handle done chunk explicitly — build final message with proper content + usage

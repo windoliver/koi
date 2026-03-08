@@ -5,8 +5,9 @@
  * Uses raw fetch — no SDK dependency.
  */
 
-import type { KoiError, ModelRequest, ModelResponse } from "@koi/core";
-import { normalizeToPlainText } from "../normalize.js";
+import type { ContentBlock, KoiError, ModelRequest, ModelResponse } from "@koi/core";
+import type { NormalizedRole } from "../normalize.js";
+import { normalizeMessages, normalizeToPlainText } from "../normalize.js";
 import type { ProviderAdapter, ProviderAdapterConfig, StreamChunk } from "../provider-adapter.js";
 import {
   fetchWithTimeout,
@@ -21,14 +22,33 @@ const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const ANTHROPIC_VERSION = "2023-06-01";
 
+// ---------------------------------------------------------------------------
+// Anthropic structured content types
+// ---------------------------------------------------------------------------
+
+interface AnthropicTextPart {
+  readonly type: "text";
+  readonly text: string;
+}
+
+interface AnthropicImagePart {
+  readonly type: "image";
+  readonly source:
+    | { readonly type: "base64"; readonly media_type: string; readonly data: string }
+    | { readonly type: "url"; readonly url: string };
+}
+
+type AnthropicContentPart = AnthropicTextPart | AnthropicImagePart;
+
 interface AnthropicMessage {
   readonly role: "user" | "assistant";
-  readonly content: string;
+  readonly content: string | readonly AnthropicContentPart[];
 }
 
 interface AnthropicRequest {
   readonly model: string;
   readonly messages: readonly AnthropicMessage[];
+  readonly system?: string;
   readonly max_tokens: number;
   readonly temperature?: number;
   readonly stream?: boolean;
@@ -47,18 +67,101 @@ interface AnthropicResponse {
   readonly usage: AnthropicUsage;
 }
 
+// ---------------------------------------------------------------------------
+// Content block conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Parses a data URL into base64 data and media type.
+ * Returns undefined if the URL is not a valid data URL.
+ */
+function parseDataUrl(
+  url: string,
+): { readonly data: string; readonly mediaType: string } | undefined {
+  const match = url.match(/^data:([^;]+);base64,(.+)$/);
+  if (match?.[1] !== undefined && match[2] !== undefined) {
+    return { mediaType: match[1], data: match[2] };
+  }
+  return undefined;
+}
+
+/**
+ * Converts a single Koi ContentBlock to an Anthropic content part.
+ * Text and image blocks map natively; unsupported types fall back to text.
+ */
+function contentBlockToAnthropicPart(block: ContentBlock): AnthropicContentPart {
+  switch (block.kind) {
+    case "text":
+      return { type: "text", text: block.text };
+    case "image": {
+      const parsed = parseDataUrl(block.url);
+      if (parsed !== undefined) {
+        return {
+          type: "image",
+          source: { type: "base64", media_type: parsed.mediaType, data: parsed.data },
+        };
+      }
+      return { type: "image", source: { type: "url", url: block.url } };
+    }
+    default:
+      // file, button, custom → fall back to plain text representation
+      return { type: "text", text: normalizeToPlainText([block]) };
+  }
+}
+
+/**
+ * Converts Koi ContentBlock[] to Anthropic message content.
+ * Returns a plain string when all blocks are text (simpler API payload);
+ * returns a structured array when images are present.
+ */
+function contentBlocksToAnthropic(
+  content: readonly ContentBlock[],
+): string | readonly AnthropicContentPart[] {
+  const hasNonText = content.some((b) => b.kind === "image");
+  if (!hasNonText) {
+    return normalizeToPlainText(content);
+  }
+  return content.map(contentBlockToAnthropicPart);
+}
+
+/**
+ * Maps a NormalizedRole to an Anthropic message role.
+ * Anthropic does not support "system" as a message role — system messages
+ * are separated into the top-level `system` parameter by `toAnthropicRequest`.
+ * This function only maps non-system roles.
+ */
+function mapRoleToAnthropic(role: NormalizedRole): "user" | "assistant" {
+  if (role === "assistant") return "assistant";
+  // "user" and "system" (for any system messages not extracted) → "user"
+  return "user";
+}
+
 /**
  * Transforms a Koi ModelRequest into an Anthropic messages API request.
+ * Preserves original message roles and rich content (images).
+ * System messages are extracted to the top-level `system` parameter.
  */
 export function toAnthropicRequest(request: ModelRequest): AnthropicRequest {
-  const messages: AnthropicMessage[] = request.messages.map((m) => ({
-    role: "user" as const,
-    content: normalizeToPlainText(m.content),
-  }));
+  const normalized = normalizeMessages(request.messages);
+
+  // Extract system messages into the top-level system parameter
+  const systemTexts = normalized
+    .filter((m) => m.role === "system")
+    .map((m) => normalizeToPlainText(m.content));
+  const systemPrompt = systemTexts.join("\n\n");
+
+  // Non-system messages preserve their roles and rich content
+  const messages: readonly AnthropicMessage[] = normalized
+    .filter((m) => m.role !== "system")
+    .map((m) => ({
+      role: mapRoleToAnthropic(m.role),
+      content: contentBlocksToAnthropic(m.content),
+    }));
 
   return {
     model: request.model ?? "claude-sonnet-4-5-20250929",
     messages,
+    ...(systemPrompt.length > 0 && { system: systemPrompt }),
     max_tokens: request.maxTokens ?? 4096,
     ...(request.temperature !== undefined && { temperature: request.temperature }),
   };
