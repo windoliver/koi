@@ -1,5 +1,5 @@
 import type { KoiError, Result, SandboxAdapter } from "@koi/core";
-import type { DaytonaAdapterConfig } from "@koi/sandbox-daytona";
+import type { DaytonaAdapterConfig } from "../cloud-types.js";
 
 export async function createDaytonaAdapterShim(
   config: DaytonaAdapterConfig,

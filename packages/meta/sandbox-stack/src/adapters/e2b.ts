@@ -1,5 +1,5 @@
 import type { KoiError, Result, SandboxAdapter } from "@koi/core";
-import type { E2bAdapterConfig } from "@koi/sandbox-e2b";
+import type { E2bAdapterConfig } from "../cloud-types.js";
 
 export async function createE2bAdapterShim(
   config: E2bAdapterConfig,

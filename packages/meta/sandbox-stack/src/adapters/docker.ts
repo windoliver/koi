@@ -1,5 +1,5 @@
 import type { KoiError, Result, SandboxAdapter } from "@koi/core";
-import type { DockerAdapterConfig } from "@koi/sandbox-docker";
+import type { DockerAdapterConfig } from "../cloud-types.js";
 
 export async function createDockerAdapterShim(
   config: DockerAdapterConfig,

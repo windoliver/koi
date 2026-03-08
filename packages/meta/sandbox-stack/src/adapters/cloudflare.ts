@@ -1,5 +1,5 @@
 import type { KoiError, Result, SandboxAdapter } from "@koi/core";
-import type { CloudflareAdapterConfig } from "@koi/sandbox-cloudflare";
+import type { CloudflareAdapterConfig } from "../cloud-types.js";
 
 export async function createCloudflareAdapterShim(
   config: CloudflareAdapterConfig,

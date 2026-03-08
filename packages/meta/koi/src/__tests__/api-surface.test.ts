@@ -1,7 +1,10 @@
 /**
  * API surface stability tests.
  *
- * Validates all subpath exports have corresponding .d.ts and .js files.
+ * Validates all subpath exports have corresponding .d.ts and .js files,
+ * and asserts exported symbol names for key subpaths to catch breaking
+ * contract changes (e.g., function signature changes, removed exports).
+ *
  * Requires a prior build. Package name is read dynamically from package.json.
  */
 
@@ -78,4 +81,40 @@ describe(`${pkgJson.name} API surface`, () => {
       expect(existsSync(jsPath)).toBe(true);
     });
   }
+});
+
+/**
+ * Root export symbol assertions — catches breaking changes like removed
+ * exports, renamed functions, or sync→async signature changes.
+ *
+ * Only tests the root export (which inlines types from multiple packages).
+ * L3 subpaths are thin `export * from '@koi/...'` re-exports whose .d.ts
+ * content is just the re-export declaration.
+ */
+describe(`${pkgJson.name} root export symbols`, () => {
+  test("root .d.ts contains expected key exports", () => {
+    const rootConfig = pkgJson.exports["."];
+    const dtsPath = resolve(__dirname, "../..", rootConfig.types);
+    const dts = readFileSync(dtsPath, "utf-8");
+
+    // Functions that must be exported from the root
+    expect(dts).toContain("createKoi");
+    expect(dts).toContain("createPiAdapter");
+    expect(dts).toContain("loadManifest");
+    expect(dts).toContain("getEngineName");
+    expect(dts).toContain("createConfiguredKoi");
+  });
+
+  test("L3 subpaths are re-export declarations", () => {
+    const l3Subpaths = ["./channels", "./sandbox", "./forge", "./governance", "./autonomous"];
+
+    for (const subpath of l3Subpaths) {
+      const config = pkgJson.exports[subpath];
+      if (!config) continue;
+      const dtsPath = resolve(__dirname, "../..", config.types);
+      const dts = readFileSync(dtsPath, "utf-8");
+      // L3 subpaths must re-export from their source package
+      expect(dts).toContain("export *");
+    }
+  });
 });

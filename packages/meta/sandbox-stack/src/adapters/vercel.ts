@@ -1,5 +1,5 @@
 import type { KoiError, Result, SandboxAdapter } from "@koi/core";
-import type { VercelAdapterConfig } from "@koi/sandbox-vercel";
+import type { VercelAdapterConfig } from "../cloud-types.js";
 
 export async function createVercelAdapterShim(
   config: VercelAdapterConfig,
