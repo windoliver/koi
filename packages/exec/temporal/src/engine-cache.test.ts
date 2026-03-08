@@ -19,12 +19,12 @@ function createMockRuntime(id: string): CachedRuntime {
   };
 }
 
-function createMockFactory(): RuntimeFactory & { calls: number } {
+function createMockFactory(): RuntimeFactory & { readonly calls: number } {
   let calls = 0;
-  const factory = mock(async () => {
+  const factory = mock(async (_options: Record<string, unknown>) => {
     calls++;
     return createMockRuntime(`runtime-${calls}`);
-  }) as RuntimeFactory & { calls: number };
+  }) as unknown as RuntimeFactory & { readonly calls: number };
   Object.defineProperty(factory, "calls", {
     get: () => calls,
   });

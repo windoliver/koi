@@ -10,13 +10,12 @@
  */
 
 import {
-  type ActivityOptions,
   allHandlersFinished,
   condition,
   continueAsNew,
   defineQuery,
   defineSignal,
-  executeActivity,
+  proxyActivities,
   setHandler,
   startChild,
   workflowInfo,
@@ -52,11 +51,14 @@ const statusQuery = defineQuery<AgentActivityStatus>(STATUS_QUERY_NAME);
 const pendingCountQuery = defineQuery<number>(PENDING_COUNT_QUERY_NAME);
 
 // ---------------------------------------------------------------------------
-// Activity stub options
+// Activity stubs (proxyActivities creates typed proxies)
 // ---------------------------------------------------------------------------
 
-const TURN_ACTIVITY_OPTIONS: ActivityOptions = {
-  taskQueue: undefined, // Inherited from workflow
+interface AgentActivities {
+  readonly runAgentTurn: (input: AgentTurnInput) => Promise<AgentTurnResult>;
+}
+
+const { runAgentTurn } = proxyActivities<AgentActivities>({
   startToCloseTimeout: "5 minutes",
   heartbeatTimeout: "30 seconds",
   retry: {
@@ -65,7 +67,18 @@ const TURN_ACTIVITY_OPTIONS: ActivityOptions = {
     maximumInterval: "30 seconds",
     backoffCoefficient: 2,
   },
-};
+});
+
+const { runAgentTurn: runAgentTurnLong } = proxyActivities<AgentActivities>({
+  startToCloseTimeout: "10 minutes",
+  heartbeatTimeout: "30 seconds",
+  retry: {
+    maximumAttempts: 3,
+    initialInterval: "1 second",
+    maximumInterval: "30 seconds",
+    backoffCoefficient: 2,
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Entity Workflow
@@ -133,9 +146,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
       gatewayUrl: undefined, // Injected by Activity context at runtime
     };
 
-    const result: AgentTurnResult = await executeActivity<
-      (input: AgentTurnInput) => Promise<AgentTurnResult>
-    >("runAgentTurn", turnInput, TURN_ACTIVITY_OPTIONS);
+    const result: AgentTurnResult = await runAgentTurn(turnInput);
 
     // Update lightweight state refs (Decision 16A)
     stateRefs = result.updatedStateRefs;
@@ -172,9 +183,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
           gatewayUrl: undefined,
         };
 
-        const drainResult: AgentTurnResult = await executeActivity<
-          (input: AgentTurnInput) => Promise<AgentTurnResult>
-        >("runAgentTurn", drainInput, TURN_ACTIVITY_OPTIONS);
+        const drainResult: AgentTurnResult = await runAgentTurn(drainInput);
 
         stateRefs = drainResult.updatedStateRefs;
       }
@@ -218,12 +227,5 @@ export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<Agen
     gatewayUrl: undefined,
   };
 
-  return executeActivity<(input: AgentTurnInput) => Promise<AgentTurnResult>>(
-    "runAgentTurn",
-    input,
-    {
-      ...TURN_ACTIVITY_OPTIONS,
-      startToCloseTimeout: "10 minutes", // Workers may run longer tasks
-    },
-  );
+  return runAgentTurnLong(input);
 }

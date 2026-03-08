@@ -38,8 +38,8 @@ interface TemporalFailureLike {
 const TEMPORAL_TO_KOI_CODE: Readonly<Record<TemporalFailureName, KoiErrorCode>> = {
   ApplicationFailure: "INTERNAL",
   TimeoutFailure: "TIMEOUT",
-  CancelledFailure: "CANCELLED",
-  TerminatedFailure: "CANCELLED",
+  CancelledFailure: "EXTERNAL",
+  TerminatedFailure: "EXTERNAL",
   ServerFailure: "INTERNAL",
 };
 

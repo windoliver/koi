@@ -93,7 +93,7 @@ describe("submit", () => {
 
     await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn", { priority: 1 });
 
-    const tasks = scheduler.query({ agentId: AGENT_ID });
+    const tasks = await scheduler.query({ agentId: AGENT_ID });
     expect(tasks[0]?.priority).toBe(1);
   });
 
@@ -103,7 +103,7 @@ describe("submit", () => {
 
     await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
 
-    const tasks = scheduler.query({});
+    const tasks = await scheduler.query({});
     expect(tasks[0]?.priority).toBe(5);
   });
 });
@@ -246,10 +246,10 @@ describe("query / stats", () => {
     await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
     await scheduler.submit(AGENT_ID, ENGINE_INPUT, "dispatch");
 
-    const allTasks = scheduler.query({});
+    const allTasks = await scheduler.query({});
     expect(allTasks).toHaveLength(2);
 
-    const spawnTasks = scheduler.query({ agentId: AGENT_ID });
+    const spawnTasks = await scheduler.query({ agentId: AGENT_ID });
     expect(spawnTasks).toHaveLength(2);
   });
 
@@ -261,7 +261,7 @@ describe("query / stats", () => {
     await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
     await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
 
-    const limited = scheduler.query({ limit: 2 });
+    const limited = await scheduler.query({ limit: 2 });
     expect(limited).toHaveLength(2);
   });
 
@@ -272,16 +272,16 @@ describe("query / stats", () => {
     await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
     await scheduler.schedule("0 0 * * *", AGENT_ID, ENGINE_INPUT, "spawn");
 
-    const stats = scheduler.stats();
-    expect(stats.pending).toBe(1);
-    expect(stats.activeSchedules).toBe(1);
+    const s = await scheduler.stats();
+    expect(s.pending).toBe(1);
+    expect(s.activeSchedules).toBe(1);
   });
 
-  test("history returns empty for fresh scheduler", () => {
+  test("history returns empty for fresh scheduler", async () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
-    const records = scheduler.history({});
+    const records = await scheduler.history({});
     expect(records).toHaveLength(0);
   });
 });
@@ -318,7 +318,9 @@ describe("dispose", () => {
     await scheduler.submit(AGENT_ID, ENGINE_INPUT, "spawn");
     await scheduler[Symbol.asyncDispose]();
 
-    expect(scheduler.query({})).toHaveLength(0);
-    expect(scheduler.stats().pending).toBe(0);
+    const remaining = await scheduler.query({});
+    expect(remaining).toHaveLength(0);
+    const stats = await scheduler.stats();
+    expect(stats.pending).toBe(0);
   });
 });
