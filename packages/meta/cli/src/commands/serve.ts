@@ -79,7 +79,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
   // 5b. Resolve Nexus stack (embed or remote)
-  const nexus = await resolveNexusOrWarn(flags.nexusUrl, flags.verbose);
+  const nexus = await resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose);
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
@@ -93,6 +93,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // let justified: set inside try/catch, read when building runtime middleware
   let arenaMiddleware: readonly KoiMiddleware[] = [];
 
+  // let justified: mutable binding updated per-message so resolveThreadId can read the
+  // current session key. Updated inside the serial queue before each runtime.run() call.
+  let currentThreadKey: string | undefined;
+
   try {
     const threadStore = createThreadStore({
       store: createInMemorySnapshotChainStore(),
@@ -103,6 +107,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       sessionId: sessionId(`serve:${manifest.name}:${Date.now()}`),
       getMessages: () => currentMessages,
       threadStore,
+      conversation: {
+        resolveThreadId: () => currentThreadKey,
+      },
     });
 
     arenaMiddleware = arenaBundle.middleware;
@@ -145,8 +152,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       const key = deriveSessionKey(ch.name, inbound);
 
       pending = pending.then(async () => {
-        // Update message buffer for squash partitioning
+        // Update bindings for conversation middleware and squash partitioning
         currentMessages = [inbound];
+        currentThreadKey = key;
 
         const input: EngineInput = { kind: "text", text };
 
@@ -171,6 +179,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
           process.stderr.write(`Channel "${ch.name}" session "${key}" error: ${msg}\n`);
         } finally {
           currentMessages = [];
+          currentThreadKey = undefined;
         }
       });
 
@@ -235,12 +244,12 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     controller.signal.addEventListener("abort", () => resolve(), { once: true });
   });
 
-  // 11. Cleanup — drain in-flight messages, then tear down
+  // 11. Cleanup — stop accepting new messages first, then drain in-flight work
   shutdown.uninstall();
-  await pending;
   for (const unsub of unsubscribers) {
     unsub();
   }
+  await pending;
   for (const ch of channels) {
     await ch.disconnect();
   }

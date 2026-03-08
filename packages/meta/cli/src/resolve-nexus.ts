@@ -4,7 +4,8 @@
  * Resolves Nexus connection from (in priority order):
  * 1. --nexus-url CLI flag
  * 2. NEXUS_URL environment variable
- * 3. No URL → embed mode (auto-start local Nexus)
+ * 3. manifest.nexus.url from koi.yaml
+ * 4. No URL → embed mode (auto-start local Nexus)
  *
  * Auth is resolved from NEXUS_API_KEY env var (remote mode only).
  */
@@ -30,9 +31,12 @@ export interface NexusResolution {
  * Resolves and creates the Nexus stack. Falls back to embed mode (auto-start
  * local Nexus) when no URL is configured.
  */
-export async function resolveNexusStack(nexusUrl: string | undefined): Promise<NexusResolution> {
-  // Priority: CLI flag > env var > embed mode (no URL)
-  const baseUrl = nexusUrl ?? process.env.NEXUS_URL;
+export async function resolveNexusStack(
+  nexusUrl: string | undefined,
+  manifestNexusUrl: string | undefined,
+): Promise<NexusResolution> {
+  // Priority: CLI flag > env var > manifest nexus.url > embed mode (no URL)
+  const baseUrl = nexusUrl ?? process.env.NEXUS_URL ?? manifestNexusUrl;
 
   const apiKey = process.env.NEXUS_API_KEY;
 
@@ -80,10 +84,11 @@ export interface NexusResolvedState {
  */
 export async function resolveNexusOrWarn(
   nexusUrl: string | undefined,
+  manifestNexusUrl: string | undefined,
   verbose: boolean,
 ): Promise<NexusResolvedState> {
   try {
-    const nexus = await resolveNexusStack(nexusUrl);
+    const nexus = await resolveNexusStack(nexusUrl, manifestNexusUrl);
     if (verbose) {
       process.stderr.write(`Nexus: ${nexus.baseUrl}\n`);
     }

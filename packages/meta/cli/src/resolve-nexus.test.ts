@@ -39,7 +39,7 @@ describe("resolveNexusStack — URL priority", () => {
   test("CLI flag takes priority over env var", async () => {
     process.env.NEXUS_URL = "http://env-url:2026";
 
-    await resolveNexusStack("http://flag-url:2026");
+    await resolveNexusStack("http://flag-url:2026", undefined);
 
     expect(mockCreateNexusStack).toHaveBeenCalledTimes(1);
     const config = mockCreateNexusStack.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -49,14 +49,30 @@ describe("resolveNexusStack — URL priority", () => {
   test("env var used when no CLI flag", async () => {
     process.env.NEXUS_URL = "http://env-url:2026";
 
-    await resolveNexusStack(undefined);
+    await resolveNexusStack(undefined, undefined);
+
+    const config = mockCreateNexusStack.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(config.baseUrl).toBe("http://env-url:2026");
+  });
+
+  test("manifest nexus.url used when no CLI flag or env var", async () => {
+    await resolveNexusStack(undefined, "http://manifest-url:2026");
+
+    const config = mockCreateNexusStack.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(config.baseUrl).toBe("http://manifest-url:2026");
+  });
+
+  test("env var takes priority over manifest nexus.url", async () => {
+    process.env.NEXUS_URL = "http://env-url:2026";
+
+    await resolveNexusStack(undefined, "http://manifest-url:2026");
 
     const config = mockCreateNexusStack.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(config.baseUrl).toBe("http://env-url:2026");
   });
 
   test("no URL → embed mode (no baseUrl passed)", async () => {
-    await resolveNexusStack(undefined);
+    await resolveNexusStack(undefined, undefined);
 
     const config = mockCreateNexusStack.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(config.baseUrl).toBeUndefined();
@@ -65,14 +81,14 @@ describe("resolveNexusStack — URL priority", () => {
   test("passes apiKey from env", async () => {
     process.env.NEXUS_API_KEY = "test-api-key";
 
-    await resolveNexusStack("http://flag-url:2026");
+    await resolveNexusStack("http://flag-url:2026", undefined);
 
     const config = mockCreateNexusStack.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(config.apiKey).toBe("test-api-key");
   });
 
   test("returns NexusResolution with correct fields", async () => {
-    const result = await resolveNexusStack(undefined);
+    const result = await resolveNexusStack(undefined, undefined);
 
     expect(result.middlewares).toEqual([]);
     expect(result.providers).toEqual([]);
@@ -87,7 +103,7 @@ describe("resolveNexusStack — URL priority", () => {
 
 describe("resolveNexusOrWarn — graceful fallback", () => {
   test("returns Nexus state on success", async () => {
-    const result = await resolveNexusOrWarn("http://localhost:2026", false);
+    const result = await resolveNexusOrWarn("http://localhost:2026", undefined, false);
 
     expect(result.middlewares).toEqual([]);
     expect(result.providers).toEqual([]);
@@ -108,7 +124,7 @@ describe("resolveNexusOrWarn — graceful fallback", () => {
     }) as typeof process.stderr.write;
 
     try {
-      const result = await resolveNexusOrWarn(undefined, false);
+      const result = await resolveNexusOrWarn(undefined, undefined, false);
 
       expect(result.middlewares).toEqual([]);
       expect(result.providers).toEqual([]);
@@ -132,7 +148,7 @@ describe("resolveNexusOrWarn — graceful fallback", () => {
     }) as typeof process.stderr.write;
 
     try {
-      await resolveNexusOrWarn("http://localhost:2026", true);
+      await resolveNexusOrWarn("http://localhost:2026", undefined, true);
       const output = stderrChunks.join("");
       expect(output).toContain("Nexus: http://localhost:2026");
     } finally {

@@ -103,7 +103,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
   // 5b. Resolve Nexus stack (embed or remote)
-  const nexus = await resolveNexusOrWarn(flags.nexusUrl, flags.verbose);
+  const nexus = await resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose);
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
