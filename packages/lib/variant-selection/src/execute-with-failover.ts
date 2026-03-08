@@ -77,13 +77,14 @@ export async function executeWithFailover<T, R>(
     return { ok: false, attempts, lastError: primaryResult.error };
   }
 
-  // Try alternatives sequentially
+  // Try alternatives sequentially, skipping open breakers first
   let lastError: unknown = primaryResult.error;
+  const attempted = new Set<string>([selection.selected.id]);
   for (const alt of selection.alternatives) {
-    // Skip open circuit breakers (but still try if all are open — handled by select)
     const breaker = breakers.get(alt.id);
     if (breaker !== undefined && !breaker.isAllowed()) continue;
 
+    attempted.add(alt.id);
     const altResult = await tryVariant(alt, execute, breakers, clock);
     attempts.push(altResult.attempt);
     if (altResult.ok) {
@@ -93,6 +94,26 @@ export async function executeWithFailover<T, R>(
           result: altResult.result,
           attempts,
           selectedVariantId: alt.id,
+        },
+      };
+    }
+    lastError = altResult.error;
+  }
+
+  // Graceful degradation: try any pool variants not yet attempted (including
+  // those filtered at selection time due to open breakers)
+  for (const variant of pool.variants) {
+    if (attempted.has(variant.id)) continue;
+    attempted.add(variant.id);
+    const altResult = await tryVariant(variant, execute, breakers, clock);
+    attempts.push(altResult.attempt);
+    if (altResult.ok) {
+      return {
+        ok: true,
+        value: {
+          result: altResult.result,
+          attempts,
+          selectedVariantId: variant.id,
         },
       };
     }

@@ -133,4 +133,32 @@ describe("batchRead", () => {
       expect(result.value.size).toBe(0);
     }
   });
+
+  test("clamps concurrency of 0 to 1 — no infinite loop", async () => {
+    const responses = new Map<string, Result<string, KoiError>>([
+      ["a.json", { ok: true, value: "content" }],
+    ]);
+    const client = createMockClient(responses);
+
+    const result = await batchRead(client, ["a.json"], { concurrency: 0 });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.size).toBe(1);
+    }
+  });
+
+  test("clamps negative concurrency to 1", async () => {
+    const responses = new Map<string, Result<string, KoiError>>([
+      ["a.json", { ok: true, value: "content" }],
+    ]);
+    const client = createMockClient(responses);
+
+    const result = await batchRead(client, ["a.json"], { concurrency: -5 });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.size).toBe(1);
+    }
+  });
 });

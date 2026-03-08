@@ -29,6 +29,13 @@ describe("lookupPreset", () => {
     expect(result.spec).toEqual({ maxRetries: 1 });
   });
 
+  test("throws for unknown preset name", () => {
+    // Force an unknown preset at runtime via type cast
+    expect(() => lookupPreset(SPECS, "nonexistent" as Preset, "standard")).toThrow(
+      /Unknown preset: "nonexistent"/,
+    );
+  });
+
   test("returns frozen spec without modification", () => {
     const frozenSpecs = Object.freeze({
       a: Object.freeze({ value: 10 }),

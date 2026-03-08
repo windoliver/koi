@@ -90,9 +90,11 @@ function feedFiles(
   const sortedKeys = Object.keys(files).sort();
   for (const key of sortedKeys) {
     hasher.update(key);
+    hasher.update("\0");
     const value = files[key];
     if (value !== undefined) {
       hasher.update(value);
     }
+    hasher.update("\0");
   }
 }

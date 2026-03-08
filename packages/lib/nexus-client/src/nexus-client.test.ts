@@ -163,6 +163,28 @@ describe("createNexusClient", () => {
     }
   });
 
+  test("returns error for malformed JSON-RPC response without result or error", async () => {
+    const client = createNexusClient({
+      baseUrl: "http://localhost:2026",
+      apiKey: "test-key",
+      fetch: createMockFetch(
+        async () =>
+          new Response(JSON.stringify({ jsonrpc: "2.0", id: 1 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    });
+
+    const result = await client.rpc("test", {});
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("INTERNAL");
+      expect(result.error.message).toContain("missing result");
+    }
+  });
+
   test("uses globalThis.fetch when no fetch provided", () => {
     // Just verifying it doesn't throw during construction
     const client = createNexusClient({

@@ -313,6 +313,63 @@ describe("createDeliveryManager", () => {
       expect(dlq.ok).toBe(true);
       if (dlq.ok) expect(dlq.value).toHaveLength(0);
     });
+
+    test("purgeDeadLetters calls removeDeadLetter on persistent backend", async () => {
+      const removedIds: string[] = [];
+      const cbWithTracking: DeliveryCallbacks = {
+        ...cb,
+        removeDeadLetter: (id) => {
+          removedIds.push(id);
+          return true;
+        },
+      };
+      const dm2 = createDeliveryManager(cbWithTracking);
+
+      dm2.subscribe({
+        streamId: "s",
+        subscriptionName: "sub-purge-persist",
+        fromPosition: 0,
+        maxRetries: 1,
+        handler: () => {
+          throw new Error("purge persist test");
+        },
+      });
+
+      dm2.notifySubscribers("s", createEnvelope({ streamId: "s", sequence: 1 }));
+      dm2.notifySubscribers("s", createEnvelope({ streamId: "s", sequence: 2 }));
+      await Bun.sleep(100);
+
+      dm2.purgeDeadLetters({ subscriptionName: "sub-purge-persist" });
+      expect(removedIds).toHaveLength(2);
+    });
+
+    test("handler is not re-executed when persistPosition fails", async () => {
+      // let justified: mutable counter for tracking handler invocations
+      let handlerCalls = 0;
+      const cbFailPersist: DeliveryCallbacks = {
+        ...cb,
+        persistPosition: () => {
+          throw new Error("persist boom");
+        },
+      };
+      const dm2 = createDeliveryManager(cbFailPersist);
+
+      dm2.subscribe({
+        streamId: "s",
+        subscriptionName: "sub-persist-fail",
+        fromPosition: 0,
+        maxRetries: 3,
+        handler: () => {
+          handlerCalls++;
+        },
+      });
+
+      dm2.notifySubscribers("s", createEnvelope({ streamId: "s", sequence: 1 }));
+      await Bun.sleep(100);
+
+      // Handler should execute exactly once — persistPosition failure must not retry it
+      expect(handlerCalls).toBe(1);
+    });
   });
 
   describe("closeAll", () => {

@@ -130,10 +130,6 @@ export function createDeliveryManager(
       attempts++;
       try {
         await sub.handler(event);
-        // Success — advance position
-        sub.position = event.sequence;
-        await callbacks.persistPosition(sub.subscriptionName, event.sequence);
-        return;
       } catch (err: unknown) {
         if (attempts >= sub.maxRetries) {
           // Dead-letter the event
@@ -158,7 +154,22 @@ export function createDeliveryManager(
           return;
         }
         // Immediate retry (no backoff)
+        continue;
       }
+      // Handler succeeded — advance position outside handler retry scope.
+      // persistPosition failure must not re-execute the handler (at-least-once).
+      sub.position = event.sequence;
+      try {
+        await callbacks.persistPosition(sub.subscriptionName, event.sequence);
+      } catch (persistErr: unknown) {
+        // In-memory position is already advanced. On restart, replay will
+        // re-deliver from the last persisted position (at-least-once semantics).
+        console.warn(
+          "[event-delivery] failed to persist position:",
+          persistErr instanceof Error ? persistErr.message : persistErr,
+        );
+      }
+      return;
     }
   }
 
@@ -315,6 +326,9 @@ export function createDeliveryManager(
 
   const purgeDeadLetters = (filter?: DeadLetterFilter): Result<void, KoiError> => {
     if (filter === undefined) {
+      for (const entry of deadLetters) {
+        void callbacks.removeDeadLetter(entry.id);
+      }
       deadLetters.length = 0;
       return { ok: true, value: undefined };
     }
@@ -328,6 +342,7 @@ export function createDeliveryManager(
         filter.subscriptionName === undefined || entry.subscriptionName === filter.subscriptionName;
       if (matchStream && matchSub) {
         deadLetters.splice(i, 1);
+        void callbacks.removeDeadLetter(entry.id);
       }
     }
 
