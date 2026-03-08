@@ -1,0 +1,37 @@
+{
+  "name": "@koi/temporal",
+  "description": "Optional durable agent execution via Temporal — L3 package wrapping createKoi() with Entity Workflows",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./workflows": {
+      "types": "./dist/workflows/agent-workflow.d.ts",
+      "import": "./dist/workflows/agent-workflow.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@temporalio/activity": "1.15.0",
+    "@temporalio/client": "1.15.0",
+    "@temporalio/common": "1.15.0",
+    "@temporalio/worker": "1.15.0",
+    "@temporalio/workflow": "1.15.0"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*",
+    "@temporalio/testing": "1.15.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:integration": "TEMPORAL_INTEGRATION=true bun test src/__tests__/integration.test.ts",
+    "test:e2e": "TEMPORAL_E2E=true bun test src/__tests__/e2e.test.ts"
+  }
+}
