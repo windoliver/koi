@@ -92,11 +92,19 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
             metrics,
             createdAt: Date.now(),
           };
-          await threadStore.appendAndCheckpoint(
+          const checkpointResult = await threadStore.appendAndCheckpoint(
             threadId(status.harnessId),
             [], // no individual thread messages to append for harness-type checkpoints
             snapshot,
           );
+          if (!checkpointResult.ok) {
+            // Surface checkpoint failures — silent loss of autonomous state is
+            // worse than a noisy error. Callers can catch and decide policy.
+            throw new Error(
+              `Autonomous checkpoint failed for harness ${status.harnessId}: ${checkpointResult.error.message}`,
+              { cause: checkpointResult.error },
+            );
+          }
           void ctx.trigger; // trigger is informational; checkpoint is unconditional here
         },
       }),

@@ -12,7 +12,13 @@
 
 import { createContextExtension } from "@koi/context";
 import { createContextArena } from "@koi/context-arena";
-import type { ContentBlock, EngineInput, InboundMessage, KoiMiddleware } from "@koi/core";
+import type {
+  ComponentProvider,
+  ContentBlock,
+  EngineInput,
+  InboundMessage,
+  KoiMiddleware,
+} from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createHealthServer } from "@koi/deploy";
 import { createKoi } from "@koi/engine";
@@ -90,8 +96,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // 6b. Wire conversation persistence via context-arena (graceful fallback)
   // let justified: message buffer for squash partitioning, cleared per-session
   let currentMessages: readonly InboundMessage[] = [];
-  // let justified: set inside try/catch, read when building runtime middleware
+  // let justified: set inside try/catch, read when building runtime middleware/providers
   let arenaMiddleware: readonly KoiMiddleware[] = [];
+  let arenaProviders: readonly ComponentProvider[] = [];
 
   // let justified: mutable binding updated per-message so resolveThreadId can read the
   // current session key. Updated inside the serial queue before each runtime.run() call.
@@ -102,6 +109,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       store: createInMemorySnapshotChainStore(),
     });
 
+    // TODO(#2): Single synthetic sessionId means all threads share the same
+    // squash/compaction archive namespace. Per-thread archive isolation requires
+    // squash/compactor APIs to accept a sessionId resolver function.
     const arenaBundle = await createContextArena({
       summarizer: resolved.value.model,
       sessionId: sessionId(`serve:${manifest.name}:${Date.now()}`),
@@ -113,6 +123,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     });
 
     arenaMiddleware = arenaBundle.middleware;
+    arenaProviders = arenaBundle.providers;
 
     if (flags.verbose) {
       process.stderr.write(
@@ -128,7 +139,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     manifest,
     adapter,
     middleware: [...resolved.value.middleware, ...arenaMiddleware, ...nexus.middlewares],
-    providers: [...nexus.providers],
+    providers: [...nexus.providers, ...arenaProviders],
     extensions,
   });
 

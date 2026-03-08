@@ -117,6 +117,14 @@ function createApprovalRoutingProvider(
   // Late-binding onAsk — resolves the correct handler per agent at call time.
   // Falls back to user's original onAsk, then to deny_once.
   const dynamicOnAsk = async (req: ExecApprovalRequest): Promise<ProgressiveDecision> => {
+    // Route by agentId when the request carries agent identity
+    if (req.agentId !== undefined) {
+      const targetHandler = agentHandlers.get(req.agentId);
+      if (targetHandler !== undefined) {
+        return targetHandler(req);
+      }
+      // agentId provided but no handler found — fall through to fallback
+    }
     if (agentHandlers.size > 1) {
       console.warn(
         `[koi:governance] dynamicOnAsk: ${agentHandlers.size} agent handlers registered but ` +

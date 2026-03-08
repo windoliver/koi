@@ -37,8 +37,10 @@ export function resolveChannelStackConfig(config: ChannelStackConfig): ResolvedC
     healthTimeoutMs: config.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS,
   };
 
-  // Explicit channels take priority over preset
-  if (config.channels !== undefined && config.channels.length > 0) {
+  // Explicit channels take priority over preset.
+  // An empty array (channels: []) is a valid explicit config meaning "no channels"
+  // — distinct from undefined which means "use preset".
+  if (config.channels !== undefined) {
     return { channels: config.channels, registry: config.registry, runtimeOpts };
   }
 

@@ -79,10 +79,26 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   aliases: ["permissions"],
   optionsValidator: validatePermissionsDescriptorOptions,
   factory(options, context): KoiMiddleware {
+    // Fail fast on invalid types — the validator should have caught these,
+    // but direct callers of createPatternPermissionBackend() may bypass it.
+    // Silent coercion to [] would cause deny-all without any indication.
+    if (options.allow !== undefined && !isStringArray(options.allow)) {
+      throw new Error(
+        `permissions.allow must be an array of strings, got ${typeof options.allow}. ` +
+          'A typo like allow: "*" silently becomes deny-all.',
+      );
+    }
+    if (options.deny !== undefined && !isStringArray(options.deny)) {
+      throw new Error(`permissions.deny must be an array of strings, got ${typeof options.deny}`);
+    }
+    if (options.ask !== undefined && !isStringArray(options.ask)) {
+      throw new Error(`permissions.ask must be an array of strings, got ${typeof options.ask}`);
+    }
+
     const rules: PermissionRules = {
-      allow: isStringArray(options.allow) ? options.allow : [],
-      deny: isStringArray(options.deny) ? options.deny : [],
-      ask: isStringArray(options.ask) ? options.ask : [],
+      allow: options.allow ?? [],
+      deny: options.deny ?? [],
+      ask: options.ask ?? [],
     };
 
     const backend = createPatternPermissionBackend({ rules });

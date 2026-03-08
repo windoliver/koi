@@ -68,6 +68,14 @@ interface ExecApprovalRequest {
      * Absent when no securityAnalyzer is configured in ExecApprovalsConfig.
      */
     readonly riskAnalysis?: RiskAnalysis;
+    /**
+     * Agent identity for multi-agent approval routing.
+     * When a governance stack is shared across multiple agents, this field
+     * enables deterministic routing to the correct agent's approval handler.
+     * Optional for backward compatibility — when absent, the governance stack
+     * falls back to first-handler-wins (with a console warning).
+     */
+    readonly agentId?: string | undefined;
 }
 
 /**

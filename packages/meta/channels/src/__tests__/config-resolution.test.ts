@@ -60,13 +60,22 @@ describe("resolveChannelStackConfig", () => {
     expect(result.registry).toBe(customRegistry);
   });
 
-  test("empty channels array falls through to preset", () => {
+  test("empty channels array means zero channels (not preset fallback)", () => {
     const result = resolveChannelStackConfig({
       channels: [],
       preset: "standard",
     });
 
-    // Empty array → falls through to preset
+    // Explicit empty array means "no channels" — distinct from undefined
+    expect(result.channels).toHaveLength(0);
+  });
+
+  test("omitted channels falls through to preset", () => {
+    const result = resolveChannelStackConfig({
+      preset: "standard",
+    });
+
+    // No channels property → falls through to preset
     expect(result.channels).toHaveLength(4);
   });
 });

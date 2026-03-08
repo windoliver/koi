@@ -139,13 +139,23 @@ describe("buildAcpStdin", () => {
     }
   });
 
-  test("third line contains the prompt", () => {
+  test("third line contains the prompt with matching sessionId", () => {
     const stdin = buildAcpStdin("implement feature X");
     const lines = stdin.trim().split("\n");
     const lastLine = lines[2] ?? "";
     const parsed = JSON.parse(lastLine);
     expect(parsed.method).toBe("session/prompt");
     expect(parsed.params.messages[0].content).toBe("implement feature X");
+
+    // Verify sessionId in session/prompt matches the one in session/new
+    const sessionLine = lines[1] ?? "";
+    const sessionParsed = JSON.parse(sessionLine);
+    expect(sessionParsed.method).toBe("session/new");
+    expect(parsed.params.sessionId).toBe(sessionParsed.params.sessionId);
+    // Must not be the hardcoded "default"
+    expect(parsed.params.sessionId).not.toBe("default");
+    expect(typeof parsed.params.sessionId).toBe("string");
+    expect(parsed.params.sessionId.length).toBeGreaterThan(0);
   });
 });
 
