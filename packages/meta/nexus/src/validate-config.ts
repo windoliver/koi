@@ -10,11 +10,11 @@ import { validation } from "@koi/core";
 import type { NexusStackConfig } from "./types.js";
 
 /**
- * Validates a NexusStackConfig at the system boundary.
+ * Validates a resolved NexusStackConfig at the system boundary.
  *
- * Returns a validation error if:
- * - `baseUrl` is missing or empty
- * - `apiKey` is missing or empty
+ * For remote mode: baseUrl is required.
+ * For embed mode: baseUrl is filled by ensureNexusRunning() before this is called.
+ * apiKey is optional (embed mode runs without auth).
  */
 export function validateNexusStackConfig(config: NexusStackConfig): Result<void, KoiError> {
   if (typeof config.baseUrl !== "string" || config.baseUrl.trim() === "") {
@@ -23,11 +23,6 @@ export function validateNexusStackConfig(config: NexusStackConfig): Result<void,
       error: validation("NexusStackConfig.baseUrl is required and must be a non-empty string"),
     };
   }
-  if (typeof config.apiKey !== "string" || config.apiKey.trim() === "") {
-    return {
-      ok: false,
-      error: validation("NexusStackConfig.apiKey is required and must be a non-empty string"),
-    };
-  }
+  // apiKey is optional — embed mode runs without authentication
   return { ok: true, value: undefined };
 }

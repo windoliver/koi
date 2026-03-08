@@ -49,6 +49,7 @@ export type {
   PayOverrides,
   PermissionsOverrides,
   RegistryOverrides,
+  ResolvedNexusConnection,
   ResolvedNexusMeta,
   SchedulerOverrides,
   SearchOverrides,

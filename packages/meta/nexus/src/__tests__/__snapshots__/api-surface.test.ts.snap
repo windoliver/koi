@@ -40,6 +40,12 @@ declare function computeGroupNamespace(groupId: string): GroupNamespace;
 
 /** Shared connection fields used by all Nexus backends. */
 interface NexusConnectionConfig {
+    readonly baseUrl?: string | undefined;
+    readonly apiKey?: string | undefined;
+    readonly fetch?: typeof globalThis.fetch | undefined;
+}
+/** Connection config with baseUrl resolved (post-validation / post-embed). */
+interface ResolvedNexusConnection {
     readonly baseUrl: string;
     readonly apiKey: string;
     readonly fetch?: typeof globalThis.fetch | undefined;
@@ -191,16 +197,15 @@ interface NexusBundle {
  * Main factory composing all Nexus pieces into a single bundle.
  *
  * Creates global backends, agent-scoped provider, and wires disposal.
+ * When baseUrl is omitted, auto-starts a local Nexus via embed mode.
  */
 
 /**
  * Creates a complete Nexus stack from a single config.
  *
- * - Validates config at the boundary
- * - Creates a shared NexusClient
- * - Initializes global backends in parallel (registry, nameService are async)
- * - Creates an agent-scoped ComponentProvider
- * - Returns a bundle with dispose() for full cleanup
+ * When baseUrl is omitted or empty, auto-starts a local Nexus server
+ * using @koi/nexus-embed (embed mode). When baseUrl is provided,
+ * connects to the remote Nexus server (remote mode).
  */
 declare function createNexusStack(config: NexusStackConfig): Promise<NexusBundle>;
 
@@ -212,14 +217,14 @@ declare function createNexusStack(config: NexusStackConfig): Promise<NexusBundle
  */
 
 /**
- * Validates a NexusStackConfig at the system boundary.
+ * Validates a resolved NexusStackConfig at the system boundary.
  *
- * Returns a validation error if:
- * - \`baseUrl\` is missing or empty
- * - \`apiKey\` is missing or empty
+ * For remote mode: baseUrl is required.
+ * For embed mode: baseUrl is filled by ensureNexusRunning() before this is called.
+ * apiKey is optional (embed mode runs without auth).
  */
 declare function validateNexusStackConfig(config: NexusStackConfig): Result<void, KoiError>;
 
-export { type AgentBackendOverrides, type AgentNamespace, type AuditOverrides, type EventsOverrides, type FilesystemOverrides, type ForgeOverrides, type GatewayOverrides, type GlobalBackendOverrides, type GroupNamespace, type MailboxOverrides, type MemoryOverrides, type NameServiceOverrides, type NexusBundle, type NexusConnectionConfig, type NexusGlobalBackends, type NexusStackConfig, type OptInOverrides, type PayOverrides, type PermissionsOverrides, type RegistryOverrides, type ResolvedNexusMeta, type SchedulerOverrides, type SearchOverrides, type SessionOverrides, type SnapshotsOverrides, type WorkspaceOverrides, computeAgentNamespace, computeGroupNamespace, createNexusStack, validateNexusStackConfig };
+export { type AgentBackendOverrides, type AgentNamespace, type AuditOverrides, type EventsOverrides, type FilesystemOverrides, type ForgeOverrides, type GatewayOverrides, type GlobalBackendOverrides, type GroupNamespace, type MailboxOverrides, type MemoryOverrides, type NameServiceOverrides, type NexusBundle, type NexusConnectionConfig, type NexusGlobalBackends, type NexusStackConfig, type OptInOverrides, type PayOverrides, type PermissionsOverrides, type RegistryOverrides, type ResolvedNexusConnection, type ResolvedNexusMeta, type SchedulerOverrides, type SearchOverrides, type SessionOverrides, type SnapshotsOverrides, type WorkspaceOverrides, computeAgentNamespace, computeGroupNamespace, createNexusStack, validateNexusStackConfig };
 "
 `;

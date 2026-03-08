@@ -12,7 +12,7 @@ describe("validateNexusConfig", () => {
   });
 
   test("returns error for empty baseUrl", () => {
-    const result = validateNexusConfig({ baseUrl: "", apiKey: "key" });
+    const result = validateNexusConfig({ baseUrl: "" });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -21,17 +21,18 @@ describe("validateNexusConfig", () => {
   });
 
   test("returns error for whitespace-only baseUrl", () => {
-    const result = validateNexusConfig({ baseUrl: "  ", apiKey: "key" });
+    const result = validateNexusConfig({ baseUrl: "  " });
     expect(result.ok).toBe(false);
   });
 
-  test("returns error for empty apiKey", () => {
+  test("returns ok for missing apiKey", () => {
+    const result = validateNexusConfig({ baseUrl: "http://localhost:2026" });
+    expect(result.ok).toBe(true);
+  });
+
+  test("returns ok for empty apiKey", () => {
     const result = validateNexusConfig({ baseUrl: "http://localhost", apiKey: "" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
-      expect(result.error.message).toContain("apiKey");
-    }
+    expect(result.ok).toBe(true);
   });
 });
 

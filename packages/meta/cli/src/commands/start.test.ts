@@ -113,6 +113,7 @@ function makeFlags(overrides: Partial<StartFlags> = {}): StartFlags {
     manifest: undefined,
     verbose: false,
     dryRun: false,
+    nexusUrl: undefined,
     ...overrides,
   };
 }

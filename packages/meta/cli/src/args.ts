@@ -30,6 +30,7 @@ export interface StartFlags extends BaseFlags {
   readonly manifest: string | undefined;
   readonly verbose: boolean;
   readonly dryRun: boolean;
+  readonly nexusUrl: string | undefined;
 }
 
 export interface ServeFlags extends BaseFlags {
@@ -37,6 +38,7 @@ export interface ServeFlags extends BaseFlags {
   readonly manifest: string | undefined;
   readonly port: number | undefined;
   readonly verbose: boolean;
+  readonly nexusUrl: string | undefined;
 }
 
 export interface DeployFlags extends BaseFlags {
@@ -55,6 +57,7 @@ export interface StatusFlags extends BaseFlags {
 export interface StopFlags extends BaseFlags {
   readonly command: "stop";
   readonly manifest: string | undefined;
+  readonly nexus: boolean;
 }
 
 export interface LogsFlags extends BaseFlags {
@@ -137,6 +140,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
       manifest: { type: "string" },
       verbose: { type: "boolean", short: "v", default: false },
       "dry-run": { type: "boolean", default: false },
+      "nexus-url": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -151,6 +155,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     manifest: (values.manifest as string | undefined) ?? positionalManifest,
     verbose: (values.verbose as boolean | undefined) ?? false,
     dryRun: (values["dry-run"] as boolean | undefined) ?? false,
+    nexusUrl: values["nexus-url"] as string | undefined,
   };
 }
 
@@ -161,6 +166,7 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
       manifest: { type: "string" },
       port: { type: "string", short: "p" },
       verbose: { type: "boolean", short: "v", default: false },
+      "nexus-url": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -175,6 +181,7 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
     manifest: (values.manifest as string | undefined) ?? positionalManifest,
     port: portStr !== undefined ? Number.parseInt(portStr, 10) : undefined,
     verbose: (values.verbose as boolean | undefined) ?? false,
+    nexusUrl: values["nexus-url"] as string | undefined,
   };
 }
 
@@ -228,6 +235,7 @@ export function parseStopFlags(rest: readonly string[]): StopFlags {
     args: rest as string[],
     options: {
       manifest: { type: "string" },
+      nexus: { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -239,6 +247,7 @@ export function parseStopFlags(rest: readonly string[]): StopFlags {
     command: "stop" as const,
     directory: positionalManifest,
     manifest: (values.manifest as string | undefined) ?? positionalManifest,
+    nexus: (values.nexus as boolean | undefined) ?? false,
   };
 }
 

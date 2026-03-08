@@ -13,6 +13,7 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/nexus-client": "workspace:*",
+    "@koi/nexus-embed": "workspace:*",
     "@koi/registry-nexus": "workspace:*",
     "@koi/permissions-nexus": "workspace:*",
     "@koi/audit-sink-nexus": "workspace:*",

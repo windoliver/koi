@@ -86,12 +86,29 @@ describe("createNexusStack", () => {
     expect(bundle.backends.pay).toBeUndefined();
   });
 
-  test("throws on invalid config — empty baseUrl", async () => {
-    await expect(createNexusStack({ baseUrl: "", apiKey: "sk-test" })).rejects.toThrow("baseUrl");
+  test("throws on invalid config — empty baseUrl without embed available", async () => {
+    // Empty baseUrl triggers embed mode, which will fail when @koi/nexus-embed
+    // cannot find the Nexus binary. The error comes from embed, not validation.
+    await expect(createNexusStack({ baseUrl: "", apiKey: "sk-test" })).rejects.toThrow();
   });
 
-  test("throws on invalid config — empty apiKey", async () => {
-    await expect(createNexusStack({ baseUrl: BASE_URL, apiKey: "" })).rejects.toThrow("apiKey");
+  test("empty apiKey is valid for embed mode — disables auth-requiring backends", async () => {
+    // apiKey: "" is valid (embed mode without auth). Auth-requiring backends
+    // are automatically disabled. This test verifies the config is accepted.
+    const bundle = await createNexusStack({
+      ...testConfig(),
+      apiKey: "",
+    });
+
+    // Auth-requiring backends should be disabled in embed mode
+    expect(bundle.backends.audit).toBeUndefined();
+    expect(bundle.backends.search).toBeUndefined();
+    expect(bundle.backends.pay).toBeUndefined();
+    expect(bundle.backends.scheduler).toBeUndefined();
+    // Permissions uses NexusClient directly, stays enabled
+    expect(bundle.backends.permissions).toBeDefined();
+    // globalBackendCount should only count permissions (registry + nameService already disabled by testConfig)
+    expect(bundle.config.globalBackendCount).toBe(1);
   });
 
   test("dispose is callable without error", async () => {
