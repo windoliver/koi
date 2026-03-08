@@ -98,10 +98,10 @@ describe("readStream", () => {
 
   test("does not exceed maxBytes in emitted content (byte-accurate slice)", async () => {
     const maxBytes = 30;
-    // Generate exactly 100 bytes of 'A' characters
+    // Generate exactly 100 bytes of 'A' characters (portable — no brace expansion)
     const result = spawnProcess(
       "sh",
-      ["-c", "printf '%0.sA' {1..100}"],
+      ["-c", "printf '%100s' '' | tr ' ' A"],
       { PATH: process.env.PATH ?? "" },
       process.cwd(),
     );
