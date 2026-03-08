@@ -2,7 +2,8 @@
  * Resolve the Nexus binary command.
  *
  * Default: ["uv", "run", "nexus"]
- * Override: NEXUS_COMMAND env var (space-separated)
+ * Override: NEXUS_COMMAND env var (space-separated, no quoting support).
+ * Paths with spaces are not supported — use a wrapper script instead.
  */
 
 /** Resolve the command to run Nexus. Returns array of command parts. */

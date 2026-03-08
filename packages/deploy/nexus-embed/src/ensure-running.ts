@@ -77,7 +77,7 @@ export async function ensureNexusRunning(
       ok: false,
       error: {
         code: "NOT_FOUND" as const,
-        message: `Cannot find '${binaryName}' on PATH. Install it:\n  - uv: pip install nexus-ai-fs\n  - Or set NEXUS_COMMAND to the full command`,
+        message: `Cannot find '${binaryName}' on PATH. Install it:\n  - uv: pip install nexus-ai-fs\n  - Or set NEXUS_COMMAND (space-separated, no quoting)`,
         retryable: false,
         context: { binary: binaryName, binaryParts: [...binaryParts] },
       },
