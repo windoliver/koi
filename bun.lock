@@ -142,10 +142,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/engine": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/gateway-types": "workspace:*",
-        "@koi/shutdown": "workspace:*",
         "@temporalio/activity": "1.15.0",
         "@temporalio/client": "1.15.0",
         "@temporalio/common": "1.15.0",
@@ -153,6 +149,8 @@
         "@temporalio/workflow": "1.15.0",
       },
       "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
         "@temporalio/testing": "1.15.0",
       },
