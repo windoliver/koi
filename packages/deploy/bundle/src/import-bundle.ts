@@ -77,8 +77,17 @@ export async function importBundle(
     return { ok: true, value: { imported: 0, skipped: 0, errors: [] } };
   }
 
+  // 3b. Deduplicate bricks by ID — a bundle may contain the same brick twice
+  const seenIds = new Set<string>();
+  const uniqueBricks: readonly BrickArtifact[] = bundle.bricks.filter((b) => {
+    const id = String(b.id);
+    if (seenIds.has(id)) return false;
+    seenIds.add(id);
+    return true;
+  });
+
   // 4. Validate and verify each brick, then import in parallel
-  const importTasks = bundle.bricks.map(
+  const importTasks = uniqueBricks.map(
     async (
       rawBrick,
     ): Promise<{

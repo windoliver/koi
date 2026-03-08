@@ -82,9 +82,13 @@ export function createTranscriptingEngine(
 
   function fireAppend(entries: readonly TranscriptEntry[]): void {
     if (entries.length === 0) return;
-    void Promise.resolve(transcript.append(sessionId, entries)).catch(() => {
-      // Intentionally swallowed — transcript failure must not block the stream.
-    });
+    try {
+      void Promise.resolve(transcript.append(sessionId, entries)).catch(() => {
+        // Intentionally swallowed — transcript failure must not block the stream.
+      });
+    } catch {
+      // Swallow sync throws from transcript.append() — must not block the stream.
+    }
   }
 
   async function* wrappedStream(input: EngineInput): AsyncGenerator<EngineEvent> {

@@ -21,7 +21,7 @@ import {
 } from "./connection-store.js";
 import { DEFAULT_DATA_DIR_NAME, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROFILE } from "./constants.js";
 import { pollHealth, probeHealth } from "./health-check.js";
-import { cleanStalePid, readPid, removePid, writePid } from "./pid-manager.js";
+import { cleanStalePid, isProcessAlive, readPid, removePid, writePid } from "./pid-manager.js";
 import type { ConnectionState, EmbedConfig, EmbedResult } from "./types.js";
 
 /** Ensure a Nexus server is running locally, spawning one if needed. */
@@ -53,8 +53,19 @@ export async function ensureNexusRunning(
         };
       }
     }
+
+    // Config mismatch with a still-alive process — stop it before spawning new one
+    if (!configMatches && savedState.pid !== undefined && isProcessAlive(savedState.pid)) {
+      try {
+        process.kill(savedState.pid, "SIGTERM");
+      } catch {
+        /* best effort */
+      }
+    }
+
     // Dead or config mismatch — clean up stale state
     cleanStalePid(dataDir);
+    removePid(dataDir);
     removeConnectionState(dataDir);
   }
 

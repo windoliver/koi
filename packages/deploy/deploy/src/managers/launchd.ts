@@ -89,6 +89,19 @@ export function createLaunchdManager(system: boolean, logDir: string): ServiceMa
       await mkdir(logDir, { recursive: true });
       await writeFile(filePath, content, { mode: 0o644 });
 
+      // Bootout first if already loaded — makes redeploy idempotent
+      const bootoutResult = await exec(["launchctl", "bootout", `${domain}/${label}`]);
+      if (bootoutResult.exitCode !== 0) {
+        const isBenign =
+          bootoutResult.stderr.includes("not found") ||
+          bootoutResult.stderr.includes("could not find service");
+        if (!isBenign) {
+          throw new Error(
+            `Failed to bootout ${serviceName} before reinstall: ${bootoutResult.stderr}`,
+          );
+        }
+      }
+
       // Bootstrap the service
       const bootstrapResult = await exec(["launchctl", "bootstrap", domain, filePath]);
       if (bootstrapResult.exitCode !== 0) {

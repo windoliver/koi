@@ -97,7 +97,9 @@ export function createSystemdManager(system: boolean): ServiceManager {
     },
 
     async start(serviceName) {
-      const result = await exec(["systemctl", ...userFlag, "start", serviceName]);
+      // Use restart to pick up config changes when the service is already running.
+      // restart is a no-op → start when the service is not yet active.
+      const result = await exec(["systemctl", ...userFlag, "restart", serviceName]);
       if (result.exitCode !== 0) {
         throw new Error(`Failed to start ${serviceName}: ${result.stderr}`);
       }

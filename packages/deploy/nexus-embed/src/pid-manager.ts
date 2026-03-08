@@ -53,6 +53,9 @@ export function isProcessAlive(pid: number): boolean {
 /**
  * Verify that a PID belongs to a Nexus process by checking its command line.
  * Prevents killing an unrelated process after PID reuse.
+ *
+ * Matches "nexus" by default, and also matches the resolved NEXUS_COMMAND
+ * executable name so wrapper-style setups are correctly identified.
  */
 export function isNexusProcess(pid: number): boolean {
   try {
@@ -61,8 +64,19 @@ export function isNexusProcess(pid: number): boolean {
       encoding: "utf-8",
       timeout: 2_000,
     }).trim();
-    // Nexus runs as "python ... nexus serve" or similar — check for "nexus"
-    return output.includes("nexus");
+
+    // Always check for the literal "nexus" (covers default uv run nexus, python -m nexus, etc.)
+    if (output.includes("nexus")) return true;
+
+    // Also match the NEXUS_COMMAND executable name for wrapper-style setups
+    const nexusCmd = process.env.NEXUS_COMMAND;
+    if (nexusCmd !== undefined && nexusCmd.trim().length > 0) {
+      const cmdParts = nexusCmd.trim().split(/\s+/);
+      const executable = cmdParts[0];
+      if (executable !== undefined && output.includes(executable)) return true;
+    }
+
+    return false;
   } catch {
     // ps failed — process doesn't exist or we can't inspect it
     return false;

@@ -68,7 +68,7 @@ export function generateSystemdUnit(config: SystemdTemplateConfig): string {
     "Type=simple",
     ...(config.user !== undefined ? [`User=${config.user}`] : []),
     `WorkingDirectory=${config.workDir}`,
-    `ExecStart=${config.bunPath} ${config.koiPath} serve --manifest ${config.manifestPath} --port ${config.port}`,
+    `ExecStart="${config.bunPath}" "${config.koiPath}" serve --manifest "${config.manifestPath}" --port ${config.port}`,
     `ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5; do curl -sf http://localhost:${config.port}/health && exit 0; sleep 1; done; exit 1'`,
     `Restart=${config.restart}`,
     `RestartSec=${config.restartDelaySec}s`,
