@@ -20,6 +20,8 @@ import type {
   ComponentProvider,
   DelegationComponent,
   DelegationId,
+  EngineEvent,
+  EngineInput,
 } from "@koi/core";
 import { channelToken, DEFAULT_SPAWN_CHANNEL_POLICY, DELEGATION, ENV } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
@@ -192,8 +194,22 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     }
   }
 
-  // 7. Create child handle for lifecycle monitoring
+  // 7. Wrap runtime.run() to compose the abort signal from the child handle.
+  //    This ensures that handle.signal(TERM) → abortController.abort() reaches the
+  //    engine loop's AbortSignal, enabling graceful in-flight shutdown during the
+  //    grace period before force-termination.
+  function wrappedRun(input: EngineInput): AsyncIterable<EngineEvent> {
+    const composedSignal =
+      input.signal !== undefined
+        ? AbortSignal.any([input.signal, abortController.signal])
+        : abortController.signal;
+    return childRuntime.run({ ...input, signal: composedSignal });
+  }
+
+  // 8. Create child handle for lifecycle monitoring + determine dispose override
   let handle: ChildHandle;
+  let disposeOverride: (() => Promise<void>) | undefined;
+
   if (options.registry !== undefined) {
     const reg = options.registry;
     handle = createChildHandle(
@@ -204,10 +220,10 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       options.gracePeriodMs,
     );
 
-    // 7. Parent termination → child cascade is handled by CascadingTermination
-    //    (centralized, supervision-aware). No per-child watcher needed here.
+    // Parent termination → child cascade is handled by CascadingTermination
+    // (centralized, supervision-aware). No per-child watcher needed here.
 
-    // 8. Wire ledger release + runtime disposal + delegation revoke to child termination
+    // 9. Wire ledger release + runtime disposal + delegation revoke to child termination
     //    Idempotency guard prevents double release if terminated fires multiple times.
     let released = false; // let justified: mutable idempotency flag for one-shot cleanup
     handle.onEvent((event) => {
@@ -234,11 +250,30 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       }
     });
   } else {
+    // No-registry path: wire ledger release to dispose.
+    // Without a registry, there is no termination event to trigger cleanup,
+    // so we intercept dispose() to release the ledger slot that would otherwise leak.
+    let released = false; // let justified: mutable idempotency flag for one-shot cleanup
+    const originalDispose = childRuntime.dispose;
+    disposeOverride = async (): Promise<void> => {
+      if (!released) {
+        released = true;
+        const release = options.spawnLedger.release();
+        void (release instanceof Promise ? release : undefined);
+      }
+      await originalDispose();
+    };
     handle = createNoopChildHandle(childPid.id, options.manifest.name);
   }
 
+  const wrappedRuntime: KoiRuntime = {
+    ...childRuntime,
+    run: wrappedRun,
+    ...(disposeOverride !== undefined ? { dispose: disposeOverride } : {}),
+  };
+
   return {
-    runtime: childRuntime,
+    runtime: wrappedRuntime,
     handle,
     childPid,
   };

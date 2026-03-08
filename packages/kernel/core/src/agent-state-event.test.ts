@@ -19,6 +19,7 @@ import {
 } from "./agent-state-event.js";
 import { agentId } from "./ecs.js";
 import type { RegistryEntry } from "./lifecycle.js";
+import { zoneId } from "./zone.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -168,6 +169,39 @@ describe("evolveRegistryEntry — agent_registered", () => {
 
     expect(result?.spawner).toBeUndefined();
     expect("spawner" in (result ?? {})).toBe(false);
+  });
+
+  test("preserves priority when provided", () => {
+    const event: AgentRegisteredEvent = {
+      ...REGISTERED_EVENT,
+      priority: 5,
+    };
+    const result = evolveRegistryEntry(undefined, event);
+
+    expect(result?.priority).toBe(5);
+  });
+
+  test("defaults priority to 10 when not provided", () => {
+    const result = evolveRegistryEntry(undefined, REGISTERED_EVENT);
+
+    expect(result?.priority).toBe(10);
+  });
+
+  test("preserves zoneId when provided", () => {
+    const event: AgentRegisteredEvent = {
+      ...REGISTERED_EVENT,
+      zoneId: zoneId("us-east-1"),
+    };
+    const result = evolveRegistryEntry(undefined, event);
+
+    expect(result?.zoneId).toBe(zoneId("us-east-1"));
+  });
+
+  test("omits zoneId when not provided", () => {
+    const result = evolveRegistryEntry(undefined, REGISTERED_EVENT);
+
+    expect(result?.zoneId).toBeUndefined();
+    expect("zoneId" in (result ?? {})).toBe(false);
   });
 
   test("re-register replaces existing state", () => {

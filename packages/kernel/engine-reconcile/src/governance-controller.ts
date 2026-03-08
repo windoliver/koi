@@ -60,11 +60,11 @@ export function createGovernanceController(
   // let justified: mutable accumulated cost in USD
   let accumulatedCostUsd = 0;
 
-  // Error rate tracking
+  // Error rate tracking — both numerator and denominator use rolling windows
+  // so the rate reflects recent activity, not lifetime-diluted averages.
   const errorRateConfig = resolved.errorRate;
   const errorWindow = createRollingWindow(errorRateConfig.windowMs);
-  // let justified: mutable total tool call counter for error rate denominator
-  let totalToolCalls = 0;
+  const totalCallsWindow = createRollingWindow(errorRateConfig.windowMs);
 
   // --- Helper: create a GovernanceCheck for a variable violation ---
   function failCheck(variable: GovernanceVariable, reason: string): GovernanceCheck {
@@ -168,13 +168,19 @@ export function createGovernanceController(
 
   const errorRateVar: GovernanceVariable = {
     name: GOVERNANCE_VARIABLES.ERROR_RATE,
-    read: () => (totalToolCalls > 0 ? errorWindow.count(Date.now()) / totalToolCalls : 0),
+    read: () => {
+      const now = Date.now();
+      const windowCalls = totalCallsWindow.count(now);
+      return windowCalls > 0 ? errorWindow.count(now) / windowCalls : 0;
+    },
     limit: errorRateConfig.threshold,
     retryable: true,
     description: "Tool error rate within rolling time window",
     check(): GovernanceCheck {
-      if (totalToolCalls <= 0) return { ok: true };
-      const rate = errorWindow.count(Date.now()) / totalToolCalls;
+      const now = Date.now();
+      const windowCalls = totalCallsWindow.count(now);
+      if (windowCalls <= 0) return { ok: true };
+      const rate = errorWindow.count(now) / windowCalls;
       if (rate >= errorRateConfig.threshold) {
         return failCheck(
           errorRateVar,
@@ -259,12 +265,14 @@ export function createGovernanceController(
             event.outputTokens * costConfig.costPerOutputToken;
         }
         break;
-      case "tool_error":
-        errorWindow.record(Date.now());
-        totalToolCalls++;
+      case "tool_error": {
+        const now = Date.now();
+        errorWindow.record(now);
+        totalCallsWindow.record(now);
         break;
+      }
       case "tool_success":
-        totalToolCalls++;
+        totalCallsWindow.record(Date.now());
         break;
     }
   }

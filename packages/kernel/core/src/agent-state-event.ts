@@ -18,6 +18,7 @@ import type {
   RegistryEntry,
   TransitionReason,
 } from "./lifecycle.js";
+import type { ZoneId } from "./zone.js";
 
 // ---------------------------------------------------------------------------
 // Event kind union
@@ -44,6 +45,10 @@ export interface AgentRegisteredEvent {
   readonly spawner?: AgentId | undefined;
   /** Process group this agent belongs to. */
   readonly groupId?: AgentGroupId | undefined;
+  /** Runtime priority. 0 = highest, default 10, range [0, 39]. */
+  readonly priority?: number | undefined;
+  /** Zone this agent belongs to. Undefined for unzoned agents. */
+  readonly zoneId?: ZoneId | undefined;
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly registeredAt: number;
 }
@@ -144,7 +149,7 @@ export function evolveRegistryEntry(
         agentType: event.agentType,
         metadata: event.metadata,
         registeredAt: event.registeredAt,
-        priority: 10,
+        priority: event.priority ?? 10,
         status: {
           ...INITIAL_AGENT_STATUS,
           lastTransitionAt: event.registeredAt,
@@ -155,6 +160,7 @@ export function evolveRegistryEntry(
         ...(event.parentId !== undefined ? { parentId: event.parentId } : {}),
         ...(event.spawner !== undefined ? { spawner: event.spawner } : {}),
         ...(event.groupId !== undefined ? { groupId: event.groupId } : {}),
+        ...(event.zoneId !== undefined ? { zoneId: event.zoneId } : {}),
       };
     }
 
