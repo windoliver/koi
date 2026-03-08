@@ -97,10 +97,14 @@ export function createServiceProvider<TBackend, TOperation extends string>(
     policy = DEFAULT_UNSANDBOXED_POLICY,
     prefix = "",
     priority,
-    cache: shouldCache = true,
+    cache: cacheOverride,
     customTools,
     detach,
   } = config;
+
+  // Default cache to false when customTools is agent-aware (receives agent param),
+  // since caching would bind the first agent's identity to all subsequent callers.
+  const shouldCache = cacheOverride ?? customTools === undefined;
 
   // Validation — programmer errors, throw immediately
   if (operations.length === 0) {

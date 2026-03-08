@@ -166,11 +166,14 @@ export function createChildHandle(
   function waitForCompletion(): Promise<ChildCompletionResult> {
     return new Promise<ChildCompletionResult>((resolve) => {
       // If the child is already terminated (cleanup was already called),
-      // we have no registry subscription — resolve immediately with exit code 1.
+      // we have no registry subscription — resolve immediately.
+      // Derive exit code from the last-seen transition reason to avoid
+      // misclassifying completed (0) or evicted (4) children as error (1).
       if (unsubscribe === undefined) {
+        const exitCode = lastReason !== undefined ? exitCodeForTransitionReason(lastReason) : 1;
         resolve({
           childId,
-          exitCode: 1,
+          exitCode,
           ...(lastReason !== undefined ? { reason: lastReason } : {}),
         });
         return;
