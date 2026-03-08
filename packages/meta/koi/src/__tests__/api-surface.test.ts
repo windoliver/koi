@@ -94,6 +94,8 @@ describe(`${pkgJson.name} API surface`, () => {
 describe(`${pkgJson.name} root export symbols`, () => {
   test("root .d.ts contains expected key exports", () => {
     const rootConfig = pkgJson.exports["."];
+    expect(rootConfig).toBeDefined();
+    if (rootConfig === undefined) return;
     const dtsPath = resolve(__dirname, "../..", rootConfig.types);
     const dts = readFileSync(dtsPath, "utf-8");
 
