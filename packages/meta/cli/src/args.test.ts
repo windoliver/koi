@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { InitFlags, StartFlags } from "./args.js";
+import type { InitFlags, ServeFlags, StartFlags, StopFlags } from "./args.js";
 import { parseArgs } from "./args.js";
 
 describe("parseArgs", () => {
@@ -156,6 +156,41 @@ describe("parseArgs — start command", () => {
     expect(result.manifest).toBe("agent.yaml");
     expect(result.verbose).toBe(true);
     expect(result.dryRun).toBe(true);
+  });
+});
+
+describe("parseArgs — nexus flags", () => {
+  test("parses --nexus-url for start command", () => {
+    const result = parseArgs(["start", "--nexus-url", "http://localhost:2026"]) as StartFlags;
+    expect(result.command).toBe("start");
+    expect(result.nexusUrl).toBe("http://localhost:2026");
+  });
+
+  test("defaults nexusUrl to undefined for start", () => {
+    const result = parseArgs(["start"]) as StartFlags;
+    expect(result.nexusUrl).toBeUndefined();
+  });
+
+  test("parses --nexus-url for serve command", () => {
+    const result = parseArgs(["serve", "--nexus-url", "http://nexus.example.com"]) as ServeFlags;
+    expect(result.command).toBe("serve");
+    expect(result.nexusUrl).toBe("http://nexus.example.com");
+  });
+
+  test("defaults nexusUrl to undefined for serve", () => {
+    const result = parseArgs(["serve"]) as ServeFlags;
+    expect(result.nexusUrl).toBeUndefined();
+  });
+
+  test("parses --nexus flag for stop command", () => {
+    const result = parseArgs(["stop", "--nexus"]) as StopFlags;
+    expect(result.command).toBe("stop");
+    expect(result.nexus).toBe(true);
+  });
+
+  test("defaults nexus to false for stop", () => {
+    const result = parseArgs(["stop"]) as StopFlags;
+    expect(result.nexus).toBe(false);
   });
 });
 

@@ -161,10 +161,13 @@ const runtime = await createKoi({
 ```typescript
 import { createNexusStack } from "@koi/nexus";
 
-// Minimal — all backends enabled, default config
+// Embed mode — no URL, auto-starts local Nexus daemon
+const nexus = await createNexusStack({});
+
+// Remote mode — connect to existing Nexus server
 const nexus = await createNexusStack({
-  baseUrl: "http://localhost:2026",
-  apiKey: process.env.NEXUS_API_KEY!,
+  baseUrl: "https://nexus.mycompany.com",
+  apiKey: process.env.NEXUS_API_KEY,
 });
 
 // Wire into Koi runtime
@@ -179,6 +182,10 @@ const runtime = await createKoi({
 // Cleanup on shutdown
 await nexus.dispose();
 ```
+
+### Embed Mode (Local Auto-Start)
+
+When `baseUrl` is omitted, `createNexusStack()` lazy-imports `@koi/nexus-embed` and auto-starts a local Nexus daemon. No manual `nexus serve` required — see [docs/L2/nexus-embed.md](../L2/nexus-embed.md) for details.
 
 ---
 

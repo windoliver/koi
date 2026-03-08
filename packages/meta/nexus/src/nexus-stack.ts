@@ -2,6 +2,7 @@
  * Main factory composing all Nexus pieces into a single bundle.
  *
  * Creates global backends, agent-scoped provider, and wires disposal.
+ * When baseUrl is omitted, auto-starts a local Nexus via embed mode.
  */
 
 import { createNexusClient } from "@koi/nexus-client";
@@ -13,38 +14,69 @@ import { validateNexusStackConfig } from "./validate-config.js";
 /**
  * Creates a complete Nexus stack from a single config.
  *
- * - Validates config at the boundary
- * - Creates a shared NexusClient
- * - Initializes global backends in parallel (registry, nameService are async)
- * - Creates an agent-scoped ComponentProvider
- * - Returns a bundle with dispose() for full cleanup
+ * When baseUrl is omitted or empty, auto-starts a local Nexus server
+ * using @koi/nexus-embed (embed mode). When baseUrl is provided,
+ * connects to the remote Nexus server (remote mode).
  */
 export async function createNexusStack(config: NexusStackConfig): Promise<NexusBundle> {
-  const validation = validateNexusStackConfig(config);
-  if (!validation.ok) {
-    throw new Error(validation.error.message, { cause: validation.error });
+  // let — resolved from embed mode when baseUrl is missing
+  let resolvedBaseUrl = config.baseUrl;
+  const resolvedApiKey = config.apiKey;
+
+  if (!resolvedBaseUrl || resolvedBaseUrl.trim() === "") {
+    // Lazy import to avoid loading embed deps when in remote mode
+    const { ensureNexusRunning } = await import("@koi/nexus-embed");
+    const embedResult = await ensureNexusRunning({
+      ...(config.fetch !== undefined ? { fetch: config.fetch } : {}),
+    });
+    if (!embedResult.ok) {
+      throw new Error(embedResult.error.message, { cause: embedResult.error });
+    }
+    resolvedBaseUrl = embedResult.value.baseUrl;
+    // apiKey stays undefined for embed mode (no auth)
   }
 
-  const { baseUrl, apiKey, overrides, agentOverrides, optIn } = config;
+  // Validate the resolved config
+  const resolvedConfig = { ...config, baseUrl: resolvedBaseUrl, apiKey: resolvedApiKey };
+  const validationResult = validateNexusStackConfig(resolvedConfig);
+  if (!validationResult.ok) {
+    throw new Error(validationResult.error.message, { cause: validationResult.error });
+  }
+
+  // After validation, baseUrl is guaranteed to be a non-empty string.
+  // Guard for TypeScript narrowing (validation already checked this).
+  if (resolvedBaseUrl === undefined) {
+    throw new Error("NexusStackConfig.baseUrl is required and must be a non-empty string");
+  }
+
+  const { overrides, agentOverrides, optIn } = config;
   const fetchFn = config.fetch;
 
   // Shared NexusClient for backends that accept a client directly
   const client = createNexusClient({
-    baseUrl,
-    apiKey,
+    baseUrl: resolvedBaseUrl,
+    apiKey: resolvedApiKey,
     ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
   });
 
   // Create global backends (registry + nameService are async)
   const backends = await createGlobalBackends(
-    { baseUrl, apiKey, ...(fetchFn !== undefined ? { fetch: fetchFn } : {}) },
+    {
+      baseUrl: resolvedBaseUrl,
+      apiKey: resolvedApiKey,
+      ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
+    },
     client,
     overrides,
   );
 
   // Create agent-scoped provider
   const { provider, middlewares } = createNexusAgentProvider(
-    { baseUrl, apiKey, ...(fetchFn !== undefined ? { fetch: fetchFn } : {}) },
+    {
+      baseUrl: resolvedBaseUrl,
+      apiKey: resolvedApiKey,
+      ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
+    },
     client,
     agentOverrides,
     optIn,
@@ -62,7 +94,7 @@ export async function createNexusStack(config: NexusStackConfig): Promise<NexusB
   ].filter((b) => b !== undefined).length;
 
   const meta: ResolvedNexusMeta = {
-    baseUrl,
+    baseUrl: resolvedBaseUrl,
     globalBackendCount,
     gatewayEnabled: optIn?.gateway !== undefined,
     workspaceEnabled: optIn?.workspace !== undefined,

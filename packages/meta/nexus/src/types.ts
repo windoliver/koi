@@ -21,8 +21,8 @@ import type { NexusSearch } from "@koi/search-nexus";
 
 /** Shared connection fields used by all Nexus backends. */
 export interface NexusConnectionConfig {
-  readonly baseUrl: string;
-  readonly apiKey: string;
+  readonly baseUrl?: string | undefined;
+  readonly apiKey?: string | undefined;
   readonly fetch?: typeof globalThis.fetch | undefined;
 }
 

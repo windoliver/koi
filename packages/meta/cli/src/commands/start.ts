@@ -21,6 +21,7 @@ import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
+import { resolveNexusStack } from "../resolve-nexus.js";
 
 // ---------------------------------------------------------------------------
 // Event rendering
@@ -111,6 +112,31 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // 5. ASSEMBLE: Use resolved engine or fall back to pi adapter
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
+  // 5b. Resolve Nexus stack (embed or remote)
+  const nexusManifestUrl = (manifest as { readonly nexus?: { readonly url?: string } }).nexus?.url;
+  let nexusDispose: (() => Promise<void>) | undefined;
+  let nexusMiddlewares: readonly import("@koi/core").KoiMiddleware[] = [];
+  let nexusProviders: readonly import("@koi/core").ComponentProvider[] = [];
+
+  try {
+    const nexus = await resolveNexusStack({
+      nexusUrl: flags.nexusUrl,
+      manifestNexusUrl: nexusManifestUrl,
+    });
+    if (nexus !== undefined) {
+      nexusMiddlewares = nexus.middlewares;
+      nexusProviders = nexus.providers;
+      nexusDispose = nexus.dispose;
+      if (flags.verbose) {
+        process.stderr.write(`Nexus: ${nexus.baseUrl}\n`);
+      }
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: Nexus initialization failed: ${message}\n`);
+    // Continue without Nexus — agent can still run with local backends
+  }
+
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
   const contextConfig = await mergeBootstrapContext(manifest.context, manifestPath, manifest.name);
@@ -120,7 +146,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const runtime = await createKoi({
     manifest,
     adapter,
-    middleware: resolved.value.middleware,
+    middleware: [...resolved.value.middleware, ...nexusMiddlewares],
+    providers: [...nexusProviders],
     extensions,
   });
 
@@ -206,6 +233,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
     await ch.disconnect();
   }
   await runtime.dispose();
+  if (nexusDispose !== undefined) {
+    await nexusDispose();
+  }
 
   process.stderr.write("Goodbye.\n");
 }

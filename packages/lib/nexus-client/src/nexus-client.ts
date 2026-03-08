@@ -35,12 +35,14 @@ export function createNexusClient(config: NexusClientConfig): NexusClient {
 
     let response: Response;
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (config.apiKey) {
+        headers["Authorization"] = `Bearer ${config.apiKey}`;
+      }
+
       response = await fetchFn(config.baseUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
-        },
+        headers,
         body: JSON.stringify(body),
       });
     } catch (err: unknown) {

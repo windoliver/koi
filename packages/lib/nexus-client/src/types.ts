@@ -11,8 +11,8 @@
 export interface NexusClientConfig {
   /** Nexus server base URL (e.g., "http://localhost:2026"). */
   readonly baseUrl: string;
-  /** Nexus API key for authentication. */
-  readonly apiKey: string;
+  /** Nexus API key for authentication. Optional for embed mode (no auth). */
+  readonly apiKey?: string | undefined;
   /** Injectable fetch for testing/tracing. Default: globalThis.fetch. */
   readonly fetch?:
     | typeof globalThis.fetch

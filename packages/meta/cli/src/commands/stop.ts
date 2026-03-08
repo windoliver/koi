@@ -1,5 +1,5 @@
 /**
- * `koi stop` command — stop the deployed service.
+ * `koi stop` command — stop the deployed service and optionally the embed Nexus daemon.
  */
 
 import {
@@ -34,15 +34,27 @@ export async function runStop(flags: StopFlags): Promise<void> {
   const info = await manager.status(serviceName);
   if (info.status === "not-installed") {
     process.stderr.write(`Service "${serviceName}" is not installed.\n`);
-    return;
-  }
-
-  if (info.status !== "running") {
+  } else if (info.status !== "running") {
     process.stderr.write(`Service "${serviceName}" is already ${info.status}.\n`);
-    return;
+  } else {
+    process.stderr.write(`Stopping "${serviceName}"...\n`);
+    await manager.stop(serviceName);
+    process.stderr.write(`Service "${serviceName}" stopped.\n`);
   }
 
-  process.stderr.write(`Stopping "${serviceName}"...\n`);
-  await manager.stop(serviceName);
-  process.stderr.write(`Service "${serviceName}" stopped.\n`);
+  // Stop embed Nexus daemon if requested
+  if (flags.nexus) {
+    try {
+      const { stopEmbedNexus } = await import("@koi/nexus-embed");
+      const result = stopEmbedNexus();
+      if (result.ok) {
+        process.stderr.write(`Nexus embed daemon stopped (PID ${String(result.value.pid)}).\n`);
+      } else {
+        process.stderr.write(`Nexus embed: ${result.error.message}\n`);
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Failed to stop Nexus embed: ${message}\n`);
+    }
+  }
 }

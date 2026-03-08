@@ -7,10 +7,10 @@
 import type { KoiError, NexusPath, Result } from "@koi/core";
 import { MAX_NEXUS_PATH_LENGTH, nexusPath } from "@koi/core";
 
-/** Validate Nexus connection config. */
+/** Validate Nexus connection config. apiKey is optional for embed mode. */
 export function validateNexusConfig(config: {
   readonly baseUrl: string;
-  readonly apiKey: string;
+  readonly apiKey?: string | undefined;
 }): Result<void, KoiError> {
   if (!config.baseUrl || config.baseUrl.trim().length === 0) {
     return {
@@ -18,16 +18,6 @@ export function validateNexusConfig(config: {
       error: {
         code: "VALIDATION",
         message: "Nexus baseUrl must be a non-empty string",
-        retryable: false,
-      },
-    };
-  }
-  if (!config.apiKey || config.apiKey.trim().length === 0) {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Nexus apiKey must be a non-empty string",
         retryable: false,
       },
     };

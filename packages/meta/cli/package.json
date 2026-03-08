@@ -52,6 +52,8 @@
     "@koi/model-router": "workspace:*",
     "@koi/resolve": "workspace:*",
     "@koi/engine-pi": "workspace:*",
+    "@koi/nexus": "workspace:*",
+    "@koi/nexus-embed": "workspace:*",
     "@koi/shutdown": "workspace:*"
   }
 }

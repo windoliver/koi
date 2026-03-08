@@ -34,6 +34,14 @@
       "name": "@koi/deploy",
       "version": "0.0.0",
     },
+    "packages/deploy/nexus-embed": {
+      "name": "@koi/nexus-embed",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/deploy/node": {
       "name": "@koi/node",
       "version": "0.0.0",
@@ -1056,6 +1064,8 @@
         "@koi/middleware-tool-selector": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/nexus": "workspace:*",
+        "@koi/nexus-embed": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/shutdown": "workspace:*",
         "@koi/soul": "workspace:*",
@@ -1258,6 +1268,7 @@
         "@koi/ipc-nexus": "workspace:*",
         "@koi/name-service-nexus": "workspace:*",
         "@koi/nexus-client": "workspace:*",
+        "@koi/nexus-embed": "workspace:*",
         "@koi/nexus-store": "workspace:*",
         "@koi/pay-nexus": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
@@ -3542,6 +3553,8 @@
     "@koi/nexus": ["@koi/nexus@workspace:packages/meta/nexus"],
 
     "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
+
+    "@koi/nexus-embed": ["@koi/nexus-embed@workspace:packages/deploy/nexus-embed"],
 
     "@koi/nexus-store": ["@koi/nexus-store@workspace:packages/fs/nexus-store"],
 
