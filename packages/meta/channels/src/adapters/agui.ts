@@ -12,7 +12,13 @@ export async function createAguiShim(
   config: JsonObject,
   _opts?: ChannelRuntimeOpts,
 ): Promise<ChannelAdapter> {
-  const { createAguiChannel } = await import("@koi/channel-agui");
-  const result = createAguiChannel(config as unknown as Parameters<typeof createAguiChannel>[0]);
-  return result.channel;
+  try {
+    const { createAguiChannel } = await import("@koi/channel-agui");
+    const result = createAguiChannel(config as unknown as Parameters<typeof createAguiChannel>[0]);
+    return result.channel;
+  } catch (error: unknown) {
+    throw new Error("To use the AG-UI channel, install: bun add @koi/channel-agui", {
+      cause: error,
+    });
+  }
 }

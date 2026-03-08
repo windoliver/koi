@@ -8,6 +8,7 @@
  */
 
 // Functions
+export { getEngineName } from "./engine-name.js";
 export { loadManifest, loadManifestFromString } from "./loader.js";
 
 // Types

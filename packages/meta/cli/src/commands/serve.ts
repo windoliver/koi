@@ -12,7 +12,7 @@ import { createContextExtension } from "@koi/context";
 import type { ContentBlock, EngineInput } from "@koi/core";
 import { createHealthServer } from "@koi/deploy";
 import { createKoi } from "@koi/engine";
-import { createLoopAdapter } from "@koi/engine-loop";
+import { createPiAdapter } from "@koi/engine-pi";
 import { loadManifest } from "@koi/manifest";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import type { ServeFlags } from "../args.js";
@@ -64,8 +64,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.exit(EXIT_CONFIG);
   }
 
-  // 5. ASSEMBLE: Use resolved engine or fall back to loop adapter
-  const adapter = resolved.value.engine ?? createLoopAdapter({ modelCall: resolved.value.model });
+  // 5. ASSEMBLE: Use resolved engine or fall back to pi adapter
+  const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources

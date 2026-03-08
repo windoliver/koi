@@ -1,0 +1,41 @@
+import { defineConfig } from "tsup";
+
+export default defineConfig({
+  entry: {
+    index: "src/index.ts",
+    autonomous: "src/autonomous/index.ts",
+    channels: "src/channels/index.ts",
+    cli: "src/cli/index.ts",
+    "context-arena": "src/context-arena/index.ts",
+    forge: "src/forge/index.ts",
+    gateway: "src/gateway/index.ts",
+    goals: "src/goals/index.ts",
+    governance: "src/governance/index.ts",
+    ipc: "src/ipc/index.ts",
+    nexus: "src/nexus/index.ts",
+    node: "src/node/index.ts",
+    quality: "src/quality/index.ts",
+    retry: "src/retry/index.ts",
+    rlm: "src/rlm/index.ts",
+    sandbox: "src/sandbox/index.ts",
+    skills: "src/skills/index.ts",
+    "tool-stack": "src/tool-stack/index.ts",
+    workspace: "src/workspace/index.ts",
+    spawner: "src/spawner/index.ts",
+    tools: "src/tools/index.ts",
+    infra: "src/infra/index.ts",
+    safety: "src/safety/index.ts",
+    middleware: "src/middleware/index.ts",
+    observability: "src/observability/index.ts",
+  },
+  format: ["esm"],
+  dts: {
+    compilerOptions: {
+      composite: false,
+    },
+  },
+  clean: true,
+  treeshake: true,
+  splitting: true,
+  target: "node22",
+});

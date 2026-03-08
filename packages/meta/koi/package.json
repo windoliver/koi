@@ -1,0 +1,177 @@
+{
+  "name": "koi",
+  "description": "Self-extending agent engine — single package distribution",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./autonomous": {
+      "types": "./dist/autonomous.d.ts",
+      "import": "./dist/autonomous.js"
+    },
+    "./channels": {
+      "types": "./dist/channels.d.ts",
+      "import": "./dist/channels.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js"
+    },
+    "./context-arena": {
+      "types": "./dist/context-arena.d.ts",
+      "import": "./dist/context-arena.js"
+    },
+    "./forge": {
+      "types": "./dist/forge.d.ts",
+      "import": "./dist/forge.js"
+    },
+    "./gateway": {
+      "types": "./dist/gateway.d.ts",
+      "import": "./dist/gateway.js"
+    },
+    "./goals": {
+      "types": "./dist/goals.d.ts",
+      "import": "./dist/goals.js"
+    },
+    "./governance": {
+      "types": "./dist/governance.d.ts",
+      "import": "./dist/governance.js"
+    },
+    "./ipc": {
+      "types": "./dist/ipc.d.ts",
+      "import": "./dist/ipc.js"
+    },
+    "./nexus": {
+      "types": "./dist/nexus.d.ts",
+      "import": "./dist/nexus.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    },
+    "./quality": {
+      "types": "./dist/quality.d.ts",
+      "import": "./dist/quality.js"
+    },
+    "./retry": {
+      "types": "./dist/retry.d.ts",
+      "import": "./dist/retry.js"
+    },
+    "./rlm": {
+      "types": "./dist/rlm.d.ts",
+      "import": "./dist/rlm.js"
+    },
+    "./sandbox": {
+      "types": "./dist/sandbox.d.ts",
+      "import": "./dist/sandbox.js"
+    },
+    "./skills": {
+      "types": "./dist/skills.d.ts",
+      "import": "./dist/skills.js"
+    },
+    "./tool-stack": {
+      "types": "./dist/tool-stack.d.ts",
+      "import": "./dist/tool-stack.js"
+    },
+    "./workspace": {
+      "types": "./dist/workspace.d.ts",
+      "import": "./dist/workspace.js"
+    },
+    "./spawner": {
+      "types": "./dist/spawner.d.ts",
+      "import": "./dist/spawner.js"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "import": "./dist/tools.js"
+    },
+    "./infra": {
+      "types": "./dist/infra.d.ts",
+      "import": "./dist/infra.js"
+    },
+    "./safety": {
+      "types": "./dist/safety.d.ts",
+      "import": "./dist/safety.js"
+    },
+    "./middleware": {
+      "types": "./dist/middleware.d.ts",
+      "import": "./dist/middleware.js"
+    },
+    "./observability": {
+      "types": "./dist/observability.d.ts",
+      "import": "./dist/observability.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  },
+  "dependencies": {
+    "@koi/agent-spawner": "workspace:*",
+    "@koi/autonomous": "workspace:*",
+    "@koi/bundle": "workspace:*",
+    "@koi/channels": "workspace:*",
+    "@koi/cli": "workspace:*",
+    "@koi/code-mode": "workspace:*",
+    "@koi/config": "workspace:*",
+    "@koi/context-arena": "workspace:*",
+    "@koi/core": "workspace:*",
+    "@koi/dashboard-api": "workspace:*",
+    "@koi/doctor": "workspace:*",
+    "@koi/engine": "workspace:*",
+    "@koi/engine-pi": "workspace:*",
+    "@koi/eval": "workspace:*",
+    "@koi/forge": "workspace:*",
+    "@koi/gateway-stack": "workspace:*",
+    "@koi/goal-stack": "workspace:*",
+    "@koi/governance": "workspace:*",
+    "@koi/handoff": "workspace:*",
+    "@koi/ipc-stack": "workspace:*",
+    "@koi/manifest": "workspace:*",
+    "@koi/mcp": "workspace:*",
+    "@koi/mcp-server": "workspace:*",
+    "@koi/middleware-collective-memory": "workspace:*",
+    "@koi/middleware-event-rules": "workspace:*",
+    "@koi/middleware-event-trace": "workspace:*",
+    "@koi/middleware-reflex": "workspace:*",
+    "@koi/middleware-report": "workspace:*",
+    "@koi/name-service": "workspace:*",
+    "@koi/nexus": "workspace:*",
+    "@koi/node-stack": "workspace:*",
+    "@koi/quality-gate": "workspace:*",
+    "@koi/retry-stack": "workspace:*",
+    "@koi/rlm-stack": "workspace:*",
+    "@koi/sandbox-stack": "workspace:*",
+    "@koi/scheduler": "workspace:*",
+    "@koi/scheduler-provider": "workspace:*",
+    "@koi/search": "workspace:*",
+    "@koi/search-brave": "workspace:*",
+    "@koi/self-test": "workspace:*",
+    "@koi/session-store": "workspace:*",
+    "@koi/skill-stack": "workspace:*",
+    "@koi/starter": "workspace:*",
+    "@koi/tool-ask-guide": "workspace:*",
+    "@koi/tool-ask-user": "workspace:*",
+    "@koi/tool-exec": "workspace:*",
+    "@koi/tool-stack": "workspace:*",
+    "@koi/tools-github": "workspace:*",
+    "@koi/tools-web": "workspace:*",
+    "@koi/transcript": "workspace:*",
+    "@koi/verified-loop": "workspace:*",
+    "@koi/webhook-delivery": "workspace:*",
+    "@koi/webhook-provider": "workspace:*",
+    "@koi/workspace-stack": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  }
+}

@@ -18,7 +18,7 @@
  */
 
 import { readdir } from "node:fs/promises";
-import { L0_PACKAGES, L0U_PACKAGES, L1_PACKAGES, L3_PACKAGES } from "./layers.js";
+import { L0_PACKAGES, L0U_PACKAGES, L1_PACKAGES, L3_PACKAGES, L4_PACKAGES } from "./layers.js";
 
 const PACKAGES_DIR = new URL("../packages/", import.meta.url).pathname;
 
@@ -404,8 +404,8 @@ async function main(): Promise<void> {
         return [];
       }
 
-      // --- L3: may depend on any layer (meta-package / orchestrator) ---
-      if (L3_PACKAGES.has(pkg.name)) {
+      // --- L3/L4: may depend on any layer (meta-package / orchestrator / distribution) ---
+      if (L3_PACKAGES.has(pkg.name) || L4_PACKAGES.has(pkg.name)) {
         return [];
       }
 
@@ -476,12 +476,13 @@ async function main(): Promise<void> {
       if (!(await file.exists())) return [];
       const pkg = (await file.json()) as { name: string };
 
-      // Only L2 source is constrained — skip L0, L0u, L1, and L3
+      // Only L2 source is constrained — skip L0, L0u, L1, L3, and L4
       if (
         L0_PACKAGES.has(pkg.name) ||
         L0U_PACKAGES.has(pkg.name) ||
         L1_PACKAGES.has(pkg.name) ||
-        L3_PACKAGES.has(pkg.name)
+        L3_PACKAGES.has(pkg.name) ||
+        L4_PACKAGES.has(pkg.name)
       )
         return [];
 

@@ -20,7 +20,7 @@ import {
   // Cloud dispatch — select provider by name string
   createCloudSandbox,
 
-  // Direct adapter access (bypass dispatch)
+  // Direct adapter access (lazy-loaded — install provider package first)
   createCloudflareAdapter,
   createDaytonaAdapter,
   createDockerAdapter,
@@ -64,7 +64,7 @@ sandbox:
 import { createCloudSandbox } from "@koi/sandbox-stack";
 import type { CloudSandboxConfig } from "@koi/sandbox-stack";
 
-const result = createCloudSandbox(manifestSandboxConfig as CloudSandboxConfig);
+const result = await createCloudSandbox(manifestSandboxConfig as CloudSandboxConfig);
 if (result.ok) {
   const adapter = result.value; // SandboxAdapter — ready for createSandboxStack()
 }
@@ -100,8 +100,8 @@ import {
   createSandboxMiddleware,
 } from "@koi/sandbox-stack";
 
-// 1. Select provider from manifest config
-const adapterResult = createCloudSandbox({ provider: "docker", client, image: "node:20" });
+// 1. Select provider from manifest config (async — lazy-loads the provider package)
+const adapterResult = await createCloudSandbox({ provider: "docker", image: "node:20" });
 if (!adapterResult.ok) throw new Error(adapterResult.error.message);
 
 // 2. Compose into stack with timeout guard
@@ -158,11 +158,11 @@ Without this package:
 │                                                       │
 │  @koi/core                (L0)  Types, interfaces     │
 │  @koi/sandbox-cloud-base  (L0u) Bridge, profiles      │
-│  @koi/sandbox-cloudflare  (L2)  Cloudflare adapter    │
-│  @koi/sandbox-daytona     (L2)  Daytona adapter       │
-│  @koi/sandbox-docker      (L2)  Docker adapter        │
-│  @koi/sandbox-e2b         (L2)  E2B adapter           │
-│  @koi/sandbox-vercel      (L2)  Vercel adapter        │
+│  @koi/sandbox-cloudflare  (L2)  Lazy-loaded shim      │
+│  @koi/sandbox-daytona     (L2)  Lazy-loaded shim      │
+│  @koi/sandbox-docker      (L2)  Lazy-loaded shim      │
+│  @koi/sandbox-e2b         (L2)  Lazy-loaded shim      │
+│  @koi/sandbox-vercel      (L2)  Lazy-loaded shim      │
 │  @koi/code-executor       (L2)  Code execution tools  │
 │  @koi/sandbox-executor    (L2)  Subprocess executors  │
 │  @koi/middleware-sandbox   (L2)  Sandbox middleware    │
@@ -211,24 +211,24 @@ Without this package:
 ### Cloud Dispatch Factory
 
 ```
-  createCloudSandbox({ provider: "docker", ... })
+  await createCloudSandbox({ provider: "docker", ... })
          │
          ▼
   ┌──────────────────────────────────┐
   │ switch (config.provider)         │
-  │   "cloudflare" → adapter        │
-  │   "daytona"    → adapter        │
-  │   "docker"     → adapter        │
-  │   "e2b"        → adapter        │
-  │   "vercel"     → adapter        │
+  │   "cloudflare" → lazy import    │
+  │   "daytona"    → lazy import    │
+  │   "docker"     → lazy import    │
+  │   "e2b"        → lazy import    │
+  │   "vercel"     → lazy import    │
   │   default      → VALIDATION err │
   └──────────────────────────────────┘
          │
          ▼
-  Result<SandboxAdapter, KoiError>
+  Promise<Result<SandboxAdapter, KoiError>>
 ```
 
-TypeScript exhaustiveness checking (via `never`) catches missing providers at compile time.
+Each provider package is dynamically imported only when requested. If the package is not installed, an actionable error is thrown (e.g., "install: bun add @koi/sandbox-docker"). TypeScript exhaustiveness checking (via `never`) catches missing providers at compile time.
 
 ### Timeout Guard (Two-Layer)
 
@@ -305,11 +305,11 @@ Low-level helper. Wraps any executor with `Promise.race` timeout enforcement.
 
 ### Cloud Dispatch
 
-#### `createCloudSandbox(config: CloudSandboxConfig): Result<SandboxAdapter, KoiError>`
+#### `createCloudSandbox(config: CloudSandboxConfig): Promise<Result<SandboxAdapter, KoiError>>`
 
-Dispatch factory. Routes to the correct provider based on `config.provider`.
+Async dispatch factory. Lazy-loads the provider package and routes to the correct adapter based on `config.provider`.
 
-Returns `{ ok: true, value: SandboxAdapter }` on success, `{ ok: false, error: KoiError }` with code `"VALIDATION"` for unknown providers.
+Returns `{ ok: true, value: SandboxAdapter }` on success, `{ ok: false, error: KoiError }` with code `"VALIDATION"` for unknown providers. Throws with an actionable install message if the provider package is not installed.
 
 #### Types
 
@@ -324,15 +324,17 @@ type CloudSandboxConfig =
 type CloudSandboxProvider = "cloudflare" | "daytona" | "docker" | "e2b" | "vercel";
 ```
 
-### Re-Exported Adapter Factories
+### Lazy-Loaded Adapter Factories
 
-| Factory | Source Package |
-|---------|---------------|
-| `createCloudflareAdapter` | `@koi/sandbox-cloudflare` |
-| `createDaytonaAdapter` | `@koi/sandbox-daytona` |
-| `createDockerAdapter` | `@koi/sandbox-docker` |
-| `createE2bAdapter` | `@koi/sandbox-e2b` |
-| `createVercelAdapter` | `@koi/sandbox-vercel` |
+Each factory lazy-loads its backend package on first call. Install the provider package to use:
+
+| Factory | Provider Package | Install |
+|---------|-----------------|---------|
+| `createCloudflareAdapter` | `@koi/sandbox-cloudflare` | `bun add @koi/sandbox-cloudflare` |
+| `createDaytonaAdapter` | `@koi/sandbox-daytona` | `bun add @koi/sandbox-daytona` |
+| `createDockerAdapter` | `@koi/sandbox-docker` | `bun add @koi/sandbox-docker` |
+| `createE2bAdapter` | `@koi/sandbox-e2b` | `bun add @koi/sandbox-e2b` |
+| `createVercelAdapter` | `@koi/sandbox-vercel` | `bun add @koi/sandbox-vercel` |
 
 ### Re-Exported Cloud Base Utilities
 
@@ -388,9 +390,9 @@ type CloudSandboxProvider = "cloudflare" | "daytona" | "docker" | "e2b" | "verce
 ```typescript
 import { createCloudSandbox, createSandboxStack } from "@koi/sandbox-stack";
 
-const adapterResult = createCloudSandbox({
+const adapterResult = await createCloudSandbox({
   provider: "e2b",
-  client: e2bSdk,
+  apiKey: process.env["E2B_API_KEY"],
 });
 
 if (adapterResult.ok) {
@@ -492,7 +494,7 @@ Use `warmup()` to absorb cold start latency before the first user-facing executi
 |----------|-----------|
 | Merge sandbox-cloud into sandbox-stack | Eliminates a coordination problem — one L3 instead of two for the same domain. Docker was excluded from cloud dispatch; now included |
 | Adapter injection (BYO) for stack | Stack doesn't know or care which backend — zero coupling to cloud SDKs. Users pick their adapter, stack composes it |
-| Static imports for cloud dispatch | All 5 adapters are lightweight stubs — SDKs are injected via `client` field. No cold-start penalty from importing unused providers |
+| Lazy-load shims for cloud dispatch | Provider packages are dynamically imported only when their adapter is requested. Avoids eager imports of optional devDependencies and keeps install footprint minimal |
 | Discriminated union with `provider` field | Manifest-friendly — string-based selection. TypeScript exhaustiveness checking catches missing providers |
 | Synchronous stack factory | No I/O at creation time. Lazy provisioning via bridge means `createSandboxStack()` is instant |
 | Two-layer timeout | L3 guard catches hung bridges. Bridge guard passes clamped timeout to adapter. Defense in depth |
@@ -525,7 +527,7 @@ __tests__/exports.test.ts — 23 tests
 
 ```bash
 bun --cwd packages/meta/sandbox-stack test
-# 56 pass, 0 fail
+# 60 pass, 0 fail
 ```
 
 ---
@@ -543,7 +545,7 @@ L0u @koi/sandbox-cloud-base ────────────┐             
     createTestProfile                    │             │
                                          │             │
 L2  @koi/sandbox-{cloudflare,daytona,   │             │
-    docker,e2b,vercel}                   │             │
+    docker,e2b,vercel} (lazy-loaded)     │             │
 L2  @koi/code-executor                  │             │
 L2  @koi/sandbox-executor               │             │
 L2  @koi/middleware-sandbox              │             │

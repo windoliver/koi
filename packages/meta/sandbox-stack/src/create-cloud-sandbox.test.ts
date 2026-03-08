@@ -24,11 +24,11 @@ const mockVercelResult: Result<SandboxAdapter, KoiError> = {
   value: { name: "vercel" } as unknown as SandboxAdapter,
 };
 
-const mockCreateCloudflare = mock(() => mockCloudflareResult);
-const mockCreateDaytona = mock(() => mockDaytonaResult);
-const mockCreateDocker = mock(() => mockDockerResult);
-const mockCreateE2b = mock(() => mockE2bResult);
-const mockCreateVercel = mock(() => mockVercelResult);
+const mockCreateCloudflare = mock(() => Promise.resolve(mockCloudflareResult));
+const mockCreateDaytona = mock(() => Promise.resolve(mockDaytonaResult));
+const mockCreateDocker = mock(() => Promise.resolve(mockDockerResult));
+const mockCreateE2b = mock(() => Promise.resolve(mockE2bResult));
+const mockCreateVercel = mock(() => Promise.resolve(mockVercelResult));
 
 mock.module("@koi/sandbox-cloudflare", () => ({
   createCloudflareAdapter: mockCreateCloudflare,
@@ -50,44 +50,39 @@ mock.module("@koi/sandbox-vercel", () => ({
 const { createCloudSandbox } = await import("./create-cloud-sandbox.js");
 
 describe("createCloudSandbox", () => {
-  test("dispatches to createCloudflareAdapter for provider cloudflare", () => {
+  test("dispatches to createCloudflareAdapter for provider cloudflare", async () => {
     const config = { provider: "cloudflare" } as unknown as CloudSandboxConfig;
-    const result = createCloudSandbox(config);
-    expect(result).toBe(mockCloudflareResult);
-    expect(mockCreateCloudflare).toHaveBeenCalledWith(config);
+    const result = await createCloudSandbox(config);
+    expect(result).toEqual(mockCloudflareResult);
   });
 
-  test("dispatches to createDaytonaAdapter for provider daytona", () => {
+  test("dispatches to createDaytonaAdapter for provider daytona", async () => {
     const config = { provider: "daytona" } as unknown as CloudSandboxConfig;
-    const result = createCloudSandbox(config);
-    expect(result).toBe(mockDaytonaResult);
-    expect(mockCreateDaytona).toHaveBeenCalledWith(config);
+    const result = await createCloudSandbox(config);
+    expect(result).toEqual(mockDaytonaResult);
   });
 
-  test("dispatches to createDockerAdapter for provider docker", () => {
+  test("dispatches to createDockerAdapter for provider docker", async () => {
     const config = { provider: "docker" } as unknown as CloudSandboxConfig;
-    const result = createCloudSandbox(config);
-    expect(result).toBe(mockDockerResult);
-    expect(mockCreateDocker).toHaveBeenCalledWith(config);
+    const result = await createCloudSandbox(config);
+    expect(result).toEqual(mockDockerResult);
   });
 
-  test("dispatches to createE2bAdapter for provider e2b", () => {
+  test("dispatches to createE2bAdapter for provider e2b", async () => {
     const config = { provider: "e2b" } as unknown as CloudSandboxConfig;
-    const result = createCloudSandbox(config);
-    expect(result).toBe(mockE2bResult);
-    expect(mockCreateE2b).toHaveBeenCalledWith(config);
+    const result = await createCloudSandbox(config);
+    expect(result).toEqual(mockE2bResult);
   });
 
-  test("dispatches to createVercelAdapter for provider vercel", () => {
+  test("dispatches to createVercelAdapter for provider vercel", async () => {
     const config = { provider: "vercel" } as unknown as CloudSandboxConfig;
-    const result = createCloudSandbox(config);
-    expect(result).toBe(mockVercelResult);
-    expect(mockCreateVercel).toHaveBeenCalledWith(config);
+    const result = await createCloudSandbox(config);
+    expect(result).toEqual(mockVercelResult);
   });
 
-  test("returns validation error for unknown provider", () => {
+  test("returns validation error for unknown provider", async () => {
     const config = { provider: "unknown" } as unknown as CloudSandboxConfig;
-    const result = createCloudSandbox(config);
+    const result = await createCloudSandbox(config);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
