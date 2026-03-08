@@ -54,6 +54,7 @@ export function createCircuitBreaker(
   // Mutable internal state (encapsulated, never exposed directly)
   let state: CircuitState = "CLOSED";
   let lastTransitionAt = clock();
+  let probeInFlight = false;
 
   // Ring buffer for failure timestamps
   const ringBuffer: number[] = new Array(config.failureThreshold).fill(0);
@@ -114,12 +115,15 @@ export function createCircuitBreaker(
           // Check if cooldown has passed → transition to HALF_OPEN
           if (now - lastTransitionAt >= config.cooldownMs) {
             transitionTo("HALF_OPEN");
+            probeInFlight = true;
             return true;
           }
           return false;
         }
         case "HALF_OPEN":
-          // Allow one probe request
+          // Allow exactly one probe request at a time
+          if (probeInFlight) return false;
+          probeInFlight = true;
           return true;
         default: {
           const _exhaustive: never = state;
@@ -132,6 +136,7 @@ export function createCircuitBreaker(
       switch (state) {
         case "HALF_OPEN":
           // Probe succeeded → close circuit
+          probeInFlight = false;
           transitionTo("CLOSED");
           resetRingBuffer();
           break;
@@ -169,6 +174,7 @@ export function createCircuitBreaker(
         }
         case "HALF_OPEN":
           // Probe failed → back to OPEN
+          probeInFlight = false;
           transitionTo("OPEN");
           break;
         case "OPEN":
@@ -187,6 +193,7 @@ export function createCircuitBreaker(
     },
 
     reset(): void {
+      probeInFlight = false;
       transitionTo("CLOSED");
       resetRingBuffer();
     },

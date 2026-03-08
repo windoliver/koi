@@ -78,6 +78,20 @@ describe("computeBrickId", () => {
     // so the hash should be identical to no-files.
     expect(withUndefined).toBe(withEmpty);
   });
+
+  test("files with ambiguous key/value boundaries produce different IDs", () => {
+    // { a: "bc" } vs { ab: "c" } must not collide
+    const a = computeBrickId("tool", "body", { a: "bc" });
+    const b = computeBrickId("tool", "body", { ab: "c" });
+    expect(a).not.toBe(b);
+  });
+
+  test("single-entry vs multi-entry files with same concatenation differ", () => {
+    // { "ab": "cd" } vs { "a": "b", "c": "d" } must not collide
+    const single = computeBrickId("tool", "body", { ab: "cd" });
+    const multi = computeBrickId("tool", "body", { a: "b", c: "d" });
+    expect(single).not.toBe(multi);
+  });
 });
 
 // ---------------------------------------------------------------------------

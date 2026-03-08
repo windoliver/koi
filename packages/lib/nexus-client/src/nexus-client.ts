@@ -37,7 +37,7 @@ export function createNexusClient(config: NexusClientConfig): NexusClient {
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (config.apiKey) {
-        headers["Authorization"] = `Bearer ${config.apiKey}`;
+        headers.Authorization = `Bearer ${config.apiKey}`;
       }
 
       response = await fetchFn(config.baseUrl, {
@@ -73,6 +73,17 @@ export function createNexusClient(config: NexusClientConfig): NexusClient {
 
     if ("error" in json) {
       return { ok: false, error: mapRpcError(json.error) };
+    }
+
+    if (!("result" in json)) {
+      return {
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message: "Malformed JSON-RPC response: missing result",
+          retryable: false,
+        },
+      };
     }
 
     return { ok: true, value: json.result };

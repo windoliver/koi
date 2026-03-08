@@ -167,6 +167,37 @@ describe("ShutdownHandler", () => {
     expect(events.filter((e) => e === "shutdown_error")).toHaveLength(1);
   });
 
+  it("runs cleanup and emits shutdown_complete when onStopAccepting throws", async () => {
+    const order: string[] = [];
+    const events: string[] = [];
+
+    const handler = createShutdownHandler(
+      {
+        onStopAccepting: () => {
+          order.push("stop");
+          throw new Error("stop exploded");
+        },
+        onDrainAgents: async () => {
+          order.push("drain");
+        },
+        onCleanup: async () => {
+          order.push("cleanup");
+        },
+      },
+      (type: string) => {
+        events.push(type);
+      },
+    );
+
+    await handler.shutdown();
+
+    // Drain and cleanup must still run despite stop failing
+    expect(order).toEqual(["stop", "drain", "cleanup"]);
+    expect(events).toContain("shutdown_started");
+    expect(events).toContain("shutdown_error");
+    expect(events).toContain("shutdown_complete");
+  });
+
   it("install is idempotent — repeated calls do not leak listeners", () => {
     const handler = createShutdownHandler(
       {

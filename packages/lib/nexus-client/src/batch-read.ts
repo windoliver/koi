@@ -22,7 +22,7 @@ export async function batchRead(
   paths: readonly string[],
   options?: { readonly concurrency?: number },
 ): Promise<Result<ReadonlyMap<string, string>, KoiError>> {
-  const concurrency = options?.concurrency ?? DEFAULT_BATCH_CONCURRENCY;
+  const concurrency = Math.max(1, options?.concurrency ?? DEFAULT_BATCH_CONCURRENCY);
   const results = new Map<string, string>();
 
   for (let i = 0; i < paths.length; i += concurrency) {

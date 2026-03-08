@@ -13,6 +13,9 @@ export function lookupPreset<P extends string, S>(
   defaultPreset: NoInfer<P>,
 ): { readonly preset: P; readonly spec: Readonly<S> } {
   const resolved = preset ?? defaultPreset;
+  if (!(resolved in specs)) {
+    throw new Error(`Unknown preset: "${resolved}". Available: ${Object.keys(specs).join(", ")}`);
+  }
   const spec = specs[resolved];
   return { preset: resolved, spec };
 }

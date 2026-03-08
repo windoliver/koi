@@ -50,8 +50,15 @@ export function createShutdownHandler(
 
     emit("shutdown_started", { signal });
 
-    // 1. Stop accepting new work
-    callbacks.onStopAccepting();
+    // 1. Stop accepting new work — guarded so drain/cleanup always run
+    try {
+      callbacks.onStopAccepting();
+    } catch (stopError: unknown) {
+      emit("shutdown_error", {
+        phase: "stopAccepting",
+        error: stopError instanceof Error ? stopError.message : String(stopError),
+      });
+    }
 
     // 2. Drain active work with timeout — wrapped in try/finally so
     //    cleanup and shutdown_complete are always reached, even if

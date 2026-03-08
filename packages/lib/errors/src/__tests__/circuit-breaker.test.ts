@@ -176,6 +176,46 @@ describe("HALF_OPEN state", () => {
     const snap = cb.recordFailure(500);
     expect(snap.state).toBe("OPEN");
   });
+
+  test("blocks concurrent callers in HALF_OPEN — only one probe at a time", () => {
+    const config = makeConfig({ failureThreshold: 1, cooldownMs: 100 });
+    let now = 0;
+    const cb = createCircuitBreaker(config, () => now);
+
+    cb.recordFailure(500);
+    now = 100;
+
+    // First caller gets through (probe)
+    expect(cb.isAllowed()).toBe(true);
+    // Second caller should be blocked while probe is in flight
+    expect(cb.isAllowed()).toBe(false);
+    expect(cb.isAllowed()).toBe(false);
+
+    // Probe completes with success → back to CLOSED
+    cb.recordSuccess();
+    // Now requests flow freely
+    expect(cb.isAllowed()).toBe(true);
+    expect(cb.isAllowed()).toBe(true);
+  });
+
+  test("probe failure unblocks next probe attempt after cooldown", () => {
+    const config = makeConfig({ failureThreshold: 1, cooldownMs: 100 });
+    let now = 0;
+    const cb = createCircuitBreaker(config, () => now);
+
+    cb.recordFailure(500);
+    now = 100;
+    cb.isAllowed(); // probe allowed
+    cb.recordFailure(500); // probe failed → OPEN
+
+    // Still in OPEN before next cooldown
+    expect(cb.isAllowed()).toBe(false);
+
+    // After another cooldown, a new probe should be allowed
+    now = 200;
+    expect(cb.isAllowed()).toBe(true); // new probe
+    expect(cb.isAllowed()).toBe(false); // blocked again
+  });
 });
 
 describe("ring buffer behavior", () => {

@@ -207,6 +207,47 @@ describe("executeWithFailover", () => {
     }
   });
 
+  test("graceful degradation — tries open-breaker alternatives when all healthy ones fail", async () => {
+    const pool = makePool([makeEntry("a", 0.9), makeEntry("b", 0.5), makeEntry("c", 0.3)]);
+    // Both 'b' and 'c' have open breakers
+    const bBreaker = createCircuitBreaker(
+      { failureThreshold: 1, cooldownMs: 60_000, failureWindowMs: 60_000, failureStatusCodes: [] },
+      clock,
+    );
+    bBreaker.recordFailure();
+    const cBreaker = createCircuitBreaker(
+      { failureThreshold: 1, cooldownMs: 60_000, failureWindowMs: 60_000, failureStatusCodes: [] },
+      clock,
+    );
+    cBreaker.recordFailure();
+    const breakers: BreakerMap = new Map([
+      ["a", createCircuitBreaker(undefined, clock)],
+      ["b", bBreaker],
+      ["c", cBreaker],
+    ]);
+    now = 1000;
+
+    const result = await executeWithFailover({
+      pool,
+      breakers,
+      selectOptions: { strategy: "fitness", ctx: { clock, random: () => 0.01 } },
+      execute: async (v) => {
+        now += 5;
+        // Primary 'a' fails, 'b' open (skipped initially), 'c' open (skipped initially)
+        // Graceful degradation: try 'b' which succeeds
+        if (v.id === "a") throw new Error("primary failed");
+        return `result-${v.id}`;
+      },
+      clock,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Should have tried 'a' (failed), then skipped b/c, then retried b (succeeded)
+      expect(result.value.result).toBe("result-b");
+    }
+  });
+
   test("records duration correctly on success and failure", async () => {
     const pool = makePool([makeEntry("a", 0.9), makeEntry("b", 0.5)]);
     const breakers: BreakerMap = new Map();
