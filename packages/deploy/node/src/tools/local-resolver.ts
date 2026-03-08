@@ -5,7 +5,14 @@
  * Priority: local config > built-in defaults (first-wins).
  */
 
-import type { KoiError, Result, SourceBundle, Tool, ToolDescriptor } from "@koi/core";
+import type {
+  KoiError,
+  Result,
+  SourceBundle,
+  Tool,
+  ToolDescriptor,
+  ToolExecuteOptions,
+} from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, RETRYABLE_DEFAULTS } from "@koi/core";
 import { createFilesystemTool } from "./filesystem.js";
 import { createShellTool } from "./shell.js";
@@ -99,7 +106,13 @@ export function createLocalResolver(config: ResolverConfig): LocalResolver {
             descriptor,
             origin: "primordial",
             policy: DEFAULT_SANDBOXED_POLICY,
-            async execute(args) {
+            async execute(args, options?: ToolExecuteOptions) {
+              const signal = options?.signal;
+
+              if (signal?.aborted) {
+                return { error: "Tool call cancelled", cancelled: true };
+              }
+
               if (command === undefined) {
                 return { error: "Tool has no executable command" };
               }
@@ -115,16 +128,46 @@ export function createLocalResolver(config: ResolverConfig): LocalResolver {
                 stdout: "pipe",
                 stderr: "pipe",
               });
-              // Pass tool args via stdin instead of env to avoid shell expansion attacks
-              proc.stdin.write(JSON.stringify(args));
-              proc.stdin.end();
-              const stdout = await new Response(proc.stdout).text();
-              const exitCode = await proc.exited;
-              if (exitCode !== 0) {
-                const stderr = await new Response(proc.stderr).text();
-                return { error: stderr, exitCode };
+
+              // Kill child process on abort
+              if (signal === undefined) {
+                // No signal — run without cancellation support
+                proc.stdin.write(JSON.stringify(args));
+                proc.stdin.end();
+                const stdout = await new Response(proc.stdout).text();
+                const exitCode = await proc.exited;
+                if (exitCode !== 0) {
+                  const stderr = await new Response(proc.stderr).text();
+                  return { error: stderr, exitCode };
+                }
+                return { output: stdout, exitCode: 0 };
               }
-              return { output: stdout, exitCode: 0 };
+
+              const onAbort = (): void => {
+                proc.kill();
+              };
+              signal.addEventListener("abort", onAbort, { once: true });
+
+              try {
+                // Pass tool args via stdin instead of env to avoid shell expansion attacks
+                proc.stdin.write(JSON.stringify(args));
+                proc.stdin.end();
+                const stdout = await new Response(proc.stdout).text();
+                const exitCode = await proc.exited;
+
+                if (signal.aborted) {
+                  proc.kill();
+                  return { error: "Tool call cancelled", cancelled: true };
+                }
+
+                if (exitCode !== 0) {
+                  const stderr = await new Response(proc.stderr).text();
+                  return { error: stderr, exitCode };
+                }
+                return { output: stdout, exitCode: 0 };
+              } finally {
+                signal.removeEventListener("abort", onAbort);
+              }
             },
           };
 

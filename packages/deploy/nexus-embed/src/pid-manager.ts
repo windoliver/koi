@@ -4,6 +4,7 @@
  * Handles read/write/check of PID files with stale detection.
  */
 
+import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PID_FILE } from "./constants.js";
@@ -45,6 +46,25 @@ export function isProcessAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch {
+    return false;
+  }
+}
+
+/**
+ * Verify that a PID belongs to a Nexus process by checking its command line.
+ * Prevents killing an unrelated process after PID reuse.
+ */
+export function isNexusProcess(pid: number): boolean {
+  try {
+    // Use ps to get the full command line for the PID
+    const output = execSync(`ps -o args= -p ${String(pid)}`, {
+      encoding: "utf-8",
+      timeout: 2_000,
+    }).trim();
+    // Nexus runs as "python ... nexus serve" or similar — check for "nexus"
+    return output.includes("nexus");
+  } catch {
+    // ps failed — process doesn't exist or we can't inspect it
     return false;
   }
 }

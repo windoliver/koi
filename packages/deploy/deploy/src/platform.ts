@@ -92,9 +92,11 @@ export function resolveServiceName(agentName: string): string {
 
 /** Converts an agent name to a launchd label: "my-agent" → "com.koi.my-agent". */
 export function resolveLaunchdLabel(agentName: string): string {
+  // Use the same sanitization as resolveServiceName (dots → dashes) so that
+  // install and start/stop/status derive the same label for dotted agent names.
   const sanitized = agentName
     .toLowerCase()
-    .replace(/[^a-z0-9.]/g, "-")
+    .replace(/[^a-z0-9-]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
   return `com.koi.${sanitized}`;

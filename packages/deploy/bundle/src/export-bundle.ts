@@ -12,7 +12,7 @@
 
 import type { AgentBundle, BrickArtifact, KoiError, Result } from "@koi/core";
 import { BUNDLE_FORMAT_VERSION, brickId, bundleId, notFound, validation } from "@koi/core";
-import { computeBrickId, computeContentHash } from "@koi/hash";
+import { computeBrickId, computeContentHash, computePipelineBrickId } from "@koi/hash";
 
 import { extractBrickContent } from "./brick-content.js";
 import type { ExportBundleConfig } from "./types.js";
@@ -68,8 +68,14 @@ export async function createBundle(
 
   // 5. Verify integrity of each brick
   for (const brick of bricks) {
-    const content = extractBrickContent(brick);
-    const expectedId = computeBrickId(brick.kind, content, brick.files);
+    const expectedId =
+      brick.kind === "composite"
+        ? computePipelineBrickId(
+            brick.steps.map((s) => brickId(s.brickId)),
+            brick.outputKind,
+            brick.files,
+          )
+        : computeBrickId(brick.kind, extractBrickContent(brick), brick.files);
     if (expectedId !== brick.id) {
       return {
         ok: false,

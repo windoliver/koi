@@ -11,8 +11,13 @@
  */
 
 import type { BrickArtifact, KoiError, Result } from "@koi/core";
-import { BUNDLE_FORMAT_VERSION, DEFAULT_SANDBOXED_POLICY, validation } from "@koi/core";
-import { computeBrickId, computeContentHash } from "@koi/hash";
+import {
+  BUNDLE_FORMAT_VERSION,
+  DEFAULT_SANDBOXED_POLICY,
+  brickId as toBrickId,
+  validation,
+} from "@koi/core";
+import { computeBrickId, computeContentHash, computePipelineBrickId } from "@koi/hash";
 import { validateBrickArtifact } from "@koi/validation";
 
 import { extractBrickContent } from "./brick-content.js";
@@ -92,8 +97,14 @@ export async function importBundle(
       const brick = validationResult.value;
 
       // Verify integrity: recompute BrickId from content
-      const content = extractBrickContent(brick);
-      const expectedId = computeBrickId(brick.kind, content, brick.files);
+      const expectedId =
+        brick.kind === "composite"
+          ? computePipelineBrickId(
+              brick.steps.map((s) => toBrickId(s.brickId)),
+              brick.outputKind,
+              brick.files,
+            )
+          : computeBrickId(brick.kind, extractBrickContent(brick), brick.files);
       if (expectedId !== brick.id) {
         return {
           kind: "error",

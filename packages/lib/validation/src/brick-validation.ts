@@ -63,8 +63,15 @@ function validateUniversalOptionals(
   data: Record<string, unknown>,
   source: string,
 ): Result<void, KoiError> {
-  if (data.files !== undefined && !isRecord(data.files)) {
-    return fail("'files' must be an object if present", source);
+  if (data.files !== undefined) {
+    if (!isRecord(data.files)) {
+      return fail("'files' must be an object if present", source);
+    }
+    for (const [key, value] of Object.entries(data.files)) {
+      if (typeof value !== "string") {
+        return fail(`'files["${key}"]' must be a string, got ${typeof value}`, source);
+      }
+    }
   }
   if (data.requires !== undefined && !isRecord(data.requires)) {
     return fail("'requires' must be an object if present", source);

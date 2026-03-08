@@ -301,7 +301,6 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
               capacity: { current: 0, max: 0, available: 0 },
             },
           });
-          advertiseCapabilities();
         });
 
         const discoveryPromise = discovery.publish({
@@ -323,6 +322,9 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           currentState = "stopped";
           throw new Error("Failed to connect to Gateway", { cause: connectResult.reason });
         }
+
+        // Advertise capabilities AFTER discovery completes so the tool list is populated
+        advertiseCapabilities();
 
         currentState = "connected";
 
@@ -676,7 +678,6 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
             kind: "node:handshake",
             payload: { nodeId, version: "0.0.0", capacity: host.capacity() },
           });
-          advertiseCapabilities();
         });
 
         const discoveryPromise = discovery.publish({
@@ -702,6 +703,9 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           currentState = "stopped";
           throw new Error("Failed to connect to Gateway", { cause: connectResult.reason });
         }
+
+        // Advertise capabilities AFTER discovery completes so the tool list is populated
+        advertiseCapabilities();
 
         if (deps?.sessionStore !== undefined && deps?.onRecover !== undefined) {
           await recoverAgents(deps.onRecover, deps.sessionStore);
