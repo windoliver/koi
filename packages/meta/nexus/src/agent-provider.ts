@@ -31,7 +31,7 @@ import {
 import { createScratchpadNexusProvider } from "@koi/scratchpad-nexus";
 import { createNexusWorkspaceBackend } from "@koi/workspace-nexus";
 import { computeAgentNamespace, computeGroupNamespace, ensureNamespace } from "./namespace.js";
-import type { AgentBackendOverrides, NexusConnectionConfig, OptInOverrides } from "./types.js";
+import type { AgentBackendOverrides, OptInOverrides, ResolvedNexusConnection } from "./types.js";
 
 /** Maximum disposal map size before emitting a warning. */
 const DISPOSAL_MAP_WARNING_THRESHOLD = 10_000;
@@ -48,7 +48,7 @@ interface AgentDisposables {
  * Returns both the provider and any middleware collected from scratchpad wiring.
  */
 export function createNexusAgentProvider(
-  conn: NexusConnectionConfig,
+  conn: ResolvedNexusConnection,
   client: NexusClient,
   agentOverrides: AgentBackendOverrides = {},
   optIn: OptInOverrides = {},

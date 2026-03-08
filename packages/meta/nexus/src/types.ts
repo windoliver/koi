@@ -26,6 +26,13 @@ export interface NexusConnectionConfig {
   readonly fetch?: typeof globalThis.fetch | undefined;
 }
 
+/** Connection config with baseUrl resolved (post-validation / post-embed). */
+export interface ResolvedNexusConnection {
+  readonly baseUrl: string;
+  readonly apiKey: string;
+  readonly fetch?: typeof globalThis.fetch | undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Per-backend override configs
 // ---------------------------------------------------------------------------

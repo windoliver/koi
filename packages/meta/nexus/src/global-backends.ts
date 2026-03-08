@@ -16,8 +16,8 @@ import { createNexusSchedulerBackends } from "@koi/scheduler-nexus";
 import { createNexusSearch } from "@koi/search-nexus";
 import type {
   GlobalBackendOverrides,
-  NexusConnectionConfig,
   NexusGlobalBackends,
+  ResolvedNexusConnection,
 } from "./types.js";
 
 /**
@@ -28,7 +28,7 @@ import type {
  * - Override objects are shallow-merged with the base connection config.
  */
 export async function createGlobalBackends(
-  conn: NexusConnectionConfig,
+  conn: ResolvedNexusConnection,
   client: NexusClient,
   overrides: GlobalBackendOverrides = {},
 ): Promise<NexusGlobalBackends> {

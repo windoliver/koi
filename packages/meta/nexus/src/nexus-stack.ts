@@ -8,7 +8,12 @@
 import { createNexusClient } from "@koi/nexus-client";
 import { createNexusAgentProvider } from "./agent-provider.js";
 import { createGlobalBackends } from "./global-backends.js";
-import type { NexusBundle, NexusStackConfig, ResolvedNexusMeta } from "./types.js";
+import type {
+  NexusBundle,
+  NexusStackConfig,
+  ResolvedNexusConnection,
+  ResolvedNexusMeta,
+} from "./types.js";
 import { validateNexusStackConfig } from "./validate-config.js";
 
 /**
@@ -21,7 +26,7 @@ import { validateNexusStackConfig } from "./validate-config.js";
 export async function createNexusStack(config: NexusStackConfig): Promise<NexusBundle> {
   // let — resolved from embed mode when baseUrl is missing
   let resolvedBaseUrl = config.baseUrl;
-  const resolvedApiKey = config.apiKey;
+  const resolvedApiKey = config.apiKey ?? "";
 
   if (!resolvedBaseUrl || resolvedBaseUrl.trim() === "") {
     // Lazy import to avoid loading embed deps when in remote mode
@@ -52,6 +57,13 @@ export async function createNexusStack(config: NexusStackConfig): Promise<NexusB
   const { overrides, agentOverrides, optIn } = config;
   const fetchFn = config.fetch;
 
+  // Build resolved connection (baseUrl guaranteed non-undefined after guard above)
+  const resolvedConn: ResolvedNexusConnection = {
+    baseUrl: resolvedBaseUrl,
+    apiKey: resolvedApiKey,
+    ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
+  };
+
   // Shared NexusClient for backends that accept a client directly
   const client = createNexusClient({
     baseUrl: resolvedBaseUrl,
@@ -60,23 +72,11 @@ export async function createNexusStack(config: NexusStackConfig): Promise<NexusB
   });
 
   // Create global backends (registry + nameService are async)
-  const backends = await createGlobalBackends(
-    {
-      baseUrl: resolvedBaseUrl,
-      apiKey: resolvedApiKey,
-      ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
-    },
-    client,
-    overrides,
-  );
+  const backends = await createGlobalBackends(resolvedConn, client, overrides);
 
   // Create agent-scoped provider
   const { provider, middlewares } = createNexusAgentProvider(
-    {
-      baseUrl: resolvedBaseUrl,
-      apiKey: resolvedApiKey,
-      ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
-    },
+    resolvedConn,
     client,
     agentOverrides,
     optIn,
