@@ -10,6 +10,7 @@
 
 import type {
   AgentId,
+  ContentBlock,
   CronSchedule,
   EngineInput,
   ScheduledTask,
@@ -38,25 +39,22 @@ function toScheduleId(id: string): ScheduleId {
 
 /**
  * Convert EngineInput to a content array suitable for IncomingMessage.
+ * Preserves ALL ContentBlock types (text, image, file, button, custom).
  * Handles all three EngineInput kinds: text, messages, resume.
  */
-function mapEngineInputToContent(
-  input: EngineInput,
-): readonly { readonly kind: "text"; readonly text: string }[] {
+function mapEngineInputToContent(input: EngineInput): readonly ContentBlock[] {
   switch (input.kind) {
     case "text":
       return [{ kind: "text", text: input.text }];
     case "messages": {
-      // Flatten all InboundMessage content blocks into text content
-      const texts: { readonly kind: "text"; readonly text: string }[] = [];
+      // Flatten all InboundMessage content blocks (preserve every block type)
+      const blocks: ContentBlock[] = [];
       for (const msg of input.messages) {
         for (const block of msg.content) {
-          if (block.kind === "text") {
-            texts.push({ kind: "text", text: block.text });
-          }
+          blocks.push(block);
         }
       }
-      return texts;
+      return blocks;
     }
     case "resume":
       // Resume has no new user message content
@@ -84,6 +82,8 @@ export interface TemporalClientLike {
       ...args: readonly unknown[]
     ) => Promise<void>;
     readonly cancel: (workflowId: string) => Promise<void>;
+    /** Resolves when the workflow completes. Rejects if the workflow fails. */
+    readonly getResult?: ((workflowId: string) => Promise<unknown>) | undefined;
   };
   readonly schedule: {
     readonly create: (scheduleId: string, options: Record<string, unknown>) => Promise<unknown>;
@@ -213,7 +213,51 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       });
 
       // Transition to running after the workflow is signaled
-      tasks.set(id, { ...task, status: "running" });
+      const runningTask: ScheduledTask = { ...task, status: "running" };
+      tasks.set(id, runningTask);
+
+      // Fire-and-forget: track workflow completion asynchronously
+      if (config.client.workflow.getResult !== undefined) {
+        const startedAt = now;
+        void config.client.workflow.getResult(id).then(
+          (result: unknown) => {
+            const completedAt = Date.now();
+            tasks.set(id, { ...runningTask, status: "completed" });
+            history.push({
+              taskId: id,
+              agentId,
+              status: "completed",
+              startedAt,
+              completedAt,
+              durationMs: completedAt - startedAt,
+              result,
+              retryAttempt: 0,
+            });
+            emit({ kind: "task:completed", taskId: id, result });
+          },
+          (error: unknown) => {
+            const completedAt = Date.now();
+            tasks.set(id, { ...runningTask, status: "failed" });
+            const koiError = {
+              code: "EXTERNAL" as const,
+              message: error instanceof Error ? error.message : String(error),
+              retryable: false,
+              context: { taskId: id, agentId },
+            };
+            history.push({
+              taskId: id,
+              agentId,
+              status: "failed",
+              startedAt,
+              completedAt,
+              durationMs: completedAt - startedAt,
+              error: koiError.message,
+              retryAttempt: 0,
+            });
+            emit({ kind: "task:failed", taskId: id, error: koiError });
+          },
+        );
+      }
 
       return id;
     },
@@ -265,7 +309,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       };
 
       await config.client.schedule.create(id, {
-        spec: { cronExpressions: [expression] },
+        spec: {
+          cronExpressions: [expression],
+          ...(options?.timezone !== undefined ? { timezone: options.timezone } : {}),
+        },
         action: {
           type: "startWorkflow",
           workflowType: config.workflowType,

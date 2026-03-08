@@ -15,12 +15,13 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function createMockClient(): TemporalClientLike {
+function createMockClient(overrides?: Partial<TemporalClientLike["workflow"]>): TemporalClientLike {
   return {
     workflow: {
       start: mock(async () => ({ workflowId: "wf-1" })),
       signal: mock(async () => undefined),
       cancel: mock(async () => undefined),
+      ...overrides,
     },
     schedule: {
       create: mock(async () => undefined),
@@ -43,7 +44,16 @@ const AGENT_ID = "agent-1" as AgentId;
 const TEXT_INPUT: EngineInput = { kind: "text", text: "hello" } as unknown as EngineInput;
 const MESSAGES_INPUT: EngineInput = {
   kind: "messages",
-  messages: [{ content: [{ kind: "text", text: "from message" }], senderId: "u1", timestamp: 1 }],
+  messages: [
+    {
+      content: [
+        { kind: "text", text: "from message" },
+        { kind: "image", url: "https://example.com/img.png", alt: "test" },
+      ],
+      senderId: "u1",
+      timestamp: 1,
+    },
+  ],
 } as unknown as EngineInput;
 const RESUME_INPUT: EngineInput = { kind: "resume", state: {} } as unknown as EngineInput;
 
@@ -123,7 +133,7 @@ describe("submit", () => {
     expect(payload.content).toEqual([{ kind: "text", text: "hello" }]);
   });
 
-  test("converts messages EngineInput to content array in signal", async () => {
+  test("preserves all ContentBlock types from messages EngineInput", async () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
@@ -131,7 +141,10 @@ describe("submit", () => {
 
     const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
     const payload = signalArgs?.[2] as { content: readonly unknown[] };
-    expect(payload.content).toEqual([{ kind: "text", text: "from message" }]);
+    expect(payload.content).toEqual([
+      { kind: "text", text: "from message" },
+      { kind: "image", url: "https://example.com/img.png", alt: "test" },
+    ]);
   });
 
   test("converts resume EngineInput to empty content array", async () => {
@@ -164,6 +177,55 @@ describe("submit", () => {
 
     const tasks = await scheduler.query({});
     expect(tasks[0]?.status).toBe("running");
+  });
+
+  test("tracks workflow completion via getResult", async () => {
+    let resolveResult!: (value: unknown) => void;
+    const resultPromise = new Promise((resolve) => {
+      resolveResult = resolve;
+    });
+    const client = createMockClient({
+      getResult: mock(async () => resultPromise),
+    });
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    expect((await scheduler.query({}))[0]?.status).toBe("running");
+
+    // Simulate workflow completion
+    resolveResult({ done: true });
+    // Let the microtask queue flush
+    await new Promise((r) => setTimeout(r, 10));
+
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("completed");
+    const records = await scheduler.history({});
+    expect(records).toHaveLength(1);
+    expect(records[0]?.status).toBe("completed");
+  });
+
+  test("tracks workflow failure via getResult", async () => {
+    let rejectResult!: (error: unknown) => void;
+    const resultPromise = new Promise((_resolve, reject) => {
+      rejectResult = reject;
+    });
+    const client = createMockClient({
+      getResult: mock(async () => resultPromise),
+    });
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+
+    // Simulate workflow failure
+    rejectResult(new Error("workflow failed"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("failed");
+    const records = await scheduler.history({});
+    expect(records).toHaveLength(1);
+    expect(records[0]?.status).toBe("failed");
+    expect(records[0]?.error).toBe("workflow failed");
   });
 });
 
@@ -228,6 +290,30 @@ describe("schedule", () => {
     expect(workflowConfig).toHaveProperty("initialMessage");
     const msg = workflowConfig.initialMessage as { content: readonly unknown[] };
     expect(msg.content).toEqual([{ kind: "text", text: "hello" }]);
+  });
+
+  test("passes timezone in schedule spec", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn", {
+      timezone: "America/New_York",
+    });
+
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const options = createArgs?.[1] as { spec: { timezone?: string } };
+    expect(options.spec.timezone).toBe("America/New_York");
+  });
+
+  test("omits timezone when not provided", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
+
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const options = createArgs?.[1] as { spec: Record<string, unknown> };
+    expect(options.spec).not.toHaveProperty("timezone");
   });
 
   test("emits schedule:created event", async () => {

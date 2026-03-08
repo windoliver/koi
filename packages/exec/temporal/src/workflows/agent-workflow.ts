@@ -163,6 +163,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
         sessionId: config.sessionId,
         parentAgentId: config.agentId,
         stateRefs: result.spawnChild.childConfig.stateRefs,
+        initialMessage: result.spawnChild.childConfig.initialMessage,
       };
 
       await startChild("workerWorkflow", {

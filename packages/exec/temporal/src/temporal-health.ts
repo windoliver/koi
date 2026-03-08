@@ -68,10 +68,12 @@ function createCircuitBreaker(
     },
 
     recordSuccess(): CircuitBreakerSnapshot {
+      // Always reset failure count on success — prevents cumulative failures
+      // from tripping the circuit across non-consecutive failure windows.
+      failureCount = 0;
+      lastFailureAt = undefined;
       if (state === "HALF_OPEN") {
         transitionTo("CLOSED");
-        failureCount = 0;
-        lastFailureAt = undefined;
       }
       return snapshot();
     },

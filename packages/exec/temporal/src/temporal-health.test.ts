@@ -169,6 +169,32 @@ describe("circuit breaker", () => {
 
     expect(monitor.snapshot().consecutiveFailures).toBeGreaterThanOrEqual(2);
   });
+
+  test("non-consecutive failures do not trip circuit (fail-fail-success-fail-fail stays healthy)", async () => {
+    // Pattern: fail, fail, success, fail, fail — threshold=3
+    // With consecutive-only logic, the success resets the counter,
+    // so it should NOT trip (max consecutive = 2 < threshold 3).
+    let callCount = 0;
+    const healthCheck = mock(async () => {
+      callCount++;
+      // fail, fail, success, fail, fail, then success forever
+      if (callCount === 3 || callCount > 5) return true;
+      return false;
+    });
+    monitor = createTemporalHealthMonitor(
+      createTestConfig({ pollIntervalMs: 20, failureThreshold: 3 }),
+      healthCheck,
+    );
+
+    monitor.start();
+    // Wait for enough polls to cover the full pattern
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Should still be healthy — no run of 3 consecutive failures
+    expect(callCount).toBeGreaterThanOrEqual(5);
+    expect(monitor.snapshot().status).toBe("healthy");
+    expect(monitor.isAvailable()).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
