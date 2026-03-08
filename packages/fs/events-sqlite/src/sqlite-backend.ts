@@ -374,37 +374,84 @@ export function createSqliteEventBackend(config: SqliteEventBackendConfig = {}):
       const direction = options?.direction ?? "forward";
       const limit = options?.limit ?? Number.MAX_SAFE_INTEGER;
       const typeFilter = options?.types !== undefined ? new Set(options.types) : undefined;
+      const needsPostFilter = eventTtlMs !== undefined || typeFilter !== undefined;
 
       try {
-        // Fetch one extra to detect hasMore
-        const fetchLimit = limit < Number.MAX_SAFE_INTEGER ? limit + 1 : limit;
         const stmt = direction === "backward" ? readEventsBackwardStmt : readEventsForwardStmt;
-        const rows = stmt.all(streamId, from, to, fetchLimit);
 
-        // let is required: progressively filtered
-        let envelopes = rows.map(mapRowToEnvelope);
+        if (!needsPostFilter) {
+          // Fast path: no post-fetch filtering, limit+1 sentinel is reliable
+          const fetchLimit = limit < Number.MAX_SAFE_INTEGER ? limit + 1 : limit;
+          const rows = stmt.all(streamId, from, to, fetchLimit);
+          const envelopes = rows.map(mapRowToEnvelope);
 
-        // TTL filtering
-        if (eventTtlMs !== undefined) {
-          const cutoff = ttlCutoff();
-          envelopes = envelopes.filter((e) => e.timestamp > cutoff);
+          if (limit < Number.MAX_SAFE_INTEGER && envelopes.length > limit) {
+            return {
+              ok: true,
+              value: { events: envelopes.slice(0, limit), hasMore: true },
+            };
+          }
+          return { ok: true, value: { events: envelopes, hasMore: false } };
         }
 
-        // Type filtering
-        if (typeFilter !== undefined) {
-          envelopes = envelopes.filter((e) => typeFilter.has(e.type));
+        // Slow path: TTL and/or type filters applied after fetch.
+        // Over-fetch in batches to collect enough matching events and
+        // reliably detect whether more exist beyond the requested limit.
+        const cutoff = eventTtlMs !== undefined ? ttlCutoff() : 0;
+        const batchSize =
+          limit < Number.MAX_SAFE_INTEGER ? (limit + 1) * 2 : Number.MAX_SAFE_INTEGER;
+        const collected: EventEnvelope[] = [];
+        // let is required: range bounds narrow across batches
+        // SQL: WHERE sequence >= rangeFrom AND sequence < rangeTo
+        let rangeFrom = from;
+        let rangeTo = to;
+        // let is required: flag set when DB rows are exhausted
+        let dbExhausted = false;
+
+        while (collected.length <= limit) {
+          const rows = stmt.all(streamId, rangeFrom, rangeTo, batchSize);
+          if (rows.length === 0) {
+            dbExhausted = true;
+            break;
+          }
+
+          for (const row of rows) {
+            const env = mapRowToEnvelope(row);
+            if (eventTtlMs !== undefined && env.timestamp <= cutoff) continue;
+            if (typeFilter !== undefined && !typeFilter.has(env.type)) continue;
+            collected.push(env);
+            if (collected.length > limit) break;
+          }
+
+          // Narrow the range past the rows we already fetched.
+          // Forward: last row has highest sequence → advance lower bound
+          // Backward: last row (ORDER BY DESC) has lowest sequence → lower upper bound
+          const lastRow = rows[rows.length - 1];
+          if (lastRow === undefined) {
+            dbExhausted = true;
+            break;
+          }
+          if (direction === "backward") {
+            rangeTo = lastRow.sequence;
+          } else {
+            rangeFrom = lastRow.sequence + 1;
+          }
+
+          if (rows.length < batchSize) {
+            dbExhausted = true;
+            break;
+          }
         }
 
-        if (limit < Number.MAX_SAFE_INTEGER && envelopes.length > limit) {
+        if (limit < Number.MAX_SAFE_INTEGER && collected.length > limit) {
           return {
             ok: true,
-            value: { events: envelopes.slice(0, limit), hasMore: true },
+            value: { events: collected.slice(0, limit), hasMore: true },
           };
         }
-
         return {
           ok: true,
-          value: { events: envelopes, hasMore: false },
+          value: { events: collected, hasMore: !dbExhausted },
         };
       } catch (e: unknown) {
         return { ok: false, error: mapSqliteError(e, "read") };

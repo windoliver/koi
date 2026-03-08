@@ -56,12 +56,12 @@ export async function resolveOne<T>(
     };
   }
 
-  // 3. Call factory
-  const EMPTY_OPTIONS: JsonObject = {};
+  // 3. Call factory — pass validated (potentially normalized) options, not raw input
   try {
     // Generic cast: registry returns BrickDescriptor<unknown>, caller narrows via T
     const typedDescriptor = descriptor as BrickDescriptor<T>;
-    const instance = await typedDescriptor.factory(config.options ?? EMPTY_OPTIONS, context);
+    const validatedOptions = (validationResult.value ?? config.options ?? {}) as JsonObject;
+    const instance = await typedDescriptor.factory(validatedOptions, context);
     return { ok: true, value: instance };
   } catch (e: unknown) {
     return {

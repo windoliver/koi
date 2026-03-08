@@ -46,6 +46,21 @@ export async function resolveSearch(
   // config is narrowed to `object & { name: string }` — access via Record for options
   const obj = config as Record<string, unknown>;
   const name = config.name;
+
+  // Fail fast on non-object options instead of silently dropping
+  if (obj.options !== undefined && obj.options !== null) {
+    if (typeof obj.options !== "object") {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `search.options must be an object, got ${typeof obj.options}`,
+          retryable: false,
+        },
+      };
+    }
+  }
+
   const options =
     typeof obj.options === "object" && obj.options !== null
       ? (obj.options as Record<string, unknown>)

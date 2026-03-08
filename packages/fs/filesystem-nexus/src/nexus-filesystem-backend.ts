@@ -135,9 +135,15 @@ function mapNotFoundError<T>(result: {
 
 /** Strip basePath prefix from a full path, returning the user-relative path. */
 function stripBasePath(base: string, fullPath: string): string {
-  if (fullPath.startsWith(base)) {
-    const relative = fullPath.slice(base.length);
-    return relative.startsWith("/") ? relative : `/${relative}`;
+  // Exact match: path IS the base directory
+  if (fullPath === base) {
+    return "/";
+  }
+  // Path-boundary check: ensure base is followed by "/" to prevent
+  // sibling-prefix collisions (e.g. base="/fs" must not match "/fspath/a.txt")
+  const baseWithSlash = base.endsWith("/") ? base : `${base}/`;
+  if (fullPath.startsWith(baseWithSlash)) {
+    return `/${fullPath.slice(baseWithSlash.length)}`;
   }
   return fullPath;
 }

@@ -52,6 +52,40 @@ describe("isBlockedUrl", () => {
     expect(isBlockedUrl("http://db.local:5432/")).toBe(true);
   });
 
+  test("blocks IPv6 link-local (fe80::/10)", () => {
+    expect(isBlockedUrl("http://[fe80::1]/")).toBe(true);
+    expect(isBlockedUrl("http://[fe80::1%25eth0]:8080/")).toBe(true);
+    expect(isBlockedUrl("http://[feb0::1]/")).toBe(true);
+  });
+
+  test("blocks IPv6 unique local addresses (fc00::/7)", () => {
+    expect(isBlockedUrl("http://[fc00::1]/")).toBe(true);
+    expect(isBlockedUrl("http://[fd12:3456::1]/")).toBe(true);
+  });
+
+  test("blocks IPv6 unspecified address (::)", () => {
+    expect(isBlockedUrl("http://[::]/")).toBe(true);
+    expect(isBlockedUrl("http://::/")).toBe(true);
+  });
+
+  test("blocks numeric IPv4 (decimal integer form)", () => {
+    // 2130706433 = 127.0.0.1
+    expect(isBlockedUrl("http://2130706433/")).toBe(true);
+    // 167772161 = 10.0.0.1
+    expect(isBlockedUrl("http://167772161/secret")).toBe(true);
+  });
+
+  test("blocks octal IPv4", () => {
+    // 0177.0.0.1 = 127.0.0.1
+    expect(isBlockedUrl("http://0177.0.0.1/")).toBe(true);
+  });
+
+  test("blocks hex IPv4", () => {
+    // 0x7f.0.0.1 = 127.0.0.1
+    expect(isBlockedUrl("http://0x7f.0.0.1/")).toBe(true);
+    expect(isBlockedUrl("http://0x7f000001/")).toBe(true);
+  });
+
   test("allows public URLs", () => {
     expect(isBlockedUrl("https://example.com")).toBe(false);
     expect(isBlockedUrl("https://api.github.com/repos")).toBe(false);
