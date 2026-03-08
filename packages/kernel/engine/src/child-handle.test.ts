@@ -474,15 +474,42 @@ describe("createChildHandle waitForCompletion", () => {
     expect(r2.exitCode).toBe(0);
   });
 
-  test("resolves immediately with exitCode:1 when already terminated (cleanup ran)", async () => {
+  test("resolves immediately with correct exitCode when already terminated (cleanup ran)", async () => {
     registry.register(entry("child-1", "running", 0));
 
     const handle = createChildHandle(agentId("child-1"), "worker-1", registry);
 
-    // Terminate synchronously to trigger cleanup
+    // Terminate synchronously to trigger cleanup — evicted maps to exitCode 4
     registry.transition(agentId("child-1"), "terminated", 0, { kind: "evicted" });
 
-    // waitForCompletion after termination should resolve immediately
+    // waitForCompletion after termination should derive exitCode from lastReason
+    const result = await handle.waitForCompletion();
+    expect(result.exitCode).toBe(4);
+    expect(result.reason?.kind).toBe("evicted");
+  });
+
+  test("resolves with exitCode:0 when already completed (cleanup ran)", async () => {
+    registry.register(entry("child-1", "running", 0));
+
+    const handle = createChildHandle(agentId("child-1"), "worker-1", registry);
+
+    // Complete synchronously to trigger cleanup — completed maps to exitCode 0
+    registry.transition(agentId("child-1"), "terminated", 0, { kind: "completed" });
+
+    const result = await handle.waitForCompletion();
+    expect(result.exitCode).toBe(0);
+    expect(result.reason?.kind).toBe("completed");
+  });
+
+  test("resolves with exitCode:1 when no reason available (fallback)", async () => {
+    registry.register(entry("child-1", "running", 0));
+
+    const handle = createChildHandle(agentId("child-1"), "worker-1", registry);
+
+    // Deregister fires terminated with no reason captured via transition
+    registry.deregister(agentId("child-1"));
+
+    // lastReason is undefined (deregister doesn't set it) — falls back to exitCode 1
     const result = await handle.waitForCompletion();
     expect(result.exitCode).toBe(1);
   });

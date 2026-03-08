@@ -274,6 +274,22 @@ describe("createGovernanceController", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("error rate uses windowed denominator, not lifetime total", () => {
+    // Use a very short window so we can demonstrate the windowed behavior.
+    // With lifetime denominator, old successes would dilute the rate.
+    const ctrl = createGovernanceController({ errorRate: { windowMs: 60000, threshold: 0.5 } });
+
+    // Record 2 successes and 1 error — all within the window
+    ctrl.record({ kind: "tool_success", toolName: "t" });
+    ctrl.record({ kind: "tool_success", toolName: "t" });
+    ctrl.record({ kind: "tool_error", toolName: "t" });
+
+    // 1 error / 3 total in window = 0.333...
+    const r = ctrl.reading(GOVERNANCE_VARIABLES.ERROR_RATE);
+    expect(r).toBeDefined();
+    expect(r?.current).toBeCloseTo(1 / 3);
+  });
+
   test("error rate is 0 when no tool calls recorded", async () => {
     const ctrl = createGovernanceController();
     const result = await ctrl.check(GOVERNANCE_VARIABLES.ERROR_RATE);

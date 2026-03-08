@@ -267,6 +267,35 @@ describe("createServiceProvider — customTools", () => {
     expect(receivedAgent?.pid.id).toBe(agentId("observed-agent"));
   });
 
+  test("customTools disables caching by default (per-agent safety)", async () => {
+    const provider = createServiceProvider(
+      createTestConfig({
+        customTools: (_b, _agent) => [],
+      }),
+    );
+
+    const first = await provider.attach(createMockAgent({ pid: { id: agentId("a1") } }));
+    const second = await provider.attach(createMockAgent({ pid: { id: agentId("a2") } }));
+
+    // With customTools and no explicit cache setting, each attach rebuilds
+    expect(first).not.toBe(second);
+  });
+
+  test("customTools with cache: true explicitly enables caching", async () => {
+    const provider = createServiceProvider(
+      createTestConfig({
+        customTools: (_b, _agent) => [],
+        cache: true,
+      }),
+    );
+
+    const first = await provider.attach(createMockAgent({ pid: { id: agentId("a1") } }));
+    const second = await provider.attach(createMockAgent({ pid: { id: agentId("a2") } }));
+
+    // Explicitly enabled — same cached reference
+    expect(first).toBe(second);
+  });
+
   test("customTools returning empty array adds nothing extra", async () => {
     const provider = createServiceProvider(createTestConfig({ customTools: () => [] }));
     const components = extractMap(await provider.attach(createMockAgent()));
