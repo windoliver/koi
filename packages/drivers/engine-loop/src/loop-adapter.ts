@@ -199,10 +199,12 @@ function finalizeMetrics(acc: MetricsAccumulator): EngineMetrics {
 async function executeToolCall(
   descriptor: ToolCallDescriptor,
   toolHandler: ToolHandler,
+  signal?: AbortSignal,
 ): Promise<{ readonly descriptor: ToolCallDescriptor; readonly response: ToolResponse }> {
   const request: ToolRequest = {
     toolId: descriptor.toolName,
     input: descriptor.input,
+    ...(signal !== undefined ? { signal } : {}),
   };
   try {
     const response = await toolHandler(request);
@@ -224,6 +226,7 @@ async function executeToolRound(
   toolCalls: readonly ToolCallDescriptor[],
   toolHandler: ToolHandler | undefined,
   emitStartEvents: boolean,
+  signal?: AbortSignal,
 ): Promise<{
   readonly results: readonly {
     readonly descriptor: ToolCallDescriptor;
@@ -253,7 +256,9 @@ async function executeToolRound(
     }
   }
 
-  const results = await Promise.all(toolCalls.map((tc) => executeToolCall(tc, toolHandler)));
+  const results = await Promise.all(
+    toolCalls.map((tc) => executeToolCall(tc, toolHandler, signal)),
+  );
 
   for (const result of results) {
     events.push({
@@ -362,6 +367,24 @@ async function* streamModelAndCollect(
   }
 }
 
+/**
+ * Consume a model stream and return the final ModelResponse, discarding chunks.
+ * Used for the max_turns summary call where we only need the final response.
+ */
+async function collectStreamResponse(
+  streamHandler: ModelStreamHandler,
+  request: ModelRequest,
+): Promise<ModelResponse | undefined> {
+  // let: set once when the stream emits the done chunk
+  let finalResponse: ModelResponse | undefined;
+  for await (const chunk of streamHandler(request)) {
+    if (chunk.kind === "done") {
+      finalResponse = chunk.response;
+    }
+  }
+  return finalResponse;
+}
+
 // ---------------------------------------------------------------------------
 // Factory function
 // ---------------------------------------------------------------------------
@@ -415,6 +438,7 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
       const modelCall = resolveModelCall(callHandlers);
       const toolHandler = resolveToolCall(callHandlers);
       const modelStream = resolveModelStream(callHandlers);
+      const signal = input.signal;
 
       // Mutable array — local to this generator, never shared during iteration.
       // Uses push() for O(1) append instead of O(n) spread per turn.
@@ -429,7 +453,16 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
           break;
         }
 
-        const request: ModelRequest = { messages };
+        // Check abort signal before each model call
+        if (signal?.aborted) {
+          stopReason = "interrupted";
+          break;
+        }
+
+        const request: ModelRequest = {
+          messages,
+          ...(signal !== undefined ? { signal } : {}),
+        };
 
         // --- Get model response (streaming or non-streaming) ---
         let response: ModelResponse | undefined;
@@ -471,6 +504,7 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
           toolCalls,
           toolHandler,
           modelStream === undefined,
+          signal,
         );
         for (const event of events) yield event;
 
@@ -481,6 +515,37 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
 
         if (turn === maxTurns - 1) {
           stopReason = "max_turns";
+        }
+      }
+
+      // When max_turns is hit after a tool round, the last message is a tool result.
+      // Do one final model call to produce a proper text response so the output
+      // reflects the model's synthesis rather than raw tool output.
+      if (stopReason === "max_turns") {
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg !== undefined && lastMsg.senderId === "tool") {
+          if (!signal?.aborted && !disposed) {
+            const finalRequest: ModelRequest = {
+              messages,
+              ...(signal !== undefined ? { signal } : {}),
+            };
+            try {
+              const summaryResponse =
+                modelStream !== undefined
+                  ? await collectStreamResponse(modelStream, finalRequest)
+                  : await modelCall(finalRequest);
+              if (summaryResponse !== undefined) {
+                metrics = addModelUsage(metrics, summaryResponse);
+                messages.push(
+                  buildAssistantMessage(summaryResponse.content, summaryResponse.metadata),
+                );
+              }
+            } catch {
+              // If the final summary call fails, fall through to use existing content.
+              // The stop reason already indicates max_turns — the caller knows the output
+              // may be incomplete.
+            }
+          }
         }
       }
 

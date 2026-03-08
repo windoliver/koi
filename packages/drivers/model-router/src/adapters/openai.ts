@@ -5,8 +5,9 @@
  * Uses raw fetch — no SDK dependency.
  */
 
-import type { ModelRequest, ModelResponse } from "@koi/core";
-import { normalizeToPlainText } from "../normalize.js";
+import type { ContentBlock, ModelRequest, ModelResponse } from "@koi/core";
+import type { NormalizedRole } from "../normalize.js";
+import { normalizeMessages, normalizeToPlainText } from "../normalize.js";
 import type { ProviderAdapter, ProviderAdapterConfig } from "../provider-adapter.js";
 import { createOpenAICompatibleAdapter } from "./openai-compat.js";
 
@@ -16,9 +17,25 @@ export { mapStatusToErrorCode } from "./shared.js";
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+// ---------------------------------------------------------------------------
+// OpenAI structured content types
+// ---------------------------------------------------------------------------
+
+interface OpenAITextPart {
+  readonly type: "text";
+  readonly text: string;
+}
+
+interface OpenAIImageUrlPart {
+  readonly type: "image_url";
+  readonly image_url: { readonly url: string };
+}
+
+type OpenAIContentPart = OpenAITextPart | OpenAIImageUrlPart;
+
 interface OpenAIChatMessage {
   readonly role: "system" | "user" | "assistant";
-  readonly content: string;
+  readonly content: string | readonly OpenAIContentPart[];
 }
 
 interface OpenAIChatRequest {
@@ -48,13 +65,57 @@ interface OpenAIChatResponse {
   readonly usage?: OpenAIUsage;
 }
 
+// ---------------------------------------------------------------------------
+// Content block conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Converts a single Koi ContentBlock to an OpenAI content part.
+ * Text and image blocks map natively; unsupported types fall back to text.
+ */
+function contentBlockToOpenAIPart(block: ContentBlock): OpenAIContentPart {
+  switch (block.kind) {
+    case "text":
+      return { type: "text", text: block.text };
+    case "image":
+      return { type: "image_url", image_url: { url: block.url } };
+    default:
+      // file, button, custom → fall back to plain text representation
+      return { type: "text", text: normalizeToPlainText([block]) };
+  }
+}
+
+/**
+ * Converts Koi ContentBlock[] to OpenAI message content.
+ * Returns a plain string when all blocks are text (simpler API payload);
+ * returns a structured array when images are present.
+ */
+function contentBlocksToOpenAI(
+  content: readonly ContentBlock[],
+): string | readonly OpenAIContentPart[] {
+  const hasNonText = content.some((b) => b.kind === "image");
+  if (!hasNonText) {
+    return normalizeToPlainText(content);
+  }
+  return content.map(contentBlockToOpenAIPart);
+}
+
+/**
+ * Maps a NormalizedRole to an OpenAI chat role.
+ */
+function mapRoleToOpenAI(role: NormalizedRole): "system" | "user" | "assistant" {
+  return role;
+}
+
 /**
  * Transforms a Koi ModelRequest into an OpenAI chat completion request.
+ * Preserves original message roles and rich content (images).
  */
 export function toOpenAIRequest(request: ModelRequest): OpenAIChatRequest {
-  const messages: OpenAIChatMessage[] = request.messages.map((m) => ({
-    role: "user" as const,
-    content: normalizeToPlainText(m.content),
+  const normalized = normalizeMessages(request.messages);
+  const messages: readonly OpenAIChatMessage[] = normalized.map((m) => ({
+    role: mapRoleToOpenAI(m.role),
+    content: contentBlocksToOpenAI(m.content),
   }));
 
   return {

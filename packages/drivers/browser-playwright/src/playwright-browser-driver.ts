@@ -339,7 +339,12 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         });
       })();
     }
-    browser = await browserInitPromise; // intentional assignment: cache resolved browser for sync access
+    try {
+      browser = await browserInitPromise; // intentional assignment: cache resolved browser for sync access
+    } catch (e: unknown) {
+      browserInitPromise = null; // intentional reset: allow retry on next call instead of caching rejection forever
+      throw e;
+    }
     return browser;
   }
 
@@ -422,7 +427,12 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         return ctx;
       })();
     }
-    browserContext = await contextInitPromise; // intentional assignment: cache resolved context for sync access
+    try {
+      browserContext = await contextInitPromise; // intentional assignment: cache resolved context for sync access
+    } catch (e: unknown) {
+      contextInitPromise = null; // intentional reset: allow retry on next call instead of caching rejection forever
+      throw e;
+    }
     return browserContext;
   }
 
@@ -862,8 +872,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const tabId = newTabId();
         tabs.set(tabId, page);
         attachConsoleListener(page, tabId);
-        // New tab becomes the active tab (matches real browser behaviour).
-        currentTabId = tabId;
+        const previousTabId = currentTabId;
 
         if (options?.url) {
           const t = resolveTimeout(
@@ -875,10 +884,23 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           if (!t.ok) {
             await page.close();
             tabs.delete(tabId);
+            tabConsoleLogs.delete(tabId);
             return t;
           }
-          await page.goto(options.url, { timeout: t.value });
+          try {
+            await page.goto(options.url, { timeout: t.value });
+          } catch (gotoErr: unknown) {
+            // Navigation failed — clean up the new page and restore previous tab focus
+            await page.close().catch(() => undefined);
+            tabs.delete(tabId);
+            tabConsoleLogs.delete(tabId);
+            currentTabId = previousTabId; // intentional restore: goto() failed, revert to previous tab
+            throw gotoErr;
+          }
         }
+
+        // New tab becomes the active tab only after successful navigation (or no URL requested).
+        currentTabId = tabId;
 
         return {
           ok: true,
@@ -1011,7 +1033,13 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         );
         if (!t.ok) return t;
 
-        const value: unknown = await page.evaluate(script);
+        // page.evaluate() has no native timeout option — wrap with a race to honour the validated timeout.
+        const value: unknown = await Promise.race([
+          page.evaluate(script),
+          new Promise<never>((_resolve, reject) => {
+            setTimeout(() => reject(new Error(`evaluate timed out after ${t.value}ms`)), t.value);
+          }),
+        ]);
         return { ok: true, value: { value } };
       } catch (e: unknown) {
         return { ok: false, error: translatePlaywrightError("browser_evaluate", e) };

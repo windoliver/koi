@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  collectDescendants,
   isEbadf,
   killProcess,
   readStream,
@@ -95,6 +96,31 @@ describe("readStream", () => {
     expect(output).toContain("[output truncated]");
   });
 
+  test("does not exceed maxBytes in emitted content (byte-accurate slice)", async () => {
+    const maxBytes = 30;
+    // Generate exactly 100 bytes of 'A' characters
+    const result = spawnProcess(
+      "sh",
+      ["-c", "printf '%0.sA' {1..100}"],
+      { PATH: process.env.PATH ?? "" },
+      process.cwd(),
+    );
+    if (!result.ok) throw new Error("spawn failed");
+
+    const chunks: string[] = [];
+    await readStream(result.value.stdout, (text) => chunks.push(text), maxBytes);
+    await result.value.exited;
+
+    const output = chunks.join("");
+    expect(output).toContain("[output truncated]");
+
+    // The content before the truncation marker must not exceed maxBytes
+    const truncationIdx = output.indexOf("\n[output truncated]");
+    const contentBeforeTruncation = output.slice(0, truncationIdx);
+    const contentBytes = new TextEncoder().encode(contentBeforeTruncation).byteLength;
+    expect(contentBytes).toBeLessThanOrEqual(maxBytes);
+  });
+
   test("respects abort signal", async () => {
     const result = spawnProcess(
       "sh",
@@ -150,7 +176,7 @@ describe("killProcess", () => {
     expect(typeof exitCode).toBe("number");
   }, 10_000);
 
-  test("kills child processes (process group + pkill tree kill)", async () => {
+  test("kills child processes (process group + recursive tree kill)", async () => {
     // Spawn a parent sh that forks a child sleep
     const result = spawnProcess(
       "sh",
@@ -185,6 +211,81 @@ describe("killProcess", () => {
       childAlive = false;
     }
     expect(childAlive).toBe(false);
+  }, 10_000);
+
+  test("kills grandchild processes (recursive descendant kill)", async () => {
+    // Spawn parent → child → grandchild (3-level process tree)
+    // The parent sh spawns a child sh, which spawns a grandchild sleep
+    const result = spawnProcess(
+      "sh",
+      ["-c", "sh -c 'sleep 30 & echo $!; wait' & wait"],
+      { PATH: process.env.PATH ?? "" },
+      process.cwd(),
+    );
+    if (!result.ok) throw new Error("spawn failed");
+
+    // Read the grandchild PID from stdout
+    const chunks: string[] = [];
+    const reader = result.value.stdout.getReader();
+    const { value } = await reader.read();
+    reader.releaseLock();
+    if (value !== undefined) {
+      chunks.push(new TextDecoder().decode(value));
+    }
+    const grandchildPid = parseInt(chunks.join("").trim(), 10);
+    expect(grandchildPid).toBeGreaterThan(0);
+
+    // Kill the process tree (must reach the grandchild)
+    await killProcess(result.value, { gracePeriodMs: 500 });
+
+    // Verify grandchild is also dead
+    await new Promise((r) => setTimeout(r, 100));
+    let grandchildAlive = false;
+    try {
+      process.kill(grandchildPid, 0);
+      grandchildAlive = true;
+    } catch {
+      grandchildAlive = false;
+    }
+    expect(grandchildAlive).toBe(false);
+  }, 10_000);
+});
+
+describe("collectDescendants", () => {
+  test("returns empty array for process with no children", () => {
+    // PID 1 (init/launchd) descendants are system processes — use current pid
+    // which shouldn't have pgrep-visible children in this test context
+    const fakePid = 999_999_999; // Non-existent PID
+    const descendants = collectDescendants(fakePid);
+    expect(descendants).toEqual([]);
+  });
+
+  test("collects child PIDs of a running process", async () => {
+    // Spawn a parent that forks a child
+    const result = spawnProcess(
+      "sh",
+      ["-c", "sleep 30 & echo $!; wait"],
+      { PATH: process.env.PATH ?? "" },
+      process.cwd(),
+    );
+    if (!result.ok) throw new Error("spawn failed");
+
+    // Read child PID
+    const reader = result.value.stdout.getReader();
+    const { value } = await reader.read();
+    reader.releaseLock();
+    const childPid = parseInt(
+      value !== undefined ? new TextDecoder().decode(value).trim() : "",
+      10,
+    );
+    expect(childPid).toBeGreaterThan(0);
+
+    // collectDescendants should find the child
+    const descendants = collectDescendants(result.value.pid);
+    expect(descendants).toContain(childPid);
+
+    // Clean up
+    await killProcess(result.value, { gracePeriodMs: 500 });
   }, 10_000);
 });
 

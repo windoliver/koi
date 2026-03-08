@@ -560,7 +560,17 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
         return;
       }
 
+      /** Send SIGINT to the subprocess to interrupt the current operation. */
+      const interruptSubprocess = (): void => {
+        try {
+          proc?.kill(2 /* SIGINT */);
+        } catch {
+          // Process may have already exited — safe to ignore
+        }
+      };
+
       const abortHandler = (): void => {
+        interruptSubprocess();
         currentQueue?.end();
       };
       input.signal?.addEventListener("abort", abortHandler, { once: true });
@@ -570,6 +580,7 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       if (timeoutMs > 0) {
         timeoutHandle = setTimeout(() => {
+          interruptSubprocess();
           currentQueue?.end();
         }, timeoutMs);
       }
@@ -651,6 +662,7 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
     } finally {
       running = false;
       currentSessionId = undefined;
+      terminalRegistry?.releaseAll();
       terminalRegistry = undefined;
     }
   }

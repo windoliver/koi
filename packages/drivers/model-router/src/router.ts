@@ -224,6 +224,14 @@ export function createModelRouter(
   }
 
   /**
+   * Resolves the enabled status for a cascade tier target by looking up
+   * the actual target config. Returns false if the target is disabled.
+   */
+  function isTierTargetEnabled(tierTargetId: string): boolean {
+    return targetConfigById.get(tierTargetId)?.enabled ?? false;
+  }
+
+  /**
    * Determines ordered target list for streaming, taking cascade
    * classification into account when available.
    */
@@ -232,10 +240,13 @@ export function createModelRouter(
       const allTiers = config.cascade.tiers;
       const classification = options.classifier(request, allTiers.length);
       const startIndex = classification.recommendedTierIndex;
-      const tierTargets: readonly FallbackTarget[] = allTiers.slice(startIndex).map((t) => ({
-        id: t.targetId,
-        enabled: true,
-      }));
+      const tierTargets: readonly FallbackTarget[] = allTiers
+        .slice(startIndex)
+        .map((t) => ({
+          id: t.targetId,
+          enabled: isTierTargetEnabled(t.targetId),
+        }))
+        .filter((t) => t.enabled);
       return tierTargets.length > 0 ? tierTargets : enabledFallbackTargets;
     }
     return orderTargets(enabledFallbackTargets);
@@ -271,8 +282,14 @@ export function createModelRouter(
         const classifiedTiers = classification
           ? allTiers.slice(classification.recommendedTierIndex)
           : allTiers;
+        // Filter out disabled targets and capability-incompatible targets
+        const enabledTiers = classifiedTiers.filter((t) => {
+          if (!isTierTargetEnabled(t.targetId)) return false;
+          const cfg = targetConfigById.get(t.targetId);
+          return cfg !== undefined && targetSupportsRequest(cfg, request);
+        });
         // Ensure at least one tier remains
-        const tiers = classifiedTiers.length > 0 ? classifiedTiers : allTiers;
+        const tiers = enabledTiers.length > 0 ? enabledTiers : allTiers;
 
         const result = await withCascade(
           tiers,
@@ -313,8 +330,16 @@ export function createModelRouter(
         return { ok: true, value: result.value.response };
       }
 
+      // Filter to targets that support the request's capabilities (e.g. vision)
+      const compatibleTargets = enabledFallbackTargets.filter((t) => {
+        const cfg = targetConfigById.get(t.id);
+        return cfg !== undefined && targetSupportsRequest(cfg, request);
+      });
+      const fallbackCandidates =
+        compatibleTargets.length > 0 ? compatibleTargets : enabledFallbackTargets;
+
       const result = await withFallback(
-        orderTargets(enabledFallbackTargets),
+        orderTargets(fallbackCandidates),
         (target) => executeForTargetId(target.id, request),
         circuitBreakers,
         clock,

@@ -237,12 +237,17 @@ export async function readStream(
       // block on write if the pipe fills), but don't call onChunk.
       if (truncated) continue;
 
+      const remaining = maxBytes - totalBytes;
       totalBytes += value.byteLength;
 
       if (totalBytes > maxBytes) {
         truncated = true;
-        const text = decoder.decode(value, { stream: false });
-        onChunk(text);
+        // Only emit the portion that fits within maxBytes (byte-accurate slice)
+        if (remaining > 0) {
+          const partial = value.subarray(0, remaining);
+          const text = decoder.decode(partial, { stream: false });
+          onChunk(text);
+        }
         onChunk("\n[output truncated]");
         continue; // keep draining
       }
@@ -260,13 +265,56 @@ export async function readStream(
 // ---------------------------------------------------------------------------
 
 /**
+ * Collect all descendant PIDs of a given PID recursively using `pgrep -P`.
+ *
+ * Returns PIDs in depth-first order (deepest descendants first) so callers
+ * can signal leaves before parents, avoiding orphan re-parenting races.
+ *
+ * @internal Exported for testing.
+ */
+export function collectDescendants(pid: number): readonly number[] {
+  const descendants: number[] = [];
+
+  function walk(parentPid: number): void {
+    try {
+      const result = Bun.spawnSync(["pgrep", "-P", String(parentPid)], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const stdout =
+        result.stdout instanceof Uint8Array
+          ? new TextDecoder().decode(result.stdout)
+          : typeof result.stdout === "string"
+            ? result.stdout
+            : "";
+      const childPids = stdout
+        .trim()
+        .split("\n")
+        .map((s) => parseInt(s, 10))
+        .filter((n) => !Number.isNaN(n) && n > 0);
+
+      for (const childPid of childPids) {
+        // Recurse first so deepest descendants come first (leaf-to-root order)
+        walk(childPid);
+        descendants.push(childPid);
+      }
+    } catch {
+      // pgrep unavailable or no children — not fatal
+    }
+  }
+
+  walk(pid);
+  return descendants;
+}
+
+/**
  * Kill a process and all its descendants (process tree kill).
  *
  * Uses three strategies in sequence (belt-and-suspenders):
  * 1. `kill(-pid)` — process-group signal. Works when process is a group
  *    leader, catches all descendants in one syscall.
- * 2. `pkill -P` — signals direct children by parent PID. Catches the
- *    common case where Bun.spawn() children inherit the parent's group.
+ * 2. Recursive descendant collection via `pgrep -P` — signals every
+ *    descendant (children, grandchildren, etc.) leaf-first.
  * 3. `kill(pid)` — direct signal to the process itself.
  *
  * Redundant signals to already-dead processes are harmless (ESRCH).
@@ -279,14 +327,14 @@ function killTree(pid: number, signal: number): void {
     // Not a process group leader or already exited — expected
   }
 
-  // 2. Signal direct children via pkill (catches non-group-leader case)
-  try {
-    Bun.spawnSync(["pkill", `-${signal}`, "-P", String(pid)], {
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-  } catch {
-    // pkill unavailable or no children — not fatal
+  // 2. Signal all descendants recursively (leaf-first to avoid orphan races)
+  const descendants = collectDescendants(pid);
+  for (const childPid of descendants) {
+    try {
+      process.kill(childPid, signal);
+    } catch {
+      // Descendant may have already exited — expected
+    }
   }
 
   // 3. Signal the process directly
