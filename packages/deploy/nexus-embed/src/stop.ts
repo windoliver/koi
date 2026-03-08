@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { removeConnectionState } from "./connection-store.js";
 import { DEFAULT_DATA_DIR_NAME } from "./constants.js";
-import { isProcessAlive, readPid, removePid } from "./pid-manager.js";
+import { isNexusProcess, isProcessAlive, readPid, removePid } from "./pid-manager.js";
 
 /** Maximum time to wait for daemon to exit after SIGTERM (ms). */
 const STOP_TIMEOUT_MS = 5_000;
@@ -37,6 +37,22 @@ export async function stopEmbedNexus(config?: {
   }
 
   const wasRunning = isProcessAlive(pid);
+
+  if (wasRunning && !isNexusProcess(pid)) {
+    // PID is alive but it's not a Nexus process — stale PID file after PID reuse.
+    // Clean up state files but do NOT kill the unrelated process.
+    removePid(dataDir);
+    removeConnectionState(dataDir);
+    return {
+      ok: false,
+      error: {
+        code: "EXTERNAL" as const,
+        message: `PID ${String(pid)} is alive but is not a Nexus process (possible PID reuse). Cleaned up stale state files.`,
+        retryable: false,
+        context: { dataDir, pid },
+      },
+    };
+  }
 
   if (wasRunning) {
     try {

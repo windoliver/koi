@@ -7,8 +7,14 @@
 
 import type { BrickArtifact } from "@koi/core";
 
-/** Extract the primary content string from a brick artifact for ID recomputation. */
-export function extractBrickContent(brick: BrickArtifact): string {
+/**
+ * Extract the primary content string from a brick artifact for ID recomputation.
+ * For non-composite kinds only — composite bricks need special handling via
+ * computePipelineBrickId (which includes outputKind in the hash).
+ */
+export function extractBrickContent(
+  brick: Exclude<BrickArtifact, { readonly kind: "composite" }>,
+): string {
   switch (brick.kind) {
     case "tool":
     case "middleware":
@@ -18,7 +24,5 @@ export function extractBrickContent(brick: BrickArtifact): string {
       return brick.content;
     case "agent":
       return brick.manifestYaml;
-    case "composite":
-      return brick.steps.map((s) => s.brickId).join(",");
   }
 }
