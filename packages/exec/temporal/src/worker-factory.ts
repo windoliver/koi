@@ -28,7 +28,7 @@ export interface NativeConnectionLike {
  */
 export interface WorkerLike {
   readonly run: () => Promise<void>;
-  readonly shutdown: () => Promise<void>;
+  readonly shutdown: () => void;
 }
 
 /** Options for creating the Temporal Worker. */
@@ -84,7 +84,7 @@ export async function createTemporalWorker(
     worker,
     connection,
     async dispose() {
-      await worker.shutdown();
+      worker.shutdown();
       await connection.close();
     },
   };

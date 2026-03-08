@@ -84,7 +84,7 @@ describe("mapTemporalError — TimeoutFailure", () => {
 // ---------------------------------------------------------------------------
 
 describe("mapTemporalError — CancelledFailure", () => {
-  test("maps CancelledFailure to CANCELLED code with retryable=false", () => {
+  test("maps CancelledFailure to EXTERNAL code with retryable=false", () => {
     const temporalError = {
       name: "CancelledFailure",
       message: "Workflow cancelled by user",
@@ -92,7 +92,7 @@ describe("mapTemporalError — CancelledFailure", () => {
 
     const result = mapTemporalError(temporalError);
 
-    expect(result.code).toBe("CANCELLED");
+    expect(result.code).toBe("EXTERNAL");
     expect(result.message).toBe("Workflow cancelled by user");
     expect(result.retryable).toBe(false);
   });
@@ -105,7 +105,7 @@ describe("mapTemporalError — CancelledFailure", () => {
 describe("mapTemporalError — ApplicationFailure round-trip", () => {
   test("round-trips KoiError through ApplicationFailure", () => {
     const original: KoiError = {
-      code: "RATE_LIMITED",
+      code: "RATE_LIMIT",
       message: "Too many requests",
       retryable: true,
       context: { retryAfterMs: 5000 },
@@ -123,7 +123,7 @@ describe("mapTemporalError — ApplicationFailure round-trip", () => {
 
     const result = mapTemporalError(temporalError);
 
-    expect(result.code).toBe("RATE_LIMITED");
+    expect(result.code).toBe("RATE_LIMIT");
     expect(result.message).toBe("Too many requests");
     expect(result.retryable).toBe(true);
     expect(result.context).toEqual({ retryAfterMs: 5000 });
@@ -162,7 +162,7 @@ describe("mapTemporalError — ApplicationFailure round-trip", () => {
 // ---------------------------------------------------------------------------
 
 describe("mapTemporalError — TerminatedFailure", () => {
-  test("maps TerminatedFailure to CANCELLED with retryable=false", () => {
+  test("maps TerminatedFailure to EXTERNAL with retryable=false", () => {
     const temporalError = {
       name: "TerminatedFailure",
       message: "Workflow terminated",
@@ -170,7 +170,7 @@ describe("mapTemporalError — TerminatedFailure", () => {
 
     const result = mapTemporalError(temporalError);
 
-    expect(result.code).toBe("CANCELLED");
+    expect(result.code).toBe("EXTERNAL");
     expect(result.retryable).toBe(false);
   });
 });

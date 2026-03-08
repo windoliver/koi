@@ -175,7 +175,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       await config.client.workflow.signal(handle.workflowId, "message", {
         id: `task:${id}`,
         senderId: "scheduler",
-        content: input.messages ?? [],
+        content: input.kind === "messages" ? input.messages : [],
         timestamp: now,
       });
 
