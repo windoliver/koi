@@ -88,6 +88,7 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/sandbox-stack",
   "@koi/skill-stack",
   "@koi/starter",
+  "@koi/temporal",
   "@koi/tool-stack",
   "@koi/workspace-stack",
 ]);
