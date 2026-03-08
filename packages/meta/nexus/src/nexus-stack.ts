@@ -9,6 +9,7 @@ import { createNexusClient } from "@koi/nexus-client";
 import { createNexusAgentProvider } from "./agent-provider.js";
 import { createGlobalBackends } from "./global-backends.js";
 import type {
+  GlobalBackendOverrides,
   NexusBundle,
   NexusStackConfig,
   ResolvedNexusConnection,
@@ -54,8 +55,25 @@ export async function createNexusStack(config: NexusStackConfig): Promise<NexusB
     throw new Error("NexusStackConfig.baseUrl is required and must be a non-empty string");
   }
 
-  const { overrides, agentOverrides, optIn } = config;
+  const { agentOverrides, optIn } = config;
   const fetchFn = config.fetch;
+
+  // In embed mode (no apiKey), disable global backends that validate non-empty apiKey.
+  // These backends (audit, search, registry, pay, scheduler, nameService) will reject
+  // apiKey: "" at their config validation boundary. Permissions uses the NexusClient
+  // directly and does not validate apiKey, so it stays enabled.
+  const overrides: GlobalBackendOverrides =
+    resolvedApiKey === ""
+      ? {
+          ...config.overrides,
+          audit: config.overrides?.audit ?? false,
+          search: config.overrides?.search ?? false,
+          registry: config.overrides?.registry ?? false,
+          pay: config.overrides?.pay ?? false,
+          scheduler: config.overrides?.scheduler ?? false,
+          nameService: config.overrides?.nameService ?? false,
+        }
+      : (config.overrides ?? {});
 
   // Build resolved connection (baseUrl guaranteed non-undefined after guard above)
   const resolvedConn: ResolvedNexusConnection = {

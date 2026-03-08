@@ -14,10 +14,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { checkBinaryAvailable, resolveNexusBinary } from "./binary-resolver.js";
-import { readConnectionState, writeConnectionState } from "./connection-store.js";
+import {
+  readConnectionState,
+  removeConnectionState,
+  writeConnectionState,
+} from "./connection-store.js";
 import { DEFAULT_DATA_DIR_NAME, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROFILE } from "./constants.js";
 import { pollHealth, probeHealth } from "./health-check.js";
-import { cleanStalePid, readPid, writePid } from "./pid-manager.js";
+import { cleanStalePid, readPid, removePid, writePid } from "./pid-manager.js";
 import type { ConnectionState, EmbedConfig, EmbedResult } from "./types.js";
 
 /** Ensure a Nexus server is running locally, spawning one if needed. */
@@ -33,19 +37,25 @@ export async function ensureNexusRunning(
 
   const baseUrl = `http://${host}:${String(port)}`;
 
-  // 1. Check saved state — reuse if alive
+  // 1. Check saved state — reuse if alive AND config matches
   const savedState = readConnectionState(dataDir);
   if (savedState !== undefined) {
-    const savedUrl = `http://${savedState.host}:${String(savedState.port)}`;
-    const alive = await probeHealth(savedUrl, fetchFn);
-    if (alive) {
-      return {
-        ok: true,
-        value: { baseUrl: savedUrl, spawned: false, pid: savedState.pid },
-      };
+    const configMatches =
+      savedState.port === port && savedState.host === host && savedState.profile === profile;
+
+    if (configMatches) {
+      const savedUrl = `http://${savedState.host}:${String(savedState.port)}`;
+      const alive = await probeHealth(savedUrl, fetchFn);
+      if (alive) {
+        return {
+          ok: true,
+          value: { baseUrl: savedUrl, spawned: false, pid: savedState.pid },
+        };
+      }
     }
-    // Dead — clean up stale state
+    // Dead or config mismatch — clean up stale state
     cleanStalePid(dataDir);
+    removeConnectionState(dataDir);
   }
 
   // 2. Also check if something is already running on the port (not from us)
@@ -140,12 +150,13 @@ export async function ensureNexusRunning(
   // 7. Poll health until ready
   const healthResult = await pollHealth(baseUrl, fetchFn);
   if (!healthResult.ok) {
-    // Cleanup on failure
+    // Cleanup on failure — kill process and remove PID file
     try {
       process.kill(pid, "SIGTERM");
     } catch {
       /* best effort */
     }
+    removePid(dataDir);
     return healthResult;
   }
 

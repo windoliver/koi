@@ -172,6 +172,65 @@ describe("ensureNexusRunning", () => {
     }
   });
 
+  test("does not reuse saved state when config mismatches", async () => {
+    // Saved state with port 2026, but caller wants port 3000
+    const state: ConnectionState = {
+      port: 2026,
+      pid: 12345,
+      host: "127.0.0.1",
+      profile: "lite",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    };
+    writeConnectionState(tempDir, state);
+
+    const { spawn } = createMockSpawn(9999);
+    // Call 1: probeHealth for port 3000 fails (config mismatch skips saved state probe)
+    // Call 2: pollHealth after spawn succeeds
+    const mockFetch = createEventualFetch(1);
+
+    const result = await ensureNexusRunning({
+      dataDir: tempDir,
+      port: 3000,
+      host: "127.0.0.1",
+      profile: "lite",
+      fetch: mockFetch,
+      spawn,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Should spawn fresh — not reuse the saved state
+      expect(result.value.spawned).toBe(true);
+      expect(result.value.pid).toBe(9999);
+      expect(result.value.baseUrl).toBe("http://127.0.0.1:3000");
+    }
+  });
+
+  test(
+    "cleans PID file on health poll failure",
+    async () => {
+      const { spawn } = createMockSpawn(5555);
+      // All health checks fail — spawn succeeds but health poll times out
+      const mockFetch = createRejectingFetch();
+
+      const result = await ensureNexusRunning({
+        dataDir: tempDir,
+        fetch: mockFetch,
+        spawn,
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("TIMEOUT");
+      }
+
+      // PID file should be cleaned up after failure
+      const { readPid: readPidFn } = await import("./pid-manager.js");
+      expect(readPidFn(tempDir)).toBeUndefined();
+    },
+    { timeout: 20_000 },
+  );
+
   test("reuses Nexus running on port even without saved state", async () => {
     // No saved state, but probeHealth on the port succeeds
     const result = await ensureNexusRunning({
