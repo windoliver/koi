@@ -51,6 +51,7 @@ const MAX_DECAY_DEMOTIONS_PER_DISCOVER = 5;
 
 export interface ForgeResolverContext {
   readonly agentId: string;
+  readonly zoneId?: string | undefined;
   /** Called when a brick is demoted due to fitness decay. */
   readonly onDecayDemotion?: (brickId: string, from: ToolPolicy, to: ToolPolicy) => void;
   /** Called when a decay-related store update or callback throws. */
@@ -147,7 +148,7 @@ export function createForgeResolver(
         cause: result.error,
       });
     }
-    const visible = filterByAgentScope(result.value, agentId);
+    const visible = filterByAgentScope(result.value, agentId, context.zoneId);
 
     // Emit discovery miss when no bricks are visible
     if (visible.length === 0) {
@@ -173,7 +174,7 @@ export function createForgeResolver(
   const load = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
     const result = await store.load(brickId(id));
     if (!result.ok) return result;
-    if (!isVisibleToAgent(result.value, agentId)) return notFoundError(id);
+    if (!isVisibleToAgent(result.value, agentId, context.zoneId)) return notFoundError(id);
 
     // Lazy trust decay on load
     const nowMs = Date.now();
@@ -197,7 +198,7 @@ export function createForgeResolver(
   const source = async (id: string): Promise<Result<SourceBundle, KoiError>> => {
     const result = await store.load(brickId(id));
     if (!result.ok) return result;
-    if (!isVisibleToAgent(result.value, agentId)) return notFoundError(id);
+    if (!isVisibleToAgent(result.value, agentId, context.zoneId)) return notFoundError(id);
     return { ok: true, value: extractSource(result.value) };
   };
 

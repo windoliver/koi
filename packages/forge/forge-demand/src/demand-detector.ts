@@ -11,9 +11,11 @@ import type {
   ForgeDemandSignal,
   ForgeTrigger,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -175,7 +177,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     );
     if (latencyTrigger !== undefined) {
       emitSignal(latencyTrigger, {
-        failureCount: snapshot?.metrics.usageCount ?? 0,
+        failureCount: snapshot?.metrics.avgLatencyMs ?? 0,
         threshold: thresholds.latencyDegradationP95Ms,
       });
     }
@@ -292,6 +294,43 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       }
 
       return response;
+    },
+
+    async *wrapModelStream(
+      _ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      const chunks: string[] = [];
+      for await (const chunk of next(request)) {
+        if (chunk.kind === "text_delta") {
+          chunks.push(chunk.delta);
+        }
+        yield chunk;
+      }
+
+      // Fast path: no patterns configured
+      if (patterns.length === 0) return;
+
+      const responseText = chunks.join("");
+      if (responseText.length === 0) return;
+
+      updateGapCounts(responseText);
+
+      const trigger = detectCapabilityGap(
+        responseText,
+        patterns,
+        capabilityGapCounts,
+        thresholds.capabilityGapOccurrences,
+      );
+
+      if (trigger !== undefined) {
+        const gapKey = trigger.kind === "capability_gap" ? trigger.requiredCapability : "";
+        emitSignal(trigger, {
+          failureCount: capabilityGapCounts.get(gapKey) ?? 1,
+          threshold: thresholds.capabilityGapOccurrences,
+        });
+      }
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

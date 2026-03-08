@@ -80,6 +80,8 @@ export interface DetectPatternsConfig {
   readonly maxNgramSize?: number | undefined;
   readonly minOccurrences?: number | undefined;
   readonly maxCandidates?: number | undefined;
+  /** Map of n-gram key → first-seen timestamp for recency decay. */
+  readonly firstSeenTimes?: ReadonlyMap<string, number> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +108,14 @@ export function detectPatterns(
   const ngramMap = extractNgrams(sequences, minSize, maxSize);
   const now = clock();
 
-  return buildCandidates(ngramMap, minOccurrences, maxCandidates, dismissed, now);
+  return buildCandidates(
+    ngramMap,
+    minOccurrences,
+    maxCandidates,
+    dismissed,
+    now,
+    config.firstSeenTimes,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +167,14 @@ export function detectPatternsIncremental(
   );
 
   const now = clock();
-  const candidates = buildCandidates(mergedMap, minOccurrences, maxCandidates, dismissed, now);
+  const candidates = buildCandidates(
+    mergedMap,
+    minOccurrences,
+    maxCandidates,
+    dismissed,
+    now,
+    config.firstSeenTimes,
+  );
 
   const lastProcessedTurnIndex =
     newTraces.length > 0 ? startTurnIndex + newTraces.length - 1 : startTurnIndex - 1;
@@ -180,6 +196,7 @@ function buildCandidates(
   maxCandidates: number,
   dismissed: ReadonlySet<string>,
   now: number,
+  firstSeenTimes?: ReadonlyMap<string, number> | undefined,
 ): readonly CrystallizationCandidate[] {
   const raw: CrystallizationCandidate[] = [];
 
@@ -189,7 +206,7 @@ function buildCandidates(
         ngram: entry.ngram,
         occurrences: entry.turnIndices.length,
         turnIndices: entry.turnIndices,
-        detectedAt: now,
+        detectedAt: firstSeenTimes?.get(entry.ngram.key) ?? now,
         suggestedName: computeSuggestedName(entry.ngram),
       };
       // justified: mutable local array being constructed, not shared state

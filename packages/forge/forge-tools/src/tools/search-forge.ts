@@ -91,7 +91,7 @@ async function searchForgeHandler(
     };
   }
 
-  const scoped = filterByAgentScope(result.value, deps.context.agentId);
+  const scoped = filterByAgentScope(result.value, deps.context.agentId, deps.context.zoneId);
   const ranked = sortBricks(scoped, query, { nowMs: Date.now() });
   return { ok: true, value: ranked };
 }

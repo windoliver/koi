@@ -9,11 +9,17 @@
 import type { BrickArtifact, ForgeStore, Result } from "@koi/core";
 import { brickId } from "@koi/core";
 import type { ForgeError } from "@koi/forge-types";
-import { staticError } from "@koi/forge-types";
+import { isVisibleToAgent, staticError } from "@koi/forge-types";
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
+
+/** Optional visibility context for brick access checks. */
+export interface AssembleVisibility {
+  readonly agentId: string;
+  readonly zoneId?: string | undefined;
+}
 
 export interface AssembleManifestOptions {
   readonly name: string;
@@ -46,6 +52,7 @@ export async function assembleManifest(
   brickIds: readonly string[],
   store: ForgeStore,
   options: AssembleManifestOptions,
+  visibility?: AssembleVisibility,
 ): Promise<Result<AssembleManifestResult, ForgeError>> {
   if (brickIds.length === 0) {
     return {
@@ -64,6 +71,14 @@ export async function assembleManifest(
   for (let i = 0; i < loadResults.length; i++) {
     const result = loadResults[i];
     if (result === undefined || !result.ok) {
+      const id = brickIds[i];
+      if (id !== undefined) {
+        missingIds.push(id);
+      }
+    } else if (
+      visibility !== undefined &&
+      !isVisibleToAgent(result.value, visibility.agentId, visibility.zoneId)
+    ) {
       const id = brickIds[i];
       if (id !== undefined) {
         missingIds.push(id);

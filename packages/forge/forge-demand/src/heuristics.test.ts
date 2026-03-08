@@ -80,7 +80,10 @@ describe("detectCapabilityGap", () => {
 
   for (const text of truePositives) {
     it(`detects gap in: "${text}"`, () => {
-      const trigger = detectCapabilityGap(text, DEFAULT_CAPABILITY_GAP_PATTERNS, new Map(), 1);
+      // Count must be >= threshold. In real usage, updateGapCounts increments
+      // before detectCapabilityGap reads. Simulate with threshold=0 to test
+      // regex matching independently of counting logic.
+      const trigger = detectCapabilityGap(text, DEFAULT_CAPABILITY_GAP_PATTERNS, new Map(), 0);
       expect(trigger).toBeDefined();
       expect(trigger?.kind).toBe("capability_gap");
     });
@@ -88,14 +91,14 @@ describe("detectCapabilityGap", () => {
 
   for (const text of falsePositives) {
     it(`does not detect gap in: "${text}"`, () => {
-      const trigger = detectCapabilityGap(text, DEFAULT_CAPABILITY_GAP_PATTERNS, new Map(), 1);
+      const trigger = detectCapabilityGap(text, DEFAULT_CAPABILITY_GAP_PATTERNS, new Map(), 0);
       expect(trigger).toBeUndefined();
     });
   }
 
   it("respects occurrence threshold", () => {
     const gapCounts = new Map<string, number>();
-    // First occurrence — below threshold of 2
+    // Count 0 (empty map) — below threshold of 2
     const trigger1 = detectCapabilityGap(
       "I don't have a tool for that.",
       DEFAULT_CAPABILITY_GAP_PATTERNS,
@@ -104,8 +107,8 @@ describe("detectCapabilityGap", () => {
     );
     expect(trigger1).toBeUndefined();
 
-    // Second occurrence — at threshold
-    gapCounts.set("I don't have a tool", 1);
+    // Count 2 — at threshold (caller incremented via updateGapCounts)
+    gapCounts.set("I don't have a tool", 2);
     const trigger2 = detectCapabilityGap(
       "I don't have a tool for that.",
       DEFAULT_CAPABILITY_GAP_PATTERNS,

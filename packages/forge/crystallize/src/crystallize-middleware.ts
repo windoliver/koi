@@ -113,6 +113,7 @@ export function createCrystallizeMiddleware(config: CrystallizeConfig): Crystall
           maxNgramSize: validated.maxNgramSize,
           minOccurrences: validated.minOccurrences,
           maxCandidates: validated.maxCandidates,
+          firstSeenTimes: knownKeys,
         },
         dismissedSet,
         validated.clock,

@@ -142,12 +142,17 @@ async function forgeAgentHandler(
 
   if (parsed.value.brickIds !== undefined) {
     // Auto-assembly path
-    const assemblyResult = await assembleManifest(parsed.value.brickIds, deps.store, {
-      name: parsed.value.name,
-      description: parsed.value.description,
-      ...(parsed.value.model !== undefined ? { model: parsed.value.model } : {}),
-      ...(parsed.value.agentType !== undefined ? { agentType: parsed.value.agentType } : {}),
-    });
+    const assemblyResult = await assembleManifest(
+      parsed.value.brickIds,
+      deps.store,
+      {
+        name: parsed.value.name,
+        description: parsed.value.description,
+        ...(parsed.value.model !== undefined ? { model: parsed.value.model } : {}),
+        ...(parsed.value.agentType !== undefined ? { agentType: parsed.value.agentType } : {}),
+      },
+      { agentId: deps.context.agentId, zoneId: deps.context.zoneId },
+    );
     if (!assemblyResult.ok) {
       return { result: assemblyResult };
     }
