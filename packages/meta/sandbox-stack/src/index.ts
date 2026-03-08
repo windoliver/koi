@@ -36,11 +36,6 @@ export {
   createCachedBridge,
   createCloudInstance,
 } from "@koi/sandbox-cloud-base";
-// ── Cloud adapter shims (lazy-loaded — install the provider package to use) ──
-export type { CloudflareAdapterConfig } from "@koi/sandbox-cloudflare";
-export type { DaytonaAdapterConfig } from "@koi/sandbox-daytona";
-export type { DockerAdapterConfig } from "@koi/sandbox-docker";
-export type { E2bAdapterConfig } from "@koi/sandbox-e2b";
 // ── Sandbox executor ────────────────────────────────────────────────────
 export type { SandboxPlatform } from "@koi/sandbox-executor";
 export {
@@ -48,7 +43,7 @@ export {
   createSubprocessExecutor,
   detectSandboxPlatform,
 } from "@koi/sandbox-executor";
-export type { VercelAdapterConfig } from "@koi/sandbox-vercel";
+// ── Cloud adapter shims (lazy-loaded — install the provider package to use) ──
 export { createCloudflareAdapterShim as createCloudflareAdapter } from "./adapters/cloudflare.js";
 export { createDaytonaAdapterShim as createDaytonaAdapter } from "./adapters/daytona.js";
 export { createDockerAdapterShim as createDockerAdapter } from "./adapters/docker.js";

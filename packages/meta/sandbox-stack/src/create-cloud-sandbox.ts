@@ -1,29 +1,32 @@
 import type { KoiError, Result, SandboxAdapter } from "@koi/core";
-import { createCloudflareAdapter } from "@koi/sandbox-cloudflare";
-import { createDaytonaAdapter } from "@koi/sandbox-daytona";
-import { createDockerAdapter } from "@koi/sandbox-docker";
-import { createE2bAdapter } from "@koi/sandbox-e2b";
-import { createVercelAdapter } from "@koi/sandbox-vercel";
+import { createCloudflareAdapterShim } from "./adapters/cloudflare.js";
+import { createDaytonaAdapterShim } from "./adapters/daytona.js";
+import { createDockerAdapterShim } from "./adapters/docker.js";
+import { createE2bAdapterShim } from "./adapters/e2b.js";
+import { createVercelAdapterShim } from "./adapters/vercel.js";
 import type { CloudSandboxConfig } from "./cloud-types.js";
 
 /**
  * Dispatch factory — creates a SandboxAdapter for any supported cloud provider.
  *
  * Select provider via the `provider` discriminant field in config.
- * The remaining config fields are forwarded to the provider-specific factory.
+ * The remaining config fields are forwarded to the provider-specific lazy-load shim.
+ * Each provider package is dynamically imported only when its adapter is requested.
  */
-export function createCloudSandbox(config: CloudSandboxConfig): Result<SandboxAdapter, KoiError> {
+export async function createCloudSandbox(
+  config: CloudSandboxConfig,
+): Promise<Result<SandboxAdapter, KoiError>> {
   switch (config.provider) {
     case "cloudflare":
-      return createCloudflareAdapter(config);
+      return createCloudflareAdapterShim(config);
     case "daytona":
-      return createDaytonaAdapter(config);
+      return createDaytonaAdapterShim(config);
     case "docker":
-      return createDockerAdapter(config);
+      return createDockerAdapterShim(config);
     case "e2b":
-      return createE2bAdapter(config);
+      return createE2bAdapterShim(config);
     case "vercel":
-      return createVercelAdapter(config);
+      return createVercelAdapterShim(config);
     default: {
       const _exhaustive: never = config;
       return {
