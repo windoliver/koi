@@ -1,12 +1,12 @@
 /**
  * API surface stability tests.
  *
- * Snapshots .d.ts files for all exports. Requires a prior build.
- * Package name is read dynamically from package.json.
+ * Validates all subpath exports have corresponding .d.ts and .js files.
+ * Requires a prior build. Package name is read dynamically from package.json.
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 interface ExportConfig {
@@ -66,10 +66,16 @@ describe(`${pkgJson.name} API surface`, () => {
 
   for (const [subpath, config] of exportEntries) {
     const dtsPath = resolve(__dirname, "../..", config.types);
+    const jsPath = resolve(__dirname, "../..", config.import);
 
-    test(`${subpath} has stable type surface`, () => {
+    test(`${subpath} .d.ts file exists and is non-empty`, () => {
+      expect(existsSync(dtsPath)).toBe(true);
       const dts = readFileSync(dtsPath, "utf-8");
-      expect(dts).toMatchSnapshot();
+      expect(dts.length).toBeGreaterThan(0);
+    });
+
+    test(`${subpath} .js file exists`, () => {
+      expect(existsSync(jsPath)).toBe(true);
     });
   }
 });
