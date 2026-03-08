@@ -220,6 +220,19 @@ export function createNexusWorkspaceBackend(
     },
 
     dispose: async (wsId: WorkspaceId): Promise<Result<void, KoiError>> => {
+      // Defense-in-depth: verify resolved path stays under baseDir
+      const localPath = resolve(baseDir, wsId);
+      if (!localPath.startsWith(baseDir)) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `Resolved workspace path escapes base directory: ${localPath}`,
+            retryable: false,
+          },
+        };
+      }
+
       // Nexus-first: delete artifact
       const removeResult = await wsClient.removeWorkspaceArtifact(wsId);
       if (!removeResult.ok) {
@@ -235,7 +248,6 @@ export function createNexusWorkspaceBackend(
       }
 
       // Local-second: remove directory
-      const localPath = resolve(baseDir, wsId);
       try {
         await rm(localPath, { recursive: true, force: true });
       } catch (e: unknown) {

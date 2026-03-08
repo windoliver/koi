@@ -19,7 +19,7 @@ import { agentGroupId, agentId, SCRATCHPAD_DEFAULTS, scratchpadPath } from "@koi
 import type { GenerationCache } from "./generation-cache.js";
 import { createScratchpadAdapter } from "./scratchpad-adapter.js";
 import type { ScratchpadClient } from "./scratchpad-client.js";
-import type { BufferedWrite, WriteBuffer } from "./write-buffer.js";
+import type { BufferedWrite, FlushResult, WriteBuffer } from "./write-buffer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,9 +56,10 @@ function createMockWriteBuffer(): WriteBuffer {
         },
       });
     }),
-    flush: mock((): Promise<void> => {
+    flush: mock((): Promise<FlushResult> => {
+      const paths = [...buffer.keys()];
       buffer.clear();
-      return Promise.resolve();
+      return Promise.resolve({ succeeded: paths, failed: [] });
     }),
     has: (path: ScratchpadPath): boolean => buffer.has(path),
     get: (path: ScratchpadPath): BufferedWrite | undefined => buffer.get(path),
@@ -252,7 +253,7 @@ describe("createScratchpadAdapter", () => {
       expect(mockWriteBuffer.add).toHaveBeenCalledTimes(1);
     });
 
-    test("invalidates generation cache on successful write", async () => {
+    test("invalidates generation cache on successful write after flush", async () => {
       const adapter = createAdapter();
 
       await adapter.write({
@@ -260,6 +261,10 @@ describe("createScratchpadAdapter", () => {
         content: "hello",
       });
 
+      // Cache invalidation is deferred until flush confirms the write
+      expect(mockCache.invalidate).not.toHaveBeenCalled();
+
+      await adapter.flush();
       expect(mockCache.invalidate).toHaveBeenCalledWith(scratchpadPath("notes/plan.md"));
     });
 
@@ -422,7 +427,7 @@ describe("createScratchpadAdapter", () => {
   // -------------------------------------------------------------------------
 
   describe("onChange", () => {
-    test("registers listener and notifies on write", async () => {
+    test("registers listener and notifies on write after flush", async () => {
       const adapter = createAdapter();
       const events: ScratchpadChangeEvent[] = [];
 
@@ -435,6 +440,10 @@ describe("createScratchpadAdapter", () => {
         content: "hello",
       });
 
+      // Events are deferred until flush confirms the write
+      expect(events).toHaveLength(0);
+
+      await adapter.flush();
       expect(events).toHaveLength(1);
       expect(events[0]?.kind).toBe("written");
       expect(events[0]?.path).toBe(scratchpadPath("notes/plan.md"));
@@ -469,6 +478,7 @@ describe("createScratchpadAdapter", () => {
         path: scratchpadPath("a.txt"),
         content: "first",
       });
+      await adapter.flush();
       expect(events).toHaveLength(1);
 
       unsubscribe();
@@ -477,11 +487,12 @@ describe("createScratchpadAdapter", () => {
         path: scratchpadPath("b.txt"),
         content: "second",
       });
+      await adapter.flush();
       // Should still be 1 — no new event after unsubscribe
       expect(events).toHaveLength(1);
     });
 
-    test("multiple listeners all receive events", async () => {
+    test("multiple listeners all receive events after flush", async () => {
       const adapter = createAdapter();
       const events1: ScratchpadChangeEvent[] = [];
       const events2: ScratchpadChangeEvent[] = [];
@@ -494,6 +505,7 @@ describe("createScratchpadAdapter", () => {
         content: "data",
       });
 
+      await adapter.flush();
       expect(events1).toHaveLength(1);
       expect(events2).toHaveLength(1);
     });

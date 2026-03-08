@@ -48,6 +48,43 @@ export function createScratchpadAdapter(config: ScratchpadAdapterConfig): Scratc
 
   // let justified: mutable listener set for onChange notifications
   const listeners = new Set<(event: ScratchpadChangeEvent) => void>();
+  // Deferred notifications: paths with pending writes awaiting flush confirmation
+  const pendingNotifications = new Map<
+    ScratchpadPath,
+    { readonly generation: number; readonly timestamp: string }
+  >();
+
+  /** Flush writes to backend and emit events for confirmed paths. */
+  async function flushAndNotify(): Promise<void> {
+    const snapshot = new Map(pendingNotifications);
+    pendingNotifications.clear();
+
+    const flushResult = await writeBuffer.flush();
+
+    // Invalidate cache and emit events only for confirmed writes
+    for (const path of flushResult.succeeded) {
+      generationCache.invalidate(path);
+      const info = snapshot.get(path);
+      if (info !== undefined) {
+        notifyListeners({
+          kind: "written",
+          path,
+          generation: info.generation,
+          authorId,
+          groupId,
+          timestamp: info.timestamp,
+        });
+      }
+    }
+
+    // Re-queue notifications for failed paths (they'll be retried on next flush)
+    for (const path of flushResult.failed) {
+      const info = snapshot.get(path);
+      if (info !== undefined) {
+        pendingNotifications.set(path, info);
+      }
+    }
+  }
 
   function notifyListeners(event: ScratchpadChangeEvent): void {
     for (const listener of listeners) {
@@ -114,7 +151,7 @@ export function createScratchpadAdapter(config: ScratchpadAdapterConfig): Scratc
         };
       }
 
-      // Buffer the write
+      // Buffer the write (optimistic — actual persistence happens on flush)
       const result = await writeBuffer.add({
         path: input.path,
         content: input.content,
@@ -123,17 +160,11 @@ export function createScratchpadAdapter(config: ScratchpadAdapterConfig): Scratc
         metadata: input.metadata,
       });
 
+      // Track path for deferred notification — cache invalidation and events
+      // are emitted after flush confirms the write, not optimistically.
       if (result.ok) {
-        // Invalidate cache for this path
-        generationCache.invalidate(input.path);
-
-        // Notify listeners
-        notifyListeners({
-          kind: "written",
-          path: input.path,
+        pendingNotifications.set(input.path, {
           generation: result.value.generation,
-          authorId,
-          groupId,
           timestamp: new Date().toISOString(),
         });
       }
@@ -143,7 +174,7 @@ export function createScratchpadAdapter(config: ScratchpadAdapterConfig): Scratc
 
     read: async (path: ScratchpadPath): Promise<Result<ScratchpadEntry, KoiError>> => {
       // Flush buffer first to ensure consistency
-      await writeBuffer.flush();
+      await flushAndNotify();
 
       // Check write buffer for uncommitted data
       const buffered = writeBuffer.get(path);
@@ -173,7 +204,7 @@ export function createScratchpadAdapter(config: ScratchpadAdapterConfig): Scratc
 
     list: async (filter?: ScratchpadFilter): Promise<readonly ScratchpadEntrySummary[]> => {
       // Flush buffer first to ensure consistency
-      await writeBuffer.flush();
+      await flushAndNotify();
 
       const result = await client.list(groupId, filter);
       if (!result.ok) return [];
@@ -182,7 +213,7 @@ export function createScratchpadAdapter(config: ScratchpadAdapterConfig): Scratc
 
     delete: async (path: ScratchpadPath): Promise<Result<void, KoiError>> => {
       // Flush buffer first (path might be in buffer)
-      await writeBuffer.flush();
+      await flushAndNotify();
 
       const result = await client.delete(groupId, path);
       if (result.ok) {
@@ -200,7 +231,7 @@ export function createScratchpadAdapter(config: ScratchpadAdapterConfig): Scratc
     },
 
     flush: async (): Promise<void> => {
-      await writeBuffer.flush();
+      await flushAndNotify();
     },
 
     onChange: (handler: (event: ScratchpadChangeEvent) => void): (() => void) => {

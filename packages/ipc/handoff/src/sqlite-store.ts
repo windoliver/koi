@@ -17,7 +17,7 @@ import type {
 } from "@koi/core";
 import { agentId, handoffId } from "@koi/core";
 import { openDb } from "@koi/sqlite-utils";
-import { conflictError, internalError, notFoundError } from "./errors.js";
+import { conflictError, expiredError, internalError, notFoundError } from "./errors.js";
 import type { HandoffStore, HandoffStoreConfig } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -173,7 +173,7 @@ export function createSqliteHandoffStore(
           $to_status: "expired",
           $data: row.data.replace(/"status":"[^"]*"/, '"status":"expired"'),
         });
-        return { ok: false, error: notFoundError(id) };
+        return { ok: false, error: expiredError(id) };
       }
       return { ok: true, value: mapRowToEnvelope(row) };
     } catch (e: unknown) {
