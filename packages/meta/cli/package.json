@@ -26,6 +26,7 @@
     "@clack/prompts": "0.10.0",
     "@koi/bootstrap": "workspace:*",
     "@koi/context": "workspace:*",
+    "@koi/context-arena": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/deploy": "workspace:*",
     "@koi/engine": "workspace:*",
@@ -54,6 +55,7 @@
     "@koi/engine-pi": "workspace:*",
     "@koi/nexus": "workspace:*",
     "@koi/nexus-embed": "workspace:*",
-    "@koi/shutdown": "workspace:*"
+    "@koi/shutdown": "workspace:*",
+    "@koi/snapshot-chain-store": "workspace:*"
   }
 }

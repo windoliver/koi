@@ -6,29 +6,39 @@
  * - Starts HTTP health server
  * - Uses @koi/shutdown for graceful signal handling
  * - Uses exit codes from @koi/shutdown (78 for config, 1 for runtime)
+ * - Conversation persistence via @koi/context-arena + in-memory ThreadStore
+ * - Per-session concurrency lanes via @koi/session-state
  */
 
 import { createContextExtension } from "@koi/context";
-import type { ContentBlock, EngineInput } from "@koi/core";
+import { createContextArena } from "@koi/context-arena";
+import type { ContentBlock, EngineInput, InboundMessage, KoiMiddleware } from "@koi/core";
+import { sessionId } from "@koi/core";
 import { createHealthServer } from "@koi/deploy";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { loadManifest } from "@koi/manifest";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
+import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
 import type { ServeFlags } from "../args.js";
+import { extractTextFromBlocks } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
-import { resolveNexusStack } from "../resolve-nexus.js";
+import { resolveNexusOrWarn } from "../resolve-nexus.js";
 
 // ---------------------------------------------------------------------------
-// Text extraction helper
+// Session key derivation
 // ---------------------------------------------------------------------------
 
-function extractTextFromBlocks(blocks: readonly ContentBlock[]): string {
-  return blocks
-    .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
-    .map((b) => b.text)
-    .join("\n");
+/**
+ * Derives a stable session key from an inbound message for per-session
+ * concurrency lanes and conversation threading.
+ *
+ * Format: `channel:senderId:threadId` (threadId defaults to "default").
+ */
+function deriveSessionKey(channelName: string, inbound: InboundMessage): string {
+  const thread = inbound.threadId ?? "default";
+  return `${channelName}:${inbound.senderId}:${thread}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,28 +79,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
   // 5b. Resolve Nexus stack (embed or remote)
-  const nexusManifestUrl = (manifest as { readonly nexus?: { readonly url?: string } }).nexus?.url;
-  let nexusDispose: (() => Promise<void>) | undefined;
-  let nexusMiddlewares: readonly import("@koi/core").KoiMiddleware[] = [];
-  let nexusProviders: readonly import("@koi/core").ComponentProvider[] = [];
-
-  try {
-    const nexus = await resolveNexusStack({
-      nexusUrl: flags.nexusUrl,
-      manifestNexusUrl: nexusManifestUrl,
-    });
-    if (nexus !== undefined) {
-      nexusMiddlewares = nexus.middlewares;
-      nexusProviders = nexus.providers;
-      nexusDispose = nexus.dispose;
-      if (flags.verbose) {
-        process.stderr.write(`Nexus: ${nexus.baseUrl}\n`);
-      }
-    }
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`warn: Nexus initialization failed: ${message}\n`);
-  }
+  const nexus = await resolveNexusOrWarn(flags.nexusUrl, flags.verbose);
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
@@ -98,49 +87,93 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const contextExt = createContextExtension(contextConfig);
   const extensions = contextExt !== undefined ? [contextExt] : [];
 
+  // 6b. Wire conversation persistence via context-arena (graceful fallback)
+  // let justified: message buffer for squash partitioning, cleared per-session
+  let currentMessages: readonly InboundMessage[] = [];
+  // let justified: set inside try/catch, read when building runtime middleware
+  let arenaMiddleware: readonly KoiMiddleware[] = [];
+
+  try {
+    const threadStore = createThreadStore({
+      store: createInMemorySnapshotChainStore(),
+    });
+
+    const arenaBundle = await createContextArena({
+      summarizer: resolved.value.model,
+      sessionId: sessionId(`serve:${manifest.name}:${Date.now()}`),
+      getMessages: () => currentMessages,
+      threadStore,
+    });
+
+    arenaMiddleware = arenaBundle.middleware;
+
+    if (flags.verbose) {
+      process.stderr.write(
+        `Conversation persistence: enabled (${String(arenaBundle.middleware.length)} middleware)\n`,
+      );
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: conversation persistence disabled: ${message}\n`);
+  }
+
   const runtime = await createKoi({
     manifest,
     adapter,
-    middleware: [...resolved.value.middleware, ...nexusMiddlewares],
-    providers: [...nexusProviders],
+    middleware: [...resolved.value.middleware, ...arenaMiddleware, ...nexus.middlewares],
+    providers: [...nexus.providers],
     extensions,
   });
 
-  // 6b. Connect resolved channels and wire 1:1 response routing
+  // 6c. Connect resolved channels and wire per-session concurrency
   // Empty fallback is intentional — headless serve mode has no stdin/stdout channel
   const channels = resolved.value.channels ?? [];
   for (const ch of channels) {
     await ch.connect();
   }
 
+  // Global serial queue — runtime enforces single-flight (throws on concurrent
+  // run() calls), so all messages serialize through one queue.
   // let justified: serial queue prevents concurrent runtime.run() calls
-  // (runtime enforces single-flight and throws on overlap)
   let pending: Promise<void> = Promise.resolve();
 
   const unsubscribers = channels.map((ch) =>
     ch.onMessage(async (inbound) => {
+      const text = extractTextFromBlocks(inbound.content);
+      if (text.trim() === "") return;
+
+      const key = deriveSessionKey(ch.name, inbound);
+
       pending = pending.then(async () => {
-        const text = extractTextFromBlocks(inbound.content);
-        if (text.trim() === "") return;
+        // Update message buffer for squash partitioning
+        currentMessages = [inbound];
 
         const input: EngineInput = { kind: "text", text };
-        const blocks: ContentBlock[] = [];
 
         try {
+          // Collect text deltas into local array, build immutable blocks at end
+          const deltas: string[] = [];
           for await (const event of runtime.run(input)) {
             if (event.kind === "text_delta") {
-              blocks.push({ kind: "text", text: event.delta });
+              deltas.push(event.delta);
             }
           }
 
-          if (blocks.length > 0) {
+          if (deltas.length > 0) {
+            const blocks: readonly ContentBlock[] = deltas.map((d) => ({
+              kind: "text" as const,
+              text: d,
+            }));
             await ch.send({ content: blocks });
           }
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          process.stderr.write(`Channel "${ch.name}" error: ${message}\n`);
+          const msg = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`Channel "${ch.name}" session "${key}" error: ${msg}\n`);
+        } finally {
+          currentMessages = [];
         }
       });
+
       await pending;
     }),
   );
@@ -174,17 +207,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
         // Give the runtime a moment to finish current work
       },
       async onCleanup() {
-        for (const unsub of unsubscribers) {
-          unsub();
-        }
-        for (const ch of channels) {
-          await ch.disconnect();
-        }
-        healthServer.stop();
-        await runtime.dispose();
-        if (nexusDispose !== undefined) {
-          await nexusDispose();
-        }
+        // Cleanup is done explicitly after the abort signal below
       },
     },
     (type) => {
@@ -196,7 +219,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
 
   shutdown.install();
 
-  // 8. Print startup info
+  // 9. Print startup info
   if (flags.verbose) {
     process.stderr.write(`Agent: ${manifest.name} v${manifest.version}\n`);
     process.stderr.write(`Model: ${modelName}\n`);
@@ -207,11 +230,25 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     `Agent "${manifest.name}" serving on port ${healthInfo.port}. Send SIGTERM to stop.\n`,
   );
 
-  // 9. Wait for abort signal (blocks until shutdown)
+  // 10. Wait for abort signal (blocks until shutdown)
   await new Promise<void>((resolve) => {
     controller.signal.addEventListener("abort", () => resolve(), { once: true });
   });
 
+  // 11. Cleanup — drain in-flight messages, then tear down
   shutdown.uninstall();
+  await pending;
+  for (const unsub of unsubscribers) {
+    unsub();
+  }
+  for (const ch of channels) {
+    await ch.disconnect();
+  }
+  healthServer.stop();
+  await runtime.dispose();
+  if (nexus.dispose !== undefined) {
+    await nexus.dispose();
+  }
+
   process.stderr.write("Goodbye.\n");
 }

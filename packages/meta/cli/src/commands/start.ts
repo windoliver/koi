@@ -4,7 +4,7 @@
  * Bootstrap sequence:
  * 1. RESOLVE:  Find manifest file (--manifest flag, positional arg, or default ./koi.yaml)
  * 2. VALIDATE: loadManifest() from @koi/manifest
- * 3. ASSEMBLE: Create EngineAdapter (engine-loop) with model terminal
+ * 3. ASSEMBLE: Create EngineAdapter (engine-pi) with model terminal
  * 4. WIRE:     createKoi() from @koi/engine with middleware + providers
  * 5. START:    runtime.run() — async iterate events
  * 6. RENDER:   Write events to stdout/stderr
@@ -13,15 +13,16 @@
 
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
-import type { ChannelAdapter, ContentBlock, EngineEvent, EngineInput } from "@koi/core";
+import type { ChannelAdapter, EngineEvent, EngineInput } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { getEngineName, loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
+import { extractTextFromBlocks } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
-import { resolveNexusStack } from "../resolve-nexus.js";
+import { resolveNexusOrWarn } from "../resolve-nexus.js";
 
 // ---------------------------------------------------------------------------
 // Event rendering
@@ -55,17 +56,6 @@ function renderEvent(event: EngineEvent, verbose: boolean): void {
       // Internal events — no user-visible output
       break;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Text extraction helper
-// ---------------------------------------------------------------------------
-
-function extractTextFromBlocks(blocks: readonly ContentBlock[]): string {
-  return blocks
-    .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
-    .map((b) => b.text)
-    .join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -113,29 +103,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
   // 5b. Resolve Nexus stack (embed or remote)
-  const nexusManifestUrl = (manifest as { readonly nexus?: { readonly url?: string } }).nexus?.url;
-  let nexusDispose: (() => Promise<void>) | undefined;
-  let nexusMiddlewares: readonly import("@koi/core").KoiMiddleware[] = [];
-  let nexusProviders: readonly import("@koi/core").ComponentProvider[] = [];
-
-  try {
-    const nexus = await resolveNexusStack({
-      nexusUrl: flags.nexusUrl,
-      manifestNexusUrl: nexusManifestUrl,
-    });
-    if (nexus !== undefined) {
-      nexusMiddlewares = nexus.middlewares;
-      nexusProviders = nexus.providers;
-      nexusDispose = nexus.dispose;
-      if (flags.verbose) {
-        process.stderr.write(`Nexus: ${nexus.baseUrl}\n`);
-      }
-    }
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`warn: Nexus initialization failed: ${message}\n`);
-    // Continue without Nexus — agent can still run with local backends
-  }
+  const nexus = await resolveNexusOrWarn(flags.nexusUrl, flags.verbose);
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
@@ -146,8 +114,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const runtime = await createKoi({
     manifest,
     adapter,
-    middleware: [...resolved.value.middleware, ...nexusMiddlewares],
-    providers: [...nexusProviders],
+    middleware: [...resolved.value.middleware, ...nexus.middlewares],
+    providers: [...nexus.providers],
     extensions,
   });
 
@@ -233,8 +201,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
     await ch.disconnect();
   }
   await runtime.dispose();
-  if (nexusDispose !== undefined) {
-    await nexusDispose();
+  if (nexus.dispose !== undefined) {
+    await nexus.dispose();
   }
 
   process.stderr.write("Goodbye.\n");
