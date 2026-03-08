@@ -66,6 +66,9 @@ export async function createTaskTool(config: TaskSpawnConfig): Promise<Tool> {
 
   return {
     get descriptor() {
+      // Trigger async refresh if stale — fire-and-forget so next access sees fresh data.
+      // The current call still gets the cached value to avoid blocking tool selection.
+      void refreshDescriptorIfStale();
       return cachedDescriptor;
     },
     origin: "primordial",

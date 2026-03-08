@@ -101,16 +101,22 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
   // let: in-flight guard — prevents overlapping syncAll() calls
   let syncing = false;
 
-  /** Sync a single remote zone. Returns the number of new events processed. */
-  async function syncZone(remoteId: string, client: SyncClient): Promise<number> {
+  /** Result of a single zone sync: event count + whether an error occurred. */
+  interface SyncZoneResult {
+    readonly count: number;
+    readonly errored: boolean;
+  }
+
+  /** Sync a single remote zone. Returns event count and error status. */
+  async function syncZone(remoteId: string, client: SyncClient): Promise<SyncZoneResult> {
     const cursor = cursors.get(remoteId);
-    if (cursor === undefined) return 0;
+    if (cursor === undefined) return { count: 0, errored: false };
 
     const result = await client.fetchDelta(cursor);
-    if (!result.ok) return 0;
+    if (!result.ok) return { count: 0, errored: true };
 
     const newEvents = deduplicateEvents(result.value, cursor);
-    if (newEvents.length === 0) return 0;
+    if (newEvents.length === 0) return { count: 0, errored: false };
 
     // Process events
     for (const event of newEvents) {
@@ -136,7 +142,7 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
     // Track activity
     lastActiveTimes.set(remoteId, Date.now());
 
-    return newEvents.length;
+    return { count: newEvents.length, errored: false };
   }
 
   /** Sync all remote zones in parallel. Guarded against overlapping calls. */
@@ -150,18 +156,22 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       );
 
       const totalEvents = results.reduce(
-        (sum, r) => sum + (r.status === "fulfilled" ? r.value : 0),
+        (sum, r) => sum + (r.status === "fulfilled" ? r.value.count : 0),
         0,
       );
+      const anyErrored = results.some(
+        (r) => r.status === "rejected" || (r.status === "fulfilled" && r.value.errored),
+      );
 
-      // Adaptive polling
+      // Adaptive polling — errors hold interval steady (don't back off on failures)
       if (totalEvents > 0) {
         // Events found → halve interval (floor = minPollIntervalMs)
         currentInterval = Math.max(minPollIntervalMs, Math.floor(currentInterval / 2));
-      } else {
-        // No events → double interval (cap = maxPollIntervalMs)
+      } else if (!anyErrored) {
+        // Truly idle (no events AND no errors) → double interval (cap = maxPollIntervalMs)
         currentInterval = Math.min(maxPollIntervalMs, currentInterval * 2);
       }
+      // On error with no events: hold current interval (don't back off)
 
       // Vector clock pruning
       const cutoffAt = Date.now() - clockPruneAfterMs;

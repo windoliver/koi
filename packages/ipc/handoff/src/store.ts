@@ -13,7 +13,7 @@ import type {
   RegistryEvent,
   Result,
 } from "@koi/core";
-import { conflictError, notFoundError } from "./errors.js";
+import { conflictError, expiredError, notFoundError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -97,7 +97,7 @@ export function createInMemoryHandoffStore(config?: HandoffStoreConfig): Handoff
     if (isExpired(envelope)) {
       const expired: HandoffEnvelope = { ...envelope, status: "expired" };
       envelopes.set(id, expired);
-      return { ok: false, error: notFoundError(id) };
+      return { ok: false, error: expiredError(id) };
     }
     return { ok: true, value: envelope };
   }

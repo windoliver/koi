@@ -127,7 +127,26 @@ export function createGitWorktreeBackend(
         branchName,
         repoPath,
       });
-      await writeFile(`${worktreePath}/${MARKER_FILENAME}`, marker, "utf-8");
+      try {
+        await writeFile(`${worktreePath}/${MARKER_FILENAME}`, marker, "utf-8");
+      } catch (e: unknown) {
+        // Marker write failed — clean up the orphaned worktree/branch
+        await runGit(["worktree", "remove", "--force", worktreePath], repoPath).catch(() => {
+          // Best-effort cleanup
+        });
+        await runGit(["branch", "-D", branchName], repoPath).catch(() => {
+          // Best-effort cleanup
+        });
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Failed to write marker file for workspace: ${e instanceof Error ? e.message : String(e)}`,
+            retryable: false,
+            cause: e,
+          },
+        };
+      }
 
       tracked.set(id, { worktreePath, branchName });
 

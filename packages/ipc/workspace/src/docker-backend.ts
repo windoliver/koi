@@ -288,6 +288,19 @@ export function createDockerWorkspaceBackend(
       if (!acquired.ok) return acquired;
       const { instance, agentWorkDir } = acquired.value;
 
+      // Ensure the agent sub-directory exists for shared scope
+      if (scope === "shared") {
+        try {
+          await instance.exec("mkdir", ["-p", agentWorkDir]);
+        } catch (e: unknown) {
+          // If mkdir fails, the marker write below will also fail — let it propagate
+          console.warn(
+            `[workspace] Failed to create shared-scope directory ${agentWorkDir}:`,
+            e instanceof Error ? e.message : String(e),
+          );
+        }
+      }
+
       // Write marker file inside container for lifecycle tracking
       const marker = JSON.stringify({ id, agentId, createdAt, workDir: agentWorkDir });
       try {

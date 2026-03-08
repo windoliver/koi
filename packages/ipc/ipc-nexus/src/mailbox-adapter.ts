@@ -156,6 +156,9 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
 
     sseTransport.start();
 
+    // Drain pre-existing inbox messages before relying on SSE notifications
+    void fetchAndDispatch();
+
     // Check connection after a brief delay — if not connected, fall back to polling
     setTimeout(() => {
       if (disposed) return;

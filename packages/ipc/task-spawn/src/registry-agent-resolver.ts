@@ -45,8 +45,9 @@ export function createRegistryAgentResolver(
     },
 
     async findLive(agentType: string): Promise<LiveAgentHandle | undefined> {
-      const agentTypeFilter =
-        agentType === "copilot" || agentType === "worker" ? agentType : ("copilot" as const);
+      // Query registry with the exact agent type — don't coerce unknown types to "copilot"
+      const agentTypeFilter: "copilot" | "worker" =
+        agentType === "copilot" || agentType === "worker" ? agentType : "worker";
 
       const entries = await registry.list({ agentType: agentTypeFilter });
 

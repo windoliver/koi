@@ -30,32 +30,44 @@ export async function processPendingMessages(
   seen: SeenSet,
   limit: number,
 ): Promise<number> {
-  const result = await client.listInbox(agentId, limit);
-  if (!result.ok) return 0;
-
   // let justified: count mutated in loop
   let processed = 0;
+  // let justified: offset advances as pages are drained
+  let offset = 0;
 
-  for (const envelope of result.value) {
-    if (seen.has(envelope.id)) continue;
+  // Drain all pages, not just the first
+  for (;;) {
+    const result = await client.listInbox(agentId, limit, offset);
+    if (!result.ok) break;
 
-    const message = mapNexusToKoi(envelope);
-    if (message === undefined) continue;
+    const messages = result.value;
+    if (messages.length === 0) break;
 
-    // Mark as seen only after successful parse — unmappable messages
-    // remain eligible for retry after a code fix/redeploy.
-    seen.add(envelope.id);
+    for (const envelope of messages) {
+      if (seen.has(envelope.id)) continue;
 
-    for (const handler of handlers) {
-      try {
-        await handler(message);
-      } catch (_err: unknown) {
-        // Handler errors must not crash the polling loop.
-        // Logging would be added by middleware/telemetry at a higher layer.
+      const message = mapNexusToKoi(envelope);
+      if (message === undefined) continue;
+
+      // Mark as seen only after successful parse — unmappable messages
+      // remain eligible for retry after a code fix/redeploy.
+      seen.add(envelope.id);
+
+      for (const handler of handlers) {
+        try {
+          await handler(message);
+        } catch (_err: unknown) {
+          // Handler errors must not crash the polling loop.
+          // Logging would be added by middleware/telemetry at a higher layer.
+        }
       }
+
+      processed += 1;
     }
 
-    processed += 1;
+    // If we got fewer messages than the limit, there are no more pages
+    if (messages.length < limit) break;
+    offset += messages.length;
   }
 
   return processed;

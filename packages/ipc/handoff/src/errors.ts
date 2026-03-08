@@ -24,6 +24,10 @@ export function validationError(message: string): KoiError {
   return validation(message);
 }
 
+export function expiredError(id: string): KoiError {
+  return notFound(id, `Handoff envelope expired (TTL exceeded): ${id}`);
+}
+
 export function internalError(message: string, cause?: unknown): KoiError {
   return internal(message, cause);
 }

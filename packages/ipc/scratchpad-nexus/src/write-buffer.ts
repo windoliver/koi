@@ -29,11 +29,17 @@ export interface BufferedWrite {
   readonly metadata?: Record<string, unknown> | undefined;
 }
 
+/** Result of a flush cycle — reports which paths succeeded and which failed. */
+export interface FlushResult {
+  readonly succeeded: readonly ScratchpadPath[];
+  readonly failed: readonly ScratchpadPath[];
+}
+
 export interface WriteBuffer {
   /** Buffer a write. Returns optimistic success. Forces flush if buffer is full. */
   readonly add: (write: BufferedWrite) => Promise<Result<ScratchpadWriteResult, KoiError>>;
-  /** Flush all buffered writes to the backend. */
-  readonly flush: () => Promise<void>;
+  /** Flush all buffered writes to the backend. Returns succeeded/failed paths. */
+  readonly flush: () => Promise<FlushResult>;
   /** Check if a path has a pending write. */
   readonly has: (path: ScratchpadPath) => boolean;
   /** Get a pending write by path (for read-your-writes). */
@@ -55,12 +61,13 @@ export function createWriteBuffer(
   // let justified: mutable buffer map, mutated on add/flush
   const buffer = new Map<ScratchpadPath, BufferedWrite>();
 
-  async function flush(): Promise<void> {
-    if (buffer.size === 0) return;
+  async function flush(): Promise<FlushResult> {
+    if (buffer.size === 0) return { succeeded: [], failed: [] };
 
     // Snapshot to avoid re-entrancy issues
     const entries = [...buffer.entries()];
-    const failed: Array<[ScratchpadPath, BufferedWrite]> = [];
+    const succeeded: ScratchpadPath[] = [];
+    const failed: ScratchpadPath[] = [];
 
     // Clear before persisting so concurrent adds go into a fresh buffer
     buffer.clear();
@@ -76,16 +83,17 @@ export function createWriteBuffer(
         write.metadata,
       );
       if (!result.ok) {
-        failed.push([path, write]);
+        failed.push(path);
+        // Re-buffer failed writes so they are retried on the next flush
+        if (!buffer.has(path)) {
+          buffer.set(path, write);
+        }
+      } else {
+        succeeded.push(path);
       }
     }
 
-    // Re-buffer failed writes so they are retried on the next flush
-    for (const [path, write] of failed) {
-      if (!buffer.has(path)) {
-        buffer.set(path, write);
-      }
-    }
+    return { succeeded, failed };
   }
 
   return {

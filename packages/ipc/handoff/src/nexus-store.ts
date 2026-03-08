@@ -18,7 +18,7 @@ import type {
 import { agentId, handoffId } from "@koi/core";
 import type { NexusClient } from "@koi/nexus-client";
 import { createNexusClient } from "@koi/nexus-client";
-import { conflictError, internalError, notFoundError } from "./errors.js";
+import { conflictError, expiredError, internalError, notFoundError } from "./errors.js";
 import type { HandoffStore, HandoffStoreConfig } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ export function createNexusHandoffStore(config: NexusHandoffStoreConfig): Handof
     try {
       const envelope = rebrandEnvelope(JSON.parse(readResult.value) as HandoffEnvelope);
       if (isExpired(envelope)) {
-        return { ok: false, error: notFoundError(id) };
+        return { ok: false, error: expiredError(id) };
       }
       return { ok: true, value: envelope };
     } catch {
@@ -130,7 +130,7 @@ export function createNexusHandoffStore(config: NexusHandoffStoreConfig): Handof
     from: HandoffStatus,
     to: HandoffStatus,
   ): Promise<Result<HandoffEnvelope, KoiError>> => {
-    // Read-compare-write (accepted race window per Decision #3)
+    // Read-compare-write with post-write verification to detect concurrent transitions
     const readResult = await rpc<string>("read", { path: envelopePath(id) });
     if (!readResult.ok) {
       return { ok: false, error: notFoundError(id) };
@@ -148,6 +148,20 @@ export function createNexusHandoffStore(config: NexusHandoffStoreConfig): Handof
         content: JSON.stringify(updated),
       });
       if (!writeResult.ok) return writeResult;
+
+      // Post-write verification: re-read to detect if a concurrent transition overwrote ours
+      const verifyResult = await rpc<string>("read", { path: envelopePath(id) });
+      if (verifyResult.ok) {
+        try {
+          const current = JSON.parse(verifyResult.value) as HandoffEnvelope;
+          if (current.status !== to) {
+            // Another process transitioned after our write — report conflict
+            return { ok: false, error: conflictError(id) };
+          }
+        } catch {
+          // Parse failure on verify — treat as success since our write succeeded
+        }
+      }
 
       return { ok: true, value: updated };
     } catch {

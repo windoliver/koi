@@ -47,7 +47,8 @@ export async function* parseSseStream(
       if (done) break;
 
       const chunk = leftover + decoder.decode(value, { stream: true });
-      const lines = chunk.split("\n");
+      // Split on \n, then strip trailing \r for spec-legal CRLF streams
+      const lines = chunk.split("\n").map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
 
       // Last element may be a partial line — save for next chunk
       leftover = lines.pop() ?? "";

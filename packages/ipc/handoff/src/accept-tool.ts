@@ -108,6 +108,9 @@ async function accept(config: CreateAcceptToolConfig, id: HandoffId): Promise<Ha
   // Validate artifact refs — collect warnings (not hard fail)
   const artifactWarnings = validateArtifactRefs(envelope.context.artifacts);
 
+  // Preserve the sender's original handoff warnings
+  const senderWarnings = envelope.context.warnings;
+
   // Transition: pending|injected -> accepted
   const transitionResult = await config.store.transition(envelope.id, envelope.status, "accepted");
   if (!transitionResult.ok) {
@@ -118,7 +121,7 @@ async function accept(config: CreateAcceptToolConfig, id: HandoffId): Promise<Ha
   return {
     ok: true,
     envelope: transitionResult.value,
-    warnings: artifactWarnings,
+    warnings: [...senderWarnings, ...artifactWarnings],
   };
 }
 

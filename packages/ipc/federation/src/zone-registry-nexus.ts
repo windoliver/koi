@@ -52,9 +52,17 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
         });
       }
 
-      projection.set(descriptor.zoneId, descriptor);
-      notify({ kind: "zone_registered", descriptor });
-      return descriptor;
+      // Use server-returned descriptor if it includes required fields (may include canonicalization),
+      // otherwise fall back to caller's input for backward compatibility.
+      const canonical: ZoneDescriptor =
+        result.value !== null &&
+        typeof result.value === "object" &&
+        typeof result.value.zoneId === "string"
+          ? result.value
+          : descriptor;
+      projection.set(canonical.zoneId, canonical);
+      notify({ kind: "zone_registered", descriptor: canonical });
+      return canonical;
     },
 
     deregister: async (id: ZoneId) => {
@@ -68,11 +76,14 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
         });
       }
 
-      const existed = projection.delete(id);
-      if (existed) {
+      // Use server's boolean response when available; fall back to local projection
+      // for servers that don't return a boolean (e.g., return void/null).
+      const serverConfirmed = typeof result.value === "boolean" ? result.value : projection.has(id);
+      if (serverConfirmed) {
+        projection.delete(id);
         notify({ kind: "zone_deregistered", zoneId: id });
       }
-      return existed;
+      return serverConfirmed;
     },
 
     lookup: (id: ZoneId) => {

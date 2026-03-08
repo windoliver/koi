@@ -46,7 +46,7 @@ export function createGenerationCache(
   const cache = new Map<string, CacheEntry>();
 
   function cacheKey(groupId: AgentGroupId, path: ScratchpadPath): string {
-    return `${groupId}:${path}`;
+    return `${groupId}\0${path}`;
   }
 
   function evictIfFull(): void {
@@ -104,7 +104,7 @@ export function createGenerationCache(
     invalidate: (path) => {
       // Invalidate all groups for this path
       for (const key of cache.keys()) {
-        if (key.endsWith(`:${path}`)) {
+        if (key.endsWith(`\0${path}`)) {
           cache.delete(key);
         }
       }

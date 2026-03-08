@@ -24,8 +24,20 @@ function validationError(message: string): {
   };
 }
 
+/** Structural type guard for Map-like objects (accepts Map and ReadonlyMap). */
+function isMapLike(value: unknown): value is ReadonlyMap<unknown, unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as Record<string, unknown>).get === "function" &&
+    typeof (value as Record<string, unknown>).has === "function" &&
+    typeof (value as Record<string, unknown>).size === "number" &&
+    typeof (value as Record<string, unknown>).entries === "function"
+  );
+}
+
 function validateAgentsMap(
-  agents: Map<unknown, unknown>,
+  agents: ReadonlyMap<unknown, unknown>,
 ): ReturnType<typeof validationError> | undefined {
   if (agents.size === 0) {
     return validationError("Config requires at least one agent in the 'agents' map");
@@ -73,7 +85,7 @@ export function validateTaskSpawnConfig(config: unknown): Result<TaskSpawnConfig
     );
   }
 
-  const hasAgents = config.agents instanceof Map;
+  const hasAgents = isMapLike(config.agents);
   const hasResolver =
     isRecord(config.agentResolver) &&
     typeof config.agentResolver.resolve === "function" &&
@@ -86,7 +98,7 @@ export function validateTaskSpawnConfig(config: unknown): Result<TaskSpawnConfig
   }
 
   if (hasAgents) {
-    const mapError = validateAgentsMap(config.agents as Map<unknown, unknown>);
+    const mapError = validateAgentsMap(config.agents as ReadonlyMap<unknown, unknown>);
     if (mapError !== undefined) return mapError;
   }
 
@@ -95,7 +107,7 @@ export function validateTaskSpawnConfig(config: unknown): Result<TaskSpawnConfig
       return validationError("'defaultAgent' must be a string");
     }
     // When using agentResolver, we can't validate defaultAgent against static map
-    if (hasAgents && !(config.agents as Map<string, unknown>).has(config.defaultAgent)) {
+    if (hasAgents && !(config.agents as ReadonlyMap<string, unknown>).has(config.defaultAgent)) {
       return validationError(
         `'defaultAgent' value '${config.defaultAgent}' must reference a key in 'agents'`,
       );
