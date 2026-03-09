@@ -28,7 +28,7 @@ import { validatePathSegment, wrapNexusError } from "./shared/nexus-helpers.js";
 // Config
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE_PATH = "/session";
+const DEFAULT_BASE_PATH = "session";
 
 export interface NexusSessionStoreConfig {
   readonly baseUrl: string;

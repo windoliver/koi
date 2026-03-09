@@ -251,14 +251,15 @@ attach(agent)
     │
     ├─ 1. Extract agent.pid.id and agent.pid.groupId
     │
-    ├─ 2. Compute namespace paths
-    │     /agents/{agentId}/forge/bricks
-    │     /agents/{agentId}/events
-    │     /agents/{agentId}/sessions
-    │     /agents/{agentId}/memory
-    │     /agents/{agentId}/snapshots
-    │     /agents/{agentId}/filesystem
-    │     /groups/{groupId}/scratch  (if groupId)
+    ├─ 2. Compute namespace paths (frozen per #922)
+    │     agents/{agentId}/bricks
+    │     agents/{agentId}/events
+    │     agents/{agentId}/session
+    │     agents/{agentId}/memory/entities
+    │     agents/{agentId}/snapshots
+    │     agents/{agentId}/workspace
+    │     agents/{agentId}/mailbox
+    │     groups/{groupId}/scratch  (if groupId)
     │
     ├─ 3. Best-effort auto-provisioning (mkdir via Nexus RPC)
     │

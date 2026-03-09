@@ -13,9 +13,12 @@ import {
   agentPendingFramePath,
   agentPendingFramesGlob,
   agentSessionPath,
+  agentSessionsGlob,
   agentSnapshotGlob,
   agentSnapshotPath,
   agentSubscriptionPath,
+  agentWorkspaceGlob,
+  agentWorkspacePath,
   gatewayNodePath,
   gatewayNodesGlob,
   gatewaySessionPath,
@@ -25,6 +28,7 @@ import {
   globalBrickPath,
   groupScratchGlob,
   groupScratchPath,
+  SEGMENTS,
 } from "./paths.js";
 
 const AGENT = agentId("agent-1");
@@ -49,37 +53,43 @@ describe("Nexus namespace paths", () => {
   describe("events", () => {
     test("agentEventMetaPath", () => {
       expect(agentEventMetaPath(AGENT, "stream-a")).toBe(
-        nexusPath("agents/agent-1/events/stream-a/meta.json"),
+        nexusPath("agents/agent-1/events/streams/stream-a/meta.json"),
       );
     });
 
     test("agentEventPath", () => {
       expect(agentEventPath(AGENT, "stream-a", "0000000001")).toBe(
-        nexusPath("agents/agent-1/events/stream-a/events/0000000001.json"),
+        nexusPath("agents/agent-1/events/streams/stream-a/events/0000000001.json"),
       );
     });
 
     test("agentEventGlob", () => {
       expect(agentEventGlob(AGENT, "stream-a")).toBe(
-        nexusPath("agents/agent-1/events/stream-a/events/*.json"),
+        nexusPath("agents/agent-1/events/streams/stream-a/events/*.json"),
       );
     });
   });
 
   describe("session", () => {
     test("agentSessionPath", () => {
-      expect(agentSessionPath(AGENT)).toBe(nexusPath("agents/agent-1/session/record.json"));
+      expect(agentSessionPath(AGENT, "sess-1")).toBe(
+        nexusPath("agents/agent-1/session/records/sess-1.json"),
+      );
+    });
+
+    test("agentSessionsGlob", () => {
+      expect(agentSessionsGlob(AGENT)).toBe(nexusPath("agents/agent-1/session/records/*.json"));
     });
 
     test("agentPendingFramePath", () => {
-      expect(agentPendingFramePath(AGENT, "frame-1")).toBe(
-        nexusPath("agents/agent-1/session/pending-frames/frame-1.json"),
+      expect(agentPendingFramePath(AGENT, "sess-1", "frame-1")).toBe(
+        nexusPath("agents/agent-1/session/pending/sess-1/frame-1.json"),
       );
     });
 
     test("agentPendingFramesGlob", () => {
-      expect(agentPendingFramesGlob(AGENT)).toBe(
-        nexusPath("agents/agent-1/session/pending-frames/*.json"),
+      expect(agentPendingFramesGlob(AGENT, "sess-1")).toBe(
+        nexusPath("agents/agent-1/session/pending/sess-1/*.json"),
       );
     });
   });
@@ -118,7 +128,7 @@ describe("Nexus namespace paths", () => {
     });
 
     test("groupScratchGlob", () => {
-      expect(groupScratchGlob(GROUP)).toBe(nexusPath("groups/group-x/scratch/*"));
+      expect(groupScratchGlob(GROUP)).toBe(nexusPath("groups/group-x/scratch/**"));
     });
   });
 
@@ -139,6 +149,37 @@ describe("Nexus namespace paths", () => {
       expect(agentDeadLetterGlob(AGENT)).toBe(
         nexusPath("agents/agent-1/events/dead-letters/*.json"),
       );
+    });
+  });
+
+  describe("workspace", () => {
+    test("agentWorkspacePath", () => {
+      expect(agentWorkspacePath(AGENT, "src/main.ts")).toBe(
+        nexusPath("agents/agent-1/workspace/src/main.ts"),
+      );
+    });
+
+    test("agentWorkspaceGlob", () => {
+      expect(agentWorkspaceGlob(AGENT)).toBe(nexusPath("agents/agent-1/workspace/**"));
+    });
+  });
+
+  describe("SEGMENTS", () => {
+    test("exports all domain segments", () => {
+      expect(SEGMENTS.bricks).toBe("bricks");
+      expect(SEGMENTS.events).toBe("events");
+      expect(SEGMENTS.session).toBe("session");
+      expect(SEGMENTS.memory).toBe("memory/entities");
+      expect(SEGMENTS.snapshots).toBe("snapshots");
+      expect(SEGMENTS.workspace).toBe("workspace");
+      expect(SEGMENTS.mailbox).toBe("mailbox");
+    });
+
+    test("segments have no leading or trailing slashes", () => {
+      for (const segment of Object.values(SEGMENTS)) {
+        expect(segment.startsWith("/")).toBe(false);
+        expect(segment.endsWith("/")).toBe(false);
+      }
     });
   });
 

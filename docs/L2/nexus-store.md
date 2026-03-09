@@ -40,20 +40,38 @@ This led to ~2,000 LOC of duplicated patterns across 2 packages, with 3 domains 
 
 ### Namespace Convention
 
-All data is organized under a unified agent-scoped namespace:
+<!-- FROZEN: Namespace contract locked per #922. Changes require a new issue. -->
+
+All data is organized under a unified agent-scoped namespace. Canonical paths are defined in `@koi/nexus-client/paths.ts` — the single source of truth. No leading slashes (NexusPath convention).
+
+> **Migration note (v0 → v1):** Prior to #922, `DEFAULT_BASE_PATH` constants used leading slashes (e.g., `"/session"`) which violates the `NexusPath` contract. Any pre-#922 persisted data that was addressed with leading-slash paths will need re-addressing if the Nexus server treats `/session/...` and `session/...` as distinct paths. No automated migration is provided — this is a pre-release breaking change.
 
 ```
-/agents/{agentId}/
-├── bricks/{brickId}.json              ← forge
-├── events/{streamId}/
-│   ├── meta.json                      ← event stream metadata
-│   └── events/{seq}.json             ← individual events
-├── snapshots/{chainId}/{nodeId}.json  ← snapshot chains
+agents/{agentId}/
+├── bricks/{brickId}.json                        ← forge artifacts
+├── events/
+│   ├── streams/{streamId}/
+│   │   ├── meta.json                            ← event stream metadata
+│   │   └── events/{seq:10}.json                 ← individual events (zero-padded)
+│   ├── subscriptions/{name}.json                ← subscription positions
+│   └── dead-letters/{entryId}.json              ← failed deliveries
+├── snapshots/{chainId}/{nodeId}.json            ← snapshot chains
 ├── session/
-│   ├── record.json                    ← session record
-│   ├── checkpoints/{id}.json          ← session checkpoints
-│   └── pending-frames/{frameId}.json  ← pending frames
-└── memory/entities/{slug}.json        ← memory facts
+│   ├── records/{sessionId}.json                 ← session records
+│   └── pending/{sessionId}/{frameId}.json       ← pending frames
+├── memory/entities/{slug}.json                  ← memory facts
+├── workspace/...                                ← free-form file storage
+└── mailbox/                                     ← REST+SSE adapter (not file-backed)
+
+global/
+├── bricks/{brickId}.json                        ← shared brick artifacts
+└── gateway/
+    ├── sessions/{id}.json
+    ├── nodes/{id}.json
+    └── surfaces/{id}.json
+
+groups/{groupId}/
+└── scratch/{path}                               ← group scratchpad
 ```
 
 ---

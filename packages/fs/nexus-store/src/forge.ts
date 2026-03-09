@@ -36,7 +36,7 @@ import { validatePathSegment, wrapNexusError } from "./shared/nexus-helpers.js";
 // Config
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE_PATH = "/forge/bricks";
+const DEFAULT_BASE_PATH = "bricks";
 const DEFAULT_CONCURRENCY = 10;
 
 export interface NexusForgeStoreConfig {

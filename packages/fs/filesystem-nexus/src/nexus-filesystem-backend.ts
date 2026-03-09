@@ -33,7 +33,7 @@ import { validateNexusFileSystemConfig } from "./validate-config.js";
 // Defaults
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE_PATH = "/fs";
+const DEFAULT_BASE_PATH = "fs";
 
 // ---------------------------------------------------------------------------
 // Path helper
@@ -90,7 +90,7 @@ function computeFullPath(basePath: string, userPath: string): Result<string, Koi
     if (part !== "" && part !== ".") return acc.concat(part);
     return acc;
   }, []);
-  const result = `/${resolved.join("/")}`;
+  const result = resolved.join("/");
 
   // Ensure result stays within basePath boundary
   const baseWithSlash = basePath.endsWith("/") ? basePath : `${basePath}/`;
@@ -159,7 +159,9 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     throw new Error(validated.error.message, { cause: validated.error });
   }
 
-  const basePath = config.basePath ?? DEFAULT_BASE_PATH;
+  // Normalize basePath: strip leading slash for NexusPath convention (#922)
+  const rawBase = config.basePath ?? DEFAULT_BASE_PATH;
+  const basePath = rawBase.startsWith("/") ? rawBase.slice(1) : rawBase;
   const client = config.client;
 
   async function read(
