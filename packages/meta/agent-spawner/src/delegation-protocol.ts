@@ -113,16 +113,32 @@ export function buildAcpArgs(command: string, model?: string): readonly string[]
   return args;
 }
 
-/** Build newline-delimited JSON-RPC stdin for an ACP session. */
+/**
+ * Build newline-delimited JSON-RPC stdin for an ACP session.
+ *
+ * Uses a pre-allocated session ID so the session/new response and session/prompt
+ * request agree on the same ID. This is necessary because stdin is pre-built as a
+ * single string (batch mode) — we cannot read the session/new response before
+ * sending session/prompt.
+ *
+ * TODO: Implement interactive ACP session handling where the spawner reads the
+ * session/new response before sending session/prompt, supporting ACP servers that
+ * allocate server-side session IDs.
+ */
 export function buildAcpStdin(prompt: string): string {
+  // Pre-allocate a client-side session ID so both session/new and session/prompt
+  // reference the same value. ACP servers that honour client-suggested IDs will
+  // accept this; servers that allocate their own IDs require interactive handling.
+  const clientSessionId = `koi-spawn-${Date.now()}`;
+
   const init = buildRequest("initialize", {
     protocolVersion: "0.1",
     clientInfo: { name: "koi-agent-spawner", version: "0.0.0" },
     capabilities: {},
   });
-  const session = buildRequest("session/new", {});
+  const session = buildRequest("session/new", { sessionId: clientSessionId });
   const promptReq = buildRequest("session/prompt", {
-    sessionId: "default",
+    sessionId: clientSessionId,
     messages: [{ role: "user", content: prompt }],
   });
 

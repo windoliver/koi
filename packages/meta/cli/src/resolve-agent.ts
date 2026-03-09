@@ -142,10 +142,11 @@ const ALL_DESCRIPTORS: readonly BrickDescriptor<unknown>[] = [
 
 /**
  * Detects the monorepo `packages/` directory relative to this module.
- * Both `src/` and `dist/` live two levels under `packages/cli/`.
+ * This module lives at `packages/meta/cli/src/`, so three levels up
+ * reaches the `packages/` root where discoverable packages reside.
  */
 function detectPackagesDir(): string {
-  return pathResolve(import.meta.dir, "..", "..");
+  return pathResolve(import.meta.dir, "..", "..", "..");
 }
 
 /**

@@ -314,12 +314,22 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
   ];
 
   // --- Opt-in: memory provider (user-scoped or single-instance) ---
+  // When user-scoped AND session-binding is active, share the same scopedMemory
+  // instance so the provider routes to the same per-user memory as the middleware proxy.
+  // This prevents the mismatch where middleware uses SessionContext.userId but
+  // the provider routes by agent.pid.ownerId (a static value set at attach time).
   const memoryProvider =
-    config.memoryFs?.userScoped === true && effectiveFsConfig !== undefined
+    config.memoryFs?.userScoped === true &&
+    effectiveFsConfig !== undefined &&
+    scopedMemory !== undefined
       ? createUserScopedMemoryProvider({
           baseDir: effectiveFsConfig.baseDir,
           maxCachedUsers: config.memoryFs.maxCachedUsers,
           memoryConfig: effectiveFsConfig,
+          // TODO(#6): Provider tools still resolve userId from agent.pid.ownerId at attach time,
+          // while the arena's session-binding middleware resolves from SessionContext.userId per-session.
+          // In multi-user serve mode these can diverge. Full fix requires provider tools to accept
+          // a dynamic userId resolver, similar to createScopedMemoryProxy above.
         })
       : fsMemory !== undefined
         ? createMemoryProvider({ memory: fsMemory })

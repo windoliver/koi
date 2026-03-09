@@ -20,6 +20,14 @@ export async function createChatSdkShim(
     if (adapters.length === 0) {
       throw new Error("[channel-chat-sdk] No platforms configured in chat-sdk config");
     }
+    if (adapters.length > 1) {
+      const names = adapters.map((a) => (a as { readonly name?: string }).name ?? "unknown");
+      process.stderr.write(
+        `[channel-chat-sdk] Warning: ${String(adapters.length)} platforms configured ` +
+          `(${names.join(", ")}), but only the first is used. ` +
+          `Configure each platform as a separate channel in the manifest for multi-platform support.\n`,
+      );
+    }
     return adapters[0] as ChannelAdapter;
   } catch (error: unknown) {
     if (error instanceof Error && error.message.includes("No platforms configured")) {
