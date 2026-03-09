@@ -50,7 +50,7 @@ describe("computeAgentNamespace — contract test (paths.ts compatibility)", () 
     expect(bPath.startsWith(ns.forge as string)).toBe(true);
 
     // Session: ns.session is prefix of agentSessionPath
-    const sPath = agentSessionPath(id) as string;
+    const sPath = agentSessionPath(id, "sess-1") as string;
     expect(sPath.startsWith(ns.session as string)).toBe(true);
 
     // Memory: ns.memory is prefix of agentMemoryPath

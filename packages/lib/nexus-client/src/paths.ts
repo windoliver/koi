@@ -74,19 +74,28 @@ export function agentEventGlob(agentId: AgentId, streamId: string): NexusPath {
 // Session
 // ---------------------------------------------------------------------------
 
-/** Path to session record: agents/{agentId}/session/record.json */
-export function agentSessionPath(agentId: AgentId): NexusPath {
-  return nexusPath(`agents/${agentId}/session/record.json`);
+/** Path to a session record: agents/{agentId}/session/records/{sessionId}.json */
+export function agentSessionPath(agentId: AgentId, sessionId: string): NexusPath {
+  return nexusPath(`agents/${agentId}/session/records/${sessionId}.json`);
 }
 
-/** Path to a pending frame: agents/{agentId}/session/pending-frames/{frameId}.json */
-export function agentPendingFramePath(agentId: AgentId, frameId: string): NexusPath {
-  return nexusPath(`agents/${agentId}/session/pending-frames/${frameId}.json`);
+/** Glob for all session records: agents/{agentId}/session/records/*.json */
+export function agentSessionsGlob(agentId: AgentId): NexusPath {
+  return nexusPath(`agents/${agentId}/session/records/*.json`);
 }
 
-/** Glob for pending frames: agents/{agentId}/session/pending-frames/*.json */
-export function agentPendingFramesGlob(agentId: AgentId): NexusPath {
-  return nexusPath(`agents/${agentId}/session/pending-frames/*.json`);
+/** Path to a pending frame: agents/{agentId}/session/pending/{sessionId}/{frameId}.json */
+export function agentPendingFramePath(
+  agentId: AgentId,
+  sessionId: string,
+  frameId: string,
+): NexusPath {
+  return nexusPath(`agents/${agentId}/session/pending/${sessionId}/${frameId}.json`);
+}
+
+/** Glob for pending frames of a session: agents/{agentId}/session/pending/{sessionId}/*.json */
+export function agentPendingFramesGlob(agentId: AgentId, sessionId: string): NexusPath {
+  return nexusPath(`agents/${agentId}/session/pending/${sessionId}/*.json`);
 }
 
 // ---------------------------------------------------------------------------

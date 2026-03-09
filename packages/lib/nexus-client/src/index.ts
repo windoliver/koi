@@ -27,6 +27,7 @@ export {
   agentPendingFramePath,
   agentPendingFramesGlob,
   agentSessionPath,
+  agentSessionsGlob,
   agentSnapshotGlob,
   agentSnapshotPath,
   agentSubscriptionPath,

@@ -13,6 +13,7 @@ import {
   agentPendingFramePath,
   agentPendingFramesGlob,
   agentSessionPath,
+  agentSessionsGlob,
   agentSnapshotGlob,
   agentSnapshotPath,
   agentSubscriptionPath,
@@ -71,18 +72,24 @@ describe("Nexus namespace paths", () => {
 
   describe("session", () => {
     test("agentSessionPath", () => {
-      expect(agentSessionPath(AGENT)).toBe(nexusPath("agents/agent-1/session/record.json"));
+      expect(agentSessionPath(AGENT, "sess-1")).toBe(
+        nexusPath("agents/agent-1/session/records/sess-1.json"),
+      );
+    });
+
+    test("agentSessionsGlob", () => {
+      expect(agentSessionsGlob(AGENT)).toBe(nexusPath("agents/agent-1/session/records/*.json"));
     });
 
     test("agentPendingFramePath", () => {
-      expect(agentPendingFramePath(AGENT, "frame-1")).toBe(
-        nexusPath("agents/agent-1/session/pending-frames/frame-1.json"),
+      expect(agentPendingFramePath(AGENT, "sess-1", "frame-1")).toBe(
+        nexusPath("agents/agent-1/session/pending/sess-1/frame-1.json"),
       );
     });
 
     test("agentPendingFramesGlob", () => {
-      expect(agentPendingFramesGlob(AGENT)).toBe(
-        nexusPath("agents/agent-1/session/pending-frames/*.json"),
+      expect(agentPendingFramesGlob(AGENT, "sess-1")).toBe(
+        nexusPath("agents/agent-1/session/pending/sess-1/*.json"),
       );
     });
   });

@@ -44,6 +44,8 @@ This led to ~2,000 LOC of duplicated patterns across 2 packages, with 3 domains 
 
 All data is organized under a unified agent-scoped namespace. Canonical paths are defined in `@koi/nexus-client/paths.ts` — the single source of truth. No leading slashes (NexusPath convention).
 
+> **Migration note (v0 → v1):** Prior to #922, `DEFAULT_BASE_PATH` constants used leading slashes (e.g., `"/session"`) which violates the `NexusPath` contract. Any pre-#922 persisted data that was addressed with leading-slash paths will need re-addressing if the Nexus server treats `/session/...` and `session/...` as distinct paths. No automated migration is provided — this is a pre-release breaking change.
+
 ```
 agents/{agentId}/
 ├── bricks/{brickId}.json                        ← forge artifacts
