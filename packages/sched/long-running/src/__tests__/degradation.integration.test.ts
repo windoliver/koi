@@ -39,7 +39,7 @@ function createPlan(count = 2): TaskBoardSnapshot {
       priority: i,
       maxRetries: 3,
       retries: 0,
-      status: "pending" as const,
+      status: "assigned" as const,
     })),
     results: [],
   };

@@ -167,11 +167,14 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           iterError = extractMessage(e);
         }
 
-        // Run verification gate — race against gate timeout
+        // Run verification gate — race against gate timeout + abort signal
         // Use let — justified: mutable gate result across try/catch
         let gateResult: VerificationResult;
         try {
-          const gateSignal = AbortSignal.timeout(gateTimeoutMs);
+          const gateSignal = AbortSignal.any([
+            abortController.signal,
+            AbortSignal.timeout(gateTimeoutMs),
+          ]);
           const gatePromise = config.verify({
             iteration: i,
             currentItem: current,
@@ -191,14 +194,25 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
           gateResult = { passed: false, details: `Gate error: ${extractMessage(e)}` };
         }
 
-        // Mark completed items
+        // Mark completed items — deduplicate to prevent inflated iterationCount
         if (gateResult.passed && gateResult.itemsCompleted) {
-          for (const itemId of gateResult.itemsCompleted) {
-            await markDone(config.prdPath, itemId);
+          const uniqueCompleted = [...new Set(gateResult.itemsCompleted)];
+          for (const itemId of uniqueCompleted) {
+            const doneResult = await markDone(config.prdPath, itemId);
+            if (!doneResult.ok) {
+              console.warn(
+                `[verified-loop] Failed to mark item "${itemId}" as done: ${doneResult.error.message}`,
+              );
+            }
             consecutiveFailures.delete(itemId);
           }
         } else if (gateResult.passed) {
-          await markDone(config.prdPath, current.id);
+          const doneResult = await markDone(config.prdPath, current.id);
+          if (!doneResult.ok) {
+            console.warn(
+              `[verified-loop] Failed to mark item "${current.id}" as done: ${doneResult.error.message}`,
+            );
+          }
           consecutiveFailures.delete(current.id);
         }
 
@@ -210,7 +224,12 @@ export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
 
           // Skip item if it hit the consecutive failure threshold
           if (newCount >= maxConsecutiveFailures) {
-            await markSkipped(config.prdPath, current.id);
+            const skipResult = await markSkipped(config.prdPath, current.id);
+            if (!skipResult.ok) {
+              console.warn(
+                `[verified-loop] Failed to mark item "${current.id}" as skipped: ${skipResult.error.message}`,
+              );
+            }
           }
         }
 

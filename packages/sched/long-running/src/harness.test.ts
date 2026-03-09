@@ -51,7 +51,7 @@ function createTestPlan(count = 3): TaskBoardSnapshot {
       priority: i,
       maxRetries: 3,
       retries: 0,
-      status: "pending" as const,
+      status: "assigned" as const,
     })),
     results: [],
   };
@@ -395,11 +395,11 @@ describe("completeTask metrics", () => {
   test("updates completedTaskCount after each completion", async () => {
     await harness.completeTask(taskItemId("task-1"), createTaskResult("task-1"));
     expect(harness.status().metrics.completedTaskCount).toBe(1);
-    expect(harness.status().metrics.pendingTaskCount).toBe(2);
+    expect(harness.status().metrics.pendingTaskCount).toBe(0);
 
     await harness.completeTask(taskItemId("task-2"), createTaskResult("task-2"));
     expect(harness.status().metrics.completedTaskCount).toBe(2);
-    expect(harness.status().metrics.pendingTaskCount).toBe(1);
+    expect(harness.status().metrics.pendingTaskCount).toBe(0);
   });
 
   test("sets pendingTaskCount to 0 when all done", async () => {

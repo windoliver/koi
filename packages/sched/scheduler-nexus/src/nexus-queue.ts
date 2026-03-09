@@ -12,6 +12,7 @@
  */
 
 import type {
+  EngineInput,
   KoiError,
   ScheduledTask,
   ScheduleId,
@@ -53,6 +54,15 @@ interface ApiCancelResponse {
 
 interface ApiStatusResponse {
   readonly status: string;
+}
+
+// ---------------------------------------------------------------------------
+// Input serialization — strip non-serializable fields (callHandlers, signal)
+// ---------------------------------------------------------------------------
+
+function serializeInput(input: EngineInput): Record<string, unknown> {
+  const { callHandlers: _ch, signal: _sig, correlationIds: _cid, ...rest } = input;
+  return rest;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,9 +130,14 @@ export function createNexusTaskQueue(
       const result = await request<ApiEnqueueResponse>("POST", "/api/v2/scheduler/submit", {
         task_id: task.id,
         agent_id: task.agentId,
+        input: serializeInput(task.input),
         priority: task.priority,
         mode: task.mode,
+        created_at: task.createdAt,
+        max_retries: task.maxRetries,
         metadata: task.metadata,
+        ...(task.scheduledAt !== undefined ? { scheduled_at: task.scheduledAt } : {}),
+        ...(task.timeoutMs !== undefined ? { timeout_ms: task.timeoutMs } : {}),
         ...(idempotencyKey !== undefined ? { idempotency_key: idempotencyKey } : {}),
       });
       return taskId(result.id);

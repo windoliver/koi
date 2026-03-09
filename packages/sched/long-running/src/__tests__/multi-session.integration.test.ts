@@ -41,7 +41,7 @@ function createPlan(): TaskBoardSnapshot {
         priority: 0,
         maxRetries: 3,
         retries: 0,
-        status: "pending" as const,
+        status: "assigned" as const,
       },
       {
         id: taskItemId("task-B"),
@@ -50,7 +50,7 @@ function createPlan(): TaskBoardSnapshot {
         priority: 1,
         maxRetries: 3,
         retries: 0,
-        status: "pending" as const,
+        status: "assigned" as const,
       },
       {
         id: taskItemId("task-C"),
@@ -59,7 +59,7 @@ function createPlan(): TaskBoardSnapshot {
         priority: 2,
         maxRetries: 3,
         retries: 0,
-        status: "pending" as const,
+        status: "assigned" as const,
       },
     ],
     results: [],

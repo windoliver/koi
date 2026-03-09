@@ -71,7 +71,7 @@ function createContractPlan(): TaskBoardSnapshot {
         priority: 0,
         maxRetries: 3,
         retries: 0,
-        status: "pending" as const,
+        status: "assigned" as const,
       },
       {
         id: taskItemId("contract-task-2"),
@@ -80,7 +80,7 @@ function createContractPlan(): TaskBoardSnapshot {
         priority: 1,
         maxRetries: 3,
         retries: 0,
-        status: "pending" as const,
+        status: "assigned" as const,
       },
     ],
     results: [],

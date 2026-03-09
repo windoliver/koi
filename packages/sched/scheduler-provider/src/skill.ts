@@ -26,16 +26,16 @@ All operations are scoped to your agent identity — you can only manage your ow
 
 | Need | Tool | Notes |
 |------|------|-------|
-| Run a task now | \`sched_submit\` | One-shot immediate execution |
-| Run a task later | \`sched_submit\` with \`delayMs\` | Deferred one-shot |
-| Run a task on a schedule | \`sched_schedule\` | Cron-based recurring |
-| Stop a running/pending task | \`sched_cancel\` | Cancels one-shot tasks |
-| Remove a recurring schedule | \`sched_unschedule\` | Permanently removes the schedule |
-| Temporarily stop a schedule | \`sched_pause\` | Schedule remains, stops firing |
-| Re-enable a paused schedule | \`sched_resume\` | Resumes from next cron tick |
-| Check current tasks | \`sched_query\` | Filter by status, priority |
-| View aggregate stats | \`sched_stats\` | Counts by status |
-| View past executions | \`sched_history\` | Historical run records |
+| Run a task now | \`scheduler_submit\` | One-shot immediate execution |
+| Run a task later | \`scheduler_submit\` with \`delayMs\` | Deferred one-shot |
+| Run a task on a schedule | \`scheduler_schedule\` | Cron-based recurring |
+| Stop a running/pending task | \`scheduler_cancel\` | Cancels one-shot tasks |
+| Remove a recurring schedule | \`scheduler_unschedule\` | Permanently removes the schedule |
+| Temporarily stop a schedule | \`scheduler_pause\` | Schedule remains, stops firing |
+| Re-enable a paused schedule | \`scheduler_resume\` | Resumes from next cron tick |
+| Check current tasks | \`scheduler_query\` | Filter by status, priority |
+| View aggregate stats | \`scheduler_stats\` | Counts by status |
+| View past executions | \`scheduler_history\` | Historical run records |
 
 ## When to use the scheduler
 

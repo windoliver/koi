@@ -2,8 +2,16 @@
  * Tool factory for `scheduler_schedule` — create a recurring cron schedule.
  */
 
-import type { JsonObject, SchedulerComponent, TaskOptions, Tool, ToolPolicy } from "@koi/core";
+import type {
+  EngineInput,
+  JsonObject,
+  SchedulerComponent,
+  TaskOptions,
+  Tool,
+  ToolPolicy,
+} from "@koi/core";
 import { parseEnum, parseOptionalNumber, parseOptionalString, parseString } from "../parse-args.js";
+import { parseEngineInput } from "../parse-engine-input.js";
 
 export function createScheduleTool(
   component: SchedulerComponent,
@@ -48,7 +56,7 @@ export function createScheduleTool(
       const expressionResult = parseString(args, "expression");
       if (!expressionResult.ok) return expressionResult.err;
 
-      const inputResult = parseOptionalString(args, "input");
+      const inputResult = parseString(args, "input");
       if (!inputResult.ok) return inputResult.err;
 
       const modeResult = parseEnum(args, "mode", ["spawn", "dispatch"] as const);
@@ -60,7 +68,7 @@ export function createScheduleTool(
       const priorityResult = parseOptionalNumber(args, "priority");
       if (!priorityResult.ok) return priorityResult.err;
 
-      const engineInput = { kind: "text" as const, text: inputResult.value ?? "" };
+      const engineInput: EngineInput = parseEngineInput(inputResult.value);
 
       const options: TaskOptions & { readonly timezone?: string | undefined } = {
         ...(priorityResult.value !== undefined && { priority: priorityResult.value }),

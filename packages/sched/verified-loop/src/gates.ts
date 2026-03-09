@@ -95,10 +95,13 @@ export function createCompositeGate(gates: readonly VerificationFn[]): Verificat
       }
     }
 
+    // Deduplicate itemsCompleted — multiple sub-gates may report the same item
+    const uniqueCompleted = [...new Set(allCompleted)];
+
     return {
       passed: allPassed,
       details: details.join("; "),
-      itemsCompleted: allCompleted.length > 0 ? allCompleted : undefined,
+      itemsCompleted: uniqueCompleted.length > 0 ? uniqueCompleted : undefined,
     };
   };
 }

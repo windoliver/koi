@@ -86,6 +86,11 @@ export function createDelegationBridge(config: DelegationBridgeConfig): Delegati
     task: TaskItem,
     board: TaskBoard,
   ): Promise<{ readonly board: TaskBoard; readonly cascadeNeeded: boolean }> {
+    // Step 0: Check abort before claiming — prevents orphan assigned tasks
+    if (controller.signal.aborted) {
+      return { board, cascadeNeeded: false };
+    }
+
     const agentName = task.agentType ?? "worker";
     const workerAgentId: AgentId = brandAgentId(`worker-${task.id}`);
 
@@ -201,11 +206,11 @@ export function createDelegationBridge(config: DelegationBridgeConfig): Delegati
 
       if (readySpawnTasks.length === 0) break;
 
-      // Dispatch all ready spawn tasks concurrently
-      const dispatches = readySpawnTasks.map((task) => dispatchOne(task, currentBoard));
-      const results = await Promise.all(dispatches);
-
-      for (const result of results) {
+      // Dispatch sequentially — board.assign/complete/fail return new board
+      // instances, so concurrent dispatch would fork from a stale snapshot.
+      // The semaphore already limits concurrency; correctness > throughput.
+      for (const task of readySpawnTasks) {
+        const result = await dispatchOne(task, currentBoard);
         currentBoard = result.board;
         if (result.cascadeNeeded) {
           changed = true;

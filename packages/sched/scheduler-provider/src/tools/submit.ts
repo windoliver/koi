@@ -2,8 +2,16 @@
  * Tool factory for `scheduler_submit` — submit a one-shot task.
  */
 
-import type { JsonObject, SchedulerComponent, TaskOptions, Tool, ToolPolicy } from "@koi/core";
-import { parseEnum, parseOptionalNumber, parseOptionalString } from "../parse-args.js";
+import type {
+  EngineInput,
+  JsonObject,
+  SchedulerComponent,
+  TaskOptions,
+  Tool,
+  ToolPolicy,
+} from "@koi/core";
+import { parseEnum, parseOptionalNumber, parseString } from "../parse-args.js";
+import { parseEngineInput } from "../parse-engine-input.js";
 
 export function createSubmitTool(
   component: SchedulerComponent,
@@ -49,7 +57,7 @@ export function createSubmitTool(
     origin: "primordial",
     policy,
     execute: async (args: JsonObject): Promise<unknown> => {
-      const inputResult = parseOptionalString(args, "input");
+      const inputResult = parseString(args, "input");
       if (!inputResult.ok) return inputResult.err;
 
       const modeResult = parseEnum(args, "mode", ["spawn", "dispatch"] as const);
@@ -67,7 +75,7 @@ export function createSubmitTool(
       const timeoutMsResult = parseOptionalNumber(args, "timeoutMs");
       if (!timeoutMsResult.ok) return timeoutMsResult.err;
 
-      const engineInput = { kind: "text" as const, text: inputResult.value ?? "" };
+      const engineInput: EngineInput = parseEngineInput(inputResult.value);
 
       const options: TaskOptions = {
         ...(priorityResult.value !== undefined && { priority: priorityResult.value }),
