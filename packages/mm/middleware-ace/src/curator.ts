@@ -51,14 +51,16 @@ interface MutableSection {
  * Apply delta operations to a structured playbook immutably.
  * Includes anti-collapse: auto-prunes lowest-value bullets when over token budget.
  * Never prunes below 1 bullet per section.
+ *
+ * Async because the tokenizer may be a remote estimator returning Promise\<number\>.
  */
-export function applyOperations(
+export async function applyOperations(
   playbook: StructuredPlaybook,
   ops: readonly CuratorOperation[],
   tokenBudget: number,
   clock: () => number,
-  tokenizer?: (text: string) => number,
-): StructuredPlaybook {
+  tokenizer?: (text: string) => number | Promise<number>,
+): Promise<StructuredPlaybook> {
   const now = clock();
   // let: accumulator that gets rebuilt after each operation
   let sections: MutableSection[] = playbook.sections.map((s) => ({
@@ -82,7 +84,7 @@ export function applyOperations(
     }
   }
 
-  sections = enforceTokenBudget(sections, tokenBudget, tokenizer);
+  sections = await enforceTokenBudget(sections, tokenBudget, tokenizer);
 
   return {
     ...playbook,
@@ -182,11 +184,11 @@ function applyPrune(
   }
 }
 
-function enforceTokenBudget(
+async function enforceTokenBudget(
   sections: { readonly name: string; readonly slug: string; bullets: PlaybookBullet[] }[],
   tokenBudget: number,
-  tokenizer?: (text: string) => number,
-): typeof sections {
+  tokenizer?: (text: string) => number | Promise<number>,
+): Promise<typeof sections> {
   const tempPlaybook: StructuredPlaybook = {
     id: "",
     title: "",
@@ -199,7 +201,7 @@ function enforceTokenBudget(
   };
 
   // let: mutable counter tracking current token usage
-  let currentTokens = estimateStructuredTokens(tempPlaybook, tokenizer);
+  let currentTokens = await estimateStructuredTokens(tempPlaybook, tokenizer);
 
   while (currentTokens > tokenBudget) {
     // Collect all bullets with their section index, excluding sections with only 1 bullet
@@ -238,7 +240,7 @@ function enforceTokenBudget(
       ...tempPlaybook,
       sections: sections.map((s) => ({ ...s, bullets: s.bullets })),
     };
-    currentTokens = estimateStructuredTokens(updated, tokenizer);
+    currentTokens = await estimateStructuredTokens(updated, tokenizer);
   }
 
   return sections;

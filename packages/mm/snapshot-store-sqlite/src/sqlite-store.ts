@@ -396,14 +396,18 @@ export function createSqliteSnapshotStore<T>(
 
       // Add the source node as a member of the new chain
       const forkSeq = (chainSeqs.get(newChainId) ?? -1) + 1;
-      insertMemberStmt.run({
+      const result = insertMemberStmt.run({
         $chain_id: newChainId,
         $node_id: sourceNodeId,
         $created_at: sourceRow.created_at,
         $seq: forkSeq,
       });
-      chainHeads.set(newChainId, sourceNodeId);
-      chainSeqs.set(newChainId, forkSeq);
+      // INSERT OR IGNORE may silently skip if the row already exists;
+      // only update in-memory caches when a row was actually inserted.
+      if (result.changes > 0) {
+        chainHeads.set(newChainId, sourceNodeId);
+        chainSeqs.set(newChainId, forkSeq);
+      }
 
       return { ok: true, value: { parentNodeId: sourceNodeId, label } };
     } catch (e: unknown) {

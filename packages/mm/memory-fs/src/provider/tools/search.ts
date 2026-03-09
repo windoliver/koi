@@ -47,6 +47,7 @@ export function createMemorySearchTool(
       try {
         if (entityResult.value !== undefined) {
           const results = await memory.component.recall(entityResult.value, {
+            namespace: entityResult.value,
             limit: clampedLimit,
           });
           return { results, count: results.length };

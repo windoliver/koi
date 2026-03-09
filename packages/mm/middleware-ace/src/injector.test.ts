@@ -123,17 +123,17 @@ function makeStructuredPlaybook(overrides?: Partial<StructuredPlaybook>): Struct
 }
 
 describe("selectStructuredPlaybooks", () => {
-  test("returns empty for no available playbooks", () => {
-    const result = selectStructuredPlaybooks([], 500);
+  test("returns empty for no available playbooks", async () => {
+    const result = await selectStructuredPlaybooks([], 500);
     expect(result).toHaveLength(0);
   });
 
-  test("returns empty when remaining budget is 0", () => {
-    const result = selectStructuredPlaybooks([makeStructuredPlaybook()], 0);
+  test("returns empty when remaining budget is 0", async () => {
+    const result = await selectStructuredPlaybooks([makeStructuredPlaybook()], 0);
     expect(result).toHaveLength(0);
   });
 
-  test("selects playbooks within remaining budget", () => {
+  test("selects playbooks within remaining budget", async () => {
     const small = makeStructuredPlaybook({
       id: "sp-small",
       sections: [
@@ -153,11 +153,11 @@ describe("selectStructuredPlaybooks", () => {
         },
       ],
     });
-    const result = selectStructuredPlaybooks([small], 500);
+    const result = await selectStructuredPlaybooks([small], 500);
     expect(result).toHaveLength(1);
   });
 
-  test("skips playbooks that exceed remaining budget", () => {
+  test("skips playbooks that exceed remaining budget", async () => {
     const large = makeStructuredPlaybook({
       id: "sp-large",
       sections: [
@@ -197,7 +197,7 @@ describe("selectStructuredPlaybooks", () => {
       ],
     });
     // Budget only allows the small one (2000 chars = 500 tokens for large, 4 chars = 1 token for small)
-    const result = selectStructuredPlaybooks([large, small], 50);
+    const result = await selectStructuredPlaybooks([large, small], 50);
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe("sp-small");
   });

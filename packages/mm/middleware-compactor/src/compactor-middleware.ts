@@ -143,7 +143,7 @@ export function createCompactorMiddleware(config: CompactorConfig): CompactorMid
     const result = await compactor.compact(
       request.messages,
       contextWindowSize,
-      undefined,
+      request.model,
       state.epoch,
     );
 

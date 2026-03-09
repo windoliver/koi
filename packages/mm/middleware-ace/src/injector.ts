@@ -39,17 +39,17 @@ export function selectPlaybooks(
  * Select structured playbooks within a remaining token budget.
  * Greedy selection: include playbooks in order while budget allows.
  */
-export function selectStructuredPlaybooks(
+export async function selectStructuredPlaybooks(
   available: readonly StructuredPlaybook[],
   remainingTokens: number,
-): readonly StructuredPlaybook[] {
+): Promise<readonly StructuredPlaybook[]> {
   if (available.length === 0 || remainingTokens <= 0) return [];
 
   const selected: StructuredPlaybook[] = [];
   let tokensUsed = 0; // let: accumulator for token budget
 
   for (const sp of available) {
-    const tokens = estimateStructuredTokens(sp);
+    const tokens = await estimateStructuredTokens(sp);
     if (tokensUsed + tokens > remainingTokens) continue;
     tokensUsed += tokens;
     selected.push(sp);

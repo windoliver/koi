@@ -62,13 +62,13 @@ const clock = (): number => 2000;
 
 describe("applyOperations", () => {
   describe("ADD", () => {
-    test("appends new bullet to correct section", () => {
+    test("appends new bullet to correct section", async () => {
       const pb = makePlaybook();
       const ops: readonly CuratorOperation[] = [
         { kind: "add", section: "str", content: "New strategy bullet" },
       ];
 
-      const result = applyOperations(pb, ops, 10000, clock);
+      const result = await applyOperations(pb, ops, 10000, clock);
       const section = result.sections[0]!;
 
       expect(section.bullets).toHaveLength(3);
@@ -79,7 +79,7 @@ describe("applyOperations", () => {
       expect(newBullet.id).toMatch(/^\[str-\d{5}\]$/);
     });
 
-    test("generates correct ID based on existing bullets", () => {
+    test("generates correct ID based on existing bullets", async () => {
       const pb = makePlaybook({
         sections: [
           makeSection({
@@ -91,23 +91,23 @@ describe("applyOperations", () => {
         { kind: "add", section: "str", content: "After 5" },
       ];
 
-      const result = applyOperations(pb, ops, 10000, clock);
+      const result = await applyOperations(pb, ops, 10000, clock);
       expect(result.sections[0]?.bullets[1]?.id).toBe("[str-00006]");
     });
 
-    test("skips ADD for unknown section", () => {
+    test("skips ADD for unknown section", async () => {
       const pb = makePlaybook();
       const ops: readonly CuratorOperation[] = [
         { kind: "add", section: "nonexistent", content: "Should skip" },
       ];
 
-      const result = applyOperations(pb, ops, 10000, clock);
+      const result = await applyOperations(pb, ops, 10000, clock);
       expect(result.sections[0]?.bullets).toHaveLength(2);
     });
   });
 
   describe("MERGE", () => {
-    test("combines two bullets with summed counters", () => {
+    test("combines two bullets with summed counters", async () => {
       const pb = makePlaybook({
         sections: [
           makeSection({
@@ -122,7 +122,7 @@ describe("applyOperations", () => {
         { kind: "merge", bulletIds: ["[str-00001]", "[str-00002]"], content: "Merged content" },
       ];
 
-      const result = applyOperations(pb, ops, 10000, clock);
+      const result = await applyOperations(pb, ops, 10000, clock);
       const section = result.sections[0]!;
 
       // Two removed, one added
@@ -133,19 +133,19 @@ describe("applyOperations", () => {
       expect(merged.harmful).toBe(1); // 1 + 0
     });
 
-    test("skips MERGE when bullet IDs not found", () => {
+    test("skips MERGE when bullet IDs not found", async () => {
       const pb = makePlaybook();
       const ops: readonly CuratorOperation[] = [
         { kind: "merge", bulletIds: ["[str-99999]", "[str-88888]"], content: "Should skip" },
       ];
 
-      const result = applyOperations(pb, ops, 10000, clock);
+      const result = await applyOperations(pb, ops, 10000, clock);
       expect(result.sections[0]?.bullets).toHaveLength(2);
     });
   });
 
   describe("PRUNE", () => {
-    test("removes bullet by ID", () => {
+    test("removes bullet by ID", async () => {
       const pb = makePlaybook({
         sections: [
           makeSection({
@@ -155,12 +155,12 @@ describe("applyOperations", () => {
       });
       const ops: readonly CuratorOperation[] = [{ kind: "prune", bulletId: "[str-00001]" }];
 
-      const result = applyOperations(pb, ops, 10000, clock);
+      const result = await applyOperations(pb, ops, 10000, clock);
       expect(result.sections[0]?.bullets).toHaveLength(1);
       expect(result.sections[0]?.bullets[0]?.id).toBe("[str-00002]");
     });
 
-    test("keeps minimum 1 bullet per section", () => {
+    test("keeps minimum 1 bullet per section", async () => {
       const pb = makePlaybook({
         sections: [
           makeSection({
@@ -170,13 +170,13 @@ describe("applyOperations", () => {
       });
       const ops: readonly CuratorOperation[] = [{ kind: "prune", bulletId: "[str-00001]" }];
 
-      const result = applyOperations(pb, ops, 10000, clock);
+      const result = await applyOperations(pb, ops, 10000, clock);
       expect(result.sections[0]?.bullets).toHaveLength(1);
     });
   });
 
   describe("anti-collapse", () => {
-    test("auto-prunes lowest-value bullets when over budget", () => {
+    test("auto-prunes lowest-value bullets when over budget", async () => {
       const bullets = Array.from({ length: 20 }, (_, i) =>
         makeBullet({
           id: `[str-${String(i).padStart(5, "0")}]`,
@@ -190,8 +190,8 @@ describe("applyOperations", () => {
       });
 
       // Set a very tight budget
-      const result = applyOperations(pb, [], 100, clock);
-      const totalTokens = estimateStructuredTokens(result);
+      const result = await applyOperations(pb, [], 100, clock);
+      const totalTokens = await estimateStructuredTokens(result);
 
       expect(totalTokens).toBeLessThanOrEqual(100);
       // Should have kept higher-value bullets
@@ -199,7 +199,7 @@ describe("applyOperations", () => {
       expect(result.sections[0]?.bullets.length).toBeGreaterThanOrEqual(1);
     });
 
-    test("positive-value bullets survive unless budget forces removal", () => {
+    test("positive-value bullets survive unless budget forces removal", async () => {
       const pb = makePlaybook({
         sections: [
           makeSection({
@@ -212,25 +212,25 @@ describe("applyOperations", () => {
       });
 
       // Generous budget — both should survive
-      const result = applyOperations(pb, [], 10000, clock);
+      const result = await applyOperations(pb, [], 10000, clock);
       expect(result.sections[0]?.bullets).toHaveLength(2);
     });
   });
 
   describe("immutability", () => {
-    test("input playbook is not mutated", () => {
+    test("input playbook is not mutated", async () => {
       const pb = makePlaybook();
       const originalBulletCount = pb.sections[0]?.bullets.length;
       const ops: readonly CuratorOperation[] = [{ kind: "add", section: "str", content: "New" }];
 
-      applyOperations(pb, ops, 10000, clock);
+      await applyOperations(pb, ops, 10000, clock);
 
       expect(pb.sections[0]?.bullets.length).toBe(originalBulletCount);
     });
   });
 
   describe("edge cases", () => {
-    test("empty playbook with ADD creates first bullet", () => {
+    test("empty playbook with ADD creates first bullet", async () => {
       const pb = makePlaybook({
         sections: [makeSection({ bullets: [] })],
       });
@@ -238,12 +238,12 @@ describe("applyOperations", () => {
         { kind: "add", section: "str", content: "First bullet" },
       ];
 
-      const result = applyOperations(pb, ops, 10000, clock);
+      const result = await applyOperations(pb, ops, 10000, clock);
       expect(result.sections[0]?.bullets).toHaveLength(1);
       expect(result.sections[0]?.bullets[0]?.id).toBe("[str-00000]");
     });
 
-    test("all harmful bullets: anti-collapse keeps minimum", () => {
+    test("all harmful bullets: anti-collapse keeps minimum", async () => {
       const pb = makePlaybook({
         sections: [
           makeSection({
@@ -256,17 +256,17 @@ describe("applyOperations", () => {
       });
 
       // Even with generous budget, bullets aren't removed just for being harmful
-      const result = applyOperations(pb, [], 10000, clock);
+      const result = await applyOperations(pb, [], 10000, clock);
       expect(result.sections[0]?.bullets).toHaveLength(2);
     });
 
-    test("updates updatedAt timestamp", () => {
+    test("updates updatedAt timestamp", async () => {
       const pb = makePlaybook({ updatedAt: 1000 });
-      const result = applyOperations(pb, [], 10000, clock);
+      const result = await applyOperations(pb, [], 10000, clock);
       expect(result.updatedAt).toBe(2000);
     });
 
-    test("handles ADD by section name (not just slug)", () => {
+    test("handles ADD by section name (not just slug)", async () => {
       const pb = makePlaybook({
         sections: [makeSection({ name: "Strategy", slug: "str", bullets: [] })],
       });
@@ -274,7 +274,7 @@ describe("applyOperations", () => {
         { kind: "add", section: "Strategy", content: "Via name" },
       ];
 
-      const result = applyOperations(pb, ops, 10000, clock);
+      const result = await applyOperations(pb, ops, 10000, clock);
       expect(result.sections[0]?.bullets).toHaveLength(1);
     });
   });

@@ -87,8 +87,8 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
   async function flushDeferredIndex(): Promise<void> {
     if (indexer === undefined || deferredIndexDocs.length === 0) return;
     const docs = deferredIndexDocs;
-    deferredIndexDocs = [];
     await indexer.index(docs);
+    deferredIndexDocs = [];
   }
 
   function mapFactToResult(fact: MemoryFact, score: number): MemoryResult {

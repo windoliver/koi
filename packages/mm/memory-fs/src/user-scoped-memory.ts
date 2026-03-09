@@ -33,8 +33,12 @@ export function createUserScopedMemory(config: UserScopedMemoryConfig): UserScop
 
   // Map — internal mutable cache required for LRU eviction tracking (insertion order = access order)
   const cache = new Map<string, FsMemory>();
+  // Map — deduplicates concurrent createFsMemory calls for the same slug
+  const pending = new Map<string, Promise<FsMemory>>();
   // let — lazy-initialized shared instance
   let shared: FsMemory | undefined;
+  // let — deduplicates concurrent shared-instance creation
+  let sharedPending: Promise<FsMemory> | undefined;
 
   async function evictLru(): Promise<void> {
     if (cache.size <= maxCachedUsers) return;
@@ -60,17 +64,36 @@ export function createUserScopedMemory(config: UserScopedMemoryConfig): UserScop
       return existing;
     }
 
-    const userDir = join(baseDir, "users", slug);
-    const mem = await createFsMemory({ ...memoryConfig, baseDir: userDir });
-    cache.set(slug, mem);
-    await evictLru();
-    return mem;
+    // Deduplicate concurrent creation for the same slug
+    const inflight = pending.get(slug);
+    if (inflight !== undefined) return inflight;
+
+    const promise = (async (): Promise<FsMemory> => {
+      const userDir = join(baseDir, "users", slug);
+      const mem = await createFsMemory({ ...memoryConfig, baseDir: userDir });
+      cache.set(slug, mem);
+      pending.delete(slug);
+      await evictLru();
+      return mem;
+    })();
+
+    pending.set(slug, promise);
+    return promise;
   };
 
   const getShared = async (): Promise<FsMemory> => {
     if (shared !== undefined) return shared;
-    shared = await createFsMemory({ ...memoryConfig, baseDir });
-    return shared;
+    if (sharedPending !== undefined) return sharedPending;
+
+    const promise = (async (): Promise<FsMemory> => {
+      const mem = await createFsMemory({ ...memoryConfig, baseDir });
+      shared = mem;
+      sharedPending = undefined;
+      return mem;
+    })();
+
+    sharedPending = promise;
+    return promise;
   };
 
   const closeAll = async (): Promise<void> => {

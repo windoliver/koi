@@ -69,7 +69,10 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
   const tokenBudget = config.playbookTokenBudget ?? DEFAULT_PLAYBOOK_TOKEN_BUDGET;
   const tokenizer =
     config.tokenEstimator !== undefined
-      ? (text: string): number => config.tokenEstimator?.estimateText(text) as number
+      ? async (text: string): Promise<number> => {
+          const result = config.tokenEstimator?.estimateText(text);
+          return (await result) ?? 0;
+        }
       : undefined;
 
   return {
@@ -120,7 +123,7 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
       const taggedPlaybook = applyBulletTags(playbook, reflection.bulletTags, clock);
 
       // Apply delta operations
-      const updated = applyOperations(taggedPlaybook, ops, tokenBudget, clock, tokenizer);
+      const updated = await applyOperations(taggedPlaybook, ops, tokenBudget, clock, tokenizer);
 
       // Persist
       const final: StructuredPlaybook = {
@@ -178,10 +181,16 @@ export function isLlmPipelineEnabled(config: AceConfig): boolean {
 }
 
 /** Estimate structured playbook tokens using configured or default tokenizer. */
-export function estimatePlaybookTokens(playbook: StructuredPlaybook, config: AceConfig): number {
+export function estimatePlaybookTokens(
+  playbook: StructuredPlaybook,
+  config: AceConfig,
+): number | Promise<number> {
   const tokenizer =
     config.tokenEstimator !== undefined
-      ? (text: string): number => config.tokenEstimator?.estimateText(text) as number
+      ? async (text: string): Promise<number> => {
+          const result = config.tokenEstimator?.estimateText(text);
+          return (await result) ?? 0;
+        }
       : undefined;
   return estimateStructuredTokens(playbook, tokenizer);
 }

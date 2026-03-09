@@ -19,6 +19,8 @@ describe("createMemorySearchTool", () => {
     expect(component.calls).toHaveLength(1);
     expect(component.calls[0]?.method).toBe("recall");
     expect(component.calls[0]?.args?.[0]).toBe("alice");
+    const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
+    expect(opts.namespace).toBe("alice");
   });
 
   test("returns entity list when no entity provided", async () => {

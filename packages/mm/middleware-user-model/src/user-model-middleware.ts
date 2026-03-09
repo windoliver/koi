@@ -88,8 +88,10 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
   let sensorState: Record<string, unknown> = {}; // let: mutable sensor accumulator
   const activeSessions = new Set<string>();
 
-  // Turn-level memory recall cache
-  let recallCache: readonly MemoryResult[] | undefined; // let: mutable recall cache
+  // Turn-level memory recall cache (keyed by query to avoid stale cross-query hits)
+  let recallCache:
+    | { readonly query: string; readonly results: readonly MemoryResult[] }
+    | undefined; // let: mutable recall cache
 
   function handleError(error: unknown): void {
     if (cfg.onError) {
@@ -129,13 +131,13 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
   }
 
   async function recallPreferences(query: string): Promise<readonly MemoryResult[]> {
-    if (recallCache !== undefined) return recallCache;
+    if (recallCache !== undefined && recallCache.query === query) return recallCache.results;
 
     const results = await cfg.memory.recall(query, {
       namespace: cfg.preferenceNamespace,
       limit: cfg.recallLimit,
     });
-    recallCache = results;
+    recallCache = { query, results };
     return results;
   }
 

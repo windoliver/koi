@@ -124,7 +124,7 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       // Compute stat token usage, derive remaining budget for structured playbooks
       const statTokensUsed = selected.reduce((sum, pb) => sum + estimateTokens(pb.strategy), 0);
       const remainingBudget = totalBudget - statTokensUsed;
-      const filteredStructured = selectStructuredPlaybooks(
+      const filteredStructured = await selectStructuredPlaybooks(
         cachedStructuredPlaybooks ?? [],
         remainingBudget,
       );
