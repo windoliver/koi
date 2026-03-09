@@ -5,7 +5,7 @@
  * for the SandboxExecutor dependency in @koi/forge's verification pipeline.
  */
 
-import type { SandboxError, SandboxExecutor, SandboxResult } from "@koi/core";
+import type { ExecutionContext, SandboxError, SandboxExecutor, SandboxResult } from "@koi/core";
 import { mapIpcErrorToSandbox } from "./errors.js";
 import type { SandboxBridge } from "./types.js";
 
@@ -23,6 +23,7 @@ export function bridgeToExecutor(bridge: SandboxBridge): SandboxExecutor {
       code: string,
       input: unknown,
       timeoutMs: number,
+      context?: ExecutionContext,
     ): Promise<
       | { readonly ok: true; readonly value: SandboxResult }
       | { readonly ok: false; readonly error: SandboxError }
@@ -41,7 +42,10 @@ export function bridgeToExecutor(bridge: SandboxBridge): SandboxExecutor {
         };
       }
 
-      const result = await bridge.execute(code, input, { timeoutMs });
+      const result = await bridge.execute(code, input, {
+        timeoutMs,
+        ...(context !== undefined ? { context } : {}),
+      });
 
       if (!result.ok) {
         return {

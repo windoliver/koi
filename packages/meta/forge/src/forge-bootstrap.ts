@@ -49,6 +49,8 @@ export interface ForgeBootstrapConfig {
   readonly onError?: ((error: unknown) => void) | undefined;
   /** Clock function for testing. */
   readonly clock?: (() => number) | undefined;
+  /** Resolve the current engine session ID. Resets forge counter on change. */
+  readonly resolveSessionId?: (() => string) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +123,9 @@ export function createForgeBootstrap(
       forgeConfig,
       notifier: system.notifier,
       pipeline: system.pipeline,
+      ...(config.resolveSessionId !== undefined
+        ? { resolveSessionId: config.resolveSessionId }
+        : {}),
     });
 
     return {

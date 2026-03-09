@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/sandbox-ipc API surface . has stable type surface 1`] = `
-"import { SandboxProfile, Result, KoiError, JsonObject, SandboxExecutor, SandboxError } from '@koi/core';
+"import { SandboxProfile, Result, KoiError, ExecutionContext, JsonObject, SandboxExecutor, SandboxError } from '@koi/core';
 
 /**
  * Core types for @koi/sandbox-ipc — IPC bridge between host and sandboxed workers.
@@ -28,6 +28,8 @@ interface BridgeConfig {
 interface BridgeExecOptions {
     readonly timeoutMs?: number;
     readonly maxResultBytes?: number;
+    /** Execution context for per-brick workspace, network, and resource overrides. */
+    readonly context?: ExecutionContext | undefined;
 }
 interface BridgeResult {
     readonly output: unknown;

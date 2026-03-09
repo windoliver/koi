@@ -4,7 +4,7 @@
  * Types only, zero runtime code.
  */
 
-import type { JsonObject, KoiError, Result, SandboxProfile } from "@koi/core";
+import type { ExecutionContext, JsonObject, KoiError, Result, SandboxProfile } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Command builder — injected dependency (avoids L2→L2 import of @koi/sandbox)
@@ -44,6 +44,8 @@ export interface BridgeConfig {
 export interface BridgeExecOptions {
   readonly timeoutMs?: number;
   readonly maxResultBytes?: number;
+  /** Execution context for per-brick workspace, network, and resource overrides. */
+  readonly context?: ExecutionContext | undefined;
 }
 
 export interface BridgeResult {

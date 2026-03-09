@@ -34,6 +34,8 @@ export interface ForgeToolsProviderConfig {
   readonly forgeConfig: ForgeConfig;
   readonly notifier?: StoreChangeNotifier | undefined;
   readonly pipeline?: ForgePipeline | undefined;
+  /** Resolve the current engine session ID. Resets forge counter on change. */
+  readonly resolveSessionId?: (() => string) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,9 +51,24 @@ export function createForgeToolsProvider(config: ForgeToolsProviderConfig): Comp
     name: "forge-tools",
     priority: 50,
     attach: async (agent: Agent) => {
-      // Mutable counter incremented by onForgeConsumed callback.
-      // let justified: mutable counter tracking forges consumed during session
+      // Per-session forge counter. Resets when the engine session ID changes.
+      // let justified: mutable counter tracking forges consumed during current session
       let forgeCount = 0;
+      // let justified: tracks last seen session ID to detect session boundaries
+      let lastSessionId: string | undefined;
+
+      const defaultSessionId = `session:${agent.pid.id}`;
+      const resolveSession = config.resolveSessionId ?? (() => defaultSessionId);
+
+      /** Returns current session ID, resetting forge counter on session change. */
+      function getCurrentSessionId(): string {
+        const sid = resolveSession();
+        if (sid !== lastSessionId) {
+          lastSessionId = sid;
+          forgeCount = 0;
+        }
+        return sid;
+      }
 
       // Build ForgeDeps with runtime context from the agent entity
       const deps: ForgeDeps = {
@@ -62,13 +79,17 @@ export function createForgeToolsProvider(config: ForgeToolsProviderConfig): Comp
         context: {
           agentId: agent.pid.id,
           depth: agent.pid.depth,
-          sessionId: `session:${agent.pid.id}`,
-          // Dynamic getter backed by mutable counter — incremented via onForgeConsumed
+          // Dynamic getters — session-scoped, auto-reset on session boundary
+          get sessionId() {
+            return getCurrentSessionId();
+          },
           get forgesThisSession() {
+            getCurrentSessionId(); // ensure counter is reset if session changed
             return forgeCount;
           },
         },
         onForgeConsumed: (consumed: number) => {
+          getCurrentSessionId(); // ensure counter is reset if session changed
           forgeCount += consumed;
         },
         // Spread conditionally to satisfy exactOptionalPropertyTypes —

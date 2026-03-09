@@ -260,6 +260,8 @@ interface ForgeToolsProviderConfig {
     readonly forgeConfig: ForgeConfig;
     readonly notifier?: StoreChangeNotifier | undefined;
     readonly pipeline?: ForgePipeline | undefined;
+    /** Resolve the current engine session ID. Resets forge counter on change. */
+    readonly resolveSessionId?: (() => string) | undefined;
 }
 /**
  * Build a ComponentProvider that lazily creates the 5 default forge tools
@@ -295,6 +297,8 @@ interface ForgeBootstrapConfig {
     readonly onError?: ((error: unknown) => void) | undefined;
     /** Clock function for testing. */
     readonly clock?: (() => number) | undefined;
+    /** Resolve the current engine session ID. Resets forge counter on change. */
+    readonly resolveSessionId?: (() => string) | undefined;
 }
 /** Successful forge bootstrap result — everything needed for createKoi(). */
 interface ForgeBootstrapResult {

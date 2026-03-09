@@ -107,45 +107,59 @@ export async function runStart(flags: StartFlags): Promise<void> {
     return;
   }
 
-  // 4. Bootstrap sandbox executor for forge verification
+  // 4. Bootstrap forge system (before resolution, so forgeStore is available)
+  // Only create sandbox bridge when forge is enabled to avoid temp file leaks
   // let justified: mutable binding — set inside try/catch, read for cleanup
   let sandboxBridge: SandboxBridge | undefined;
-  // let justified: conditionally assigned in try/catch
-  let forgeExecutor: SandboxExecutor;
+  // let justified: tracks current session ID for forge counter scoping
+  let currentStartSessionId = `start:${manifest.name}:0`;
+  // let justified: incremented per REPL message to generate unique session IDs
+  let startSessionCounter = 0;
 
-  try {
-    const bridge = await createSandboxBridge({
-      config: {
-        profile: restrictiveProfile(),
-        buildCommand: createSandboxCommand,
+  const forgeEnabled = isForgeEnabled(manifest);
+  // let justified: conditionally set when forge is enabled
+  let forgeBootstrap: ReturnType<typeof createForgeBootstrap>;
+
+  if (forgeEnabled) {
+    // let justified: conditionally assigned in try/catch
+    let forgeExecutor: SandboxExecutor;
+
+    try {
+      const bridge = await createSandboxBridge({
+        config: {
+          profile: restrictiveProfile(),
+          buildCommand: createSandboxCommand,
+        },
+      });
+      sandboxBridge = bridge;
+      forgeExecutor = bridgeToExecutor(bridge);
+    } catch {
+      process.stderr.write("warn: sandbox unavailable, forged tool execution disabled\n");
+      forgeExecutor = {
+        execute: async () => ({
+          ok: false as const,
+          error: {
+            code: "PERMISSION" as const,
+            message:
+              "Sandbox executor not configured — forged tool execution is not available in this CLI session",
+            durationMs: 0,
+          },
+        }),
+      };
+    }
+
+    forgeBootstrap = createForgeBootstrap({
+      executor: forgeExecutor,
+      forgeConfig: { enabled: true },
+      resolveSessionId: () => currentStartSessionId,
+      onError: (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
       },
     });
-    sandboxBridge = bridge;
-    forgeExecutor = bridgeToExecutor(bridge);
-  } catch {
-    process.stderr.write("warn: sandbox unavailable, forged tool execution disabled\n");
-    forgeExecutor = {
-      execute: async () => ({
-        ok: false as const,
-        error: {
-          code: "PERMISSION" as const,
-          message:
-            "Sandbox executor not configured — forged tool execution is not available in this CLI session",
-          durationMs: 0,
-        },
-      }),
-    };
+  } else {
+    forgeBootstrap = undefined;
   }
-
-  // 5. Bootstrap forge system (before resolution, so forgeStore is available)
-  const forgeBootstrap = createForgeBootstrap({
-    executor: forgeExecutor,
-    forgeConfig: { enabled: isForgeEnabled(manifest) },
-    onError: (err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
-    },
-  });
 
   // 5. RESOLVE: Resolve manifest into runtime instances (middleware + model)
   // Pass forgeStore so companion skills get registered during resolution
@@ -157,6 +171,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
   });
   if (!resolved.ok) {
     process.stderr.write(formatResolutionError(resolved.error));
+    if (sandboxBridge !== undefined) {
+      await sandboxBridge.dispose();
+    }
     process.exit(EXIT_CONFIG);
   }
 
@@ -239,6 +256,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
       }
 
       processing = true;
+      startSessionCounter++;
+      currentStartSessionId = `start:${manifest.name}:${String(startSessionCounter)}`;
       const input: EngineInput = { kind: "text", text };
 
       try {
