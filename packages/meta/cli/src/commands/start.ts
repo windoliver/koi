@@ -14,9 +14,11 @@
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineEvent, EngineInput } from "@koi/core";
-import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
+import { createForgeConfiguredKoi } from "@koi/forge";
+import { createInMemoryForgeStore } from "@koi/forge-tools";
 import { getEngineName, loadManifest } from "@koi/manifest";
+import { createSubprocessExecutor } from "@koi/sandbox-executor";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
 import { extractTextFromBlocks } from "../helpers.js";
@@ -112,12 +114,14 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const contextExt = createContextExtension(contextConfig);
   const extensions = contextExt !== undefined ? [contextExt] : [];
 
-  const runtime = await createKoi({
+  const { runtime } = await createForgeConfiguredKoi({
     manifest,
     adapter,
     middleware: [...resolved.value.middleware, ...nexus.middlewares],
     providers: [...nexus.providers],
     extensions,
+    forgeStore: createInMemoryForgeStore(),
+    forgeExecutor: createSubprocessExecutor(),
   });
 
   // 6b. Set up channels — use resolved channels or fall back to CLI channel

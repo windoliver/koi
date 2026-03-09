@@ -22,6 +22,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { extractMessage, KoiRuntimeError } from "@koi/errors";
+import { selectBrickKind } from "./brick-kind-selector.js";
 import type { DemandContext } from "./confidence.js";
 import { computeDemandConfidence, DEFAULT_CONFIDENCE_WEIGHTS } from "./confidence.js";
 import {
@@ -40,6 +41,8 @@ const DEFAULT_REPEATED_FAILURE_COUNT = 3;
 const DEFAULT_CAPABILITY_GAP_OCCURRENCES = 2;
 const DEFAULT_LATENCY_DEGRADATION_P95_MS = 5_000;
 const DEFAULT_MAX_PENDING_SIGNALS = 10;
+/** Maximum error messages kept per tool in failedToolCalls (memory cap). */
+const MAX_FAILED_CALL_MESSAGES = 10;
 
 const DEFAULT_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: DEFAULT_REPEATED_FAILURE_COUNT,
@@ -68,6 +71,18 @@ function triggerKey(trigger: ForgeTrigger): string {
       return `arf:${trigger.agentType}:${trigger.brickId}`;
     case "agent_latency_degradation":
       return `ald:${trigger.agentType}:${trigger.brickId}`;
+    // Success-side triggers
+    case "complex_task_completed":
+      return `ctc:${trigger.taskDescription.slice(0, 50)}`;
+    case "user_correction":
+      return `uc:${trigger.correctionDescription.slice(0, 50)}`;
+    case "novel_workflow":
+      return `nw:${trigger.workflowDescription.slice(0, 50)}`;
+
+    default: {
+      const _exhaustive: never = trigger;
+      return _exhaustive;
+    }
   }
 }
 
@@ -118,9 +133,23 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     return clock() - lastEmitted < config.budget.cooldownMs;
   }
 
+  /** Evict expired cooldown entries to prevent unbounded memory growth. */
+  function evictExpiredCooldowns(): void {
+    const now = clock();
+    for (const [key, lastEmitted] of cooldowns) {
+      if (now - lastEmitted >= config.budget.cooldownMs) {
+        cooldowns.delete(key);
+      }
+    }
+  }
+
   function emitSignal(trigger: ForgeTrigger, context: DemandContext): void {
     const key = triggerKey(trigger);
     if (isOnCooldown(key)) return;
+
+    // Use real brick-kind selector instead of hardcoded "tool"
+    const selection = selectBrickKind(trigger);
+    if (selection.suppressed) return;
 
     const confidence = computeDemandConfidence(trigger, thresholds.confidenceWeights, context);
 
@@ -132,7 +161,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       kind: "forge_demand",
       trigger,
       confidence,
-      suggestedBrickKind: "tool",
+      suggestedBrickKind: selection.kind,
       context: {
         failureCount: context.failureCount,
         failedToolCalls: failedToolCalls.get(key) ?? [],
@@ -147,6 +176,9 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     signals.push(signal);
     cooldowns.set(key, clock());
     config.onDemand?.(signal);
+
+    // Periodic eviction of expired cooldowns to prevent unbounded growth
+    evictExpiredCooldowns();
   }
 
   function dismiss(signalId: string): void {
@@ -194,6 +226,32 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     }
   }
 
+  /**
+   * Check model response text for capability gap patterns and emit demand if found.
+   * Extracted from wrapModelCall/wrapModelStream to eliminate DRY violation.
+   */
+  function checkCapabilityGaps(responseText: string): void {
+    if (patterns.length === 0) return;
+    if (responseText.length === 0) return;
+
+    updateGapCounts(responseText);
+
+    const trigger = detectCapabilityGap(
+      responseText,
+      patterns,
+      capabilityGapCounts,
+      thresholds.capabilityGapOccurrences,
+    );
+
+    if (trigger !== undefined) {
+      const gapKey = trigger.kind === "capability_gap" ? trigger.requiredCapability : "";
+      emitSignal(trigger, {
+        failureCount: capabilityGapCounts.get(gapKey) ?? 1,
+        threshold: thresholds.capabilityGapOccurrences,
+      });
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Middleware
   // ---------------------------------------------------------------------------
@@ -235,6 +293,10 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
 
         const calls = failedToolCalls.get(`rf:${toolId}`) ?? [];
         calls.push(extractMessage(e));
+        // Cap at MAX_FAILED_CALL_MESSAGES to prevent unbounded memory growth
+        if (calls.length > MAX_FAILED_CALL_MESSAGES) {
+          calls.splice(0, calls.length - MAX_FAILED_CALL_MESSAGES);
+        }
         failedToolCalls.set(`rf:${toolId}`, calls);
 
         // Check repeated failure heuristic
@@ -267,32 +329,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const response = await next(request);
-
-      // Fast path: no patterns configured
-      if (patterns.length === 0) return response;
-
-      const responseText = extractResponseText(response);
-      if (responseText.length === 0) return response;
-
-      // Always update gap counts first
-      updateGapCounts(responseText);
-
-      // Check capability gap patterns
-      const trigger = detectCapabilityGap(
-        responseText,
-        patterns,
-        capabilityGapCounts,
-        thresholds.capabilityGapOccurrences,
-      );
-
-      if (trigger !== undefined) {
-        const gapKey = trigger.kind === "capability_gap" ? trigger.requiredCapability : "";
-        emitSignal(trigger, {
-          failureCount: capabilityGapCounts.get(gapKey) ?? 1,
-          threshold: thresholds.capabilityGapOccurrences,
-        });
-      }
-
+      checkCapabilityGaps(extractResponseText(response));
       return response;
     },
 
@@ -308,29 +345,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         }
         yield chunk;
       }
-
-      // Fast path: no patterns configured
-      if (patterns.length === 0) return;
-
-      const responseText = chunks.join("");
-      if (responseText.length === 0) return;
-
-      updateGapCounts(responseText);
-
-      const trigger = detectCapabilityGap(
-        responseText,
-        patterns,
-        capabilityGapCounts,
-        thresholds.capabilityGapOccurrences,
-      );
-
-      if (trigger !== undefined) {
-        const gapKey = trigger.kind === "capability_gap" ? trigger.requiredCapability : "";
-        emitSignal(trigger, {
-          failureCount: capabilityGapCounts.get(gapKey) ?? 1,
-          threshold: thresholds.capabilityGapOccurrences,
-        });
-      }
+      checkCapabilityGaps(chunks.join(""));
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

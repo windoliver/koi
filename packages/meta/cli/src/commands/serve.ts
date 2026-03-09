@@ -21,9 +21,11 @@ import type {
 } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createHealthServer } from "@koi/deploy";
-import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
+import { createForgeConfiguredKoi } from "@koi/forge";
+import { createInMemoryForgeStore } from "@koi/forge-tools";
 import { loadManifest } from "@koi/manifest";
+import { createSubprocessExecutor } from "@koi/sandbox-executor";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
 import type { ServeFlags } from "../args.js";
@@ -135,12 +137,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`warn: conversation persistence disabled: ${message}\n`);
   }
 
-  const runtime = await createKoi({
+  const { runtime } = await createForgeConfiguredKoi({
     manifest,
     adapter,
     middleware: [...resolved.value.middleware, ...arenaMiddleware, ...nexus.middlewares],
     providers: [...nexus.providers, ...arenaProviders],
     extensions,
+    forgeStore: createInMemoryForgeStore(),
+    forgeExecutor: createSubprocessExecutor(),
   });
 
   // 6c. Connect resolved channels and wire per-session concurrency

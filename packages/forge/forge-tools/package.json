@@ -25,5 +25,8 @@
     "@koi/resolve": "workspace:*",
     "@koi/validation": "workspace:*",
     "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
   }
 }

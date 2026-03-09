@@ -8,6 +8,8 @@
  * Layer 2: depends on @koi/core + @koi/errors + @koi/validation only.
  */
 
+export type { BrickKindSelection } from "./brick-kind-selector.js";
+export { selectBrickKind } from "./brick-kind-selector.js";
 export type { DemandContext } from "./confidence.js";
 export { computeDemandConfidence, DEFAULT_CONFIDENCE_WEIGHTS } from "./confidence.js";
 export {

@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { SandboxAdapter, ForgeStore, ForgeScope, Result, TurnTrace, KoiError, KoiMiddleware, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ComponentProvider } from '@koi/core';
+"import { SandboxAdapter, ForgeStore, ForgeScope, Result, TurnTrace, KoiError, KoiMiddleware, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, StoreChangeNotifier, ComponentProvider, SandboxExecutor as SandboxExecutor$1, SkillComponent } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, CounterExample, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from '@koi/core';
 import { ForgeConfig, ForgePipeline, SandboxExecutor, DependencyConfig } from '@koi/forge-types';
 export { BrickContentInput, CreateProvenanceOptions, DEFAULT_REVERIFICATION_CONFIG, DependencyConfig, DriftCheckResult, DriftChecker, ForgeAgentInput, ForgeAgentInputWithBricks, ForgeAgentInputWithManifest, ForgeChannelInput, ForgeConfig, ForgeContext, ForgeError, ForgeInput, ForgeInputBase, ForgeMiddlewareInput, ForgePipeline, ForgeResult, ForgeResultMetadata, ForgeSkillInput, ForgeToolInput, ForgeVerifier, FormatConfig, GovernanceResult, ManifestParseResult, ManifestParser, MutationPressureConfig, PromoteChange, PromoteResult, ResolveStageReport, ReverificationConfig, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, ScopePromotionConfig, SelfTestStageReport, StageReport, TestFailure, TrustStageReport, VerificationConfig, VerificationReport, VerificationStage, VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig } from '@koi/forge-types';
@@ -18,6 +18,8 @@ export { BrickOptimizer, OptimizationConfig, OptimizationResult, OptimizerMiddle
 import { CrystallizeHandle } from '@koi/crystallize';
 export { AutoForgeConfig, AutoForgeVerifier, AutoForgeVerifierResult, CrystallizationCandidate, CrystallizeConfig, CrystallizeHandle, ToolNgram, ToolStep, createAutoForgeMiddleware, createCrystallizeMiddleware } from '@koi/crystallize';
 import { DiscoverySource } from '@koi/agent-discovery';
+import { ConfiguredKoiOptions } from '@koi/starter';
+import { KoiRuntime } from '@koi/engine';
 
 /**
  * createForgeDelegation — wires @koi/agent-discovery and @koi/agent-spawner
@@ -170,12 +172,15 @@ interface CreateFullForgeSystemConfig {
     readonly signer?: SigningBackend | undefined;
     readonly onError?: ((error: unknown) => void) | undefined;
     readonly clock?: (() => number) | undefined;
+    /** Optional notifier for cross-agent cache invalidation. Auto-created when not provided. */
+    readonly notifier?: StoreChangeNotifier | undefined;
 }
 interface FullForgeSystem {
     readonly runtime: ForgeRuntimeInstance;
     readonly provider: ComponentProvider;
     readonly pipeline: ForgePipeline;
     readonly middlewares: readonly KoiMiddleware[];
+    readonly notifier: StoreChangeNotifier;
     readonly handles: {
         readonly demand: ForgeDemandHandle;
         readonly crystallize: CrystallizeHandle;
@@ -193,6 +198,68 @@ interface FullForgeSystem {
  */
 declare function createFullForgeSystem(config: CreateFullForgeSystemConfig): FullForgeSystem;
 
-export { type CreateForgeRuntimeOptions, type CreateFullForgeSystemConfig, type ForgeDelegation, type ForgeDelegationConfig, type ForgeMiddlewareStackConfig, type ForgeMiddlewareStackResult, type ForgeRuntimeInstance, type FullForgeSystem, createForgeDelegation, createForgeMiddlewareStack, createForgePipeline, createForgeRuntime, createFullForgeSystem };
+/**
+ * createForgeConfiguredKoi — extends createConfiguredKoi with forge activation.
+ *
+ * When \`manifest.forge.enabled\` is true:
+ * 1. Instantiates the full forge system (runtime, provider, middleware stack)
+ * 2. Exposes default forge tools (search_forge, forge_skill, forge_tool, forge_edit, promote_forge)
+ * 3. Attaches the forge companion skill
+ * 4. Passes runtime, provider, and middlewares into createKoi()
+ *
+ * When forge is not enabled, delegates directly to createConfiguredKoi().
+ *
+ * Lives in L3 @koi/forge because it composes L3 @koi/starter with forge L2 packages.
+ */
+
+/** Additional options for forge-aware bootstrap. */
+interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
+    /** ForgeStore backend for brick persistence. Required when forge is enabled. */
+    readonly forgeStore?: ForgeStore | undefined;
+    /** SandboxExecutor for forge verification. Required when forge is enabled. */
+    readonly forgeExecutor?: SandboxExecutor$1 | undefined;
+    /** Optional signing backend for attestation. */
+    readonly forgeSigner?: SigningBackend | undefined;
+    /** Override forge config (merged with manifest.forge defaults). */
+    readonly forgeConfig?: Partial<ForgeConfig> | undefined;
+    /** Trace reader for crystallize middleware. */
+    readonly readTraces?: (() => Promise<Result<readonly TurnTrace[], KoiError>>) | undefined;
+}
+/** Return type for createForgeConfiguredKoi — runtime + optional forge system handle. */
+interface ForgeConfiguredKoiResult {
+    readonly runtime: KoiRuntime;
+    readonly forgeSystem: FullForgeSystem | undefined;
+}
+/**
+ * Create a Koi runtime with optional forge activation.
+ *
+ * When \`manifest.forge.enabled\` is true AND forgeStore + forgeExecutor are provided:
+ * - Instantiates createFullForgeSystem()
+ * - Creates 5 default forge tools (search, skill, tool, edit, promote)
+ * - Attaches forge companion skill
+ * - Passes forge runtime, provider, and middlewares into createKoi()
+ *
+ * When forge is not enabled, delegates directly to createConfiguredKoi().
+ */
+declare function createForgeConfiguredKoi(options: ForgeConfiguredKoiOptions): Promise<ForgeConfiguredKoiResult>;
+
+/**
+ * Forge companion skill — teaches the model when and how to use forge tools.
+ *
+ * Attached as a SkillComponent when forge is enabled. Provides guidance on:
+ * - When to create a skill vs a tool
+ * - What kinds of workflows are worth saving
+ * - How to include helper scripts under \`files\` / \`scripts\`
+ */
+
+/**
+ * Static companion skill for the forge subsystem.
+ *
+ * Follows the "Exposing a Skill" recipe from the architecture doc:
+ * a const SkillComponent attached via extras on the forge provider.
+ */
+declare const FORGE_COMPANION_SKILL: SkillComponent;
+
+export { type CreateForgeRuntimeOptions, type CreateFullForgeSystemConfig, FORGE_COMPANION_SKILL, type ForgeConfiguredKoiOptions, type ForgeConfiguredKoiResult, type ForgeDelegation, type ForgeDelegationConfig, type ForgeMiddlewareStackConfig, type ForgeMiddlewareStackResult, type ForgeRuntimeInstance, type FullForgeSystem, createForgeConfiguredKoi, createForgeDelegation, createForgeMiddlewareStack, createForgePipeline, createForgeRuntime, createFullForgeSystem };
 "
 `;
