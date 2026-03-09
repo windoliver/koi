@@ -21,15 +21,25 @@ export function normalizePattern(pattern: string): string {
 }
 
 /**
- * Split a compound pattern on the FIRST colon only.
+ * Split a compound pattern on the first UNESCAPED colon.
+ * Use `\:` to include a literal colon in the tool name
+ * (e.g., `"fs\:delete:*"` → tool `"fs:delete"`, input `"*"`).
  * Returns [toolPattern, inputPattern | undefined].
  */
 function splitPattern(pattern: string): readonly [string, string | undefined] {
-  const colonIdx = pattern.indexOf(":");
-  if (colonIdx === -1) {
-    return [pattern, undefined];
+  // Scan for the first unescaped colon
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i] === "\\" && i + 1 < pattern.length) {
+      i++; // Skip escaped character
+      continue;
+    }
+    if (pattern[i] === ":") {
+      const toolPart = pattern.slice(0, i).replace(/\\:/g, ":");
+      return [toolPart, pattern.slice(i + 1)];
+    }
   }
-  return [pattern.slice(0, colonIdx), pattern.slice(colonIdx + 1)];
+  // No unescaped colon found
+  return [pattern.replace(/\\:/g, ":"), undefined];
 }
 
 /**

@@ -35,6 +35,7 @@ export function createFieldMatcher(fieldNames: readonly (string | RegExp)[]): Fi
   return (key: string): boolean => {
     if (exactSet.has(key.toLowerCase())) return true;
     for (const re of regexps) {
+      re.lastIndex = 0; // Reset stateful g/y regexes to avoid intermittent misses
       if (re.test(key)) return true;
     }
     return false;

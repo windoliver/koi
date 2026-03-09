@@ -108,7 +108,7 @@ export function matchToolAgainstScope(toolId: string, scope: DelegationScope): b
     return false;
   }
 
-  // If resource patterns are defined and toolId has a resource path, match patterns
+  // If resource patterns are defined and toolId contains a resource path, enforce them
   if (scope.resources !== undefined && scope.resources.length > 0 && hasResourcePath) {
     return scope.resources.some((pattern) => matchGlob(pattern, toolId));
   }

@@ -179,9 +179,11 @@ export function createMemoryEvaluator(config: GovernanceMemoryConfig): MemoryEva
       };
     }
 
-    // Allowed — relax adaptive thresholds for rules that didn't fire
+    // Allowed — relax adaptive thresholds only for rules that were actually evaluated
     for (const rule of dag.sortedRules) {
-      updateThreshold(thresholds, rule.id, false);
+      if (satisfiedRules.has(rule.id)) {
+        updateThreshold(thresholds, rule.id, false);
+      }
     }
 
     return GOVERNANCE_ALLOW;

@@ -91,8 +91,21 @@ function createRequest(): ModelRequest {
   };
 }
 
-function textMsg(text: string): InboundMessage {
-  return { content: [{ kind: "text", text }], senderId: "human", timestamp: Date.now() };
+function textMsg(text: string, correlationToken?: string): InboundMessage {
+  return {
+    content: [{ kind: "text", text }],
+    senderId: "human",
+    timestamp: Date.now(),
+    ...(correlationToken !== undefined ? { metadata: { correlationToken } } : {}),
+  };
+}
+
+/** Extract the correlationToken from the last sent escalation message. */
+function getCorrelationToken(sentMessages: readonly OutboundMessage[]): string | undefined {
+  const last = sentMessages[sentMessages.length - 1];
+  return (last?.metadata as Record<string, unknown> | undefined)?.correlationToken as
+    | string
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,9 +168,10 @@ describe("delegation-escalation e2e", () => {
       expect(sentMsg.content[0].text).toContain("Batch data processing job");
     }
 
-    // Phase 3: Human responds with instruction
+    // Phase 3: Human responds with instruction (include correlation token from escalation)
     const callPromise = handle.middleware.wrapModelCall?.(ctx, createRequest(), next);
-    await channel.simulateMessage(textMsg("Switch to backup workers"));
+    const token1 = getCorrelationToken(channel.sentMessages);
+    await channel.simulateMessage(textMsg("Switch to backup workers", token1));
 
     const result = await callPromise;
     expect(result).toBe(response);
@@ -211,7 +225,8 @@ describe("delegation-escalation e2e", () => {
     expect(channel.sentMessages).toHaveLength(1);
 
     const call1 = handle.middleware.wrapModelCall?.(ctx, createRequest(), async () => response);
-    await channel.simulateMessage(textMsg("try again"));
+    const token1 = getCorrelationToken(channel.sentMessages);
+    await channel.simulateMessage(textMsg("try again", token1));
     await call1;
     expect(handle.isPending()).toBe(false);
 
@@ -221,7 +236,8 @@ describe("delegation-escalation e2e", () => {
     expect(handle.isPending()).toBe(true);
 
     const call2 = handle.middleware.wrapModelCall?.(ctx, createRequest(), async () => response);
-    await channel.simulateMessage(textMsg("abort"));
+    const token2 = getCorrelationToken(channel.sentMessages);
+    await channel.simulateMessage(textMsg("abort", token2));
     await expect(call2).rejects.toThrow("aborted");
   });
 });

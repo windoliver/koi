@@ -84,10 +84,15 @@ export function createDelegationEscalationMiddleware(
       taskSummary,
     };
 
-    const message = generateEscalationMessage(ctx);
+    const correlationToken = crypto.randomUUID();
+    const message = generateEscalationMessage(ctx, correlationToken);
     await channel.send(message);
 
-    gate = createEscalationGate(channel, signal, timeoutMs);
+    gate = createEscalationGate(channel, {
+      ...(signal !== undefined ? { signal } : {}),
+      timeoutMs,
+      correlationToken,
+    });
   }
 
   async function awaitDecision(): Promise<EscalationDecision> {
