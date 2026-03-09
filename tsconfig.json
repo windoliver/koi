@@ -168,6 +168,9 @@
       "path": "packages/sched/scheduler"
     },
     {
+      "path": "packages/exec/temporal"
+    },
+    {
       "path": "packages/fs/search"
     },
     {

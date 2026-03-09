@@ -4,7 +4,7 @@
 
 import type { JsonObject } from "./common.js";
 import type { CorrelationIds } from "./correlation.js";
-import type { ToolCallId, ToolDescriptor } from "./ecs.js";
+import type { AgentId, ToolCallId, ToolDescriptor } from "./ecs.js";
 import type { ContentBlock, InboundMessage } from "./message.js";
 import type {
   ModelChunk,
@@ -16,6 +16,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "./middleware.js";
+import type { SpawnRequest } from "./spawn.js";
 
 export type EngineStopReason = "completed" | "max_turns" | "interrupted" | "error";
 
@@ -122,6 +123,11 @@ export type EngineEvent =
       readonly kind: "discovery:miss";
       readonly resolverSource: string;
       readonly timestamp: number;
+    }
+  | {
+      readonly kind: "spawn_requested";
+      readonly request: SpawnRequest;
+      readonly childAgentId: AgentId;
     };
 
 // ---------------------------------------------------------------------------

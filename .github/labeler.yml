@@ -81,6 +81,7 @@
       - "packages/**/sandbox-stack/**"
       - "packages/**/skill-stack/**"
       - "packages/**/starter/**"
+      - "packages/**/temporal/**"
       - "packages/**/tool-stack/**"
       - "packages/**/workspace-stack/**"
 
@@ -143,6 +144,7 @@
       - "!packages/**/sqlite-utils/**"
       - "!packages/**/starter/**"
       - "!packages/**/task-board/**"
+      - "!packages/**/temporal/**"
       - "!packages/**/test-utils/**"
       - "!packages/**/test-utils-contracts/**"
       - "!packages/**/test-utils-mocks/**"
