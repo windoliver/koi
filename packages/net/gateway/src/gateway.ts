@@ -519,7 +519,9 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
                     sessionByConn.set(conn.id, sessionId);
                     connBySession.set(sessionId, conn.id);
 
-                    const pending = disc.pendingFrames;
+                    // Filter buffered frames: only replay frames at or after lastSeq
+                    const lastSeq = connectFrame.resume.lastSeq;
+                    const pending = disc.pendingFrames.filter((f) => f.seq >= lastSeq);
                     for (const pendingFrame of pending) {
                       conn.send(encodeFrame(pendingFrame));
                     }

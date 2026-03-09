@@ -7,7 +7,11 @@ import type {
 } from "@koi/core";
 import type { WebhookDeliveryConfig } from "./config.js";
 import { DEFAULT_WEBHOOK_DELIVERY_CONFIG } from "./config.js";
+import type { DnsResolver } from "./deliver.js";
 import { createWebhookDeliveryService } from "./delivery-service.js";
+
+/** No-op DNS resolver that always returns a safe public IP (avoids real DNS in tests). */
+const noopResolver: DnsResolver = async () => ({ address: "93.184.216.34" });
 
 function makeWebhook(overrides?: Partial<OutboundWebhookConfig>): OutboundWebhookConfig {
   return {
@@ -109,6 +113,7 @@ describe("createWebhookDeliveryService", () => {
       agentId: "agent-1",
       config: FAST_CONFIG,
       fetcher: mockFetch(200),
+      dnsResolver: noopResolver,
     });
 
     await service.start();
@@ -152,6 +157,7 @@ describe("createWebhookDeliveryService", () => {
       agentId: "agent-1",
       config: FAST_CONFIG,
       fetcher,
+      dnsResolver: noopResolver,
     });
 
     await service.start();
@@ -180,6 +186,7 @@ describe("createWebhookDeliveryService", () => {
       agentId: "agent-1",
       config: FAST_CONFIG,
       fetcher,
+      dnsResolver: noopResolver,
     });
 
     await service.start();
@@ -210,6 +217,7 @@ describe("createWebhookDeliveryService", () => {
       agentId: "agent-1",
       config: FAST_CONFIG,
       fetcher,
+      dnsResolver: noopResolver,
     });
 
     await service.start();
@@ -240,6 +248,7 @@ describe("createWebhookDeliveryService", () => {
       config: FAST_CONFIG,
       fetcher,
       logger: { warn: (msg) => warnings.push(msg), info: () => {} },
+      dnsResolver: noopResolver,
     });
 
     await service.start();
@@ -262,6 +271,7 @@ describe("createWebhookDeliveryService", () => {
       agentId: "agent-1",
       config: FAST_CONFIG,
       fetcher: mockFetch(500), // always fail → triggers retry timers
+      dnsResolver: noopResolver,
     });
 
     await service.start();
@@ -275,6 +285,45 @@ describe("createWebhookDeliveryService", () => {
 
     // Stream handler should be removed
     expect(backend.handlers.has("webhook:agent-1")).toBe(false);
+  });
+
+  test("signs with current time, not event timestamp (regression)", async () => {
+    const backend = makeEventBackend();
+    let capturedTimestamp = 0;
+    const fetcher = (async (_url: string | URL | Request, init: RequestInit | undefined) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      capturedTimestamp = Number(headers?.["webhook-timestamp"] ?? "0");
+      return new Response("", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    // Clock returns a fixed "now" far from the event timestamp
+    const clockNow = Math.floor(Date.now() / 1_000) * 1_000;
+    const service = createWebhookDeliveryService({
+      eventBackend: backend,
+      webhooks: [makeWebhook({ events: ["session.started"] })],
+      agentId: "agent-1",
+      config: FAST_CONFIG,
+      fetcher,
+      clock: () => clockNow,
+      dnsResolver: noopResolver,
+    });
+
+    await service.start();
+
+    // Emit an event with a timestamp 10 minutes in the past
+    const staleTimestamp = clockNow - 600_000;
+    backend.emit("webhook:agent-1", {
+      type: "session.started",
+      timestamp: staleTimestamp,
+      data: {},
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Signature timestamp should match clock(), not event timestamp
+    const expectedTimestampSeconds = Math.floor(clockNow / 1_000);
+    expect(capturedTimestamp).toBe(expectedTimestampSeconds);
+
+    service.dispose();
   });
 
   test("circuit breaker blocks after repeated failures", async () => {
@@ -300,6 +349,7 @@ describe("createWebhookDeliveryService", () => {
         },
       },
       fetcher,
+      dnsResolver: noopResolver,
     });
 
     await service.start();

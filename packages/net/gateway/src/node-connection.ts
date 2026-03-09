@@ -315,6 +315,21 @@ export function createNodeConnectionHandler(
     connByNode.delete(nodeId);
     pendingNodeHandshakes.delete(connId);
 
+    // Purge agent indices for the disconnected node
+    for (const [agentId, ownerNodeId] of agentNodeIndex) {
+      if (ownerNodeId === nodeId) {
+        agentNodeIndex.delete(agentId);
+      }
+    }
+    for (const [groupId, group] of groupAgentIndex) {
+      for (const agentId of group) {
+        if (agentNodeIndex.get(agentId) === undefined) {
+          group.delete(agentId);
+        }
+      }
+      if (group.size === 0) groupAgentIndex.delete(groupId);
+    }
+
     const deregResult = registry.deregister(nodeId);
     if (deregResult.ok && deregResult.value) {
       emitNodeEvent({ kind: "deregistered", nodeId });

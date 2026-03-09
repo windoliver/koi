@@ -353,6 +353,47 @@ describe("Session Resume", () => {
     expect(conn3.closeCode).toBe(4011);
   });
 
+  test("resume with lastSeq filters already-seen buffered frames (regression)", async () => {
+    gw = createResumeGateway();
+    await gw.start(0);
+
+    const connId = await connectClient();
+
+    // Disconnect
+    transport.simulateClose(connId);
+
+    // Buffer 3 frames while disconnected (seq 0, 1, 2)
+    const frame0: GatewayFrame = createTestFrame({ seq: 0 });
+    const frame1: GatewayFrame = createTestFrame({ seq: 1 });
+    const frame2: GatewayFrame = createTestFrame({ seq: 2 });
+    gw.send(SESSION_ID, frame0);
+    gw.send(SESSION_ID, frame1);
+    gw.send(SESSION_ID, frame2);
+
+    // Resume with lastSeq=2 (client already saw seq 0, 1, and started at 2)
+    const conn2 = transport.simulateOpen();
+    transport.simulateMessage(conn2.id, createResumeConnectMessage(SESSION_ID, 2));
+
+    // Small delay to ensure all frames are sent
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Only frame with seq >= 2 (i.e., seq 2) should be replayed
+    const sentPayloads = conn2.sent
+      .map((s) => {
+        try {
+          return JSON.parse(s) as { id: string; seq?: number };
+        } catch {
+          return null;
+        }
+      })
+      .filter((p): p is { id: string; seq?: number } => p !== null);
+
+    const replayedIds = sentPayloads.map((p) => p.id);
+    expect(replayedIds).not.toContain(frame0.id);
+    expect(replayedIds).not.toContain(frame1.id);
+    expect(replayedIds).toContain(frame2.id);
+  });
+
   test("returns error when pending frame buffer is full", async () => {
     gw = createResumeGateway();
     await gw.start(0);

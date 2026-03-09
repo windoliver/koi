@@ -174,4 +174,19 @@ describe("combined", () => {
     expect(r.result).toBe("accepted");
     expect(tracker.expectedSeq()).toBe(4);
   });
+
+  test("rejects second frame with same seq but different id (regression)", () => {
+    const tracker = createSequenceTracker(128);
+
+    // Buffer seq 5 with id "a"
+    const fa = createTestFrame({ seq: 5, id: "a" });
+    const ra = tracker.accept(fa);
+    expect(ra.result).toBe("buffered");
+
+    // Second frame with same seq but different id should be rejected
+    const fb = createTestFrame({ seq: 5, id: "b" });
+    const rb = tracker.accept(fb);
+    expect(rb.result).toBe("duplicate");
+    expect(tracker.bufferedCount()).toBe(1);
+  });
 });
