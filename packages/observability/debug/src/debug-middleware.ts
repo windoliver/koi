@@ -234,7 +234,10 @@ export function createDebugMiddleware(
 
       await processEvent({ kind: "model_call_start" } as EngineEvent);
       const response = await next(request);
-      await processEvent({ kind: "done", output: { stopReason: response.stopReason ?? "end" } } as EngineEvent);
+      await processEvent({
+        kind: "done",
+        output: { stopReason: response.stopReason ?? "end" },
+      } as EngineEvent);
       return response;
     },
 

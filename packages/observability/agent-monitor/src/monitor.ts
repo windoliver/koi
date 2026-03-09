@@ -277,7 +277,11 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
         const { sessionId, agentId } = ctx.session;
 
         // Keyword scorer (sync): fire only when no async scorer is configured
-        if (asyncScorer === undefined && keywordPatterns.length > 0 && !m.goalDriftMatchedThisTurn) {
+        if (
+          asyncScorer === undefined &&
+          keywordPatterns.length > 0 &&
+          !m.goalDriftMatchedThisTurn
+        ) {
           const detail = checkGoalDrift(1.0, thresholds.goalDriftThreshold, objectives);
           if (detail !== null) {
             fireAnomaly(buildSignal(detail, sessionId, agentId, prevTurnIndex), m);
@@ -553,7 +557,11 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
       // Evaluate goal drift for the final turn (otherwise skipped since onBeforeTurn won't fire again)
       if (m.toolCallsThisTurn > 0 && objectives.length > 0) {
         const { sessionId, agentId } = ctx;
-        if (asyncScorer === undefined && keywordPatterns.length > 0 && !m.goalDriftMatchedThisTurn) {
+        if (
+          asyncScorer === undefined &&
+          keywordPatterns.length > 0 &&
+          !m.goalDriftMatchedThisTurn
+        ) {
           const detail = checkGoalDrift(1.0, thresholds.goalDriftThreshold, objectives);
           if (detail !== null) {
             fireAnomaly(buildSignal(detail, sessionId, agentId, m.turnIndex), m);
