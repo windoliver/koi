@@ -128,7 +128,7 @@ describe("Nexus namespace paths", () => {
     });
 
     test("groupScratchGlob", () => {
-      expect(groupScratchGlob(GROUP)).toBe(nexusPath("groups/group-x/scratch/*"));
+      expect(groupScratchGlob(GROUP)).toBe(nexusPath("groups/group-x/scratch/**"));
     });
   });
 
@@ -160,7 +160,7 @@ describe("Nexus namespace paths", () => {
     });
 
     test("agentWorkspaceGlob", () => {
-      expect(agentWorkspaceGlob(AGENT)).toBe(nexusPath("agents/agent-1/workspace/*"));
+      expect(agentWorkspaceGlob(AGENT)).toBe(nexusPath("agents/agent-1/workspace/**"));
     });
   });
 

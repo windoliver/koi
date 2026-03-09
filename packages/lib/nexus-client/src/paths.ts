@@ -135,9 +135,9 @@ export function groupScratchPath(groupId: AgentGroupId, path: string): NexusPath
   return nexusPath(`groups/${groupId}/scratch/${path}`);
 }
 
-/** Glob for all scratchpad entries: groups/{groupId}/scratch/* */
+/** Glob for all scratchpad entries (recursive): groups/{groupId}/scratch/** */
 export function groupScratchGlob(groupId: AgentGroupId): NexusPath {
-  return nexusPath(`groups/${groupId}/scratch/*`);
+  return nexusPath(`groups/${groupId}/scratch/**`);
 }
 
 // ---------------------------------------------------------------------------
@@ -168,9 +168,9 @@ export function agentWorkspacePath(agentId: AgentId, path: string): NexusPath {
   return nexusPath(`agents/${agentId}/workspace/${path}`);
 }
 
-/** Glob for all workspace files: agents/{agentId}/workspace/* */
+/** Glob for all workspace files (recursive): agents/{agentId}/workspace/** */
 export function agentWorkspaceGlob(agentId: AgentId): NexusPath {
-  return nexusPath(`agents/${agentId}/workspace/*`);
+  return nexusPath(`agents/${agentId}/workspace/**`);
 }
 
 // ---------------------------------------------------------------------------
