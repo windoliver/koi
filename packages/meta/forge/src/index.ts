@@ -366,6 +366,8 @@ export type {
 } from "./create-forge-middleware-stack.js";
 export { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
 export { createForgePipeline } from "./create-forge-stack.js";
+export type { ForgeToolsProviderConfig } from "./create-forge-tools-provider.js";
+export { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 export type { CreateFullForgeSystemConfig, FullForgeSystem } from "./create-full-forge-system.js";
 export { createFullForgeSystem } from "./create-full-forge-system.js";
 export type { ForgeBootstrapConfig, ForgeBootstrapResult } from "./forge-bootstrap.js";

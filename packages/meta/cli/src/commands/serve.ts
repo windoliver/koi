@@ -186,7 +186,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     providers: [
       ...nexus.providers,
       ...arenaProviders,
-      ...(forgeBootstrap !== undefined ? [forgeBootstrap.provider] : []),
+      ...(forgeBootstrap !== undefined
+        ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
+        : []),
     ],
     extensions,
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),

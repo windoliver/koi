@@ -108,6 +108,7 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
     resolveBrickId: config.resolveBrickId,
     onError: config.onError,
     clock: config.clock,
+    notifier,
   });
 
   return {

@@ -23,6 +23,7 @@ import type {
   KoiMiddleware,
   SessionContext,
   SkillArtifact,
+  StoreChangeNotifier,
   ToolArtifact,
   ToolPolicy,
   TurnContext,
@@ -94,6 +95,8 @@ export interface AutoForgeConfig {
    * without L2→L2 imports (L3 wiring injects the check).
    */
   readonly beforeSave?: (brick: BrickArtifact) => Promise<boolean>;
+  /** Optional notifier for cross-agent cache invalidation after store mutations. */
+  readonly notifier?: StoreChangeNotifier | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +284,10 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
           onError(
             new Error(`Failed to save brick ${descriptor.name}: ${saveResult.error.message}`),
           );
+        } else if (config.notifier !== undefined) {
+          void Promise.resolve(
+            config.notifier.notify({ kind: "saved", brickId: brick.id, scope: config.scope }),
+          ).catch(() => {});
         }
       } catch (err: unknown) {
         onError(err);
@@ -418,6 +425,13 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
     if (!saveResult.ok) {
       onError(new Error(`Failed to save demand-forged brick: ${saveResult.error.message}`));
       return;
+    }
+
+    // Notify after successful demand-forged save
+    if (config.notifier !== undefined) {
+      void Promise.resolve(
+        config.notifier.notify({ kind: "saved", brickId: brick.id, scope: config.scope }),
+      ).catch(() => {});
     }
 
     config.onDemandForged?.(signal, brick);

@@ -20,6 +20,7 @@ import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import { createInMemoryForgeStore } from "@koi/forge-tools";
 import type { ForgeConfig, SandboxExecutor } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
+import { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 import type { FullForgeSystem } from "./create-full-forge-system.js";
 import { createFullForgeSystem } from "./create-full-forge-system.js";
 import type { ForgeRuntimeInstance } from "./forge-runtime.js";
@@ -66,6 +67,8 @@ export interface ForgeBootstrapResult {
   readonly store: ForgeStore;
   /** Full forge system handle (for advanced use). */
   readonly system: FullForgeSystem;
+  /** Provider that exposes the 5 primordial forge tools + companion skill. */
+  readonly forgeToolsProvider: ComponentProvider;
   /** Tear down forge runtime + provider store subscriptions. */
   readonly dispose: () => void;
 }
@@ -112,12 +115,21 @@ export function createForgeBootstrap(
     // base ComponentProvider interface.
     const providerInstance = system.provider as ForgeComponentProviderInstance;
 
+    const forgeToolsProvider = createForgeToolsProvider({
+      store,
+      executor: config.executor,
+      forgeConfig,
+      notifier: system.notifier,
+      pipeline: system.pipeline,
+    });
+
     return {
       runtime: system.runtime,
       middlewares: system.middlewares,
       provider: system.provider,
       store,
       system,
+      forgeToolsProvider,
       dispose: (): void => {
         system.runtime.dispose?.();
         providerInstance.dispose();

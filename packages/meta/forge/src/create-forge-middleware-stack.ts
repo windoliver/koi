@@ -7,7 +7,15 @@
  * L0u @koi/crystallize package.
  */
 
-import type { ForgeScope, ForgeStore, KoiError, KoiMiddleware, Result, TurnTrace } from "@koi/core";
+import type {
+  ForgeScope,
+  ForgeStore,
+  KoiError,
+  KoiMiddleware,
+  Result,
+  StoreChangeNotifier,
+  TurnTrace,
+} from "@koi/core";
 import { DEFAULT_FORGE_BUDGET } from "@koi/core";
 import type { CrystallizeHandle } from "@koi/crystallize";
 import { createAutoForgeMiddleware, createCrystallizeMiddleware } from "@koi/crystallize";
@@ -31,6 +39,8 @@ export interface ForgeMiddlewareStackConfig {
   readonly resolveBrickId: (toolName: string) => string | undefined;
   readonly onError?: ((error: unknown) => void) | undefined;
   readonly clock?: (() => number) | undefined;
+  /** Optional notifier for cross-agent cache invalidation after store mutations. */
+  readonly notifier?: StoreChangeNotifier | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +104,7 @@ export function createForgeMiddlewareStack(
     demandHandle,
     forgeStore: config.forgeStore,
     scope: config.scope,
+    notifier: config.notifier,
     ...(config.onError !== undefined ? { onError: config.onError } : {}),
     clock,
   });

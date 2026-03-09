@@ -39,6 +39,8 @@ describe("createForgeBootstrap", () => {
     expect(result?.provider).toBeDefined();
     expect(result?.store).toBeDefined();
     expect(result?.system).toBeDefined();
+    expect(result?.forgeToolsProvider).toBeDefined();
+    expect(result?.forgeToolsProvider.name).toBe("forge-tools");
   });
 
   test("uses default config when no overrides provided", () => {

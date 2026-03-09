@@ -134,6 +134,8 @@ interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
 interface ForgeConfiguredKoiResult {
     readonly runtime: KoiRuntime;
     readonly forgeSystem: FullForgeSystem | undefined;
+    /** Tear down forge system internals. Call after runtime.dispose(). */
+    readonly dispose: () => void;
 }
 /**
  * Create a Koi runtime with optional forge activation.
@@ -202,6 +204,8 @@ interface ForgeMiddlewareStackConfig {
     readonly resolveBrickId: (toolName: string) => string | undefined;
     readonly onError?: ((error: unknown) => void) | undefined;
     readonly clock?: (() => number) | undefined;
+    /** Optional notifier for cross-agent cache invalidation after store mutations. */
+    readonly notifier?: StoreChangeNotifier | undefined;
 }
 interface ForgeMiddlewareStackResult {
     readonly middlewares: readonly KoiMiddleware[];
@@ -244,6 +248,26 @@ declare function createForgeMiddlewareStack(config: ForgeMiddlewareStackConfig):
 declare function createForgePipeline(): ForgePipeline;
 
 /**
+ * createForgeToolsProvider — builds a ComponentProvider that lazily creates
+ * the 5 primordial forge tools + companion skill at attach() time.
+ *
+ * Shared between createForgeBootstrap() and createForgeConfiguredKoi().
+ */
+
+interface ForgeToolsProviderConfig {
+    readonly store: ForgeStore;
+    readonly executor: SandboxExecutor$1;
+    readonly forgeConfig: ForgeConfig;
+    readonly notifier?: StoreChangeNotifier | undefined;
+    readonly pipeline?: ForgePipeline | undefined;
+}
+/**
+ * Build a ComponentProvider that lazily creates the 5 default forge tools
+ * + companion skill at attach() time (when the agent entity is available).
+ */
+declare function createForgeToolsProvider(config: ForgeToolsProviderConfig): ComponentProvider;
+
+/**
  * Shared forge bootstrap factory — single entry point for both CLI and starter.
  *
  * Creates the full forge system with graceful degradation: if forge
@@ -284,6 +308,8 @@ interface ForgeBootstrapResult {
     readonly store: ForgeStore;
     /** Full forge system handle (for advanced use). */
     readonly system: FullForgeSystem;
+    /** Provider that exposes the 5 primordial forge tools + companion skill. */
+    readonly forgeToolsProvider: ComponentProvider;
     /** Tear down forge runtime + provider store subscriptions. */
     readonly dispose: () => void;
 }
@@ -313,6 +339,6 @@ declare function createForgeBootstrap(config: ForgeBootstrapConfig): ForgeBootst
  */
 declare const FORGE_COMPANION_SKILL: SkillComponent;
 
-export { type CreateForgeRuntimeOptions, type CreateFullForgeSystemConfig, FORGE_COMPANION_SKILL, type ForgeBootstrapConfig, type ForgeBootstrapResult, type ForgeConfiguredKoiOptions, type ForgeConfiguredKoiResult, type ForgeDelegation, type ForgeDelegationConfig, type ForgeMiddlewareStackConfig, type ForgeMiddlewareStackResult, type ForgeRuntimeInstance, type FullForgeSystem, createForgeBootstrap, createForgeConfiguredKoi, createForgeDelegation, createForgeMiddlewareStack, createForgePipeline, createForgeRuntime, createFullForgeSystem };
+export { type CreateForgeRuntimeOptions, type CreateFullForgeSystemConfig, FORGE_COMPANION_SKILL, type ForgeBootstrapConfig, type ForgeBootstrapResult, type ForgeConfiguredKoiOptions, type ForgeConfiguredKoiResult, type ForgeDelegation, type ForgeDelegationConfig, type ForgeMiddlewareStackConfig, type ForgeMiddlewareStackResult, type ForgeRuntimeInstance, type ForgeToolsProviderConfig, type FullForgeSystem, createForgeBootstrap, createForgeConfiguredKoi, createForgeDelegation, createForgeMiddlewareStack, createForgePipeline, createForgeRuntime, createForgeToolsProvider, createFullForgeSystem };
 "
 `;

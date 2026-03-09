@@ -163,7 +163,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
     ],
     providers: [
       ...nexus.providers,
-      ...(forgeBootstrap !== undefined ? [forgeBootstrap.provider] : []),
+      ...(forgeBootstrap !== undefined
+        ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
+        : []),
     ],
     extensions,
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),

@@ -13,7 +13,6 @@
  */
 
 import type {
-  Agent,
   ComponentProvider,
   ForgeScope,
   ForgeStore,
@@ -25,24 +24,16 @@ import type {
   ToolPolicy,
   TurnTrace,
 } from "@koi/core";
-import { skillToken } from "@koi/core";
 import type { KoiRuntime } from "@koi/engine";
-import type { ForgeDeps } from "@koi/forge-tools";
-import {
-  createForgeEditTool,
-  createForgeSkillTool,
-  createForgeToolTool,
-  createPromoteForgeTool,
-  createSearchForgeTool,
-} from "@koi/forge-tools";
+import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import type { ForgeConfig } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
 import type { LoadedManifest } from "@koi/manifest";
 import type { ConfiguredKoiOptions } from "@koi/starter";
 import { createConfiguredKoi, createMiddlewareRegistry } from "@koi/starter";
+import { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 import type { FullForgeSystem } from "./create-full-forge-system.js";
 import { createFullForgeSystem } from "./create-full-forge-system.js";
-import { FORGE_COMPANION_SKILL } from "./forge-companion-skill.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -76,6 +67,8 @@ export interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
 export interface ForgeConfiguredKoiResult {
   readonly runtime: KoiRuntime;
   readonly forgeSystem: FullForgeSystem | undefined;
+  /** Tear down forge system internals. Call after runtime.dispose(). */
+  readonly dispose: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,51 +83,6 @@ function extractForgeConfig(
   const raw = (manifest as LoadedManifest).forge;
   if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
   return raw as ManifestForgeSection;
-}
-
-/**
- * Build a ComponentProvider that lazily creates the 5 default forge tools
- * + companion skill at attach() time (when the agent entity is available).
- */
-function createForgeToolsProvider(
-  store: ForgeStore,
-  executor: SandboxExecutor,
-  forgeConfig: ForgeConfig,
-  notifier: FullForgeSystem["notifier"],
-  pipeline: FullForgeSystem["pipeline"],
-): ComponentProvider {
-  return {
-    name: "forge-tools",
-    priority: 50,
-    attach: async (agent: Agent) => {
-      // Build ForgeDeps with runtime context from the agent entity
-      const deps: ForgeDeps = {
-        store,
-        executor,
-        verifiers: [],
-        config: forgeConfig,
-        context: {
-          agentId: agent.pid.id,
-          depth: agent.pid.depth,
-          sessionId: `session:${agent.pid.id}`,
-          forgesThisSession: 0,
-        },
-        notifier,
-        pipeline,
-      };
-
-      const components = new Map<string, unknown>();
-      // 5 default forge tools
-      components.set("tool:search_forge", createSearchForgeTool(deps));
-      components.set("tool:forge_skill", createForgeSkillTool(deps));
-      components.set("tool:forge_tool", createForgeToolTool(deps));
-      components.set("tool:forge_edit", createForgeEditTool(deps));
-      components.set("tool:promote_forge", createPromoteForgeTool(deps));
-      // Companion skill
-      components.set(skillToken("forge-companion") as string, FORGE_COMPANION_SKILL);
-      return components;
-    },
-  };
 }
 
 // Default no-op trace reader
@@ -217,7 +165,7 @@ export async function createForgeConfiguredKoi(
       ...options,
       ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
     });
-    return { runtime, forgeSystem: undefined };
+    return { runtime, forgeSystem: undefined, dispose: () => {} };
   }
 
   // Derive scope from the merged config (respects both manifest and programmatic override)
@@ -241,13 +189,13 @@ export async function createForgeConfiguredKoi(
   });
 
   // Build forge tools provider (5 tools + companion skill, created at attach time)
-  const forgeToolsProvider = createForgeToolsProvider(
-    options.forgeStore,
-    options.forgeExecutor,
+  const forgeToolsProvider = createForgeToolsProvider({
+    store: options.forgeStore,
+    executor: options.forgeExecutor,
     forgeConfig,
-    forgeSystem.notifier,
-    forgeSystem.pipeline,
-  );
+    notifier: forgeSystem.notifier,
+    pipeline: forgeSystem.pipeline,
+  });
 
   // Merge forge middleware and providers with user-supplied ones
   const mergedMiddleware: readonly KoiMiddleware[] = [
@@ -268,5 +216,14 @@ export async function createForgeConfiguredKoi(
     ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
   });
 
-  return { runtime, forgeSystem };
+  const providerInstance = forgeSystem.provider as ForgeComponentProviderInstance;
+
+  return {
+    runtime,
+    forgeSystem,
+    dispose: (): void => {
+      forgeSystem.runtime.dispose?.();
+      providerInstance.dispose();
+    },
+  };
 }
