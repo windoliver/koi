@@ -31,9 +31,10 @@ export function useAgents(): {
     let mounted = true;
 
     const load = async (): Promise<void> => {
-      // Only show loading skeleton on initial fetch (empty store).
-      // Subsequent polls should not blank the page.
-      const isInitial = Object.keys(useAgentsStore.getState().agents).length === 0;
+      // Only show loading skeleton before the first successful fetch.
+      // Uses initialLoadDone (not empty map check) so that a dashboard
+      // with zero agents doesn't flash skeletons every 30s.
+      const isInitial = !useAgentsStore.getState().initialLoadDone;
       if (isInitial) {
         setLoading(true);
       }

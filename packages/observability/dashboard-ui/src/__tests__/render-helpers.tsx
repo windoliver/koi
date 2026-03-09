@@ -28,8 +28,9 @@ function createTestQueryClient(): QueryClient {
 export function resetStores(): void {
   useAgentsStore.setState({
     agents: {},
-    lastUpdated: 0,
+    lastFullRefresh: 0,
     isLoading: true,
+    initialLoadDone: false,
     error: null,
   });
   useConnectionStore.setState({
