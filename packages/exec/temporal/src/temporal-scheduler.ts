@@ -10,7 +10,6 @@
 
 import type {
   AgentId,
-  ContentBlock,
   CronSchedule,
   EngineInput,
   ScheduledTask,
@@ -25,6 +24,8 @@ import type {
   TaskScheduler,
 } from "@koi/core";
 
+import type { IncomingMessage } from "./types.js";
+
 // ---------------------------------------------------------------------------
 // Local branded type constructors (avoid runtime import from @koi/core)
 // ---------------------------------------------------------------------------
@@ -38,27 +39,46 @@ function toScheduleId(id: string): ScheduleId {
 }
 
 /**
- * Convert EngineInput to a content array suitable for IncomingMessage.
- * Preserves ALL ContentBlock types (text, image, file, button, custom).
- * Handles all three EngineInput kinds: text, messages, resume.
+ * Convert EngineInput to one or more IncomingMessages.
+ *
+ * Preserves per-message fidelity:
+ * - text: single message with text content
+ * - messages: one IncomingMessage per InboundMessage (preserves senderId, timestamp, threadId, metadata)
+ * - resume: single message carrying the EngineState in resumeState
  */
-function mapEngineInputToContent(input: EngineInput): readonly ContentBlock[] {
+function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly IncomingMessage[] {
+  const now = Date.now();
   switch (input.kind) {
     case "text":
-      return [{ kind: "text", text: input.text }];
-    case "messages": {
-      // Flatten all InboundMessage content blocks (preserve every block type)
-      const blocks: ContentBlock[] = [];
-      for (const msg of input.messages) {
-        for (const block of msg.content) {
-          blocks.push(block);
-        }
-      }
-      return blocks;
-    }
+      return [
+        {
+          id: `${taskId}:0`,
+          senderId: "scheduler",
+          content: [{ kind: "text", text: input.text }],
+          timestamp: now,
+        },
+      ];
+    case "messages":
+      return input.messages.map(
+        (msg, i): IncomingMessage => ({
+          id: `${taskId}:${i}`,
+          senderId: msg.senderId,
+          content: [...msg.content],
+          timestamp: msg.timestamp,
+          threadId: msg.threadId,
+          metadata: msg.metadata as Record<string, unknown> | undefined,
+        }),
+      );
     case "resume":
-      // Resume has no new user message content
-      return [];
+      return [
+        {
+          id: `${taskId}:resume`,
+          senderId: "scheduler",
+          content: [],
+          timestamp: now,
+          resumeState: input.state,
+        },
+      ];
   }
 }
 
@@ -192,8 +212,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       tasks.set(id, task);
       emit({ kind: "task:submitted", task });
 
-      // Build IncomingMessage content from EngineInput (all kinds)
-      const content = mapEngineInputToContent(input);
+      // Map EngineInput to per-message IncomingMessages (preserves senderId, metadata, etc.)
+      const messages = mapEngineInputToMessages(input, id);
 
       // Start a Temporal Workflow for this task
       const handle = await config.client.workflow.start(config.workflowType, {
@@ -204,13 +224,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         ...(options?.delayMs !== undefined ? { startDelay: `${options.delayMs}ms` } : {}),
       });
 
-      // Signal the workflow with the task input
-      await config.client.workflow.signal(handle.workflowId, "message", {
-        id: `task:${id}`,
-        senderId: "scheduler",
-        content,
-        timestamp: now,
-      });
+      // Signal the workflow with each message individually
+      for (const msg of messages) {
+        await config.client.workflow.signal(handle.workflowId, "message", msg);
+      }
 
       // Transition to running after the workflow is signaled
       const runningTask: ScheduledTask = { ...task, status: "running" };
@@ -298,15 +315,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
       schedules.set(id, schedule);
 
-      // Build initial message so the cron-started workflow has work to do
+      // Build initial messages so the cron-started workflow has work to do
       // (without this, the workflow would block waiting for a signal)
-      const content = mapEngineInputToContent(input);
-      const initialMessage = {
-        id: `sched:${id}:${Date.now()}`,
-        senderId: "scheduler",
-        content,
-        timestamp: Date.now(),
-      };
+      const initialMessages = mapEngineInputToMessages(input, id);
 
       await config.client.schedule.create(id, {
         spec: {
@@ -322,7 +333,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               agentId,
               sessionId: id,
               stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-              initialMessage,
+              initialMessages,
             },
           ],
         },

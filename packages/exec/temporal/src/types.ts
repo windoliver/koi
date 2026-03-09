@@ -17,8 +17,10 @@ export interface AgentWorkflowConfig {
   readonly sessionId: SessionId;
   /** Lightweight state refs — NO data, only pointers to external stores. */
   readonly stateRefs: AgentStateRefs;
-  /** Initial message to process on startup (used by cron schedules). */
+  /** Single initial message to process on startup. */
   readonly initialMessage?: IncomingMessage | undefined;
+  /** Multiple initial messages to process on startup (used by cron schedules with multi-message EngineInput). */
+  readonly initialMessages?: readonly IncomingMessage[] | undefined;
 }
 
 /**
@@ -73,6 +75,16 @@ export interface IncomingMessage {
   readonly senderId: string;
   readonly content: readonly ContentBlock[];
   readonly timestamp: number;
+  /** Thread context (preserved from InboundMessage). */
+  readonly threadId?: string | undefined;
+  /** Arbitrary metadata (preserved from InboundMessage). */
+  readonly metadata?: Record<string, unknown> | undefined;
+  /**
+   * Resume state from EngineInput.kind === "resume".
+   * When set, the Activity should reconstruct EngineInput { kind: "resume", state }
+   * instead of treating this as a user message.
+   */
+  readonly resumeState?: unknown | undefined;
 }
 
 // ---------------------------------------------------------------------------

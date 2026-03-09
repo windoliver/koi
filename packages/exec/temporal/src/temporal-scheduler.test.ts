@@ -158,6 +158,40 @@ describe("submit", () => {
     expect(payload.content).toEqual([]);
   });
 
+  test("signals each message individually for multi-message input", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, MESSAGES_INPUT, "spawn");
+
+    // MESSAGES_INPUT has 1 message, so 1 signal call
+    expect(client.workflow.signal).toHaveBeenCalledTimes(1);
+  });
+
+  test("preserves senderId and timestamp from messages input", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, MESSAGES_INPUT, "spawn");
+
+    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
+    const payload = signalArgs?.[2] as { senderId: string; timestamp: number };
+    expect(payload.senderId).toBe("u1");
+    expect(payload.timestamp).toBe(1);
+  });
+
+  test("carries resumeState for resume input", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, RESUME_INPUT, "spawn");
+
+    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
+    const payload = signalArgs?.[2] as { resumeState: unknown; content: readonly unknown[] };
+    expect(payload.resumeState).toEqual({});
+    expect(payload.content).toEqual([]);
+  });
+
   test("passes startDelay when delayMs is set", async () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
@@ -273,7 +307,7 @@ describe("cancel", () => {
 // ---------------------------------------------------------------------------
 
 describe("schedule", () => {
-  test("creates a Temporal schedule with initialMessage", async () => {
+  test("creates a Temporal schedule with initialMessages", async () => {
     const client = createMockClient();
     const scheduler = createTemporalScheduler(createTestConfig(client));
 
@@ -283,13 +317,14 @@ describe("schedule", () => {
     expect(id).toContain("sched:");
     expect(client.schedule.create).toHaveBeenCalledTimes(1);
 
-    // Verify initialMessage is passed in workflow args
+    // Verify initialMessages (plural) is passed in workflow args
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const options = createArgs?.[1] as { action: { args: readonly [Record<string, unknown>] } };
     const workflowConfig = options.action.args[0];
-    expect(workflowConfig).toHaveProperty("initialMessage");
-    const msg = workflowConfig.initialMessage as { content: readonly unknown[] };
-    expect(msg.content).toEqual([{ kind: "text", text: "hello" }]);
+    expect(workflowConfig).toHaveProperty("initialMessages");
+    const msgs = workflowConfig.initialMessages as readonly { content: readonly unknown[] }[];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.content).toEqual([{ kind: "text", text: "hello" }]);
   });
 
   test("passes timezone in schedule spec", async () => {

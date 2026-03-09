@@ -99,9 +99,16 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
   let stateRefs: AgentStateRefs = config.stateRefs;
   const pendingMessages: IncomingMessage[] = [];
   let shutdownRequested = false;
+  let processingTurn = false;
 
-  // Seed with initial message if provided (cron schedules, Continue-As-New)
-  if (config.initialMessage !== undefined) {
+  // Seed with initial message(s) if provided (cron schedules, Continue-As-New).
+  // `initialMessages` (plural) takes precedence — used by cron schedules with
+  // multi-message EngineInput. `initialMessage` (singular) is the legacy path.
+  if (config.initialMessages !== undefined && config.initialMessages.length > 0) {
+    for (const msg of config.initialMessages) {
+      pendingMessages.push(msg);
+    }
+  } else if (config.initialMessage !== undefined) {
     pendingMessages.push(config.initialMessage);
   }
 
@@ -124,6 +131,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
 
   setHandler(statusQuery, (): AgentActivityStatus => {
     if (shutdownRequested) return "shutting_down";
+    if (processingTurn) return "working";
     return pendingMessages.length > 0 ? "working" : "idle";
   });
 
@@ -151,7 +159,9 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
       gatewayUrl: undefined, // Injected by Activity context at runtime
     };
 
+    processingTurn = true;
     const result: AgentTurnResult = await runAgentTurn(turnInput);
+    processingTurn = false;
 
     // Update lightweight state refs (Decision 16A)
     stateRefs = result.updatedStateRefs;

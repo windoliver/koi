@@ -72,7 +72,9 @@ export function createActivities(deps: ActivityDeps): {
     async runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
       const turnId = `turn:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`;
       const blocks: ContentBlock[] = [];
-      // TODO: Wire spawnChild based on engine spawn events (currently always undefined)
+      // Intentional v1 scaffolding: spawnChild is always undefined until the
+      // engine emits spawn events. The workflow already handles non-undefined
+      // values (startChild in agent-workflow.ts), so wiring this is a v2 task.
       let spawnChild: AgentTurnResult["spawnChild"];
 
       try {
