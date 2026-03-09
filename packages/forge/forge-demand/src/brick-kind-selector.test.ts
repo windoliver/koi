@@ -106,6 +106,7 @@ describe("selectBrickKind", () => {
   test("complex_task_completed → skill", () => {
     const trigger: ForgeTrigger = {
       kind: "complex_task_completed",
+      toolCallCount: 5,
       taskDescription: "refactored auth module",
       toolsUsed: ["read_file", "write_file", "run_tests"],
       turnCount: 8,
@@ -120,6 +121,8 @@ describe("selectBrickKind", () => {
   test("user_correction → skill", () => {
     const trigger: ForgeTrigger = {
       kind: "user_correction",
+      correctionText: "that's wrong",
+      correctedToolCall: "tool-call-1",
       correctionDescription: "use snake_case not camelCase",
     };
     const result = selectBrickKind(trigger);
@@ -162,11 +165,17 @@ describe("selectBrickKind", () => {
       { kind: "agent_latency_degradation", agentType: "a", brickId: "b" as BrickId, p95Ms: 100 },
       {
         kind: "complex_task_completed",
+        toolCallCount: 1,
         taskDescription: "t",
         toolsUsed: [],
         turnCount: 1,
       },
-      { kind: "user_correction", correctionDescription: "c" },
+      {
+        kind: "user_correction",
+        correctionText: "wrong",
+        correctedToolCall: "tc-1",
+        correctionDescription: "c",
+      },
       { kind: "novel_workflow", workflowDescription: "w", toolSequence: [] },
     ];
 
