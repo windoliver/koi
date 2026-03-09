@@ -188,10 +188,9 @@ export async function createForgeConfiguredKoi(
     return { runtime, forgeSystem: undefined };
   }
 
-  // Build forge config from manifest + overrides
-  const scope: ForgeScope = forgeSection.defaultScope ?? "agent";
+  // Build forge config: defaults ← manifest fields ← programmatic overrides.
+  // Manifest fields are the base, options.forgeConfig wins when both are set.
   const forgeConfig = createDefaultForgeConfig({
-    ...options.forgeConfig,
     enabled: true,
     ...(forgeSection.maxForgeDepth !== undefined
       ? { maxForgeDepth: forgeSection.maxForgeDepth }
@@ -210,7 +209,11 @@ export async function createForgeConfiguredKoi(
           },
         }
       : {}),
+    // Programmatic overrides win over manifest values
+    ...options.forgeConfig,
   });
+  // Derive scope from the merged config (respects both manifest and programmatic override)
+  const scope: ForgeScope = forgeConfig.defaultScope;
 
   // Instantiate forge system
   const forgeSystem = createFullForgeSystem({
