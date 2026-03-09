@@ -18,7 +18,12 @@ import type {
 import { runId, sessionId } from "@koi/core";
 import type { WebhookDeliveryConfig } from "../config.js";
 import { DEFAULT_WEBHOOK_DELIVERY_CONFIG } from "../config.js";
+import type { DnsResolver } from "../deliver.js";
 import { createWebhookDeliveryService } from "../delivery-service.js";
+
+/** No-op DNS resolver — returns a safe public IP so localhost tests bypass SSRF checks. */
+const noopResolver: DnsResolver = async () => ({ address: "93.184.216.34" });
+
 import { createWebhookMiddleware } from "../middleware.js";
 import { verifySignature } from "../signing.js";
 
@@ -152,6 +157,7 @@ describe("webhook delivery pipeline", () => {
       ],
       agentId: AGENT_ID,
       config: FAST_CONFIG,
+      dnsResolver: noopResolver,
     });
 
     await service.start();

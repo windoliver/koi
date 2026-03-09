@@ -37,11 +37,17 @@ declare function validateWebhookDeliveryConfig(config: Partial<WebhookDeliveryCo
  * HTTP webhook delivery — single POST with timeout and diagnostics.
  */
 
+/** DNS resolver function type — injectable for testing. */
+type DnsResolver = (hostname: string) => Promise<{
+    readonly address: string;
+}>;
 interface DeliverOptions {
     /** HTTP request timeout in milliseconds. */
     readonly timeoutMs: number;
     /** Maximum response body bytes to read for error diagnostics. */
     readonly maxResponseBodyBytes: number;
+    /** DNS resolver for SSRF checks (injectable for testing). Default: node:dns lookup. */
+    readonly dnsResolver?: DnsResolver | undefined;
 }
 /**
  * Delivers a webhook payload via HTTP POST.
@@ -68,6 +74,8 @@ interface WebhookDeliveryServiceDeps {
     readonly fetcher?: typeof fetch | undefined;
     readonly clock?: (() => number) | undefined;
     readonly logger?: WebhookDeliveryServiceLogger | undefined;
+    /** DNS resolver for SSRF checks (injectable for testing). */
+    readonly dnsResolver?: DnsResolver | undefined;
 }
 interface WebhookDeliveryServiceLogger {
     readonly warn: (msg: string) => void;
@@ -180,7 +188,12 @@ interface WebhookUrlValidationResult {
  * @param allowInsecureLocalhost - Allow HTTP for localhost (dev mode). Default: false.
  */
 declare function validateWebhookUrl(url: string, allowInsecureLocalhost?: boolean): WebhookUrlValidationResult;
+/**
+ * Checks whether a resolved IP address falls into a blocked range.
+ * Use this at delivery time to prevent DNS-rebinding SSRF attacks.
+ */
+declare function isBlockedAddress(ip: string): boolean;
 
-export { DEFAULT_WEBHOOK_DELIVERY_CONFIG, type WebhookDeliveryConfig, type WebhookDeliveryService, type WebhookDeliveryServiceDeps, createSignatureHeaders, createWebhookDeliveryService, createWebhookMiddleware, deliverWebhook, descriptor, validateWebhookDeliveryConfig, validateWebhookUrl, verifySignature };
+export { DEFAULT_WEBHOOK_DELIVERY_CONFIG, type DnsResolver, type WebhookDeliveryConfig, type WebhookDeliveryService, type WebhookDeliveryServiceDeps, createSignatureHeaders, createWebhookDeliveryService, createWebhookMiddleware, deliverWebhook, descriptor, isBlockedAddress, validateWebhookDeliveryConfig, validateWebhookUrl, verifySignature };
 "
 `;
