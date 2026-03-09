@@ -246,4 +246,49 @@ describe("createForgeConfiguredKoi", () => {
     expect(result.forgeSystem).toBeDefined();
     await result.runtime.dispose();
   });
+
+  test("manifest enables forge but forgeConfig override disables — no forgeSystem", async () => {
+    const adapter = createMockEngineAdapter();
+    const result = await createForgeConfiguredKoi({
+      manifest: makeForgeManifest(true),
+      adapter,
+      forgeStore: createInMemoryForgeStore(),
+      forgeExecutor: createMockExecutor(),
+      forgeConfig: { enabled: false },
+    });
+
+    expect(result.runtime).toBeDefined();
+    expect(result.forgeSystem).toBeUndefined();
+    await result.runtime.dispose();
+  });
+
+  test("manifest disables forge but forgeConfig override enables — returns forgeSystem", async () => {
+    const adapter = createMockEngineAdapter();
+    const result = await createForgeConfiguredKoi({
+      manifest: makeForgeManifest(false),
+      adapter,
+      forgeStore: createInMemoryForgeStore(),
+      forgeExecutor: createMockExecutor(),
+      forgeConfig: { enabled: true },
+    });
+
+    expect(result.runtime).toBeDefined();
+    expect(result.forgeSystem).toBeDefined();
+    await result.runtime.dispose();
+  });
+
+  test("no forge section + forgeConfig enables — returns forgeSystem", async () => {
+    const adapter = createMockEngineAdapter();
+    const result = await createForgeConfiguredKoi({
+      manifest: PLAIN_MANIFEST,
+      adapter,
+      forgeStore: createInMemoryForgeStore(),
+      forgeExecutor: createMockExecutor(),
+      forgeConfig: { enabled: true },
+    });
+
+    expect(result.runtime).toBeDefined();
+    expect(result.forgeSystem).toBeDefined();
+    await result.runtime.dispose();
+  });
 });

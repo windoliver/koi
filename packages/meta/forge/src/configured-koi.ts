@@ -169,7 +169,6 @@ export async function createForgeConfiguredKoi(
   options: ForgeConfiguredKoiOptions,
 ): Promise<ForgeConfiguredKoiResult> {
   const forgeSection = extractForgeConfig(options.manifest);
-  const forgeEnabled = forgeSection?.enabled === true;
 
   // When caller provides pre-resolved middleware but no custom registry, inject
   // an empty registry to prevent createConfiguredKoi from double-resolving
@@ -179,30 +178,25 @@ export async function createForgeConfiguredKoi(
     options.middleware.length > 0 &&
     options.middlewareRegistry === undefined;
 
-  // Fast path: forge not enabled
-  if (!forgeEnabled || options.forgeStore === undefined || options.forgeExecutor === undefined) {
-    const runtime = await createConfiguredKoi({
-      ...options,
-      ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
-    });
-    return { runtime, forgeSystem: undefined };
-  }
-
-  // Build forge config: defaults ← manifest fields ← programmatic overrides.
-  // Manifest fields are the base, options.forgeConfig wins when both are set.
+  // Build forge config early so the activation gate respects programmatic overrides.
+  // Merge order: defaults ← manifest fields ← options.forgeConfig (overrides win).
+  // When no forge section exists in the manifest, default to disabled unless
+  // the caller explicitly enables via options.forgeConfig.enabled.
   const forgeConfig = createDefaultForgeConfig({
-    enabled: true,
-    ...(forgeSection.maxForgeDepth !== undefined
+    enabled: forgeSection?.enabled ?? false,
+    ...(forgeSection?.maxForgeDepth !== undefined
       ? { maxForgeDepth: forgeSection.maxForgeDepth }
       : {}),
-    ...(forgeSection.maxForgesPerSession !== undefined
+    ...(forgeSection?.maxForgesPerSession !== undefined
       ? { maxForgesPerSession: forgeSection.maxForgesPerSession }
       : {}),
-    ...(forgeSection.defaultScope !== undefined ? { defaultScope: forgeSection.defaultScope } : {}),
-    ...(forgeSection.defaultPolicy !== undefined
+    ...(forgeSection?.defaultScope !== undefined
+      ? { defaultScope: forgeSection.defaultScope }
+      : {}),
+    ...(forgeSection?.defaultPolicy !== undefined
       ? { defaultPolicy: forgeSection.defaultPolicy }
       : {}),
-    ...(forgeSection.scopePromotion?.requireHumanApproval !== undefined
+    ...(forgeSection?.scopePromotion?.requireHumanApproval !== undefined
       ? {
           scopePromotion: {
             requireHumanApproval: forgeSection.scopePromotion.requireHumanApproval,
@@ -212,6 +206,20 @@ export async function createForgeConfiguredKoi(
     // Programmatic overrides win over manifest values
     ...options.forgeConfig,
   });
+
+  // Fast path: forge not enabled (merged config is the single source of truth)
+  if (
+    !forgeConfig.enabled ||
+    options.forgeStore === undefined ||
+    options.forgeExecutor === undefined
+  ) {
+    const runtime = await createConfiguredKoi({
+      ...options,
+      ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
+    });
+    return { runtime, forgeSystem: undefined };
+  }
+
   // Derive scope from the merged config (respects both manifest and programmatic override)
   const scope: ForgeScope = forgeConfig.defaultScope;
 
