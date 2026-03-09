@@ -20,7 +20,7 @@ import type { CrystallizeHandle } from "@koi/crystallize";
 import type { ForgeDemandHandle } from "@koi/forge-demand";
 import type { ExaptationHandle } from "@koi/forge-exaptation";
 import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
-import { createForgeComponentProvider } from "@koi/forge-tools";
+import { createForgeComponentProvider, createMemoryStoreChangeNotifier } from "@koi/forge-tools";
 import type { ForgeConfig, ForgePipeline, SandboxExecutor } from "@koi/forge-types";
 import type { ForgeMiddlewareStackResult } from "./create-forge-middleware-stack.js";
 import { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
@@ -42,6 +42,8 @@ export interface CreateFullForgeSystemConfig {
   readonly signer?: SigningBackend | undefined;
   readonly onError?: ((error: unknown) => void) | undefined;
   readonly clock?: (() => number) | undefined;
+  /** Optional notifier for cross-agent cache invalidation. Auto-created when not provided. */
+  readonly notifier?: StoreChangeNotifier | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,7 @@ export interface FullForgeSystem {
   readonly provider: ComponentProvider;
   readonly pipeline: ForgePipeline;
   readonly middlewares: readonly KoiMiddleware[];
+  readonly notifier: StoreChangeNotifier;
   readonly handles: {
     readonly demand: ForgeDemandHandle;
     readonly crystallize: CrystallizeHandle;
@@ -74,6 +77,9 @@ export interface FullForgeSystem {
  * - ForgeMiddlewareStack (demand, exaptation, crystallize, auto-forge, optimizer, usage)
  */
 export function createFullForgeSystem(config: CreateFullForgeSystemConfig): FullForgeSystem {
+  // 0. Notifier — shared pub/sub for cross-agent cache invalidation
+  const notifier = config.notifier ?? createMemoryStoreChangeNotifier();
+
   // 1. Runtime — hot-attach tool resolution with integrity checks
   const runtime = createForgeRuntime({
     store: config.store,
@@ -82,19 +88,12 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
     ...(config.signer !== undefined ? { signer: config.signer } : {}),
   });
 
-  // 2. Component provider — ECS brick attachment
+  // 2. Component provider — ECS brick attachment (with notifier for cache invalidation)
   const providerInstance: ForgeComponentProviderInstance = createForgeComponentProvider({
     store: config.store,
     executor: config.executor,
     scope: config.scope,
-    ...(config.store.watch !== undefined
-      ? {
-          notifier: {
-            notify: () => {},
-            subscribe: config.store.watch,
-          } satisfies StoreChangeNotifier,
-        }
-      : {}),
+    notifier,
   });
 
   // 3. Pipeline — cross-L2 wiring (verify, governance, provenance, etc.)
@@ -116,6 +115,7 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
     provider: providerInstance,
     pipeline,
     middlewares: stackResult.middlewares,
+    notifier,
     handles: stackResult.handles,
   };
 }

@@ -609,6 +609,7 @@ describe("createForgeDemandDetector", () => {
       const signals: ForgeDemandSignal[] = [];
       const handle = createForgeDemandDetector(
         createConfig({
+          budget: lowThresholdBudget,
           heuristics: { complexTaskToolCallThreshold: 1 },
           onDemand: (s) => signals.push(s),
         }),
@@ -671,6 +672,126 @@ describe("createForgeDemandDetector", () => {
       expect(chunks.length).toBe(2);
       expect(chunks[0]).toEqual({ kind: "text_delta", delta: "hello " });
       expect(chunks[1]).toEqual({ kind: "text_delta", delta: "world" });
+    });
+
+    it("emits signal from streamed text chunks", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({
+          heuristics: { capabilityGapOccurrences: 1 },
+          onDemand: (s) => signals.push(s),
+        }),
+      );
+
+      const ctx = createMockTurnContext();
+      async function* fakeStream() {
+        yield { kind: "text_delta" as const, delta: "I don't have " };
+        yield { kind: "text_delta" as const, delta: "a tool for that." };
+      }
+
+      const chunks: unknown[] = [];
+      const wrapStream = handle.middleware.wrapModelStream;
+      expect(wrapStream).toBeDefined();
+      if (wrapStream === undefined) return;
+      for await (const chunk of wrapStream(ctx, {} as never, () => fakeStream())) {
+        chunks.push(chunk);
+      }
+
+      // All chunks yielded through
+      expect(chunks.length).toBe(2);
+      // Signal emitted from assembled text
+      expect(signals.length).toBe(1);
+      expect(signals[0]?.trigger.kind).toBe("capability_gap");
+    });
+  });
+
+  describe("brick-kind selection integration", () => {
+    it("suggestedBrickKind uses selectBrickKind for repeated_failure → skill", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({
+          heuristics: { repeatedFailureCount: 1 },
+          onDemand: (s) => signals.push(s),
+        }),
+      );
+
+      const ctx = createMockTurnContext();
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-a"), async () => {
+          throw new Error("fail");
+        });
+      } catch {
+        // expected
+      }
+
+      expect(signals.length).toBe(1);
+      expect(signals[0]?.suggestedBrickKind).toBe("skill");
+    });
+
+    it("suggestedBrickKind for no_matching_tool → skill", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({ budget: lowThresholdBudget, onDemand: (s) => signals.push(s) }),
+      );
+
+      const ctx = createMockTurnContext();
+      try {
+        await handle.middleware.wrapToolCall?.(ctx, createToolRequest("x"), async () => {
+          throw KoiRuntimeError.from("NOT_FOUND", "Tool not found");
+        });
+      } catch {
+        // expected
+      }
+
+      expect(signals.length).toBe(1);
+      expect(signals[0]?.suggestedBrickKind).toBe("skill");
+    });
+
+    it("suggestedBrickKind for capability_gap → skill", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({
+          heuristics: { capabilityGapOccurrences: 1 },
+          onDemand: (s) => signals.push(s),
+        }),
+      );
+
+      const ctx = createMockTurnContext();
+      const response = createModelResponse("I don't have a tool for that.");
+      await handle.middleware.wrapModelCall?.(ctx, {} as never, async () => response);
+
+      expect(signals.length).toBe(1);
+      expect(signals[0]?.suggestedBrickKind).toBe("skill");
+    });
+  });
+
+  describe("memory management", () => {
+    it("caps failedToolCalls at MAX_FAILED_CALL_MESSAGES", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({
+          budget: lowThresholdBudget,
+          heuristics: { repeatedFailureCount: 1 },
+          onDemand: (s) => signals.push(s),
+        }),
+      );
+
+      const ctx = createMockTurnContext();
+      // Fail 15 times (MAX_FAILED_CALL_MESSAGES = 10)
+      for (let i = 0; i < 15; i++) {
+        try {
+          await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-a"), async () => {
+            throw new Error(`failure-${String(i)}`);
+          });
+        } catch {
+          // expected
+        }
+      }
+
+      // Signal should contain at most 10 failedToolCalls
+      const lastSignal = signals.at(-1);
+      expect(lastSignal).toBeDefined();
+      expect(lastSignal?.context.failedToolCalls.length).toBeLessThanOrEqual(10);
     });
   });
 

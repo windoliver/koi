@@ -14,9 +14,8 @@
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineEvent, EngineInput } from "@koi/core";
-import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
-import { createForgeBootstrap } from "@koi/forge";
+import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
@@ -154,7 +153,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const contextExt = createContextExtension(contextConfig);
   const extensions = contextExt !== undefined ? [contextExt] : [];
 
-  const runtime = await createKoi({
+  const { runtime } = await createForgeConfiguredKoi({
     manifest,
     adapter,
     middleware: [

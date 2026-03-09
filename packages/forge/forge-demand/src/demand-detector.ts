@@ -7,7 +7,6 @@
  */
 
 import type {
-  BrickKind,
   CapabilityFragment,
   ForgeDemandSignal,
   ForgeTrigger,
@@ -24,6 +23,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { extractMessage, KoiRuntimeError } from "@koi/errors";
+import { selectBrickKind } from "./brick-kind-selector.js";
 import type { DemandContext } from "./confidence.js";
 import { computeDemandConfidence, DEFAULT_CONFIDENCE_WEIGHTS } from "./confidence.js";
 import {
@@ -36,12 +36,7 @@ import {
   detectRepeatedFailure,
   detectUserCorrection,
 } from "./heuristics.js";
-import type {
-  ForgeDemandConfig,
-  ForgeDemandHandle,
-  HeuristicThresholds,
-  RecoveryAnalyzer,
-} from "./types.js";
+import type { ForgeDemandConfig, ForgeDemandHandle, HeuristicThresholds } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -53,6 +48,8 @@ const DEFAULT_LATENCY_DEGRADATION_P95_MS = 5_000;
 const DEFAULT_MAX_PENDING_SIGNALS = 10;
 const DEFAULT_COMPLEX_TASK_TOOL_CALL_THRESHOLD = 5;
 const DEFAULT_NOVEL_WORKFLOW_MIN_LENGTH = 3;
+/** Maximum error messages kept per tool in failedToolCalls (memory cap). */
+const MAX_FAILED_CALL_MESSAGES = 10;
 
 const DEFAULT_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: DEFAULT_REPEATED_FAILURE_COUNT,
@@ -83,12 +80,13 @@ function triggerKey(trigger: ForgeTrigger): string {
       return `arf:${trigger.agentType}:${trigger.brickId}`;
     case "agent_latency_degradation":
       return `ald:${trigger.agentType}:${trigger.brickId}`;
+    // Success-side triggers
     case "complex_task_completed":
-      return `ctc:${String(trigger.toolCallCount)}`;
+      return `ctc:${trigger.taskDescription.slice(0, 50)}`;
     case "user_correction":
-      return `uc:${trigger.correctedToolCall}`;
+      return `uc:${trigger.correctionDescription.slice(0, 50)}`;
     case "novel_workflow":
-      return `nw:${trigger.toolSequence.join(",")}`;
+      return `nw:${trigger.workflowDescription.slice(0, 50)}`;
   }
   // Exhaustiveness guard — compiler errors if a trigger kind is missing above
   const _exhaustive: never = trigger;
@@ -101,75 +99,6 @@ function triggerKey(trigger: ForgeTrigger): string {
 
 function extractResponseText(response: ModelResponse): string {
   return typeof response.content === "string" ? response.content : "";
-}
-
-// ---------------------------------------------------------------------------
-// Brick kind selection — maps trigger type to the appropriate brick kind
-// ---------------------------------------------------------------------------
-
-/**
- * Selects the appropriate brick kind based on trigger type.
- * Exhaustive switch — no default branch. Compiler catches missing cases.
- *
- * Phase 3A: when recoveryAnalyzer is provided, refines the kind based on
- * recovery trajectory. Terminal recovery → skill (with scripts);
- * single-step deterministic → tool; multi-step no-terminal → skill.
- */
-function selectBrickKind(
-  trigger: ForgeTrigger,
-  recoveryAnalyzer?: RecoveryAnalyzer | undefined,
-): BrickKind {
-  const kind: ForgeTrigger["kind"] = trigger.kind;
-  const baseKind = selectBaseKind(kind);
-
-  // Phase 3A: refine based on recovery context (only for failure triggers)
-  if (
-    recoveryAnalyzer !== undefined &&
-    (trigger.kind === "repeated_failure" || trigger.kind === "performance_degradation")
-  ) {
-    const toolId = trigger.toolName;
-    const recovery = recoveryAnalyzer.analyzeRecovery(toolId);
-    if (recovery?.succeeded) {
-      // Terminal recovery → skill (needs scripts for procedural guidance)
-      if (recovery.usedTerminal) return "skill";
-      // Single-step deterministic recovery → tool
-      if (recovery.stepCount === 1) return "tool";
-      // Multi-step no-terminal → skill (instruction-only)
-      return "skill";
-    }
-  }
-
-  return baseKind;
-}
-
-/** Base kind mapping — pure, no recovery context. */
-function selectBaseKind(kind: ForgeTrigger["kind"]): BrickKind {
-  switch (kind) {
-    // Knowledge gaps → skill (procedural knowledge, not executable code)
-    case "repeated_failure":
-    case "capability_gap":
-    case "no_matching_tool":
-      return "skill";
-
-    // Performance → tool (deterministic optimization)
-    case "performance_degradation":
-      return "tool";
-
-    // Agent-level gaps → agent
-    case "agent_capability_gap":
-    case "agent_repeated_failure":
-    case "agent_latency_degradation":
-      return "agent";
-
-    // Success-side triggers → skill (capture learnings)
-    case "complex_task_completed":
-    case "user_correction":
-    case "novel_workflow":
-      return "skill";
-  }
-  // TypeScript exhaustiveness guard — triggers compile error if a case is missed
-  const _exhaustive: never = kind;
-  return _exhaustive;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,9 +148,23 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     return clock() - lastEmitted < config.budget.cooldownMs;
   }
 
+  /** Evict expired cooldown entries to prevent unbounded memory growth. */
+  function evictExpiredCooldowns(): void {
+    const now = clock();
+    for (const [key, lastEmitted] of cooldowns) {
+      if (now - lastEmitted >= config.budget.cooldownMs) {
+        cooldowns.delete(key);
+      }
+    }
+  }
+
   function emitSignal(trigger: ForgeTrigger, context: DemandContext): void {
     const key = triggerKey(trigger);
     if (isOnCooldown(key)) return;
+
+    // Use real brick-kind selector instead of hardcoded "tool"
+    const selection = selectBrickKind(trigger);
+    if (selection.suppressed) return;
 
     const confidence = computeDemandConfidence(trigger, thresholds.confidenceWeights, context);
 
@@ -233,7 +176,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       kind: "forge_demand",
       trigger,
       confidence,
-      suggestedBrickKind: selectBrickKind(trigger, config.recoveryAnalyzer),
+      suggestedBrickKind: selection.kind,
       context: {
         failureCount: context.failureCount,
         failedToolCalls: failedToolCalls.get(key) ?? [],
@@ -248,6 +191,9 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     signals.push(signal);
     cooldowns.set(key, clock());
     config.onDemand?.(signal);
+
+    // Periodic eviction of expired cooldowns to prevent unbounded growth
+    evictExpiredCooldowns();
   }
 
   function dismiss(signalId: string): void {
@@ -295,6 +241,32 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     }
   }
 
+  /**
+   * Check model response text for capability gap patterns and emit demand if found.
+   * Extracted from wrapModelCall/wrapModelStream to eliminate DRY violation.
+   */
+  function checkCapabilityGaps(responseText: string): void {
+    if (patterns.length === 0) return;
+    if (responseText.length === 0) return;
+
+    updateGapCounts(responseText);
+
+    const trigger = detectCapabilityGap(
+      responseText,
+      patterns,
+      capabilityGapCounts,
+      thresholds.capabilityGapOccurrences,
+    );
+
+    if (trigger !== undefined) {
+      const gapKey = trigger.kind === "capability_gap" ? trigger.requiredCapability : "";
+      emitSignal(trigger, {
+        failureCount: capabilityGapCounts.get(gapKey) ?? 1,
+        threshold: thresholds.capabilityGapOccurrences,
+      });
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Middleware
   // ---------------------------------------------------------------------------
@@ -336,6 +308,10 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
 
         const calls = failedToolCalls.get(`rf:${toolId}`) ?? [];
         calls.push(extractMessage(e));
+        // Cap at MAX_FAILED_CALL_MESSAGES to prevent unbounded memory growth
+        if (calls.length > MAX_FAILED_CALL_MESSAGES) {
+          calls.splice(0, calls.length - MAX_FAILED_CALL_MESSAGES);
+        }
         failedToolCalls.set(`rf:${toolId}`, calls);
 
         // Check repeated failure heuristic
@@ -396,32 +372,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       }
 
       const response = await next(request);
-
-      // Fast path: no patterns configured
-      if (patterns.length === 0) return response;
-
-      const responseText = extractResponseText(response);
-      if (responseText.length === 0) return response;
-
-      // Always update gap counts first
-      updateGapCounts(responseText);
-
-      // Check capability gap patterns
-      const trigger = detectCapabilityGap(
-        responseText,
-        patterns,
-        capabilityGapCounts,
-        thresholds.capabilityGapOccurrences,
-      );
-
-      if (trigger !== undefined) {
-        const gapKey = trigger.kind === "capability_gap" ? trigger.requiredCapability : "";
-        emitSignal(trigger, {
-          failureCount: capabilityGapCounts.get(gapKey) ?? 1,
-          threshold: thresholds.capabilityGapOccurrences,
-        });
-      }
-
+      checkCapabilityGaps(extractResponseText(response));
       return response;
     },
 
@@ -460,29 +411,7 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
         }
         yield chunk;
       }
-
-      // Fast path: no patterns configured
-      if (patterns.length === 0) return;
-
-      const responseText = chunks.join("");
-      if (responseText.length === 0) return;
-
-      updateGapCounts(responseText);
-
-      const trigger = detectCapabilityGap(
-        responseText,
-        patterns,
-        capabilityGapCounts,
-        thresholds.capabilityGapOccurrences,
-      );
-
-      if (trigger !== undefined) {
-        const gapKey = trigger.kind === "capability_gap" ? trigger.requiredCapability : "";
-        emitSignal(trigger, {
-          failureCount: capabilityGapCounts.get(gapKey) ?? 1,
-          threshold: thresholds.capabilityGapOccurrences,
-        });
-      }
+      checkCapabilityGaps(chunks.join(""));
     },
 
     // Phase 2C: detect complex task completion and novel workflows at session end

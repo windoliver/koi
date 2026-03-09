@@ -80,7 +80,13 @@ const TRIGGER_KIND_TO_BRICK_KIND: ReadonlyArray<{
 
   // Success-side triggers → skill (capture learnings)
   {
-    trigger: { kind: "complex_task_completed", toolCallCount: 15, turnCount: 5 },
+    trigger: {
+      kind: "complex_task_completed",
+      toolCallCount: 15,
+      taskDescription: "complex task",
+      toolsUsed: [],
+      turnCount: 5,
+    },
     expectedKind: "skill",
     label: "complex_task_completed → skill",
   },
@@ -89,12 +95,17 @@ const TRIGGER_KIND_TO_BRICK_KIND: ReadonlyArray<{
       kind: "user_correction",
       correctionText: "use X instead",
       correctedToolCall: "bad-tool",
+      correctionDescription: "use X instead",
     },
     expectedKind: "skill",
     label: "user_correction → skill",
   },
   {
-    trigger: { kind: "novel_workflow", toolSequence: ["a", "b", "c"] },
+    trigger: {
+      kind: "novel_workflow",
+      workflowDescription: "a → b → c",
+      toolSequence: ["a", "b", "c"],
+    },
     expectedKind: "skill",
     label: "novel_workflow → skill",
   },

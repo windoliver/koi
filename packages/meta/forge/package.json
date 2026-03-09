@@ -34,10 +34,12 @@
     "@koi/hash": "workspace:*",
     "@koi/resolve": "workspace:*",
     "@koi/validation": "workspace:*",
+    "@koi/starter": "workspace:*",
+    "@koi/engine": "workspace:*",
+    "@koi/manifest": "workspace:*",
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@koi/engine": "workspace:*",
     "@koi/engine-loop": "workspace:*",
     "@koi/engine-pi": "workspace:*",
     "@koi/model-router": "workspace:*",

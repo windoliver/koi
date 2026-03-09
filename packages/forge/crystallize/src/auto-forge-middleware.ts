@@ -360,8 +360,8 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
    */
   async function processDemandForge(signal: ForgeDemandSignal): Promise<void> {
     const now = clock();
-    const id = computeBrickId(signal.suggestedBrickKind, `pioneer:${signal.id}:${String(now)}`);
     const triggerDesc = describeTrigger(signal.trigger);
+    const id = computeBrickId(signal.suggestedBrickKind, `pioneer:${signal.id}:${String(now)}`);
 
     const name = `pioneer-${triggerDesc}`;
     const description = `Pioneer ${signal.suggestedBrickKind} forged from demand signal: ${signal.trigger.kind}`;
@@ -420,7 +420,6 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       return;
     }
 
-    demandForgedCount++;
     config.onDemandForged?.(signal, brick);
   }
 
@@ -458,6 +457,10 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
           if (demandForgedCount >= demandBudget.maxForgesPerSession) break;
           // Check confidence threshold
           if (signal.confidence < demandBudget.demandThreshold) continue;
+
+          // Increment synchronously BEFORE async dispatch to enforce budget
+          // across concurrent fire-and-forget tasks
+          demandForgedCount++;
 
           // Fire-and-forget: demand forge runs asynchronously
           // justified: fire-and-forget pattern — errors handled via onError callback

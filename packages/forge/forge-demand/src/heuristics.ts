@@ -143,10 +143,13 @@ export function detectUserCorrection(
 ): ForgeTrigger | undefined {
   for (const pattern of patterns) {
     if (pattern.test(userText)) {
+      const correctionText = userText.slice(0, 200);
       return {
         kind: "user_correction",
-        correctionText: userText.slice(0, 200),
+        correctionText,
         correctedToolCall: recentToolCall,
+        correctionDescription: correctionText,
+        originalToolName: recentToolCall,
       };
     }
   }
@@ -174,6 +177,8 @@ export function detectComplexTaskCompletion(
   return {
     kind: "complex_task_completed",
     toolCallCount,
+    taskDescription: `Complex task with ${String(toolCallCount)} tool calls across ${String(turnCount)} turns`,
+    toolsUsed: [],
     turnCount,
   };
 }
@@ -196,6 +201,7 @@ export function detectNovelWorkflow(
   if (toolSequence.length < minLength) return undefined;
   return {
     kind: "novel_workflow",
+    workflowDescription: `Novel workflow: ${toolSequence.join(" → ")}`,
     toolSequence,
   };
 }

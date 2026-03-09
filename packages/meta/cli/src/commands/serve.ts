@@ -21,9 +21,8 @@ import type {
 } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createHealthServer } from "@koi/deploy";
-import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
-import { createForgeBootstrap } from "@koi/forge";
+import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
 import { loadManifest } from "@koi/manifest";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
@@ -175,7 +174,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`warn: conversation persistence disabled: ${message}\n`);
   }
 
-  const runtime = await createKoi({
+  const { runtime } = await createForgeConfiguredKoi({
     manifest,
     adapter,
     middleware: [
