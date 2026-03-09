@@ -23,6 +23,8 @@ import { sessionId } from "@koi/core";
 import { createHealthServer } from "@koi/deploy";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
+import { createForgeBootstrap } from "@koi/forge";
+import { createForgeCompanionSkillProvider } from "@koi/forge-tools";
 import { loadManifest } from "@koi/manifest";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
@@ -31,6 +33,18 @@ import { extractTextFromBlocks } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Safely checks if forge is enabled in the manifest's extension fields. */
+function isForgeEnabled(manifest: { readonly forge?: unknown }): boolean {
+  const forge = manifest.forge;
+  if (forge === null || forge === undefined || typeof forge !== "object") return false;
+  const obj = forge as Record<string, unknown>;
+  return obj.enabled === true;
+}
 
 // ---------------------------------------------------------------------------
 // Session key derivation
@@ -73,18 +87,36 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const deployConfig = manifest.deploy;
   const healthPort = flags.port ?? deployConfig?.port ?? 9100;
 
-  // 4. RESOLVE: Resolve manifest into runtime instances (middleware + model)
+  // 4. Bootstrap forge system (before resolution, so forgeStore is available for companion skills)
+  const noopExecutor = {
+    execute: async () => ({ ok: true as const, value: { output: undefined, durationMs: 0 } }),
+  };
+  const forgeBootstrap = createForgeBootstrap({
+    executor: noopExecutor,
+    forgeConfig: { enabled: isForgeEnabled(manifest) },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
+    },
+  });
+
+  // 5. RESOLVE: Resolve manifest into runtime instances (middleware + model)
+  // Pass forgeStore so companion skills get registered during resolution
   const modelName = manifest.model.name;
-  const resolved = await resolveAgent({ manifestPath, manifest });
+  const resolved = await resolveAgent({
+    manifestPath,
+    manifest,
+    ...(forgeBootstrap !== undefined ? { forgeStore: forgeBootstrap.store } : {}),
+  });
   if (!resolved.ok) {
     process.stderr.write(formatResolutionError(resolved.error));
     process.exit(EXIT_CONFIG);
   }
 
-  // 5. ASSEMBLE: Use resolved engine or fall back to pi adapter
+  // 6. ASSEMBLE: Use resolved engine or fall back to pi adapter
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
-  // 5b. Resolve Nexus stack (embed or remote)
+  // 6b. Resolve Nexus stack (embed or remote)
   const nexus = await resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose);
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
@@ -138,9 +170,21 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const runtime = await createKoi({
     manifest,
     adapter,
-    middleware: [...resolved.value.middleware, ...arenaMiddleware, ...nexus.middlewares],
-    providers: [...nexus.providers, ...arenaProviders],
+    middleware: [
+      ...resolved.value.middleware,
+      ...arenaMiddleware,
+      ...nexus.middlewares,
+      ...(forgeBootstrap?.middlewares ?? []),
+    ],
+    providers: [
+      ...nexus.providers,
+      ...arenaProviders,
+      ...(forgeBootstrap !== undefined
+        ? [forgeBootstrap.provider, createForgeCompanionSkillProvider()]
+        : []),
+    ],
     extensions,
+    ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
   });
 
   // 6c. Connect resolved channels and wire per-session concurrency

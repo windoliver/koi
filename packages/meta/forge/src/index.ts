@@ -363,5 +363,7 @@ export { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
 export { createForgePipeline } from "./create-forge-stack.js";
 export type { CreateFullForgeSystemConfig, FullForgeSystem } from "./create-full-forge-system.js";
 export { createFullForgeSystem } from "./create-full-forge-system.js";
+export type { ForgeBootstrapConfig, ForgeBootstrapResult } from "./forge-bootstrap.js";
+export { createForgeBootstrap } from "./forge-bootstrap.js";
 export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";
 export { createForgeRuntime } from "./forge-runtime.js";

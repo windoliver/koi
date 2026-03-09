@@ -73,6 +73,9 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
   // let: mutable — updated after each playbook injection to reflect current count
   let activePlaybookCount = 0;
 
+  // let: mutable — incremented on each tool call for forge nudge threshold
+  let toolCallCount = 0;
+
   // Playbook cache (Decision #14): load once per session, clear on session end
   let cachedStatPlaybooks: readonly Playbook[] | undefined;
   let cachedStructuredPlaybooks: readonly StructuredPlaybook[] | undefined;
@@ -81,10 +84,28 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
     name: "ace",
     priority: 350,
 
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
-      label: "playbooks",
-      description: `Active playbooks: ${activePlaybookCount}`,
-    }),
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment | undefined => {
+      const nudgeInterval = config.forgeNudgeInterval ?? 15;
+      const parts: string[] = [];
+      if (activePlaybookCount > 0) {
+        parts.push(`Active playbooks: ${activePlaybookCount}`);
+      }
+      if (
+        config.forgeToolsAvailable === true &&
+        toolCallCount >= nudgeInterval &&
+        toolCallCount % nudgeInterval === 0
+      ) {
+        parts.push(
+          "This task involved many steps. If you discovered a reusable " +
+            "workflow, consider saving it as a skill with forge_skill.",
+        );
+      }
+      if (parts.length === 0) return undefined;
+      return {
+        label: "playbooks",
+        description: parts.join(". "),
+      };
+    },
 
     async wrapModelCall(
       ctx: TurnContext,
@@ -165,6 +186,7 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       try {
         const response = await next(request);
         recordOutcome(ctx, "tool_call", request.toolId, start, "success");
+        toolCallCount++;
         return response;
       } catch (e: unknown) {
         recordOutcome(ctx, "tool_call", request.toolId, start, "failure");
@@ -173,6 +195,8 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
+      toolCallCount = 0;
+
       // Clear playbook caches
       cachedStatPlaybooks = undefined;
       cachedStructuredPlaybooks = undefined;

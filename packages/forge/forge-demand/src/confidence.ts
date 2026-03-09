@@ -71,5 +71,13 @@ function getBaseWeight(kind: ForgeTrigger["kind"], weights: ConfidenceWeights): 
       return weights.capabilityGap;
     case "agent_repeated_failure":
       return weights.repeatedFailure;
+    case "complex_task_completed":
+    case "user_correction":
+    case "novel_workflow":
+      // Success-side triggers — use capability gap weight as baseline
+      return weights.capabilityGap;
   }
+  // Exhaustiveness guard — compiler errors if a trigger kind is missing above
+  const _exhaustive: never = kind;
+  return _exhaustive;
 }

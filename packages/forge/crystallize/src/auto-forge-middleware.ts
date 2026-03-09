@@ -10,14 +10,19 @@
  */
 
 import type {
+  AgentArtifact,
+  BrickArtifact,
+  BrickId,
   CapabilityFragment,
   ForgeBudget,
   ForgeDemandSignal,
   ForgeProvenance,
   ForgeScope,
   ForgeStore,
+  ForgeTrigger,
   KoiMiddleware,
   SessionContext,
+  SkillArtifact,
   ToolArtifact,
   ToolPolicy,
   TurnContext,
@@ -82,13 +87,13 @@ export interface AutoForgeConfig {
   /** Demand budget — overrides when demandHandle is provided. */
   readonly demandBudget?: ForgeBudget | undefined;
   /** Called when a demand signal triggers a forge. */
-  readonly onDemandForged?: ((signal: ForgeDemandSignal, brick: ToolArtifact) => void) | undefined;
+  readonly onDemandForged?: ((signal: ForgeDemandSignal, brick: BrickArtifact) => void) | undefined;
   /**
    * Optional pre-save gate. When provided, called before each brick is saved.
    * Return true to allow, false to skip. Enables mutation pressure checks
    * without L2→L2 imports (L3 wiring injects the check).
    */
-  readonly beforeSave?: (brick: ToolArtifact) => Promise<boolean>;
+  readonly beforeSave?: (brick: BrickArtifact) => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +184,37 @@ async function runVerifiers(
 }
 
 // ---------------------------------------------------------------------------
+// Trigger description — short human-readable label for naming pioneer bricks
+// ---------------------------------------------------------------------------
+
+/** Extracts a short descriptor from a trigger for naming pioneer bricks. */
+function describeTrigger(trigger: ForgeTrigger): string {
+  switch (trigger.kind) {
+    case "repeated_failure":
+    case "performance_degradation":
+      return trigger.toolName;
+    case "capability_gap":
+      return trigger.requiredCapability;
+    case "no_matching_tool":
+      return trigger.query;
+    case "agent_capability_gap":
+    case "agent_repeated_failure":
+      return trigger.agentType;
+    case "agent_latency_degradation":
+      return trigger.agentType;
+    case "complex_task_completed":
+      return `complex-${String(trigger.toolCallCount)}`;
+    case "user_correction":
+      return trigger.correctedToolCall;
+    case "novel_workflow":
+      return trigger.toolSequence.slice(0, 3).join("-");
+  }
+  // Exhaustiveness guard
+  const _exhaustive: never = trigger;
+  return String((_exhaustive as ForgeTrigger).kind);
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -255,27 +291,80 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
   }
 
   /**
+   * Builds a demand-forged artifact for the given brick kind.
+   * Shared provenance and metadata are pre-computed; this function
+   * only creates the kind-specific artifact shape.
+   */
+  function buildDemandArtifact(
+    signal: ForgeDemandSignal,
+    base: {
+      readonly id: BrickId;
+      readonly name: string;
+      readonly description: string;
+      readonly scope: ForgeScope;
+      readonly provenance: ForgeProvenance;
+    },
+  ): BrickArtifact {
+    const kind = signal.suggestedBrickKind;
+    const shared = {
+      id: base.id,
+      name: base.name,
+      description: base.description,
+      scope: base.scope,
+      origin: "primordial" as const,
+      policy: DEFAULT_SANDBOXED_POLICY,
+      lifecycle: "active" as const,
+      provenance: base.provenance,
+      version: "0.1.0",
+      tags: ["demand-forged", "pioneer"],
+      usageCount: 0,
+    };
+
+    switch (kind) {
+      case "skill":
+        return {
+          ...shared,
+          kind: "skill",
+          content: `# ${base.name}\n\nPioneer skill — demand-triggered for: ${signal.trigger.kind}\n\n## Procedure\n\nTODO: Fill in after observation.\n\n## Pitfalls\n\n${signal.context.failedToolCalls.map((c: string) => `- ${c}`).join("\n") || "None recorded."}\n`,
+        } satisfies SkillArtifact;
+      case "agent":
+        return {
+          ...shared,
+          kind: "agent",
+          manifestYaml: `name: ${base.name}\nversion: "0.1.0"\nmodel:\n  name: "default"\n`,
+        } satisfies AgentArtifact;
+      case "tool":
+        return {
+          ...shared,
+          kind: "tool",
+          implementation: `// Pioneer stub — demand-triggered for: ${signal.trigger.kind}`,
+          inputSchema: {},
+        } satisfies ToolArtifact;
+      case "middleware":
+      case "channel":
+      case "composite":
+        // Demand forging for middleware/channel/composite is not supported;
+        // fall back to tool as a safe default
+        return {
+          ...shared,
+          kind: "tool",
+          implementation: `// Pioneer stub (${kind} requested, tool created) — demand-triggered for: ${signal.trigger.kind}`,
+          inputSchema: {},
+        } satisfies ToolArtifact;
+    }
+  }
+
+  /**
    * Process a demand signal — forge a pioneer brick.
    * Tags as demand-forged/pioneer, starts at sandbox trust.
    */
   async function processDemandForge(signal: ForgeDemandSignal): Promise<void> {
     const now = clock();
-    const implementation = `// Pioneer stub — demand-triggered for: ${signal.trigger.kind}`;
-    const id = computeBrickId("tool", implementation);
-    const triggerDesc =
-      signal.trigger.kind === "repeated_failure"
-        ? signal.trigger.toolName
-        : signal.trigger.kind === "capability_gap"
-          ? signal.trigger.requiredCapability
-          : signal.trigger.kind === "no_matching_tool"
-            ? signal.trigger.query
-            : signal.trigger.kind === "performance_degradation"
-              ? signal.trigger.toolName
-              : signal.trigger.kind === "agent_capability_gap"
-                ? signal.trigger.agentType
-                : signal.trigger.kind === "agent_repeated_failure"
-                  ? signal.trigger.agentType
-                  : signal.trigger.agentType;
+    const id = computeBrickId(signal.suggestedBrickKind, `pioneer:${signal.id}:${String(now)}`);
+    const triggerDesc = describeTrigger(signal.trigger);
+
+    const name = `pioneer-${triggerDesc}`;
+    const description = `Pioneer ${signal.suggestedBrickKind} forged from demand signal: ${signal.trigger.kind}`;
 
     const provenance: ForgeProvenance = {
       source: {
@@ -311,22 +400,13 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       contentHash: id,
     };
 
-    const brick: ToolArtifact = {
+    const brick = buildDemandArtifact(signal, {
       id,
-      kind: "tool",
-      name: `pioneer-${triggerDesc}`,
-      description: `Pioneer tool forged from demand signal: ${signal.trigger.kind}`,
+      name,
+      description,
       scope: config.scope,
-      origin: "primordial",
-      policy: DEFAULT_SANDBOXED_POLICY,
-      lifecycle: "active",
       provenance,
-      version: "0.1.0",
-      tags: ["demand-forged", "pioneer"],
-      usageCount: 0,
-      implementation,
-      inputSchema: {},
-    };
+    });
 
     // Pre-save gate (e.g., mutation pressure check injected by L3)
     if (config.beforeSave !== undefined) {

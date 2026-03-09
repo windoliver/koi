@@ -37,7 +37,19 @@ export type ForgeTrigger =
       readonly agentType: string;
       readonly brickId: BrickId;
       readonly p95Ms: number;
-    };
+    }
+  // Success-side triggers
+  | {
+      readonly kind: "complex_task_completed";
+      readonly toolCallCount: number;
+      readonly turnCount: number;
+    }
+  | {
+      readonly kind: "user_correction";
+      readonly correctionText: string;
+      readonly correctedToolCall: string;
+    }
+  | { readonly kind: "novel_workflow"; readonly toolSequence: readonly string[] };
 
 // ---------------------------------------------------------------------------
 // Demand signal — emitted by middleware when patterns detected

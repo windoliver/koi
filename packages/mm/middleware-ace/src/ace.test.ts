@@ -328,7 +328,7 @@ describe("createAceMiddleware", () => {
       expect(mw.describeCapabilities).toBeDefined();
     });
 
-    test("returns label 'playbooks' and description containing 'playbooks'", () => {
+    test("returns undefined when no active playbooks and no forge nudge", () => {
       const mw = createAceMiddleware(baseConfig());
       const ctx = {
         session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
@@ -338,8 +338,7 @@ describe("createAceMiddleware", () => {
         metadata: {},
       };
       const result = mw.describeCapabilities?.(ctx);
-      expect(result?.label).toBe("playbooks");
-      expect(result?.description).toContain("playbooks");
+      expect(result).toBeUndefined();
     });
   });
 

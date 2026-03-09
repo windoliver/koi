@@ -19,7 +19,8 @@ export {
   meetsKindTrust,
   meetsMinTrust,
 } from "./brick-resolver.js";
-
+// companion skill — forge self-improvement guidance for LLMs
+export { createForgeCompanionSkillProvider, FORGE_COMPANION_SKILL } from "./companion-skill.js";
 // descriptor — tool descriptor constant
 export { descriptor } from "./descriptor.js";
 
@@ -51,6 +52,14 @@ export { createInMemoryForgeStore } from "./memory-store.js";
 // requires-check — brick dependency validation
 export type { NetworkPolicy, RequiresCheckResult } from "./requires-check.js";
 export { checkBrickRequires } from "./requires-check.js";
+
+// skill reference provider — progressive disclosure (Phase 3B)
+export type {
+  SkillInstructions,
+  SkillMetadata,
+  SkillReferenceProvider,
+} from "./skill-reference-provider.js";
+export { createSkillReferenceProvider } from "./skill-reference-provider.js";
 
 // store change notifier
 export { createMemoryStoreChangeNotifier } from "./store-notifier.js";

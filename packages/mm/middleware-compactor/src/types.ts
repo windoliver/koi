@@ -85,6 +85,13 @@ export interface CompactorConfig {
   readonly toolEnabled?: boolean;
   /** Convention fragments preserved through compaction cycles. */
   readonly conventions?: readonly CapabilityFragment[] | undefined;
+  /**
+   * Called before compaction runs. Fire-and-forget: errors logged, never block.
+   * Use for forge "save learnings" hooks — injected by L3 wiring when forge is active.
+   */
+  readonly onBeforeCompaction?:
+    | ((messages: readonly InboundMessage[]) => void | Promise<void>)
+    | undefined;
 }
 
 /**

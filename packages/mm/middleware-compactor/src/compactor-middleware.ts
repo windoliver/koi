@@ -140,6 +140,15 @@ export function createCompactorMiddleware(config: CompactorConfig): CompactorMid
       }
     }
 
+    // Phase 2D: fire pre-compaction hook (save learnings before context is lost)
+    if (config.onBeforeCompaction !== undefined) {
+      try {
+        await config.onBeforeCompaction(request.messages);
+      } catch (_e: unknown) {
+        // Fire-and-forget — never block compaction
+      }
+    }
+
     const result = await compactor.compact(
       request.messages,
       contextWindowSize,

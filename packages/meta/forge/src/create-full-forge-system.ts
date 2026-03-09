@@ -13,6 +13,7 @@ import type {
   KoiMiddleware,
   Result,
   SigningBackend,
+  StoreChangeNotifier,
   TurnTrace,
 } from "@koi/core";
 import type { CrystallizeHandle } from "@koi/crystallize";
@@ -86,6 +87,14 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
     store: config.store,
     executor: config.executor,
     scope: config.scope,
+    ...(config.store.watch !== undefined
+      ? {
+          notifier: {
+            notify: () => {},
+            subscribe: config.store.watch,
+          } satisfies StoreChangeNotifier,
+        }
+      : {}),
   });
 
   // 3. Pipeline — cross-L2 wiring (verify, governance, provenance, etc.)

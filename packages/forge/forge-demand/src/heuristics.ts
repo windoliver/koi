@@ -116,6 +116,91 @@ export function detectLatencyDegradation(
 }
 
 // ---------------------------------------------------------------------------
+// User correction detection
+// ---------------------------------------------------------------------------
+
+/** Default patterns indicating the user is correcting the agent's behavior. */
+export const DEFAULT_USER_CORRECTION_PATTERNS: readonly RegExp[] = [
+  /(?:no,? )?that'?s (?:not (?:quite )?right|wrong|incorrect)/i,
+  /(?:actually|instead),? (?:you should|use|try)/i,
+  /(?:don'?t|do not|stop) (?:do(?:ing)?|use|using) (?:that|this)/i,
+  /I (?:said|meant|wanted|asked for)/i,
+  /let me (?:correct|fix|clarify)/i,
+];
+
+/**
+ * Detect user correction patterns in a user message.
+ *
+ * @param userText - The user's message text.
+ * @param patterns - Regex patterns indicating corrections.
+ * @param recentToolCall - The most recent tool call that may have been corrected.
+ * @returns ForgeTrigger if correction detected, undefined otherwise.
+ */
+export function detectUserCorrection(
+  userText: string,
+  patterns: readonly RegExp[],
+  recentToolCall: string,
+): ForgeTrigger | undefined {
+  for (const pattern of patterns) {
+    if (pattern.test(userText)) {
+      return {
+        kind: "user_correction",
+        correctionText: userText.slice(0, 200),
+        correctedToolCall: recentToolCall,
+      };
+    }
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Complex task completion detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect complex task completion when tool call count exceeds threshold.
+ *
+ * @param toolCallCount - Total tool calls in the session.
+ * @param turnCount - Total turns in the session.
+ * @param threshold - Minimum tool calls to consider "complex". Default: 5.
+ * @returns ForgeTrigger if threshold met, undefined otherwise.
+ */
+export function detectComplexTaskCompletion(
+  toolCallCount: number,
+  turnCount: number,
+  threshold: number,
+): ForgeTrigger | undefined {
+  if (toolCallCount < threshold) return undefined;
+  return {
+    kind: "complex_task_completed",
+    toolCallCount,
+    turnCount,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Novel workflow detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect novel tool sequences that haven't been seen before.
+ *
+ * @param toolSequence - Ordered list of tool IDs called this session.
+ * @param minLength - Minimum sequence length to consider. Default: 3.
+ * @returns ForgeTrigger if novel sequence detected, undefined otherwise.
+ */
+export function detectNovelWorkflow(
+  toolSequence: readonly string[],
+  minLength: number,
+): ForgeTrigger | undefined {
+  if (toolSequence.length < minLength) return undefined;
+  return {
+    kind: "novel_workflow",
+    toolSequence,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Agent-level heuristics
 // ---------------------------------------------------------------------------
 

@@ -59,6 +59,12 @@ export interface AceConfig {
 
   // Testability
   readonly clock?: () => number;
+
+  // Forge nudge
+  /** Forge nudge interval — suggest skill creation after this many tool calls. Default: 15. */
+  readonly forgeNudgeInterval?: number;
+  /** Whether forge tools (forge_skill, forge_tool) are available. Default: false. */
+  readonly forgeToolsAvailable?: boolean;
 }
 
 function validationError(message: string): KoiError {

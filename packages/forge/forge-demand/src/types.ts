@@ -5,6 +5,34 @@
 import type { ForgeBudget, ForgeDemandSignal, KoiMiddleware, ToolHealthSnapshot } from "@koi/core";
 
 // ---------------------------------------------------------------------------
+// Recovery context — enriches demand signals with trajectory analysis (Phase 3A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Recovery context from ACE trajectory analysis.
+ * Injected by L3 wiring — the demand detector never imports from @koi/middleware-ace.
+ */
+export interface RecoveryContext {
+  /** Whether the agent eventually recovered from the failure. */
+  readonly succeeded: boolean;
+  /** Tool IDs used during recovery. */
+  readonly recoveryTools: readonly string[];
+  /** Whether the recovery involved terminal/shell commands. */
+  readonly usedTerminal: boolean;
+  /** Number of steps in the recovery sequence. */
+  readonly stepCount: number;
+}
+
+/**
+ * Optional recovery analyzer — queries ACE trajectory for recovery patterns.
+ * Injected by L3 (not imported from L2) to avoid L2→L2 dependency.
+ */
+export interface RecoveryAnalyzer {
+  /** Analyze recent trajectory for recovery patterns after a tool failure. */
+  readonly analyzeRecovery: (toolId: string) => RecoveryContext | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Health handle — L0-compatible read-only interface injected by caller
 // ---------------------------------------------------------------------------
 
@@ -36,6 +64,10 @@ export interface HeuristicThresholds {
   readonly capabilityGapOccurrences: number;
   /** P95 latency threshold for degradation detection (ms). Default: 5000. */
   readonly latencyDegradationP95Ms: number;
+  /** Minimum tool calls to consider a task "complex". Default: 5. */
+  readonly complexTaskToolCallThreshold: number;
+  /** Minimum tool sequence length for novel workflow detection. Default: 3. */
+  readonly novelWorkflowMinLength: number;
   /** Confidence weight distribution. */
   readonly confidenceWeights: ConfidenceWeights;
 }
@@ -50,8 +82,12 @@ export interface ForgeDemandConfig {
   readonly budget: ForgeBudget;
   /** Optional health tracker handle — enables failure/degradation detection. */
   readonly healthTracker?: FeedbackLoopHealthHandle | undefined;
+  /** Optional recovery analyzer — enriches demand signals with trajectory data (Phase 3A). */
+  readonly recoveryAnalyzer?: RecoveryAnalyzer | undefined;
   /** Regex patterns for capability gap detection in model responses. */
   readonly capabilityGapPatterns?: readonly RegExp[] | undefined;
+  /** Regex patterns for user correction detection. Defaults to built-in patterns. */
+  readonly userCorrectionPatterns?: readonly RegExp[] | undefined;
   /** Override heuristic thresholds. */
   readonly heuristics?: Partial<HeuristicThresholds> | undefined;
   /** Called when a demand signal is emitted. */
