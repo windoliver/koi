@@ -495,14 +495,14 @@ describe("computeOutcome (via reflector input)", () => {
 // ── estimatePlaybookTokens ──
 
 describe("estimatePlaybookTokens", () => {
-  test("uses default tokenizer when estimateTokens not provided", () => {
+  test("uses default tokenizer when estimateTokens not provided", async () => {
     const config = makeMinimalConfig();
     const pb = makePlaybook();
-    const tokens = estimatePlaybookTokens(pb, config);
+    const tokens = await estimatePlaybookTokens(pb, config);
     expect(tokens).toBeGreaterThan(0);
   });
 
-  test("uses custom tokenizer when provided via tokenEstimator", () => {
+  test("uses custom tokenizer when provided via tokenEstimator", async () => {
     const customEstimateText = mock(() => 42);
     const config = makeMinimalConfig({
       tokenEstimator: {
@@ -511,7 +511,7 @@ describe("estimatePlaybookTokens", () => {
       },
     });
     const pb = makePlaybook();
-    const tokens = estimatePlaybookTokens(pb, config);
+    const tokens = await estimatePlaybookTokens(pb, config);
     expect(customEstimateText).toHaveBeenCalled();
     expect(tokens).toBe(42);
   });

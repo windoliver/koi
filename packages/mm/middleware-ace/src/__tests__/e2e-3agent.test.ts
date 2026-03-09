@@ -609,7 +609,7 @@ describeE2E("e2e: 3-agent ACE pipeline with real LLM calls", () => {
 
       // Step 3: Apply operations (deterministic, no LLM)
       const { applyOperations } = await import("../curator.js");
-      const updated = applyOperations(playbook, ops, 2000, () => 5000);
+      const updated = await applyOperations(playbook, ops, 2000, () => 5000);
 
       // Updated playbook should have valid structure
       expect(updated.sections.length).toBeGreaterThan(0);

@@ -294,5 +294,62 @@ describe("InMemorySnapshotChainStore", () => {
 
       store.close();
     });
+
+    test("prune does not delete nodes shared with forked chains", async () => {
+      const store = createInMemorySnapshotChainStore<TestData>();
+      const originalChain = "original" as ChainId;
+      const forkedChain = "forked" as ChainId;
+
+      // Build a 5-node chain
+      let lastNodeId: NodeId | undefined;
+      let forkPointId: NodeId | undefined;
+      for (let i = 0; i < 5; i++) {
+        const parents = lastNodeId !== undefined ? [lastNodeId] : [];
+        const result = await store.put(originalChain, { name: `n-${i}`, value: i }, parents);
+        expect(result.ok).toBe(true);
+        if (result.ok && result.value !== undefined) {
+          lastNodeId = result.value.nodeId;
+          // Fork at node 2 (middle of chain)
+          if (i === 2) forkPointId = result.value.nodeId;
+        }
+      }
+
+      expect(forkPointId).toBeDefined();
+
+      // Fork from the middle node
+      const forkResult = await store.fork(forkPointId as NodeId, forkedChain, "test-fork");
+      expect(forkResult.ok).toBe(true);
+
+      // Add a node on the forked chain so the fork point is not the head
+      const forkPut = await store.put(forkedChain, { name: "fork-1", value: 100 }, [
+        forkPointId as NodeId,
+      ]);
+      expect(forkPut.ok).toBe(true);
+
+      // Prune original chain aggressively — keep only 1 node (the head)
+      const pruneResult = await store.prune(originalChain, { retainCount: 1 });
+      expect(pruneResult.ok).toBe(true);
+      if (pruneResult.ok) {
+        // Should have removed 4 nodes from the original chain's list
+        expect(pruneResult.value).toBe(4);
+      }
+
+      // The fork point node should still be accessible via get()
+      // because the forked chain still references it
+      const getResult = await store.get(forkPointId as NodeId);
+      expect(getResult.ok).toBe(true);
+      if (getResult.ok && getResult.value !== undefined) {
+        expect(getResult.value.nodeId).toBe(forkPointId as NodeId);
+      }
+
+      // The forked chain's list should still work
+      const forkedList = await store.list(forkedChain);
+      expect(forkedList.ok).toBe(true);
+      if (forkedList.ok) {
+        expect(forkedList.value.length).toBe(2); // fork point + fork-1
+      }
+
+      store.close();
+    });
   });
 });

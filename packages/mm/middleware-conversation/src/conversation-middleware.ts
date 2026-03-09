@@ -58,8 +58,8 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
   let messageCounter = 0;
   // let justified: raw ThreadMessages loaded from store, reused in onSessionEnd for pruning
   let loadedRawMessages: readonly ThreadMessage[] = [];
-  // let justified: tracks captured message timestamps to prevent duplicates across calls
-  let capturedTimestamps = new Set<number>();
+  // let justified: tracks captured message identities to prevent duplicates across calls
+  let capturedKeys = new Set<string>();
 
   /** Derive role from senderId: agent → assistant, system:* → system, tool:* → tool, else user. */
   function deriveRole(msg: InboundMessage): ThreadMessageRole {
@@ -153,12 +153,12 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
    */
   function captureNewUserMessages(request: ModelRequest, sessionId: string): void {
     const fresh = request.messages.filter(
-      (m) => !isFromHistory(m) && !capturedTimestamps.has(m.timestamp),
+      (m) => !isFromHistory(m) && !capturedKeys.has(`${m.timestamp}:${m.senderId}`),
     );
 
     if (fresh.length > 0) {
       const mapped = fresh.map((m) => {
-        capturedTimestamps = new Set([...capturedTimestamps, m.timestamp]);
+        capturedKeys = new Set([...capturedKeys, `${m.timestamp}:${m.senderId}`]);
         return mapInboundToThread(m, deriveRole(m), sessionId);
       });
       newTurnMessages = [...newTurnMessages, ...mapped];
@@ -179,7 +179,7 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       messageCounter = 0;
       sessionRef = ctx;
       loadedRawMessages = [];
-      capturedTimestamps = new Set();
+      capturedKeys = new Set();
 
       const rawThreadId = ctx.metadata.threadId;
       const metadataThreadId = typeof rawThreadId === "string" ? rawThreadId : undefined;
@@ -194,8 +194,7 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       const result = await store.listMessages(threadId(tid), maxMessages);
 
       if (!result.ok) {
-        // Cannot load history — continue without it
-        resolvedThreadId = undefined;
+        // Cannot load history — continue without injection but keep thread for persistence
         return;
       }
 

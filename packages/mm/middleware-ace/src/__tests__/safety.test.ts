@@ -326,7 +326,7 @@ function makeStructuredPlaybook(overrides?: Partial<StructuredPlaybook>): Struct
 }
 
 describe("safety: anti-collapse invariants", () => {
-  test("playbook never shrinks below minimum after delta operations", () => {
+  test("playbook never shrinks below minimum after delta operations", async () => {
     const pb = makeStructuredPlaybook({
       sections: [
         makeStructuredSection({
@@ -338,12 +338,12 @@ describe("safety: anti-collapse invariants", () => {
     // Attempt to prune the only bullet
     const ops: readonly CuratorOperation[] = [{ kind: "prune", bulletId: "[str-00001]" }];
 
-    const result = applyOperations(pb, ops, 10000, () => 2000);
+    const result = await applyOperations(pb, ops, 10000, () => 2000);
     // Should keep at least 1 bullet per section
     expect(result.sections[0]?.bullets).toHaveLength(1);
   });
 
-  test("token budget always respected after operations", () => {
+  test("token budget always respected after operations", async () => {
     const bullets = Array.from({ length: 30 }, (_, i) =>
       makeStructuredBullet({
         id: `[str-${String(i).padStart(5, "0")}]`,
@@ -358,13 +358,13 @@ describe("safety: anti-collapse invariants", () => {
 
     const budgets = [50, 100, 200, 500, 1000];
     for (const budget of budgets) {
-      const result = applyOperations(pb, [], budget, () => 2000);
-      const tokens = estimateStructuredTokens(result);
+      const result = await applyOperations(pb, [], budget, () => 2000);
+      const tokens = await estimateStructuredTokens(result);
       expect(tokens).toBeLessThanOrEqual(budget);
     }
   });
 
-  test("positive-value bullets survive unless budget-forced", () => {
+  test("positive-value bullets survive unless budget-forced", async () => {
     const pb = makeStructuredPlaybook({
       sections: [
         makeStructuredSection({
@@ -377,11 +377,11 @@ describe("safety: anti-collapse invariants", () => {
     });
 
     // Generous budget
-    const result = applyOperations(pb, [], 10000, () => 2000);
+    const result = await applyOperations(pb, [], 10000, () => 2000);
     expect(result.sections[0]?.bullets).toHaveLength(2);
   });
 
-  test("delta operations are pure — no side effects on input", () => {
+  test("delta operations are pure — no side effects on input", async () => {
     const pb = makeStructuredPlaybook();
     const originalSections = JSON.stringify(pb.sections);
 
@@ -390,7 +390,7 @@ describe("safety: anti-collapse invariants", () => {
       { kind: "prune", bulletId: "[str-00001]" },
     ];
 
-    applyOperations(pb, ops, 10000, () => 2000);
+    await applyOperations(pb, ops, 10000, () => 2000);
 
     // Original playbook unchanged
     expect(JSON.stringify(pb.sections)).toBe(originalSections);

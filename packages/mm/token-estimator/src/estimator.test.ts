@@ -237,4 +237,40 @@ describe("createHeuristicEstimator input validation", () => {
     const est = createHeuristicEstimator({ perMessageOverhead: 0, perNonTextBlockOverhead: 0 });
     expect(est.estimateText("abcd")).toBe(1);
   });
+
+  test("throws for NaN charsPerToken", () => {
+    expect(() => createHeuristicEstimator({ charsPerToken: NaN })).toThrow(
+      "charsPerToken must be positive",
+    );
+  });
+
+  test("throws for Infinity charsPerToken", () => {
+    expect(() => createHeuristicEstimator({ charsPerToken: Infinity })).toThrow(
+      "charsPerToken must be positive",
+    );
+  });
+
+  test("throws for NaN perMessageOverhead", () => {
+    expect(() => createHeuristicEstimator({ perMessageOverhead: NaN })).toThrow(
+      "perMessageOverhead must be non-negative",
+    );
+  });
+
+  test("throws for Infinity perMessageOverhead", () => {
+    expect(() => createHeuristicEstimator({ perMessageOverhead: Infinity })).toThrow(
+      "perMessageOverhead must be non-negative",
+    );
+  });
+
+  test("throws for NaN perNonTextBlockOverhead", () => {
+    expect(() => createHeuristicEstimator({ perNonTextBlockOverhead: NaN })).toThrow(
+      "perNonTextBlockOverhead must be non-negative",
+    );
+  });
+
+  test("throws for Infinity perNonTextBlockOverhead", () => {
+    expect(() => createHeuristicEstimator({ perNonTextBlockOverhead: Infinity })).toThrow(
+      "perNonTextBlockOverhead must be non-negative",
+    );
+  });
 });

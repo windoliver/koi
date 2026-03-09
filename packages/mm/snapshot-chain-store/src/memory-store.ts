@@ -264,7 +264,13 @@ export function createInMemorySnapshotChainStore<T>(): SnapshotChainStore<T> {
     for (const idx of indicesToRemove) {
       const nid = ids[idx];
       if (nid !== undefined) {
-        nodesByNodeId.delete(nid);
+        // Only delete from global map if no other chain references this node
+        const referencedElsewhere = [...chainNodes.entries()].some(
+          ([otherId, nodeIds]) => otherId !== cid && nodeIds.includes(nid),
+        );
+        if (!referencedElsewhere) {
+          nodesByNodeId.delete(nid);
+        }
         removedCount += 1;
       }
       ids.splice(idx, 1);

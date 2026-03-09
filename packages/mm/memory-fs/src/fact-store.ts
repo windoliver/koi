@@ -162,16 +162,16 @@ export function createFactStore(baseDirOrBackend: string | FactPersistenceBacken
     enqueue(entity, async () => {
       const existing = await readFacts(entity);
       const updated = [...existing, fact];
-      touchCache(entity, updated);
       await backend.writeFacts(entity, updated);
+      touchCache(entity, updated);
     });
 
   const updateFact = (entity: string, id: string, updates: FactUpdates): Promise<void> =>
     enqueue(entity, async () => {
       const existing = await readFacts(entity);
       const updated = existing.map((f) => (f.id === id ? { ...f, ...updates } : f));
-      touchCache(entity, updated);
       await backend.writeFacts(entity, updated);
+      touchCache(entity, updated);
     });
 
   const listEntities = async (): Promise<readonly string[]> => {

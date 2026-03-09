@@ -61,11 +61,13 @@ export function extractCitedBulletIds(text: string): readonly string[] {
 /**
  * Estimate token count for a structured playbook.
  * Includes structural overhead (headers, IDs, newlines).
+ *
+ * Accepts sync or async tokenizers — remote estimators return Promise\<number\>.
  */
 export function estimateStructuredTokens(
   playbook: StructuredPlaybook,
-  tokenizer?: (text: string) => number,
-): number {
+  tokenizer?: (text: string) => number | Promise<number>,
+): number | Promise<number> {
   if (playbook.sections.length === 0) return 0;
 
   const text = serializeForInjection(playbook);

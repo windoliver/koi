@@ -21,7 +21,7 @@ import type {
 } from "@koi/core";
 import { COLLECTIVE_MEMORY_DEFAULTS, DEFAULT_COLLECTIVE_MEMORY } from "@koi/core";
 import { CHARS_PER_TOKEN } from "@koi/token-estimator";
-import { deduplicateEntries } from "@koi/validation";
+import { deduplicateEntries, selectEntriesWithinBudget } from "@koi/validation";
 import { compactCollectiveMemory, shouldCompact } from "./compact.js";
 import { createDefaultExtractor } from "./extract-learnings.js";
 import { createExtractionPrompt, parseExtractionResponse } from "./extract-llm.js";
@@ -201,13 +201,23 @@ export function createCollectiveMemoryMiddleware(
           return next(request);
         }
 
+        const selected = selectEntriesWithinBudget(
+          memory.entries,
+          injectionBudget,
+          CHARS_PER_TOKEN,
+        );
+        if (selected.length === 0) {
+          return next(request);
+        }
+
         const formatted = formatCollectiveMemory(memory.entries, injectionBudget, CHARS_PER_TOKEN);
         if (formatted.length === 0) {
           return next(request);
         }
 
-        // Fire-and-forget: increment accessCount on injected entries
-        incrementAccessCounts(brickIdStr as BrickId, memory).catch(() => {
+        // Fire-and-forget: increment accessCount only on entries that were actually injected
+        const injectedIds: ReadonlySet<string> = new Set(selected.map((e) => e.id));
+        incrementAccessCounts(brickIdStr as BrickId, memory, injectedIds).catch(() => {
           // Swallow — observability only
         });
 
@@ -310,13 +320,15 @@ export function createCollectiveMemoryMiddleware(
     }
   }
 
-  async function incrementAccessCounts(brickId: BrickId, memory: CollectiveMemory): Promise<void> {
+  async function incrementAccessCounts(
+    brickId: BrickId,
+    memory: CollectiveMemory,
+    injectedIds: ReadonlySet<string>,
+  ): Promise<void> {
     const nowMs = Date.now();
-    const updatedEntries = memory.entries.map((e) => ({
-      ...e,
-      accessCount: e.accessCount + 1,
-      lastAccessedAt: nowMs,
-    }));
+    const updatedEntries = memory.entries.map((e) =>
+      injectedIds.has(e.id) ? { ...e, accessCount: e.accessCount + 1, lastAccessedAt: nowMs } : e,
+    );
     await config.forgeStore.update(brickId, {
       collectiveMemory: {
         ...memory,
