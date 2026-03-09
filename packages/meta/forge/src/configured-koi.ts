@@ -59,6 +59,8 @@ export interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
   readonly forgeSigner?: SigningBackend | undefined;
   /** Override forge config (merged with manifest.forge defaults). */
   readonly forgeConfig?: Partial<ForgeConfig> | undefined;
+  /** Resolve the current engine session ID. Enables per-session forge counter reset. */
+  readonly resolveSessionId?: (() => string) | undefined;
   /** Trace reader for crystallize middleware. */
   readonly readTraces?: (() => Promise<Result<readonly TurnTrace[], KoiError>>) | undefined;
 }
@@ -195,6 +197,9 @@ export async function createForgeConfiguredKoi(
     forgeConfig,
     notifier: forgeSystem.notifier,
     pipeline: forgeSystem.pipeline,
+    ...(options.resolveSessionId !== undefined
+      ? { resolveSessionId: options.resolveSessionId }
+      : {}),
   });
 
   // Merge forge middleware and providers with user-supplied ones

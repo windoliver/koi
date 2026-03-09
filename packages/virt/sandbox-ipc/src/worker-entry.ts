@@ -9,7 +9,7 @@
  * bundle self-contained with zero external dependencies.
  */
 
-import { executeCode } from "./worker-exec.js";
+import { executeCode, executeEntry } from "./worker-exec.js";
 
 // ---------------------------------------------------------------------------
 // IPC send helper — validates IPC is available (no non-null assertion)
@@ -70,6 +70,8 @@ process.on("message", async (raw: unknown) => {
   const code = msg.code;
   const input = msg.input;
   const timeoutMs = msg.timeoutMs;
+  const entryPath = msg.entryPath;
+  const workspacePath = msg.workspacePath;
 
   if (
     typeof code !== "string" ||
@@ -87,20 +89,28 @@ process.on("message", async (raw: unknown) => {
     return;
   }
 
-  const response = await executeCode(
-    code,
-    input as Readonly<Record<string, unknown>>,
-    timeoutMs,
-    () => {
-      ipcSend({
-        kind: "error",
-        code: "TIMEOUT",
-        message: "Worker execution timed out",
-        durationMs: timeoutMs,
-      });
-      process.exit(124);
-    },
-  );
+  const onTimeout = (): void => {
+    ipcSend({
+      kind: "error",
+      code: "TIMEOUT",
+      message: "Worker execution timed out",
+      durationMs: timeoutMs,
+    });
+    process.exit(124);
+  };
+
+  // Dispatch: entry-path execution for dependency-backed bricks,
+  // new Function() for inline code bricks
+  const response =
+    typeof entryPath === "string" && entryPath.length > 0
+      ? await executeEntry(
+          entryPath,
+          input as Readonly<Record<string, unknown>>,
+          timeoutMs,
+          typeof workspacePath === "string" ? workspacePath : undefined,
+          onTimeout,
+        )
+      : await executeCode(code, input as Readonly<Record<string, unknown>>, timeoutMs, onTimeout);
 
   ipcSend(response);
   process.exit(response.kind === "result" ? 0 : 1);

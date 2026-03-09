@@ -381,6 +381,12 @@ export async function createSandboxBridge(
               code,
               input,
               timeoutMs: requestTimeoutMs,
+              ...(execOptions?.context?.entryPath !== undefined
+                ? { entryPath: execOptions.context.entryPath }
+                : {}),
+              ...(execOptions?.context?.workspacePath !== undefined
+                ? { workspacePath: execOptions.context.workspacePath }
+                : {}),
             });
             break;
           }

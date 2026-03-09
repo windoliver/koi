@@ -51,23 +51,21 @@ export function createForgeToolsProvider(config: ForgeToolsProviderConfig): Comp
     name: "forge-tools",
     priority: 50,
     attach: async (agent: Agent) => {
-      // Per-session forge counter. Resets when the engine session ID changes.
-      // let justified: mutable counter tracking forges consumed during current session
-      let forgeCount = 0;
-      // let justified: tracks last seen session ID to detect session boundaries
-      let lastSessionId: string | undefined;
+      // Per-session forge counters keyed by session ID. Each session's count
+      // persists independently — switching sessions doesn't reset other sessions.
+      const forgeCountBySession = new Map<string, number>();
 
       const defaultSessionId = `session:${agent.pid.id}`;
       const resolveSession = config.resolveSessionId ?? (() => defaultSessionId);
 
-      /** Returns current session ID, resetting forge counter on session change. */
+      /** Returns current session ID. */
       function getCurrentSessionId(): string {
-        const sid = resolveSession();
-        if (sid !== lastSessionId) {
-          lastSessionId = sid;
-          forgeCount = 0;
-        }
-        return sid;
+        return resolveSession();
+      }
+
+      /** Returns the forge count for the given session, initializing to 0 if absent. */
+      function getForgeCount(sid: string): number {
+        return forgeCountBySession.get(sid) ?? 0;
       }
 
       // Build ForgeDeps with runtime context from the agent entity
@@ -79,18 +77,17 @@ export function createForgeToolsProvider(config: ForgeToolsProviderConfig): Comp
         context: {
           agentId: agent.pid.id,
           depth: agent.pid.depth,
-          // Dynamic getters — session-scoped, auto-reset on session boundary
+          // Dynamic getters — session-scoped, per-session counter isolation
           get sessionId() {
             return getCurrentSessionId();
           },
           get forgesThisSession() {
-            getCurrentSessionId(); // ensure counter is reset if session changed
-            return forgeCount;
+            return getForgeCount(getCurrentSessionId());
           },
         },
         onForgeConsumed: (consumed: number) => {
-          getCurrentSessionId(); // ensure counter is reset if session changed
-          forgeCount += consumed;
+          const sid = getCurrentSessionId();
+          forgeCountBySession.set(sid, getForgeCount(sid) + consumed);
         },
         // Spread conditionally to satisfy exactOptionalPropertyTypes —
         // optional props without `| undefined` cannot receive explicit undefined.
