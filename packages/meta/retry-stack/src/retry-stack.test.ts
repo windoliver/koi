@@ -3,12 +3,17 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { BacktrackReason } from "@koi/core";
+import type { BacktrackReason, SessionContext } from "@koi/core";
 import { createRetryStack } from "./retry-stack.js";
 
 function makeReason(message: string): BacktrackReason {
   return { kind: "manual", message, timestamp: Date.now() };
 }
+
+const STUB_SESSION: SessionContext = {
+  sessionId: "test-session-1",
+  agentId: "test-agent",
+} as SessionContext;
 
 describe("createRetryStack", () => {
   test("returns 2 middleware without fs-rollback", () => {
@@ -46,8 +51,13 @@ describe("createRetryStack", () => {
     expect(bundle.fsRollback).toBeUndefined();
   });
 
-  test("reset() cascades to all L2 handles", () => {
+  test("reset() cascades to all L2 handles", async () => {
     const bundle = createRetryStack({});
+
+    // Initialize session so per-session state exists
+    for (const mw of bundle.middleware) {
+      if (mw.onSessionStart) await mw.onSessionStart(STUB_SESSION);
+    }
 
     // Set a constraint so we can verify clearConstraint is called
     bundle.guidedRetry.setConstraint({
