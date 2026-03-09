@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/nexus API surface . has stable type surface 1`] = `
-"import { AgentId, AgentRegistry, AuditSink, NameServiceBackend, ComponentProvider, KoiMiddleware, Result, KoiError } from '@koi/core';
+"import { NexusPath, AgentId, AgentRegistry, AuditSink, NameServiceBackend, ComponentProvider, KoiMiddleware, Result, KoiError } from '@koi/core';
 import { PayLedger } from '@koi/core/pay-ledger';
 import { NexusClient } from '@koi/nexus-client';
 import { NexusPermissionBackend } from '@koi/permissions-nexus';
@@ -15,21 +15,27 @@ import { NexusSearch } from '@koi/search-nexus';
  * then provisions them in parallel via best-effort writes.
  */
 
-/** Computed namespace paths for an agent. */
+/**
+ * Computed namespace paths for an agent.
+ * Frozen per #922. Changes require a new issue.
+ */
 interface AgentNamespace {
-    readonly forge: string;
-    readonly events: string;
-    readonly session: string;
-    readonly memory: string;
-    readonly snapshots: string;
-    readonly filesystem: string;
-    readonly mailbox: string;
+    readonly forge: NexusPath;
+    readonly events: NexusPath;
+    readonly session: NexusPath;
+    readonly memory: NexusPath;
+    readonly snapshots: NexusPath;
+    readonly filesystem: NexusPath;
+    readonly mailbox: NexusPath;
 }
 /** Computed namespace path for a group. */
 interface GroupNamespace {
-    readonly scratchpad: string;
+    readonly scratchpad: NexusPath;
 }
-/** Computes agent-scoped namespace paths from an agentId. */
+/**
+ * Computes agent-scoped namespace paths from an agentId.
+ * Derives all segments from SEGMENTS (paths.ts) — single source of truth.
+ */
 declare function computeAgentNamespace(agentId: AgentId): AgentNamespace;
 /** Computes group-scoped namespace paths from a groupId. */
 declare function computeGroupNamespace(groupId: string): GroupNamespace;
