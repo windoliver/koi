@@ -276,15 +276,15 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
         const prevToolIds = [...m.distinctToolsThisTurn]; // snapshot before reset
         const { sessionId, agentId } = ctx.session;
 
-        // Keyword scorer (sync): fire immediately if no tool matched
-        if (keywordPatterns.length > 0 && !m.goalDriftMatchedThisTurn) {
+        // Keyword scorer (sync): fire only when no async scorer is configured
+        if (asyncScorer === undefined && keywordPatterns.length > 0 && !m.goalDriftMatchedThisTurn) {
           const detail = checkGoalDrift(1.0, thresholds.goalDriftThreshold, objectives);
           if (detail !== null) {
             fireAnomaly(buildSignal(detail, sessionId, agentId, prevTurnIndex), m);
           }
         }
 
-        // Async scorer (fire-and-forget, never blocks the turn)
+        // Async scorer (fire-and-forget, never blocks the turn) — replaces keyword path
         if (asyncScorer !== undefined) {
           void Promise.resolve()
             .then(() => asyncScorer(prevToolIds, objectives))
@@ -548,7 +548,46 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       const m = sessions.get(ctx.sessionId as string);
-      if (m && config.onMetrics) {
+      if (!m) return;
+
+      // Evaluate goal drift for the final turn (otherwise skipped since onBeforeTurn won't fire again)
+      if (m.toolCallsThisTurn > 0 && objectives.length > 0) {
+        const { sessionId, agentId } = ctx;
+        if (asyncScorer === undefined && keywordPatterns.length > 0 && !m.goalDriftMatchedThisTurn) {
+          const detail = checkGoalDrift(1.0, thresholds.goalDriftThreshold, objectives);
+          if (detail !== null) {
+            fireAnomaly(buildSignal(detail, sessionId, agentId, m.turnIndex), m);
+          }
+        }
+        if (asyncScorer !== undefined) {
+          const prevToolIds = [...m.distinctToolsThisTurn];
+          void Promise.resolve()
+            .then(() => asyncScorer(prevToolIds, objectives))
+            .then((score: number) => {
+              const detail = checkGoalDrift(score, thresholds.goalDriftThreshold, objectives);
+              if (detail !== null) {
+                fireAnomaly(buildSignal(detail, sessionId, agentId, m.turnIndex), m);
+              }
+            })
+            .catch((err: unknown) => {
+              if (config.onAnomalyError) {
+                config.onAnomalyError(
+                  err,
+                  buildSignal(
+                    { kind: "goal_drift", driftScore: 0, threshold: 0, objectives },
+                    sessionId,
+                    agentId,
+                    m.turnIndex,
+                  ),
+                );
+              } else {
+                swallowError(err, { package: "agent-monitor", operation: "goalDriftScorer" });
+              }
+            });
+        }
+      }
+
+      if (config.onMetrics) {
         const summary = buildSummary(ctx.sessionId, ctx.agentId, m);
         config.onMetrics(ctx.sessionId, summary);
       }

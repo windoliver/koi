@@ -47,7 +47,8 @@ export function formatSummaryTable(summary: EvalSummary): string {
  */
 export function formatCiReport(run: EvalRun, regression?: RegressionResult): CiReport {
   const hasRegression = regression?.kind === "fail";
-  const exitCode = hasRegression ? 1 : 0;
+  const belowThreshold = run.summary.passRate < run.config.passThreshold;
+  const exitCode = hasRegression || belowThreshold ? 1 : 0;
 
   const jsonData = {
     runId: run.id,

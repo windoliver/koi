@@ -13,6 +13,8 @@ export interface SseClientOptions {
   readonly url: string;
   readonly onBatch: (batch: DashboardEventBatch) => void;
   readonly onStateChange: (state: SseConnectionState) => void;
+  /** Called after a successful reconnection so the consumer can rehydrate state. */
+  readonly onReconnect?: () => void;
   readonly reconnectDelayMs?: number;
 }
 
@@ -24,11 +26,19 @@ const DEFAULT_RECONNECT_DELAY_MS = 3_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
 export function createSseClient(options: SseClientOptions): SseClient {
-  const { url, onBatch, onStateChange, reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS } = options;
+  const {
+    url,
+    onBatch,
+    onStateChange,
+    onReconnect,
+    reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
+  } = options;
 
   let closed = false;
   // let justified: tracks reconnection backoff
   let currentDelay = reconnectDelayMs;
+  // let justified: tracks whether this is the first connection (not a reconnect)
+  let isFirstConnect = true;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let eventSource: EventSource | undefined;
 
@@ -38,8 +48,13 @@ export function createSseClient(options: SseClientOptions): SseClient {
     eventSource = new EventSource(url);
 
     eventSource.onopen = () => {
+      const wasReconnect = !isFirstConnect;
+      isFirstConnect = false;
       currentDelay = reconnectDelayMs;
       onStateChange("connected");
+      if (wasReconnect && onReconnect) {
+        onReconnect();
+      }
     };
 
     eventSource.onmessage = (event: MessageEvent) => {

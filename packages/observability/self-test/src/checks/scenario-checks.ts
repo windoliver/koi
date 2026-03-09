@@ -15,6 +15,11 @@ import {
 } from "../check-runner.js";
 import type { CheckResult, SelfTestScenario } from "../types.js";
 
+/** Escape regex metacharacters so a string is matched literally. */
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export async function runScenarioChecks(
   adapterOrFactory: EngineAdapter | (() => EngineAdapter | Promise<EngineAdapter>),
   scenarios: readonly SelfTestScenario[],
@@ -56,7 +61,7 @@ export async function runScenarioChecks(
               const pattern =
                 scenario.expectedPattern instanceof RegExp
                   ? scenario.expectedPattern
-                  : new RegExp(scenario.expectedPattern);
+                  : new RegExp(escapeRegExp(scenario.expectedPattern));
               if (!pattern.test(text)) {
                 throw new Error(
                   `Output text did not match pattern ${String(scenario.expectedPattern)}. Got: "${text}"`,

@@ -31,7 +31,9 @@ export async function checkAgentHealth(
 
   const start = performance.now();
   try {
-    const result = await systemCalls.exec(agent.command, ["--version"], timeoutMs);
+    const versionFlag =
+      (agent.metadata as Record<string, unknown> | undefined)?.versionFlag as string | undefined;
+    const result = await systemCalls.exec(agent.command, [versionFlag ?? "--version"], timeoutMs);
     const latencyMs = Math.round(performance.now() - start);
 
     if (result.exitCode === 0) {

@@ -33,10 +33,12 @@ export interface EventTraceHandle {
     sessionId: SessionId,
     turnIndex: number,
   ) => Promise<Result<TurnTrace | undefined, KoiError>>;
-  /** Retrieve all trace events between two cursors (inclusive). */
+  /** Retrieve all trace events between two cursors (inclusive).
+   *  When sessionId is provided, only events from that session are returned. */
   readonly getEventsBetween: (
     from: EventCursor,
     to: EventCursor,
+    sessionId?: SessionId,
   ) => Promise<Result<readonly TraceEvent[], KoiError>>;
   /** Return the next event index that would be assigned for the given session. */
   readonly currentEventIndex: (sessionId: SessionId) => number;

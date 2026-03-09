@@ -29,6 +29,8 @@ export interface CreateDebugObserverConfig {
   readonly agent: Agent;
   readonly controller: DebugController;
   readonly debugSessionId: DebugSessionId;
+  /** Engine session ID for snapshot correlation. Defaults to debugSessionId. */
+  readonly sessionId?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +40,7 @@ export interface CreateDebugObserverConfig {
 /** Create a read-only debug observer. */
 export function createDebugObserver(config: CreateDebugObserverConfig): DebugObserver {
   const { agent, controller, debugSessionId } = config;
+  const snapshotSessionId = config.sessionId ?? (debugSessionId as string);
   const observerId = crypto.randomUUID();
 
   // let justified: mutable detach flag
@@ -72,7 +75,7 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
 
       return {
         agentId: agent.pid.id,
-        sessionId: "",
+        sessionId: snapshotSessionId,
         debugSessionId,
         processState: agent.state,
         turnIndex: controller.turnIndex(),
