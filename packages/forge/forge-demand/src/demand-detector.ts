@@ -430,6 +430,29 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
+      sessionTurnCount++;
+
+      // Phase 2B: check user messages for correction patterns before model call
+      if (correctionPatterns.length > 0 && lastToolCallId !== "") {
+        for (const msg of request.messages) {
+          if (msg.senderId === "system:ace" || msg.senderId === "system") continue;
+          for (const block of msg.content) {
+            if (block.kind !== "text") continue;
+            const correctionTrigger = detectUserCorrection(
+              block.text,
+              correctionPatterns,
+              lastToolCallId,
+            );
+            if (correctionTrigger !== undefined) {
+              emitSignal(correctionTrigger, {
+                failureCount: 1,
+                threshold: 1,
+              });
+            }
+          }
+        }
+      }
+
       const chunks: string[] = [];
       for await (const chunk of next(request)) {
         if (chunk.kind === "text_delta") {

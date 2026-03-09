@@ -16,6 +16,7 @@ import type {
   SigningBackend,
   TurnTrace,
 } from "@koi/core";
+import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import { createInMemoryForgeStore } from "@koi/forge-tools";
 import type { ForgeConfig, SandboxExecutor } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
@@ -65,6 +66,8 @@ export interface ForgeBootstrapResult {
   readonly store: ForgeStore;
   /** Full forge system handle (for advanced use). */
   readonly system: FullForgeSystem;
+  /** Tear down forge runtime + provider store subscriptions. */
+  readonly dispose: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,12 +106,22 @@ export function createForgeBootstrap(
       clock: config.clock,
     });
 
+    // Cast provider to its full instance type for dispose access.
+    // createFullForgeSystem returns ForgeComponentProviderInstance (which
+    // extends ComponentProvider) but FullForgeSystem.provider is typed as the
+    // base ComponentProvider interface.
+    const providerInstance = system.provider as ForgeComponentProviderInstance;
+
     return {
       runtime: system.runtime,
       middlewares: system.middlewares,
       provider: system.provider,
       store,
       system,
+      dispose: (): void => {
+        system.runtime.dispose?.();
+        providerInstance.dispose();
+      },
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

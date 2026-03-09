@@ -127,4 +127,17 @@ describe("createForgeBootstrap", () => {
 
     expect(result).not.toBeUndefined();
   });
+
+  test("dispose tears down runtime and provider subscriptions", () => {
+    const result = createForgeBootstrap({
+      executor: noopExecutor,
+    });
+
+    expect(result).not.toBeUndefined();
+    expect(typeof result?.dispose).toBe("function");
+    // Should not throw
+    result?.dispose();
+    // Calling dispose again is safe (idempotent)
+    result?.dispose();
+  });
 });

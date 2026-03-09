@@ -84,6 +84,29 @@ describe("validateForgeDemandConfig", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("validates complexTaskToolCallThreshold and novelWorkflowMinLength", () => {
+    const result = validateForgeDemandConfig({
+      budget: {},
+      heuristics: {
+        complexTaskToolCallThreshold: 10,
+        novelWorkflowMinLength: 5,
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.heuristics?.complexTaskToolCallThreshold).toBe(10);
+      expect(result.value.heuristics?.novelWorkflowMinLength).toBe(5);
+    }
+  });
+
+  it("rejects invalid complexTaskToolCallThreshold", () => {
+    const result = validateForgeDemandConfig({
+      budget: {},
+      heuristics: { complexTaskToolCallThreshold: -1 },
+    });
+    expect(result.ok).toBe(false);
+  });
+
   it("validates healthTracker duck-type", () => {
     const result = validateForgeDemandConfig({
       budget: {},

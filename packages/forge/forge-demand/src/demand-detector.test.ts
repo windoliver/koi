@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import type { ForgeBudget, ForgeDemandSignal, ModelResponse, ToolResponse } from "@koi/core";
+import type {
+  ForgeBudget,
+  ForgeDemandSignal,
+  ModelChunk,
+  ModelRequest,
+  ModelResponse,
+  ToolResponse,
+} from "@koi/core";
 import { DEFAULT_FORGE_BUDGET } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import { createMockTurnContext } from "@koi/test-utils";
@@ -564,6 +571,106 @@ describe("createForgeDemandDetector", () => {
 
       const rfSignalsAfter = signals.filter((s) => s.trigger.kind === "repeated_failure");
       expect(rfSignalsAfter.length).toBe(0);
+    });
+  });
+
+  describe("wrapModelStream — parity with wrapModelCall", () => {
+    async function collectStream(stream: AsyncIterable<ModelChunk>): Promise<ModelChunk[]> {
+      const chunks: ModelChunk[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      return chunks;
+    }
+
+    function createStreamRequest(userText?: string): ModelRequest {
+      return {
+        messages:
+          userText !== undefined
+            ? [{ senderId: "user", content: [{ kind: "text" as const, text: userText }] }]
+            : [],
+        tools: [],
+      } as unknown as ModelRequest;
+    }
+
+    async function* textStream(text: string): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta" as const, delta: text };
+    }
+
+    function getWrapModelStream(
+      handle: ReturnType<typeof createForgeDemandDetector>,
+    ): NonNullable<typeof handle.middleware.wrapModelStream> {
+      const fn = handle.middleware.wrapModelStream;
+      if (fn === undefined) throw new Error("wrapModelStream not defined");
+      return fn;
+    }
+
+    it("increments sessionTurnCount for onSessionEnd heuristics", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({
+          heuristics: { complexTaskToolCallThreshold: 1 },
+          onDemand: (s) => signals.push(s),
+        }),
+      );
+
+      const ctx = createMockTurnContext();
+
+      // Make a successful tool call to set sessionToolCallCount = 1
+      await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-a"), async () =>
+        createSuccessToolResponse(),
+      );
+
+      // Call wrapModelStream to increment sessionTurnCount
+      const wrapStream = getWrapModelStream(handle);
+      const next = () => textStream("ok");
+      await collectStream(wrapStream(ctx, createStreamRequest(), next));
+
+      // Trigger onSessionEnd — should detect complex task (1 tool call >= threshold of 1)
+      await handle.middleware.onSessionEnd?.({} as never);
+      const complexSignals = signals.filter((s) => s.trigger.kind === "complex_task_completed");
+      expect(complexSignals.length).toBe(1);
+    });
+
+    it("detects user correction patterns in streaming path", async () => {
+      const signals: ForgeDemandSignal[] = [];
+      const handle = createForgeDemandDetector(
+        createConfig({
+          onDemand: (s) => signals.push(s),
+          userCorrectionPatterns: [/that's wrong/i],
+        }),
+      );
+
+      const ctx = createMockTurnContext();
+
+      // Set up lastToolCallId via a successful tool call
+      await handle.middleware.wrapToolCall?.(ctx, createToolRequest("tool-a"), async () =>
+        createSuccessToolResponse(),
+      );
+
+      // Stream with user message containing correction
+      const wrapStream = getWrapModelStream(handle);
+      const next = () => textStream("ok");
+      await collectStream(wrapStream(ctx, createStreamRequest("that's wrong, try again"), next));
+
+      const correctionSignals = signals.filter((s) => s.trigger.kind === "user_correction");
+      expect(correctionSignals.length).toBe(1);
+    });
+
+    it("yields all chunks through", async () => {
+      const handle = createForgeDemandDetector(createConfig());
+      const ctx = createMockTurnContext();
+
+      async function* multiChunk(): AsyncIterable<ModelChunk> {
+        yield { kind: "text_delta" as const, delta: "hello " };
+        yield { kind: "text_delta" as const, delta: "world" };
+      }
+
+      const wrapStream = getWrapModelStream(handle);
+      const chunks = await collectStream(wrapStream(ctx, createStreamRequest(), multiChunk));
+      expect(chunks.length).toBe(2);
+      expect(chunks[0]).toEqual({ kind: "text_delta", delta: "hello " });
+      expect(chunks[1]).toEqual({ kind: "text_delta", delta: "world" });
     });
   });
 

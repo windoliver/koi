@@ -1067,6 +1067,7 @@
         "@koi/engine-external": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/forge": "workspace:*",
         "@koi/manifest": "workspace:*",
         "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",

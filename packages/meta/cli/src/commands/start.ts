@@ -17,7 +17,6 @@ import type { ChannelAdapter, EngineEvent, EngineInput } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeBootstrap } from "@koi/forge";
-import { createForgeCompanionSkillProvider } from "@koi/forge-tools";
 import { getEngineName, loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
@@ -106,12 +105,23 @@ export async function runStart(flags: StartFlags): Promise<void> {
     return;
   }
 
-  // 4. Bootstrap forge system (before resolution, so forgeStore is available for companion skills)
-  const noopExecutor = {
-    execute: async () => ({ ok: true as const, value: { output: undefined, durationMs: 0 } }),
+  // 4. Bootstrap forge system (before resolution, so forgeStore is available)
+  // Rejecting executor — forged bricks fail loudly instead of returning silent undefined.
+  // A real SandboxExecutor (via @koi/sandbox-ipc) will replace this once sandbox profiles
+  // are wired through the CLI configuration.
+  const rejectingExecutor = {
+    execute: async () => ({
+      ok: false as const,
+      error: {
+        code: "PERMISSION" as const,
+        message:
+          "Sandbox executor not configured — forged tool execution is not available in this CLI session",
+        durationMs: 0,
+      },
+    }),
   };
   const forgeBootstrap = createForgeBootstrap({
-    executor: noopExecutor,
+    executor: rejectingExecutor,
     forgeConfig: { enabled: isForgeEnabled(manifest) },
     onError: (err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -154,9 +164,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
     ],
     providers: [
       ...nexus.providers,
-      ...(forgeBootstrap !== undefined
-        ? [forgeBootstrap.provider, createForgeCompanionSkillProvider()]
-        : []),
+      ...(forgeBootstrap !== undefined ? [forgeBootstrap.provider] : []),
     ],
     extensions,
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
@@ -244,6 +252,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
     await ch.disconnect();
   }
   await runtime.dispose();
+  forgeBootstrap?.dispose();
   if (nexus.dispose !== undefined) {
     await nexus.dispose();
   }

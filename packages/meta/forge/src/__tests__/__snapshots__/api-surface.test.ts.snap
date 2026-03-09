@@ -234,6 +234,8 @@ interface ForgeBootstrapResult {
     readonly store: ForgeStore;
     /** Full forge system handle (for advanced use). */
     readonly system: FullForgeSystem;
+    /** Tear down forge runtime + provider store subscriptions. */
+    readonly dispose: () => void;
 }
 /**
  * Bootstrap the forge self-improvement system.
