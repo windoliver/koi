@@ -232,12 +232,17 @@ export function createDebugMiddleware(
     ): Promise<ModelResponse> => {
       if (!active) return next(request);
 
-      await processEvent({ kind: "model_call_start" } as EngineEvent);
+      await processEvent({
+        kind: "custom",
+        type: "model_call_start",
+        data: undefined,
+      });
       const response = await next(request);
       await processEvent({
-        kind: "done",
-        output: { stopReason: response.stopReason ?? "end" },
-      } as EngineEvent);
+        kind: "custom",
+        type: "model_call_end",
+        data: undefined,
+      });
       return response;
     },
 
@@ -251,23 +256,24 @@ export function createDebugMiddleware(
         return;
       }
 
-      await processEvent({ kind: "model_call_start" } as EngineEvent);
+      await processEvent({
+        kind: "custom",
+        type: "model_call_start",
+        data: undefined,
+      });
 
-      let lastChunk: ModelChunk | undefined;
       for await (const chunk of next(request)) {
         if (chunk.kind === "text_delta") {
-          await processEvent({ kind: "text_delta", text: chunk.text } as EngineEvent);
+          await processEvent({ kind: "text_delta", delta: chunk.delta });
         }
-        lastChunk = chunk;
         yield chunk;
       }
 
-      if (lastChunk?.kind === "done") {
-        await processEvent({
-          kind: "done",
-          output: { stopReason: lastChunk.response?.stopReason ?? "end" },
-        } as EngineEvent);
-      }
+      await processEvent({
+        kind: "custom",
+        type: "model_call_end",
+        data: undefined,
+      });
     },
   };
 
