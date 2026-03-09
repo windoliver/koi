@@ -6,22 +6,49 @@
  * allowing the consumer to chain with other handlers.
  */
 
-import type { DashboardConfig, DashboardDataSource } from "@koi/dashboard-types";
+import type { FileSystemBackend } from "@koi/core";
+import type {
+  CommandDispatcher,
+  DashboardConfig,
+  DashboardDataSource,
+  RuntimeViewDataSource,
+} from "@koi/dashboard-types";
 import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
 import { applyCors, getCorsHeaders, handlePreflight } from "./middleware/cors.js";
 import type { RouteParams } from "./router.js";
 import { createRouter, errorResponse } from "./router.js";
 import { handleGetAgent, handleListAgents, handleTerminateAgent } from "./routes/agents.js";
 import { handleChannels } from "./routes/channels.js";
+import {
+  handleListMailbox,
+  handleResumeAgent,
+  handleRetryDeadLetter,
+  handleSuspendAgent,
+  handleTerminateAgentCmd,
+} from "./routes/commands.js";
+import { handleFsDelete, handleFsList, handleFsRead, handleFsSearch } from "./routes/filesystem.js";
 import { handleHealth } from "./routes/health.js";
 import { handleMetrics } from "./routes/metrics.js";
 import { handleSkills } from "./routes/skills.js";
+import {
+  handleAgentProcfs,
+  handleGatewayTopology,
+  handleMiddlewareChain,
+  handleProcessTree,
+} from "./routes/views.js";
 import { createSseProducer } from "./sse/producer.js";
 import { createStaticServe } from "./static-serve.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export interface DashboardHandlerOptions {
+  readonly dataSource: DashboardDataSource;
+  readonly fileSystem?: FileSystemBackend;
+  readonly runtimeViews?: RuntimeViewDataSource;
+  readonly commands?: CommandDispatcher;
+}
 
 export interface DashboardHandlerResult {
   readonly handler: (req: Request) => Promise<Response | null>;
@@ -33,9 +60,15 @@ export interface DashboardHandlerResult {
 // ---------------------------------------------------------------------------
 
 export function createDashboardHandler(
-  dataSource: DashboardDataSource,
+  dataSourceOrOptions: DashboardDataSource | DashboardHandlerOptions,
   config?: DashboardConfig,
 ): DashboardHandlerResult {
+  // Support both old and new call signatures
+  const options: DashboardHandlerOptions =
+    "listAgents" in dataSourceOrOptions ? { dataSource: dataSourceOrOptions } : dataSourceOrOptions;
+
+  const { dataSource, fileSystem, runtimeViews, commands } = options;
+
   const basePath = config?.basePath ?? DEFAULT_DASHBOARD_CONFIG.basePath;
   const apiPath = config?.apiPath ?? DEFAULT_DASHBOARD_CONFIG.apiPath;
   const enableCors = config?.cors ?? DEFAULT_DASHBOARD_CONFIG.cors;
@@ -52,44 +85,130 @@ export function createDashboardHandler(
   const staticServe =
     config?.assetsDir !== undefined ? createStaticServe(config.assetsDir) : undefined;
 
-  // Bind data source to route handlers
-  const boundRoutes = createRouter([
-    {
-      method: "GET",
-      pattern: "/health",
-      handler: (_req: Request, _params: RouteParams) => handleHealth(),
-    },
+  // Build route list — core routes always present, new routes conditional
+  const routes: Array<{
+    readonly method: string;
+    readonly pattern: string;
+    readonly handler: (req: Request, params: RouteParams) => Response | Promise<Response>;
+  }> = [
+    // Core routes (always available)
+    { method: "GET", pattern: "/health", handler: (_req, _params) => handleHealth() },
     {
       method: "GET",
       pattern: "/agents",
-      handler: (req: Request, params: RouteParams) => handleListAgents(req, params, dataSource),
+      handler: (req, params) => handleListAgents(req, params, dataSource),
     },
     {
       method: "GET",
       pattern: "/agents/:id",
-      handler: (req: Request, params: RouteParams) => handleGetAgent(req, params, dataSource),
+      handler: (req, params) => handleGetAgent(req, params, dataSource),
     },
     {
       method: "POST",
       pattern: "/agents/:id/terminate",
-      handler: (req: Request, params: RouteParams) => handleTerminateAgent(req, params, dataSource),
+      handler: (req, params) => handleTerminateAgent(req, params, dataSource),
     },
     {
       method: "GET",
       pattern: "/channels",
-      handler: (req: Request, params: RouteParams) => handleChannels(req, params, dataSource),
+      handler: (req, params) => handleChannels(req, params, dataSource),
     },
     {
       method: "GET",
       pattern: "/skills",
-      handler: (req: Request, params: RouteParams) => handleSkills(req, params, dataSource),
+      handler: (req, params) => handleSkills(req, params, dataSource),
     },
     {
       method: "GET",
       pattern: "/metrics",
-      handler: (req: Request, params: RouteParams) => handleMetrics(req, params, dataSource),
+      handler: (req, params) => handleMetrics(req, params, dataSource),
     },
-  ]);
+  ];
+
+  // Filesystem routes (when FileSystemBackend is provided)
+  if (fileSystem !== undefined) {
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/fs/list",
+        handler: (req, params) => handleFsList(req, params, fileSystem),
+      },
+      {
+        method: "GET",
+        pattern: "/fs/read",
+        handler: (req, params) => handleFsRead(req, params, fileSystem),
+      },
+      {
+        method: "GET",
+        pattern: "/fs/search",
+        handler: (req, params) => handleFsSearch(req, params, fileSystem),
+      },
+      {
+        method: "DELETE",
+        pattern: "/fs/file",
+        handler: (req, params) => handleFsDelete(req, params, fileSystem),
+      },
+    );
+  }
+
+  // Runtime view routes (when RuntimeViewDataSource is provided)
+  if (runtimeViews !== undefined) {
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/view/agents/tree",
+        handler: (req, params) => handleProcessTree(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/agents/:id/procfs",
+        handler: (req, params) => handleAgentProcfs(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/middleware/:id",
+        handler: (req, params) => handleMiddlewareChain(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/gateway/topology",
+        handler: (req, params) => handleGatewayTopology(req, params, runtimeViews),
+      },
+    );
+  }
+
+  // Command routes (when CommandDispatcher is provided)
+  if (commands !== undefined) {
+    routes.push(
+      {
+        method: "POST",
+        pattern: "/cmd/agents/:id/suspend",
+        handler: (req, params) => handleSuspendAgent(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/agents/:id/resume",
+        handler: (req, params) => handleResumeAgent(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/agents/:id/terminate",
+        handler: (req, params) => handleTerminateAgentCmd(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/events/dlq/:id/retry",
+        handler: (req, params) => handleRetryDeadLetter(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/mailbox/:agentId/list",
+        handler: (req, params) => handleListMailbox(req, params, commands),
+      },
+    );
+  }
+
+  const boundRoutes = createRouter(routes);
 
   /** Check that pathname starts with prefix at a path boundary (next char is "/" or end). */
   function matchesPathPrefix(pathname: string, prefix: string): boolean {

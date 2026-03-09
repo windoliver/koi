@@ -6,11 +6,14 @@
  * Provides:
  * - createDashboardHandler() factory — mountable HTTP handler
  * - REST endpoints for agents, channels, skills, metrics
+ * - Filesystem endpoints for Nexus namespace browsing
+ * - Runtime view endpoints for computed state
+ * - Command endpoints for imperative operations
  * - SSE streaming with 100ms batched events
  * - Static asset serving with content-hashed cache headers
  */
 
-export type { DashboardHandlerResult } from "./handler.js";
+export type { DashboardHandlerOptions, DashboardHandlerResult } from "./handler.js";
 export { createDashboardHandler } from "./handler.js";
 export type { Route, RouteHandler, RouteMatch, RouteParams, Router } from "./router.js";
 export { createRouter, errorResponse, jsonResponse } from "./router.js";

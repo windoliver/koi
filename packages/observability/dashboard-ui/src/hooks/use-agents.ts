@@ -1,14 +1,17 @@
 /**
- * TanStack Query hook for agent data — initial REST fetch + SSE-driven invalidation.
+ * Agent data hook — Zustand as sole source of truth (Decision 5A).
+ *
+ * Fetches agents on mount + at 30s intervals, writes directly to Zustand.
+ * SSE events update the store independently — no React Query sync hazards.
  */
 
 import type { DashboardAgentSummary } from "@koi/dashboard-types";
-import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { fetchAgents } from "../lib/api-client.js";
 import { useAgentsStore } from "../stores/agents-store.js";
 
-export const AGENTS_QUERY_KEY = ["agents"] as const;
+const REFETCH_INTERVAL_MS = 30_000;
 
 export function useAgents(): {
   readonly agents: readonly DashboardAgentSummary[];
@@ -16,24 +19,44 @@ export function useAgents(): {
   readonly error: Error | null;
 } {
   const setAgents = useAgentsStore((s) => s.setAgents);
-  const agentsList = useAgentsStore((s) => Object.values(s.agents));
+  const setLoading = useAgentsStore((s) => s.setLoading);
+  const setError = useAgentsStore((s) => s.setError);
 
-  const query = useQuery({
-    queryKey: AGENTS_QUERY_KEY,
-    queryFn: fetchAgents,
-    refetchInterval: 30_000,
-  });
+  // Stable selector — useShallow prevents re-renders when array contents haven't changed
+  const agentsList = useAgentsStore(useShallow((s) => Object.values(s.agents)));
+  const isLoading = useAgentsStore((s) => s.isLoading);
+  const error = useAgentsStore((s) => s.error);
 
-  // Sync REST data to Zustand store
   useEffect(() => {
-    if (query.data !== undefined) {
-      setAgents(query.data);
-    }
-  }, [query.data, setAgents]);
+    let mounted = true;
 
-  return {
-    agents: agentsList,
-    isLoading: query.isLoading,
-    error: query.error,
-  };
+    const load = async (): Promise<void> => {
+      try {
+        setLoading(true);
+        const agents = await fetchAgents();
+        if (mounted) {
+          setAgents(agents);
+          setError(null);
+        }
+      } catch (e: unknown) {
+        if (mounted) {
+          setError(e instanceof Error ? e : new Error(String(e)));
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void load();
+    const timer = setInterval(() => void load(), REFETCH_INTERVAL_MS);
+
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [setAgents, setLoading, setError]);
+
+  return { agents: agentsList, isLoading, error };
 }
