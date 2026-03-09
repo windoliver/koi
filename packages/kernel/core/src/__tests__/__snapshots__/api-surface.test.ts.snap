@@ -853,6 +853,17 @@ type ForgeTrigger = {
     readonly agentType: string;
     readonly brickId: BrickId;
     readonly p95Ms: number;
+} | {
+    readonly kind: "complex_task_completed";
+    readonly toolCallCount: number;
+    readonly turnCount: number;
+} | {
+    readonly kind: "user_correction";
+    readonly correctionText: string;
+    readonly correctedToolCall: string;
+} | {
+    readonly kind: "novel_workflow";
+    readonly toolSequence: readonly string[];
 };
 /** Signal emitted by the demand detector middleware when a forge need is detected. */
 interface ForgeDemandSignal {
