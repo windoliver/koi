@@ -53,6 +53,7 @@ function renderEvent(event: EngineEvent, verbose: boolean): void {
     case "turn_end":
     case "custom":
     case "discovery:miss":
+    case "spawn_requested":
       // Internal events — no user-visible output
       break;
   }
