@@ -92,9 +92,10 @@ function resolvePath(path: string): string | null {
     // Bare ~ or ~user — skip (not a valid pattern for seatbelt)
     return null;
   }
-  // Relative patterns like ".env" can't be used as seatbelt subpaths
+  // Resolve relative patterns (e.g., ".env") against cwd so they become
+  // valid absolute seatbelt subpaths instead of being silently dropped.
   if (!path.startsWith("/")) {
-    return null;
+    return `${process.cwd()}/${path}`;
   }
   return path;
 }

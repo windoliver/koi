@@ -7,6 +7,9 @@ import type { KoiError, Result } from "@koi/core";
 import { createSandboxCommand } from "./command.js";
 import type { SandboxAdapterResult, SandboxProfile } from "./types.js";
 
+/** Default max output bytes: 10 MB. */
+const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+
 export interface ExecuteOptions {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
@@ -17,6 +20,8 @@ export interface ExecuteOptions {
   readonly onStdout?: (chunk: string) => void;
   /** Streaming callback for stderr chunks. */
   readonly onStderr?: (chunk: string) => void;
+  /** Maximum bytes to capture for stdout+stderr. Default: 10 MB. */
+  readonly maxOutputBytes?: number;
   /** Abort signal — kills the process when aborted. */
   readonly signal?: AbortSignal;
 }
@@ -98,12 +103,17 @@ export async function execute(
       }, timeoutMs);
     }
 
-    // Collect output — streaming if callbacks provided, buffered otherwise
-    const [stdout, stderr, exitCode] = await Promise.all([
-      collectStream(proc.stdout, options?.onStdout),
-      collectStream(proc.stderr, options?.onStderr),
+    // Collect output — streaming if callbacks provided, buffered otherwise.
+    // Enforce maxOutputBytes to prevent OOM from large process output.
+    const maxOutputBytes = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    const [stdoutCollected, stderrCollected, exitCode] = await Promise.all([
+      collectStream(proc.stdout, maxOutputBytes, options?.onStdout),
+      collectStream(proc.stderr, maxOutputBytes, options?.onStderr),
       proc.exited,
     ]);
+    const stdout = stdoutCollected.text;
+    const stderr = stderrCollected.text;
+    const truncated = stdoutCollected.truncated || stderrCollected.truncated;
 
     if (timeoutId !== undefined) {
       clearTimeout(timeoutId);
@@ -118,8 +128,8 @@ export async function execute(
 
     const result: SandboxAdapterResult =
       signalNum !== null
-        ? { exitCode, stdout, stderr, signal: signalNum, durationMs, timedOut, oomKilled }
-        : { exitCode, stdout, stderr, durationMs, timedOut, oomKilled };
+        ? { exitCode, stdout, stderr, signal: signalNum, durationMs, timedOut, oomKilled, ...(truncated ? { truncated } : {}) }
+        : { exitCode, stdout, stderr, durationMs, timedOut, oomKilled, ...(truncated ? { truncated } : {}) };
 
     return { ok: true, value: result };
   } catch (e: unknown) {
@@ -135,38 +145,51 @@ export async function execute(
   }
 }
 
+interface CollectedStream {
+  readonly text: string;
+  readonly truncated: boolean;
+}
+
 /**
- * Collect a ReadableStream<Uint8Array> into a string, optionally calling
- * a callback for each decoded chunk. Uses the fast Response.text() path
- * when no callback is needed.
+ * Collect a ReadableStream<Uint8Array> into a string with a byte limit.
+ * Optionally calls a callback for each decoded chunk.
  */
 async function collectStream(
   stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
   onChunk?: (chunk: string) => void,
-): Promise<string> {
-  if (onChunk === undefined) {
-    return new Response(stream).text();
-  }
-
+): Promise<CollectedStream> {
   const decoder = new TextDecoder();
   const chunks: string[] = [];
+  // Justified `let`: accumulated byte count + truncation flag
+  let totalBytes = 0;
+  let truncated = false;
 
   for await (const bytes of stream) {
+    totalBytes += bytes.byteLength;
+    if (totalBytes > maxBytes) {
+      truncated = true;
+      // Stop accumulating but keep draining to avoid backpressure deadlock
+      continue;
+    }
+
     const text = decoder.decode(bytes, { stream: true });
     if (text.length > 0) {
       chunks.push(text);
-      onChunk(text);
+      onChunk?.(text);
     }
   }
 
   // Flush any remaining bytes in the decoder
-  const final = decoder.decode();
-  if (final.length > 0) {
-    chunks.push(final);
-    onChunk(final);
+  if (!truncated) {
+    const final = decoder.decode();
+    if (final.length > 0) {
+      chunks.push(final);
+      onChunk?.(final);
+    }
   }
 
-  return chunks.join("");
+  return { text: chunks.join(""), truncated };
 }
 
 function signalName(signalNum: number): string | null {

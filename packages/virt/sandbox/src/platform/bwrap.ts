@@ -65,6 +65,22 @@ export function buildBwrapArgs(
     }
   }
 
+  // Deny overrides: overlay an empty tmpfs on denied subpaths to mask them.
+  // This enforces denyRead/denyWrite even when a parent path was allowed above.
+  if (fs.denyRead !== undefined) {
+    for (const path of fs.denyRead) {
+      if (isSystemPath(path)) continue;
+      result.push("--tmpfs", path);
+    }
+  }
+  if (fs.denyWrite !== undefined) {
+    for (const path of fs.denyWrite) {
+      if (isSystemPath(path)) continue;
+      // Mount read-only bind of path over itself to revoke write permission
+      result.push("--ro-bind", path, path);
+    }
+  }
+
   // Environment
   result.push("--clearenv");
 

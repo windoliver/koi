@@ -50,6 +50,7 @@ function toExecuteOptions(options?: SandboxExecOptions): ExecuteOptions | undefi
     timeoutMs?: number;
     onStdout?: (chunk: string) => void;
     onStderr?: (chunk: string) => void;
+    maxOutputBytes?: number;
     signal?: AbortSignal;
   } = {};
   if (options.cwd !== undefined) result.cwd = options.cwd;
@@ -58,6 +59,7 @@ function toExecuteOptions(options?: SandboxExecOptions): ExecuteOptions | undefi
   if (options.timeoutMs !== undefined) result.timeoutMs = options.timeoutMs;
   if (options.onStdout !== undefined) result.onStdout = options.onStdout;
   if (options.onStderr !== undefined) result.onStderr = options.onStderr;
+  if (options.maxOutputBytes !== undefined) result.maxOutputBytes = options.maxOutputBytes;
   if (options.signal !== undefined) result.signal = options.signal;
   return result;
 }

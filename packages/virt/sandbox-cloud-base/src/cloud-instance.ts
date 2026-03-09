@@ -139,9 +139,20 @@ export function createCloudInstance(config: CloudInstanceConfig): SandboxInstanc
 
         const stdoutResult = stdoutAcc.result();
         const stderrResult = stderrAcc.result();
-        const truncated = stdoutResult.truncated || stderrResult.truncated;
-        const stdout = stdoutResult.output || result.stdout;
-        const stderr = stderrResult.output || result.stderr;
+
+        // When the SDK doesn't call streaming callbacks (some providers buffer
+        // internally), the accumulator is empty. Fall back to SDK output but
+        // still enforce maxOutputBytes to prevent unbounded memory usage.
+        const stdoutRaw = stdoutResult.output || result.stdout;
+        const stderrRaw = stderrResult.output || result.stderr;
+        const encoder = new TextEncoder();
+        const stdoutBytes = encoder.encode(stdoutRaw).byteLength;
+        const stderrBytes = encoder.encode(stderrRaw).byteLength;
+        const stdoutOverLimit = stdoutBytes > maxOutputBytes;
+        const stderrOverLimit = stderrBytes > maxOutputBytes;
+        const stdout = stdoutOverLimit ? stdoutRaw.slice(0, maxOutputBytes) : stdoutRaw;
+        const stderr = stderrOverLimit ? stderrRaw.slice(0, maxOutputBytes) : stderrRaw;
+        const truncated = stdoutResult.truncated || stderrResult.truncated || stdoutOverLimit || stderrOverLimit;
 
         return {
           exitCode: result.exitCode,
