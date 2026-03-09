@@ -91,6 +91,10 @@ export { createForgeToolTool } from "./tools/forge-tool.js";
 // promote_forge
 export { createPromoteForgeTool } from "./tools/promote-forge.js";
 
+// run_skill_script (Phase 3C)
+export type { RunSkillScriptDeps, RunSkillScriptResult } from "./tools/run-skill-script.js";
+export { createRunSkillScriptTool } from "./tools/run-skill-script.js";
+
 // search_forge
 export { createSearchForgeTool } from "./tools/search-forge.js";
 
