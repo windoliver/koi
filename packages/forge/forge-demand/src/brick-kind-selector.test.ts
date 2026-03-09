@@ -75,14 +75,17 @@ describe("selectBrickKind", () => {
   // Performance degradation → suppressed (optimize, don't forge)
   // -------------------------------------------------------------------------
 
-  test("performance_degradation → suppressed", () => {
+  test("performance_degradation → tool (optimization brick)", () => {
     const trigger: ForgeTrigger = {
       kind: "performance_degradation",
       toolName: "slow_tool",
       metric: "avgLatencyMs=8000",
     };
     const result = selectBrickKind(trigger);
-    expect(result.suppressed).toBe(true);
+    expect(result.suppressed).toBe(false);
+    if (!result.suppressed) {
+      expect(result.kind).toBe("tool");
+    }
   });
 
   test("agent_latency_degradation → suppressed", () => {

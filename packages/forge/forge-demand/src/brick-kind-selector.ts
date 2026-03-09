@@ -25,7 +25,7 @@ export type BrickKindSelection =
  * - no_matching_tool → skill (default) or tool (when explicitly executable)
  * - agent_capability_gap → agent
  * - agent_repeated_failure → agent
- * - performance_degradation → suppress (optimize, don't forge)
+ * - performance_degradation → tool (optimization brick)
  * - agent_latency_degradation → suppress (optimize, don't forge)
  * - complex_task_completed → skill (save the approach)
  * - user_correction → skill (save the correction)
@@ -49,8 +49,11 @@ export function selectBrickKind(trigger: ForgeTrigger): BrickKindSelection {
     case "agent_repeated_failure":
       return { suppressed: false, kind: "agent" };
 
-    // Performance degradation → suppress forge, optimize instead
+    // Performance degradation → emit as tool (optimization brick)
     case "performance_degradation":
+      return { suppressed: false, kind: "tool" };
+
+    // Agent latency degradation → suppress forge, optimize instead
     case "agent_latency_degradation":
       return { suppressed: true };
 

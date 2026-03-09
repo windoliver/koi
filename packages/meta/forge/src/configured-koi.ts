@@ -38,7 +38,7 @@ import type { ForgeConfig } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
 import type { LoadedManifest } from "@koi/manifest";
 import type { ConfiguredKoiOptions } from "@koi/starter";
-import { createConfiguredKoi } from "@koi/starter";
+import { createConfiguredKoi, createMiddlewareRegistry } from "@koi/starter";
 import type { FullForgeSystem } from "./create-full-forge-system.js";
 import { createFullForgeSystem } from "./create-full-forge-system.js";
 import { FORGE_COMPANION_SKILL } from "./forge-companion-skill.js";
@@ -97,6 +97,7 @@ function createForgeToolsProvider(
   executor: SandboxExecutor,
   forgeConfig: ForgeConfig,
   notifier: FullForgeSystem["notifier"],
+  pipeline: FullForgeSystem["pipeline"],
 ): ComponentProvider {
   return {
     name: "forge-tools",
@@ -115,6 +116,7 @@ function createForgeToolsProvider(
           forgesThisSession: 0,
         },
         notifier,
+        pipeline,
       };
 
       const components = new Map<string, unknown>();
@@ -134,6 +136,15 @@ function createForgeToolsProvider(
 // Default no-op trace reader
 const EMPTY_TRACES: Result<readonly TurnTrace[], KoiError> = { ok: true, value: [] };
 const defaultReadTraces = async (): Promise<Result<readonly TurnTrace[], KoiError>> => EMPTY_TRACES;
+
+/**
+ * Empty middleware registry — prevents `createConfiguredKoi` from re-resolving
+ * manifest middleware when the caller already provides pre-resolved middleware
+ * via `options.middleware`. Without this, middleware declared in manifest.middleware[]
+ * gets instantiated twice: once by the caller (e.g. CLI's resolveAgent), and once
+ * by starter's resolveManifestMiddleware.
+ */
+const EMPTY_MIDDLEWARE_REGISTRY = createMiddlewareRegistry(new Map());
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -156,9 +167,20 @@ export async function createForgeConfiguredKoi(
   const forgeSection = extractForgeConfig(options.manifest);
   const forgeEnabled = forgeSection?.enabled === true;
 
+  // When caller provides pre-resolved middleware but no custom registry, inject
+  // an empty registry to prevent createConfiguredKoi from double-resolving
+  // manifest.middleware[] entries.
+  const skipManifestResolve =
+    options.middleware !== undefined &&
+    options.middleware.length > 0 &&
+    options.middlewareRegistry === undefined;
+
   // Fast path: forge not enabled
   if (!forgeEnabled || options.forgeStore === undefined || options.forgeExecutor === undefined) {
-    const runtime = await createConfiguredKoi(options);
+    const runtime = await createConfiguredKoi({
+      ...options,
+      ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
+    });
     return { runtime, forgeSystem: undefined };
   }
 
@@ -196,6 +218,7 @@ export async function createForgeConfiguredKoi(
     options.forgeExecutor,
     forgeConfig,
     forgeSystem.notifier,
+    forgeSystem.pipeline,
   );
 
   // Merge forge middleware and providers with user-supplied ones
@@ -214,6 +237,7 @@ export async function createForgeConfiguredKoi(
     middleware: mergedMiddleware,
     providers: mergedProviders,
     forge: forgeSystem.runtime,
+    ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
   });
 
   return { runtime, forgeSystem };
