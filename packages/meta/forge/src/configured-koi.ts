@@ -22,6 +22,7 @@ import type {
   Result,
   SandboxExecutor,
   SigningBackend,
+  ToolPolicy,
   TurnTrace,
 } from "@koi/core";
 import { skillToken } from "@koi/core";
@@ -50,8 +51,11 @@ import { FORGE_COMPANION_SKILL } from "./forge-companion-skill.js";
 /** Raw forge section from the loaded manifest. */
 interface ManifestForgeSection {
   readonly enabled?: boolean | undefined;
+  readonly maxForgeDepth?: number | undefined;
   readonly maxForgesPerSession?: number | undefined;
   readonly defaultScope?: "agent" | "zone" | "global" | undefined;
+  readonly defaultPolicy?: ToolPolicy | undefined;
+  readonly scopePromotion?: { readonly requireHumanApproval?: boolean | undefined } | undefined;
 }
 
 /** Additional options for forge-aware bootstrap. */
@@ -189,10 +193,23 @@ export async function createForgeConfiguredKoi(
   const forgeConfig = createDefaultForgeConfig({
     ...options.forgeConfig,
     enabled: true,
+    ...(forgeSection.maxForgeDepth !== undefined
+      ? { maxForgeDepth: forgeSection.maxForgeDepth }
+      : {}),
     ...(forgeSection.maxForgesPerSession !== undefined
       ? { maxForgesPerSession: forgeSection.maxForgesPerSession }
       : {}),
     ...(forgeSection.defaultScope !== undefined ? { defaultScope: forgeSection.defaultScope } : {}),
+    ...(forgeSection.defaultPolicy !== undefined
+      ? { defaultPolicy: forgeSection.defaultPolicy }
+      : {}),
+    ...(forgeSection.scopePromotion?.requireHumanApproval !== undefined
+      ? {
+          scopePromotion: {
+            requireHumanApproval: forgeSection.scopePromotion.requireHumanApproval,
+          },
+        }
+      : {}),
   });
 
   // Instantiate forge system

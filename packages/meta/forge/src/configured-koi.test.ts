@@ -198,4 +198,52 @@ describe("createForgeConfiguredKoi", () => {
     expect(result.forgeSystem).toBeDefined();
     await result.runtime.dispose();
   });
+
+  test("forge enabled with maxForgeDepth override", async () => {
+    const adapter = createMockEngineAdapter();
+    const result = await createForgeConfiguredKoi({
+      manifest: {
+        ...makeForgeManifest(true),
+        forge: { enabled: true, maxForgeDepth: 3 },
+      } as AgentManifest & { readonly forge: unknown },
+      adapter,
+      forgeStore: createInMemoryForgeStore(),
+      forgeExecutor: createMockExecutor(),
+    });
+
+    expect(result.forgeSystem).toBeDefined();
+    await result.runtime.dispose();
+  });
+
+  test("forge enabled with defaultPolicy override", async () => {
+    const adapter = createMockEngineAdapter();
+    const result = await createForgeConfiguredKoi({
+      manifest: {
+        ...makeForgeManifest(true),
+        forge: { enabled: true, defaultPolicy: { sandbox: false, capabilities: {} } },
+      } as AgentManifest & { readonly forge: unknown },
+      adapter,
+      forgeStore: createInMemoryForgeStore(),
+      forgeExecutor: createMockExecutor(),
+    });
+
+    expect(result.forgeSystem).toBeDefined();
+    await result.runtime.dispose();
+  });
+
+  test("forge enabled with scopePromotion override", async () => {
+    const adapter = createMockEngineAdapter();
+    const result = await createForgeConfiguredKoi({
+      manifest: {
+        ...makeForgeManifest(true),
+        forge: { enabled: true, scopePromotion: { requireHumanApproval: false } },
+      } as AgentManifest & { readonly forge: unknown },
+      adapter,
+      forgeStore: createInMemoryForgeStore(),
+      forgeExecutor: createMockExecutor(),
+    });
+
+    expect(result.forgeSystem).toBeDefined();
+    await result.runtime.dispose();
+  });
 });
