@@ -338,8 +338,8 @@ describe("InMemorySnapshotChainStore", () => {
       // because the forked chain still references it
       const getResult = await store.get(forkPointId as NodeId);
       expect(getResult.ok).toBe(true);
-      if (getResult.ok) {
-        expect(getResult.value.nodeId).toBe(forkPointId);
+      if (getResult.ok && getResult.value !== undefined) {
+        expect(getResult.value.nodeId).toBe(forkPointId as NodeId);
       }
 
       // The forked chain's list should still work
