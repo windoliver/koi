@@ -441,7 +441,11 @@ export function createSubprocessExecutor(): SandboxExecutor {
         } catch (_: unknown) {
           return {
             ok: false,
-            error: { code: "CRASH", message: "Failed to parse subprocess protocol output", durationMs },
+            error: {
+              code: "CRASH",
+              message: "Failed to parse subprocess protocol output",
+              durationMs,
+            },
           };
         }
 

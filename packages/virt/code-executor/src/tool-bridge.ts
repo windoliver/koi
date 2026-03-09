@@ -53,7 +53,10 @@ export function createToolBridge(config: ToolBridgeConfig): ToolBridge {
       async (argsJson: string): Promise<string> => {
         calls++;
         if (calls > maxCalls) {
-          return JSON.stringify({ __koi_ok: false, __koi_error: `Tool call budget exceeded (max ${maxCalls})` });
+          return JSON.stringify({
+            __koi_ok: false,
+            __koi_error: `Tool call budget exceeded (max ${maxCalls})`,
+          });
         }
 
         // Justified `let`: parsed may fail, need separate error path.
@@ -61,7 +64,10 @@ export function createToolBridge(config: ToolBridgeConfig): ToolBridge {
         try {
           parsed = JSON.parse(argsJson) as { readonly name?: unknown; readonly args?: unknown };
         } catch (_e: unknown) {
-          return JSON.stringify({ __koi_ok: false, __koi_error: "Invalid JSON in tool call arguments" });
+          return JSON.stringify({
+            __koi_ok: false,
+            __koi_error: "Invalid JSON in tool call arguments",
+          });
         }
 
         const name = typeof parsed.name === "string" ? parsed.name : undefined;

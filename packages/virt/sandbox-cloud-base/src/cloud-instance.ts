@@ -152,7 +152,8 @@ export function createCloudInstance(config: CloudInstanceConfig): SandboxInstanc
         const stderrOverLimit = stderrBytes > maxOutputBytes;
         const stdout = stdoutOverLimit ? stdoutRaw.slice(0, maxOutputBytes) : stdoutRaw;
         const stderr = stderrOverLimit ? stderrRaw.slice(0, maxOutputBytes) : stderrRaw;
-        const truncated = stdoutResult.truncated || stderrResult.truncated || stdoutOverLimit || stderrOverLimit;
+        const truncated =
+          stdoutResult.truncated || stderrResult.truncated || stdoutOverLimit || stderrOverLimit;
 
         return {
           exitCode: result.exitCode,

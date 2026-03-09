@@ -128,8 +128,25 @@ export async function execute(
 
     const result: SandboxAdapterResult =
       signalNum !== null
-        ? { exitCode, stdout, stderr, signal: signalNum, durationMs, timedOut, oomKilled, ...(truncated ? { truncated } : {}) }
-        : { exitCode, stdout, stderr, durationMs, timedOut, oomKilled, ...(truncated ? { truncated } : {}) };
+        ? {
+            exitCode,
+            stdout,
+            stderr,
+            signal: signalNum,
+            durationMs,
+            timedOut,
+            oomKilled,
+            ...(truncated ? { truncated } : {}),
+          }
+        : {
+            exitCode,
+            stdout,
+            stderr,
+            durationMs,
+            timedOut,
+            oomKilled,
+            ...(truncated ? { truncated } : {}),
+          };
 
     return { ok: true, value: result };
   } catch (e: unknown) {

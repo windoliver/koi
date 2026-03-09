@@ -65,7 +65,10 @@ export function createDockerInstance(
             ? await Promise.race([
                 execPromise,
                 new Promise<never>((_, reject) =>
-                  setTimeout(() => reject(new Error(`Docker exec timed out after ${String(timeoutMs)}ms`)), timeoutMs),
+                  setTimeout(
+                    () => reject(new Error(`Docker exec timed out after ${String(timeoutMs)}ms`)),
+                    timeoutMs,
+                  ),
                 ),
               ])
             : await execPromise;
