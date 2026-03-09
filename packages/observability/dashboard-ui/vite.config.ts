@@ -4,7 +4,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  base: "/dashboard/",
+  base: process.env.DASHBOARD_BASE_PATH ?? "/dashboard/",
   build: {
     outDir: "dist",
     sourcemap: true,

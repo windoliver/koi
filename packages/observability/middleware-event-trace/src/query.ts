@@ -10,6 +10,7 @@ import type {
   EventCursor,
   KoiError,
   Result,
+  SessionId,
   SnapshotChainStore,
   TraceEvent,
   TurnTrace,
@@ -18,12 +19,15 @@ import type {
 /**
  * Retrieves all trace events between two cursors (inclusive).
  * Walks the snapshot chain to find relevant TurnTrace nodes.
+ * When sessionId is provided, only nodes belonging to that session are included,
+ * preventing contamination from overlapping sessions on the same chainId.
  */
 export async function getEventsBetween(
   store: SnapshotChainStore<TurnTrace>,
   chainId: ChainId,
   from: EventCursor,
   to: EventCursor,
+  sessionId?: SessionId,
 ): Promise<Result<readonly TraceEvent[], KoiError>> {
   const listResult = await store.list(chainId);
   if (!listResult.ok) {
@@ -32,9 +36,14 @@ export async function getEventsBetween(
 
   const nodes = listResult.value;
 
-  // Collect events from turns in the cursor range
+  // Collect events from turns in the cursor range, scoped to session
   const collected: TraceEvent[] = [];
   for (const node of nodes) {
+    // Skip nodes belonging to other sessions
+    if (sessionId !== undefined && node.data.sessionId !== sessionId) {
+      continue;
+    }
+
     const turnIndex = node.data.turnIndex;
     if (turnIndex < from.turnIndex || turnIndex > to.turnIndex) {
       continue;

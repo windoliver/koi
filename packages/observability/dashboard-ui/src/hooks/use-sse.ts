@@ -58,6 +58,10 @@ export function useSse(queryClient: QueryClient): void {
         }
       },
       onStateChange: setConnectionStatus,
+      onReconnect: () => {
+        // Rehydrate state via REST after reconnect to cover missed SSE events
+        void queryClient.invalidateQueries({ queryKey: AGENTS_QUERY_KEY });
+      },
     });
 
     return () => {

@@ -39,12 +39,15 @@ import { createDebugObserver } from "./debug-observer.js";
 export interface CreateDebugSessionConfig {
   readonly agent: Agent;
   readonly controller: DebugController;
+  /** Engine session ID for snapshot correlation. Defaults to debugSessionId. */
+  readonly sessionId?: string | undefined;
 }
 
 /** Create a DebugSession for a given agent and middleware controller. */
 export function createDebugSession(config: CreateDebugSessionConfig): DebugSession {
   const { agent, controller } = config;
   const id = debugSessionId(crypto.randomUUID());
+  const snapshotSessionId = config.sessionId ?? (id as string);
 
   // let justified: mutable state tracking
   let detached = false;
@@ -120,7 +123,7 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
 
     return {
       agentId: agent.pid.id,
-      sessionId: "",
+      sessionId: snapshotSessionId,
       debugSessionId: id,
       processState: agent.state,
       turnIndex: controller.turnIndex(),
@@ -164,8 +167,8 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
       if (until !== undefined) {
         // Install a one-shot breakpoint for the "until" predicate, then resume
         controller.addBreakpoint(until, { once: true, label: "step-until" });
-      } else if (count > 1) {
-        // Install a one-shot breakpoint at the target turn index
+      } else {
+        // Install a one-shot breakpoint at the target turn index (including count === 1)
         const targetTurn = controller.turnIndex() + count;
         controller.addBreakpoint(
           { kind: "turn", turnIndex: targetTurn },
@@ -175,12 +178,6 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
 
       // Release the gate to allow execution
       controller.releaseGate();
-
-      emitToSession({
-        kind: "step_completed",
-        debugSessionId: id,
-        turnIndex: controller.turnIndex(),
-      });
 
       return { ok: true, value: undefined };
     },
@@ -271,6 +268,7 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
         agent,
         controller,
         debugSessionId: id,
+        sessionId: snapshotSessionId,
       });
     },
   };

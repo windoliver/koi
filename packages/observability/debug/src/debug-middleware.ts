@@ -14,9 +14,11 @@ import type {
   DebugSessionId,
   EngineEvent,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   ToolCallId,
   ToolHandler,
   ToolRequest,
@@ -229,7 +231,49 @@ export function createDebugMiddleware(
       next: ModelHandler,
     ): Promise<ModelResponse> => {
       if (!active) return next(request);
-      return next(request);
+
+      await processEvent({
+        kind: "custom",
+        type: "model_call_start",
+        data: undefined,
+      });
+      const response = await next(request);
+      await processEvent({
+        kind: "custom",
+        type: "model_call_end",
+        data: undefined,
+      });
+      return response;
+    },
+
+    async *wrapModelStream(
+      _ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      if (!active) {
+        yield* next(request);
+        return;
+      }
+
+      await processEvent({
+        kind: "custom",
+        type: "model_call_start",
+        data: undefined,
+      });
+
+      for await (const chunk of next(request)) {
+        if (chunk.kind === "text_delta") {
+          await processEvent({ kind: "text_delta", delta: chunk.delta });
+        }
+        yield chunk;
+      }
+
+      await processEvent({
+        kind: "custom",
+        type: "model_call_end",
+        data: undefined,
+      });
     },
   };
 

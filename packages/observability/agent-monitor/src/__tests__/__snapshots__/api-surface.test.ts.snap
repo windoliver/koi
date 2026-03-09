@@ -167,9 +167,11 @@ interface AgentMonitorConfig {
          */
         readonly threshold?: number;
         /**
-         * Optional async scorer replacing keyword default.
+         * Optional async scorer that replaces the keyword path when present.
          * Returns 0.0 (aligned) to 1.0 (fully drifted).
          * Must NOT block — results are fire-and-forget via Promise.
+         * When set, keyword matching is used only for the goalDriftMatchedThisTurn flag,
+         * not for firing anomalies.
          */
         readonly scorer?: (toolIds: readonly string[], objectives: readonly string[]) => number | Promise<number>;
     };

@@ -203,8 +203,8 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     return { ok: true, value: node.data };
   };
 
-  const getEventsBetween: EventTraceHandle["getEventsBetween"] = async (from, to) =>
-    queryEventsBetween(store, chainId, from, to);
+  const getEventsBetween: EventTraceHandle["getEventsBetween"] = async (from, to, sessionId) =>
+    queryEventsBetween(store, chainId, from, to, sessionId);
 
   const currentEventIndex = (sid: SessionId): number => {
     const state = sessions.get(sid as string);

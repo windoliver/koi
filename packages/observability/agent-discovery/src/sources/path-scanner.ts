@@ -60,6 +60,7 @@ export function createPathSource(config?: PathSourceConfig): DiscoverySource {
             healthy: true as const,
             source: "path" as const,
             protocol: agent.protocol,
+            metadata: { versionFlag: agent.versionFlag },
           },
         ];
       });

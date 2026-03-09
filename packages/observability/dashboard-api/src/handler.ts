@@ -91,14 +91,21 @@ export function createDashboardHandler(
     },
   ]);
 
+  /** Check that pathname starts with prefix at a path boundary (next char is "/" or end). */
+  function matchesPathPrefix(pathname: string, prefix: string): boolean {
+    if (!pathname.startsWith(prefix)) return false;
+    const next = pathname[prefix.length];
+    return next === undefined || next === "/" || prefix.endsWith("/");
+  }
+
   const rawHandler = async (req: Request, pathname: string): Promise<Response | null> => {
     // Handle CORS preflight
-    if (enableCors && req.method === "OPTIONS" && pathname.startsWith(apiPath)) {
+    if (enableCors && req.method === "OPTIONS" && matchesPathPrefix(pathname, apiPath)) {
       return handlePreflight();
     }
 
     // API routes
-    if (pathname.startsWith(apiPath)) {
+    if (matchesPathPrefix(pathname, apiPath)) {
       const apiSubpath = pathname.slice(apiPath.length);
 
       // SSE events endpoint — inject CORS headers directly to avoid re-wrapping stream
@@ -117,7 +124,7 @@ export function createDashboardHandler(
     }
 
     // Static assets (if assetsDir configured)
-    if (staticServe !== undefined && pathname.startsWith(basePath)) {
+    if (staticServe !== undefined && matchesPathPrefix(pathname, basePath)) {
       const assetPath = pathname.slice(basePath.length) || "/index.html";
 
       const response = await staticServe.serve(assetPath);
@@ -137,7 +144,7 @@ export function createDashboardHandler(
     const pathname = new URL(req.url).pathname;
 
     // Only handle dashboard paths
-    if (!pathname.startsWith(apiPath) && !pathname.startsWith(basePath)) {
+    if (!matchesPathPrefix(pathname, apiPath) && !matchesPathPrefix(pathname, basePath)) {
       return null;
     }
 
