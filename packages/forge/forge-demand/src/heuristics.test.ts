@@ -2,12 +2,16 @@ import { describe, expect, it } from "bun:test";
 import type { BrickId, KoiError, Result, TaskableAgent, ToolHealthSnapshot } from "@koi/core";
 import {
   DEFAULT_CAPABILITY_GAP_PATTERNS,
+  DEFAULT_USER_CORRECTION_PATTERNS,
   detectAgentCapabilityGap,
   detectAgentLatencyDegradation,
   detectAgentRepeatedFailure,
   detectCapabilityGap,
+  detectComplexTaskCompletion,
   detectLatencyDegradation,
+  detectNovelWorkflow,
   detectRepeatedFailure,
+  detectUserCorrection,
 } from "./heuristics.js";
 
 describe("detectRepeatedFailure", () => {
@@ -357,5 +361,136 @@ describe("detectAgentLatencyDegradation", () => {
       metrics: { ...fastSnapshot.metrics, avgLatencyMs: 10000 },
     };
     expect(detectAgentLatencyDegradation("code", BRICK_ID, atThreshold, 10000)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// User correction detection (Phase 2B)
+// ---------------------------------------------------------------------------
+
+describe("detectUserCorrection", () => {
+  it("returns undefined when no correction pattern matches", () => {
+    expect(
+      detectUserCorrection("Great work, thanks!", DEFAULT_USER_CORRECTION_PATTERNS, "tool-a"),
+    ).toBeUndefined();
+  });
+
+  it("detects 'that's not right' pattern", () => {
+    const trigger = detectUserCorrection(
+      "No, that's not right, try again",
+      DEFAULT_USER_CORRECTION_PATTERNS,
+      "tool-a",
+    );
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("user_correction");
+    if (trigger?.kind === "user_correction") {
+      expect(trigger.correctedToolCall).toBe("tool-a");
+      expect(trigger.correctionText).toContain("not right");
+    }
+  });
+
+  it("detects 'actually you should' pattern", () => {
+    const trigger = detectUserCorrection(
+      "Actually, you should use the other endpoint",
+      DEFAULT_USER_CORRECTION_PATTERNS,
+      "fetch-api",
+    );
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("user_correction");
+  });
+
+  it("detects 'don't do that' pattern", () => {
+    const trigger = detectUserCorrection(
+      "Don't use that approach",
+      DEFAULT_USER_CORRECTION_PATTERNS,
+      "tool-b",
+    );
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("user_correction");
+  });
+
+  it("detects 'I said' pattern", () => {
+    const trigger = detectUserCorrection(
+      "I said to use the database directly",
+      DEFAULT_USER_CORRECTION_PATTERNS,
+      "tool-c",
+    );
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("user_correction");
+  });
+
+  it("truncates long correction text to 200 chars", () => {
+    const longText = `Actually, you should ${"x".repeat(300)}`;
+    const trigger = detectUserCorrection(longText, DEFAULT_USER_CORRECTION_PATTERNS, "tool-a");
+    expect(trigger).toBeDefined();
+    if (trigger?.kind === "user_correction") {
+      expect(trigger.correctionText.length).toBeLessThanOrEqual(200);
+    }
+  });
+
+  it("works with custom patterns", () => {
+    const customPatterns = [/WRONG ANSWER/i];
+    expect(detectUserCorrection("That's a WRONG ANSWER", customPatterns, "tool-a")).toBeDefined();
+    expect(detectUserCorrection("Good answer", customPatterns, "tool-a")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Complex task completion detection (Phase 2C)
+// ---------------------------------------------------------------------------
+
+describe("detectComplexTaskCompletion", () => {
+  it("returns undefined when below threshold", () => {
+    expect(detectComplexTaskCompletion(3, 2, 5)).toBeUndefined();
+  });
+
+  it("returns trigger when at threshold", () => {
+    const trigger = detectComplexTaskCompletion(5, 3, 5);
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("complex_task_completed");
+    if (trigger?.kind === "complex_task_completed") {
+      expect(trigger.toolCallCount).toBe(5);
+      expect(trigger.turnCount).toBe(3);
+    }
+  });
+
+  it("returns trigger when above threshold", () => {
+    const trigger = detectComplexTaskCompletion(15, 8, 5);
+    expect(trigger).toBeDefined();
+    if (trigger?.kind === "complex_task_completed") {
+      expect(trigger.toolCallCount).toBe(15);
+      expect(trigger.turnCount).toBe(8);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Novel workflow detection
+// ---------------------------------------------------------------------------
+
+describe("detectNovelWorkflow", () => {
+  it("returns undefined when sequence is too short", () => {
+    expect(detectNovelWorkflow(["a", "b"], 3)).toBeUndefined();
+  });
+
+  it("returns trigger when sequence meets minimum length", () => {
+    const trigger = detectNovelWorkflow(["read", "transform", "write"], 3);
+    expect(trigger).toBeDefined();
+    expect(trigger?.kind).toBe("novel_workflow");
+    if (trigger?.kind === "novel_workflow") {
+      expect(trigger.toolSequence).toEqual(["read", "transform", "write"]);
+    }
+  });
+
+  it("returns trigger for longer sequences", () => {
+    const trigger = detectNovelWorkflow(["a", "b", "c", "d", "e"], 3);
+    expect(trigger).toBeDefined();
+    if (trigger?.kind === "novel_workflow") {
+      expect(trigger.toolSequence.length).toBe(5);
+    }
+  });
+
+  it("returns undefined for empty sequence", () => {
+    expect(detectNovelWorkflow([], 3)).toBeUndefined();
   });
 });

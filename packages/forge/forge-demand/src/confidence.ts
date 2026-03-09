@@ -71,5 +71,14 @@ function getBaseWeight(kind: ForgeTrigger["kind"], weights: ConfidenceWeights): 
       return weights.capabilityGap;
     case "agent_repeated_failure":
       return weights.repeatedFailure;
+    // Success-side signals — moderate confidence (skill proposals, not urgent)
+    case "complex_task_completed":
+    case "novel_workflow":
+      return 0.5;
+    case "user_correction":
+      return 0.7;
   }
+  // Exhaustiveness guard — compiler errors if a trigger kind is missing above
+  const _exhaustive: never = kind;
+  return _exhaustive;
 }

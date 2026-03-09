@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
-"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, StoreChangeNotifier, ComponentProvider, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController, EngineAdapter, ExternalAgentDescriptor } from '@koi/core';
+"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, CompanionSkillDefinition, ComponentProvider, StoreChangeNotifier, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController, EngineAdapter, ExternalAgentDescriptor } from '@koi/core';
 import { ForgeError, DriftChecker, SandboxExecutor as SandboxExecutor$1, ForgeVerifier, ForgeConfig, ForgeContext, ManifestParser, ForgePipeline, ForgeToolInput, AgentArtifact } from '@koi/forge-types';
 import { BrickDescriptor } from '@koi/resolve';
 export { createMemoryStoreChangeNotifier } from '@koi/validation';
@@ -112,6 +112,17 @@ interface DeltaInvalidator<V> {
  * - "quarantined" → delta (brick quarantined for specific brick)
  */
 declare function createDeltaInvalidator<V>(): DeltaInvalidator<V>;
+
+/**
+ * Companion skill — teaches the LLM when/how to use forge self-improvement tools.
+ */
+
+/** Static skill definition describing forge self-improvement capabilities. */
+declare const FORGE_COMPANION_SKILL: CompanionSkillDefinition;
+/**
+ * Create a ComponentProvider that attaches the forge companion skill.
+ */
+declare function createForgeCompanionSkillProvider(): ComponentProvider;
 
 /**
  * BrickDescriptor for @koi/forge.
@@ -300,6 +311,46 @@ interface RequiresCheckResult {
  * Check order: bins -> env -> tools -> agents -> packages -> network.
  */
 declare function checkBrickRequires(requires: BrickRequires | undefined, availableToolNames: ReadonlySet<string>, networkPolicy?: NetworkPolicy, availableAgentNames?: ReadonlySet<string>): RequiresCheckResult;
+
+/**
+ * Skill reference provider — progressive disclosure for forged skills.
+ *
+ * Phase 3B: Instead of dumping full skill content into every context window,
+ * this provider offers three disclosure levels:
+ * 1. Metadata — name, description, tags (cheapest, always available)
+ * 2. Instructions — full SKILL.md content (on demand)
+ * 3. Resources — scripts, references, examples (on demand)
+ *
+ * AgentSkills.io progressive disclosure pattern: metadata → instructions → resources.
+ */
+
+/** Minimal metadata for skill discovery (level 1: cheapest). */
+interface SkillMetadata {
+    readonly id: string;
+    readonly name: string;
+    readonly description: string;
+    readonly tags: readonly string[];
+}
+/** Full skill instructions (level 2: on demand). */
+interface SkillInstructions {
+    readonly id: string;
+    readonly name: string;
+    readonly content: string;
+}
+/** Skill reference provider — progressive disclosure API. */
+interface SkillReferenceProvider {
+    /** List available skill metadata (cheapest query — names + descriptions only). */
+    readonly listSkills: () => Promise<Result<readonly SkillMetadata[], KoiError>>;
+    /** Get full instructions for a specific skill (on demand). */
+    readonly getInstructions: (skillId: string) => Promise<Result<SkillInstructions, KoiError>>;
+}
+/**
+ * Creates a skill reference provider backed by a ForgeStore.
+ *
+ * Queries are lazy — listSkills returns metadata only, getInstructions
+ * loads the full artifact on demand.
+ */
+declare function createSkillReferenceProvider(store: ForgeStore): SkillReferenceProvider;
 
 /**
  * Shared factory for primordial forge tools — DRY across all 6 tools.
@@ -509,11 +560,32 @@ declare function createForgeToolTool(deps: ForgeDeps): Tool;
 declare function createPromoteForgeTool(deps: ForgeDeps): Tool;
 
 /**
+ * run_skill_script — Executes a script bundled inside a forged skill artifact.
+ *
+ * Phase 3C: Skills can bundle scripts in their \`files\` field under \`scripts/\`.
+ * This tool loads the skill, extracts the script, and executes it through the
+ * injected SandboxExecutor with restrictive resource limits (no network,
+ * capped memory, short timeout).
+ */
+
+interface RunSkillScriptResult {
+    readonly output: unknown;
+    readonly durationMs: number;
+    readonly scriptPath: string;
+    readonly brickId: string;
+}
+interface RunSkillScriptDeps {
+    readonly store: ForgeStore;
+    readonly executor: SandboxExecutor$1;
+}
+declare function createRunSkillScriptTool(deps: RunSkillScriptDeps): Tool;
+
+/**
  * search_forge — Discovers existing bricks via ForgeStore queries.
  */
 
 declare function createSearchForgeTool(deps: ForgeDeps): Tool;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type DelegateOptions, type DeltaInvalidator, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeDeps, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type SkillMdInput, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createSearchForgeTool, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust };
+export { type AssembleManifestOptions, type AssembleManifestResult, type DelegateOptions, type DeltaInvalidator, FORGE_COMPANION_SKILL, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeDeps, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type RunSkillScriptDeps, type RunSkillScriptResult, type SkillInstructions, type SkillMdInput, type SkillMetadata, type SkillReferenceProvider, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeCompanionSkillProvider, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createRunSkillScriptTool, createSearchForgeTool, createSkillReferenceProvider, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust };
 "
 `;

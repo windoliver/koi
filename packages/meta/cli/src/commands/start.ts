@@ -13,16 +13,31 @@
 
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
-import type { ChannelAdapter, EngineEvent, EngineInput } from "@koi/core";
-import { createKoi } from "@koi/engine";
+import type { ChannelAdapter, EngineEvent, EngineInput, SandboxExecutor } from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
+import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
+import { createSandboxCommand, restrictiveProfile } from "@koi/sandbox";
+import type { SandboxBridge } from "@koi/sandbox-ipc";
+import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
 import { extractTextFromBlocks } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Safely checks if forge is enabled in the manifest's extension fields. */
+function isForgeEnabled(manifest: { readonly forge?: unknown }): boolean {
+  const forge = manifest.forge;
+  if (forge === null || forge === undefined || typeof forge !== "object") return false;
+  const obj = forge as Record<string, unknown>;
+  return obj.enabled === true;
+}
 
 // ---------------------------------------------------------------------------
 // Event rendering
@@ -92,18 +107,80 @@ export async function runStart(flags: StartFlags): Promise<void> {
     return;
   }
 
-  // 4. RESOLVE: Resolve manifest into runtime instances (middleware + model)
+  // 4. Bootstrap forge system (before resolution, so forgeStore is available)
+  // Only create sandbox bridge when forge is enabled to avoid temp file leaks
+  // let justified: mutable binding — set inside try/catch, read for cleanup
+  let sandboxBridge: SandboxBridge | undefined;
+  // let justified: tracks current session ID for forge counter scoping
+  let currentStartSessionId = `start:${manifest.name}:0`;
+  // let justified: incremented per REPL message to generate unique session IDs
+  let startSessionCounter = 0;
+
+  const forgeEnabled = isForgeEnabled(manifest);
+  // let justified: conditionally set when forge is enabled
+  let forgeBootstrap: ReturnType<typeof createForgeBootstrap>;
+
+  if (forgeEnabled) {
+    // let justified: conditionally assigned in try/catch
+    let forgeExecutor: SandboxExecutor;
+
+    try {
+      const bridge = await createSandboxBridge({
+        config: {
+          profile: restrictiveProfile(),
+          buildCommand: createSandboxCommand,
+        },
+      });
+      sandboxBridge = bridge;
+      forgeExecutor = bridgeToExecutor(bridge);
+    } catch {
+      process.stderr.write("warn: sandbox unavailable, forged tool execution disabled\n");
+      forgeExecutor = {
+        execute: async () => ({
+          ok: false as const,
+          error: {
+            code: "PERMISSION" as const,
+            message:
+              "Sandbox executor not configured — forged tool execution is not available in this CLI session",
+            durationMs: 0,
+          },
+        }),
+      };
+    }
+
+    forgeBootstrap = createForgeBootstrap({
+      executor: forgeExecutor,
+      forgeConfig: { enabled: true },
+      resolveSessionId: () => currentStartSessionId,
+      onError: (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
+      },
+    });
+  } else {
+    forgeBootstrap = undefined;
+  }
+
+  // 5. RESOLVE: Resolve manifest into runtime instances (middleware + model)
+  // Pass forgeStore so companion skills get registered during resolution
   const modelName = manifest.model.name;
-  const resolved = await resolveAgent({ manifestPath, manifest });
+  const resolved = await resolveAgent({
+    manifestPath,
+    manifest,
+    ...(forgeBootstrap !== undefined ? { forgeStore: forgeBootstrap.store } : {}),
+  });
   if (!resolved.ok) {
     process.stderr.write(formatResolutionError(resolved.error));
+    if (sandboxBridge !== undefined) {
+      await sandboxBridge.dispose();
+    }
     process.exit(EXIT_CONFIG);
   }
 
-  // 5. ASSEMBLE: Use resolved engine or fall back to pi adapter
+  // 6. ASSEMBLE: Use resolved engine or fall back to pi adapter
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
-  // 5b. Resolve Nexus stack (embed or remote)
+  // 6b. Resolve Nexus stack (embed or remote)
   const nexus = await resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose);
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
@@ -112,12 +189,22 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const contextExt = createContextExtension(contextConfig);
   const extensions = contextExt !== undefined ? [contextExt] : [];
 
-  const runtime = await createKoi({
+  const { runtime } = await createForgeConfiguredKoi({
     manifest,
     adapter,
-    middleware: [...resolved.value.middleware, ...nexus.middlewares],
-    providers: [...nexus.providers],
+    middleware: [
+      ...resolved.value.middleware,
+      ...nexus.middlewares,
+      ...(forgeBootstrap?.middlewares ?? []),
+    ],
+    providers: [
+      ...nexus.providers,
+      ...(forgeBootstrap !== undefined
+        ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
+        : []),
+    ],
     extensions,
+    ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
   });
 
   // 6b. Set up channels — use resolved channels or fall back to CLI channel
@@ -169,6 +256,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
       }
 
       processing = true;
+      startSessionCounter++;
+      currentStartSessionId = `start:${manifest.name}:${String(startSessionCounter)}`;
       const input: EngineInput = { kind: "text", text };
 
       try {
@@ -202,6 +291,10 @@ export async function runStart(flags: StartFlags): Promise<void> {
     await ch.disconnect();
   }
   await runtime.dispose();
+  forgeBootstrap?.dispose();
+  if (sandboxBridge !== undefined) {
+    await sandboxBridge.dispose();
+  }
   if (nexus.dispose !== undefined) {
     await nexus.dispose();
   }

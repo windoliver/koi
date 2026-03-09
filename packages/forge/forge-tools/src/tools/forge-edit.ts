@@ -245,6 +245,15 @@ async function forgeEditHandler(
     };
   }
 
+  // Notify cross-agent cache invalidation after successful save
+  if (deps.notifier !== undefined) {
+    void Promise.resolve(
+      deps.notifier.notify({ kind: "saved", brickId: newId, scope: deps.config.defaultScope }),
+    ).catch(() => {
+      // Swallow — notifier failure is non-fatal
+    });
+  }
+
   return {
     ok: true,
     value: {

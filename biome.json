@@ -32,6 +32,18 @@
       "trailingCommas": "all"
     }
   },
+  "overrides": [
+    {
+      "includes": ["packages/virt/sandbox-ipc/src/worker-source.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noTemplateCurlyInString": "off"
+          }
+        }
+      }
+    }
+  ],
   "files": {
     "includes": ["**/*.ts", "**/*.json"]
   }

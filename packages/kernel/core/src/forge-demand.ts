@@ -37,6 +37,26 @@ export type ForgeTrigger =
       readonly agentType: string;
       readonly brickId: BrickId;
       readonly p95Ms: number;
+    }
+  // Success-side triggers (Phase 3 — skill proposals, not immediate code generation)
+  | {
+      readonly kind: "complex_task_completed";
+      readonly toolCallCount: number;
+      readonly taskDescription: string;
+      readonly toolsUsed: readonly string[];
+      readonly turnCount: number;
+    }
+  | {
+      readonly kind: "user_correction";
+      readonly correctionText: string;
+      readonly correctedToolCall: string;
+      readonly correctionDescription: string;
+      readonly originalToolName?: string | undefined;
+    }
+  | {
+      readonly kind: "novel_workflow";
+      readonly workflowDescription: string;
+      readonly toolSequence: readonly string[];
     };
 
 // ---------------------------------------------------------------------------

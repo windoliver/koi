@@ -19,6 +19,10 @@ export interface ExecuteMessage {
   readonly code: string;
   readonly input: Readonly<Record<string, unknown>>;
   readonly timeoutMs: number;
+  /** Entry file path for dependency-backed bricks (uses import() instead of new Function). */
+  readonly entryPath?: string | undefined;
+  /** Workspace directory for dependency-backed bricks (chdir before import). */
+  readonly workspacePath?: string | undefined;
 }
 
 export interface ReadyMessage {
@@ -83,6 +87,8 @@ const executeSchema = z.object({
   code: z.string(),
   input: z.record(z.string(), z.unknown()),
   timeoutMs: z.number().positive(),
+  entryPath: z.string().optional(),
+  workspacePath: z.string().optional(),
 });
 
 const readySchema = z.object({

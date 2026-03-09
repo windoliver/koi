@@ -1,9 +1,9 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { SandboxAdapter, ForgeStore, ForgeScope, Result, TurnTrace, KoiError, KoiMiddleware, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ComponentProvider } from '@koi/core';
+"import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ForgeScope, Result, TurnTrace, KoiError, StoreChangeNotifier, ComponentProvider, KoiMiddleware, SandboxExecutor as SandboxExecutor$1, SandboxAdapter, SkillComponent } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, CounterExample, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from '@koi/core';
-import { ForgeConfig, ForgePipeline, SandboxExecutor, DependencyConfig } from '@koi/forge-types';
+import { SandboxExecutor, DependencyConfig, ForgeConfig, ForgePipeline } from '@koi/forge-types';
 export { BrickContentInput, CreateProvenanceOptions, DEFAULT_REVERIFICATION_CONFIG, DependencyConfig, DriftCheckResult, DriftChecker, ForgeAgentInput, ForgeAgentInputWithBricks, ForgeAgentInputWithManifest, ForgeChannelInput, ForgeConfig, ForgeContext, ForgeError, ForgeInput, ForgeInputBase, ForgeMiddlewareInput, ForgePipeline, ForgeResult, ForgeResultMetadata, ForgeSkillInput, ForgeToolInput, ForgeVerifier, FormatConfig, GovernanceResult, ManifestParseResult, ManifestParser, MutationPressureConfig, PromoteChange, PromoteResult, ResolveStageReport, ReverificationConfig, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, ScopePromotionConfig, SelfTestStageReport, StageReport, TestFailure, TrustStageReport, VerificationConfig, VerificationReport, VerificationStage, VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig } from '@koi/forge-types';
 export { AttestationCache, IntegrityAttestationFailed, IntegrityContentMismatch, IntegrityOk, IntegrityResult, SlsaBuildDefinition, SlsaBuildMetadata, SlsaBuilder, SlsaKoiExtensions, SlsaProvenanceV1, SlsaProvenanceV1WithExtensions, SlsaResourceDescriptor, SlsaRunDetails, canonicalJsonSerialize, createAttestationCache, createForgeProvenance, extractBrickContent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, signAttestation, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity } from '@koi/forge-integrity';
 export { DriftCheckerConfig, FORGE_GOVERNANCE, ForgeSessionCounterInstance, ForgeSessionCounterOptions, ForgeUsageMiddlewareConfig, ReverificationHandler, ReverificationQueue, UsageRecordedResult, UsageResult, checkGovernance, checkMutationPressure, checkScopePromotion, createDriftChecker, createForgeGovernanceContributor, createForgeSessionCounter, createForgeUsageMiddleware, createReverificationQueue, recordBrickUsage, validatePolicyChange } from '@koi/forge-policy';
@@ -17,102 +17,9 @@ export { DEFAULT_EXAPTATION_CONFIG, ExaptationConfig, ExaptationHandle, Exaptati
 export { BrickOptimizer, OptimizationConfig, OptimizationResult, OptimizerMiddlewareConfig, computeFitnessScore, createBrickOptimizer, createOptimizerMiddleware } from '@koi/forge-optimizer';
 import { CrystallizeHandle } from '@koi/crystallize';
 export { AutoForgeConfig, AutoForgeVerifier, AutoForgeVerifierResult, CrystallizationCandidate, CrystallizeConfig, CrystallizeHandle, ToolNgram, ToolStep, createAutoForgeMiddleware, createCrystallizeMiddleware } from '@koi/crystallize';
+import { KoiRuntime } from '@koi/engine';
+import { ConfiguredKoiOptions } from '@koi/starter';
 import { DiscoverySource } from '@koi/agent-discovery';
-
-/**
- * createForgeDelegation — wires @koi/agent-discovery and @koi/agent-spawner
- * into the two optional ForgeDeps callbacks: discoverAgent + spawnCodingAgent.
- *
- * Lives in the L3 @koi/forge bundle because it imports from two L2 peers.
- */
-
-interface ForgeDelegationConfig {
-    /** Sandbox adapter used to create isolated containers. */
-    readonly adapter: SandboxAdapter;
-    /** Working directory inside the sandbox. */
-    readonly cwd?: string | undefined;
-    /** Environment variables to inject into the sandbox. */
-    readonly env?: Readonly<Record<string, string>> | undefined;
-    /** Maximum concurrent agent delegations. Default: 2. */
-    readonly maxConcurrentDelegations?: number | undefined;
-    /** Maximum stdout bytes to capture before truncation. Default: 10 MB. */
-    readonly maxOutputBytes?: number | undefined;
-    /** Discovery cache TTL in milliseconds. Default: 60,000. */
-    readonly cacheTtlMs?: number | undefined;
-    /** Override discovery sources (defaults to PATH scanner). Useful for testing. */
-    readonly discoverySources?: readonly DiscoverySource[] | undefined;
-}
-interface ForgeDelegation {
-    /** Discovers an agent by name — compatible with ForgeDeps.discoverAgent. */
-    readonly discoverAgent: NonNullable<ForgeDeps["discoverAgent"]>;
-    /** Spawns a coding agent — compatible with ForgeDeps.spawnCodingAgent. */
-    readonly spawnCodingAgent: NonNullable<ForgeDeps["spawnCodingAgent"]>;
-    /** Release underlying sandbox resources. */
-    readonly dispose: () => Promise<void>;
-}
-/**
- * Create a ForgeDelegation that bridges @koi/agent-discovery and
- * @koi/agent-spawner into ForgeDeps-compatible callbacks.
- */
-declare function createForgeDelegation(config: ForgeDelegationConfig): ForgeDelegation;
-
-/**
- * createForgeMiddlewareStack — wires the 4 orphaned forge middleware packages
- * into a single, correctly-ordered middleware array.
- *
- * Lives in L3 @koi/forge because it imports from multiple L2 peers
- * (forge-demand, forge-exaptation, forge-optimizer, forge-policy) and the
- * L0u @koi/crystallize package.
- */
-
-interface ForgeMiddlewareStackConfig {
-    readonly forgeStore: ForgeStore;
-    readonly forgeConfig: ForgeConfig;
-    readonly scope: ForgeScope;
-    readonly readTraces: () => Promise<Result<readonly TurnTrace[], KoiError>>;
-    readonly resolveBrickId: (toolName: string) => string | undefined;
-    readonly onError?: ((error: unknown) => void) | undefined;
-    readonly clock?: (() => number) | undefined;
-}
-interface ForgeMiddlewareStackResult {
-    readonly middlewares: readonly KoiMiddleware[];
-    readonly handles: {
-        readonly demand: ForgeDemandHandle;
-        readonly crystallize: CrystallizeHandle;
-        readonly exaptation: ExaptationHandle;
-    };
-}
-/**
- * Create the full forge middleware stack with all 6 middlewares wired.
- *
- * Construction order follows the dependency graph:
- * 1. crystallize (standalone — reads traces)
- * 2. demand (standalone — monitors tool calls)
- * 3. auto-forge (depends on crystallize + demand handles)
- * 4. exaptation (standalone — monitors purpose drift)
- * 5. optimizer (standalone — sweeps on session end)
- * 6. usage (standalone — tracks brick usage)
- *
- * Returned middleware array is sorted by priority:
- * - demand (455), exaptation (465), usage (900),
- *   crystallize (950), auto-forge (960), optimizer (990)
- */
-declare function createForgeMiddlewareStack(config: ForgeMiddlewareStackConfig): ForgeMiddlewareStackResult;
-
-/**
- * createForgePipeline — composition root that wires L2 sub-packages into a ForgePipeline.
- *
- * Lives in the L3 @koi/forge bundle because it imports from multiple L2 peers
- * (forge-verifier, forge-integrity, forge-policy), which only L3 may do.
- */
-
-/**
- * Create a wired ForgePipeline instance.
- *
- * Pass the result as \`pipeline\` in ForgeDeps so that @koi/forge-tools
- * can call cross-package operations without direct L2→L2 imports.
- */
-declare function createForgePipeline(): ForgePipeline;
 
 /**
  * ForgeRuntime factory — creates a live forge runtime backed by a ForgeStore.
@@ -170,12 +77,15 @@ interface CreateFullForgeSystemConfig {
     readonly signer?: SigningBackend | undefined;
     readonly onError?: ((error: unknown) => void) | undefined;
     readonly clock?: (() => number) | undefined;
+    /** Optional notifier for cross-agent cache invalidation. Auto-created when not provided. */
+    readonly notifier?: StoreChangeNotifier | undefined;
 }
 interface FullForgeSystem {
     readonly runtime: ForgeRuntimeInstance;
     readonly provider: ComponentProvider;
     readonly pipeline: ForgePipeline;
     readonly middlewares: readonly KoiMiddleware[];
+    readonly notifier: StoreChangeNotifier;
     readonly handles: {
         readonly demand: ForgeDemandHandle;
         readonly crystallize: CrystallizeHandle;
@@ -193,6 +103,248 @@ interface FullForgeSystem {
  */
 declare function createFullForgeSystem(config: CreateFullForgeSystemConfig): FullForgeSystem;
 
-export { type CreateForgeRuntimeOptions, type CreateFullForgeSystemConfig, type ForgeDelegation, type ForgeDelegationConfig, type ForgeMiddlewareStackConfig, type ForgeMiddlewareStackResult, type ForgeRuntimeInstance, type FullForgeSystem, createForgeDelegation, createForgeMiddlewareStack, createForgePipeline, createForgeRuntime, createFullForgeSystem };
+/**
+ * createForgeConfiguredKoi — extends createConfiguredKoi with forge activation.
+ *
+ * When \`manifest.forge.enabled\` is true:
+ * 1. Instantiates the full forge system (runtime, provider, middleware stack)
+ * 2. Exposes default forge tools (search_forge, forge_skill, forge_tool, forge_edit, promote_forge)
+ * 3. Attaches the forge companion skill
+ * 4. Passes runtime, provider, and middlewares into createKoi()
+ *
+ * When forge is not enabled, delegates directly to createConfiguredKoi().
+ *
+ * Lives in L3 @koi/forge because it composes L3 @koi/starter with forge L2 packages.
+ */
+
+/** Additional options for forge-aware bootstrap. */
+interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
+    /** ForgeStore backend for brick persistence. Required when forge is enabled. */
+    readonly forgeStore?: ForgeStore | undefined;
+    /** SandboxExecutor for forge verification. Required when forge is enabled. */
+    readonly forgeExecutor?: SandboxExecutor$1 | undefined;
+    /** Optional signing backend for attestation. */
+    readonly forgeSigner?: SigningBackend | undefined;
+    /** Override forge config (merged with manifest.forge defaults). */
+    readonly forgeConfig?: Partial<ForgeConfig> | undefined;
+    /** Resolve the current engine session ID. Enables per-session forge counter reset. */
+    readonly resolveSessionId?: (() => string) | undefined;
+    /** Trace reader for crystallize middleware. */
+    readonly readTraces?: (() => Promise<Result<readonly TurnTrace[], KoiError>>) | undefined;
+}
+/** Return type for createForgeConfiguredKoi — runtime + optional forge system handle. */
+interface ForgeConfiguredKoiResult {
+    readonly runtime: KoiRuntime;
+    readonly forgeSystem: FullForgeSystem | undefined;
+    /** Tear down forge system internals. Call after runtime.dispose(). */
+    readonly dispose: () => void;
+}
+/**
+ * Create a Koi runtime with optional forge activation.
+ *
+ * When \`manifest.forge.enabled\` is true AND forgeStore + forgeExecutor are provided:
+ * - Instantiates createFullForgeSystem()
+ * - Creates 5 default forge tools (search, skill, tool, edit, promote)
+ * - Attaches forge companion skill
+ * - Passes forge runtime, provider, and middlewares into createKoi()
+ *
+ * When forge is not enabled, delegates directly to createConfiguredKoi().
+ */
+declare function createForgeConfiguredKoi(options: ForgeConfiguredKoiOptions): Promise<ForgeConfiguredKoiResult>;
+
+/**
+ * createForgeDelegation — wires @koi/agent-discovery and @koi/agent-spawner
+ * into the two optional ForgeDeps callbacks: discoverAgent + spawnCodingAgent.
+ *
+ * Lives in the L3 @koi/forge bundle because it imports from two L2 peers.
+ */
+
+interface ForgeDelegationConfig {
+    /** Sandbox adapter used to create isolated containers. */
+    readonly adapter: SandboxAdapter;
+    /** Working directory inside the sandbox. */
+    readonly cwd?: string | undefined;
+    /** Environment variables to inject into the sandbox. */
+    readonly env?: Readonly<Record<string, string>> | undefined;
+    /** Maximum concurrent agent delegations. Default: 2. */
+    readonly maxConcurrentDelegations?: number | undefined;
+    /** Maximum stdout bytes to capture before truncation. Default: 10 MB. */
+    readonly maxOutputBytes?: number | undefined;
+    /** Discovery cache TTL in milliseconds. Default: 60,000. */
+    readonly cacheTtlMs?: number | undefined;
+    /** Override discovery sources (defaults to PATH scanner). Useful for testing. */
+    readonly discoverySources?: readonly DiscoverySource[] | undefined;
+}
+interface ForgeDelegation {
+    /** Discovers an agent by name — compatible with ForgeDeps.discoverAgent. */
+    readonly discoverAgent: NonNullable<ForgeDeps["discoverAgent"]>;
+    /** Spawns a coding agent — compatible with ForgeDeps.spawnCodingAgent. */
+    readonly spawnCodingAgent: NonNullable<ForgeDeps["spawnCodingAgent"]>;
+    /** Release underlying sandbox resources. */
+    readonly dispose: () => Promise<void>;
+}
+/**
+ * Create a ForgeDelegation that bridges @koi/agent-discovery and
+ * @koi/agent-spawner into ForgeDeps-compatible callbacks.
+ */
+declare function createForgeDelegation(config: ForgeDelegationConfig): ForgeDelegation;
+
+/**
+ * createForgeMiddlewareStack — wires the 4 orphaned forge middleware packages
+ * into a single, correctly-ordered middleware array.
+ *
+ * Lives in L3 @koi/forge because it imports from multiple L2 peers
+ * (forge-demand, forge-exaptation, forge-optimizer, forge-policy) and the
+ * L0u @koi/crystallize package.
+ */
+
+interface ForgeMiddlewareStackConfig {
+    readonly forgeStore: ForgeStore;
+    readonly forgeConfig: ForgeConfig;
+    readonly scope: ForgeScope;
+    readonly readTraces: () => Promise<Result<readonly TurnTrace[], KoiError>>;
+    readonly resolveBrickId: (toolName: string) => string | undefined;
+    readonly onError?: ((error: unknown) => void) | undefined;
+    readonly clock?: (() => number) | undefined;
+    /** Optional notifier for cross-agent cache invalidation after store mutations. */
+    readonly notifier?: StoreChangeNotifier | undefined;
+}
+interface ForgeMiddlewareStackResult {
+    readonly middlewares: readonly KoiMiddleware[];
+    readonly handles: {
+        readonly demand: ForgeDemandHandle;
+        readonly crystallize: CrystallizeHandle;
+        readonly exaptation: ExaptationHandle;
+    };
+}
+/**
+ * Create the full forge middleware stack with all 6 middlewares wired.
+ *
+ * Construction order follows the dependency graph:
+ * 1. crystallize (standalone — reads traces)
+ * 2. demand (standalone — monitors tool calls)
+ * 3. auto-forge (depends on crystallize + demand handles)
+ * 4. exaptation (standalone — monitors purpose drift)
+ * 5. optimizer (standalone — sweeps on session end)
+ * 6. usage (standalone — tracks brick usage)
+ *
+ * Returned middleware array is sorted by priority:
+ * - demand (455), exaptation (465), usage (900),
+ *   crystallize (950), auto-forge (960), optimizer (990)
+ */
+declare function createForgeMiddlewareStack(config: ForgeMiddlewareStackConfig): ForgeMiddlewareStackResult;
+
+/**
+ * createForgePipeline — composition root that wires L2 sub-packages into a ForgePipeline.
+ *
+ * Lives in the L3 @koi/forge bundle because it imports from multiple L2 peers
+ * (forge-verifier, forge-integrity, forge-policy), which only L3 may do.
+ */
+
+/**
+ * Create a wired ForgePipeline instance.
+ *
+ * Pass the result as \`pipeline\` in ForgeDeps so that @koi/forge-tools
+ * can call cross-package operations without direct L2→L2 imports.
+ */
+declare function createForgePipeline(): ForgePipeline;
+
+/**
+ * createForgeToolsProvider — builds a ComponentProvider that lazily creates
+ * the 5 primordial forge tools + companion skill at attach() time.
+ *
+ * Shared between createForgeBootstrap() and createForgeConfiguredKoi().
+ */
+
+interface ForgeToolsProviderConfig {
+    readonly store: ForgeStore;
+    readonly executor: SandboxExecutor$1;
+    readonly forgeConfig: ForgeConfig;
+    readonly notifier?: StoreChangeNotifier | undefined;
+    readonly pipeline?: ForgePipeline | undefined;
+    /** Resolve the current engine session ID. Resets forge counter on change. */
+    readonly resolveSessionId?: (() => string) | undefined;
+}
+/**
+ * Build a ComponentProvider that lazily creates the 5 default forge tools
+ * + companion skill at attach() time (when the agent entity is available).
+ */
+declare function createForgeToolsProvider(config: ForgeToolsProviderConfig): ComponentProvider;
+
+/**
+ * Shared forge bootstrap factory — single entry point for both CLI and starter.
+ *
+ * Creates the full forge system with graceful degradation: if forge
+ * initialization fails, the agent starts without self-improvement
+ * capabilities rather than crashing.
+ */
+
+/** Configuration for forge bootstrap. */
+interface ForgeBootstrapConfig {
+    /** Override forge config. Defaults to createDefaultForgeConfig(). */
+    readonly forgeConfig?: Partial<ForgeConfig> | undefined;
+    /** Override forge store. Defaults to in-memory store. */
+    readonly store?: ForgeStore | undefined;
+    /** Sandbox executor for forged bricks. */
+    readonly executor: SandboxExecutor;
+    /** Visibility scope. Default: "agent". */
+    readonly scope?: ForgeScope | undefined;
+    /** Trace reader for crystallize/auto-forge. */
+    readonly readTraces?: (() => Promise<Result<readonly TurnTrace[], KoiError>>) | undefined;
+    /** Brick ID resolver for demand detector. */
+    readonly resolveBrickId?: ((toolName: string) => string | undefined) | undefined;
+    /** Optional signing backend. */
+    readonly signer?: SigningBackend | undefined;
+    /** Error callback. */
+    readonly onError?: ((error: unknown) => void) | undefined;
+    /** Clock function for testing. */
+    readonly clock?: (() => number) | undefined;
+    /** Resolve the current engine session ID. Resets forge counter on change. */
+    readonly resolveSessionId?: (() => string) | undefined;
+}
+/** Successful forge bootstrap result — everything needed for createKoi(). */
+interface ForgeBootstrapResult {
+    /** The forge runtime, passed as \`options.forge\` to createKoi(). */
+    readonly runtime: ForgeRuntimeInstance;
+    /** Forge middleware, merged into \`options.middleware\`. */
+    readonly middlewares: readonly KoiMiddleware[];
+    /** Component provider, merged into \`options.providers\`. */
+    readonly provider: ComponentProvider;
+    /** The forge store instance (for companion skill registration). */
+    readonly store: ForgeStore;
+    /** Full forge system handle (for advanced use). */
+    readonly system: FullForgeSystem;
+    /** Provider that exposes the 5 primordial forge tools + companion skill. */
+    readonly forgeToolsProvider: ComponentProvider;
+    /** Tear down forge runtime + provider store subscriptions. */
+    readonly dispose: () => void;
+}
+/**
+ * Bootstrap the forge self-improvement system.
+ *
+ * Returns ForgeBootstrapResult on success, undefined on failure.
+ * On failure, logs a warning and the agent starts without forge.
+ * This is Decision #8A: graceful degradation.
+ */
+declare function createForgeBootstrap(config: ForgeBootstrapConfig): ForgeBootstrapResult | undefined;
+
+/**
+ * Forge companion skill — teaches the model when and how to use forge tools.
+ *
+ * Attached as a SkillComponent when forge is enabled. Provides guidance on:
+ * - When to create a skill vs a tool
+ * - What kinds of workflows are worth saving
+ * - How to include helper scripts under \`files\` / \`scripts\`
+ */
+
+/**
+ * Static companion skill for the forge subsystem.
+ *
+ * Follows the "Exposing a Skill" recipe from the architecture doc:
+ * a const SkillComponent attached via extras on the forge provider.
+ */
+declare const FORGE_COMPANION_SKILL: SkillComponent;
+
+export { type CreateForgeRuntimeOptions, type CreateFullForgeSystemConfig, FORGE_COMPANION_SKILL, type ForgeBootstrapConfig, type ForgeBootstrapResult, type ForgeConfiguredKoiOptions, type ForgeConfiguredKoiResult, type ForgeDelegation, type ForgeDelegationConfig, type ForgeMiddlewareStackConfig, type ForgeMiddlewareStackResult, type ForgeRuntimeInstance, type ForgeToolsProviderConfig, type FullForgeSystem, createForgeBootstrap, createForgeConfiguredKoi, createForgeDelegation, createForgeMiddlewareStack, createForgePipeline, createForgeRuntime, createForgeToolsProvider, createFullForgeSystem };
 "
 `;

@@ -11,7 +11,7 @@
  * - Process killed on any error path (no zombie processes)
  */
 
-import type { JsonObject, Result } from "@koi/core";
+import type { ExecutionContext, JsonObject, Result, SandboxProfile } from "@koi/core";
 import { createIpcError } from "./errors.js";
 import type { ErrorMessage, ResultMessage } from "./protocol.js";
 import { parseWorkerMessage } from "./protocol.js";
@@ -184,6 +184,49 @@ function mapWorkerErrorCode(code: ErrorMessage["code"]): IpcErrorCode {
 }
 
 // ---------------------------------------------------------------------------
+// Per-execution profile merging
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a per-execution sandbox profile by applying ExecutionContext overrides
+ * to the base profile. Returns the base profile unchanged when no context is provided.
+ */
+function applyContextToProfile(
+  base: SandboxProfile,
+  ctx: ExecutionContext | undefined,
+): SandboxProfile {
+  if (ctx === undefined) return base;
+
+  const fs = { ...base.filesystem };
+  const net = { ...base.network };
+  const res = { ...base.resources };
+
+  // Workspace paths → allow filesystem access
+  if (ctx.workspacePath !== undefined) {
+    fs.allowRead = [...(fs.allowRead ?? []), ctx.workspacePath];
+    fs.allowWrite = [...(fs.allowWrite ?? []), ctx.workspacePath];
+  }
+  if (ctx.entryPath !== undefined) {
+    fs.allowRead = [...(fs.allowRead ?? []), ctx.entryPath];
+  }
+
+  // Network override
+  if (ctx.networkAllowed === true) {
+    net.allow = true;
+  }
+
+  // Resource limit overrides
+  if (ctx.resourceLimits?.maxMemoryMb !== undefined) {
+    res.maxMemoryMb = ctx.resourceLimits.maxMemoryMb;
+  }
+  if (ctx.resourceLimits?.maxPids !== undefined) {
+    res.maxPids = ctx.resourceLimits.maxPids;
+  }
+
+  return { filesystem: fs, network: net, resources: res };
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -228,8 +271,11 @@ export async function createSandboxBridge(
     const requestTimeoutMs = execOptions?.timeoutMs ?? sandboxTimeoutMs;
     const bridgeTimeoutMs = requestTimeoutMs + graceMs;
 
+    // Build per-execution profile with context overrides (network, workspace, resources)
+    const execProfile = applyContextToProfile(config.profile, execOptions?.context);
+
     // Build sandbox command via injected builder
-    const cmd = config.buildCommand(config.profile, "bun", ["run", workerPath]);
+    const cmd = config.buildCommand(execProfile, "bun", ["run", workerPath]);
     if (!cmd.ok) {
       return {
         ok: false,
@@ -335,6 +381,12 @@ export async function createSandboxBridge(
               code,
               input,
               timeoutMs: requestTimeoutMs,
+              ...(execOptions?.context?.entryPath !== undefined
+                ? { entryPath: execOptions.context.entryPath }
+                : {}),
+              ...(execOptions?.context?.workspacePath !== undefined
+                ? { workspacePath: execOptions.context.workspacePath }
+                : {}),
             });
             break;
           }

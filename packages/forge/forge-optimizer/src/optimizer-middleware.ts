@@ -10,6 +10,7 @@ import type {
   ForgeStore,
   KoiMiddleware,
   SessionContext,
+  StoreChangeNotifier,
   TurnContext,
 } from "@koi/core";
 import type { BrickOptimizer, OptimizationResult } from "./optimizer.js";
@@ -32,6 +33,8 @@ export interface OptimizerMiddlewareConfig {
   readonly clock?: (() => number) | undefined;
   /** Called with sweep results. Default: no-op. */
   readonly onSweepComplete?: ((results: readonly OptimizationResult[]) => void) | undefined;
+  /** Optional notifier for cross-agent cache invalidation after deprecation. */
+  readonly notifier?: StoreChangeNotifier | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +54,7 @@ export function createOptimizerMiddleware(config: OptimizerMiddlewareConfig): Ko
     improvementThreshold: config.improvementThreshold,
     evaluationWindowMs: config.evaluationWindowMs,
     clock: config.clock,
+    ...(config.notifier !== undefined ? { notifier: config.notifier } : {}),
   });
 
   const resultsBySession = new Map<string, readonly OptimizationResult[]>();

@@ -353,6 +353,11 @@ export {
 // L3-only: composition root + runtime
 // ---------------------------------------------------------------------------
 
+export type {
+  ForgeConfiguredKoiOptions,
+  ForgeConfiguredKoiResult,
+} from "./configured-koi.js";
+export { createForgeConfiguredKoi } from "./configured-koi.js";
 export type { ForgeDelegation, ForgeDelegationConfig } from "./create-forge-delegation.js";
 export { createForgeDelegation } from "./create-forge-delegation.js";
 export type {
@@ -361,7 +366,12 @@ export type {
 } from "./create-forge-middleware-stack.js";
 export { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
 export { createForgePipeline } from "./create-forge-stack.js";
+export type { ForgeToolsProviderConfig } from "./create-forge-tools-provider.js";
+export { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 export type { CreateFullForgeSystemConfig, FullForgeSystem } from "./create-full-forge-system.js";
 export { createFullForgeSystem } from "./create-full-forge-system.js";
+export type { ForgeBootstrapConfig, ForgeBootstrapResult } from "./forge-bootstrap.js";
+export { createForgeBootstrap } from "./forge-bootstrap.js";
+export { FORGE_COMPANION_SKILL } from "./forge-companion-skill.js";
 export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";
 export { createForgeRuntime } from "./forge-runtime.js";

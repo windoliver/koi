@@ -31,6 +31,8 @@ const heuristicThresholdsSchema = z.object({
   repeatedFailureCount: z.number().int().positive().optional(),
   capabilityGapOccurrences: z.number().int().positive().optional(),
   latencyDegradationP95Ms: z.number().int().positive().optional(),
+  complexTaskToolCallThreshold: z.number().int().positive().optional(),
+  novelWorkflowMinLength: z.number().int().positive().optional(),
   confidenceWeights: confidenceWeightsSchema.optional(),
 });
 
@@ -48,6 +50,8 @@ const DEFAULT_HEURISTIC_THRESHOLDS: HeuristicThresholds = {
   repeatedFailureCount: 3,
   capabilityGapOccurrences: 2,
   latencyDegradationP95Ms: 5_000,
+  complexTaskToolCallThreshold: 5,
+  novelWorkflowMinLength: 3,
   confidenceWeights: DEFAULT_CONFIDENCE_WEIGHTS,
 } as const;
 
@@ -191,6 +195,12 @@ export function validateForgeDemandConfig(raw: unknown): Result<ForgeDemandConfi
             latencyDegradationP95Ms:
               p.heuristics.latencyDegradationP95Ms ??
               DEFAULT_HEURISTIC_THRESHOLDS.latencyDegradationP95Ms,
+            complexTaskToolCallThreshold:
+              p.heuristics.complexTaskToolCallThreshold ??
+              DEFAULT_HEURISTIC_THRESHOLDS.complexTaskToolCallThreshold,
+            novelWorkflowMinLength:
+              p.heuristics.novelWorkflowMinLength ??
+              DEFAULT_HEURISTIC_THRESHOLDS.novelWorkflowMinLength,
             confidenceWeights: {
               repeatedFailure:
                 p.heuristics.confidenceWeights?.repeatedFailure ??
