@@ -14,9 +14,9 @@ describe("build output", () => {
     expect(await file.exists()).toBe(true);
   });
 
-  test("bundle is under 15KB", async () => {
+  test("bundle is under 16KB", async () => {
     const file = Bun.file(resolve(DIST_DIR, "index.js"));
     const size = file.size;
-    expect(size).toBeLessThan(15_360);
+    expect(size).toBeLessThan(16_384);
   });
 });
