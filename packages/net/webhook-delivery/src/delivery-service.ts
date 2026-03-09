@@ -17,6 +17,7 @@ import { type CircuitBreaker, computeBackoff, createCircuitBreaker } from "@koi/
 import { generateUlid } from "@koi/hash";
 import type { WebhookDeliveryConfig } from "./config.js";
 import { DEFAULT_WEBHOOK_DELIVERY_CONFIG } from "./config.js";
+import type { DnsResolver } from "./deliver.js";
 import { deliverWebhook } from "./deliver.js";
 import { createSemaphore } from "./semaphore.js";
 import { createSignatureHeaders } from "./signing.js";
@@ -40,6 +41,8 @@ export interface WebhookDeliveryServiceDeps {
   readonly fetcher?: typeof fetch | undefined;
   readonly clock?: (() => number) | undefined;
   readonly logger?: WebhookDeliveryServiceLogger | undefined;
+  /** DNS resolver for SSRF checks (injectable for testing). */
+  readonly dnsResolver?: DnsResolver | undefined;
 }
 
 export interface WebhookDeliveryServiceLogger {
@@ -64,6 +67,7 @@ export function createWebhookDeliveryService(
   const clock = deps.clock ?? Date.now;
   const fetcher = deps.fetcher ?? fetch;
   const logger = deps.logger;
+  const dnsResolver = deps.dnsResolver;
 
   // Filter to only enabled webhooks
   const activeWebhooks = deps.webhooks.filter((w) => w.enabled !== false);
@@ -136,7 +140,7 @@ export function createWebhookDeliveryService(
       return;
     }
 
-    const timestampSeconds = Math.floor(payload.timestamp / 1_000);
+    const timestampSeconds = Math.floor(clock() / 1_000);
     const headers = createSignatureHeaders(
       payload.webhookId,
       timestampSeconds,
@@ -154,6 +158,7 @@ export function createWebhookDeliveryService(
         {
           timeoutMs: config.requestTimeoutMs,
           maxResponseBodyBytes: config.maxResponseBodyBytes,
+          dnsResolver,
         },
         fetcher,
       );

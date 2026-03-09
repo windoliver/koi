@@ -90,3 +90,18 @@ export function validateWebhookUrl(
 
   return { ok: true };
 }
+
+/**
+ * Checks whether a resolved IP address falls into a blocked range.
+ * Use this at delivery time to prevent DNS-rebinding SSRF attacks.
+ */
+export function isBlockedAddress(ip: string): boolean {
+  for (const range of BLOCKED_IPV4_RANGES) {
+    if (ip.startsWith(range.prefix)) return true;
+  }
+  const rawIp = ip.startsWith("[") ? ip.slice(1, -1) : ip;
+  for (const pattern of BLOCKED_IPV6) {
+    if (rawIp === pattern || rawIp.startsWith(pattern)) return true;
+  }
+  return false;
+}

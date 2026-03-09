@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { validateWebhookUrl } from "./ssrf.js";
+import { isBlockedAddress, validateWebhookUrl } from "./ssrf.js";
 
 describe("validateWebhookUrl", () => {
   test("accepts valid HTTPS URL", () => {
@@ -99,5 +99,27 @@ describe("validateWebhookUrl", () => {
     const result = validateWebhookUrl("ftp://example.com/webhook");
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Unsupported protocol");
+  });
+});
+
+describe("isBlockedAddress", () => {
+  test("blocks private IPv4 10.x", () => {
+    expect(isBlockedAddress("10.0.0.1")).toBe(true);
+  });
+
+  test("blocks link-local 169.254.x", () => {
+    expect(isBlockedAddress("169.254.169.254")).toBe(true);
+  });
+
+  test("blocks loopback 127.x", () => {
+    expect(isBlockedAddress("127.0.0.1")).toBe(true);
+  });
+
+  test("blocks IPv6 loopback", () => {
+    expect(isBlockedAddress("::1")).toBe(true);
+  });
+
+  test("allows public IP", () => {
+    expect(isBlockedAddress("93.184.216.34")).toBe(false);
   });
 });

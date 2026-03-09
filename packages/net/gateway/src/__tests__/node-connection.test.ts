@@ -703,4 +703,93 @@ describe("Node connections", () => {
       }
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Agent index cleanup on disconnect (regression)
+  // -----------------------------------------------------------------------
+
+  describe("agent index cleanup on disconnect", () => {
+    function createAgentStatusMessage(
+      nodeId: string,
+      agents: readonly {
+        readonly agentId: string;
+        readonly state: string;
+        readonly groupId?: string;
+      }[],
+    ): string {
+      return JSON.stringify({
+        kind: "agent:status",
+        nodeId,
+        agentId: "",
+        correlationId: crypto.randomUUID(),
+        payload: {
+          agents: agents.map((a) => ({
+            agentId: a.agentId,
+            state: a.state,
+            turnCount: 1,
+            lastActivityMs: Date.now(),
+            ...(a.groupId !== undefined ? { groupId: a.groupId } : {}),
+          })),
+        },
+      });
+    }
+
+    test("lookupAgentNode returns undefined after node disconnects", async () => {
+      const conn = transport.simulateOpen();
+      transport.simulateMessage(conn.id, createNodeHandshakeMessage("n1"));
+      transport.simulateMessage(conn.id, createNodeCapabilitiesMessage("n1"));
+      await waitForCondition(() => gateway.nodeRegistry().size() === 1);
+
+      // Report agent running on n1
+      transport.simulateMessage(
+        conn.id,
+        createAgentStatusMessage("n1", [{ agentId: "a1", state: "running" }]),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Agent should be indexed to n1 via signalAgent (which calls lookupAgentNode)
+      const before = gateway.signalAgent("a1", "SIGTERM");
+      expect(before.ok).toBe(true);
+
+      // Disconnect n1
+      transport.simulateClose(conn.id);
+
+      // After disconnect, agent index should be purged
+      const after = gateway.signalAgent("a1", "SIGTERM");
+      expect(after.ok).toBe(false);
+      if (!after.ok) {
+        expect(after.error.code).toBe("NOT_FOUND");
+      }
+    });
+
+    test("lookupAgentsByGroup returns empty after node disconnects", async () => {
+      const conn = transport.simulateOpen();
+      transport.simulateMessage(conn.id, createNodeHandshakeMessage("n1"));
+      transport.simulateMessage(conn.id, createNodeCapabilitiesMessage("n1"));
+      await waitForCondition(() => gateway.nodeRegistry().size() === 1);
+
+      transport.simulateMessage(
+        conn.id,
+        createAgentStatusMessage("n1", [
+          { agentId: "a1", state: "running", groupId: "g1" },
+          { agentId: "a2", state: "running", groupId: "g1" },
+        ]),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+
+      const beforeResult = gateway.signalGroup("g1", "SIGTERM");
+      expect(beforeResult.ok).toBe(true);
+      if (beforeResult.ok) {
+        expect(beforeResult.value).toHaveLength(2);
+      }
+
+      transport.simulateClose(conn.id);
+
+      const afterResult = gateway.signalGroup("g1", "SIGTERM");
+      expect(afterResult.ok).toBe(true);
+      if (afterResult.ok) {
+        expect(afterResult.value).toHaveLength(0);
+      }
+    });
+  });
 });

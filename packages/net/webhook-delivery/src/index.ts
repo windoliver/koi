@@ -13,7 +13,7 @@ export {
   validateWebhookDeliveryConfig,
   type WebhookDeliveryConfig,
 } from "./config.js";
-export { deliverWebhook } from "./deliver.js";
+export { type DnsResolver, deliverWebhook } from "./deliver.js";
 export {
   createWebhookDeliveryService,
   type WebhookDeliveryService,
@@ -22,4 +22,4 @@ export {
 export { descriptor } from "./descriptor.js";
 export { createWebhookMiddleware } from "./middleware.js";
 export { createSignatureHeaders, verifySignature } from "./signing.js";
-export { validateWebhookUrl } from "./ssrf.js";
+export { isBlockedAddress, validateWebhookUrl } from "./ssrf.js";

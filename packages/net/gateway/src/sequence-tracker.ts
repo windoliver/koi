@@ -86,6 +86,11 @@ export function createSequenceTracker(windowSize: number): SequenceTracker {
         return { result: "duplicate", ready: [] };
       }
 
+      // Reject if a different frame already occupies this seq in the buffer
+      if (buffer.has(seq)) {
+        return { result: "duplicate", ready: [] };
+      }
+
       seenIds.set(id, seq);
 
       // In-order: accept immediately and flush any buffered followers
