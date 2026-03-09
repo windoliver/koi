@@ -157,14 +157,15 @@ describe("createNexusTaskQueue", () => {
         fetch: createMockFetch(200, { id: "task_123" }, capture),
       });
 
+      const inputWithNonSerializable = {
+        ...SAMPLE_TASK.input,
+        text: "hello",
+        callHandlers: {} as NonNullable<ScheduledTask["input"]["callHandlers"]>,
+        signal: AbortSignal.timeout(5000),
+      };
       const taskWithHandlers: ScheduledTask = {
         ...SAMPLE_TASK,
-        input: {
-          kind: "text" as const,
-          text: "hello",
-          callHandlers: {} as ScheduledTask["input"]["callHandlers"],
-          signal: AbortSignal.timeout(5000),
-        },
+        input: inputWithNonSerializable,
       };
 
       await queue.enqueue(taskWithHandlers);
