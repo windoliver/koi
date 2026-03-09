@@ -44,7 +44,8 @@ export function createHarnessScheduler(config: HarnessSchedulerConfig): HarnessS
   const backoffCapMs = config.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
   const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
   const signal = config.signal;
-  const delay = config.delay ?? ((ms: number) => Bun.sleep(ms));
+  const delay =
+    config.delay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   let phase: SchedulerPhase = "idle";
   let retriesRemaining = maxRetries;
@@ -90,6 +91,7 @@ export function createHarnessScheduler(config: HarnessSchedulerConfig): HarnessS
         if (result.ok) {
           totalResumes += 1;
           retriesRemaining = maxRetries;
+          lastError = undefined;
           prevBackoffMs = backoffBaseMs;
         } else {
           retriesRemaining -= 1;

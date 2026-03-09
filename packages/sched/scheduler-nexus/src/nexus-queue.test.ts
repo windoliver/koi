@@ -111,6 +111,70 @@ describe("createNexusTaskQueue", () => {
       expect(body.agent_id).toBe("agent_a");
       expect(body.priority).toBe(5);
       expect(body.mode).toBe("spawn");
+      expect(body.input).toEqual({ kind: "text", text: "hello" });
+      expect(body.created_at).toBe(1000);
+      expect(body.max_retries).toBe(3);
+    });
+
+    test("sends optional fields when present", async () => {
+      const capture = { calls: [] as Array<CapturedCall> };
+      const queue = createNexusTaskQueue({
+        ...BASE_CONFIG,
+        fetch: createMockFetch(200, { id: "task_123" }, capture),
+      });
+
+      const taskWithOptionals: ScheduledTask = {
+        ...SAMPLE_TASK,
+        scheduledAt: 2000,
+        timeoutMs: 30_000,
+      };
+
+      await queue.enqueue(taskWithOptionals);
+
+      const body = JSON.parse(firstCall(capture).init.body as string) as Record<string, unknown>;
+      expect(body.scheduled_at).toBe(2000);
+      expect(body.timeout_ms).toBe(30_000);
+    });
+
+    test("omits optional fields when undefined", async () => {
+      const capture = { calls: [] as Array<CapturedCall> };
+      const queue = createNexusTaskQueue({
+        ...BASE_CONFIG,
+        fetch: createMockFetch(200, { id: "task_123" }, capture),
+      });
+
+      await queue.enqueue(SAMPLE_TASK);
+
+      const body = JSON.parse(firstCall(capture).init.body as string) as Record<string, unknown>;
+      expect("scheduled_at" in body).toBe(false);
+      expect("timeout_ms" in body).toBe(false);
+    });
+
+    test("strips non-serializable input fields (callHandlers, signal)", async () => {
+      const capture = { calls: [] as Array<CapturedCall> };
+      const queue = createNexusTaskQueue({
+        ...BASE_CONFIG,
+        fetch: createMockFetch(200, { id: "task_123" }, capture),
+      });
+
+      const taskWithHandlers: ScheduledTask = {
+        ...SAMPLE_TASK,
+        input: {
+          kind: "text" as const,
+          text: "hello",
+          callHandlers: {} as ScheduledTask["input"]["callHandlers"],
+          signal: AbortSignal.timeout(5000),
+        },
+      };
+
+      await queue.enqueue(taskWithHandlers);
+
+      const body = JSON.parse(firstCall(capture).init.body as string) as Record<string, unknown>;
+      const input = body.input as Record<string, unknown>;
+      expect(input.kind).toBe("text");
+      expect(input.text).toBe("hello");
+      expect("callHandlers" in input).toBe(false);
+      expect("signal" in input).toBe(false);
     });
 
     test("passes idempotency_key in body", async () => {

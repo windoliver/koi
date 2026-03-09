@@ -236,4 +236,57 @@ describe("createInboxMiddleware", () => {
 
     expect(inbox.items[0]?.priority).toBe(5);
   });
+
+  test("does not replay already-seen messages on subsequent turns", async () => {
+    const inbox = createFakeInbox();
+    const msg = createMessage({ id: messageId("replay-1") });
+
+    const mw = createInboxMiddleware({
+      getMailbox: () => createFakeMailbox([msg]),
+      getInbox: () => inbox,
+    });
+
+    await mw.onBeforeTurn?.(createTurnCtx());
+    expect(inbox.items).toHaveLength(1);
+
+    // Drain the inbox (simulates engine consuming items between turns)
+    inbox.drain();
+    expect(inbox.items).toHaveLength(0);
+
+    // Second turn — same message returned by list() but should be skipped
+    await mw.onBeforeTurn?.(createTurnCtx());
+    expect(inbox.items).toHaveLength(0);
+  });
+
+  test("processes new messages while skipping already-seen ones", async () => {
+    const inbox = createFakeInbox();
+    const msg1 = createMessage({ id: messageId("seen-1") });
+    const msg2 = createMessage({ id: messageId("new-2") });
+
+    // Mutable backing array so we can add messages between turns
+    const mailboxMessages: AgentMessage[] = [msg1];
+    const mailbox: MailboxComponent = {
+      send: async () => ({ ok: true, value: msg1 }),
+      onMessage: () => () => {},
+      list: async () => mailboxMessages,
+    };
+
+    const mw = createInboxMiddleware({
+      getMailbox: () => mailbox,
+      getInbox: () => inbox,
+    });
+
+    // Turn 1 — processes msg1
+    await mw.onBeforeTurn?.(createTurnCtx());
+    expect(inbox.items).toHaveLength(1);
+    expect(inbox.items[0]?.id).toBe("seen-1");
+
+    inbox.drain();
+
+    // Turn 2 — msg1 still in list (non-destructive), msg2 is new
+    mailboxMessages.push(msg2);
+    await mw.onBeforeTurn?.(createTurnCtx());
+    expect(inbox.items).toHaveLength(1);
+    expect(inbox.items[0]?.id).toBe("new-2");
+  });
 });

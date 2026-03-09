@@ -68,7 +68,7 @@ The context hydrator calls `agent.query<SkillComponent>("skill:")`, finds the ma
 | `@koi/task-spawn` | `task-spawn` | `task` |
 | `@koi/long-running` | `autonomous` | `plan_autonomous`, `task_complete`, `task_update`, `task_status`, `task_review`, `task_synthesize` |
 | `@koi/code-mode` | `code-mode` | `code_plan_create`, `code_plan_apply`, `code_plan_status` |
-| `@koi/scheduler-provider` | `scheduler` | `sched_submit`, `sched_cancel`, `sched_schedule`, + 6 more |
+| `@koi/scheduler-provider` | `scheduler` | `scheduler_submit`, `scheduler_cancel`, `scheduler_schedule`, + 6 more |
 | `@koi/tools-web` | `web` | `web_fetch`, `web_search` |
 | `@koi/handoff` | `handoff` | `prepare_handoff`, `accept_handoff` |
 | `@koi/workspace` | `workspace` | (no tools — WORKSPACE component) |

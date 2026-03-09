@@ -65,6 +65,48 @@ describe("createScheduleTool", () => {
     expect(result.error).toContain("mode");
   });
 
+  test("returns validation error when input is missing", async () => {
+    const component = createMockSchedulerComponent();
+    const tool = createScheduleTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({
+      expression: "0 0 * * *",
+      mode: "spawn",
+    })) as {
+      readonly error: string;
+      readonly code: string;
+    };
+
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("input");
+  });
+
+  test("passes structured EngineInput through without mangling", async () => {
+    const component = createMockSchedulerComponent();
+    const tool = createScheduleTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
+    const structured = JSON.stringify({ kind: "messages", messages: [] });
+    await tool.execute({
+      expression: "0 0 * * *",
+      input: structured,
+      mode: "spawn",
+    });
+
+    const args = component.calls[0]?.args;
+    expect(args?.[1]).toEqual({ kind: "messages", messages: [] });
+  });
+
+  test("wraps plain text input as text EngineInput", async () => {
+    const component = createMockSchedulerComponent();
+    const tool = createScheduleTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
+    await tool.execute({
+      expression: "0 0 * * *",
+      input: "daily task",
+      mode: "spawn",
+    });
+
+    const args = component.calls[0]?.args;
+    expect(args?.[1]).toEqual({ kind: "text", text: "daily task" });
+  });
+
   test("descriptor has correct name", () => {
     const component = createMockSchedulerComponent();
     const tool = createScheduleTool(component, "sched", DEFAULT_UNSANDBOXED_POLICY);

@@ -14,6 +14,7 @@ import type {
   InboxMode,
   KoiMiddleware,
   MailboxComponent,
+  MessageId,
   TurnContext,
 } from "@koi/core";
 
@@ -71,6 +72,11 @@ function mapToInboxItem(message: AgentMessage, mode: InboxMode): InboxItem {
  * inbox and dispatches items based on mode (steer/collect/followup).
  */
 export function createInboxMiddleware(config: InboxMiddlewareConfig): KoiMiddleware {
+  // Track already-consumed message IDs to prevent replay.
+  // MailboxComponent.list() is non-destructive (L0 contract), so the same
+  // messages reappear on every turn. This set deduplicates across turns.
+  const seen = new Set<MessageId>();
+
   return {
     name: "inbox-middleware",
     priority: 45,
@@ -91,6 +97,11 @@ export function createInboxMiddleware(config: InboxMiddlewareConfig): KoiMiddlew
       const messages: readonly AgentMessage[] = await mailbox.list();
 
       for (const message of messages) {
+        if (seen.has(message.id)) {
+          continue;
+        }
+        seen.add(message.id);
+
         const mode = resolveMode(message);
         const item = mapToInboxItem(message, mode);
         // push returns false if at capacity — drop silently per Decision 14B

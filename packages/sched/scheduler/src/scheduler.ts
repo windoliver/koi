@@ -111,12 +111,12 @@ export function createScheduler(
    * Enqueue a task — delegates to queue backend if present, otherwise local heap.
    * When a backend is present, Nexus owns the priority queue (Decision 14A).
    */
-  async function enqueueTask(task: ScheduledTask, idempotencyKey?: string): Promise<void> {
+  async function enqueueTask(task: ScheduledTask, idempotencyKey?: string): Promise<TaskId> {
     if (queueBackend !== undefined) {
-      await queueBackend.enqueue(task, idempotencyKey);
-    } else {
-      await enqueueLocally(task);
+      return queueBackend.enqueue(task, idempotencyKey);
     }
+    await enqueueLocally(task);
+    return task.id;
   }
 
   /**
@@ -157,7 +157,7 @@ export function createScheduler(
       metadata: options?.metadata,
     };
 
-    await enqueueTask(task, idempotencyKey);
+    const assignedId = await enqueueTask(task, idempotencyKey);
     emit({ kind: "task:submitted", task });
 
     // P1 fix: immediately attempt dispatch for zero-delay tasks
@@ -166,7 +166,7 @@ export function createScheduler(
       poll();
     }
 
-    return id;
+    return assignedId;
   }
 
   /**
@@ -269,7 +269,23 @@ export function createScheduler(
         const nextRetries = task.retries + 1;
         if (nextRetries < task.maxRetries) {
           if (distributedMode) {
-            // Distributed mode: nack so the server re-queues
+            // Distributed mode: compute backoff delay and persist retry state
+            // before nacking so the server-side re-queue respects the delay.
+            // The nack interface does not accept a delay parameter, so we
+            // advance retries + scheduledAt in the local store.
+            const delay = computeRetryDelay(task.retries, config);
+            await store.updateStatus(task.id, "pending", {
+              retries: nextRetries,
+            });
+            // Update scheduledAt via save so re-claim respects backoff
+            const retask: ScheduledTask = {
+              ...task,
+              status: "pending",
+              retries: nextRetries,
+              scheduledAt: clk.now() + delay,
+              lastError: koiError,
+            };
+            await store.save(retask);
             await queueBackend?.nack?.(task.id, koiError.message);
           } else {
             // Local mode: re-queue with backoff
@@ -318,12 +334,19 @@ export function createScheduler(
     if (disposed) return;
 
     const now = clk.now();
+    const deferred: ScheduledTask[] = []; // delayed tasks to re-insert after loop
     while (true) {
       const next = heap.peek();
       if (next === undefined) break;
 
-      // Check if task is scheduled for future
-      if (next.scheduledAt !== undefined && next.scheduledAt > now) break;
+      // Skip tasks scheduled for the future — pop and stash for re-insertion
+      if (next.scheduledAt !== undefined && next.scheduledAt > now) {
+        const skipped = heap.extractMin();
+        if (skipped !== undefined) {
+          deferred.push(skipped);
+        }
+        continue;
+      }
 
       if (!semaphore.acquire()) break;
 
@@ -334,6 +357,11 @@ export function createScheduler(
       }
       // Fire and forget — errors handled inside dispatchTask
       void dispatchTask(task);
+    }
+
+    // Re-insert deferred tasks so they are dispatched on a future poll cycle
+    for (const task of deferred) {
+      heap.insert(task);
     }
   }
 
@@ -363,8 +391,19 @@ export function createScheduler(
       for (const task of claimed) {
         if (!semaphore.acquire()) break;
 
-        // Save task locally for status tracking, then dispatch
-        await store.save(task);
+        // Save task locally for status tracking, then dispatch.
+        // If save fails, release the semaphore slot acquired above —
+        // dispatchTask (which owns the final release) never executes.
+        try {
+          await store.save(task);
+        } catch (saveError: unknown) {
+          semaphore.release();
+          await queueBackend?.nack?.(
+            task.id,
+            saveError instanceof Error ? saveError.message : String(saveError),
+          );
+          continue;
+        }
         void dispatchTask(task);
       }
     } catch (_claimError: unknown) {

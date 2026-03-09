@@ -9,9 +9,9 @@
  * - submit/schedule: agentId is pinned — agents can only create work for themselves.
  * - query/history: agentId filter is injected — agents only see their own tasks.
  * - cancel: ownership verified via query before cancellation.
- * - unschedule/pause/resume: NOT ownership-verified. The TaskScheduler L0 contract
- *   does not expose schedule lookup by ID. ScheduleIds are opaque ULIDs returned
- *   by schedule(), making cross-agent collisions improbable.
+ * - unschedule/pause/resume: ownership verified via local ScheduleId tracking.
+ *   Only ScheduleIds created through this component (pinned to this agent) are
+ *   allowed. Foreign ScheduleIds are rejected with a `false` return.
  */
 
 import type {
@@ -69,12 +69,20 @@ export interface SchedulerProviderConfig {
  * Creates a SchedulerComponent that wraps TaskScheduler with a pinned agentId.
  * The agentId is captured from the agent at attach() time.
  *
- * cancel() verifies task ownership via query before allowing cancellation.
+ * Ownership enforcement:
+ * - cancel: verifies task ownership via query before allowing cancellation.
+ * - unschedule/pause/resume: verifies schedule ownership via local tracking.
+ *   Only ScheduleIds created through this component's schedule() are permitted.
  */
 function createSchedulerComponentForAgent(
   scheduler: TaskScheduler,
   pinnedAgentId: AgentId,
 ): SchedulerComponent {
+  // Track ScheduleIds created through this component for ownership verification.
+  // The TaskScheduler L0 contract does not expose schedule lookup by ID, so we
+  // maintain a local set of IDs that were created with this agent's pinnedAgentId.
+  const ownedScheduleIds = new Set<ScheduleId>();
+
   return {
     submit: (
       input: EngineInput,
@@ -89,19 +97,35 @@ function createSchedulerComponentForAgent(
       return scheduler.cancel(id);
     },
 
-    schedule: (
+    schedule: async (
       expression: string,
       input: EngineInput,
       mode: "spawn" | "dispatch",
       options?: TaskOptions & { readonly timezone?: string | undefined },
-    ): ScheduleId | Promise<ScheduleId> =>
-      scheduler.schedule(expression, pinnedAgentId, input, mode, options),
+    ): Promise<ScheduleId> => {
+      const id = await scheduler.schedule(expression, pinnedAgentId, input, mode, options);
+      ownedScheduleIds.add(id);
+      return id;
+    },
 
-    unschedule: (id: ScheduleId): boolean | Promise<boolean> => scheduler.unschedule(id),
+    unschedule: async (id: ScheduleId): Promise<boolean> => {
+      if (!ownedScheduleIds.has(id)) return false;
+      const result = await scheduler.unschedule(id);
+      if (result) {
+        ownedScheduleIds.delete(id);
+      }
+      return result;
+    },
 
-    pause: (id: ScheduleId): boolean | Promise<boolean> => scheduler.pause(id),
+    pause: (id: ScheduleId): boolean | Promise<boolean> => {
+      if (!ownedScheduleIds.has(id)) return false;
+      return scheduler.pause(id);
+    },
 
-    resume: (id: ScheduleId): boolean | Promise<boolean> => scheduler.resume(id),
+    resume: (id: ScheduleId): boolean | Promise<boolean> => {
+      if (!ownedScheduleIds.has(id)) return false;
+      return scheduler.resume(id);
+    },
 
     query: (filter: TaskFilter) => scheduler.query({ ...filter, agentId: pinnedAgentId }),
 

@@ -68,6 +68,37 @@ describe("createSubmitTool", () => {
     expect(required).toContain("mode");
   });
 
+  test("returns validation error when input is missing", async () => {
+    const component = createMockSchedulerComponent();
+    const tool = createSubmitTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({ mode: "spawn" })) as {
+      readonly error: string;
+      readonly code: string;
+    };
+
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("input");
+  });
+
+  test("passes structured EngineInput through without mangling", async () => {
+    const component = createMockSchedulerComponent();
+    const tool = createSubmitTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
+    const structured = JSON.stringify({ kind: "messages", messages: [] });
+    await tool.execute({ input: structured, mode: "spawn" });
+
+    const args = component.calls[0]?.args;
+    expect(args?.[0]).toEqual({ kind: "messages", messages: [] });
+  });
+
+  test("wraps plain text input as text EngineInput", async () => {
+    const component = createMockSchedulerComponent();
+    const tool = createSubmitTool(component, "scheduler", DEFAULT_UNSANDBOXED_POLICY);
+    await tool.execute({ input: "do something", mode: "spawn" });
+
+    const args = component.calls[0]?.args;
+    expect(args?.[0]).toEqual({ kind: "text", text: "do something" });
+  });
+
   test("handles component error gracefully", async () => {
     const component = {
       ...createMockSchedulerComponent(),

@@ -77,23 +77,112 @@ interface ValidatedTask {
   readonly dependencies: readonly TaskItemId[];
 }
 
-function validateTasks(raw: unknown): readonly ValidatedTask[] {
-  if (!Array.isArray(raw)) return [];
-  const result: ValidatedTask[] = [];
+/** Check whether a dependency graph contains a cycle using iterative DFS. */
+function hasCycle(tasks: readonly ValidatedTask[]): boolean {
+  const adjacency = new Map<TaskItemId, readonly TaskItemId[]>();
+  for (const t of tasks) {
+    adjacency.set(t.id, t.dependencies);
+  }
+
+  // 0 = unvisited, 1 = in-stack, 2 = done
+  const state = new Map<TaskItemId, 0 | 1 | 2>();
+  for (const t of tasks) {
+    state.set(t.id, 0);
+  }
+
+  for (const t of tasks) {
+    if (state.get(t.id) === 2) continue;
+
+    // Iterative DFS with explicit stack
+    const stack: { readonly id: TaskItemId; readonly phase: "enter" | "exit" }[] = [
+      { id: t.id, phase: "enter" },
+    ];
+
+    while (stack.length > 0) {
+      // biome-lint: length check above guarantees element exists
+      const frame = stack[stack.length - 1] as (typeof stack)[number];
+      if (frame.phase === "exit") {
+        stack.pop();
+        state.set(frame.id, 2);
+        continue;
+      }
+
+      // Replace enter with exit, then push children
+      (stack as { id: TaskItemId; phase: "enter" | "exit" }[])[stack.length - 1] = {
+        id: frame.id,
+        phase: "exit",
+      };
+
+      if (state.get(frame.id) === 1) {
+        // Already in-stack from a different path — cycle detected
+        return true;
+      }
+
+      state.set(frame.id, 1);
+
+      const deps = adjacency.get(frame.id) ?? [];
+      for (const dep of deps) {
+        const depState = state.get(dep);
+        if (depState === 1) return true; // back-edge → cycle
+        if (depState === 0) {
+          stack.push({ id: dep, phase: "enter" });
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+type TaskValidationResult =
+  | { readonly ok: true; readonly tasks: readonly ValidatedTask[] }
+  | { readonly ok: false; readonly error: string };
+
+function validateTasks(raw: unknown): TaskValidationResult {
+  if (!Array.isArray(raw)) return { ok: false, error: "Tasks must be an array." };
+
+  const parsed: ValidatedTask[] = [];
+  const seenIds = new Set<string>();
+
   for (const item of raw as readonly RawTaskInput[]) {
     if (typeof item?.id !== "string" || typeof item?.description !== "string") continue;
+
+    // Duplicate ID check
+    if (seenIds.has(item.id)) {
+      return { ok: false, error: `Duplicate task ID: "${item.id}".` };
+    }
+    seenIds.add(item.id);
+
     const deps = Array.isArray(item.dependencies)
       ? (item.dependencies as readonly unknown[])
           .filter((d): d is string => typeof d === "string")
           .map(taskItemId)
       : [];
-    result.push({
+    parsed.push({
       id: taskItemId(item.id),
       description: item.description,
       dependencies: deps,
     });
   }
-  return result;
+
+  // Check for dependencies referencing non-existent task IDs
+  for (const task of parsed) {
+    for (const dep of task.dependencies) {
+      if (!seenIds.has(dep)) {
+        return {
+          ok: false,
+          error: `Task "${task.id}" depends on unknown task ID: "${dep}".`,
+        };
+      }
+    }
+  }
+
+  // Cycle detection
+  if (hasCycle(parsed)) {
+    return { ok: false, error: "Task dependency graph contains a cycle." };
+  }
+
+  return { ok: true, tasks: parsed };
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +225,11 @@ export function createPlanAutonomousProvider(config: PlanAutonomousConfig): Comp
       origin: "primordial",
       policy: DEFAULT_UNSANDBOXED_POLICY,
       execute: async (args: JsonObject): Promise<unknown> => {
-        const tasks = validateTasks(args.tasks);
+        const validation = validateTasks(args.tasks);
+        if (!validation.ok) {
+          return { error: validation.error };
+        }
+        const tasks = validation.tasks;
         if (tasks.length === 0) {
           return { error: "No valid tasks provided. Each task needs an id and description." };
         }

@@ -377,7 +377,8 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
         lastSessionId: sid,
         checkpointedAt: Date.now(),
       };
-      await persistSnapshot(updated);
+      const persistResult = await persistSnapshot(updated);
+      if (!persistResult.ok) return persistResult;
 
       // Transition from suspended → running
       const transResult = await registryTransition("running", { kind: "signal_cont" });
@@ -405,7 +406,8 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
       lastSessionId: sid,
       checkpointedAt: Date.now(),
     };
-    await persistSnapshot(updated);
+    const persistResult = await persistSnapshot(updated);
+    if (!persistResult.ok) return persistResult;
 
     // Transition from suspended → running
     const transResult = await registryTransition("running", { kind: "signal_cont" });
@@ -522,6 +524,16 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
           message: `Task not found: ${taskId}`,
           retryable: false,
         },
+      };
+    }
+
+    // Verify task is in "assigned" status before completing
+    if (task.status !== "assigned") {
+      return {
+        ok: false,
+        error: validation(
+          `Cannot complete task ${taskId}: expected status "assigned", got "${task.status}"`,
+        ),
       };
     }
 
