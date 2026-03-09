@@ -50,7 +50,7 @@ describe("Nexus filesystem backend", () => {
     }
   });
 
-  test("default basePath is /fs", async () => {
+  test("default basePath is fs (no leading slash)", async () => {
     const backend = createTestBackend();
 
     await backend.write("/test.txt", "data");
@@ -205,14 +205,14 @@ describe("validateNexusFileSystemConfig", () => {
     }
   });
 
-  test("basePath without leading slash fails", () => {
+  test("basePath with path traversal fails", () => {
     const fakeFetch = createFakeNexusFetch();
     const client = createNexusClient({
       baseUrl: "http://fake",
       apiKey: "key",
       fetch: fakeFetch,
     });
-    const result = validateNexusFileSystemConfig({ client, basePath: "no-slash" });
+    const result = validateNexusFileSystemConfig({ client, basePath: "agents/../secret" });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");

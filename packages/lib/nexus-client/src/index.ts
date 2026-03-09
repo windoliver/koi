@@ -30,6 +30,8 @@ export {
   agentSnapshotGlob,
   agentSnapshotPath,
   agentSubscriptionPath,
+  agentWorkspaceGlob,
+  agentWorkspacePath,
   gatewayNodePath,
   gatewayNodesGlob,
   gatewaySessionPath,
@@ -39,6 +41,7 @@ export {
   globalBrickPath,
   groupScratchGlob,
   groupScratchPath,
+  SEGMENTS,
 } from "./paths.js";
 export type { NexusRestClient, NexusRestClientConfig } from "./rest-client.js";
 export { createNexusRestClient, mapRestFetchError, mapRestHttpError } from "./rest-client.js";

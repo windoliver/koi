@@ -104,7 +104,7 @@ function deadLetterGlobPattern(basePath: string): string {
 export function createNexusEventBackend(config: NexusEventBackendConfig): EventBackend {
   const maxPerStream = config.maxEventsPerStream ?? DEFAULT_MAX_EVENTS_PER_STREAM;
   const eventTtlMs = config.eventTtlMs;
-  const basePath = config.basePath ?? "/events";
+  const basePath = config.basePath ?? "events";
   const client: NexusClient = createNexusClient({
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,

@@ -32,7 +32,7 @@ import { validatePathSegment, wrapNexusError } from "./shared/nexus-helpers.js";
 // Config
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE_PATH = "/snapshots";
+const DEFAULT_BASE_PATH = "snapshots";
 
 export interface NexusSnapshotStoreConfig {
   readonly baseUrl: string;

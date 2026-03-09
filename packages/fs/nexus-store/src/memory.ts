@@ -47,7 +47,7 @@ export interface MemoryPersistenceBackend {
 // Config
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE_PATH = "/memory/entities";
+const DEFAULT_BASE_PATH = "memory/entities";
 
 export interface NexusMemoryBackendConfig {
   readonly baseUrl: string;

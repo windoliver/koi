@@ -12,6 +12,27 @@ import type { AgentGroupId, AgentId, BrickId, NexusPath } from "@koi/core";
 import { nexusPath } from "@koi/core";
 
 // ---------------------------------------------------------------------------
+// Canonical path segments — single source of truth for domain prefixes.
+// namespace.ts (L3) imports these to derive agent-scoped base paths.
+// Frozen per #922. Changes require a new issue.
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical path segments for each Nexus storage domain.
+ * Each segment is relative to the agent root (`agents/{agentId}/`).
+ * Stores append resource-specific suffixes to these base segments.
+ */
+export const SEGMENTS = {
+  bricks: "bricks",
+  events: "events",
+  session: "session",
+  memory: "memory/entities",
+  snapshots: "snapshots",
+  workspace: "workspace",
+  mailbox: "mailbox",
+} as const;
+
+// ---------------------------------------------------------------------------
 // Forge (brick artifacts)
 // ---------------------------------------------------------------------------
 
@@ -34,19 +55,19 @@ export function globalBrickPath(brickId: BrickId): NexusPath {
 // Events
 // ---------------------------------------------------------------------------
 
-/** Path to event stream metadata: agents/{agentId}/events/{streamId}/meta.json */
+/** Path to event stream metadata: agents/{agentId}/events/streams/{streamId}/meta.json */
 export function agentEventMetaPath(agentId: AgentId, streamId: string): NexusPath {
-  return nexusPath(`agents/${agentId}/events/${streamId}/meta.json`);
+  return nexusPath(`agents/${agentId}/events/streams/${streamId}/meta.json`);
 }
 
-/** Path to a single event: agents/{agentId}/events/{streamId}/events/{seq}.json */
+/** Path to a single event: agents/{agentId}/events/streams/{streamId}/events/{seq}.json */
 export function agentEventPath(agentId: AgentId, streamId: string, sequence: string): NexusPath {
-  return nexusPath(`agents/${agentId}/events/${streamId}/events/${sequence}.json`);
+  return nexusPath(`agents/${agentId}/events/streams/${streamId}/events/${sequence}.json`);
 }
 
-/** Glob for all events in a stream: agents/{agentId}/events/{streamId}/events/*.json */
+/** Glob for all events in a stream: agents/{agentId}/events/streams/{streamId}/events/*.json */
 export function agentEventGlob(agentId: AgentId, streamId: string): NexusPath {
-  return nexusPath(`agents/${agentId}/events/${streamId}/events/*.json`);
+  return nexusPath(`agents/${agentId}/events/streams/${streamId}/events/*.json`);
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +149,25 @@ export function agentDeadLetterPath(agentId: AgentId, entryId: string): NexusPat
 export function agentDeadLetterGlob(agentId: AgentId): NexusPath {
   return nexusPath(`agents/${agentId}/events/dead-letters/*.json`);
 }
+
+// ---------------------------------------------------------------------------
+// Workspace (agent-scoped file storage)
+// ---------------------------------------------------------------------------
+
+/** Path to a workspace file: agents/{agentId}/workspace/{path} */
+export function agentWorkspacePath(agentId: AgentId, path: string): NexusPath {
+  return nexusPath(`agents/${agentId}/workspace/${path}`);
+}
+
+/** Glob for all workspace files: agents/{agentId}/workspace/* */
+export function agentWorkspaceGlob(agentId: AgentId): NexusPath {
+  return nexusPath(`agents/${agentId}/workspace/*`);
+}
+
+// ---------------------------------------------------------------------------
+// Mailbox — REST+SSE adapter, NOT file-backed.
+// See @koi/ipc-nexus for mailbox path conventions.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Gateway (global namespace — shared across gateway instances)

@@ -33,12 +33,13 @@ export function validateNexusFileSystemConfig(
         },
       };
     }
-    if (!config.basePath.startsWith("/")) {
+    // NexusPath convention: no leading slash, no ".." (#922)
+    if (config.basePath.includes("..")) {
       return {
         ok: false,
         error: {
           code: "VALIDATION",
-          message: "NexusFileSystemConfig.basePath must start with '/'",
+          message: "NexusFileSystemConfig.basePath must not contain '..'",
           retryable: RETRYABLE_DEFAULTS.VALIDATION,
         },
       };

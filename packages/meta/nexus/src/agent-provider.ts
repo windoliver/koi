@@ -75,6 +75,16 @@ export function createNexusAgentProvider(
       const groupId: AgentGroupId | undefined = agent.pid.groupId;
       const ns = computeAgentNamespace(agentId);
 
+      // Namespace contract validation — fail-fast on drift (#922)
+      const expectedPrefix = `agents/${agentIdStr}`;
+      for (const [key, path] of Object.entries(ns)) {
+        if (!(path as string).startsWith(expectedPrefix)) {
+          throw new Error(
+            `Namespace contract violation: ${key} path '${path as string}' does not start with '${expectedPrefix}'`,
+          );
+        }
+      }
+
       // Best-effort namespace provisioning
       const provisionPaths = Object.values(ns);
       if (groupId !== undefined) {

@@ -6,7 +6,7 @@
  *
  * Examples:
  *   agents/{agentId}/bricks/{brickId}.json
- *   agents/{agentId}/events/{streamId}/events/0000000001.json
+ *   agents/{agentId}/events/streams/{streamId}/events/0000000001.json
  *   groups/{groupId}/scratch/{path}
  *
  * Exception: branded type constructors (identity casts) are permitted in L0
