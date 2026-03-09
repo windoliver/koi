@@ -13,7 +13,7 @@ import { RLM_PROCESS_TOOL_NAME } from "./rlm-tool-descriptor.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
-const STUB_CTX = {} as TurnContext;
+const STUB_CTX = { session: { sessionId: "test-session-1" } } as TurnContext;
 
 function createPassthroughNext(): ModelHandler {
   return mock(async (_request: ModelRequest) => {

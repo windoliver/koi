@@ -11,10 +11,17 @@ import type {
   KoiMiddleware,
   ModelRequest,
   ModelResponse,
+  SessionContext,
   TurnContext,
 } from "@koi/core";
 import { formatConstraintMessage } from "./format.js";
 import type { GuidedRetryConfig, GuidedRetryHandle } from "./types.js";
+
+/** Per-session mutable state for the guided-retry middleware. */
+interface GuidedRetrySessionState {
+  constraint: BacktrackConstraint | undefined;
+  remainingInjections: number;
+}
 
 const MIDDLEWARE_NAME = "guided-retry";
 const MIDDLEWARE_PRIORITY = 425;
@@ -25,39 +32,57 @@ const DEFAULT_MAX_INJECTIONS = 1;
  * into model calls after a backtrack event.
  */
 export function createGuidedRetryMiddleware(config: GuidedRetryConfig): GuidedRetryHandle {
-  // let: mutable state — this middleware is stateful by design.
-  // The constraint is set externally (e.g., by a backtrack handler)
-  // and consumed after maxInjections model calls.
-  let constraint: BacktrackConstraint | undefined = config.initialConstraint;
-  let remainingInjections: number =
-    config.initialConstraint?.maxInjections ?? DEFAULT_MAX_INJECTIONS;
+  // Per-session state map — keyed by sessionId to prevent cross-session leaks.
+  const sessions = new Map<string, GuidedRetrySessionState>();
 
-  // If no initial constraint, start with 0 remaining injections
-  if (constraint === undefined) {
-    remainingInjections = 0;
+  function getSession(sessionId: string): GuidedRetrySessionState | undefined {
+    return sessions.get(sessionId);
   }
 
   const middleware: KoiMiddleware = {
     name: MIDDLEWARE_NAME,
     priority: MIDDLEWARE_PRIORITY,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
-      label: "guided-retry",
-      description:
-        constraint !== undefined
-          ? `Constraint active (${String(remainingInjections)} injections remaining): injects hint into model calls`
-          : "Guided retry idle — no active constraint",
-    }),
+
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      const initialConstraint = config.initialConstraint;
+      sessions.set(ctx.sessionId as string, {
+        constraint: initialConstraint,
+        remainingInjections:
+          initialConstraint !== undefined
+            ? (initialConstraint.maxInjections ?? DEFAULT_MAX_INJECTIONS)
+            : 0,
+      });
+    },
+
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      sessions.delete(ctx.sessionId as string);
+    },
+
+    describeCapabilities: (ctx: TurnContext): CapabilityFragment => {
+      const state = getSession(ctx.session.sessionId as string);
+      if (state?.constraint !== undefined) {
+        return {
+          label: "guided-retry",
+          description: `Constraint active (${String(state.remainingInjections)} injections remaining): injects hint into model calls`,
+        };
+      }
+      return {
+        label: "guided-retry",
+        description: "Guided retry idle — no active constraint",
+      };
+    },
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: (request: ModelRequest) => Promise<ModelResponse>,
     ): Promise<ModelResponse> {
-      if (constraint === undefined) {
+      const state = getSession(ctx.session.sessionId as string);
+      if (state?.constraint === undefined) {
         return next(request);
       }
 
-      const systemMessage = formatConstraintMessage(constraint);
+      const systemMessage = formatConstraintMessage(state.constraint);
       const modifiedRequest: ModelRequest = {
         ...request,
         messages: [systemMessage, ...request.messages],
@@ -65,10 +90,10 @@ export function createGuidedRetryMiddleware(config: GuidedRetryConfig): GuidedRe
 
       const response = await next(modifiedRequest);
 
-      remainingInjections--;
-      if (remainingInjections <= 0) {
-        constraint = undefined;
-        remainingInjections = 0;
+      state.remainingInjections--;
+      if (state.remainingInjections <= 0) {
+        state.constraint = undefined;
+        state.remainingInjections = 0;
       }
 
       return response;
@@ -78,18 +103,47 @@ export function createGuidedRetryMiddleware(config: GuidedRetryConfig): GuidedRe
   return {
     middleware,
 
-    setConstraint(c: BacktrackConstraint): void {
-      constraint = c;
-      remainingInjections = c.maxInjections ?? DEFAULT_MAX_INJECTIONS;
+    setConstraint(c: BacktrackConstraint, sessionId?: string): void {
+      if (sessionId !== undefined) {
+        const state = getSession(sessionId);
+        if (state !== undefined) {
+          state.constraint = c;
+          state.remainingInjections = c.maxInjections ?? DEFAULT_MAX_INJECTIONS;
+        }
+        return;
+      }
+      // Fallback: apply to all active sessions (backwards compat)
+      for (const state of sessions.values()) {
+        state.constraint = c;
+        state.remainingInjections = c.maxInjections ?? DEFAULT_MAX_INJECTIONS;
+      }
     },
 
-    clearConstraint(): void {
-      constraint = undefined;
-      remainingInjections = 0;
+    clearConstraint(sessionId?: string): void {
+      if (sessionId !== undefined) {
+        const state = getSession(sessionId);
+        if (state !== undefined) {
+          state.constraint = undefined;
+          state.remainingInjections = 0;
+        }
+        return;
+      }
+      for (const state of sessions.values()) {
+        state.constraint = undefined;
+        state.remainingInjections = 0;
+      }
     },
 
-    hasConstraint(): boolean {
-      return constraint !== undefined;
+    hasConstraint(sessionId?: string): boolean {
+      if (sessionId !== undefined) {
+        const state = getSession(sessionId);
+        return state?.constraint !== undefined;
+      }
+      // Fallback: true if any session has a constraint
+      for (const state of sessions.values()) {
+        if (state.constraint !== undefined) return true;
+      }
+      return false;
     },
   };
 }

@@ -35,6 +35,13 @@ import type {
   ToolFailureRequest,
 } from "./types.js";
 
+/** Per-session mutable state for the semantic-retry middleware. */
+interface SemanticRetrySessionState {
+  records: readonly RetryRecord[];
+  pendingAction: RetryAction | undefined;
+  budget: number;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -158,34 +165,39 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
   const rewriterTimeoutMs = config.rewriterTimeoutMs ?? DEFAULT_REWRITER_TIMEOUT_MS;
   const onRetry = config.onRetry;
 
-  // let: mutable state — this middleware is stateful by design.
-  // It tracks retry history within a session and manages a pending retry action
-  // that will be applied to the next model call.
-  let records: readonly RetryRecord[] = [];
-  let pendingAction: RetryAction | undefined;
-  let budget: number = maxRetries;
+  // Per-session state map — keyed by sessionId to prevent cross-session leaks.
+  const sessions = new Map<string, SemanticRetrySessionState>();
+
+  function getSession(sessionId: string): SemanticRetrySessionState | undefined {
+    return sessions.get(sessionId);
+  }
+
+  function createSessionState(): SemanticRetrySessionState {
+    return { records: [], pendingAction: undefined, budget: maxRetries };
+  }
 
   async function handleFailure(
+    state: SemanticRetrySessionState,
     error: unknown,
     request: ModelRequest | ToolFailureRequest,
     turnIndex: number,
   ): Promise<void> {
     // Guard: skip analysis once budget is exhausted — prevents negative counter
-    if (budget <= 0) return;
+    if (state.budget <= 0) return;
 
-    const ctx: FailureContext = { error, request, records, turnIndex };
+    const ctx: FailureContext = { error, request, records: state.records, turnIndex };
     const { failureClass, classifyFailed } = await classifyWithFallback(
       analyzer,
       ctx,
       analyzerTimeoutMs,
     );
 
-    budget--;
+    state.budget--;
     const action = selectActionWithFallback(
       analyzer,
       failureClass,
-      records,
-      budget,
+      state.records,
+      state.budget,
       maxRetries,
       error,
       classifyFailed,
@@ -197,8 +209,8 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
       actionTaken: action,
       succeeded: false,
     };
-    records = trimToRecent([...records, record], maxHistorySize);
-    pendingAction = action;
+    state.records = trimToRecent([...state.records, record], maxHistorySize);
+    state.pendingAction = action;
     onRetry?.(record);
   }
 
@@ -206,59 +218,72 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     name: MIDDLEWARE_NAME,
     priority: MIDDLEWARE_PRIORITY,
 
-    async onSessionStart(_ctx: SessionContext): Promise<void> {
-      records = [];
-      pendingAction = undefined;
-      budget = maxRetries;
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      sessions.set(ctx.sessionId as string, createSessionState());
     },
 
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
-      label: "semantic-retry",
-      description: `Semantic retry: ${String(budget)}/${String(maxRetries)} retries remaining, failure analysis + prompt rewrite`,
-    }),
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      sessions.delete(ctx.sessionId as string);
+    },
+
+    describeCapabilities: (ctx: TurnContext): CapabilityFragment => {
+      const state = getSession(ctx.session.sessionId as string);
+      const currentBudget = state?.budget ?? maxRetries;
+      return {
+        label: "semantic-retry",
+        description: `Semantic retry: ${String(currentBudget)}/${String(maxRetries)} retries remaining, failure analysis + prompt rewrite`,
+      };
+    },
 
     async wrapModelCall(
       ctx: TurnContext,
       request: ModelRequest,
       next: (request: ModelRequest) => Promise<ModelResponse>,
     ): Promise<ModelResponse> {
+      const state = getSession(ctx.session.sessionId as string);
+      // No session state — pass through (session not started yet or already ended)
+      if (state === undefined) {
+        return next(request);
+      }
+
       // Guard clause: fast path when no pending action
-      if (pendingAction === undefined) {
+      if (state.pendingAction === undefined) {
         try {
           return await next(request);
         } catch (e: unknown) {
-          await handleFailure(e, request, ctx.turnIndex);
+          await handleFailure(state, e, request, ctx.turnIndex);
           throw e;
         }
       }
 
       // Abort: throw immediately without calling next
-      if (pendingAction.kind === "abort") {
-        const reason = pendingAction.reason;
-        pendingAction = undefined;
+      if (state.pendingAction.kind === "abort") {
+        const reason = state.pendingAction.reason;
+        state.pendingAction = undefined;
         throw new Error(`Semantic retry aborted: ${reason}`);
       }
 
       // Build rewrite context from latest failure record
-      const lastClass = records[records.length - 1]?.failureClass ?? FALLBACK_FAILURE_CLASS;
+      const lastClass =
+        state.records[state.records.length - 1]?.failureClass ?? FALLBACK_FAILURE_CLASS;
       const rewriteCtx: RewriteContext = {
         failureClass: lastClass,
-        records,
+        records: state.records,
         turnIndex: ctx.turnIndex,
       };
       const modifiedRequest = await rewriteWithFallback(
         rewriter,
         request,
-        pendingAction,
+        state.pendingAction,
         rewriteCtx,
         rewriterTimeoutMs,
       );
-      pendingAction = undefined;
+      state.pendingAction = undefined;
 
       try {
         return await next(modifiedRequest);
       } catch (e: unknown) {
-        await handleFailure(e, request, ctx.turnIndex);
+        await handleFailure(state, e, request, ctx.turnIndex);
         throw e;
       }
     },
@@ -268,15 +293,18 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
       request: ToolRequest,
       next: (request: ToolRequest) => Promise<ToolResponse>,
     ): Promise<ToolResponse> {
+      const state = getSession(ctx.session.sessionId as string);
       try {
         return await next(request);
       } catch (e: unknown) {
-        const toolFailure: ToolFailureRequest = {
-          kind: "tool",
-          toolId: request.toolId,
-          input: request.input,
-        };
-        await handleFailure(e, toolFailure, ctx.turnIndex);
+        if (state !== undefined) {
+          const toolFailure: ToolFailureRequest = {
+            kind: "tool",
+            toolId: request.toolId,
+            input: request.input,
+          };
+          await handleFailure(state, e, toolFailure, ctx.turnIndex);
+        }
         throw e;
       }
     },
@@ -284,12 +312,36 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
 
   return {
     middleware,
-    getRecords: () => records,
-    getRetryBudget: () => budget,
-    reset: () => {
-      records = [];
-      pendingAction = undefined;
-      budget = maxRetries;
+    getRecords: (sessionId?: string) => {
+      if (sessionId !== undefined) {
+        return getSession(sessionId)?.records ?? [];
+      }
+      // Fallback: return records from first active session (backwards compat)
+      const first = sessions.values().next();
+      return first.done ? [] : first.value.records;
+    },
+    getRetryBudget: (sessionId?: string) => {
+      if (sessionId !== undefined) {
+        return getSession(sessionId)?.budget ?? maxRetries;
+      }
+      const first = sessions.values().next();
+      return first.done ? maxRetries : first.value.budget;
+    },
+    reset: (sessionId?: string) => {
+      if (sessionId !== undefined) {
+        const state = getSession(sessionId);
+        if (state !== undefined) {
+          state.records = [];
+          state.pendingAction = undefined;
+          state.budget = maxRetries;
+        }
+        return;
+      }
+      for (const state of sessions.values()) {
+        state.records = [];
+        state.pendingAction = undefined;
+        state.budget = maxRetries;
+      }
     },
   };
 }

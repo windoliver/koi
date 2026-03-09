@@ -309,6 +309,9 @@ describe("Time-travel middleware -- rollback + guided retry", () => {
 
     const guidedRetry = createGuidedRetryMiddleware({});
 
+    // Initialize per-session state
+    await guidedRetry.middleware.onSessionStart?.(createMockSessionContext());
+
     // --- Turn 0: write file A ---
     const ctx0 = createMockTurnContext({ turnIndex: 0 });
     const toolSpy = createSpyToolHandler({ output: { ok: true } });
@@ -421,7 +424,9 @@ describe("Time-travel middleware -- full scenario", () => {
     const modelChain = composeModelChain(sorted, modelSpy.handler);
 
     // Start session
-    await eventTrace.middleware.onSessionStart?.(createMockSessionContext());
+    const sessionCtx = createMockSessionContext();
+    await eventTrace.middleware.onSessionStart?.(sessionCtx);
+    await guidedRetry.middleware.onSessionStart?.(sessionCtx);
 
     // --- Turn 0: update config.json ---
     const ctx0 = createMockTurnContext({ turnIndex: 0 });

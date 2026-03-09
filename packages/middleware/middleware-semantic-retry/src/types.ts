@@ -151,10 +151,10 @@ export interface SemanticRetryConfig {
 export interface SemanticRetryHandle {
   /** The KoiMiddleware instance to register in the middleware chain. */
   readonly middleware: KoiMiddleware;
-  /** Returns an immutable snapshot of retry history. */
-  readonly getRecords: () => readonly RetryRecord[];
-  /** Returns remaining retry budget. */
-  readonly getRetryBudget: () => number;
-  /** Resets all state (records, budget, pending action). */
-  readonly reset: () => void;
+  /** Returns an immutable snapshot of retry history. Pass sessionId for per-session query. */
+  readonly getRecords: (sessionId?: string) => readonly RetryRecord[];
+  /** Returns remaining retry budget. Pass sessionId for per-session query. */
+  readonly getRetryBudget: (sessionId?: string) => number;
+  /** Resets all state (records, budget, pending action). Pass sessionId for per-session reset. */
+  readonly reset: (sessionId?: string) => void;
 }

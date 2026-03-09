@@ -15,19 +15,14 @@ import type {
   TurnContext,
   VariantAttempt,
 } from "@koi/core";
-import {
-  type CircuitBreaker,
-  createCircuitBreaker,
-  DEFAULT_CIRCUIT_BREAKER_CONFIG,
-} from "@koi/errors";
-import {
-  createRoundRobinState,
-  executeWithFailover,
-  type RoundRobinState,
-  type VariantPool,
-} from "@koi/variant-selection";
+import { createCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/errors";
+import { createRoundRobinState, executeWithFailover } from "@koi/variant-selection";
 import { buildVariantPools } from "./build-pools.js";
-import type { DegenerateHandle, DegenerateMiddlewareConfig } from "./types.js";
+import type {
+  DegenerateHandle,
+  DegenerateMiddlewareConfig,
+  DegenerateSessionState,
+} from "./types.js";
 
 /** Creates a degenerate middleware with variant selection and failover. */
 export function createDegenerateMiddleware(config: DegenerateMiddlewareConfig): DegenerateHandle {
@@ -35,72 +30,92 @@ export function createDegenerateMiddleware(config: DegenerateMiddlewareConfig): 
   const random = config.random ?? Math.random;
   const cbConfig = config.circuitBreakerConfig ?? DEFAULT_CIRCUIT_BREAKER_CONFIG;
 
-  // Mutable internal state — initialized in onSessionStart
-  let pools = new Map<string, VariantPool<ToolHandler>>();
-  let toolToCapability = new Map<string, string>();
-  let breakers = new Map<string, CircuitBreaker>();
-  let roundRobinStates = new Map<string, RoundRobinState>();
-  let attemptLog = new Map<string, VariantAttempt[]>();
+  // Per-session state keyed by session ID
+  const sessions = new Map<string, DegenerateSessionState>();
 
-  function initBreakers(): void {
-    breakers = new Map();
-    for (const [, pool] of pools) {
+  function initBreakers(state: DegenerateSessionState): void {
+    for (const [, pool] of state.pools) {
       for (const variant of pool.variants) {
-        if (!breakers.has(variant.id)) {
-          breakers.set(variant.id, createCircuitBreaker(cbConfig, clock));
+        if (!state.breakers.has(variant.id)) {
+          state.breakers.set(variant.id, createCircuitBreaker(cbConfig, clock));
         }
       }
     }
   }
 
-  function logAttempts(capability: string, attempts: readonly VariantAttempt[]): void {
-    const existing = attemptLog.get(capability) ?? [];
-    attemptLog.set(capability, [...existing, ...attempts]);
+  function logAttempts(
+    state: DegenerateSessionState,
+    capability: string,
+    attempts: readonly VariantAttempt[],
+  ): void {
+    const existing = state.attemptLog.get(capability) ?? [];
+    state.attemptLog.set(capability, [...existing, ...attempts]);
+  }
+
+  /** Resolve session state by explicit ID or fall back to the sole active session. */
+  function resolveState(sessionId?: string): DegenerateSessionState | undefined {
+    if (sessionId !== undefined) {
+      return sessions.get(sessionId);
+    }
+    // Fallback: if exactly one session is active, use it
+    if (sessions.size === 1) {
+      return sessions.values().next().value as DegenerateSessionState;
+    }
+    return undefined;
   }
 
   const middleware: KoiMiddleware = {
     name: "degenerate",
     priority: 460,
 
-    async onSessionStart(_ctx: SessionContext): Promise<void> {
+    async onSessionStart(ctx: SessionContext): Promise<void> {
       const result = await buildVariantPools({
         forgeStore: config.forgeStore,
         capabilityConfigs: config.capabilityConfigs,
         createToolExecutor: config.createToolExecutor,
         clock,
       });
-      pools = new Map(result.pools);
-      toolToCapability = new Map(result.toolToCapability);
-      initBreakers();
-      roundRobinStates = new Map();
-      attemptLog = new Map();
+      const state: DegenerateSessionState = {
+        pools: new Map(result.pools),
+        toolToCapability: new Map(result.toolToCapability),
+        breakers: new Map(),
+        roundRobinStates: new Map(),
+        attemptLog: new Map(),
+      };
+      initBreakers(state);
+      sessions.set(ctx.sessionId as string, state);
     },
 
-    async onSessionEnd(_ctx: SessionContext): Promise<void> {
-      // Dispose circuit breakers and clear pools
-      for (const [, breaker] of breakers) {
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      const sid = ctx.sessionId as string;
+      const state = sessions.get(sid);
+      if (state === undefined) return;
+      // Dispose circuit breakers
+      for (const [, breaker] of state.breakers) {
         breaker.reset();
       }
-      pools.clear();
-      toolToCapability.clear();
-      breakers.clear();
-      roundRobinStates.clear();
-      attemptLog.clear();
+      sessions.delete(sid);
     },
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
+      const state = sessions.get(ctx.session.sessionId as string);
+      if (state === undefined) {
+        // No session state — pass through
+        return next(request);
+      }
+
       // Look up which capability this tool belongs to
-      const capability = toolToCapability.get(request.toolId);
+      const capability = state.toolToCapability.get(request.toolId);
       if (capability === undefined) {
         // Not a degenerate tool — pass through
         return next(request);
       }
 
-      const pool = pools.get(capability);
+      const pool = state.pools.get(capability);
       if (pool === undefined || pool.variants.length === 0) {
         // No variants available — pass through
         return next(request);
@@ -109,43 +124,35 @@ export function createDegenerateMiddleware(config: DegenerateMiddlewareConfig): 
       const strategy = pool.config.selectionStrategy;
 
       // Get or create round-robin state for this capability
-      let rrState = roundRobinStates.get(capability);
+      let rrState = state.roundRobinStates.get(capability);
       if (rrState === undefined) {
         rrState = createRoundRobinState();
-        roundRobinStates.set(capability, rrState);
+        state.roundRobinStates.set(capability, rrState);
       }
 
       const outcome = await executeWithFailover({
         pool,
-        breakers,
+        breakers: state.breakers,
         selectOptions: {
           strategy,
           ctx: { input: request.input, clock, random },
           roundRobinState: rrState,
         },
         execute: async (variant) => {
-          // For the variant matching the current tool, use the normal middleware chain
-          const currentToolVariant = pool.variants.find((v) => v.id === variant.id);
-          if (currentToolVariant !== undefined) {
-            // Check if this is the tool the LLM actually called
-            // If so, use `next()` to preserve the middleware chain
-            // Otherwise, call the variant's handler directly
-            const isCalledTool =
-              toolToCapability.get(request.toolId) === capability &&
-              pool.variants[0]?.id === variant.id;
-            if (isCalledTool) {
-              return next(request);
-            }
+          // Use the middleware chain (next) when the selected variant IS the
+          // tool the model actually called; otherwise route through next with
+          // the variant's tool ID so failover paths also traverse the chain.
+          if (variant.id === request.toolId) {
+            return next(request);
           }
-          // Alternative variant — call handler directly (bypasses component map)
-          return variant.value(request);
+          return next({ ...request, toolId: variant.id });
         },
         clock,
       });
 
       // Log attempts
       const attempts = outcome.ok ? outcome.value.attempts : outcome.attempts;
-      logAttempts(capability, attempts);
+      logAttempts(state, capability, attempts);
 
       // Fire callbacks for failover events
       if (outcome.ok && outcome.value.attempts.length > 1) {
@@ -175,21 +182,29 @@ export function createDegenerateMiddleware(config: DegenerateMiddlewareConfig): 
       };
     },
 
-    describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
-      if (pools.size === 0) return undefined;
-      const totalVariants = [...pools.values()].reduce((sum, p) => sum + p.variants.length, 0);
+    describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
+      const state = sessions.get(ctx.session.sessionId as string);
+      if (state === undefined || state.pools.size === 0) return undefined;
+      const totalVariants = [...state.pools.values()].reduce(
+        (sum, p) => sum + p.variants.length,
+        0,
+      );
       return {
         label: "degeneracy",
-        description: `${String(pools.size)} capabilities with ${String(totalVariants)} degenerate variants`,
+        description: `${String(state.pools.size)} capabilities with ${String(totalVariants)} degenerate variants`,
       };
     },
   };
 
   return {
     middleware,
-    getVariantPool: (capability: string): VariantPool<ToolHandler> | undefined =>
-      pools.get(capability),
-    getAttemptLog: (capability: string): readonly VariantAttempt[] =>
-      attemptLog.get(capability) ?? [],
+    getVariantPool: (capability: string, sessionId?: string) => {
+      const state = resolveState(sessionId);
+      return state?.pools.get(capability);
+    },
+    getAttemptLog: (capability: string, sessionId?: string): readonly VariantAttempt[] => {
+      const state = resolveState(sessionId);
+      return state?.attemptLog.get(capability) ?? [];
+    },
   };
 }

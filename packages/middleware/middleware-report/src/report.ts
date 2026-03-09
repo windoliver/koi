@@ -57,7 +57,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
   const summarizerTimeoutMs = config.summarizerTimeoutMs ?? DEFAULT_SUMMARIZER_TIMEOUT_MS;
   const formatter = config.formatter ?? mapReportToMarkdown;
   const sessions = new Map<string, ReportSessionState>();
-  let lastReport: RunReport | undefined;
+  const lastReports = new Map<string, RunReport>();
 
   const middleware: KoiMiddleware = {
     name: "report",
@@ -357,7 +357,7 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
         recommendations = [];
       }
 
-      lastReport = {
+      const report: RunReport = {
         agentId: toAgentId(ctx.agentId),
         sessionId: ctx.sessionId,
         runId: ctx.runId,
@@ -370,11 +370,12 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
         cost,
         recommendations,
       };
+      lastReports.set(ctx.sessionId as string, report);
 
       if (config.onReport) {
         try {
-          const formatted = formatter(lastReport);
-          await config.onReport(lastReport, formatted);
+          const formatted = formatter(report);
+          await config.onReport(report, formatted);
         } catch (e: unknown) {
           swallowError(e, {
             package: "middleware-report",
@@ -390,11 +391,13 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
 
   return {
     middleware,
-    getReport: (): RunReport | undefined => lastReport,
-    getProgress: (): ProgressSnapshot => {
-      // Return snapshot from the most recent active session, or zeroes
-      const entries = [...sessions.values()];
-      const state = entries.length > 0 ? entries[entries.length - 1] : undefined;
+    getReport: (sessionId?: string): RunReport | undefined => {
+      if (sessionId) return lastReports.get(sessionId);
+      const entries = [...lastReports.values()];
+      return entries.length > 0 ? entries[entries.length - 1] : undefined;
+    },
+    getProgress: (sessionId?: string): ProgressSnapshot => {
+      const state = sessionId ? sessions.get(sessionId) : [...sessions.values()].pop();
       if (!state) {
         return {
           turnIndex: 0,

@@ -175,10 +175,13 @@ describe("createDegenerateMiddleware", () => {
 
     await handle.middleware.onSessionStart?.(makeSessionCtx());
 
-    // The primary tool call will use the chain (next), which also fails since
-    // the handler for b1 throws. Then failover tries b2.
-    const next: ToolHandler = async () => {
-      throw new Error("api down");
+    // Both variants route through next() with variant.id as toolId.
+    // Primary (b1) fails, failover (b2) succeeds.
+    const next: ToolHandler = async (req) => {
+      if (req.toolId === "b1") {
+        throw new Error("api down");
+      }
+      return { output: "scrape-result" };
     };
     const response = await handle.middleware.wrapToolCall?.(
       makeTurnCtx(),

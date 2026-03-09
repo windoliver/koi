@@ -121,7 +121,7 @@ function createProfileMiddleware(
     | Extract<ValidatedToolSelectorConfig, { readonly kind: "profile" }>
     | Extract<ValidatedToolSelectorConfig, { readonly kind: "auto" }>,
 ): KoiMiddleware {
-  const { minTools = DEFAULT_MIN_TOOLS } = config;
+  const { minTools = DEFAULT_MIN_TOOLS, maxTools } = config;
 
   // Resolve profile at factory time. If the model changes after middleware
   // creation (e.g., fallback), the tier cap will NOT be re-evaluated.
@@ -154,6 +154,9 @@ function createProfileMiddleware(
     // Profile filtering is static — always apply regardless of query content
     const filteredTools = tools.filter((t) => allowedSet.has(t.name));
 
+    // Apply maxTools cap if configured
+    const cappedTools = maxTools !== undefined ? filteredTools.slice(0, maxTools) : filteredTools;
+
     // Detect profile tools missing from available tools (for observability)
     const availableNames = new Set(tools.map((t) => t.name));
     const missingTools = resolved.toolNames.filter((name) => !availableNames.has(name));
@@ -161,15 +164,16 @@ function createProfileMiddleware(
     const metadata: JsonObject = {
       ...request.metadata,
       toolsBeforeFilter: tools.length,
-      toolsAfterFilter: filteredTools.length,
+      toolsAfterFilter: cappedTools.length,
       ...(missingTools.length > 0 ? { profileMissingTools: missingTools } : {}),
     };
 
-    return { ...request, tools: filteredTools, metadata };
+    return { ...request, tools: cappedTools, metadata };
   }
 
   const profileDesc = `profile "${config.profile}" (${String(resolved.toolNames.length)} tools)`;
-  const description = `Tool filtering: ${profileDesc}, skip below ${String(minTools)}`;
+  const maxDesc = maxTools !== undefined ? `, cap at ${String(maxTools)}` : "";
+  const description = `Tool filtering: ${profileDesc}, skip below ${String(minTools)}${maxDesc}`;
 
   return buildMiddleware(filterRequest, description);
 }

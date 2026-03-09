@@ -3,12 +3,17 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { BacktrackReason } from "@koi/core";
+import type { BacktrackReason, SessionContext } from "@koi/core";
 import { createRetryStack } from "../retry-stack.js";
 
 function makeReason(message: string): BacktrackReason {
   return { kind: "manual", message, timestamp: Date.now() };
 }
+
+const STUB_SESSION: SessionContext = {
+  sessionId: "test-session-1",
+  agentId: "test-agent",
+} as SessionContext;
 
 describe("retry-stack composition", () => {
   test("full stack composes without error", () => {
@@ -26,8 +31,13 @@ describe("retry-stack composition", () => {
     expect(names).toContain("guided-retry");
   });
 
-  test("reset and re-use cycle works", () => {
+  test("reset and re-use cycle works", async () => {
     const bundle = createRetryStack({});
+
+    // Initialize session so per-session state exists
+    for (const mw of bundle.middleware) {
+      if (mw.onSessionStart) await mw.onSessionStart(STUB_SESSION);
+    }
 
     // Set some state
     bundle.guidedRetry.setConstraint({

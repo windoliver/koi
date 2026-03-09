@@ -1,18 +1,25 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ModelRequest, ModelResponse, ToolRequest, ToolResponse } from "@koi/core";
 import {
+  createMockSessionContext,
   createMockTurnContext,
   createSpyModelHandler,
   createSpyToolHandler,
 } from "@koi/test-utils";
 import { createSemanticRetryMiddleware } from "./semantic-retry.js";
-import type { FailureAnalyzer, FailureContext } from "./types.js";
+import type { FailureAnalyzer, FailureContext, SemanticRetryHandle } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+const mockSessionCtx = createMockSessionContext();
 const mockCtx = createMockTurnContext();
+
+/** Initialize per-session state so wrapModelCall/wrapToolCall find it. */
+async function initSession(handle: SemanticRetryHandle): Promise<void> {
+  await handle.middleware.onSessionStart?.(mockSessionCtx);
+}
 
 const baseRequest: ModelRequest = {
   messages: [
@@ -59,6 +66,7 @@ describe("createSemanticRetryMiddleware", () => {
   describe("passthrough (no failures)", () => {
     test("passes model call through unchanged when no pending action", async () => {
       const handle = createSemanticRetryMiddleware({});
+      await initSession(handle);
       const spy = createSpyModelHandler();
 
       const response = await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
@@ -71,6 +79,7 @@ describe("createSemanticRetryMiddleware", () => {
 
     test("passes tool call through unchanged when no pending action", async () => {
       const handle = createSemanticRetryMiddleware({});
+      await initSession(handle);
       const spy = createSpyToolHandler();
 
       const response = await handle.middleware.wrapToolCall?.(
@@ -85,6 +94,7 @@ describe("createSemanticRetryMiddleware", () => {
 
     test("records remain empty after successful calls", async () => {
       const handle = createSemanticRetryMiddleware({});
+      await initSession(handle);
       const spy = createSpyModelHandler();
 
       await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
@@ -96,6 +106,7 @@ describe("createSemanticRetryMiddleware", () => {
   describe("model call failure detection", () => {
     test("catches model call error and sets pending action", async () => {
       const handle = createSemanticRetryMiddleware({});
+      await initSession(handle);
       const error = new Error("model failed");
 
       await expect(
@@ -109,6 +120,7 @@ describe("createSemanticRetryMiddleware", () => {
 
     test("decrements retry budget on failure", async () => {
       const handle = createSemanticRetryMiddleware({ maxRetries: 3 });
+      await initSession(handle);
       const error = new Error("model failed");
 
       expect(handle.getRetryBudget()).toBe(3);
@@ -124,6 +136,7 @@ describe("createSemanticRetryMiddleware", () => {
   describe("prompt rewriting on subsequent call", () => {
     test("applies rewrite on model call after failure", async () => {
       const handle = createSemanticRetryMiddleware({});
+      await initSession(handle);
       const spy = createSpyModelHandler();
 
       // First call fails
@@ -145,6 +158,7 @@ describe("createSemanticRetryMiddleware", () => {
 
     test("clears pending action after rewrite is applied", async () => {
       const handle = createSemanticRetryMiddleware({});
+      await initSession(handle);
       const spy = createSpyModelHandler();
 
       // Fail then succeed
@@ -168,6 +182,7 @@ describe("createSemanticRetryMiddleware", () => {
   describe("tool call failure detection", () => {
     test("catches tool call error and records failure", async () => {
       const handle = createSemanticRetryMiddleware({});
+      await initSession(handle);
       const error = new Error("tool failed");
 
       await expect(
@@ -179,6 +194,7 @@ describe("createSemanticRetryMiddleware", () => {
 
     test("sets pending action after tool failure for next model call", async () => {
       const handle = createSemanticRetryMiddleware({});
+      await initSession(handle);
       const spy = createSpyModelHandler();
 
       // Tool fails
@@ -199,6 +215,7 @@ describe("createSemanticRetryMiddleware", () => {
   describe("budget enforcement", () => {
     test("forces abort when budget is exhausted", async () => {
       const handle = createSemanticRetryMiddleware({ maxRetries: 1 });
+      await initSession(handle);
 
       // First failure uses the budget
       await expect(
@@ -225,6 +242,7 @@ describe("createSemanticRetryMiddleware", () => {
         maxRetries: 100,
         maxHistorySize: 3,
       });
+      await initSession(handle);
 
       // Generate 5 failures
       for (const _ of Array.from({ length: 5 })) {
@@ -258,6 +276,7 @@ describe("createSemanticRetryMiddleware", () => {
         analyzer: slowAnalyzer,
         analyzerTimeoutMs: 50,
       });
+      await initSession(handle);
 
       await expect(
         handle.middleware.wrapModelCall?.(
@@ -287,6 +306,7 @@ describe("createSemanticRetryMiddleware", () => {
         rewriter: slowRewriter,
         rewriterTimeoutMs: 50,
       });
+      await initSession(handle);
       const spy = createSpyModelHandler();
 
       // Fail to set pending action
@@ -315,6 +335,7 @@ describe("createSemanticRetryMiddleware", () => {
       const handle = createSemanticRetryMiddleware({
         analyzer: { classify: classifyFn, selectAction: selectActionFn },
       });
+      await initSession(handle);
 
       await expect(
         handle.middleware.wrapModelCall?.(
@@ -334,6 +355,7 @@ describe("createSemanticRetryMiddleware", () => {
     test("invokes onRetry with record after failure", async () => {
       const onRetry = mock(() => {});
       const handle = createSemanticRetryMiddleware({ onRetry });
+      await initSession(handle);
 
       await expect(
         handle.middleware.wrapModelCall?.(
@@ -354,6 +376,7 @@ describe("createSemanticRetryMiddleware", () => {
   describe("reset()", () => {
     test("clears all state", async () => {
       const handle = createSemanticRetryMiddleware({ maxRetries: 5 });
+      await initSession(handle);
 
       // Accumulate some state
       await expect(
@@ -384,6 +407,7 @@ describe("createSemanticRetryMiddleware", () => {
       };
 
       const handle = createSemanticRetryMiddleware({ analyzer: brokenAnalyzer });
+      await initSession(handle);
 
       await expect(
         handle.middleware.wrapModelCall?.(
@@ -406,6 +430,7 @@ describe("createSemanticRetryMiddleware", () => {
       };
 
       const handle = createSemanticRetryMiddleware({ analyzer: brokenAnalyzer });
+      await initSession(handle);
 
       await expect(
         handle.middleware.wrapModelCall?.(
@@ -423,6 +448,7 @@ describe("createSemanticRetryMiddleware", () => {
   describe("budget underflow guard", () => {
     test("budget never goes negative after exhaustion", async () => {
       const handle = createSemanticRetryMiddleware({ maxRetries: 1 });
+      await initSession(handle);
 
       // First failure: budget 1 → 0, sets abort
       await expect(
@@ -454,6 +480,7 @@ describe("createSemanticRetryMiddleware", () => {
   describe("onSessionStart resets state", () => {
     test("budget resets to maxRetries on session start", async () => {
       const handle = createSemanticRetryMiddleware({ maxRetries: 3 });
+      await initSession(handle);
 
       // Exhaust some budget
       await expect(
@@ -465,14 +492,15 @@ describe("createSemanticRetryMiddleware", () => {
       ).rejects.toThrow();
       expect(handle.getRetryBudget()).toBe(2);
 
-      // Simulate new session
-      await handle.middleware.onSessionStart?.({} as never);
+      // Simulate new session (re-initializes the same session ID)
+      await initSession(handle);
 
       expect(handle.getRetryBudget()).toBe(3);
     });
 
     test("records and pendingAction are cleared on session start", async () => {
       const handle = createSemanticRetryMiddleware({ maxRetries: 5 });
+      await initSession(handle);
 
       // Generate a failure to create records + pendingAction
       await expect(
@@ -485,8 +513,8 @@ describe("createSemanticRetryMiddleware", () => {
 
       expect(handle.getRecords()).toHaveLength(1);
 
-      // Simulate new session
-      await handle.middleware.onSessionStart?.({} as never);
+      // Simulate new session (re-initializes the same session ID)
+      await initSession(handle);
 
       expect(handle.getRecords()).toHaveLength(0);
 

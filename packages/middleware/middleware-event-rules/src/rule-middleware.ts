@@ -157,8 +157,27 @@ export function createEventRulesMiddleware(config: EventRulesConfig): KoiMiddlew
         };
       }
 
-      // Execute tool
-      const response = await next(request);
+      // Execute tool — wrap in try/catch so failure-driven rules still fire
+      let response: ToolResponse;
+      try {
+        response = await next(request);
+      } catch (error: unknown) {
+        // Emit failure event so escalation / circuit-break rules can react
+        const event: RuleEvent = {
+          type: "tool_call",
+          sessionId,
+          fields: {
+            ...flattenInput(request.input),
+            toolId: request.toolId,
+            ok: false,
+          },
+        };
+        const newSkipIds = await evaluateAndExecute(event, actionContext);
+        for (const toolId of newSkipIds) {
+          skipSet.add(toolId);
+        }
+        throw error;
+      }
 
       // Build event with ok derived from metadata
       const ok = !(response.metadata?.error === true);
@@ -166,9 +185,9 @@ export function createEventRulesMiddleware(config: EventRulesConfig): KoiMiddlew
         type: "tool_call",
         sessionId,
         fields: {
+          ...flattenInput(request.input),
           toolId: request.toolId,
           ok,
-          ...flattenInput(request.input),
         },
       };
 

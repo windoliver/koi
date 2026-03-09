@@ -56,9 +56,22 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
 
   const sessions = new Map<string, PlanSessionState>();
 
-  /** Enrich a model request with the plan system message and tool descriptor. */
-  function enrichRequest(request: ModelRequest): ModelRequest {
-    const messages = [PLAN_SYSTEM_MESSAGE, ...request.messages];
+  /** Enrich a model request with the plan system message, current plan state, and tool descriptor. */
+  function enrichRequest(request: ModelRequest, currentPlan: readonly PlanItem[]): ModelRequest {
+    const messages: readonly InboundMessage[] = (() => {
+      if (currentPlan.length === 0) {
+        return [PLAN_SYSTEM_MESSAGE, ...request.messages];
+      }
+      const planText = currentPlan
+        .map((item, i) => `${String(i + 1)}. [${item.status}] ${item.content}`)
+        .join("\n");
+      const planStateMessage: InboundMessage = {
+        senderId: "system:plan",
+        timestamp: 0,
+        content: [{ kind: "text", text: `Current plan state:\n${planText}` }],
+      };
+      return [PLAN_SYSTEM_MESSAGE, planStateMessage, ...request.messages];
+    })();
     const tools =
       request.tools !== undefined
         ? [...request.tools, WRITE_PLAN_DESCRIPTOR]
@@ -151,7 +164,7 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const state = sessions.get(ctx.session.sessionId as string);
-      const enriched = enrichRequest(request);
+      const enriched = enrichRequest(request, state?.currentPlan ?? []);
       const response = await next(enriched);
 
       // Attach current plan to response metadata for observability
@@ -164,11 +177,12 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
     },
 
     async *wrapModelStream(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      const enriched = enrichRequest(request);
+      const state = sessions.get(ctx.session.sessionId as string);
+      const enriched = enrichRequest(request, state?.currentPlan ?? []);
       yield* next(enriched);
     },
 
