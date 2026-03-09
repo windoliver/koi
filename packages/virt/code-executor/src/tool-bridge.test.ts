@@ -31,7 +31,10 @@ describe("createToolBridge", () => {
     const result = await callToolRaw?.(JSON.stringify({ name: "my_tool", args: {} }));
     const parsed = JSON.parse(result ?? "{}") as Record<string, unknown>;
 
-    expect(parsed.result).toBe("my_tool-result");
+    // Envelope protocol: { __koi_ok: true, value: ... }
+    expect(parsed.__koi_ok).toBe(true);
+    const value = parsed.value as Record<string, unknown>;
+    expect(value.result).toBe("my_tool-result");
   });
 
   test("returns error for unknown tool", async () => {
@@ -45,7 +48,8 @@ describe("createToolBridge", () => {
     const result = await callToolRaw?.(JSON.stringify({ name: "nonexistent" }));
     const parsed = JSON.parse(result ?? "{}") as Record<string, unknown>;
 
-    expect(parsed.__error).toContain("Unknown tool");
+    expect(parsed.__koi_ok).toBe(false);
+    expect(parsed.__koi_error).toContain("Unknown tool");
   });
 
   test("enforces call budget", async () => {
@@ -61,7 +65,8 @@ describe("createToolBridge", () => {
     const result = await callToolRaw?.(JSON.stringify({ name: "my_tool" }));
     const parsed = JSON.parse(result ?? "{}") as Record<string, unknown>;
 
-    expect(parsed.__error).toContain("budget exceeded");
+    expect(parsed.__koi_ok).toBe(false);
+    expect(parsed.__koi_error).toContain("budget exceeded");
     expect(bridge.callCount()).toBe(3);
   });
 
@@ -79,7 +84,8 @@ describe("createToolBridge", () => {
     const result = await callToolRaw?.(JSON.stringify({ name: "fail_tool" }));
     const parsed = JSON.parse(result ?? "{}") as Record<string, unknown>;
 
-    expect(parsed.__error).toBe("tool crashed");
+    expect(parsed.__koi_ok).toBe(false);
+    expect(parsed.__koi_error).toBe("tool crashed");
   });
 
   test("handles invalid JSON input", async () => {
@@ -93,7 +99,8 @@ describe("createToolBridge", () => {
     const result = await callToolRaw?.("not valid json");
     const parsed = JSON.parse(result ?? "{}") as Record<string, unknown>;
 
-    expect(parsed.__error).toContain("Invalid JSON");
+    expect(parsed.__koi_ok).toBe(false);
+    expect(parsed.__koi_error).toContain("Invalid JSON");
   });
 
   test("handles missing tool name", async () => {
@@ -107,7 +114,8 @@ describe("createToolBridge", () => {
     const result = await callToolRaw?.(JSON.stringify({ args: {} }));
     const parsed = JSON.parse(result ?? "{}") as Record<string, unknown>;
 
-    expect(parsed.__error).toContain("name must be a string");
+    expect(parsed.__koi_ok).toBe(false);
+    expect(parsed.__koi_error).toContain("name must be a string");
   });
 
   test("passes args to tool correctly", async () => {
@@ -144,12 +152,13 @@ describe("createToolBridge", () => {
     expect(bridge.callCount()).toBe(2);
   });
 
-  test("preamble defines callTool function", () => {
+  test("preamble defines callTool function with envelope protocol", () => {
     const tools = new Map<string, Tool>();
     const bridge = createToolBridge({ tools });
 
     expect(bridge.preamble).toContain("function callTool");
     expect(bridge.preamble).toContain("__callToolRaw");
+    expect(bridge.preamble).toContain("__koi_ok");
   });
 
   test("provides one host function", () => {

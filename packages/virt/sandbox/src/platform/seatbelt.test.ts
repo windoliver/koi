@@ -63,13 +63,15 @@ describe("generateSeatbeltProfile", () => {
     expect(profile).toContain('(allow file-write* (subpath "/tmp/koi-sandbox-"))');
   });
 
-  test("skips relative paths in deny rules", () => {
+  test("resolves relative paths in deny rules against cwd", () => {
+    const cwd = process.cwd();
     const profile = generateSeatbeltProfile(
-      { ...MINIMAL_PROFILE, filesystem: { denyRead: [".env", ".env.*"] } },
+      { ...MINIMAL_PROFILE, filesystem: { denyRead: [".env", ".env.local"] } },
       "/bin/echo",
     );
-    // Relative paths should not appear in seatbelt profile
-    expect(profile).not.toContain(".env");
+    // Relative paths should be resolved to absolute paths using cwd
+    expect(profile).toContain(`(deny file-read* (subpath "${cwd}/.env"))`);
+    expect(profile).toContain(`(deny file-read* (subpath "${cwd}/.env.local"))`);
   });
 
   test("includes process-exec permission", () => {

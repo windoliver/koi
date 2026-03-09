@@ -53,7 +53,10 @@ export function createToolBridge(config: ToolBridgeConfig): ToolBridge {
       async (argsJson: string): Promise<string> => {
         calls++;
         if (calls > maxCalls) {
-          return JSON.stringify({ __error: `Tool call budget exceeded (max ${maxCalls})` });
+          return JSON.stringify({
+            __koi_ok: false,
+            __koi_error: `Tool call budget exceeded (max ${maxCalls})`,
+          });
         }
 
         // Justified `let`: parsed may fail, need separate error path.
@@ -61,17 +64,20 @@ export function createToolBridge(config: ToolBridgeConfig): ToolBridge {
         try {
           parsed = JSON.parse(argsJson) as { readonly name?: unknown; readonly args?: unknown };
         } catch (_e: unknown) {
-          return JSON.stringify({ __error: "Invalid JSON in tool call arguments" });
+          return JSON.stringify({
+            __koi_ok: false,
+            __koi_error: "Invalid JSON in tool call arguments",
+          });
         }
 
         const name = typeof parsed.name === "string" ? parsed.name : undefined;
         if (name === undefined) {
-          return JSON.stringify({ __error: "Tool name must be a string" });
+          return JSON.stringify({ __koi_ok: false, __koi_error: "Tool name must be a string" });
         }
 
         const tool = tools.get(name);
         if (tool === undefined) {
-          return JSON.stringify({ __error: `Unknown tool: ${name}` });
+          return JSON.stringify({ __koi_ok: false, __koi_error: `Unknown tool: ${name}` });
         }
 
         const args = (
@@ -80,10 +86,12 @@ export function createToolBridge(config: ToolBridgeConfig): ToolBridge {
 
         try {
           const result = await tool.execute(args);
-          return JSON.stringify(result);
+          // Envelope with __koi_ok avoids collision with tools that legitimately
+          // return objects containing an "__error" key. undefined → null for valid JSON.
+          return JSON.stringify({ __koi_ok: true, value: result ?? null });
         } catch (e: unknown) {
           const message = e instanceof Error ? e.message : "Tool execution failed";
-          return JSON.stringify({ __error: message });
+          return JSON.stringify({ __koi_ok: false, __koi_error: message });
         }
       },
     ],
@@ -92,11 +100,11 @@ export function createToolBridge(config: ToolBridgeConfig): ToolBridge {
   const preamble = `function callTool(name, args) {
   var payload = JSON.stringify({ name: name, args: args || {} });
   var raw = __callToolRaw(payload);
-  var result = JSON.parse(raw);
-  if (result && result.__error) {
-    throw new Error(result.__error);
+  var envelope = JSON.parse(raw);
+  if (!envelope.__koi_ok) {
+    throw new Error(envelope.__koi_error || "Tool call failed");
   }
-  return result;
+  return envelope.value;
 }`;
 
   return {

@@ -150,8 +150,22 @@ function processResultMessage(
   durationMs: number,
   spawnDurationMs: number,
 ): Result<BridgeResult, IpcError> {
-  // Check result size — Buffer.byteLength is ~3x faster than TextEncoder
-  const serialized = JSON.stringify(msg.output);
+  // Check result size — Buffer.byteLength is ~3x faster than TextEncoder.
+  // With "advanced" serialization, msg.output may contain values that aren't
+  // JSON-serializable (BigInt, cyclic objects, undefined). Catch and surface cleanly.
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(msg.output ?? null);
+  } catch (e: unknown) {
+    return {
+      ok: false,
+      error: createIpcError(
+        "DESERIALIZE",
+        `Result is not JSON-serializable: ${e instanceof Error ? e.message : String(e)}`,
+        { durationMs },
+      ),
+    };
+  }
   const sizeBytes = Buffer.byteLength(serialized, "utf8");
   if (sizeBytes > maxResultBytes) {
     return {

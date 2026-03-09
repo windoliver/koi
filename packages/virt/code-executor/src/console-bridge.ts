@@ -55,26 +55,26 @@ export function createConsoleBridge(): ConsoleBridge {
     ],
   ]);
 
-  const preamble = `var console = {
+  const preamble = `function __safeStr(v) {
+  if (typeof v === "string") return v;
+  if (typeof v === "bigint") return v.toString() + "n";
+  try { return JSON.stringify(v); }
+  catch(e) { return String(v); }
+}
+var console = {
   log: function() {
     var parts = [];
-    for (var i = 0; i < arguments.length; i++) {
-      parts.push(typeof arguments[i] === "string" ? arguments[i] : JSON.stringify(arguments[i]));
-    }
+    for (var i = 0; i < arguments.length; i++) parts.push(__safeStr(arguments[i]));
     __consoleLog(parts.join(" "));
   },
   error: function() {
     var parts = [];
-    for (var i = 0; i < arguments.length; i++) {
-      parts.push(typeof arguments[i] === "string" ? arguments[i] : JSON.stringify(arguments[i]));
-    }
+    for (var i = 0; i < arguments.length; i++) parts.push(__safeStr(arguments[i]));
     __consoleError(parts.join(" "));
   },
   warn: function() {
     var parts = [];
-    for (var i = 0; i < arguments.length; i++) {
-      parts.push(typeof arguments[i] === "string" ? arguments[i] : JSON.stringify(arguments[i]));
-    }
+    for (var i = 0; i < arguments.length; i++) parts.push(__safeStr(arguments[i]));
     __consoleWarn(parts.join(" "));
   }
 };`;

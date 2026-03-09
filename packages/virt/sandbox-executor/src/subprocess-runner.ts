@@ -2,16 +2,26 @@
  * Subprocess runner — executed by the subprocess executor in a child Bun process.
  *
  * Reads JSON input from stdin, dynamically imports the brick's entry module,
- * calls its default export, and writes the result to stdout as JSON.
+ * calls its default export, and writes the result to stderr as JSON with a
+ * unique framing marker. stdout is left available for brick user code (e.g.,
+ * console.log) and is NOT used for the protocol.
  *
  * Protocol:
  *   stdin  → { "entryPath": string, "input": unknown }
- *   stdout → { "ok": true, "output": unknown } | { "ok": false, "error": string }
+ *   stderr → __KOI_RESULT__<json>\n   (framed protocol output)
+ *   stdout → free for brick user code
  *
  * Exit codes:
- *   0 — success (result written to stdout)
- *   1 — execution error (error written to stdout as JSON)
+ *   0 — success (result written to stderr)
+ *   1 — execution error (error written to stderr as JSON)
  */
+
+/** Framing marker that separates protocol JSON from any other stderr output. */
+const RESULT_MARKER = "__KOI_RESULT__";
+
+function writeProtocol(data: object): void {
+  process.stderr.write(`${RESULT_MARKER}${JSON.stringify(data)}\n`);
+}
 
 async function main(): Promise<void> {
   // Read all of stdin
@@ -26,7 +36,7 @@ async function main(): Promise<void> {
   try {
     payload = JSON.parse(stdinText) as typeof payload;
   } catch (_: unknown) {
-    process.stdout.write(JSON.stringify({ ok: false, error: "Failed to parse stdin JSON" }));
+    writeProtocol({ ok: false, error: "Failed to parse stdin JSON" });
     process.exit(1);
   }
 
@@ -35,18 +45,16 @@ async function main(): Promise<void> {
     const fn = mod.default;
 
     if (typeof fn !== "function") {
-      process.stdout.write(
-        JSON.stringify({ ok: false, error: "Brick module must export a default function" }),
-      );
+      writeProtocol({ ok: false, error: "Brick module must export a default function" });
       process.exit(1);
     }
 
     const output: unknown = await fn(payload.input);
 
-    process.stdout.write(JSON.stringify({ ok: true, output }));
+    writeProtocol({ ok: true, output });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
-    process.stdout.write(JSON.stringify({ ok: false, error: message }));
+    writeProtocol({ ok: false, error: message });
     process.exit(1);
   }
 }
