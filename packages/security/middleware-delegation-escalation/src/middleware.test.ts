@@ -98,12 +98,21 @@ function createMockModelResponse(): ModelResponse {
   };
 }
 
-function createTextMessage(text: string): InboundMessage {
+function createTextMessage(text: string, correlationToken?: string): InboundMessage {
   return {
     content: [{ kind: "text", text }],
     senderId: "human",
     timestamp: Date.now(),
+    ...(correlationToken !== undefined ? { metadata: { correlationToken } } : {}),
   };
+}
+
+/** Extract the correlationToken from the last sent escalation message. */
+function getCorrelationToken(sentMessages: readonly OutboundMessage[]): string | undefined {
+  const last = sentMessages[sentMessages.length - 1];
+  return (last?.metadata as Record<string, unknown> | undefined)?.correlationToken as
+    | string
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -205,8 +214,9 @@ describe("createDelegationEscalationMiddleware", () => {
     // Start model call (will block on gate)
     const callPromise = handle.middleware.wrapModelCall?.(ctx, request, next);
 
-    // Simulate human response
-    await channel.simulateMessage(createTextMessage("Try plan B"));
+    // Simulate human response — include correlation token from the escalation message
+    const token = getCorrelationToken(channel.sentMessages);
+    await channel.simulateMessage(createTextMessage("Try plan B", token));
 
     const result = await callPromise;
     expect(result).toBe(response);
@@ -231,7 +241,8 @@ describe("createDelegationEscalationMiddleware", () => {
       createMockModelResponse(),
     );
 
-    await channel.simulateMessage(createTextMessage("abort"));
+    const abortToken = getCorrelationToken(channel.sentMessages);
+    await channel.simulateMessage(createTextMessage("abort", abortToken));
 
     await expect(callPromise).rejects.toThrow("Delegation escalation aborted");
   });
@@ -289,7 +300,8 @@ describe("createDelegationEscalationMiddleware", () => {
     const callPromise = handle.middleware.wrapModelCall?.(ctx, createMockModelRequest(), async () =>
       createMockModelResponse(),
     );
-    await channel.simulateMessage(createTextMessage("resume with instructions"));
+    const resumeToken = getCorrelationToken(channel.sentMessages);
+    await channel.simulateMessage(createTextMessage("resume with instructions", resumeToken));
     await callPromise;
 
     expect(decisions).toHaveLength(1);

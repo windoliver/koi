@@ -9,8 +9,14 @@ import type { EscalationContext } from "./types.js";
 /**
  * Generates an OutboundMessage describing the exhaustion condition
  * for a human operator. Includes delegatee list and optional task summary.
+ *
+ * @param correlationToken - When provided, embedded in metadata so the
+ *   escalation gate can filter responses by this token.
  */
-export function generateEscalationMessage(ctx: EscalationContext): OutboundMessage {
+export function generateEscalationMessage(
+  ctx: EscalationContext,
+  correlationToken?: string,
+): OutboundMessage {
   const delegateeList = ctx.exhaustedDelegateeIds.map((id) => `  - ${id}`).join("\n");
 
   const summarySection =
@@ -32,6 +38,7 @@ export function generateEscalationMessage(ctx: EscalationContext): OutboundMessa
       issuerId: ctx.issuerId,
       detectedAt: ctx.detectedAt,
       delegateeCount: ctx.exhaustedDelegateeIds.length,
+      ...(correlationToken !== undefined ? { correlationToken } : {}),
     },
   };
 }

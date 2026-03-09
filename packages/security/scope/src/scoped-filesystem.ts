@@ -8,7 +8,7 @@
  */
 
 import { resolve, sep } from "node:path";
-import type { FileSystemBackend, KoiError, Result } from "@koi/core";
+import type { FileSearchResult, FileSystemBackend, KoiError, Result } from "@koi/core";
 import { permission } from "@koi/core";
 import type { CompiledFileSystemScope, FileSystemScope } from "./types.js";
 
@@ -65,6 +65,32 @@ function writeGuard(operation: string, compiled: CompiledFileSystemScope): KoiEr
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
+
+/**
+ * Filters search results to only include matches within the compiled root.
+ * Handles both sync and async backend responses.
+ */
+function filterSearchResults(
+  raw: Result<FileSearchResult, KoiError> | Promise<Result<FileSearchResult, KoiError>>,
+  compiled: CompiledFileSystemScope,
+): Result<FileSearchResult, KoiError> | Promise<Result<FileSearchResult, KoiError>> {
+  if (raw instanceof Promise) {
+    return raw.then((r) => applySearchFilter(r, compiled));
+  }
+  return applySearchFilter(raw, compiled);
+}
+
+function applySearchFilter(
+  result: Result<FileSearchResult, KoiError>,
+  compiled: CompiledFileSystemScope,
+): Result<FileSearchResult, KoiError> {
+  if (!result.ok) return result;
+  const filtered = result.value.matches.filter((m) => {
+    const resolved = resolve(m.path);
+    return resolved === compiled.root || resolved.startsWith(compiled.rootWithSep);
+  });
+  return { ok: true, value: { matches: filtered, truncated: result.value.truncated } };
+}
 
 export function createScopedFileSystem(
   backend: FileSystemBackend,
@@ -142,11 +168,12 @@ export function createScopedFileSystem(
       return backend.list(norm.value, options);
     },
 
-    // search() is a pass-through: the interface takes a text content pattern
-    // (grep-style) with no directory parameter — the backend determines the
-    // search root. Read-only by nature, so no mode guard needed.
+    // search() delegates to the backend then filters results to enforce
+    // root boundary. The backend interface has no root parameter, so we
+    // must post-filter matches whose paths escape the scoped root.
     search(pattern, options) {
-      return backend.search(pattern, options);
+      const raw = backend.search(pattern, options);
+      return filterSearchResults(raw, compiled);
     },
 
     ...scopedDelete,

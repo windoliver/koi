@@ -213,18 +213,29 @@ export function createGuardrailsMiddleware(config: GuardrailsConfig): KoiMiddlew
                   if (!overflowed) {
                     if (buffer.length + chunk.delta.length > maxBufferSize) {
                       overflowed = true;
+                      const overflowAction = hasBlockRules ? "block" : "warn";
                       onViolation?.({
                         rule: "stream-buffer-overflow",
                         target: "modelOutput",
-                        action: "warn",
+                        action: overflowAction,
                         errors: [
                           {
                             path: "",
-                            message: `Stream buffer exceeded ${maxBufferSize} characters, skipping validation`,
+                            message: `Stream buffer exceeded ${maxBufferSize} characters, ${overflowAction === "block" ? "blocking unvalidated output" : "skipping validation"}`,
                             code: "buffer_overflow",
                           },
                         ],
                       });
+                      if (hasBlockRules) {
+                        // Block rules exist but we cannot validate overflowed content —
+                        // fail closed by throwing instead of flushing unvalidated output
+                        pendingChunks.length = 0;
+                        throw KoiRuntimeError.from(
+                          "VALIDATION",
+                          `Guardrail stream buffer overflow: output exceeded ${maxBufferSize} characters and cannot be validated against block rules`,
+                          { context: { maxBufferSize } },
+                        );
+                      }
                     } else {
                       buffer += chunk.delta;
                     }

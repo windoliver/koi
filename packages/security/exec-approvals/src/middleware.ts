@@ -61,12 +61,23 @@ export function createExecApprovalsMiddleware(rawConfig: ExecApprovalsConfig): K
   // Session state keyed by sessionId
   const sessions = new Map<string, SessionRulesState>();
 
+  // Mutex: serializes persistRules calls to prevent concurrent load-merge-save races
+  // let: mutable — promise chain grows as persist calls are queued
+  let persistQueue: Promise<void> = Promise.resolve();
+
   async function persistRules(state: SessionRulesState): Promise<void> {
-    const loaded = await store.load();
-    // Merge: combine loaded + session extra, deduplicate
-    const mergedAllow = dedupe([...loaded.allow, ...state.extraAllow]);
-    const mergedDeny = dedupe([...loaded.deny, ...state.extraDeny]);
-    await store.save({ allow: mergedAllow, deny: mergedDeny });
+    // Chain onto the queue so concurrent calls execute sequentially
+    const operation = persistQueue.then(async () => {
+      const loaded = await store.load();
+      // Merge: combine loaded + session extra, deduplicate
+      const mergedAllow = dedupe([...loaded.allow, ...state.extraAllow]);
+      const mergedDeny = dedupe([...loaded.deny, ...state.extraDeny]);
+      await store.save({ allow: mergedAllow, deny: mergedDeny });
+    });
+    persistQueue = operation.catch(() => {
+      /* swallow — caller handles errors via onSaveError */
+    });
+    return operation;
   }
 
   return {

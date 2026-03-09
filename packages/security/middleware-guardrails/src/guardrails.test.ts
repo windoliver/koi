@@ -283,7 +283,7 @@ describe("createGuardrailsMiddleware", () => {
       expect(events[0]?.action).toBe("warn");
     });
 
-    test("stream buffer overflow fires warn event", async () => {
+    test("stream buffer overflow with block rules throws instead of flushing unvalidated", async () => {
       const longContent = "x".repeat(300);
       const doneResponse: ModelResponse = { content: longContent, model: "test" };
       const chunks: readonly ModelChunk[] = [
@@ -299,6 +299,30 @@ describe("createGuardrailsMiddleware", () => {
       });
 
       const stream = assertStream(mw.wrapModelStream?.(ctx, request, handler.handler));
+      await expect(collectStream(stream)).rejects.toBeInstanceOf(KoiRuntimeError);
+
+      // Overflow event fired with block action
+      const overflowEvent = events.find((e) => e.rule === "stream-buffer-overflow");
+      expect(overflowEvent).toBeDefined();
+      expect(overflowEvent?.action).toBe("block");
+    });
+
+    test("stream buffer overflow with warn-only rules passes through", async () => {
+      const longContent = "x".repeat(300);
+      const doneResponse: ModelResponse = { content: longContent, model: "test" };
+      const chunks: readonly ModelChunk[] = [
+        { kind: "text_delta", delta: longContent },
+        { kind: "done", response: doneResponse },
+      ];
+      const handler = createSpyModelStreamHandler(chunks);
+      const events: GuardrailViolationEvent[] = [];
+      const mw = createGuardrailsMiddleware({
+        rules: [warnRule],
+        maxBufferSize: 100,
+        onViolation: (e) => events.push(e),
+      });
+
+      const stream = assertStream(mw.wrapModelStream?.(ctx, request, handler.handler));
       const collected = await collectStream(stream);
 
       // Overflow warning fired
@@ -306,7 +330,7 @@ describe("createGuardrailsMiddleware", () => {
       expect(overflowEvent).toBeDefined();
       expect(overflowEvent?.action).toBe("warn");
 
-      // All chunks still yielded (validation skipped)
+      // All chunks still yielded (validation skipped — no block rules)
       expect(collected).toHaveLength(2);
     });
 

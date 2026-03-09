@@ -45,16 +45,72 @@ function verifyEd25519Proof(token: CapabilityToken): boolean {
 }
 
 /**
+ * Resolves an issuer's expected public key.
+ * Implementations may be backed by an in-memory map, a database, or a remote service.
+ */
+export interface PublicKeyRegistry {
+  /** Returns the expected base64-encoded SPKI DER public key for the given issuerId, or undefined if unknown. */
+  readonly resolve: (issuerId: string) => string | undefined | Promise<string | undefined>;
+}
+
+/**
  * Creates a CapabilityVerifier for Ed25519-proof tokens.
  *
- * The public key is embedded in the token proof itself, so no external
- * key material is required for verification. The issuer's public key
- * is bound to the token at issuance time.
+ * When a keyRegistry is provided, the verifier checks that the embedded
+ * public key matches the registry's expected key for the token's issuerId.
+ * This prevents self-signed token forgery where an attacker mints a token
+ * with an arbitrary issuerId and their own key.
  *
- * @param scopeChecker - Optional pluggable scope checker. When provided,
- *   scope checking is delegated to it. Falls back to internal isToolAllowed.
+ * @param scopeChecker - Optional pluggable scope checker.
+ * @param keyRegistry - Optional registry to verify issuer key binding.
  */
-export function createEd25519Verifier(scopeChecker?: ScopeChecker): CapabilityVerifier {
+export function createEd25519Verifier(
+  scopeChecker?: ScopeChecker,
+  keyRegistry?: PublicKeyRegistry,
+): CapabilityVerifier {
+  /** Run all checks after key binding has been verified. */
+  function verifyAfterKeyCheck(
+    token: CapabilityToken,
+    context: VerifyContext,
+  ): CapabilityVerifyResult | Promise<CapabilityVerifyResult> {
+    // 2b. Verify Ed25519 signature
+    if (!verifyEd25519Proof(token)) {
+      return { ok: false, reason: "invalid_signature" };
+    }
+
+    // 3. Check expiry
+    if (token.expiresAt <= context.now) {
+      return { ok: false, reason: "expired" };
+    }
+
+    // 4. Check session revocation
+    if (!context.activeSessionIds.has(token.scope.sessionId)) {
+      return { ok: false, reason: "session_invalid" };
+    }
+
+    // 5. Check chain depth
+    if (token.chainDepth > token.maxChainDepth) {
+      return { ok: false, reason: "chain_depth_exceeded" };
+    }
+
+    // 6. Check scope — delegate to scopeChecker when provided, else built-in
+    return checkScope(context.toolId, token, scopeChecker);
+  }
+
+  /** Validate embedded key against registry's expected key. */
+  function checkKeyBinding(
+    expectedKey: string | undefined,
+    token: CapabilityToken,
+  ): CapabilityVerifyResult | undefined {
+    if (expectedKey === undefined) {
+      return { ok: false, reason: "invalid_signature" };
+    }
+    if (token.proof.kind === "ed25519" && token.proof.publicKey !== expectedKey) {
+      return { ok: false, reason: "invalid_signature" };
+    }
+    return undefined; // Key matches — proceed
+  }
+
   return {
     verify(
       token: CapabilityToken,
@@ -65,28 +121,21 @@ export function createEd25519Verifier(scopeChecker?: ScopeChecker): CapabilityVe
         return { ok: false, reason: "proof_type_unsupported" };
       }
 
-      // 2. Verify Ed25519 signature
-      if (!verifyEd25519Proof(token)) {
-        return { ok: false, reason: "invalid_signature" };
+      // 2a. Verify issuer key binding when registry is available
+      if (keyRegistry !== undefined) {
+        const resolved = keyRegistry.resolve(token.issuerId);
+        if (resolved instanceof Promise) {
+          return resolved.then((expectedKey) => {
+            const bindingResult = checkKeyBinding(expectedKey, token);
+            if (bindingResult !== undefined) return bindingResult;
+            return verifyAfterKeyCheck(token, context);
+          });
+        }
+        const bindingResult = checkKeyBinding(resolved, token);
+        if (bindingResult !== undefined) return bindingResult;
       }
 
-      // 3. Check expiry
-      if (token.expiresAt <= context.now) {
-        return { ok: false, reason: "expired" };
-      }
-
-      // 4. Check session revocation
-      if (!context.activeSessionIds.has(token.scope.sessionId)) {
-        return { ok: false, reason: "session_invalid" };
-      }
-
-      // 5. Check chain depth
-      if (token.chainDepth > token.maxChainDepth) {
-        return { ok: false, reason: "chain_depth_exceeded" };
-      }
-
-      // 6. Check scope — delegate to scopeChecker when provided, else built-in
-      return checkScope(context.toolId, token, scopeChecker);
+      return verifyAfterKeyCheck(token, context);
     },
   };
 }

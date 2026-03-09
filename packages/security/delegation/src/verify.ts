@@ -108,8 +108,14 @@ export function matchToolAgainstScope(toolId: string, scope: DelegationScope): b
     return false;
   }
 
-  // If resource patterns are defined and toolId has a resource path, match patterns
-  if (scope.resources !== undefined && scope.resources.length > 0 && hasResourcePath) {
+  // If resource patterns are defined, enforce them
+  if (scope.resources !== undefined && scope.resources.length > 0) {
+    if (!hasResourcePath) {
+      // Fail closed: scope explicitly restricts to certain resources but
+      // the toolId has no embedded resource path — we cannot verify the
+      // resource, so deny access rather than silently widening the grant
+      return false;
+    }
     return scope.resources.some((pattern) => matchGlob(pattern, toolId));
   }
 
