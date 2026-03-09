@@ -127,7 +127,13 @@ export function createFsRollbackMiddleware(config: FsRollbackConfig): FsRollback
   return {
     middleware,
 
-    rollbackTo: (targetNodeId: NodeId) => rollbackToImpl(store, chainId, targetNodeId, backend),
+    rollbackTo: async (targetNodeId: NodeId) => {
+      const result = await rollbackToImpl(store, chainId, targetNodeId, backend);
+      if (result.ok) {
+        lastNodeId = targetNodeId;
+      }
+      return result;
+    },
 
     getRecords: async () => {
       const result = await store.list(chainId);

@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { BacktrackConstraint, ModelRequest, ModelResponse } from "@koi/core";
-import { createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
+import {
+  createMockSessionContext,
+  createMockTurnContext,
+  createSpyModelHandler,
+} from "@koi/test-utils";
 import { createGuidedRetryMiddleware } from "./guided-retry.js";
 
-const mockCtx = createMockTurnContext();
+const mockSession = createMockSessionContext();
+const mockCtx = createMockTurnContext({ session: mockSession });
 
 const baseConstraint: BacktrackConstraint = {
   reason: {
@@ -38,6 +43,7 @@ describe("createGuidedRetryMiddleware", () => {
 
   test("injects system message when constraint is set", async () => {
     const handle = createGuidedRetryMiddleware({ initialConstraint: baseConstraint });
+    await handle.middleware.onSessionStart?.(mockSession);
     const spy = createSpyModelHandler();
 
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
@@ -65,6 +71,7 @@ describe("createGuidedRetryMiddleware", () => {
       maxInjections: 3,
     };
     const handle = createGuidedRetryMiddleware({ initialConstraint: constraint });
+    await handle.middleware.onSessionStart?.(mockSession);
     const spy = createSpyModelHandler();
 
     // Calls 1-3 should inject
@@ -72,7 +79,7 @@ describe("createGuidedRetryMiddleware", () => {
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
 
-    expect(handle.hasConstraint()).toBe(false);
+    expect(handle.hasConstraint(mockSession.sessionId as string)).toBe(false);
 
     // Call 4 should passthrough
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
@@ -89,30 +96,34 @@ describe("createGuidedRetryMiddleware", () => {
       },
     };
     const handle = createGuidedRetryMiddleware({ initialConstraint: constraint });
+    await handle.middleware.onSessionStart?.(mockSession);
     const spy = createSpyModelHandler();
 
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
-    expect(handle.hasConstraint()).toBe(false);
+    expect(handle.hasConstraint(mockSession.sessionId as string)).toBe(false);
 
     // Second call should passthrough
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
     expect(spy.calls[1]?.messages).toHaveLength(1);
   });
 
-  test("setConstraint / clearConstraint / hasConstraint handle API", () => {
+  test("setConstraint / clearConstraint / hasConstraint handle API", async () => {
     const handle = createGuidedRetryMiddleware({});
+    await handle.middleware.onSessionStart?.(mockSession);
+    const sid = mockSession.sessionId as string;
 
-    expect(handle.hasConstraint()).toBe(false);
+    expect(handle.hasConstraint(sid)).toBe(false);
 
-    handle.setConstraint(baseConstraint);
-    expect(handle.hasConstraint()).toBe(true);
+    handle.setConstraint(baseConstraint, sid);
+    expect(handle.hasConstraint(sid)).toBe(true);
 
-    handle.clearConstraint();
-    expect(handle.hasConstraint()).toBe(false);
+    handle.clearConstraint(sid);
+    expect(handle.hasConstraint(sid)).toBe(false);
   });
 
   test("injected message is prepended (first in messages array)", async () => {
     const handle = createGuidedRetryMiddleware({ initialConstraint: baseConstraint });
+    await handle.middleware.onSessionStart?.(mockSession);
     const spy = createSpyModelHandler();
 
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
@@ -130,6 +141,7 @@ describe("createGuidedRetryMiddleware", () => {
       usage: { inputTokens: 5, outputTokens: 10 },
     };
     const handle = createGuidedRetryMiddleware({ initialConstraint: baseConstraint });
+    await handle.middleware.onSessionStart?.(mockSession);
     const handler = async (_req: ModelRequest): Promise<ModelResponse> => expectedResponse;
 
     const response = await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, handler);
@@ -139,19 +151,21 @@ describe("createGuidedRetryMiddleware", () => {
 
   test("setConstraint resets remaining injections", async () => {
     const handle = createGuidedRetryMiddleware({});
+    await handle.middleware.onSessionStart?.(mockSession);
+    const sid = mockSession.sessionId as string;
     const spy = createSpyModelHandler();
 
     // Set constraint with maxInjections=2
-    handle.setConstraint({ ...baseConstraint, maxInjections: 2 });
+    handle.setConstraint({ ...baseConstraint, maxInjections: 2 }, sid);
 
     // Use 1 injection
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
-    expect(handle.hasConstraint()).toBe(true);
+    expect(handle.hasConstraint(sid)).toBe(true);
 
     // Replace with new constraint (maxInjections=1)
-    handle.setConstraint(baseConstraint);
+    handle.setConstraint(baseConstraint, sid);
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
-    expect(handle.hasConstraint()).toBe(false);
+    expect(handle.hasConstraint(sid)).toBe(false);
   });
 
   test("middleware has correct name and priority", () => {

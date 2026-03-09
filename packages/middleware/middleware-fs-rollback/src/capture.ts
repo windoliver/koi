@@ -19,12 +19,15 @@ export async function capturePreState(
   const result = await backend.read(path);
 
   if (!result.ok) {
-    // File doesn't exist or is unreadable — treat as "no previous content"
     if (result.error.code === "NOT_FOUND") {
       return undefined;
     }
-    // For other errors (permission, etc.), also return undefined (best-effort)
-    return undefined;
+    // Non-NOT_FOUND errors (permission, transient I/O) — throw to prevent
+    // recording undefined as previous content, which would cause rollback
+    // to delete the file instead of restoring it.
+    throw new Error(`Failed to capture pre-state for "${path}": ${result.error.message}`, {
+      cause: result.error,
+    });
   }
 
   // Skip files that exceed the capture size limit

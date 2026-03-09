@@ -11,6 +11,7 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  SessionContext,
   TurnContext,
 } from "@koi/core/middleware";
 import { DEFAULT_COOLDOWN_MS, DEFAULT_PRIORITY, type ReflexMiddlewareConfig } from "./config.js";
@@ -72,8 +73,8 @@ export function createReflexMiddleware(config: ReflexMiddlewareConfig): KoiMiddl
   const onMetrics = config.onMetrics;
   const sortedRules = sortByPriority(config.rules);
 
-  // Mutable cooldown state — per-instance, not shared
-  const lastFiredAt = new Map<string, number>();
+  // Mutable cooldown state — outer key is session ID, inner key is rule name
+  const lastFiredAt = new Map<string, Map<string, number>>();
 
   return {
     name: "koi:reflex",
@@ -81,6 +82,14 @@ export function createReflexMiddleware(config: ReflexMiddlewareConfig): KoiMiddl
     phase: "intercept",
 
     describeCapabilities: () => undefined,
+
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      lastFiredAt.set(ctx.sessionId as string, new Map<string, number>());
+    },
+
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      lastFiredAt.delete(ctx.sessionId as string);
+    },
 
     async wrapModelCall(
       ctx: TurnContext,
@@ -96,16 +105,18 @@ export function createReflexMiddleware(config: ReflexMiddlewareConfig): KoiMiddl
         return next(request);
       }
       const startTime = now();
+      const sessionCooldowns =
+        lastFiredAt.get(ctx.session.sessionId as string) ?? new Map<string, number>();
 
       for (const rule of sortedRules) {
-        if (isCooledDown(lastFiredAt, rule, now())) continue;
+        if (isCooledDown(sessionCooldowns, rule, now())) continue;
         if (!tryMatch(rule, lastMessage)) continue;
 
         const responseContent = tryRespond(rule, lastMessage, ctx);
         if (responseContent === undefined) continue;
 
         const matchTime = now();
-        lastFiredAt.set(rule.name, matchTime);
+        sessionCooldowns.set(rule.name, matchTime);
 
         fireMetrics(onMetrics, {
           ruleName: rule.name,

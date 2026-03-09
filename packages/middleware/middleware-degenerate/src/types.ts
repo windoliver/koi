@@ -10,8 +10,8 @@ import type {
   ToolHandler,
   VariantAttempt,
 } from "@koi/core";
-import type { CircuitBreakerConfig } from "@koi/errors";
-import type { VariantPool } from "@koi/variant-selection";
+import type { CircuitBreaker, CircuitBreakerConfig } from "@koi/errors";
+import type { RoundRobinState, VariantPool } from "@koi/variant-selection";
 
 /** Configuration for the degenerate middleware factory. */
 export interface DegenerateMiddlewareConfig {
@@ -31,9 +31,21 @@ export interface DegenerateMiddlewareConfig {
     | undefined;
 }
 
+/** Per-session mutable state for the degenerate middleware. */
+export interface DegenerateSessionState {
+  readonly pools: Map<string, VariantPool<ToolHandler>>;
+  readonly toolToCapability: Map<string, string>;
+  readonly breakers: Map<string, CircuitBreaker>;
+  readonly roundRobinStates: Map<string, RoundRobinState>;
+  readonly attemptLog: Map<string, VariantAttempt[]>;
+}
+
 /** Handle returned by the degenerate middleware factory. */
 export interface DegenerateHandle {
   readonly middleware: KoiMiddleware;
-  readonly getVariantPool: (capability: string) => VariantPool<ToolHandler> | undefined;
-  readonly getAttemptLog: (capability: string) => readonly VariantAttempt[];
+  readonly getVariantPool: (
+    capability: string,
+    sessionId?: string,
+  ) => VariantPool<ToolHandler> | undefined;
+  readonly getAttemptLog: (capability: string, sessionId?: string) => readonly VariantAttempt[];
 }

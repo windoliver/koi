@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { JsonObject } from "@koi/core";
-import { createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
+import {
+  createMockSessionContext,
+  createMockTurnContext,
+  createSpyModelHandler,
+} from "@koi/test-utils";
 import { descriptor } from "./descriptor.js";
 
-const mockCtx = createMockTurnContext();
+const mockSession = createMockSessionContext();
+const mockCtx = createMockTurnContext({ session: mockSession });
 
 describe("guided-retry descriptor", () => {
   test("factory forwards initialConstraint from options", async () => {
@@ -22,6 +27,7 @@ describe("guided-retry descriptor", () => {
       manifestDir: "/tmp",
       agentId: "test",
     } as never);
+    await middleware.onSessionStart?.(mockSession);
 
     // The middleware should inject the constraint into the first model call
     const spy = createSpyModelHandler();

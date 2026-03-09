@@ -3,6 +3,7 @@ import type { ContentBlock } from "@koi/core/message";
 import type { ModelHandler, ModelRequest, ModelResponse, TurnContext } from "@koi/core/middleware";
 import {
   createMockInboundMessage,
+  createMockSessionContext,
   createMockTurnContext,
   createSpyModelHandler,
 } from "@koi/test-utils";
@@ -153,6 +154,7 @@ describe("createReflexMiddleware", () => {
     let clock = 1000;
     const rule = greetingRule({ cooldownMs: 5000 });
     const mw = createReflexMiddleware({ rules: [rule], now: () => clock });
+    await mw.onSessionStart?.(createMockSessionContext());
     const wrap = getWrapModelCall(mw);
     const spy = createSpyModelHandler();
 
@@ -174,6 +176,7 @@ describe("createReflexMiddleware", () => {
     let clock = 1000;
     const rule = greetingRule({ cooldownMs: 5000 });
     const mw = createReflexMiddleware({ rules: [rule], now: () => clock });
+    await mw.onSessionStart?.(createMockSessionContext());
     const wrap = getWrapModelCall(mw);
     const spy = createSpyModelHandler();
 
@@ -205,6 +208,7 @@ describe("createReflexMiddleware", () => {
     };
 
     const mw = createReflexMiddleware({ rules: [primary, fallback], now: () => clock });
+    await mw.onSessionStart?.(createMockSessionContext());
     const wrap = getWrapModelCall(mw);
     const spy = createSpyModelHandler();
 
@@ -378,6 +382,9 @@ describe("createReflexMiddleware", () => {
 
     const mw1 = createReflexMiddleware(config);
     const mw2 = createReflexMiddleware(config);
+    const mockSess = createMockSessionContext();
+    await mw1.onSessionStart?.(mockSess);
+    await mw2.onSessionStart?.(mockSess);
     const wrap1 = getWrapModelCall(mw1);
     const wrap2 = getWrapModelCall(mw2);
     const spy = createSpyModelHandler();

@@ -30,6 +30,13 @@ const DEFAULT_UNSANDBOXED_PROFILE: SandboxProfile = {
  * Descriptor for sandbox middleware.
  * Uses policy.sandbox boolean to determine which profile to apply.
  * Exported for registration with createRegistry().
+ *
+ * NOTE: This descriptor defaults all tools to sandboxed policy via
+ * DEFAULT_SANDBOXED_POLICY. The unsandboxed profile branch in profileFor
+ * is only reachable when callers use createSandboxMiddleware() directly
+ * with a custom policyFor that returns policies with sandbox=false.
+ * For custom policy resolution, use createSandboxMiddleware() directly
+ * instead of the descriptor auto-resolution path.
  */
 export const descriptor: BrickDescriptor<KoiMiddleware> = {
   kind: "middleware",

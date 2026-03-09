@@ -8,6 +8,6 @@ import type { ProgressSnapshot } from "./config.js";
 /** Handle returned by createReportMiddleware for report retrieval. */
 export interface ReportHandle {
   readonly middleware: KoiMiddleware;
-  readonly getReport: () => RunReport | undefined;
-  readonly getProgress: () => ProgressSnapshot;
+  readonly getReport: (sessionId?: string) => RunReport | undefined;
+  readonly getProgress: (sessionId?: string) => ProgressSnapshot;
 }

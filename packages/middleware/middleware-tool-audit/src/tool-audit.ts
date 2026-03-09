@@ -127,6 +127,13 @@ function createFallbackStore(): ToolAuditStore {
   };
 }
 
+/** Per-session mutable state for tool audit tracking. */
+interface ToolAuditSessionState {
+  readonly sessionAvailableTools: Set<string>;
+  readonly sessionUsedTools: Set<string>;
+  dirty: boolean;
+}
+
 /** Creates tool audit middleware that tracks usage and emits lifecycle signals. */
 export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMiddleware {
   const store = config.store ?? createFallbackStore();
@@ -134,12 +141,7 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
   const { onAuditResult, onError } = config;
 
   const tools = new Map<string, MutableToolRecord>();
-  // let: cleared on each session start
-  let sessionAvailableTools = new Set<string>();
-  // let: cleared on each session start
-  let sessionUsedTools = new Set<string>();
-  // let: toggled on tool activity
-  let dirty = false;
+  const sessionStates = new Map<string, ToolAuditSessionState>();
   // let: lazy init cache for first load
   let loadPromise: Promise<ToolAuditSnapshot> | undefined;
   // let: accumulated session count
@@ -163,7 +165,7 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
     priority: 100,
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
-    async onSessionStart(_ctx: SessionContext): Promise<void> {
+    async onSessionStart(ctx: SessionContext): Promise<void> {
       try {
         // Lazy load: concurrent first sessions share the same promise
         loadPromise ??= Promise.resolve(store.load());
@@ -177,35 +179,43 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       }
 
       totalSessions += 1;
-      sessionAvailableTools = new Set<string>();
-      sessionUsedTools = new Set<string>();
-      dirty = false;
+      sessionStates.set(ctx.sessionId as string, {
+        sessionAvailableTools: new Set<string>(),
+        sessionUsedTools: new Set<string>(),
+        dirty: false,
+      });
     },
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
       if (request.tools !== undefined) {
-        for (const tool of request.tools) {
-          sessionAvailableTools.add(tool.name);
+        const state = sessionStates.get(ctx.session.sessionId as string);
+        if (state) {
+          for (const tool of request.tools) {
+            state.sessionAvailableTools.add(tool.name);
+          }
+          state.dirty = true;
         }
-        dirty = true;
       }
       return next(request);
     },
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
       const { toolId } = request;
       const record = getOrCreateRecord(toolId);
       record.callCount += 1;
-      sessionUsedTools.add(toolId);
-      dirty = true;
+      const state = sessionStates.get(ctx.session.sessionId as string);
+      if (state) {
+        state.sessionUsedTools.add(toolId);
+        state.dirty = true;
+      }
 
       const start = clock();
       // let: assigned inside try block, used after it (deferred init pattern)
@@ -232,15 +242,20 @@ export function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMid
       return response;
     },
 
-    async onSessionEnd(_ctx: SessionContext): Promise<void> {
-      for (const toolName of sessionAvailableTools) {
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      const state = sessionStates.get(ctx.sessionId as string);
+      if (!state) return;
+
+      for (const toolName of state.sessionAvailableTools) {
         getOrCreateRecord(toolName).sessionsAvailable += 1;
       }
-      for (const toolName of sessionUsedTools) {
+      for (const toolName of state.sessionUsedTools) {
         getOrCreateRecord(toolName).sessionsUsed += 1;
       }
 
-      if (!dirty) return;
+      sessionStates.delete(ctx.sessionId as string);
+
+      if (!state.dirty) return;
 
       const snapshot = buildSnapshot(tools, totalSessions, clock);
 

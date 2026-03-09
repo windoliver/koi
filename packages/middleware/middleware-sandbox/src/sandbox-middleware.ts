@@ -20,11 +20,8 @@ import { DEFAULT_OUTPUT_LIMIT_BYTES, DEFAULT_TIMEOUT_GRACE_MS } from "./config.j
 /** Default timeout when profile does not specify one (30 s). */
 const FALLBACK_TIMEOUT_MS = 30_000;
 
-const TRUNCATION_MARKER = "...[truncated]";
-
-/** Module-scoped encoder/decoder — avoid allocation per wrapToolCall invocation. */
+/** Module-scoped encoder — avoid allocation per wrapToolCall invocation. */
 const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: false });
 
 export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMiddleware {
   const {
@@ -119,10 +116,13 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
         onSandboxMetrics?.(request.toolId, policy, durationMs, bytes, truncated);
 
         if (truncated) {
-          const truncatedJson =
-            decoder.decode(encoded.slice(0, outputLimitBytes)) + TRUNCATION_MARKER;
           return {
-            output: truncatedJson,
+            output: {
+              truncated: true,
+              originalBytes: bytes,
+              limitBytes: outputLimitBytes,
+              message: `Output truncated from ${String(bytes)} to ${String(outputLimitBytes)} bytes`,
+            },
             metadata: {
               ...response.metadata,
               truncated: true,

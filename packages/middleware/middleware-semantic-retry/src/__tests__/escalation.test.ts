@@ -7,15 +7,25 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { ModelRequest, ModelResponse, ToolRequest, ToolResponse } from "@koi/core";
-import { createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
+import {
+  createMockSessionContext,
+  createMockTurnContext,
+  createSpyModelHandler,
+} from "@koi/test-utils";
 import { createSemanticRetryMiddleware } from "../semantic-retry.js";
-import type { RetryActionKind } from "../types.js";
+import type { RetryActionKind, SemanticRetryHandle } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+const mockSessionCtx = createMockSessionContext();
 const mockCtx = createMockTurnContext();
+
+/** Initialize per-session state so wrapModelCall/wrapToolCall find it. */
+async function initSession(handle: SemanticRetryHandle): Promise<void> {
+  await handle.middleware.onSessionStart?.(mockSessionCtx);
+}
 
 const baseRequest: ModelRequest = {
   messages: [
@@ -57,6 +67,7 @@ async function driveFailures(
   const maxRetries = options.maxRetries ?? failCount + 1;
   const error = options.error ?? new Error("test failure");
   const handle = createSemanticRetryMiddleware({ maxRetries });
+  await initSession(handle);
   const actionKinds: RetryActionKind[] = [];
 
   for (const _ of Array.from({ length: failCount })) {
@@ -140,6 +151,7 @@ describe("escalation ladder (integration)", () => {
 
   test("budget exhaustion → abort on final call", async () => {
     const handle = createSemanticRetryMiddleware({ maxRetries: 2 });
+    await initSession(handle);
 
     // Two failures exhaust the budget
     for (const _ of [1, 2]) {
@@ -170,6 +182,7 @@ describe("escalation ladder (integration)", () => {
 describe("non-linear escalation paths", () => {
   test("success mid-ladder: pending action is consumed, no state leaks", async () => {
     const handle = createSemanticRetryMiddleware({ maxRetries: 5 });
+    await initSession(handle);
     const spy = createSpyModelHandler();
 
     // Fail once → sets pending action
@@ -194,6 +207,7 @@ describe("non-linear escalation paths", () => {
 
   test("interleaved tool + model failures both contribute to records", async () => {
     const handle = createSemanticRetryMiddleware({ maxRetries: 5 });
+    await initSession(handle);
 
     // Tool failure
     try {
@@ -224,6 +238,7 @@ describe("non-linear escalation paths", () => {
 
   test("model escalation changes ModelRequest.model", async () => {
     const handle = createSemanticRetryMiddleware({ maxRetries: 10 });
+    await initSession(handle);
     const spy = createSpyModelHandler();
 
     // Drive enough failures to trigger escalate_model (3 failures with same class)
@@ -263,6 +278,7 @@ describe("non-linear escalation paths", () => {
 describe("edge cases", () => {
   test("1. budget exhaustion: exactly at maxRetries triggers abort", async () => {
     const handle = createSemanticRetryMiddleware({ maxRetries: 1 });
+    await initSession(handle);
 
     try {
       await handle.middleware.wrapModelCall?.(
@@ -291,6 +307,7 @@ describe("edge cases", () => {
         selectAction: () => ({ kind: "abort" as const, reason: "unused" }),
       },
     });
+    await initSession(handle);
 
     // Should not crash — should fall back gracefully
     await expect(
@@ -312,6 +329,7 @@ describe("edge cases", () => {
         },
       },
     });
+    await initSession(handle);
     const spy = createSpyModelHandler();
 
     // Fail to set pending action
@@ -332,6 +350,7 @@ describe("edge cases", () => {
 
   test("5. no failure detected: middleware is transparent passthrough", async () => {
     const handle = createSemanticRetryMiddleware({});
+    await initSession(handle);
     const spy = createSpyModelHandler();
 
     await handle.middleware.wrapModelCall?.(mockCtx, baseRequest, spy.handler);
@@ -349,6 +368,7 @@ describe("edge cases", () => {
         selectAction: () => ({ kind: "add_context" as const, context: "custom fallback" }),
       },
     });
+    await initSession(handle);
 
     try {
       await handle.middleware.wrapModelCall?.(
@@ -366,6 +386,7 @@ describe("edge cases", () => {
 
   test("8. tool failure without subsequent model call: failure recorded, no action leak", async () => {
     const handle = createSemanticRetryMiddleware({});
+    await initSession(handle);
 
     try {
       await handle.middleware.wrapToolCall?.(
@@ -385,6 +406,7 @@ describe("edge cases", () => {
 
   test("reset clears pending action from previous failure", async () => {
     const handle = createSemanticRetryMiddleware({});
+    await initSession(handle);
     const spy = createSpyModelHandler();
 
     // Fail to create pending action
@@ -409,6 +431,7 @@ describe("edge cases", () => {
   test("onRetry callback receives all fields", async () => {
     const onRetry = mock(() => {});
     const handle = createSemanticRetryMiddleware({ onRetry });
+    await initSession(handle);
 
     try {
       await handle.middleware.wrapModelCall?.(

@@ -14,6 +14,7 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -44,10 +45,9 @@ export function createRlmMiddleware(config?: RlmMiddlewareConfig): KoiMiddleware
   const validated = validResult.value;
   const priority = validated.priority ?? DEFAULT_PRIORITY;
 
-  // let: captured model handler — set per-turn by wrapModelCall
-  // This is the downstream chain (model-router → terminal). REPL sub-calls
-  // go through retry/fallback but NOT re-enter RLM.
-  let capturedModelNext: ModelHandler | undefined;
+  // Per-session captured model handlers — keyed by sessionId to prevent
+  // concurrent turns from overwriting each other's handler.
+  const capturedHandlers = new Map<string, ModelHandler>();
 
   /** Enrich a model request by injecting the rlm_process tool descriptor. */
   function enrichRequest(request: ModelRequest): ModelRequest {
@@ -62,17 +62,21 @@ export function createRlmMiddleware(config?: RlmMiddlewareConfig): KoiMiddleware
     name: "rlm",
     priority,
 
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      capturedHandlers.delete(ctx.sessionId as string);
+    },
+
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
       label: "rlm",
       description: "RLM: rlm_process tool injected for processing unbounded inputs",
     }),
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      capturedModelNext = next;
+      capturedHandlers.set(ctx.session.sessionId as string, next);
       return next(enrichRequest(request));
     },
 
@@ -81,13 +85,16 @@ export function createRlmMiddleware(config?: RlmMiddlewareConfig): KoiMiddleware
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      // Cannot capture next from stream — fall back to non-streaming for REPL.
-      // Still inject the tool so the model knows rlm_process is available.
+      // Cannot capture a ModelHandler from a streaming call — the stream handler
+      // has a different signature. If rlm_process is invoked during a streaming
+      // turn that never went through wrapModelCall, the tool call will return an
+      // error asking to use non-streaming mode. We still inject the tool descriptor
+      // so the model knows rlm_process exists.
       yield* next(enrichRequest(request));
     },
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
@@ -124,10 +131,12 @@ export function createRlmMiddleware(config?: RlmMiddlewareConfig): KoiMiddleware
         };
       }
 
+      const capturedModelNext = capturedHandlers.get(ctx.session.sessionId as string);
       if (capturedModelNext === undefined) {
         return {
           output: {
-            error: "RLM middleware has no captured model handler — ensure wrapModelCall ran first",
+            error:
+              "RLM middleware has no captured model handler for this session — ensure wrapModelCall ran first (streaming turns cannot use rlm_process; use non-streaming mode)",
             code: "RLM_ERROR",
           },
         };
@@ -142,7 +151,7 @@ export function createRlmMiddleware(config?: RlmMiddlewareConfig): KoiMiddleware
               input,
               question,
               config: validated,
-              signal: _ctx.signal,
+              signal: ctx.signal,
               onEvent: validated.onEvent,
             })
           : await runReplLoop({

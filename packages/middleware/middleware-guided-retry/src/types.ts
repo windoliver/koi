@@ -14,10 +14,10 @@ export interface GuidedRetryConfig {
 export interface GuidedRetryHandle {
   /** The KoiMiddleware instance to register in the middleware chain. */
   readonly middleware: KoiMiddleware;
-  /** Sets a new constraint (replaces any existing one). */
-  readonly setConstraint: (constraint: BacktrackConstraint) => void;
-  /** Clears any active constraint. */
-  readonly clearConstraint: () => void;
-  /** Returns true if a constraint is currently active. */
-  readonly hasConstraint: () => boolean;
+  /** Sets a new constraint (replaces any existing one). Pass sessionId for per-session targeting. */
+  readonly setConstraint: (constraint: BacktrackConstraint, sessionId?: string) => void;
+  /** Clears any active constraint. Pass sessionId for per-session targeting. */
+  readonly clearConstraint: (sessionId?: string) => void;
+  /** Returns true if a constraint is currently active. Pass sessionId for per-session check. */
+  readonly hasConstraint: (sessionId?: string) => boolean;
 }

@@ -248,9 +248,18 @@ describe("createSandboxMiddleware", () => {
 
       const response = await mw.wrapToolCall?.(ctx, request, spy.handler);
 
-      // Output should be a truncated string
-      expect(typeof response?.output).toBe("string");
-      expect((response?.output as string).endsWith("...[truncated]")).toBe(true);
+      // Output should be a structured truncation object
+      expect(typeof response?.output).toBe("object");
+      const output = response?.output as {
+        truncated: boolean;
+        originalBytes: number;
+        limitBytes: number;
+        message: string;
+      };
+      expect(output.truncated).toBe(true);
+      expect(typeof output.originalBytes).toBe("number");
+      expect(output.limitBytes).toBe(10);
+      expect(output.message).toContain("truncated");
       expect(response?.metadata?.truncated).toBe(true);
       expect(typeof response?.metadata?.originalBytes).toBe("number");
     });
