@@ -13,10 +13,13 @@
 
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
-import type { ChannelAdapter, EngineEvent, EngineInput } from "@koi/core";
+import type { ChannelAdapter, EngineEvent, EngineInput, SandboxExecutor } from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
+import { createSandboxCommand, restrictiveProfile } from "@koi/sandbox";
+import type { SandboxBridge } from "@koi/sandbox-ipc";
+import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
 import { extractTextFromBlocks } from "../helpers.js";
@@ -104,23 +107,39 @@ export async function runStart(flags: StartFlags): Promise<void> {
     return;
   }
 
-  // 4. Bootstrap forge system (before resolution, so forgeStore is available)
-  // Rejecting executor — forged bricks fail loudly instead of returning silent undefined.
-  // A real SandboxExecutor (via @koi/sandbox-ipc) will replace this once sandbox profiles
-  // are wired through the CLI configuration.
-  const rejectingExecutor = {
-    execute: async () => ({
-      ok: false as const,
-      error: {
-        code: "PERMISSION" as const,
-        message:
-          "Sandbox executor not configured — forged tool execution is not available in this CLI session",
-        durationMs: 0,
+  // 4. Bootstrap sandbox executor for forge verification
+  // let justified: mutable binding — set inside try/catch, read for cleanup
+  let sandboxBridge: SandboxBridge | undefined;
+  // let justified: conditionally assigned in try/catch
+  let forgeExecutor: SandboxExecutor;
+
+  try {
+    const bridge = await createSandboxBridge({
+      config: {
+        profile: restrictiveProfile(),
+        buildCommand: createSandboxCommand,
       },
-    }),
-  };
+    });
+    sandboxBridge = bridge;
+    forgeExecutor = bridgeToExecutor(bridge);
+  } catch {
+    process.stderr.write("warn: sandbox unavailable, forged tool execution disabled\n");
+    forgeExecutor = {
+      execute: async () => ({
+        ok: false as const,
+        error: {
+          code: "PERMISSION" as const,
+          message:
+            "Sandbox executor not configured — forged tool execution is not available in this CLI session",
+          durationMs: 0,
+        },
+      }),
+    };
+  }
+
+  // 5. Bootstrap forge system (before resolution, so forgeStore is available)
   const forgeBootstrap = createForgeBootstrap({
-    executor: rejectingExecutor,
+    executor: forgeExecutor,
     forgeConfig: { enabled: isForgeEnabled(manifest) },
     onError: (err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -254,6 +273,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
   await runtime.dispose();
   forgeBootstrap?.dispose();
+  if (sandboxBridge !== undefined) {
+    await sandboxBridge.dispose();
+  }
   if (nexus.dispose !== undefined) {
     await nexus.dispose();
   }

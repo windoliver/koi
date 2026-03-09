@@ -18,12 +18,16 @@ import type {
   EngineInput,
   InboundMessage,
   KoiMiddleware,
+  SandboxExecutor,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createHealthServer } from "@koi/deploy";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
 import { loadManifest } from "@koi/manifest";
+import { createSandboxCommand, restrictiveProfile } from "@koi/sandbox";
+import type { SandboxBridge } from "@koi/sandbox-ipc";
+import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
 import type { ServeFlags } from "../args.js";
@@ -85,21 +89,39 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const deployConfig = manifest.deploy;
   const healthPort = flags.port ?? deployConfig?.port ?? 9100;
 
-  // 4. Bootstrap forge system (before resolution, so forgeStore is available)
-  // Rejecting executor — forged bricks fail loudly instead of returning silent undefined.
-  const rejectingExecutor = {
-    execute: async () => ({
-      ok: false as const,
-      error: {
-        code: "PERMISSION" as const,
-        message:
-          "Sandbox executor not configured — forged tool execution is not available in this CLI session",
-        durationMs: 0,
+  // 4. Bootstrap sandbox executor for forge verification
+  // let justified: mutable binding — set inside try/catch, read for cleanup
+  let sandboxBridge: SandboxBridge | undefined;
+  // let justified: conditionally assigned in try/catch
+  let forgeExecutor: SandboxExecutor;
+
+  try {
+    const bridge = await createSandboxBridge({
+      config: {
+        profile: restrictiveProfile(),
+        buildCommand: createSandboxCommand,
       },
-    }),
-  };
+    });
+    sandboxBridge = bridge;
+    forgeExecutor = bridgeToExecutor(bridge);
+  } catch {
+    process.stderr.write("warn: sandbox unavailable, forged tool execution disabled\n");
+    forgeExecutor = {
+      execute: async () => ({
+        ok: false as const,
+        error: {
+          code: "PERMISSION" as const,
+          message:
+            "Sandbox executor not configured — forged tool execution is not available in this CLI session",
+          durationMs: 0,
+        },
+      }),
+    };
+  }
+
+  // 5. Bootstrap forge system (before resolution, so forgeStore is available)
   const forgeBootstrap = createForgeBootstrap({
-    executor: rejectingExecutor,
+    executor: forgeExecutor,
     forgeConfig: { enabled: isForgeEnabled(manifest) },
     onError: (err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -318,6 +340,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   healthServer.stop();
   await runtime.dispose();
   forgeBootstrap?.dispose();
+  if (sandboxBridge !== undefined) {
+    await sandboxBridge.dispose();
+  }
   if (nexus.dispose !== undefined) {
     await nexus.dispose();
   }

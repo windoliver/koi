@@ -49,6 +49,10 @@ export function createForgeToolsProvider(config: ForgeToolsProviderConfig): Comp
     name: "forge-tools",
     priority: 50,
     attach: async (agent: Agent) => {
+      // Mutable counter incremented by onForgeConsumed callback.
+      // let justified: mutable counter tracking forges consumed during session
+      let forgeCount = 0;
+
       // Build ForgeDeps with runtime context from the agent entity
       const deps: ForgeDeps = {
         store: config.store,
@@ -59,10 +63,13 @@ export function createForgeToolsProvider(config: ForgeToolsProviderConfig): Comp
           agentId: agent.pid.id,
           depth: agent.pid.depth,
           sessionId: `session:${agent.pid.id}`,
-          // TODO(#3): Static forgesThisSession — governance maxForgesPerSession is not
-          // enforced here. Requires engine-level ForgeSessionCounter wiring. The
-          // engine's GovernanceController provides enforcement when connected.
-          forgesThisSession: 0,
+          // Dynamic getter backed by mutable counter — incremented via onForgeConsumed
+          get forgesThisSession() {
+            return forgeCount;
+          },
+        },
+        onForgeConsumed: (consumed: number) => {
+          forgeCount += consumed;
         },
         // Spread conditionally to satisfy exactOptionalPropertyTypes —
         // optional props without `| undefined` cannot receive explicit undefined.

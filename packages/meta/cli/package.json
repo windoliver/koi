@@ -57,6 +57,8 @@
     "@koi/nexus": "workspace:*",
     "@koi/nexus-embed": "workspace:*",
     "@koi/shutdown": "workspace:*",
+    "@koi/sandbox": "workspace:*",
+    "@koi/sandbox-ipc": "workspace:*",
     "@koi/snapshot-chain-store": "workspace:*"
   }
 }

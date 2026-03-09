@@ -116,6 +116,7 @@ export function createForgeMiddlewareStack(
   const optimizer = createOptimizerMiddleware({
     store: config.forgeStore,
     clock,
+    ...(config.notifier !== undefined ? { notifier: config.notifier } : {}),
   });
 
   // 6. Usage tracking — record brick usage (priority 900)

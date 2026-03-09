@@ -1091,6 +1091,8 @@
         "@koi/nexus": "workspace:*",
         "@koi/nexus-embed": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/sandbox": "workspace:*",
+        "@koi/sandbox-ipc": "workspace:*",
         "@koi/shutdown": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/soul": "workspace:*",

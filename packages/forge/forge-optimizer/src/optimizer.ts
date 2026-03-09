@@ -9,7 +9,13 @@
  * Depends on @koi/core only (ForgeStore, BrickArtifact, BrickFitnessMetrics).
  */
 
-import type { BrickArtifact, BrickFitnessMetrics, BrickId, ForgeStore } from "@koi/core";
+import type {
+  BrickArtifact,
+  BrickFitnessMetrics,
+  BrickId,
+  ForgeStore,
+  StoreChangeNotifier,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,6 +32,8 @@ export interface OptimizationConfig {
   readonly evaluationWindowMs?: number | undefined;
   /** Clock function. Default: Date.now. */
   readonly clock?: (() => number) | undefined;
+  /** Optional notifier for cross-agent cache invalidation after deprecation. */
+  readonly notifier?: StoreChangeNotifier | undefined;
 }
 
 /** Result of evaluating a single brick. */
@@ -226,6 +234,13 @@ export function createBrickOptimizer(config: OptimizationConfig): BrickOptimizer
       // Auto-deprecate bricks that should be deprecated
       if (result.action === "deprecate") {
         await config.store.update(brick.id, { lifecycle: "deprecated" });
+
+        // Notify cross-agent caches about the deprecation
+        if (config.notifier !== undefined) {
+          void Promise.resolve(
+            config.notifier.notify({ kind: "updated", brickId: brick.id }),
+          ).catch(() => {});
+        }
       }
     }
 
