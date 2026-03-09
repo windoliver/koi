@@ -11,7 +11,7 @@ import type {
   EngineCapabilities,
   EngineEvent,
 } from "./index.js";
-import { mapContentBlocksForEngine, toolCallId } from "./index.js";
+import { agentId, mapContentBlocksForEngine, toolCallId } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // EngineEvent exhaustiveness (compile-time + runtime)
@@ -41,6 +41,8 @@ function engineEventLabel(event: EngineEvent): string {
       return "custom";
     case "discovery:miss":
       return "miss";
+    case "spawn_requested":
+      return "spawn";
     default: {
       const _exhaustive: never = event;
       return String(_exhaustive);
@@ -108,6 +110,19 @@ describe("EngineEvent exhaustiveness", () => {
       timestamp: Date.now(),
     };
     expect(engineEventLabel(event)).toBe("miss");
+  });
+
+  test("spawn_requested variant is handled", () => {
+    const event: EngineEvent = {
+      kind: "spawn_requested",
+      request: {
+        description: "research task",
+        agentName: "researcher",
+        signal: AbortSignal.timeout(5000),
+      },
+      childAgentId: agentId("child-1"),
+    };
+    expect(engineEventLabel(event)).toBe("spawn");
   });
 });
 

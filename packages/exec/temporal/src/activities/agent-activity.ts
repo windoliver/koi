@@ -11,11 +11,16 @@
  * It CAN perform I/O, use Date.now(), etc.
  */
 
-import type { ContentBlock, EngineInput } from "@koi/core";
+import type { AgentId, ContentBlock, EngineInput } from "@koi/core";
 import { ApplicationFailure, heartbeat } from "@temporalio/activity";
 import type { EngineCache } from "../engine-cache.js";
 import { mapKoiErrorToApplicationFailure } from "../temporal-errors.js";
-import type { AgentStateRefs, AgentTurnInput, AgentTurnResult } from "../types.js";
+import type {
+  AgentStateRefs,
+  AgentTurnInput,
+  AgentTurnResult,
+  SpawnChildRequest,
+} from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,12 +77,9 @@ export function createActivities(deps: ActivityDeps): {
     async runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
       const turnId = `turn:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`;
       const blocks: ContentBlock[] = [];
-      // v1: spawnChild is always undefined. The L0 engine stream does not
-      // yet emit spawn events (GovernanceEvent.kind === "spawn" exists but
-      // is not surfaced through EngineEvent). When the engine gains spawn
-      // event support, this activity will map them to SpawnChildRequest and
-      // the workflow's startChild branch (agent-workflow.ts:169) will fire.
-      let spawnChild: AgentTurnResult["spawnChild"];
+      // Populated when the engine emits a spawn_requested event.
+      // Only the last spawn request per turn is honoured (single-child model).
+      let spawnChild: SpawnChildRequest | undefined;
 
       try {
         // Get or create cached engine (Decision 13A)
@@ -116,6 +118,18 @@ export function createActivities(deps: ActivityDeps): {
             case "tool_call_end":
               // Tool events are tracked but not streamed
               break;
+            case "spawn_requested": {
+              const childAgentId = evt.childAgentId as AgentId;
+              spawnChild = {
+                childAgentId,
+                childConfig: {
+                  agentId: childAgentId,
+                  sessionId: input.sessionId,
+                  stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+                },
+              };
+              break;
+            }
             case "done":
               // Turn complete
               break;
