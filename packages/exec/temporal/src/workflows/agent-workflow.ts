@@ -207,10 +207,14 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
       // Wait for all in-flight signal/update handlers to complete
       await condition(allHandlersFinished);
 
-      // Continue-As-New with updated state refs (<1KB payload)
+      // Continue-As-New with updated state refs (<1KB payload).
+      // Clear initialMessage/initialMessages to prevent replay —
+      // those were already processed in the current execution.
       await continueAsNew<typeof agentWorkflow>({
         ...config,
         stateRefs,
+        initialMessage: undefined,
+        initialMessages: undefined,
       });
     }
   }

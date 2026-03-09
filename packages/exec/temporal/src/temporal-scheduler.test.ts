@@ -55,6 +55,17 @@ const MESSAGES_INPUT: EngineInput = {
     },
   ],
 } as unknown as EngineInput;
+const PINNED_MESSAGES_INPUT: EngineInput = {
+  kind: "messages",
+  messages: [
+    {
+      content: [{ kind: "text", text: "pinned msg" }],
+      senderId: "u1",
+      timestamp: 1,
+      pinned: true,
+    },
+  ],
+} as unknown as EngineInput;
 const RESUME_INPUT: EngineInput = { kind: "resume", state: {} } as unknown as EngineInput;
 
 // ---------------------------------------------------------------------------
@@ -190,6 +201,17 @@ describe("submit", () => {
     const payload = signalArgs?.[2] as { resumeState: unknown; content: readonly unknown[] };
     expect(payload.resumeState).toEqual({});
     expect(payload.content).toEqual([]);
+  });
+
+  test("preserves pinned flag from messages input", async () => {
+    const client = createMockClient();
+    const scheduler = createTemporalScheduler(createTestConfig(client));
+
+    await scheduler.submit(AGENT_ID, PINNED_MESSAGES_INPUT, "spawn");
+
+    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
+    const payload = signalArgs?.[2] as { pinned: boolean | undefined };
+    expect(payload.pinned).toBe(true);
   });
 
   test("passes startDelay when delayMs is set", async () => {

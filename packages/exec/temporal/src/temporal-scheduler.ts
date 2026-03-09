@@ -67,6 +67,7 @@ function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly 
           timestamp: msg.timestamp,
           threadId: msg.threadId,
           metadata: msg.metadata as Record<string, unknown> | undefined,
+          pinned: msg.pinned,
         }),
       );
     case "resume":

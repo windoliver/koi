@@ -79,6 +79,8 @@ export interface IncomingMessage {
   readonly threadId?: string | undefined;
   /** Arbitrary metadata (preserved from InboundMessage). */
   readonly metadata?: Record<string, unknown> | undefined;
+  /** When true, compaction middleware must preserve this message verbatim. */
+  readonly pinned?: boolean | undefined;
   /**
    * Resume state from EngineInput.kind === "resume".
    * When set, the Activity should reconstruct EngineInput { kind: "resume", state }
