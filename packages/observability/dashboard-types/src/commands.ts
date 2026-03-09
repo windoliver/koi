@@ -38,7 +38,7 @@ export interface CommandDispatcher {
 
   readonly retryDeadLetter?: (
     entryId: string,
-  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  ) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
 
   readonly listMailbox?: (
     agentId: AgentId,

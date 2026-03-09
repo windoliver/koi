@@ -30,7 +30,7 @@ function createMockCommands(overrides?: Partial<CommandDispatcher>): CommandDisp
     suspendAgent: () => ok(),
     resumeAgent: () => ok(),
     terminateAgent: () => ok(),
-    retryDeadLetter: () => ok(),
+    retryDeadLetter: () => ({ ok: true as const, value: true }),
     listMailbox: () => [],
     ...overrides,
   };

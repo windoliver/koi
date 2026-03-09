@@ -21,7 +21,7 @@ interface CommandDispatcher {
     readonly suspendAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     readonly resumeAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     readonly terminateAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
-    readonly retryDeadLetter?: (entryId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly retryDeadLetter?: (entryId: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
     readonly listMailbox?: (agentId: AgentId) => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
 }
 

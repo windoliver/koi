@@ -30,12 +30,14 @@ function handleEvent(event: DashboardEvent): void {
           lastActivityAt: event.timestamp,
         });
         break;
-      case "dispatched":
+      case "dispatched": {
         // New agent — fetch full list to pick up the new entry
+        const dispatchedAt = Date.now();
         void fetchAgents().then((agents) => {
-          useAgentsStore.getState().setAgents(agents);
+          useAgentsStore.getState().setAgents(agents, dispatchedAt);
         });
         break;
+      }
       case "terminated":
         store.removeAgent(event.agentId);
         break;
@@ -68,8 +70,9 @@ export function useSse(): void {
       onStateChange: setConnectionStatus,
       onReconnect: () => {
         // Rehydrate state via REST after reconnect to cover missed SSE events
+        const reconnectedAt = Date.now();
         void fetchAgents().then((agents) => {
-          useAgentsStore.getState().setAgents(agents);
+          useAgentsStore.getState().setAgents(agents, reconnectedAt);
         });
       },
     });

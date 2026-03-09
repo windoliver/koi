@@ -3,7 +3,7 @@
  *
  * GET    /fs/list?path=     — list directory contents
  * GET    /fs/read?path=     — read file content
- * GET    /fs/search?q=&path= — search file contents
+ * GET    /fs/search?q=       — search file contents (optional: glob, maxResults)
  * DELETE /fs/file?path=     — delete a file
  */
 

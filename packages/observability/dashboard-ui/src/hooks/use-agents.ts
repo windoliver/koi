@@ -31,19 +31,25 @@ export function useAgents(): {
     let mounted = true;
 
     const load = async (): Promise<void> => {
-      try {
+      // Only show loading skeleton on initial fetch (empty store).
+      // Subsequent polls should not blank the page.
+      const isInitial = Object.keys(useAgentsStore.getState().agents).length === 0;
+      if (isInitial) {
         setLoading(true);
+      }
+
+      const fetchStartedAt = Date.now();
+      try {
         const agents = await fetchAgents();
         if (mounted) {
-          setAgents(agents);
-          setError(null);
+          setAgents(agents, fetchStartedAt);
         }
       } catch (e: unknown) {
         if (mounted) {
           setError(e instanceof Error ? e : new Error(String(e)));
         }
       } finally {
-        if (mounted) {
+        if (mounted && isInitial) {
           setLoading(false);
         }
       }

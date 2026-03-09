@@ -15,7 +15,12 @@ interface AgentsState {
   readonly lastUpdated: number;
   readonly isLoading: boolean;
   readonly error: Error | null;
-  readonly setAgents: (agents: readonly DashboardAgentSummary[]) => void;
+  /**
+   * Replace the full agent map. Pass `fetchStartedAt` (captured before the
+   * async fetch) so that a slow REST response cannot overwrite fresher state
+   * that arrived via SSE while the fetch was in flight.
+   */
+  readonly setAgents: (agents: readonly DashboardAgentSummary[], fetchStartedAt: number) => void;
   readonly updateAgent: (agentId: string, partial: Partial<DashboardAgentSummary>) => void;
   readonly removeAgent: (agentId: string) => void;
   readonly setLoading: (isLoading: boolean) => void;
@@ -28,13 +33,15 @@ export const useAgentsStore = create<AgentsState>((set) => ({
   isLoading: true,
   error: null,
 
-  setAgents: (agents) =>
-    set(() => {
+  setAgents: (agents, fetchStartedAt) =>
+    set((state) => {
+      // Guard: reject stale REST responses that started before the last update
+      if (fetchStartedAt < state.lastUpdated) return state;
       const record: Record<string, DashboardAgentSummary> = {};
       for (const agent of agents) {
         record[agent.agentId] = agent;
       }
-      return { agents: record, lastUpdated: Date.now() };
+      return { agents: record, lastUpdated: Date.now(), error: null };
     }),
 
   updateAgent: (agentId, partial) =>

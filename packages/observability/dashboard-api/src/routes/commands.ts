@@ -76,7 +76,11 @@ export async function handleRetryDeadLetter(
     return errorResponse("NOT_IMPLEMENTED", "Dead letter retry not supported", 501);
   }
   const result = await commands.retryDeadLetter(id);
-  return handleCommandResult(result);
+  if (!result.ok) {
+    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
+    return errorResponse(result.error.code, result.error.message, status);
+  }
+  return jsonResponse({ retried: result.value });
 }
 
 export async function handleListMailbox(
