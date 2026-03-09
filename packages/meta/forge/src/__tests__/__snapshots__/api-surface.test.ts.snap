@@ -127,6 +127,8 @@ interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
     readonly forgeSigner?: SigningBackend | undefined;
     /** Override forge config (merged with manifest.forge defaults). */
     readonly forgeConfig?: Partial<ForgeConfig> | undefined;
+    /** Resolve the current engine session ID. Enables per-session forge counter reset. */
+    readonly resolveSessionId?: (() => string) | undefined;
     /** Trace reader for crystallize middleware. */
     readonly readTraces?: (() => Promise<Result<readonly TurnTrace[], KoiError>>) | undefined;
 }
