@@ -36,14 +36,14 @@ function createStack(storeOverride?: ForgeStore) {
 // ---------------------------------------------------------------------------
 
 describe("createForgeMiddlewareStack", () => {
-  test("creates all 6 middleware in correct priority order", () => {
+  test("creates all 7 middleware in correct priority order", () => {
     const result = createStack();
 
-    expect(result.middlewares).toHaveLength(6);
+    expect(result.middlewares).toHaveLength(7);
 
     const priorities = result.middlewares.map((m) => m.priority);
-    // demand(455), exaptation(465), usage(900), crystallize(950), auto-forge(960), optimizer(990)
-    expect(priorities).toEqual([455, 465, 900, 950, 960, 990]);
+    // feedback-loop(450), demand(455), exaptation(465), usage(900), crystallize(950), auto-forge(960), optimizer(990)
+    expect(priorities).toEqual([450, 455, 465, 900, 950, 960, 990]);
   });
 
   test("middleware names are correct", () => {
@@ -51,6 +51,7 @@ describe("createForgeMiddlewareStack", () => {
 
     const names = result.middlewares.map((m) => m.name);
     expect(names).toEqual([
+      "feedback-loop",
       "forge-demand-detector",
       "forge-exaptation-detector",
       "forge-usage",
@@ -115,6 +116,69 @@ describe("createForgeMiddlewareStack", () => {
     });
 
     // Stack should be created successfully with custom clock
-    expect(result.middlewares).toHaveLength(6);
+    expect(result.middlewares).toHaveLength(7);
+  });
+
+  test("returns feedbackLoop handle with health API", () => {
+    const result = createStack();
+
+    expect(result.handles.feedbackLoop).toBeDefined();
+    expect(typeof result.handles.feedbackLoop.getHealthSnapshot).toBe("function");
+    expect(typeof result.handles.feedbackLoop.getAllHealthSnapshots).toBe("function");
+    expect(typeof result.handles.feedbackLoop.isQuarantined).toBe("function");
+  });
+
+  test("feedbackLoop handle returns undefined for unknown tools", () => {
+    const result = createStack();
+
+    expect(result.handles.feedbackLoop.getHealthSnapshot("unknown-tool")).toBeUndefined();
+    expect(result.handles.feedbackLoop.isQuarantined("unknown-tool")).toBe(false);
+    expect(result.handles.feedbackLoop.getAllHealthSnapshots()).toEqual([]);
+  });
+
+  test("passes forgeStore and resolveBrickId through to feedback-loop", () => {
+    const store = createInMemoryForgeStore();
+    const resolveCalls: string[] = [];
+    const result = createForgeMiddlewareStack({
+      forgeStore: store,
+      forgeConfig: createDefaultForgeConfig(),
+      scope: "agent",
+      readTraces: emptyTraces,
+      resolveBrickId: (name: string) => {
+        resolveCalls.push(name);
+        return undefined;
+      },
+    });
+
+    // The feedback-loop middleware should exist and be wired
+    const feedbackLoop = result.middlewares.find((m) => m.name === "feedback-loop");
+    expect(feedbackLoop).toBeDefined();
+    expect(feedbackLoop?.priority).toBe(450);
+  });
+
+  test("accepts optional snapshotStore", () => {
+    const store = createInMemoryForgeStore();
+    const result = createForgeMiddlewareStack({
+      forgeStore: store,
+      forgeConfig: createDefaultForgeConfig(),
+      scope: "agent",
+      readTraces: emptyTraces,
+      resolveBrickId: noopResolveBrickId,
+      snapshotStore: {
+        record: async () => ({ ok: true as const, value: undefined }),
+        get: async () => ({
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "noop", retryable: false },
+        }),
+        list: async () => ({ ok: true as const, value: [] }),
+        history: async () => ({ ok: true as const, value: [] }),
+        latest: async () => ({
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "noop", retryable: false },
+        }),
+      },
+    });
+
+    expect(result.middlewares).toHaveLength(7);
   });
 });

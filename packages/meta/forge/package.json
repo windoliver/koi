@@ -28,6 +28,7 @@
     "@koi/forge-policy": "workspace:*",
     "@koi/forge-tools": "workspace:*",
     "@koi/forge-types": "workspace:*",
+    "@koi/middleware-feedback-loop": "workspace:*",
     "@koi/forge-optimizer": "workspace:*",
     "@koi/forge-verifier": "workspace:*",
     "@koi/git-utils": "workspace:*",

@@ -3,9 +3,8 @@ import type { BrickArtifact, ForgeStore, KoiError, Result, ToolArtifact } from "
 import { brickId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
-import type { ForgeRepairConfig } from "./forge-repair.js";
+import type { ForgeRepairConfig, HealthSnapshotReader } from "./forge-repair.js";
 import { createForgeRepairStrategy } from "./forge-repair.js";
-import type { ToolHealthTracker } from "./tool-health.js";
 import type { ValidationError } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -66,7 +65,7 @@ function createMockForgeStore(loadResult?: Result<BrickArtifact, KoiError>): For
   };
 }
 
-function createMockHealthTracker(snapshot?: Record<string, unknown>): ToolHealthTracker {
+function createMockHealthReader(snapshot?: Record<string, unknown>): HealthSnapshotReader {
   const defaultSnapshot = {
     brickId: "brick-1",
     toolId: "forged-tool-1",
@@ -79,25 +78,14 @@ function createMockHealthTracker(snapshot?: Record<string, unknown>): ToolHealth
     lastUpdatedAt: 1000,
   };
   return {
-    recordSuccess: mock(() => {}),
-    recordFailure: mock(() => {}),
     getSnapshot: mock(() => (snapshot ?? defaultSnapshot) as never),
-    isQuarantined: mock(() => false),
-    isQuarantinedAsync: mock(() => Promise.resolve(false)),
-    checkAndQuarantine: mock(() => Promise.resolve(false)),
-    checkAndDemote: mock(() => Promise.resolve(false)),
-    getAllSnapshots: mock(() => []),
-    shouldFlushTool: mock(() => false),
-    flushTool: mock(() => Promise.resolve()),
-    flush: mock(() => Promise.resolve()),
-    dispose: mock(() => Promise.resolve()),
   };
 }
 
 function createConfig(overrides?: Partial<ForgeRepairConfig>): ForgeRepairConfig {
   return {
     forgeStore: createMockForgeStore(),
-    healthTracker: createMockHealthTracker(),
+    healthTracker: createMockHealthReader(),
     resolveBrickId: (toolId: string) =>
       toolId.startsWith("forged-") ? `brick-${toolId}` : undefined,
     ...overrides,
@@ -185,5 +173,41 @@ describe("createForgeRepairStrategy", () => {
     expect(result.messages[0]?.senderId).toBe("user");
     expect(result.messages[1]?.senderId).toBe("assistant");
     expect(result.messages[2]?.senderId).toBe("system:feedback-loop");
+  });
+
+  // -------------------------------------------------------------------------
+  // shouldRetry pre-check (Issue #937: 13A)
+  // -------------------------------------------------------------------------
+
+  test("shouldRetry returns true for healthy tools", () => {
+    const strategy = createForgeRepairStrategy(createConfig());
+    expect(strategy.shouldRetry?.(sampleErrors, 1)).toBe(true);
+  });
+
+  test("shouldRetry returns false when tool is quarantined", () => {
+    const quarantinedSnapshot = {
+      brickId: "brick-1",
+      toolId: "forged-tool-1",
+      metrics: { successRate: 0, errorRate: 1, usageCount: 10, avgLatencyMs: 50 },
+      state: "quarantined" as const,
+      recentFailures: [],
+      lastUpdatedAt: 1000,
+    };
+    const strategy = createForgeRepairStrategy(
+      createConfig({ healthTracker: createMockHealthReader(quarantinedSnapshot) }),
+    );
+    expect(strategy.shouldRetry?.(sampleErrors, 1)).toBe(false);
+  });
+
+  test("shouldRetry returns true when brickId is not resolvable", () => {
+    const strategy = createForgeRepairStrategy(createConfig({ resolveBrickId: () => undefined }));
+    expect(strategy.shouldRetry?.(sampleErrors, 1)).toBe(true);
+  });
+
+  test("shouldRetry returns true when no snapshot exists", () => {
+    const strategy = createForgeRepairStrategy(
+      createConfig({ healthTracker: { getSnapshot: () => undefined } }),
+    );
+    expect(strategy.shouldRetry?.(sampleErrors, 1)).toBe(true);
   });
 });

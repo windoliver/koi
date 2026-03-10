@@ -1142,6 +1142,7 @@
         "@koi/git-utils": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/manifest": "workspace:*",
+        "@koi/middleware-feedback-loop": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/starter": "workspace:*",
         "@koi/validation": "workspace:*",
@@ -1517,7 +1518,7 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
-        "@koi/forge": "workspace:*",
+        "@koi/forge-tools": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },

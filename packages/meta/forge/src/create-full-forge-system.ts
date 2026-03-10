@@ -13,6 +13,7 @@ import type {
   KoiMiddleware,
   Result,
   SigningBackend,
+  SnapshotStore,
   StoreChangeNotifier,
   TurnTrace,
 } from "@koi/core";
@@ -22,6 +23,7 @@ import type { ExaptationHandle } from "@koi/forge-exaptation";
 import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import { createForgeComponentProvider, createMemoryStoreChangeNotifier } from "@koi/forge-tools";
 import type { ForgeConfig, ForgePipeline, SandboxExecutor } from "@koi/forge-types";
+import type { FeedbackLoopHandle } from "@koi/middleware-feedback-loop";
 import type { ForgeMiddlewareStackResult } from "./create-forge-middleware-stack.js";
 import { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
 import { createForgePipeline } from "./create-forge-stack.js";
@@ -44,6 +46,8 @@ export interface CreateFullForgeSystemConfig {
   readonly clock?: (() => number) | undefined;
   /** Optional notifier for cross-agent cache invalidation. Auto-created when not provided. */
   readonly notifier?: StoreChangeNotifier | undefined;
+  /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
+  readonly snapshotStore?: SnapshotStore | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +64,7 @@ export interface FullForgeSystem {
     readonly demand: ForgeDemandHandle;
     readonly crystallize: CrystallizeHandle;
     readonly exaptation: ExaptationHandle;
+    readonly feedbackLoop: FeedbackLoopHandle;
   };
 }
 
@@ -99,7 +104,7 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
   // 3. Pipeline — cross-L2 wiring (verify, governance, provenance, etc.)
   const pipeline = createForgePipeline();
 
-  // 4. Middleware stack — all 6 forge middlewares
+  // 4. Middleware stack — all 7 forge middlewares (including feedback loop)
   const stackResult: ForgeMiddlewareStackResult = createForgeMiddlewareStack({
     forgeStore: config.store,
     forgeConfig: config.forgeConfig,
@@ -109,6 +114,7 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
     onError: config.onError,
     clock: config.clock,
     notifier,
+    snapshotStore: config.snapshotStore,
   });
 
   return {

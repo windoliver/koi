@@ -12,15 +12,17 @@ export type { FeedbackLoopHandle } from "./feedback-loop.js";
 export { createFeedbackLoopMiddleware } from "./feedback-loop.js";
 export type { FlushDeltas } from "./fitness-flush.js";
 export { computeMergedFitness, shouldFlush } from "./fitness-flush.js";
-export type { ForgeRepairConfig } from "./forge-repair.js";
+export type { ForgeRepairConfig, HealthSnapshotReader } from "./forge-repair.js";
 export { createForgeRepairStrategy } from "./forge-repair.js";
 export { defaultRepairStrategy, formatErrors } from "./repair.js";
+export { resolveRepairStrategy } from "./retry.js";
 export type { ToolFlushState, ToolHealthTracker } from "./tool-health.js";
 export { createToolHealthTracker } from "./tool-health.js";
 export type {
   DiscoveryMissRecord,
   ForgeToolErrorFeedback,
   RepairStrategy,
+  RepairStrategyInput,
   RetryConfig,
   ToolFailureRecord,
   ToolHealthMetrics,

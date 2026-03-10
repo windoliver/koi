@@ -34,7 +34,7 @@ import {
 } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
-import { createInMemoryForgeStore } from "@koi/forge";
+import { createInMemoryForgeStore } from "@koi/forge-tools";
 import type { ForgeHealthConfig } from "../config.js";
 import { createFeedbackLoopMiddleware } from "../feedback-loop.js";
 import { createToolHealthTracker } from "../tool-health.js";

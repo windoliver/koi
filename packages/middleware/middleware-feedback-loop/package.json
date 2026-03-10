@@ -19,7 +19,7 @@
   "devDependencies": {
     "@koi/engine": "workspace:*",
     "@koi/engine-pi": "workspace:*",
-    "@koi/forge": "workspace:*",
+    "@koi/forge-tools": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

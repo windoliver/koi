@@ -14,6 +14,7 @@ import type {
   KoiMiddleware,
   Result,
   SigningBackend,
+  SnapshotStore,
   TurnTrace,
 } from "@koi/core";
 import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
@@ -45,6 +46,8 @@ export interface ForgeBootstrapConfig {
   readonly resolveBrickId?: ((toolName: string) => string | undefined) | undefined;
   /** Optional signing backend. */
   readonly signer?: SigningBackend | undefined;
+  /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
+  readonly snapshotStore?: SnapshotStore | undefined;
   /** Error callback. */
   readonly onError?: ((error: unknown) => void) | undefined;
   /** Clock function for testing. */
@@ -109,6 +112,7 @@ export function createForgeBootstrap(
       signer: config.signer,
       onError: config.onError,
       clock: config.clock,
+      snapshotStore: config.snapshotStore,
     });
 
     // Cast provider to its full instance type for dispose access.

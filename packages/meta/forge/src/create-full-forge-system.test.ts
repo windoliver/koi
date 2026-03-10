@@ -57,11 +57,13 @@ describe("createFullForgeSystem", () => {
     expect(typeof system.pipeline.verify).toBe("function");
     expect(typeof system.pipeline.checkGovernance).toBe("function");
 
-    expect(system.middlewares).toHaveLength(6);
+    expect(system.middlewares).toHaveLength(7);
 
     expect(system.handles.demand).toBeDefined();
     expect(system.handles.crystallize).toBeDefined();
     expect(system.handles.exaptation).toBeDefined();
+    expect(system.handles.feedbackLoop).toBeDefined();
+    expect(typeof system.handles.feedbackLoop.getHealthSnapshot).toBe("function");
   });
 
   test("middleware stack is ordered by priority", () => {
@@ -76,7 +78,7 @@ describe("createFullForgeSystem", () => {
     });
 
     const priorities = system.middlewares.map((m) => m.priority);
-    expect(priorities).toEqual([455, 465, 900, 950, 960, 990]);
+    expect(priorities).toEqual([450, 455, 465, 900, 950, 960, 990]);
   });
 
   test("accepts optional signer", () => {
@@ -114,6 +116,6 @@ describe("createFullForgeSystem", () => {
       },
     });
 
-    expect(system.middlewares).toHaveLength(6);
+    expect(system.middlewares).toHaveLength(7);
   });
 });

@@ -43,6 +43,8 @@ export interface ToolHealthTracker {
   readonly flushTool: (toolId: string) => Promise<void>;
   /** Flushes all dirty tools' fitness data to ForgeStore. */
   readonly flush: () => Promise<void>;
+  /** Batch-prefetch quarantined bricks from ForgeStore into local cache. */
+  readonly prefetchQuarantined: () => Promise<void>;
   /** Final drain: flushes all dirty tools, then clears internal state. */
   readonly dispose: () => Promise<void>;
 }
@@ -462,6 +464,45 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     await Promise.allSettled(promises);
   }
 
+  /**
+   * Batch-prefetch quarantined bricks from ForgeStore (Issue #937: 14A).
+   * Pre-populates the quarantine cache so `isQuarantinedAsync` hits the warm path.
+   */
+  async function prefetchQuarantinedImpl(): Promise<void> {
+    try {
+      const searchResult = await config.forgeStore.search({
+        lifecycle: "failed",
+      });
+      if (!searchResult.ok) return;
+      for (const brick of searchResult.value) {
+        // Reverse-resolve: we need the toolId, but we only have brickId.
+        // Pre-populate local state using the brick name as the toolId
+        // (forge tools use brick name as tool name).
+        const localTs = getOrCreate(brick.name);
+        localTs.state = "quarantined";
+      }
+    } catch (_e: unknown) {
+      // Store unavailable — graceful degradation, individual async checks still work
+    }
+  }
+
+  /**
+   * Evict quarantined tool state after flush (Issue #937: 16A).
+   * Keeps only a lightweight quarantine flag instead of the full ring buffer.
+   */
+  function evictQuarantinedState(toolId: string): void {
+    const ts = tools.get(toolId);
+    if (ts === undefined || ts.state !== "quarantined") return;
+    // Replace full state with minimal quarantine marker.
+    // Keep a single failure entry so metrics report errorRate > 0.
+    const marker = createToolState(1);
+    marker.state = "quarantined";
+    marker.ring[0] = { success: false, latencyMs: 0 };
+    marker.filledSlots = 1;
+    marker.lastUpdatedAt = ts.lastUpdatedAt;
+    tools.set(toolId, marker);
+  }
+
   async function disposeImpl(): Promise<void> {
     await flushAllImpl();
     tools.clear();
@@ -578,6 +619,9 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       // Notify callback (e.g., forgeProvider.invalidate())
       await config.onQuarantine?.(resolvedBrickId);
 
+      // Evict ring buffer to bound memory (Issue #937: 16A)
+      evictQuarantinedState(toolId);
+
       return true;
     },
 
@@ -686,6 +730,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     shouldFlushTool: shouldFlushToolImpl,
     flushTool: flushToolImpl,
     flush: flushAllImpl,
+    prefetchQuarantined: prefetchQuarantinedImpl,
     dispose: disposeImpl,
   };
 }

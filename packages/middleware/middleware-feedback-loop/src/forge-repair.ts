@@ -3,18 +3,23 @@
  * test cases, health metrics, and a computed suggestion.
  */
 
-import type { ForgeStore } from "@koi/core";
+import type { ForgeStore, ToolHealthSnapshot } from "@koi/core";
 import { brickId as toBrickId } from "@koi/core";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { formatErrors } from "./repair.js";
-import type { ToolHealthTracker } from "./tool-health.js";
 import type { RepairStrategy, ValidationError } from "./types.js";
+
+/** Minimal health read interface for the repair strategy (subset of ToolHealthTracker). */
+export interface HealthSnapshotReader {
+  readonly getSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
+}
 
 /** Configuration for forge-aware repair strategy. */
 export interface ForgeRepairConfig {
   readonly forgeStore: ForgeStore;
-  readonly healthTracker: ToolHealthTracker;
+  /** Health snapshot reader — accepts a ToolHealthTracker or FeedbackLoopHandle. */
+  readonly healthTracker: HealthSnapshotReader;
   readonly resolveBrickId: (toolId: string) => string | undefined;
 }
 
@@ -47,6 +52,16 @@ export function createForgeRepairStrategy(config: ForgeRepairConfig): RepairStra
   const { forgeStore, healthTracker, resolveBrickId } = config;
 
   return {
+    shouldRetry(errors: readonly ValidationError[]): boolean {
+      // Static pre-check (Issue #937: 13A): abort if referenced tool is quarantined.
+      // Saves an LLM call when the tool was killed between retries.
+      const toolId = errors[0]?.path ?? errors[0]?.validator ?? "";
+      if (resolveBrickId(toolId) === undefined) return true;
+      const snapshot = healthTracker.getSnapshot(toolId);
+      if (snapshot !== undefined && snapshot.state === "quarantined") return false;
+      return true;
+    },
+
     async buildRetryRequest(
       original: ModelRequest,
       response: ModelResponse,

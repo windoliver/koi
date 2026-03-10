@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ForgeScope, Result, TurnTrace, KoiError, StoreChangeNotifier, ComponentProvider, KoiMiddleware, SandboxExecutor as SandboxExecutor$1, SandboxAdapter, SkillComponent } from '@koi/core';
+"import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ForgeScope, Result, TurnTrace, KoiError, StoreChangeNotifier, SnapshotStore, ComponentProvider, KoiMiddleware, SandboxExecutor as SandboxExecutor$1, SandboxAdapter, SkillComponent } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, CounterExample, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from '@koi/core';
 import { SandboxExecutor, DependencyConfig, ForgeConfig, ForgePipeline } from '@koi/forge-types';
 export { BrickContentInput, CreateProvenanceOptions, DEFAULT_REVERIFICATION_CONFIG, DependencyConfig, DriftCheckResult, DriftChecker, ForgeAgentInput, ForgeAgentInputWithBricks, ForgeAgentInputWithManifest, ForgeChannelInput, ForgeConfig, ForgeContext, ForgeError, ForgeInput, ForgeInputBase, ForgeMiddlewareInput, ForgePipeline, ForgeResult, ForgeResultMetadata, ForgeSkillInput, ForgeToolInput, ForgeVerifier, FormatConfig, GovernanceResult, ManifestParseResult, ManifestParser, MutationPressureConfig, PromoteChange, PromoteResult, ResolveStageReport, ReverificationConfig, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, ScopePromotionConfig, SelfTestStageReport, StageReport, TestFailure, TrustStageReport, VerificationConfig, VerificationReport, VerificationStage, VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig } from '@koi/forge-types';
@@ -19,6 +19,7 @@ import { CrystallizeHandle } from '@koi/crystallize';
 export { AutoForgeConfig, AutoForgeVerifier, AutoForgeVerifierResult, CrystallizationCandidate, CrystallizeConfig, CrystallizeHandle, ToolNgram, ToolStep, createAutoForgeMiddleware, createCrystallizeMiddleware } from '@koi/crystallize';
 import { KoiRuntime } from '@koi/engine';
 import { ConfiguredKoiOptions } from '@koi/starter';
+import { FeedbackLoopHandle } from '@koi/middleware-feedback-loop';
 import { DiscoverySource } from '@koi/agent-discovery';
 
 /**
@@ -79,6 +80,8 @@ interface CreateFullForgeSystemConfig {
     readonly clock?: (() => number) | undefined;
     /** Optional notifier for cross-agent cache invalidation. Auto-created when not provided. */
     readonly notifier?: StoreChangeNotifier | undefined;
+    /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
+    readonly snapshotStore?: SnapshotStore | undefined;
 }
 interface FullForgeSystem {
     readonly runtime: ForgeRuntimeInstance;
@@ -90,6 +93,7 @@ interface FullForgeSystem {
         readonly demand: ForgeDemandHandle;
         readonly crystallize: CrystallizeHandle;
         readonly exaptation: ExaptationHandle;
+        readonly feedbackLoop: FeedbackLoopHandle;
     };
 }
 /**
@@ -131,6 +135,8 @@ interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
     readonly resolveSessionId?: (() => string) | undefined;
     /** Trace reader for crystallize middleware. */
     readonly readTraces?: (() => Promise<Result<readonly TurnTrace[], KoiError>>) | undefined;
+    /** Optional SnapshotStore for quarantine/demotion event recording. */
+    readonly forgeSnapshotStore?: SnapshotStore | undefined;
 }
 /** Return type for createForgeConfiguredKoi — runtime + optional forge system handle. */
 interface ForgeConfiguredKoiResult {
@@ -190,12 +196,12 @@ interface ForgeDelegation {
 declare function createForgeDelegation(config: ForgeDelegationConfig): ForgeDelegation;
 
 /**
- * createForgeMiddlewareStack — wires the 4 orphaned forge middleware packages
+ * createForgeMiddlewareStack — wires the forge middleware packages
  * into a single, correctly-ordered middleware array.
  *
  * Lives in L3 @koi/forge because it imports from multiple L2 peers
- * (forge-demand, forge-exaptation, forge-optimizer, forge-policy) and the
- * L0u @koi/crystallize package.
+ * (forge-demand, forge-exaptation, forge-optimizer, forge-policy,
+ * middleware-feedback-loop) and the L0u @koi/crystallize package.
  */
 
 interface ForgeMiddlewareStackConfig {
@@ -208,6 +214,8 @@ interface ForgeMiddlewareStackConfig {
     readonly clock?: (() => number) | undefined;
     /** Optional notifier for cross-agent cache invalidation after store mutations. */
     readonly notifier?: StoreChangeNotifier | undefined;
+    /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
+    readonly snapshotStore?: SnapshotStore | undefined;
 }
 interface ForgeMiddlewareStackResult {
     readonly middlewares: readonly KoiMiddleware[];
@@ -215,21 +223,23 @@ interface ForgeMiddlewareStackResult {
         readonly demand: ForgeDemandHandle;
         readonly crystallize: CrystallizeHandle;
         readonly exaptation: ExaptationHandle;
+        readonly feedbackLoop: FeedbackLoopHandle;
     };
 }
 /**
- * Create the full forge middleware stack with all 6 middlewares wired.
+ * Create the full forge middleware stack with all 7 middlewares wired.
  *
  * Construction order follows the dependency graph:
- * 1. crystallize (standalone — reads traces)
- * 2. demand (standalone — monitors tool calls)
- * 3. auto-forge (depends on crystallize + demand handles)
- * 4. exaptation (standalone — monitors purpose drift)
- * 5. optimizer (standalone — sweeps on session end)
- * 6. usage (standalone — tracks brick usage)
+ * 1. feedback-loop (standalone — health tracking, retry with repair)
+ * 2. crystallize (standalone — reads traces)
+ * 3. demand (standalone — monitors tool calls)
+ * 4. auto-forge (depends on crystallize + demand handles)
+ * 5. exaptation (standalone — monitors purpose drift)
+ * 6. optimizer (standalone — sweeps on session end)
+ * 7. usage (standalone — tracks brick usage)
  *
  * Returned middleware array is sorted by priority:
- * - demand (455), exaptation (465), usage (900),
+ * - feedback-loop (450), demand (455), exaptation (465), usage (900),
  *   crystallize (950), auto-forge (960), optimizer (990)
  */
 declare function createForgeMiddlewareStack(config: ForgeMiddlewareStackConfig): ForgeMiddlewareStackResult;
@@ -295,6 +305,8 @@ interface ForgeBootstrapConfig {
     readonly resolveBrickId?: ((toolName: string) => string | undefined) | undefined;
     /** Optional signing backend. */
     readonly signer?: SigningBackend | undefined;
+    /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
+    readonly snapshotStore?: SnapshotStore | undefined;
     /** Error callback. */
     readonly onError?: ((error: unknown) => void) | undefined;
     /** Clock function for testing. */
