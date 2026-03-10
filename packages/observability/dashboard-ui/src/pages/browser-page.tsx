@@ -1,10 +1,11 @@
 /**
  * BrowserPage — page-level wrapper for the Nexus namespace browser.
  *
- * Reads the initial view from URL query params and syncs changes back.
+ * Bidirectional sync between URL ?view= param and view store.
+ * Supports back/forward navigation and manual URL edits.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { BrowserShell } from "../components/browser/browser-shell.js";
 import { useViewStore } from "../stores/view-store.js";
@@ -14,23 +15,26 @@ export function BrowserPage(): React.ReactElement {
   const activeViewId = useViewStore((s) => s.activeViewId);
   const setActiveView = useViewStore((s) => s.setActiveView);
 
-  // Sync URL → store on mount
+  // Ref to track changes originating from URL (prevents sync loops)
+  const syncingFromUrl = useRef(false);
+
+  // URL → store: runs on mount, back/forward, and manual URL edits
   useEffect(() => {
     const viewParam = searchParams.get("view");
     if (viewParam !== null && viewParam !== activeViewId) {
+      syncingFromUrl.current = true;
       setActiveView(viewParam);
     }
-    // Only run on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [searchParams, activeViewId, setActiveView]);
 
-  // Sync store → URL on view change
+  // Store → URL: only for user-initiated store changes (tab clicks)
   useEffect(() => {
-    const currentView = searchParams.get("view");
-    if (currentView !== activeViewId) {
-      setSearchParams({ view: activeViewId }, { replace: true });
+    if (syncingFromUrl.current) {
+      syncingFromUrl.current = false;
+      return;
     }
-  }, [activeViewId, searchParams, setSearchParams]);
+    setSearchParams({ view: activeViewId }, { replace: true });
+  }, [activeViewId, setSearchParams]);
 
   return <BrowserShell />;
 }

@@ -1,8 +1,10 @@
 /**
- * ViewerRouter — routes a file path to the appropriate typed viewer.
+ * ViewerRouter — routes a file or directory path to the appropriate viewer.
  *
- * Pattern matching against path segments and file extensions to select
- * the best viewer for the content type.
+ * For files: loads content via useFileContent and pattern-matches to a typed viewer.
+ * For directories: checks for specialized directory viewers (e.g. mailbox), then
+ * tries to load a conventional index.json (routed through the typed file viewers),
+ * falling back to a generic directory listing.
  */
 
 import { useFileContent } from "../../hooks/use-file-content.js";
@@ -11,6 +13,7 @@ import { AgentOverviewViewer } from "./agent-overview-viewer.js";
 import { BrickListViewer } from "./brick-list-viewer.js";
 import { BrickViewer } from "./brick-viewer.js";
 import { DeadLetterViewer } from "./dead-letter-viewer.js";
+import { DirectoryViewer } from "./directory-viewer.js";
 import { EventDetailViewer } from "./event-detail-viewer.js";
 import { EventLogViewer } from "./event-log-viewer.js";
 import { EventStreamViewer } from "./event-stream-viewer.js";
@@ -18,6 +21,7 @@ import { GatewayNodeViewer } from "./gateway-node-viewer.js";
 import { GatewaySessionViewer } from "./gateway-session-viewer.js";
 import { GatewayViewer } from "./gateway-viewer.js";
 import { JsonViewer } from "./json-viewer.js";
+import { MailboxDirectoryViewer } from "./mailbox-directory-viewer.js";
 import { MailboxViewer } from "./mailbox-viewer.js";
 import { ManifestViewer } from "./manifest-viewer.js";
 import { MemoryEntityViewer } from "./memory-entity-viewer.js";
@@ -35,50 +39,63 @@ import { SubscriptionViewer } from "./subscription-viewer.js";
 import { TextViewer } from "./text-viewer.js";
 import { WorkspaceViewer } from "./workspace-viewer.js";
 
-/**
- * Viewer routing rules — ordered by specificity (most specific first).
- * Each rule has a `match` function and a `viewer` component.
- */
+// ---------------------------------------------------------------------------
+// File viewer rules — ordered by specificity (most specific first)
+// ---------------------------------------------------------------------------
+
 const VIEWER_RULES: readonly {
   readonly match: (path: string) => boolean;
-  readonly Viewer: React.ComponentType<{ readonly content: string; readonly path: string }>;
+  readonly Viewer: React.ComponentType<{
+    readonly content: string;
+    readonly path: string;
+  }>;
 }[] = [
   // === Most specific rules first ===
 
   // Manifest files (before any directory-based matchers)
   {
-    match: (p) => p.endsWith("/manifest.json") || p.endsWith("/manifest.yaml"),
+    match: (p) =>
+      p.endsWith("/manifest.json") || p.endsWith("/manifest.yaml"),
     Viewer: ManifestViewer,
   },
 
   // Agent overview — agent namespace manifest.json (matched above) serves as overview
   // Also match agent overview/index files specifically
   {
-    match: (p) => /\/agents\/[^/]+\/overview\.json$/.test(p) || /\/agents\/[^/]+\/index\.json$/.test(p),
+    match: (p) =>
+      /\/agents\/[^/]+\/overview\.json$/.test(p) ||
+      /\/agents\/[^/]+\/index\.json$/.test(p),
     Viewer: AgentOverviewViewer,
   },
 
   // Dead letter queue entries (before general events match)
   {
-    match: (p) => (p.includes("/events/dlq/") || p.includes("/dead-letter/")) && p.endsWith(".json"),
+    match: (p) =>
+      (p.includes("/events/dlq/") || p.includes("/dead-letter/")) &&
+      p.endsWith(".json"),
     Viewer: DeadLetterViewer,
   },
 
   // Event stream metadata (before general events match)
   {
-    match: (p) => p.includes("/events/") && (p.endsWith("/stream.json") || p.endsWith("/meta.json")),
+    match: (p) =>
+      p.includes("/events/") &&
+      (p.endsWith("/stream.json") || p.endsWith("/meta.json")),
     Viewer: EventStreamViewer,
   },
 
   // Event detail — individual event files in events directory (e.g., /events/evt-001.json)
   {
-    match: (p) => p.includes("/events/") && /\/evt[_-]/.test(p) && p.endsWith(".json"),
+    match: (p) =>
+      p.includes("/events/") && /\/evt[_-]/.test(p) && p.endsWith(".json"),
     Viewer: EventDetailViewer,
   },
 
   // Brick list — index/listing files in bricks directory
   {
-    match: (p) => p.includes("/bricks/") && (p.endsWith("/index.json") || p.endsWith("/list.json")),
+    match: (p) =>
+      p.includes("/bricks/") &&
+      (p.endsWith("/index.json") || p.endsWith("/list.json")),
     Viewer: BrickListViewer,
   },
 
@@ -90,7 +107,9 @@ const VIEWER_RULES: readonly {
 
   // Event logs (JSONL or JSON in events directories)
   {
-    match: (p) => p.includes("/events/") && (p.endsWith(".jsonl") || p.endsWith(".json")),
+    match: (p) =>
+      p.includes("/events/") &&
+      (p.endsWith(".jsonl") || p.endsWith(".json")),
     Viewer: EventLogViewer,
   },
 
@@ -105,21 +124,25 @@ const VIEWER_RULES: readonly {
   // Gateway session files (before general session match — /gateway/session/ contains /session/)
   {
     match: (p) =>
-      (p.includes("/gateway/sessions/") || p.includes("/gateway/session/")) && p.endsWith(".json"),
+      (p.includes("/gateway/sessions/") ||
+        p.includes("/gateway/session/")) &&
+      p.endsWith(".json"),
     Viewer: GatewaySessionViewer,
   },
 
   // Gateway node files (before general gateway match)
   {
     match: (p) =>
-      (p.includes("/gateway/nodes/") || p.includes("/gateway/node/")) && p.endsWith(".json"),
+      (p.includes("/gateway/nodes/") || p.includes("/gateway/node/")) &&
+      p.endsWith(".json"),
     Viewer: GatewayNodeViewer,
   },
 
   // Pending frames (before general session match)
   {
     match: (p) =>
-      (p.includes("/session/pending/") || p.includes("/pending-frames")) && p.endsWith(".json"),
+      (p.includes("/session/pending/") || p.includes("/pending-frames")) &&
+      p.endsWith(".json"),
     Viewer: PendingFramesViewer,
   },
 
@@ -127,7 +150,9 @@ const VIEWER_RULES: readonly {
   {
     match: (p) =>
       p.includes("/session/") &&
-      (p.endsWith("/index.json") || p.endsWith("/list.json") || p.endsWith("/sessions.json")),
+      (p.endsWith("/index.json") ||
+        p.endsWith("/list.json") ||
+        p.endsWith("/sessions.json")),
     Viewer: SessionListViewer,
   },
 
@@ -243,9 +268,27 @@ const VIEWER_RULES: readonly {
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Directory viewer rules — specialized directory viewers
+// ---------------------------------------------------------------------------
+
+const DIRECTORY_RULES: readonly {
+  readonly match: (path: string) => boolean;
+  readonly Component: React.ComponentType<{ readonly path: string }>;
+}[] = [
+  // Mailbox directories use command-backed API (listMailbox)
+  {
+    match: (p) => /\/mailbox\/?$/.test(p),
+    Component: MailboxDirectoryViewer,
+  },
+];
+
 function resolveViewer(
   path: string,
-): React.ComponentType<{ readonly content: string; readonly path: string }> {
+): React.ComponentType<{
+  readonly content: string;
+  readonly path: string;
+}> {
   for (const rule of VIEWER_RULES) {
     if (rule.match(path)) return rule.Viewer;
   }
@@ -253,7 +296,37 @@ function resolveViewer(
   return TextViewer;
 }
 
+function resolveDirectoryViewer(
+  path: string,
+): React.ComponentType<{ readonly path: string }> | undefined {
+  for (const rule of DIRECTORY_RULES) {
+    if (rule.match(path)) return rule.Component;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Public component — routes files and directories
+// ---------------------------------------------------------------------------
+
 export function ViewerRouter({
+  path,
+  isDirectory,
+}: {
+  readonly path: string;
+  readonly isDirectory?: boolean;
+}): React.ReactElement {
+  if (isDirectory === true) {
+    return <DirectoryViewerRouter path={path} />;
+  }
+  return <FileViewerRouter path={path} />;
+}
+
+// ---------------------------------------------------------------------------
+// File viewer — loads content and routes to typed viewer
+// ---------------------------------------------------------------------------
+
+function FileViewerRouter({
   path,
 }: {
   readonly path: string;
@@ -272,8 +345,12 @@ export function ViewerRouter({
     return (
       <div className="flex items-center justify-center p-8">
         <div className="text-center">
-          <div className="text-sm font-medium text-red-500">Failed to load file</div>
-          <div className="mt-1 text-xs text-[var(--color-muted)]">{error.message}</div>
+          <div className="text-sm font-medium text-red-500">
+            Failed to load file
+          </div>
+          <div className="mt-1 text-xs text-[var(--color-muted)]">
+            {error.message}
+          </div>
           <div className="mt-2 text-xs text-[var(--color-muted)]">{path}</div>
         </div>
       </div>
@@ -290,4 +367,51 @@ export function ViewerRouter({
 
   const Viewer = resolveViewer(path);
   return <Viewer content={content} path={path} />;
+}
+
+// ---------------------------------------------------------------------------
+// Directory viewer — tries index.json first, falls back to generic listing
+// ---------------------------------------------------------------------------
+
+function DirectoryViewerRouter({
+  path,
+}: {
+  readonly path: string;
+}): React.ReactElement {
+  const SpecializedViewer = resolveDirectoryViewer(path);
+  if (SpecializedViewer !== undefined) {
+    return <SpecializedViewer path={path} />;
+  }
+  // Default: try index.json, fall back to generic directory listing
+  return <IndexFileViewer path={path} />;
+}
+
+/**
+ * Tries to load index.json from the directory and route it through the typed
+ * file viewer rules. Falls back to DirectoryViewer on error (file not found).
+ */
+function IndexFileViewer({
+  path,
+}: {
+  readonly path: string;
+}): React.ReactElement {
+  const normalizedPath = path.endsWith("/") ? path.slice(0, -1) : path;
+  const filePath = `${normalizedPath}/index.json`;
+  const { content, isLoading, error } = useFileContent(filePath);
+
+  if (isLoading) {
+    return (
+      <div className="p-6">
+        <LoadingSkeleton />
+      </div>
+    );
+  }
+
+  // If index file not found, fall back to generic directory listing
+  if (error !== null || content === null) {
+    return <DirectoryViewer path={path} />;
+  }
+
+  const Viewer = resolveViewer(filePath);
+  return <Viewer content={content} path={filePath} />;
 }

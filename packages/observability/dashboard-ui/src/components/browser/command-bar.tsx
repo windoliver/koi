@@ -3,12 +3,14 @@
  *
  * Debounced search triggers the useSearch hook. Results shown as a dropdown
  * overlay that navigates to the selected file.
+ * Scoped to the active saved view's rootPaths and globPattern.
  */
 
 import { Search, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { useSearch } from "../../hooks/use-search.js";
 import { useTreeStore } from "../../stores/tree-store.js";
+import { useViewStore } from "../../stores/view-store.js";
 import { FileIcon } from "./file-icon.js";
 
 export function CommandBar(): React.ReactElement {
@@ -17,8 +19,13 @@ export function CommandBar(): React.ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
   const select = useTreeStore((s) => s.select);
   const expandAll = useTreeStore((s) => s.expandAll);
+  const activeView = useViewStore((s) => s.activeView);
 
-  const { results, isSearching } = useSearch(query);
+  const searchOptions =
+    activeView.globPattern !== undefined
+      ? { rootPaths: activeView.rootPaths, glob: activeView.globPattern }
+      : { rootPaths: activeView.rootPaths };
+  const { results, isSearching } = useSearch(query, searchOptions);
 
   const handleSelect = (path: string): void => {
     // Expand parent directories so the file is visible in the tree
@@ -78,10 +85,14 @@ export function CommandBar(): React.ReactElement {
       {isOpen && (
         <div className="absolute left-0 right-0 top-full z-50 max-h-64 overflow-y-auto border border-[var(--color-border)] bg-[var(--color-card)] shadow-lg">
           {isSearching && (
-            <div className="px-3 py-2 text-xs text-[var(--color-muted)]">Searching...</div>
+            <div className="px-3 py-2 text-xs text-[var(--color-muted)]">
+              Searching...
+            </div>
           )}
           {!isSearching && results.length === 0 && query.length >= 2 && (
-            <div className="px-3 py-2 text-xs text-[var(--color-muted)]">No results</div>
+            <div className="px-3 py-2 text-xs text-[var(--color-muted)]">
+              No results
+            </div>
           )}
           {results.map((result) => (
             <button
@@ -90,7 +101,10 @@ export function CommandBar(): React.ReactElement {
               onClick={() => handleSelect(result.path)}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-[var(--color-muted)]/10"
             >
-              <FileIcon name={result.path.split("/").pop() ?? ""} isDirectory={false} />
+              <FileIcon
+                name={result.path.split("/").pop() ?? ""}
+                isDirectory={false}
+              />
               <span className="truncate">{result.path}</span>
               {result.snippet !== undefined && (
                 <span className="ml-auto truncate text-xs text-[var(--color-muted)]">

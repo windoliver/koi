@@ -3,11 +3,13 @@
  *
  * Uses the file tree hook to fetch entries and displays them in a table.
  * Clicking an entry navigates to it (selecting in tree store).
+ * Respects the active saved view's globPattern for consistent filtering.
  */
 
 import { File, Folder } from "lucide-react";
 import { useFileTree } from "../../hooks/use-file-tree.js";
 import { useTreeStore } from "../../stores/tree-store.js";
+import { useViewStore } from "../../stores/view-store.js";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -20,7 +22,11 @@ export function DirectoryViewer({
 }: {
   readonly path: string;
 }): React.ReactElement {
-  const { entries, isLoading, error } = useFileTree(path);
+  const globPattern = useViewStore((s) => s.activeView.globPattern);
+  const { entries, isLoading, error } = useFileTree(
+    path,
+    globPattern !== undefined ? { glob: globPattern } : undefined,
+  );
   const select = useTreeStore((s) => s.select);
   const setExpanded = useTreeStore((s) => s.setExpanded);
 
@@ -86,7 +92,9 @@ export function DirectoryViewer({
                     <span className="truncate">{entry.name}</span>
                   </td>
                   <td className="px-4 py-2 text-right text-xs text-[var(--color-muted)]">
-                    {entry.size !== undefined ? formatSize(entry.size) : "\u2014"}
+                    {entry.size !== undefined
+                      ? formatSize(entry.size)
+                      : "\u2014"}
                   </td>
                 </tr>
               ))}

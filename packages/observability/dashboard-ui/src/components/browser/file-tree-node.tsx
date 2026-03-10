@@ -11,6 +11,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import type { FsEntry } from "../../lib/api-client.js";
 import { useFileTree } from "../../hooks/use-file-tree.js";
 import { useTreeStore } from "../../stores/tree-store.js";
+import { useViewStore } from "../../stores/view-store.js";
 import { FileContextMenu } from "./file-context-menu.js";
 import { FileIcon } from "./file-icon.js";
 
@@ -177,7 +178,11 @@ function DirectoryChildren({
   readonly path: string;
   readonly depth: number;
 }): React.ReactElement {
-  const { entries, isLoading, error } = useFileTree(path);
+  const globPattern = useViewStore((s) => s.activeView.globPattern);
+  const { entries, isLoading, error } = useFileTree(
+    path,
+    globPattern !== undefined ? { glob: globPattern } : undefined,
+  );
 
   if (isLoading) {
     return (
