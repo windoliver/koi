@@ -268,7 +268,44 @@ git clone https://github.com/windoliver/koi.git
 cd koi
 bun install
 bun run build
-bun test
+```
+
+### Running an agent from source
+
+After building, use the CLI via turbo:
+
+```bash
+# Scaffold a new agent
+bunx turbo run build --filter=@koi/cli
+bun packages/meta/cli/dist/bin.js init my-agent
+
+# Start the agent
+cd my-agent
+bun ../packages/meta/cli/dist/bin.js start
+```
+
+Or write a minimal script directly against the API:
+
+```typescript
+// run.ts
+import { loadManifest } from "@koi/manifest";
+import { createPiAdapter } from "@koi/engine-pi";
+import { createKoi } from "@koi/engine";
+
+const { manifest } = (await loadManifest("./koi.yaml")).value;
+const adapter = createPiAdapter({ model: manifest.model.name });
+const { runtime } = await createKoi({ manifest, adapter });
+
+for await (const event of runtime.run({ kind: "text", text: "Hello!" })) {
+  if (event.kind === "text_delta") process.stdout.write(event.delta);
+}
+```
+
+### Running tests
+
+```bash
+bun test                    # all tests
+bun test --filter @koi/core # single package
 ```
 
 ## Contributing
