@@ -61,6 +61,19 @@ export function createSseProducer(
     buffer.push(event);
   });
 
+  // Write encoded bytes to all connected clients, pruning disconnected ones.
+  const broadcastToAll = (encoded: Uint8Array): void => {
+    const alive: SseConnection[] = [];
+    for (const conn of connections) {
+      if (conn.signal.aborted) continue;
+      conn.writer.write(encoded).catch(() => {
+        // Client disconnected — swallow write error
+      });
+      alive.push(conn);
+    }
+    connections = alive;
+  };
+
   // Flush buffered events to all connected clients
   const flush = (): void => {
     if (buffer.length === 0) return;
@@ -78,18 +91,7 @@ export function createSseProducer(
     };
     buffer = [];
 
-    const encoded = encodeSseMessageWithId(batch, String(seq));
-    const alive: SseConnection[] = [];
-
-    for (const conn of connections) {
-      if (conn.signal.aborted) continue;
-      conn.writer.write(encoded).catch(() => {
-        // Client disconnected — swallow write error
-      });
-      alive.push(conn);
-    }
-
-    connections = alive;
+    broadcastToAll(encodeSseMessageWithId(batch, String(seq)));
   };
 
   // Batch flush timer
@@ -98,18 +100,7 @@ export function createSseProducer(
   // Keepalive timer
   const keepaliveTimer = setInterval(() => {
     if (connections.length === 0) return;
-    const encoded = encodeSseKeepalive();
-    const alive: SseConnection[] = [];
-
-    for (const conn of connections) {
-      if (conn.signal.aborted) continue;
-      conn.writer.write(encoded).catch(() => {
-        // Client disconnected — swallow write error
-      });
-      alive.push(conn);
-    }
-
-    connections = alive;
+    broadcastToAll(encodeSseKeepalive());
   }, KEEPALIVE_INTERVAL_MS);
 
   const connect = (req: Request, extraHeaders?: Readonly<Record<string, string>>): Response => {

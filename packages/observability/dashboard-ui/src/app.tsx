@@ -5,17 +5,19 @@ import { AgentsPage } from "./pages/agents-page.js";
 import { useSse } from "./hooks/use-sse.js";
 import { getDashboardConfig } from "./lib/dashboard-config.js";
 
+// Module-level is intentional — SPA-only, never SSR.
+// React Query is used for on-demand file reads/search only (Decision 5A),
+// not for agent data (which goes through Zustand directly).
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 10_000,
-      refetchInterval: 30_000,
+      staleTime: 30_000,
     },
   },
 });
 
 function SseProvider({ children }: { readonly children: React.ReactNode }): React.ReactElement {
-  useSse(queryClient);
+  useSse();
   return <>{children}</>;
 }
 

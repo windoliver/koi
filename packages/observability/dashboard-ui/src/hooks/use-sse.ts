@@ -3,22 +3,24 @@
  *
  * Handles:
  * - Agent status_changed → update agent in Zustand store
- * - Agent dispatched → invalidate agents query for full refresh
- * - Agent terminated → remove from store + invalidate
+ * - Agent dispatched → fetch full agent list (new agent added)
+ * - Agent terminated → remove from store
  * - Connection state tracking via connection store
+ *
+ * Uses queueMicrotask to coalesce batch mutations into a single
+ * React re-render (Decision 16A).
  */
 
 import type { DashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
 import { isAgentEvent } from "@koi/dashboard-types";
-import type { QueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { fetchAgents } from "../lib/api-client.js";
 import { getDashboardConfig } from "../lib/dashboard-config.js";
 import { createSseClient } from "../lib/sse-client.js";
 import { useAgentsStore } from "../stores/agents-store.js";
 import { useConnectionStore } from "../stores/connection-store.js";
-import { AGENTS_QUERY_KEY } from "./use-agents.js";
 
-function handleEvent(event: DashboardEvent, queryClient: QueryClient): void {
+function handleEvent(event: DashboardEvent): void {
   if (isAgentEvent(event)) {
     const store = useAgentsStore.getState();
     switch (event.subKind) {
@@ -28,10 +30,14 @@ function handleEvent(event: DashboardEvent, queryClient: QueryClient): void {
           lastActivityAt: event.timestamp,
         });
         break;
-      case "dispatched":
-        // New agent — trigger full refresh
-        void queryClient.invalidateQueries({ queryKey: AGENTS_QUERY_KEY });
+      case "dispatched": {
+        // New agent — fetch full list to pick up the new entry
+        const dispatchedAt = Date.now();
+        void fetchAgents().then((agents) => {
+          useAgentsStore.getState().setAgents(agents, dispatchedAt);
+        });
         break;
+      }
       case "terminated":
         store.removeAgent(event.agentId);
         break;
@@ -45,7 +51,7 @@ function handleEvent(event: DashboardEvent, queryClient: QueryClient): void {
   }
 }
 
-export function useSse(queryClient: QueryClient): void {
+export function useSse(): void {
   const setConnectionStatus = useConnectionStore((s) => s.setStatus);
 
   useEffect(() => {
@@ -53,19 +59,26 @@ export function useSse(queryClient: QueryClient): void {
     const client = createSseClient({
       url: `${apiPath}/events`,
       onBatch: (batch: DashboardEventBatch) => {
-        for (const event of batch.events) {
-          handleEvent(event, queryClient);
-        }
+        // Coalesce all mutations from this batch into one microtask
+        // to avoid O(n) synchronous re-renders (Decision 16A)
+        queueMicrotask(() => {
+          for (const event of batch.events) {
+            handleEvent(event);
+          }
+        });
       },
       onStateChange: setConnectionStatus,
       onReconnect: () => {
         // Rehydrate state via REST after reconnect to cover missed SSE events
-        void queryClient.invalidateQueries({ queryKey: AGENTS_QUERY_KEY });
+        const reconnectedAt = Date.now();
+        void fetchAgents().then((agents) => {
+          useAgentsStore.getState().setAgents(agents, reconnectedAt);
+        });
       },
     });
 
     return () => {
       client.close();
     };
-  }, [queryClient, setConnectionStatus]);
+  }, [setConnectionStatus]);
 }
