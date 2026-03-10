@@ -29,13 +29,7 @@ export function createHandoffProvider(config: HandoffConfig): ComponentProvider 
   return {
     name: "handoff",
 
-    async attach(agent: Agent): Promise<ReadonlyMap<string, unknown>> {
-      if (agent.pid.id !== config.agentId) {
-        throw new Error(
-          `Provider is single-agent; cannot attach agent ${agent.pid.id} while agent ${config.agentId} is attached.`,
-        );
-      }
-
+    async attach(_agent: Agent): Promise<ReadonlyMap<string, unknown>> {
       if (cached !== undefined) return cached;
 
       const prepareTool = createPrepareTool({
