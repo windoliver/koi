@@ -22,15 +22,24 @@
 
 ## Quickstart
 
+> **Note**: Koi is not yet published to npm. For now, run from the monorepo source.
+
 ```bash
-# From the monorepo (development)
+git clone https://github.com/windoliver/koi.git
+cd koi
 bun install
-bun run --filter @koi/cli -- koi init my-agent
-cd my-agent
-bun run --filter @koi/cli -- koi start
+bun run build
 ```
 
-Your agent is running. The YAML file **is** the agent:
+Then create and start an agent:
+
+```bash
+bun packages/meta/cli/src/bin.ts init my-agent
+cd my-agent
+bun ../packages/meta/cli/src/bin.ts start
+```
+
+The YAML file **is** the agent:
 
 ```yaml
 # koi.yaml
@@ -87,7 +96,7 @@ L3  Meta-packages     Convenience bundles (e.g., @koi/starter = L0 + L1 + select
 L4  koi               Single installable package. bun add koi — done.
 ```
 
-### 216 packages, 7 contracts
+### 225 packages, 7 contracts
 
 The kernel defines 7 extension contracts:
 
@@ -107,15 +116,15 @@ Plus ECS composition: Agent = entity, Tool = component, Middleware = system.
 
 | Subsystem | Packages | What it does |
 |-----------|----------|-------------|
-| **Forge** | 9 packages | Safe self-extension: demand analysis, verification, crystallization, trust tiers |
-| **Governance** | 12 packages | Permissions, audit, budget, delegation, graduated sanctions, intent capsules |
-| **Channels** | 15 adapters | Every surface from CLI to Voice to AG-UI |
-| **Middleware** | 35 packages | Interposition for memory, retry, pay, PII, sandbox, permissions, and more |
-| **Engines** | 7 adapters | Pi (primary), Claude SDK, ReAct loop, external process, ACP, RLM, model-router |
-| **Sandbox** | 12 backends | Docker, E2B, Wasm, Cloudflare Workers, Vercel, Daytona, OS sandbox, and more |
+| **Forge** | 6 packages | Safe self-extension: demand analysis, verification, crystallization, trust tiers |
+| **Governance** | 14 packages | Permissions, audit, budget, delegation, graduated sanctions, intent capsules |
+| **Channels** | 14 adapters | Every surface from CLI to Voice to AG-UI |
+| **Middleware** | 21 packages | Interposition for memory, retry, pay, PII, sandbox, permissions, and more |
+| **Engines** | 6 adapters | Pi (primary), Claude SDK, ReAct loop, external process, ACP, RLM |
+| **Sandbox** | 9 packages | Docker, E2B, Wasm, Cloudflare Workers, Vercel, Daytona, OS sandbox, and more |
 | **Nexus** | 14 connectors | Gmail, Calendar, Drive, Slack, GitHub, S3, PostgreSQL, and more as file paths |
-| **IPC** | 6 packages | Gateway, Node, mDNS, task board, agent spawner, federation |
-| **Observability** | 3 packages | Dashboard UI, API, types — real-time admin panel with SSE |
+| **IPC** | 8 packages | Gateway, Node, mDNS, task board, agent spawner, federation |
+| **Observability** | 11 packages | Dashboard, eval, tracing, monitoring, debug — real-time admin panel with SSE |
 
 ## CLI
 
