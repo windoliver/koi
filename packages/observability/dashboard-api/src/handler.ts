@@ -26,9 +26,37 @@ import {
   handleSuspendAgent,
   handleTerminateAgentCmd,
 } from "./routes/commands.js";
-import { handleFsDelete, handleFsList, handleFsRead, handleFsSearch } from "./routes/filesystem.js";
+import type { EditablePathMatcher } from "./routes/filesystem.js";
+import {
+  createDefaultEditablePaths,
+  handleFsDelete,
+  handleFsList,
+  handleFsRead,
+  handleFsSearch,
+  handleFsWrite,
+} from "./routes/filesystem.js";
 import { handleHealth } from "./routes/health.js";
 import { handleMetrics } from "./routes/metrics.js";
+import {
+  handleDeleteSchedule,
+  handleHarnessCheckpoints,
+  handleHarnessStatus,
+  handlePauseHarness,
+  handlePauseSchedule,
+  handleResumeHarness,
+  handleResumeSchedule,
+  handleRetrySchedulerDlq,
+  handleSchedulerDlq,
+  handleSchedulerSchedules,
+  handleSchedulerStats,
+  handleSchedulerTasks,
+  handleSignalWorkflow,
+  handleTaskBoard,
+  handleTemporalHealth,
+  handleTemporalWorkflow,
+  handleTemporalWorkflows,
+  handleTerminateWorkflow,
+} from "./routes/orchestration.js";
 import { handleSkills } from "./routes/skills.js";
 import {
   handleAgentProcfs,
@@ -48,6 +76,8 @@ export interface DashboardHandlerOptions {
   readonly fileSystem?: FileSystemBackend;
   readonly runtimeViews?: RuntimeViewDataSource;
   readonly commands?: CommandDispatcher;
+  /** Controls which file paths are writable via PUT /fs/file. Defaults to workspace paths only. */
+  readonly editablePaths?: EditablePathMatcher;
 }
 
 export interface DashboardHandlerResult {
@@ -68,6 +98,8 @@ export function createDashboardHandler(
     "listAgents" in dataSourceOrOptions ? { dataSource: dataSourceOrOptions } : dataSourceOrOptions;
 
   const { dataSource, fileSystem, runtimeViews, commands } = options;
+  const editablePaths =
+    options.editablePaths ?? (fileSystem !== undefined ? createDefaultEditablePaths() : undefined);
 
   const basePath = config?.basePath ?? DEFAULT_DASHBOARD_CONFIG.basePath;
   const apiPath = config?.apiPath ?? DEFAULT_DASHBOARD_CONFIG.apiPath;
@@ -136,12 +168,17 @@ export function createDashboardHandler(
       {
         method: "GET",
         pattern: "/fs/read",
-        handler: (req, params) => handleFsRead(req, params, fileSystem),
+        handler: (req, params) => handleFsRead(req, params, fileSystem, editablePaths),
       },
       {
         method: "GET",
         pattern: "/fs/search",
         handler: (req, params) => handleFsSearch(req, params, fileSystem),
+      },
+      {
+        method: "PUT",
+        pattern: "/fs/file",
+        handler: (req, params) => handleFsWrite(req, params, fileSystem, editablePaths),
       },
       {
         method: "DELETE",
@@ -175,6 +212,60 @@ export function createDashboardHandler(
         handler: (req, params) => handleGatewayTopology(req, params, runtimeViews),
       },
     );
+
+    // Orchestration views (Phase 2 — registered when runtimeViews provided)
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/view/temporal/health",
+        handler: (req, params) => handleTemporalHealth(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/temporal/workflows",
+        handler: (req, params) => handleTemporalWorkflows(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/temporal/workflows/:id",
+        handler: (req, params) => handleTemporalWorkflow(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scheduler/tasks",
+        handler: (req, params) => handleSchedulerTasks(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scheduler/stats",
+        handler: (req, params) => handleSchedulerStats(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scheduler/schedules",
+        handler: (req, params) => handleSchedulerSchedules(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scheduler/dlq",
+        handler: (req, params) => handleSchedulerDlq(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/taskboard",
+        handler: (req, params) => handleTaskBoard(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/harness/status",
+        handler: (req, params) => handleHarnessStatus(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/harness/checkpoints",
+        handler: (req, params) => handleHarnessCheckpoints(req, params, runtimeViews),
+      },
+    );
   }
 
   // Command routes (when CommandDispatcher is provided)
@@ -204,6 +295,50 @@ export function createDashboardHandler(
         method: "POST",
         pattern: "/cmd/mailbox/:agentId/list",
         handler: (req, params) => handleListMailbox(req, params, commands),
+      },
+    );
+
+    // Orchestration commands (Phase 2)
+    routes.push(
+      {
+        method: "POST",
+        pattern: "/cmd/temporal/workflows/:id/signal",
+        handler: (req, params) => handleSignalWorkflow(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/temporal/workflows/:id/terminate",
+        handler: (req, params) => handleTerminateWorkflow(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/scheduler/schedules/:id/pause",
+        handler: (req, params) => handlePauseSchedule(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/scheduler/schedules/:id/resume",
+        handler: (req, params) => handleResumeSchedule(req, params, commands),
+      },
+      {
+        method: "DELETE",
+        pattern: "/cmd/scheduler/schedules/:id",
+        handler: (req, params) => handleDeleteSchedule(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/scheduler/dlq/:id/retry",
+        handler: (req, params) => handleRetrySchedulerDlq(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/harness/pause",
+        handler: (req, params) => handlePauseHarness(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/harness/resume",
+        handler: (req, params) => handleResumeHarness(req, params, commands),
       },
     );
   }

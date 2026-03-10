@@ -5,7 +5,7 @@
  * child to parent. Root nodes (no parentHash) are highlighted.
  */
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import ReactFlow, { Background, Controls, MiniMap } from "reactflow";
 import type { Edge, Node } from "reactflow";
 import "reactflow/dist/style.css";
@@ -105,7 +105,7 @@ function computeDag(entries: readonly SnapshotEntry[]): {
   return { nodes: [...flowNodes], edges: [...flowEdges] };
 }
 
-export function SnapshotDag({ nodes: entries }: SnapshotDagProps): React.ReactElement {
+export const SnapshotDag = memo(function SnapshotDag({ nodes: entries }: SnapshotDagProps): React.ReactElement {
   const { nodes, edges } = useMemo(() => computeDag(entries), [entries]);
 
   if (entries.length === 0) {
@@ -130,4 +130,4 @@ export function SnapshotDag({ nodes: entries }: SnapshotDagProps): React.ReactEl
       {flow}
     </div>
   );
-}
+});

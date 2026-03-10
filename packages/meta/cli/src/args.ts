@@ -31,6 +31,7 @@ export interface StartFlags extends BaseFlags {
   readonly verbose: boolean;
   readonly dryRun: boolean;
   readonly nexusUrl: string | undefined;
+  readonly dashboard: boolean;
 }
 
 export interface ServeFlags extends BaseFlags {
@@ -39,6 +40,8 @@ export interface ServeFlags extends BaseFlags {
   readonly port: number | undefined;
   readonly verbose: boolean;
   readonly nexusUrl: string | undefined;
+  readonly dashboard: boolean;
+  readonly dashboardPort: number | undefined;
 }
 
 export interface DeployFlags extends BaseFlags {
@@ -141,6 +144,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
       verbose: { type: "boolean", short: "v", default: false },
       "dry-run": { type: "boolean", default: false },
       "nexus-url": { type: "string" },
+      dashboard: { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -156,6 +160,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     verbose: (values.verbose as boolean | undefined) ?? false,
     dryRun: (values["dry-run"] as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
+    dashboard: (values.dashboard as boolean | undefined) ?? false,
   };
 }
 
@@ -167,6 +172,8 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
       port: { type: "string", short: "p" },
       verbose: { type: "boolean", short: "v", default: false },
       "nexus-url": { type: "string" },
+      dashboard: { type: "boolean", default: false },
+      "dashboard-port": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -174,6 +181,7 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
 
   const positionalManifest = positionals[0] as string | undefined;
   const portStr = values.port as string | undefined;
+  const dashboardPortStr = values["dashboard-port"] as string | undefined;
 
   return {
     command: "serve" as const,
@@ -182,6 +190,9 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
     port: portStr !== undefined ? Number.parseInt(portStr, 10) : undefined,
     verbose: (values.verbose as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
+    dashboard: (values.dashboard as boolean | undefined) ?? false,
+    dashboardPort:
+      dashboardPortStr !== undefined ? Number.parseInt(dashboardPortStr, 10) : undefined,
   };
 }
 

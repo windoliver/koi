@@ -13,10 +13,27 @@
  * - Static asset serving with content-hashed cache headers
  */
 
+export type {
+  TemporalAdminAdapter,
+  TemporalAdminAdapterOptions,
+  TemporalAdminClientLike,
+  TemporalWorkflowExecutionLike,
+} from "./adapters/temporal-admin-adapter.js";
+export { createTemporalAdminAdapter } from "./adapters/temporal-admin-adapter.js";
+export type { AdminPanelBridgeResult, BridgeOptions } from "./bridge.js";
+export { createAdminPanelBridge } from "./bridge.js";
 export type { DashboardHandlerOptions, DashboardHandlerResult } from "./handler.js";
 export { createDashboardHandler } from "./handler.js";
 export type { Route, RouteHandler, RouteMatch, RouteParams, Router } from "./router.js";
-export { createRouter, errorResponse, jsonResponse } from "./router.js";
+export {
+  createRouter,
+  errorResponse,
+  jsonResponse,
+  mapResultToResponse,
+  validateRequiredParam,
+} from "./router.js";
+export type { EditablePathMatcher } from "./routes/filesystem.js";
+export { createDefaultEditablePaths } from "./routes/filesystem.js";
 export { encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId } from "./sse/encoder.js";
 export type { SseProducer } from "./sse/producer.js";
 export { createSseProducer } from "./sse/producer.js";

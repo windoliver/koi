@@ -95,6 +95,10 @@ export async function handleListMailbox(
   if (commands.listMailbox === undefined) {
     return errorResponse("NOT_IMPLEMENTED", "Mailbox not supported", 501);
   }
-  const messages = await commands.listMailbox(agentId(aid));
-  return jsonResponse(messages);
+  const result = await commands.listMailbox(agentId(aid));
+  if (!result.ok) {
+    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
+    return errorResponse(result.error.code, result.error.message, status);
+  }
+  return jsonResponse(result.value);
 }

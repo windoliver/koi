@@ -1,12 +1,13 @@
 /**
  * EventStreamViewer — renders event stream metadata files.
  *
- * Shows stream info (name, created, event count) at top, then an expandable
- * event list below. Each event row shows timestamp + kind + subKind, and
- * clicking expands to show full event JSON.
+ * Shows stream info (name, created, event count) at top, then a virtualized
+ * expandable event list below. Uses @tanstack/react-virtual for efficient
+ * rendering of large event streams.
  */
 
-import { useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useCallback, useRef, useState } from "react";
 import { Radio, ChevronDown, ChevronRight } from "lucide-react";
 
 interface EventStreamData {
@@ -41,6 +42,9 @@ function formatTime(ts: number): string {
   });
 }
 
+/** Collapsed row height in pixels. */
+const COLLAPSED_ROW_HEIGHT = 36;
+
 export function EventStreamViewer({
   content,
   path,
@@ -60,6 +64,7 @@ export function EventStreamViewer({
   }
 
   const eventCount = data.eventCount ?? data.events?.length ?? 0;
+  const events = data.events ?? [];
 
   return (
     <div className="flex flex-col h-full">
@@ -70,30 +75,95 @@ export function EventStreamViewer({
         </span>
         <span className="text-xs text-[var(--color-muted)]">{eventCount} events</span>
       </div>
-      <div className="flex-1 overflow-auto">
-        {/* Stream info */}
-        <div className="border-b border-[var(--color-border)] px-4 py-3">
-          <div className="flex flex-wrap gap-4 text-xs text-[var(--color-muted)]">
-            {data.streamId !== undefined && <span>Stream: {data.streamId}</span>}
-            {data.createdAt !== undefined && (
-              <span>Created: {formatTimestamp(data.createdAt)}</span>
-            )}
-            <span>Events: {eventCount}</span>
-          </div>
+      {/* Stream info */}
+      <div className="border-b border-[var(--color-border)] px-4 py-3">
+        <div className="flex flex-wrap gap-4 text-xs text-[var(--color-muted)]">
+          {data.streamId !== undefined && <span>Stream: {data.streamId}</span>}
+          {data.createdAt !== undefined && (
+            <span>Created: {formatTimestamp(data.createdAt)}</span>
+          )}
+          <span>Events: {eventCount}</span>
         </div>
+      </div>
 
-        {/* Event list */}
-        {data.events !== undefined && data.events.length > 0 ? (
-          <div>
-            {data.events.map((event, i) => (
-              <ExpandableEventRow key={i} event={event} index={i} />
-            ))}
-          </div>
-        ) : (
-          <div className="px-4 py-8 text-center text-sm text-[var(--color-muted)]">
-            No events in stream
-          </div>
-        )}
+      {/* Virtualized event list */}
+      {events.length > 0 ? (
+        <VirtualizedEventList events={events} />
+      ) : (
+        <div className="px-4 py-8 text-center text-sm text-[var(--color-muted)]">
+          No events in stream
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VirtualizedEventList({
+  events,
+}: {
+  readonly events: readonly EventStreamEntry[];
+}): React.ReactElement {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const [expandedSet, setExpandedSet] = useState<ReadonlySet<number>>(
+    () => new Set<number>(),
+  );
+
+  const toggleExpanded = useCallback((index: number): void => {
+    setExpandedSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  }, []);
+
+  const virtualizer = useVirtualizer({
+    count: events.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: (index) =>
+      expandedSet.has(index) ? 200 : COLLAPSED_ROW_HEIGHT,
+    overscan: 5,
+  });
+
+  return (
+    <div ref={parentRef} className="flex-1 overflow-auto">
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: "100%",
+          position: "relative",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const event = events[virtualRow.index];
+          if (event === undefined) return null;
+          const isExpanded = expandedSet.has(virtualRow.index);
+
+          return (
+            <div
+              key={virtualRow.index}
+              ref={virtualizer.measureElement}
+              data-index={virtualRow.index}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              <ExpandableEventRow
+                event={event}
+                index={virtualRow.index}
+                isExpanded={isExpanded}
+                onToggle={toggleExpanded}
+              />
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -102,20 +172,22 @@ export function EventStreamViewer({
 function ExpandableEventRow({
   event,
   index,
+  isExpanded,
+  onToggle,
 }: {
   readonly event: EventStreamEntry;
   readonly index: number;
+  readonly isExpanded: boolean;
+  readonly onToggle: (index: number) => void;
 }): React.ReactElement {
-  const [expanded, setExpanded] = useState(false);
-
   return (
     <div className="border-b border-[var(--color-border)]/50">
       <button
         type="button"
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => onToggle(index)}
         className="flex w-full items-center gap-3 px-4 py-2 text-left font-mono text-xs hover:bg-[var(--color-muted)]/5"
       >
-        {expanded ? (
+        {isExpanded ? (
           <ChevronDown className="h-3 w-3 shrink-0 text-[var(--color-muted)]" />
         ) : (
           <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-muted)]" />
@@ -130,7 +202,7 @@ function ExpandableEventRow({
           </span>
         )}
       </button>
-      {expanded && (
+      {isExpanded && (
         <pre className="mx-4 mb-3 overflow-auto rounded bg-[var(--color-muted)]/5 p-3 font-mono text-xs">
           {JSON.stringify(event, null, 2)}
         </pre>

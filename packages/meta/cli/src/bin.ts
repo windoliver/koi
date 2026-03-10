@@ -106,5 +106,10 @@ if (matched !== undefined) {
   for (const cmd of COMMANDS) {
     process.stderr.write(`  ${cmd.description}\n`);
   }
+  process.stderr.write("\nFlags:\n");
+  process.stderr.write("  --dashboard            Enable admin dashboard (serve, start)\n");
+  process.stderr.write(
+    "  --dashboard-port PORT  Dashboard port (serve only, defaults to health port)\n",
+  );
   process.exit(1);
 }

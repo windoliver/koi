@@ -79,9 +79,29 @@ export function fetchFsList(
   return fetchApi<readonly FsEntry[]>(`/fs/list?${params.toString()}`);
 }
 
-export function fetchFsRead(path: string): Promise<string> {
+export interface FsReadResult {
+  readonly content: string;
+  readonly path: string;
+  readonly size: number;
+  readonly editable: boolean;
+}
+
+export function fetchFsRead(path: string): Promise<FsReadResult> {
   const params = new URLSearchParams({ path });
-  return fetchApi<string>(`/fs/read?${params.toString()}`);
+  return fetchApi<FsReadResult>(`/fs/read?${params.toString()}`);
+}
+
+export interface FsWriteResult {
+  readonly path: string;
+  readonly bytesWritten: number;
+}
+
+export function saveFile(path: string, content: string): Promise<FsWriteResult> {
+  return fetchApi<FsWriteResult>("/fs/file", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path, content }),
+  });
 }
 
 export interface FsSearchResult {
@@ -161,4 +181,94 @@ export function listMailbox(agentId: string): Promise<readonly unknown[]> {
   return fetchApi<readonly unknown[]>(`/cmd/mailbox/${encodeURIComponent(agentId)}/list`, {
     method: "POST",
   });
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration view endpoints (Phase 2)
+// ---------------------------------------------------------------------------
+
+export function fetchTemporalHealth(): Promise<unknown> {
+  return fetchApi<unknown>("/view/temporal/health");
+}
+
+export function fetchTemporalWorkflows(): Promise<readonly unknown[]> {
+  return fetchApi<readonly unknown[]>("/view/temporal/workflows");
+}
+
+export function fetchTemporalWorkflow(id: string): Promise<unknown> {
+  return fetchApi<unknown>(`/view/temporal/workflows/${encodeURIComponent(id)}`);
+}
+
+export function fetchSchedulerTasks(): Promise<readonly unknown[]> {
+  return fetchApi<readonly unknown[]>("/view/scheduler/tasks");
+}
+
+export function fetchSchedulerStats(): Promise<unknown> {
+  return fetchApi<unknown>("/view/scheduler/stats");
+}
+
+export function fetchSchedulerSchedules(): Promise<readonly unknown[]> {
+  return fetchApi<readonly unknown[]>("/view/scheduler/schedules");
+}
+
+export function fetchSchedulerDlq(): Promise<readonly unknown[]> {
+  return fetchApi<readonly unknown[]>("/view/scheduler/dlq");
+}
+
+export function fetchTaskBoard(): Promise<unknown> {
+  return fetchApi<unknown>("/view/taskboard");
+}
+
+export function fetchHarnessStatus(): Promise<unknown> {
+  return fetchApi<unknown>("/view/harness/status");
+}
+
+export function fetchHarnessCheckpoints(): Promise<readonly unknown[]> {
+  return fetchApi<readonly unknown[]>("/view/harness/checkpoints");
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration command endpoints (Phase 2)
+// ---------------------------------------------------------------------------
+
+export function signalWorkflow(id: string, signal: string, payload?: unknown): Promise<null> {
+  return fetchApi<null>(`/cmd/temporal/workflows/${encodeURIComponent(id)}/signal`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ signal, payload }),
+  });
+}
+
+export function terminateWorkflow(id: string): Promise<null> {
+  return fetchApi<null>(`/cmd/temporal/workflows/${encodeURIComponent(id)}/terminate`, {
+    method: "POST",
+  });
+}
+
+export function pauseSchedule(id: string): Promise<null> {
+  return fetchApi<null>(`/cmd/scheduler/schedules/${encodeURIComponent(id)}/pause`, {
+    method: "POST",
+  });
+}
+
+export function resumeSchedule(id: string): Promise<null> {
+  return fetchApi<null>(`/cmd/scheduler/schedules/${encodeURIComponent(id)}/resume`, {
+    method: "POST",
+  });
+}
+
+export function deleteSchedule(id: string): Promise<null> {
+  return fetchApi<null>(`/cmd/scheduler/schedules/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function retrySchedulerDlq(id: string): Promise<null> {
+  return fetchApi<null>(`/cmd/scheduler/dlq/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+
+export function pauseHarness(): Promise<null> {
+  return fetchApi<null>("/cmd/harness/pause", { method: "POST" });
+}
+
+export function resumeHarness(): Promise<null> {
+  return fetchApi<null>("/cmd/harness/resume", { method: "POST" });
 }

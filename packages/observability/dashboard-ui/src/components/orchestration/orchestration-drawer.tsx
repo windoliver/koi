@@ -1,0 +1,131 @@
+/**
+ * OrchestrationDrawer — slide-out panel with 4 tabs for runtime orchestration data.
+ *
+ * Tabs: Temporal, Scheduler, Task Board, Harness.
+ * Each tab is only visible when its data source is available (graceful degradation).
+ */
+
+import { lazy, Suspense, useEffect, useState } from "react";
+import { LoadingSkeleton } from "../shared/loading-skeleton.js";
+
+// Lazy-load tab contents — drawer is hidden by default so this avoids
+// pulling ReactFlow + orchestration code into the initial bundle (Decision 16A).
+const TemporalTab = lazy(() =>
+  import("./temporal-tab.js").then((m) => ({ default: m.TemporalTab })),
+);
+const SchedulerTab = lazy(() =>
+  import("./scheduler-tab.js").then((m) => ({ default: m.SchedulerTab })),
+);
+const TaskDagTab = lazy(() =>
+  import("./task-dag-tab.js").then((m) => ({ default: m.TaskDagTab })),
+);
+const HarnessTab = lazy(() =>
+  import("./harness-tab.js").then((m) => ({ default: m.HarnessTab })),
+);
+
+type TabId = "temporal" | "scheduler" | "taskboard" | "harness";
+
+interface TabDefinition {
+  readonly id: TabId;
+  readonly label: string;
+}
+
+const TABS: readonly TabDefinition[] = [
+  { id: "temporal", label: "Temporal" },
+  { id: "scheduler", label: "Scheduler" },
+  { id: "taskboard", label: "Task Board" },
+  { id: "harness", label: "Harness" },
+] as const;
+
+function TabContent({ tabId }: { readonly tabId: TabId }): React.ReactElement {
+  return (
+    <Suspense fallback={<div className="p-4"><LoadingSkeleton /></div>}>
+      {tabId === "temporal" && <TemporalTab />}
+      {tabId === "scheduler" && <SchedulerTab />}
+      {tabId === "taskboard" && <TaskDagTab />}
+      {tabId === "harness" && <HarnessTab />}
+    </Suspense>
+  );
+}
+
+export function OrchestrationDrawer({
+  open,
+  onClose,
+}: {
+  readonly open: boolean;
+  readonly onClose: () => void;
+}): React.ReactElement | null {
+  const [activeTab, setActiveTab] = useState<TabId>("temporal");
+
+  // Close drawer on Escape key
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      {/* Backdrop */}
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/40"
+        onClick={onClose}
+        aria-label="Close drawer"
+      />
+
+      {/* Drawer panel — full width on mobile, 600px on sm+ */}
+      <div className="relative z-10 flex h-full w-full flex-col bg-[var(--color-background,#1e1e2e)] border-l border-[var(--color-border,#444)] sm:w-[600px] sm:max-w-[90vw]">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-[var(--color-border,#444)] px-4 py-3">
+          <h2 className="text-sm font-semibold text-[var(--color-foreground,#cdd6f4)]">
+            Orchestration
+          </h2>
+          <button
+            type="button"
+            className="rounded p-1 text-[var(--color-muted,#888)] hover:bg-[var(--color-card,#313244)] hover:text-[var(--color-foreground,#cdd6f4)]"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M4 4l8 8M12 4l-8 8" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Tab bar */}
+        <div className="flex border-b border-[var(--color-border,#444)]">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                activeTab === tab.id
+                  ? "border-b-2 border-[var(--color-primary,#89b4fa)] text-[var(--color-primary,#89b4fa)]"
+                  : "text-[var(--color-muted,#888)] hover:text-[var(--color-foreground,#cdd6f4)]"
+              }`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab content */}
+        <div className="flex-1 overflow-y-auto">
+          <TabContent tabId={activeTab} />
+        </div>
+      </div>
+    </div>
+  );
+}

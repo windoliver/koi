@@ -21,7 +21,8 @@ import type {
   SandboxExecutor,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
-import { createHealthServer } from "@koi/deploy";
+import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
+import { createHealthHandler, createHealthServer } from "@koi/deploy";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
 import { loadManifest } from "@koi/manifest";
@@ -287,25 +288,82 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     }),
   );
 
-  // 7. Start health server
-  const healthServer = createHealthServer({
-    port: healthPort,
-    onReady: () => true, // Agent is ready once serve starts
-  });
-
+  // 7. Start health server (optionally with dashboard)
+  // let justified: shutdown callback set in either branch, called at cleanup
+  let stopServer: () => void = () => {};
   let healthInfo: { readonly url: string; readonly port: number };
-  try {
-    healthInfo = await healthServer.start();
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`Failed to start health server: ${message}\n`);
-    await runtime.dispose();
-    forgeBootstrap?.dispose();
-    if (sandboxBridge !== undefined) {
-      await sandboxBridge.dispose();
+
+  if (flags.dashboard) {
+    // Compose dashboard + health into a single HTTP server
+    const channelNames = (resolved.value.channels ?? []).map((ch) => ch.name);
+    const skillNames = (manifest.skills ?? []).map((s) => s.name);
+
+    const bridge = createAdminPanelBridge({
+      agentName: manifest.name,
+      agentType: manifest.lifecycle ?? "copilot",
+      model: modelName,
+      channels: channelNames,
+      skills: skillNames,
+    });
+
+    const dashboardResult = createDashboardHandler(bridge, { cors: true });
+
+    const healthHandler = createHealthHandler(() => true);
+    const dashboardPort = flags.dashboardPort ?? healthPort;
+
+    try {
+      const server = Bun.serve({
+        port: dashboardPort,
+        async fetch(req: Request): Promise<Response> {
+          // Try dashboard handler first (returns null for non-dashboard paths)
+          const dashboardResponse = await dashboardResult.handler(req);
+          if (dashboardResponse !== null) return dashboardResponse;
+
+          // Fall back to health handler
+          return healthHandler(req);
+        },
+      });
+      stopServer = () => {
+        server.stop(true);
+        dashboardResult.dispose();
+      };
+      healthInfo = {
+        url: server.url.toString(),
+        port: server.port ?? dashboardPort,
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Failed to start dashboard server: ${message}\n`);
+      dashboardResult.dispose();
+      await runtime.dispose();
+      forgeBootstrap?.dispose();
+      if (sandboxBridge !== undefined) {
+        await sandboxBridge.dispose();
+      }
+      process.exit(EXIT_ERROR);
+      return; // unreachable but satisfies TypeScript
     }
-    process.exit(EXIT_ERROR);
-    return; // unreachable but satisfies TypeScript
+  } else {
+    // Standard health-only server
+    const healthServer = createHealthServer({
+      port: healthPort,
+      onReady: () => true,
+    });
+
+    try {
+      healthInfo = await healthServer.start();
+      stopServer = () => healthServer.stop();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Failed to start health server: ${message}\n`);
+      await runtime.dispose();
+      forgeBootstrap?.dispose();
+      if (sandboxBridge !== undefined) {
+        await sandboxBridge.dispose();
+      }
+      process.exit(EXIT_ERROR);
+      return; // unreachable but satisfies TypeScript
+    }
   }
 
   // 8. Set up graceful shutdown
@@ -337,10 +395,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`Agent: ${manifest.name} v${manifest.version}\n`);
     process.stderr.write(`Model: ${modelName}\n`);
     process.stderr.write(`Health: ${healthInfo.url}\n`);
+    if (flags.dashboard) {
+      process.stderr.write(`Dashboard: ${healthInfo.url}dashboard/api/health\n`);
+    }
   }
 
+  const dashboardSuffix = flags.dashboard ? " (dashboard enabled)" : "";
   process.stderr.write(
-    `Agent "${manifest.name}" serving on port ${healthInfo.port}. Send SIGTERM to stop.\n`,
+    `Agent "${manifest.name}" serving on port ${healthInfo.port}${dashboardSuffix}. Send SIGTERM to stop.\n`,
   );
 
   // 10. Wait for abort signal (blocks until shutdown)
@@ -357,7 +419,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   for (const ch of channels) {
     await ch.disconnect();
   }
-  healthServer.stop();
+  stopServer();
   await runtime.dispose();
   forgeBootstrap?.dispose();
   if (sandboxBridge !== undefined) {

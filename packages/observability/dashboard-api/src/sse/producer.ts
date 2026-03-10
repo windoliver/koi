@@ -36,6 +36,7 @@ export interface SseProducer {
 // ---------------------------------------------------------------------------
 
 const KEEPALIVE_INTERVAL_MS = 15_000;
+const MAX_BUFFER_SIZE = 1_000;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -57,6 +58,11 @@ export function createSseProducer(
   // Subscribe to data source events — skip buffering when no clients connected
   const unsubscribe = dataSource.subscribe((event: DashboardEvent) => {
     if (disposed || connections.length === 0) return;
+    // Backpressure: drop oldest events if buffer exceeds max size (Decision 13A)
+    if (buffer.length >= MAX_BUFFER_SIZE) {
+      const dropped = buffer.length - MAX_BUFFER_SIZE + 1;
+      buffer = buffer.slice(dropped);
+    }
     // Mutation justified: hot path in subscribe callback, buffer is replaced on flush
     buffer.push(event);
   });

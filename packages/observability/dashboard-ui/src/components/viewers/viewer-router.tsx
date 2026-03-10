@@ -61,6 +61,7 @@ import { WorkspaceViewer } from "./workspace-viewer.js";
 type FileViewer = React.ComponentType<{
   readonly content: string;
   readonly path: string;
+  readonly editable?: boolean;
 }>;
 
 const VIEWER_RULES: readonly {
@@ -446,7 +447,7 @@ function FileViewerRouter({
 }: {
   readonly path: string;
 }): React.ReactElement {
-  const { content, isLoading, error } = useFileContent(path);
+  const { content, editable, isLoading, error } = useFileContent(path);
 
   if (isLoading) {
     return (
@@ -481,7 +482,7 @@ function FileViewerRouter({
   }
 
   const Viewer = resolveViewer(path);
-  return <Viewer content={content} path={path} />;
+  return <Viewer content={content} path={path} editable={editable} />;
 }
 
 // ---------------------------------------------------------------------------

@@ -194,6 +194,61 @@ describe("parseArgs — nexus flags", () => {
   });
 });
 
+describe("parseArgs — dashboard flags", () => {
+  test("parses --dashboard flag for serve command", () => {
+    const result = parseArgs(["serve", "--dashboard"]) as ServeFlags;
+    expect(result.command).toBe("serve");
+    expect(result.dashboard).toBe(true);
+  });
+
+  test("defaults dashboard to false for serve", () => {
+    const result = parseArgs(["serve"]) as ServeFlags;
+    expect(result.dashboard).toBe(false);
+  });
+
+  test("parses --dashboard-port for serve command", () => {
+    const result = parseArgs(["serve", "--dashboard", "--dashboard-port", "3000"]) as ServeFlags;
+    expect(result.dashboard).toBe(true);
+    expect(result.dashboardPort).toBe(3000);
+  });
+
+  test("defaults dashboardPort to undefined when not provided", () => {
+    const result = parseArgs(["serve", "--dashboard"]) as ServeFlags;
+    expect(result.dashboardPort).toBeUndefined();
+  });
+
+  test("parses --dashboard flag for start command", () => {
+    const result = parseArgs(["start", "--dashboard"]) as StartFlags;
+    expect(result.command).toBe("start");
+    expect(result.dashboard).toBe(true);
+  });
+
+  test("defaults dashboard to false for start", () => {
+    const result = parseArgs(["start"]) as StartFlags;
+    expect(result.dashboard).toBe(false);
+  });
+
+  test("parses --dashboard with other serve flags", () => {
+    const result = parseArgs([
+      "serve",
+      "--manifest",
+      "agent.yaml",
+      "--port",
+      "9200",
+      "--dashboard",
+      "--dashboard-port",
+      "4000",
+      "--verbose",
+    ]) as ServeFlags;
+    expect(result.command).toBe("serve");
+    expect(result.manifest).toBe("agent.yaml");
+    expect(result.port).toBe(9200);
+    expect(result.dashboard).toBe(true);
+    expect(result.dashboardPort).toBe(4000);
+    expect(result.verbose).toBe(true);
+  });
+});
+
 describe("parseArgs — unknown command", () => {
   test("returns unknown command as-is", () => {
     const result = parseArgs(["deploy"]);

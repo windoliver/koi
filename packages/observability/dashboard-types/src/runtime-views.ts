@@ -88,6 +88,118 @@ export interface GatewayTopology {
 export type { DashboardSystemMetrics } from "./data-source.js";
 
 // ---------------------------------------------------------------------------
+// Temporal views (Phase 2)
+// ---------------------------------------------------------------------------
+
+export interface WorkflowSummary {
+  readonly workflowId: string;
+  readonly workflowType: string;
+  readonly status: "running" | "completed" | "failed" | "cancelled" | "terminated" | "timed_out";
+  readonly startTime: number;
+  readonly closeTime?: number;
+  readonly taskQueue: string;
+}
+
+export interface WorkflowDetail extends WorkflowSummary {
+  readonly runId: string;
+  readonly searchAttributes: Readonly<Record<string, unknown>>;
+  readonly memo: Readonly<Record<string, unknown>>;
+  readonly pendingActivities: number;
+}
+
+export interface TemporalHealth {
+  readonly healthy: boolean;
+  readonly serverAddress: string;
+  readonly namespace: string;
+  readonly latencyMs?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler views (Phase 2)
+// ---------------------------------------------------------------------------
+
+export interface SchedulerTaskSummary {
+  readonly taskId: string;
+  readonly agentId: string;
+  readonly status: "pending" | "running" | "completed" | "failed" | "dead_letter";
+  readonly priority: number;
+  readonly submittedAt: number;
+  readonly startedAt?: number;
+  readonly completedAt?: number;
+  readonly retryCount: number;
+}
+
+export interface SchedulerStats {
+  readonly submitted: number;
+  readonly completed: number;
+  readonly failed: number;
+  readonly deadLetterCount: number;
+  readonly concurrencyLimit: number;
+  readonly currentConcurrency: number;
+}
+
+export interface CronSchedule {
+  readonly scheduleId: string;
+  readonly pattern: string;
+  readonly nextFireTime: number;
+  readonly active: boolean;
+  readonly description?: string;
+}
+
+export interface SchedulerDeadLetterEntry {
+  readonly entryId: string;
+  readonly taskId: string;
+  readonly failedAt: number;
+  readonly error: string;
+  readonly retryCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// Task board views (Phase 2)
+// ---------------------------------------------------------------------------
+
+export interface TaskBoardNode {
+  readonly taskId: string;
+  readonly label: string;
+  readonly status: "pending" | "running" | "completed" | "failed";
+  readonly assignedTo?: string;
+  readonly result?: unknown;
+  readonly error?: string;
+}
+
+export interface TaskBoardEdge {
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface TaskBoardSnapshot {
+  readonly nodes: readonly TaskBoardNode[];
+  readonly edges: readonly TaskBoardEdge[];
+  readonly timestamp: number;
+}
+
+// ---------------------------------------------------------------------------
+// Harness views (Phase 2)
+// ---------------------------------------------------------------------------
+
+export interface HarnessStatus {
+  readonly phase: "idle" | "running" | "paused" | "completed" | "failed";
+  readonly sessionCount: number;
+  readonly taskProgress: { readonly completed: number; readonly total: number };
+  readonly tokenUsage: { readonly used: number; readonly budget: number };
+  readonly autoResumeEnabled: boolean;
+  readonly startedAt?: number;
+}
+
+export interface CheckpointEntry {
+  readonly id: string;
+  readonly type: "soft" | "hard";
+  readonly createdAt: number;
+  readonly sessionId?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+// ---------------------------------------------------------------------------
 // Data source interface
 // ---------------------------------------------------------------------------
 
@@ -101,4 +213,28 @@ export interface RuntimeViewDataSource {
   readonly getMiddlewareChain: (agentId: AgentId) => MiddlewareChain | Promise<MiddlewareChain>;
 
   readonly getGatewayTopology: () => GatewayTopology | Promise<GatewayTopology>;
+
+  // Phase 2: Orchestration views (optional — UI hides tabs when absent)
+
+  readonly temporal?: {
+    readonly getHealth: () => TemporalHealth | Promise<TemporalHealth>;
+    readonly listWorkflows: () => Promise<readonly WorkflowSummary[]>;
+    readonly getWorkflow: (id: string) => Promise<WorkflowDetail | undefined>;
+  };
+
+  readonly scheduler?: {
+    readonly listTasks: () => Promise<readonly SchedulerTaskSummary[]>;
+    readonly getStats: () => SchedulerStats | Promise<SchedulerStats>;
+    readonly listSchedules: () => Promise<readonly CronSchedule[]>;
+    readonly listDeadLetters: () => Promise<readonly SchedulerDeadLetterEntry[]>;
+  };
+
+  readonly taskBoard?: {
+    readonly getSnapshot: () => TaskBoardSnapshot | Promise<TaskBoardSnapshot>;
+  };
+
+  readonly harness?: {
+    readonly getStatus: () => HarnessStatus | Promise<HarnessStatus>;
+    readonly getCheckpoints: () => Promise<readonly CheckpointEntry[]>;
+  };
 }

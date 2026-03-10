@@ -1,28 +1,81 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
-"import { FileSystemBackend } from '@koi/core';
-import { DashboardDataSource, RuntimeViewDataSource, CommandDispatcher, DashboardConfig } from '@koi/dashboard-types';
+"import { RuntimeViewDataSource, CommandDispatcher, DashboardDataSource, DashboardConfig, DashboardEvent } from '@koi/dashboard-types';
+import { FileSystemBackend } from '@koi/core';
 
 /**
- * createDashboardHandler — main factory for the dashboard HTTP handler.
+ * Temporal admin adapter for the Koi dashboard.
  *
- * Returns a composable handler that returns \`Response | null\`.
- * Null means the request didn't match any dashboard route,
- * allowing the consumer to chain with other handlers.
+ * Wraps a structurally-typed Temporal client to produce dashboard-compatible
+ * views (RuntimeViewDataSource['temporal']) and commands (signalWorkflow,
+ * terminateWorkflow). Uses structural typing to avoid direct dependency on
+ * @temporalio/client — the consumer injects a compatible client at runtime.
+ *
+ * L2 package: imports from @koi/core and @koi/dashboard-types only.
  */
 
-interface DashboardHandlerOptions {
-    readonly dataSource: DashboardDataSource;
-    readonly fileSystem?: FileSystemBackend;
-    readonly runtimeViews?: RuntimeViewDataSource;
-    readonly commands?: CommandDispatcher;
+/** Minimal shape of a workflow execution returned by the Temporal SDK list API. */
+interface TemporalWorkflowExecutionLike {
+    readonly workflowId: string;
+    readonly type: {
+        readonly name: string;
+    };
+    readonly status: {
+        readonly name: string;
+    };
+    readonly startTime: Date;
+    readonly closeTime: Date | null;
+    readonly taskQueue: string;
+    readonly runId: string;
+    readonly searchAttributes: Readonly<Record<string, unknown>>;
+    readonly memo: Readonly<Record<string, unknown>>;
 }
-interface DashboardHandlerResult {
-    readonly handler: (req: Request) => Promise<Response | null>;
-    readonly dispose: () => void;
+/** Minimal shape of a workflow handle returned by getHandle. */
+interface TemporalWorkflowHandleLike {
+    readonly describe: () => Promise<TemporalWorkflowExecutionLike & {
+        readonly pendingActivities: readonly unknown[];
+    }>;
+    readonly signal: (signalName: string, ...args: readonly unknown[]) => Promise<void>;
+    readonly terminate: (reason?: string) => Promise<void>;
 }
-declare function createDashboardHandler(dataSourceOrOptions: DashboardDataSource | DashboardHandlerOptions, config?: DashboardConfig): DashboardHandlerResult;
+/** Async iterable returned by workflow.list(). */
+interface TemporalWorkflowListLike {
+    readonly [Symbol.asyncIterator]: () => AsyncIterator<TemporalWorkflowExecutionLike>;
+}
+/**
+ * Structural type for the Temporal admin client.
+ *
+ * Mirrors the subset of \`@temporalio/client.Client\` needed for admin queries.
+ * Does NOT import from \`@temporalio/client\` — the consumer provides a
+ * compatible instance at runtime.
+ */
+interface TemporalAdminClientLike {
+    readonly workflow: {
+        readonly list: () => TemporalWorkflowListLike;
+        readonly getHandle: (workflowId: string) => TemporalWorkflowHandleLike;
+    };
+    readonly connection: {
+        readonly healthCheck: () => Promise<void>;
+    };
+}
+/** Options for the temporal admin adapter factory. */
+interface TemporalAdminAdapterOptions {
+    readonly namespace?: string;
+    readonly serverAddress?: string;
+}
+/** Return type of createTemporalAdminAdapter. */
+interface TemporalAdminAdapter {
+    readonly views: NonNullable<RuntimeViewDataSource["temporal"]>;
+    readonly commands: Required<Pick<CommandDispatcher, "signalWorkflow" | "terminateWorkflow">>;
+}
+/**
+ * Create a Temporal admin adapter for the dashboard.
+ *
+ * Returns views and commands that satisfy the RuntimeViewDataSource['temporal']
+ * and CommandDispatcher shapes respectively.
+ */
+declare function createTemporalAdminAdapter(client: TemporalAdminClientLike, options?: TemporalAdminAdapterOptions): TemporalAdminAdapter;
 
 /**
  * Lightweight URL pattern router for dashboard API.
@@ -49,6 +102,85 @@ interface RouteMatch {
 declare function createRouter(routes: readonly Route[]): Router;
 declare function jsonResponse<T>(data: T, status?: number): Response;
 declare function errorResponse(code: string, message: string, status: number): Response;
+/** Validate a required route parameter. Returns errorResponse(400) if missing. */
+declare function validateRequiredParam(params: RouteParams, name: string, label?: string): string | Response;
+/** Map a Result error to an HTTP error response. NOT_FOUND → 404, all others → 500. */
+declare function mapResultToResponse(result: {
+    readonly ok: boolean;
+    readonly error?: {
+        readonly code: string;
+        readonly message: string;
+    };
+}): Response | undefined;
+
+/**
+ * Filesystem REST routes — thin wrappers over FileSystemBackend (L0).
+ *
+ * GET    /fs/list?path=     — list directory contents
+ * GET    /fs/read?path=     — read file content
+ * GET    /fs/search?q=       — search file contents (optional: glob, maxResults, path)
+ * PUT    /fs/file           — write file content (JSON body: { path, content })
+ * DELETE /fs/file?path=     — delete a file
+ */
+
+/** Returns true if the given path is editable. */
+type EditablePathMatcher = (path: string) => boolean;
+/** Default: only workspace files are editable. */
+declare function createDefaultEditablePaths(): EditablePathMatcher;
+
+/**
+ * createDashboardHandler — main factory for the dashboard HTTP handler.
+ *
+ * Returns a composable handler that returns \`Response | null\`.
+ * Null means the request didn't match any dashboard route,
+ * allowing the consumer to chain with other handlers.
+ */
+
+interface DashboardHandlerOptions {
+    readonly dataSource: DashboardDataSource;
+    readonly fileSystem?: FileSystemBackend;
+    readonly runtimeViews?: RuntimeViewDataSource;
+    readonly commands?: CommandDispatcher;
+    /** Controls which file paths are writable via PUT /fs/file. Defaults to workspace paths only. */
+    readonly editablePaths?: EditablePathMatcher;
+}
+interface DashboardHandlerResult {
+    readonly handler: (req: Request) => Promise<Response | null>;
+    readonly dispose: () => void;
+}
+declare function createDashboardHandler(dataSourceOrOptions: DashboardDataSource | DashboardHandlerOptions, config?: DashboardConfig): DashboardHandlerResult;
+
+/**
+ * createAdminPanelBridge — adapts live CLI runtime state into
+ * DashboardHandlerOptions for the admin panel HTTP handler.
+ *
+ * The bridge accepts a minimal set of inputs from the CLI runtime and
+ * exposes them through the DashboardDataSource interface. It tracks
+ * a single primary agent with its channels and skills, providing
+ * system metrics from the Bun runtime.
+ *
+ * This is designed for CLI-hosted agents where there is exactly one
+ * agent running. For multi-agent deployments, use the engine registry
+ * directly with a full data source implementation.
+ */
+
+interface BridgeOptions {
+    /** Display name of the agent (from manifest). */
+    readonly agentName: string;
+    /** Agent type: copilot or worker. */
+    readonly agentType: "copilot" | "worker";
+    /** Model name (e.g. "anthropic:claude-sonnet-4-5-20250929"). */
+    readonly model?: string | undefined;
+    /** Channel type names (e.g. ["cli", "telegram"]). */
+    readonly channels: readonly string[];
+    /** Skill names (e.g. ["web-search", "code-review"]). */
+    readonly skills: readonly string[];
+}
+interface AdminPanelBridgeResult extends DashboardHandlerOptions {
+    /** Emit a dashboard event to all subscribers. */
+    readonly emitEvent: (event: DashboardEvent) => void;
+}
+declare function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridgeResult;
 
 /**
  * SSE message encoder — converts data payloads to SSE wire format.
@@ -93,6 +225,6 @@ interface StaticServeResult {
 }
 declare function createStaticServe(assetsDir: string): StaticServeResult;
 
-export { type DashboardHandlerOptions, type DashboardHandlerResult, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SseProducer, type StaticServeResult, createDashboardHandler, createRouter, createSseProducer, createStaticServe, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse };
+export { type AdminPanelBridgeResult, type BridgeOptions, type DashboardHandlerOptions, type DashboardHandlerResult, type EditablePathMatcher, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SseProducer, type StaticServeResult, type TemporalAdminAdapter, type TemporalAdminAdapterOptions, type TemporalAdminClientLike, type TemporalWorkflowExecutionLike, createAdminPanelBridge, createDashboardHandler, createDefaultEditablePaths, createRouter, createSseProducer, createStaticServe, createTemporalAdminAdapter, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse, mapResultToResponse, validateRequiredParam };
 "
 `;

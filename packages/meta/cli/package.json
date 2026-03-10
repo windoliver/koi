@@ -28,6 +28,8 @@
     "@koi/context": "workspace:*",
     "@koi/context-arena": "workspace:*",
     "@koi/core": "workspace:*",
+    "@koi/dashboard-api": "workspace:*",
+    "@koi/dashboard-types": "workspace:*",
     "@koi/deploy": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/forge": "workspace:*",

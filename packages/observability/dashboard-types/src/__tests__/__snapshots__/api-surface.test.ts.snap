@@ -22,7 +22,15 @@ interface CommandDispatcher {
     readonly resumeAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     readonly terminateAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     readonly retryDeadLetter?: (entryId: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-    readonly listMailbox?: (agentId: AgentId) => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
+    readonly listMailbox?: (agentId: AgentId) => Result<readonly AgentMessage[], KoiError> | Promise<Result<readonly AgentMessage[], KoiError>>;
+    readonly signalWorkflow?: (id: string, signal: string, payload: unknown) => Promise<Result<void, KoiError>>;
+    readonly terminateWorkflow?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly pauseSchedule?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly resumeSchedule?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly deleteSchedule?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly retrySchedulerDeadLetter?: (id: string) => Promise<Result<void, KoiError>>;
+    readonly pauseHarness?: () => Promise<Result<void, KoiError>>;
+    readonly resumeHarness?: () => Promise<Result<void, KoiError>>;
 }
 
 /**
@@ -158,7 +166,65 @@ type GatewayDashboardEvent = {
     readonly connectionCount: number;
     readonly timestamp: number;
 };
-type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent;
+type TemporalDashboardEvent = {
+    readonly kind: "temporal";
+    readonly subKind: "workflow_started";
+    readonly workflowId: string;
+    readonly workflowType: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "temporal";
+    readonly subKind: "workflow_completed";
+    readonly workflowId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "temporal";
+    readonly subKind: "health_changed";
+    readonly healthy: boolean;
+    readonly timestamp: number;
+};
+type SchedulerDashboardEvent = {
+    readonly kind: "scheduler";
+    readonly subKind: "task_submitted";
+    readonly taskId: string;
+    readonly agentId: AgentId;
+    readonly timestamp: number;
+} | {
+    readonly kind: "scheduler";
+    readonly subKind: "task_completed";
+    readonly taskId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "scheduler";
+    readonly subKind: "task_dead_letter";
+    readonly taskId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "scheduler";
+    readonly subKind: "schedule_fired";
+    readonly scheduleId: string;
+    readonly timestamp: number;
+};
+type TaskBoardDashboardEvent = {
+    readonly kind: "taskboard";
+    readonly subKind: "task_status_changed";
+    readonly taskId: string;
+    readonly status: string;
+    readonly timestamp: number;
+};
+type HarnessDashboardEvent = {
+    readonly kind: "harness";
+    readonly subKind: "checkpoint_created";
+    readonly checkpointType: "soft" | "hard";
+    readonly timestamp: number;
+} | {
+    readonly kind: "harness";
+    readonly subKind: "phase_changed";
+    readonly from: string;
+    readonly to: string;
+    readonly timestamp: number;
+};
+type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent;
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 interface DashboardEventBatch {
     readonly events: readonly DashboardEvent[];
@@ -179,6 +245,14 @@ declare function isSystemEvent(event: DashboardEvent): event is SystemDashboardE
 declare function isNexusEvent(event: DashboardEvent): event is NexusDashboardEvent;
 /** Type guard for gateway domain events. */
 declare function isGatewayEvent(event: DashboardEvent): event is GatewayDashboardEvent;
+/** Type guard for temporal domain events. */
+declare function isTemporalEvent(event: DashboardEvent): event is TemporalDashboardEvent;
+/** Type guard for scheduler domain events. */
+declare function isSchedulerEvent(event: DashboardEvent): event is SchedulerDashboardEvent;
+/** Type guard for task board domain events. */
+declare function isTaskBoardEvent(event: DashboardEvent): event is TaskBoardDashboardEvent;
+/** Type guard for harness domain events. */
+declare function isHarnessEvent(event: DashboardEvent): event is HarnessDashboardEvent;
 
 /**
  * DashboardDataSource — adapter interface for dashboard data access.
@@ -296,11 +370,119 @@ interface GatewayTopology {
     readonly timestamp: number;
 }
 
+interface WorkflowSummary {
+    readonly workflowId: string;
+    readonly workflowType: string;
+    readonly status: "running" | "completed" | "failed" | "cancelled" | "terminated" | "timed_out";
+    readonly startTime: number;
+    readonly closeTime?: number;
+    readonly taskQueue: string;
+}
+interface WorkflowDetail extends WorkflowSummary {
+    readonly runId: string;
+    readonly searchAttributes: Readonly<Record<string, unknown>>;
+    readonly memo: Readonly<Record<string, unknown>>;
+    readonly pendingActivities: number;
+}
+interface TemporalHealth {
+    readonly healthy: boolean;
+    readonly serverAddress: string;
+    readonly namespace: string;
+    readonly latencyMs?: number;
+}
+interface SchedulerTaskSummary {
+    readonly taskId: string;
+    readonly agentId: string;
+    readonly status: "pending" | "running" | "completed" | "failed" | "dead_letter";
+    readonly priority: number;
+    readonly submittedAt: number;
+    readonly startedAt?: number;
+    readonly completedAt?: number;
+    readonly retryCount: number;
+}
+interface SchedulerStats {
+    readonly submitted: number;
+    readonly completed: number;
+    readonly failed: number;
+    readonly deadLetterCount: number;
+    readonly concurrencyLimit: number;
+    readonly currentConcurrency: number;
+}
+interface CronSchedule {
+    readonly scheduleId: string;
+    readonly pattern: string;
+    readonly nextFireTime: number;
+    readonly active: boolean;
+    readonly description?: string;
+}
+interface SchedulerDeadLetterEntry {
+    readonly entryId: string;
+    readonly taskId: string;
+    readonly failedAt: number;
+    readonly error: string;
+    readonly retryCount: number;
+}
+interface TaskBoardNode {
+    readonly taskId: string;
+    readonly label: string;
+    readonly status: "pending" | "running" | "completed" | "failed";
+    readonly assignedTo?: string;
+    readonly result?: unknown;
+    readonly error?: string;
+}
+interface TaskBoardEdge {
+    readonly from: string;
+    readonly to: string;
+}
+interface TaskBoardSnapshot {
+    readonly nodes: readonly TaskBoardNode[];
+    readonly edges: readonly TaskBoardEdge[];
+    readonly timestamp: number;
+}
+interface HarnessStatus {
+    readonly phase: "idle" | "running" | "paused" | "completed" | "failed";
+    readonly sessionCount: number;
+    readonly taskProgress: {
+        readonly completed: number;
+        readonly total: number;
+    };
+    readonly tokenUsage: {
+        readonly used: number;
+        readonly budget: number;
+    };
+    readonly autoResumeEnabled: boolean;
+    readonly startedAt?: number;
+}
+interface CheckpointEntry {
+    readonly id: string;
+    readonly type: "soft" | "hard";
+    readonly createdAt: number;
+    readonly sessionId?: string;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
 interface RuntimeViewDataSource {
     readonly getProcessTree: () => ProcessTreeSnapshot | Promise<ProcessTreeSnapshot>;
     readonly getAgentProcfs: (agentId: AgentId) => AgentProcfs | undefined | Promise<AgentProcfs | undefined>;
     readonly getMiddlewareChain: (agentId: AgentId) => MiddlewareChain | Promise<MiddlewareChain>;
     readonly getGatewayTopology: () => GatewayTopology | Promise<GatewayTopology>;
+    readonly temporal?: {
+        readonly getHealth: () => TemporalHealth | Promise<TemporalHealth>;
+        readonly listWorkflows: () => Promise<readonly WorkflowSummary[]>;
+        readonly getWorkflow: (id: string) => Promise<WorkflowDetail | undefined>;
+    };
+    readonly scheduler?: {
+        readonly listTasks: () => Promise<readonly SchedulerTaskSummary[]>;
+        readonly getStats: () => SchedulerStats | Promise<SchedulerStats>;
+        readonly listSchedules: () => Promise<readonly CronSchedule[]>;
+        readonly listDeadLetters: () => Promise<readonly SchedulerDeadLetterEntry[]>;
+    };
+    readonly taskBoard?: {
+        readonly getSnapshot: () => TaskBoardSnapshot | Promise<TaskBoardSnapshot>;
+    };
+    readonly harness?: {
+        readonly getStatus: () => HarnessStatus | Promise<HarnessStatus>;
+        readonly getCheckpoints: () => Promise<readonly CheckpointEntry[]>;
+    };
 }
 
 /**
@@ -366,6 +548,6 @@ interface ApiError {
     readonly message: string;
 }
 
-export { type AdminPanelConfig, type AdminPanelDataSources, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type ApiError, type ApiResult, type ChannelDashboardEvent, type CommandDispatcher, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RuntimeViewDataSource, SAVED_VIEWS, type SavedViewDefinition, type SkillDashboardEvent, type SystemDashboardEvent, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isNexusEvent, isSkillEvent, isSystemEvent };
+export { type AdminPanelConfig, type AdminPanelDataSources, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type ApiError, type ApiResult, type ChannelDashboardEvent, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RuntimeViewDataSource, SAVED_VIEWS, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type WorkflowDetail, type WorkflowSummary, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent };
 "
 `;
