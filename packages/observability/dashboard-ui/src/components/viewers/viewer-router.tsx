@@ -1,14 +1,14 @@
 /**
  * ViewerRouter — routes a file or directory path to the appropriate viewer.
  *
- * For files: loads content via useFileContent and pattern-matches to a typed viewer.
- * For directories: checks for specialized directory viewers (e.g. mailbox), then
- * tries to load a conventional index.json (routed through the typed file viewers),
- * falling back to a generic directory listing.
+ * Uses regex patterns from the namespace contract (admin-panel.md) for path
+ * matching. Files load content via useFileContent; directories route to
+ * specialized directory viewers or a generic listing.
  */
 
 import { useFileContent } from "../../hooks/use-file-content.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
+import { AgentDirectoryViewer } from "./agent-directory-viewer.js";
 import { AgentOverviewViewer } from "./agent-overview-viewer.js";
 import { BrickListViewer } from "./brick-list-viewer.js";
 import { BrickViewer } from "./brick-viewer.js";
@@ -40,58 +40,174 @@ import { TextViewer } from "./text-viewer.js";
 import { WorkspaceViewer } from "./workspace-viewer.js";
 
 // ---------------------------------------------------------------------------
-// File viewer rules — ordered by specificity (most specific first)
+// File viewer rules — regex patterns from admin-panel.md namespace contract
 // ---------------------------------------------------------------------------
+
+type FileViewer = React.ComponentType<{
+  readonly content: string;
+  readonly path: string;
+}>;
 
 const VIEWER_RULES: readonly {
   readonly match: (path: string) => boolean;
-  readonly Viewer: React.ComponentType<{
-    readonly content: string;
-    readonly path: string;
-  }>;
+  readonly Viewer: FileViewer;
 }[] = [
-  // === Most specific rules first ===
+  // === Contract patterns (admin-panel.md §5) ===
 
-  // Manifest files (before any directory-based matchers)
+  // Manifest files
   {
-    match: (p) =>
-      p.endsWith("/manifest.json") || p.endsWith("/manifest.yaml"),
+    match: (p) => /\/manifest\.(json|yaml)$/.test(p),
     Viewer: ManifestViewer,
   },
 
-  // Agent overview — agent namespace manifest.json (matched above) serves as overview
-  // Also match agent overview/index files specifically
+  // Agent overview/index files
   {
-    match: (p) =>
-      /\/agents\/[^/]+\/overview\.json$/.test(p) ||
-      /\/agents\/[^/]+\/index\.json$/.test(p),
+    match: (p) => /\/agents\/[^/]+\/(overview|index)\.json$/.test(p),
     Viewer: AgentOverviewViewer,
   },
 
-  // Dead letter queue entries (before general events match)
+  // Forge bricks — individual brick files
   {
     match: (p) =>
-      (p.includes("/events/dlq/") || p.includes("/dead-letter/")) &&
-      p.endsWith(".json"),
-    Viewer: DeadLetterViewer,
+      /^\/(agents\/[^/]+|global)\/bricks\/[^/]+\.json$/.test(p),
+    Viewer: BrickViewer,
   },
 
-  // Event stream metadata (before general events match)
+  // Event stream metadata
   {
     match: (p) =>
-      p.includes("/events/") &&
-      (p.endsWith("/stream.json") || p.endsWith("/meta.json")),
+      /\/agents\/[^/]+\/events\/streams\/[^/]+\/meta\.json$/.test(p),
     Viewer: EventStreamViewer,
   },
 
-  // Event detail — individual event files in events directory (e.g., /events/evt-001.json)
+  // Event detail — numeric stream event files
   {
     match: (p) =>
-      p.includes("/events/") && /\/evt[_-]/.test(p) && p.endsWith(".json"),
+      /\/agents\/[^/]+\/events\/streams\/[^/]+\/events\/\d+\.json$/.test(p),
     Viewer: EventDetailViewer,
   },
 
-  // Brick list — index/listing files in bricks directory
+  // Dead letter entries
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/events\/dead-letters\/[^/]+\.json$/.test(p),
+    Viewer: DeadLetterViewer,
+  },
+
+  // Subscription files
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/events\/subscriptions\/[^/]+\.json$/.test(p),
+    Viewer: SubscriptionViewer,
+  },
+
+  // Session records
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/session\/records\/[^/]+\.json$/.test(p),
+    Viewer: SessionRecordViewer,
+  },
+
+  // Pending frames
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/session\/pending\/[^/]+\.json$/.test(p),
+    Viewer: PendingFramesViewer,
+  },
+
+  // Session files (catch-all under session/)
+  {
+    match: (p) => /\/agents\/[^/]+\/session\/[^/]+\.json$/.test(p),
+    Viewer: SessionViewer,
+  },
+
+  // Memory overview (index/overview files)
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/memory\/(index|overview)\.json$/.test(p),
+    Viewer: MemoryOverviewViewer,
+  },
+
+  // Memory entities
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/memory\/entities\/[^/]+\.json$/.test(p),
+    Viewer: MemoryEntityViewer,
+  },
+
+  // Memory files (non-JSON catch-all)
+  {
+    match: (p) => /\/agents\/[^/]+\/memory\//.test(p),
+    Viewer: MemoryViewer,
+  },
+
+  // Snapshot chain metadata (meta.json per contract)
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/snapshots\/[^/]+\/meta\.json$/.test(p),
+    Viewer: SnapshotChainViewer,
+  },
+
+  // Snapshot overview (index/overview in snapshots root)
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/snapshots\/(index|overview)\.json$/.test(p),
+    Viewer: SnapshotOverviewViewer,
+  },
+
+  // Snapshot node files
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/snapshots\/[^/]+\/[^/]+\.json$/.test(p),
+    Viewer: SnapshotNodeViewer,
+  },
+
+  // Mailbox message files
+  {
+    match: (p) => /\/agents\/[^/]+\/mailbox\/[^/]+\.json$/.test(p),
+    Viewer: MailboxViewer,
+  },
+
+  // Gateway sessions
+  {
+    match: (p) => /\/global\/gateway\/sessions\/[^/]+\.json$/.test(p),
+    Viewer: GatewaySessionViewer,
+  },
+
+  // Gateway nodes
+  {
+    match: (p) => /\/global\/gateway\/nodes\/[^/]+\.json$/.test(p),
+    Viewer: GatewayNodeViewer,
+  },
+
+  // Gateway files (catch-all under gateway/)
+  {
+    match: (p) => /\/global\/gateway\/[^/]+\.json$/.test(p),
+    Viewer: GatewayViewer,
+  },
+
+  // Workspace files
+  {
+    match: (p) => /\/agents\/[^/]+\/workspace\//.test(p),
+    Viewer: WorkspaceViewer,
+  },
+
+  // Group scratchpad
+  {
+    match: (p) => /\/groups\/[^/]+\/scratch\//.test(p),
+    Viewer: ScratchpadViewer,
+  },
+
+  // Event log files (catch-all under events/)
+  {
+    match: (p) =>
+      /\/agents\/[^/]+\/events\//.test(p) && /\.(jsonl?|log)$/.test(p),
+    Viewer: EventLogViewer,
+  },
+
+  // === Fallback patterns ===
+
+  // Brick list files (index/list in bricks directory)
   {
     match: (p) =>
       p.includes("/bricks/") &&
@@ -99,54 +215,7 @@ const VIEWER_RULES: readonly {
     Viewer: BrickListViewer,
   },
 
-  // Brick definitions (individual brick files)
-  {
-    match: (p) => p.includes("/bricks/") && p.endsWith(".json"),
-    Viewer: BrickViewer,
-  },
-
-  // Event logs (JSONL or JSON in events directories)
-  {
-    match: (p) =>
-      p.includes("/events/") &&
-      (p.endsWith(".jsonl") || p.endsWith(".json")),
-    Viewer: EventLogViewer,
-  },
-
-  // Subscription position files
-  {
-    match: (p) =>
-      (p.includes("/subscriptions/") && p.endsWith(".json")) ||
-      /\/subscription[_-]?[^/]*\.json$/.test(p),
-    Viewer: SubscriptionViewer,
-  },
-
-  // Gateway session files (before general session match — /gateway/session/ contains /session/)
-  {
-    match: (p) =>
-      (p.includes("/gateway/sessions/") ||
-        p.includes("/gateway/session/")) &&
-      p.endsWith(".json"),
-    Viewer: GatewaySessionViewer,
-  },
-
-  // Gateway node files (before general gateway match)
-  {
-    match: (p) =>
-      (p.includes("/gateway/nodes/") || p.includes("/gateway/node/")) &&
-      p.endsWith(".json"),
-    Viewer: GatewayNodeViewer,
-  },
-
-  // Pending frames (before general session match)
-  {
-    match: (p) =>
-      (p.includes("/session/pending/") || p.includes("/pending-frames")) &&
-      p.endsWith(".json"),
-    Viewer: PendingFramesViewer,
-  },
-
-  // Session list — session index/listing files
+  // Session list files
   {
     match: (p) =>
       p.includes("/session/") &&
@@ -156,149 +225,52 @@ const VIEWER_RULES: readonly {
     Viewer: SessionListViewer,
   },
 
-  // Session record — session checkpoint/record files
-  {
-    match: (p) =>
-      p.includes("/session/") &&
-      (p.includes("/record") || p.includes("/checkpoint")) &&
-      p.endsWith(".json"),
-    Viewer: SessionRecordViewer,
-  },
-
-  // Session snapshots (existing general session viewer)
-  {
-    match: (p) => p.includes("/session/") && p.endsWith(".json"),
-    Viewer: SessionViewer,
-  },
-
-  // Memory overview — index/overview files in memory directory
-  {
-    match: (p) =>
-      p.includes("/memory/") &&
-      (p.endsWith("/index.json") || p.endsWith("/overview.json")),
-    Viewer: MemoryOverviewViewer,
-  },
-
-  // Memory entity — specific entity files in memory directory
-  {
-    match: (p) => p.includes("/memory/") && p.endsWith(".json"),
-    Viewer: MemoryEntityViewer,
-  },
-
-  // Memory files (non-JSON, existing generic viewer)
-  {
-    match: (p) => p.includes("/memory/"),
-    Viewer: MemoryViewer,
-  },
-
-  // Snapshot overview — index/overview in snapshots directory
-  {
-    match: (p) =>
-      p.includes("/snapshots/") &&
-      (p.endsWith("/index.json") || p.endsWith("/overview.json")),
-    Viewer: SnapshotOverviewViewer,
-  },
-
-  // Snapshot chain files
-  {
-    match: (p) =>
-      p.includes("/snapshots/") &&
-      (p.includes("/chain") || p.endsWith("-chain.json")) &&
-      p.endsWith(".json"),
-    Viewer: SnapshotChainViewer,
-  },
-
-  // Snapshot node files — individual snapshot nodes
-  {
-    match: (p) =>
-      p.includes("/snapshots/") &&
-      (p.includes("/node") || /\/[a-f0-9]{8,}\.json$/.test(p)) &&
-      p.endsWith(".json"),
-    Viewer: SnapshotNodeViewer,
-  },
-
-  // Mailbox files
-  {
-    match: (p) => p.includes("/mailbox/") && p.endsWith(".json"),
-    Viewer: MailboxViewer,
-  },
-
-  // Gateway files (existing general gateway viewer — session/node already matched above)
-  {
-    match: (p) => p.includes("/gateway/") && p.endsWith(".json"),
-    Viewer: GatewayViewer,
-  },
-
-  // Scratchpad files
-  {
-    match: (p) => p.includes("/scratchpad/"),
-    Viewer: ScratchpadViewer,
-  },
-
-  // Workspace files
-  {
-    match: (p) => p.includes("/workspace/") || p.includes("/scratch/"),
-    Viewer: WorkspaceViewer,
-  },
-
-  // === Catch-all rules ===
-
   // Generic JSON
   {
-    match: (p) => p.endsWith(".json") || p.endsWith(".jsonl"),
+    match: (p) => /\.jsonl?$/.test(p),
     Viewer: JsonViewer,
   },
-  // Text files (catch-all for known text extensions)
+
+  // Text files
   {
-    match: (p) => {
-      const ext = p.split(".").pop()?.toLowerCase();
-      return (
-        ext === "md" ||
-        ext === "txt" ||
-        ext === "log" ||
-        ext === "yaml" ||
-        ext === "yml" ||
-        ext === "toml" ||
-        ext === "ts" ||
-        ext === "js" ||
-        ext === "py"
-      );
-    },
+    match: (p) => /\.(md|txt|log|yaml|yml|toml|ts|js|py)$/.test(p),
     Viewer: TextViewer,
   },
 ];
 
 // ---------------------------------------------------------------------------
-// Directory viewer rules — specialized directory viewers
+// Directory viewer rules — regex patterns from admin-panel.md §5
 // ---------------------------------------------------------------------------
+
+type DirectoryComponent = React.ComponentType<{ readonly path: string }>;
 
 const DIRECTORY_RULES: readonly {
   readonly match: (path: string) => boolean;
-  readonly Component: React.ComponentType<{ readonly path: string }>;
+  readonly Component: DirectoryComponent;
 }[] = [
-  // Mailbox directories use command-backed API (listMailbox)
+  // Agent root — runtime overview + namespace contents
   {
-    match: (p) => /\/mailbox\/?$/.test(p),
+    match: (p) => /\/agents\/[^/]+\/?$/.test(p),
+    Component: AgentDirectoryViewer,
+  },
+
+  // Mailbox — command-backed (listMailbox API)
+  {
+    match: (p) => /\/agents\/[^/]+\/mailbox\/?$/.test(p),
     Component: MailboxDirectoryViewer,
   },
 ];
 
-function resolveViewer(
-  path: string,
-): React.ComponentType<{
-  readonly content: string;
-  readonly path: string;
-}> {
+function resolveViewer(path: string): FileViewer {
   for (const rule of VIEWER_RULES) {
     if (rule.match(path)) return rule.Viewer;
   }
-  // Default: text viewer
   return TextViewer;
 }
 
 function resolveDirectoryViewer(
   path: string,
-): React.ComponentType<{ readonly path: string }> | undefined {
+): DirectoryComponent | undefined {
   for (const rule of DIRECTORY_RULES) {
     if (rule.match(path)) return rule.Component;
   }
@@ -370,7 +342,7 @@ function FileViewerRouter({
 }
 
 // ---------------------------------------------------------------------------
-// Directory viewer — tries index.json first, falls back to generic listing
+// Directory viewer — matches against DIRECTORY_RULES, falls back to listing
 // ---------------------------------------------------------------------------
 
 function DirectoryViewerRouter({
@@ -382,36 +354,5 @@ function DirectoryViewerRouter({
   if (SpecializedViewer !== undefined) {
     return <SpecializedViewer path={path} />;
   }
-  // Default: try index.json, fall back to generic directory listing
-  return <IndexFileViewer path={path} />;
-}
-
-/**
- * Tries to load index.json from the directory and route it through the typed
- * file viewer rules. Falls back to DirectoryViewer on error (file not found).
- */
-function IndexFileViewer({
-  path,
-}: {
-  readonly path: string;
-}): React.ReactElement {
-  const normalizedPath = path.endsWith("/") ? path.slice(0, -1) : path;
-  const filePath = `${normalizedPath}/index.json`;
-  const { content, isLoading, error } = useFileContent(filePath);
-
-  if (isLoading) {
-    return (
-      <div className="p-6">
-        <LoadingSkeleton />
-      </div>
-    );
-  }
-
-  // If index file not found, fall back to generic directory listing
-  if (error !== null || content === null) {
-    return <DirectoryViewer path={path} />;
-  }
-
-  const Viewer = resolveViewer(filePath);
-  return <Viewer content={content} path={filePath} />;
+  return <DirectoryViewer path={path} />;
 }

@@ -3,7 +3,7 @@
  *
  * GET    /fs/list?path=     — list directory contents
  * GET    /fs/read?path=     — read file content
- * GET    /fs/search?q=       — search file contents (optional: glob, maxResults)
+ * GET    /fs/search?q=       — search file contents (optional: glob, maxResults, path)
  * DELETE /fs/file?path=     — delete a file
  */
 
@@ -14,6 +14,11 @@ import { errorResponse, jsonResponse } from "../router.js";
 function getQueryParam(req: Request, name: string): string | undefined {
   const url = new URL(req.url);
   return url.searchParams.get(name) ?? undefined;
+}
+
+function getAllQueryParams(req: Request, name: string): string[] {
+  const url = new URL(req.url);
+  return url.searchParams.getAll(name);
 }
 
 export async function handleFsList(
@@ -64,17 +69,41 @@ export async function handleFsSearch(
 
   const maxResultsRaw = getQueryParam(req, "maxResults");
   const maxResults = maxResultsRaw !== undefined ? Number.parseInt(maxResultsRaw, 10) : undefined;
+  const scopePaths = getAllQueryParams(req, "path");
 
   const searchGlob = getQueryParam(req, "glob");
   const searchOptions: { glob?: string; maxResults?: number } = {};
   if (searchGlob !== undefined) searchOptions.glob = searchGlob;
-  if (maxResults !== undefined && !Number.isNaN(maxResults)) searchOptions.maxResults = maxResults;
+
+  // When scoping by path, fetch more results from backend to ensure enough
+  // survive the path filter, then truncate to the requested maxResults.
+  if (scopePaths.length > 0) {
+    const expanded =
+      maxResults !== undefined && !Number.isNaN(maxResults) ? Math.min(maxResults * 5, 500) : 500;
+    searchOptions.maxResults = expanded;
+  } else if (maxResults !== undefined && !Number.isNaN(maxResults)) {
+    searchOptions.maxResults = maxResults;
+  }
 
   const result = await fileSystem.search(query, searchOptions);
   if (!result.ok) {
     return errorResponse(result.error.code, result.error.message, 500);
   }
-  return jsonResponse(result.value);
+
+  let matches = result.value.matches;
+
+  // Filter by path scope(s) server-side before truncating
+  if (scopePaths.length > 0) {
+    matches = matches.filter((m) => scopePaths.some((sp) => m.path.startsWith(sp)));
+  }
+
+  // Truncate to requested maxResults after path filtering
+  const limit = maxResults !== undefined && !Number.isNaN(maxResults) ? maxResults : undefined;
+  if (limit !== undefined && matches.length > limit) {
+    matches = matches.slice(0, limit);
+  }
+
+  return jsonResponse({ matches, truncated: result.value.truncated });
 }
 
 export async function handleFsDelete(

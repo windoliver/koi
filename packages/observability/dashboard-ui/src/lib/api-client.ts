@@ -92,11 +92,20 @@ export interface FsSearchResult {
 
 export function fetchFsSearch(
   query: string,
-  options?: { readonly glob?: string; readonly maxResults?: number },
+  options?: {
+    readonly glob?: string;
+    readonly maxResults?: number;
+    readonly paths?: readonly string[];
+  },
 ): Promise<readonly FsSearchResult[]> {
   const params = new URLSearchParams({ q: query });
   if (options?.glob !== undefined) params.set("glob", options.glob);
   if (options?.maxResults !== undefined) params.set("maxResults", String(options.maxResults));
+  if (options?.paths !== undefined) {
+    for (const p of options.paths) {
+      params.append("path", p);
+    }
+  }
   return fetchApi<readonly FsSearchResult[]>(`/fs/search?${params.toString()}`);
 }
 

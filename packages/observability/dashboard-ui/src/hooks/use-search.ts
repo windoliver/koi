@@ -2,12 +2,12 @@
  * Search hook — searches Nexus filesystem content.
  *
  * Debounced by 300ms to avoid excessive API calls during typing.
- * Uses React Query for caching. Filters results by the active saved view's
- * rootPaths (client-side) and passes glob to the server.
+ * Uses React Query for caching. Passes path scope to server for
+ * pre-truncation filtering so in-scope results aren't lost.
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { FsSearchResult } from "../lib/api-client.js";
 import { fetchFsSearch } from "../lib/api-client.js";
 
@@ -35,25 +35,26 @@ export function useSearch(
   }, [query]);
 
   const result = useQuery({
-    queryKey: ["fs-search", debouncedQuery, glob],
-    queryFn: () =>
-      fetchFsSearch(
-        debouncedQuery,
-        glob !== undefined ? { maxResults: MAX_RESULTS, glob } : { maxResults: MAX_RESULTS },
-      ),
+    queryKey: ["fs-search", debouncedQuery, glob, rootPaths],
+    queryFn: () => {
+      // Build options object carefully for exactOptionalPropertyTypes
+      if (glob !== undefined && rootPaths !== undefined && rootPaths.length > 0) {
+        return fetchFsSearch(debouncedQuery, { maxResults: MAX_RESULTS, glob, paths: rootPaths });
+      }
+      if (glob !== undefined) {
+        return fetchFsSearch(debouncedQuery, { maxResults: MAX_RESULTS, glob });
+      }
+      if (rootPaths !== undefined && rootPaths.length > 0) {
+        return fetchFsSearch(debouncedQuery, { maxResults: MAX_RESULTS, paths: rootPaths });
+      }
+      return fetchFsSearch(debouncedQuery, { maxResults: MAX_RESULTS });
+    },
     enabled: debouncedQuery.length >= 2,
     staleTime: 30_000,
   });
 
-  // Filter results by rootPaths client-side
-  const filtered = useMemo(() => {
-    const data = result.data ?? [];
-    if (rootPaths === undefined || rootPaths.length === 0) return data;
-    return data.filter((r) => rootPaths.some((root) => r.path.startsWith(root)));
-  }, [result.data, rootPaths]);
-
   return {
-    results: filtered,
+    results: result.data ?? [],
     isSearching: result.isLoading,
     error: result.error instanceof Error ? result.error : null,
   };

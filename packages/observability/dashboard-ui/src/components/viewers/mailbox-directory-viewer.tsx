@@ -49,7 +49,8 @@ export function MailboxDirectoryViewer({
     queryKey: ["mailbox-list", agentId, lastInvalidatedAt],
     queryFn: () => listMailbox(agentId),
     enabled: agentId.length > 0,
-    staleTime: 30_000,
+    staleTime: 5_000,
+    refetchInterval: 5_000,
   });
 
   if (query.isLoading) {
