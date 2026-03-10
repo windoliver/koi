@@ -19,6 +19,7 @@ import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { AdminFlags } from "../args.js";
 import { createLocalFileSystem, resolveDashboardAssetsDir } from "../helpers.js";
+import { resolveAutonomousOrWarn } from "../resolve-autonomous.js";
 import { resolveOrchestrationFromAgent } from "../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 
@@ -301,9 +302,11 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
 
   // 2b. Resolve all orchestration sources
   const temporal = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
+  const autonomous = await resolveAutonomousOrWarn(manifest, flags.verbose);
 
   const orch = resolveOrchestrationFromAgent({
     temporal,
+    ...(autonomous !== undefined ? { harness: autonomous.harness } : {}),
     verbose: flags.verbose,
   });
 
@@ -385,6 +388,9 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   dashboardResult.dispose();
   if (temporal !== undefined) {
     await temporal.dispose();
+  }
+  if (autonomous !== undefined) {
+    await autonomous.dispose();
   }
 
   process.stderr.write("Goodbye.\n");
