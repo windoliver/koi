@@ -6,21 +6,209 @@
  * (name, type, model, channels, skills) and creates a bridge-backed
  * data source so the admin panel reflects the manifest configuration.
  *
- * Two ways to access the admin panel:
- * - `koi admin [manifest]`       — standalone server (this command)
- * - `koi serve --admin [manifest]` — embedded with the running agent
+ * Three ways to access the admin panel:
+ * - `koi admin [manifest]`              — standalone (manifest-only metadata)
+ * - `koi admin --connect localhost:9100` — proxy to running koi serve
+ * - `koi serve --admin [manifest]`      — embedded with the running agent
  */
 
+import type { DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
+import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { AdminFlags } from "../args.js";
 import { createLocalFileSystem, resolveDashboardAssetsDir } from "../helpers.js";
+import { resolveOrchestrationFromAgent } from "../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 
 const DEFAULT_ADMIN_PORT = 9200;
 
+// ---------------------------------------------------------------------------
+// Remote proxy mode — connect to a running koi serve instance
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a reverse-proxy dashboard handler that forwards API requests
+ * to a running koi serve instance and serves static assets locally.
+ */
+function createProxyHandler(remoteBaseUrl: string): DashboardHandlerResult {
+  const basePath = DEFAULT_DASHBOARD_CONFIG.basePath;
+  const apiPath = DEFAULT_DASHBOARD_CONFIG.apiPath;
+  const assetsDir = resolveDashboardAssetsDir();
+
+  // Import static serve lazily (only needed in proxy mode)
+  // let justified: set inside handler, read for asset serving
+  let staticServeFn: ((pathname: string) => Promise<Response | null>) | undefined;
+
+  const handler = async (req: Request): Promise<Response | null> => {
+    const url = new URL(req.url);
+
+    // Forward API requests to remote server
+    if (url.pathname.startsWith(apiPath)) {
+      try {
+        const targetUrl = `${remoteBaseUrl}${url.pathname}${url.search}`;
+        const proxyRes = await fetch(targetUrl, {
+          method: req.method,
+          headers: req.headers,
+          body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
+          signal: AbortSignal.timeout(30_000),
+        });
+
+        // Clone response with CORS headers
+        const headers = new Headers(proxyRes.headers);
+        headers.set("Access-Control-Allow-Origin", "*");
+
+        return new Response(proxyRes.body, {
+          status: proxyRes.status,
+          statusText: proxyRes.statusText,
+          headers,
+        });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return new Response(JSON.stringify({ ok: false, error: { message: msg } }), {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // Forward SSE events endpoint
+    if (
+      url.pathname === `${apiPath.replace("/api", "")}/events` ||
+      url.pathname === `${apiPath}/events`
+    ) {
+      try {
+        const targetUrl = `${remoteBaseUrl}${url.pathname}${url.search}`;
+        const proxyRes = await fetch(targetUrl, {
+          headers: req.headers,
+          signal: AbortSignal.timeout(300_000),
+        });
+
+        const headers = new Headers(proxyRes.headers);
+        headers.set("Access-Control-Allow-Origin", "*");
+
+        return new Response(proxyRes.body, {
+          status: proxyRes.status,
+          headers,
+        });
+      } catch {
+        return new Response("event: error\ndata: upstream unavailable\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+    }
+
+    // Serve static assets locally
+    if (url.pathname.startsWith(basePath) && assetsDir !== undefined) {
+      if (staticServeFn === undefined) {
+        const { createStaticServe } = await import("@koi/dashboard-api");
+        const result = createStaticServe(assetsDir);
+        staticServeFn = result.serve;
+      }
+      return staticServeFn(url.pathname);
+    }
+
+    return null;
+  };
+
+  return {
+    handler,
+    dispose(): void {
+      // No resources to clean up in proxy mode
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Health probe — check if a remote koi serve instance is reachable
+// ---------------------------------------------------------------------------
+
+async function probeRemoteHealth(baseUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3_000) });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main command
+// ---------------------------------------------------------------------------
+
 export async function runAdmin(flags: AdminFlags): Promise<void> {
+  const port = flags.port ?? DEFAULT_ADMIN_PORT;
+
+  // ── Remote proxy mode ──────────────────────────────────────────────────
+  if (flags.connect !== undefined) {
+    const remoteUrl = flags.connect.startsWith("http") ? flags.connect : `http://${flags.connect}`;
+
+    // Probe remote health before starting proxy
+    const healthy = await probeRemoteHealth(remoteUrl);
+    if (!healthy) {
+      process.stderr.write(`Cannot connect to running agent at ${remoteUrl}\n`);
+      process.stderr.write("Make sure koi serve --admin is running at that address.\n");
+      process.exit(1);
+    }
+
+    if (flags.verbose) {
+      process.stderr.write(`Connected to remote agent at ${remoteUrl}\n`);
+    }
+
+    const dashboardResult = createProxyHandler(remoteUrl);
+
+    const server = Bun.serve({
+      port,
+      async fetch(req: Request): Promise<Response> {
+        const adminResponse = await dashboardResult.handler(req);
+        if (adminResponse !== null) return adminResponse;
+        return new Response("Not Found", { status: 404 });
+      },
+    });
+
+    const adminUrl = `http://localhost:${String(server.port)}/admin`;
+    process.stderr.write(`Admin panel (proxy → ${remoteUrl}) on ${adminUrl}\n`);
+
+    if (flags.open) {
+      try {
+        const { exec } = await import("node:child_process");
+        const openCmd =
+          process.platform === "darwin"
+            ? "open"
+            : process.platform === "win32"
+              ? "start"
+              : "xdg-open";
+        exec(`${openCmd} ${adminUrl}`);
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    process.stderr.write("Press Ctrl+C to stop.\n");
+
+    const controller = new AbortController();
+    function shutdown(): void {
+      controller.abort();
+    }
+    process.on("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+
+    await new Promise<void>((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+
+    process.removeListener("SIGINT", shutdown);
+    process.removeListener("SIGTERM", shutdown);
+    server.stop(true);
+    dashboardResult.dispose();
+    process.stderr.write("Goodbye.\n");
+    return;
+  }
+
+  // ── Standalone mode (manifest-based) ───────────────────────────────────
+
   // 1. Load manifest for agent metadata
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
 
@@ -48,8 +236,13 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   const workspaceRoot = pathResolve(pathDirname(manifestPath));
   const fileSystem = createLocalFileSystem(workspaceRoot);
 
-  // 2b. Optionally connect to Temporal for orchestration views/commands
+  // 2b. Resolve all orchestration sources
   const temporal = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
+
+  const orch = resolveOrchestrationFromAgent({
+    temporal,
+    verbose: flags.verbose,
+  });
 
   const bridge = createAdminPanelBridge({
     agentName: manifest.name,
@@ -58,10 +251,10 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     channels: channelNames,
     skills: skillNames,
     fileSystem,
-    ...(temporal !== undefined
+    ...(orch.hasAny
       ? {
-          orchestration: { temporal: temporal.views },
-          orchestrationCommands: temporal.commands,
+          orchestration: orch.orchestration,
+          orchestrationCommands: orch.orchestrationCommands,
         }
       : {}),
   });
@@ -73,8 +266,6 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   });
 
   // 3. Start HTTP server
-  const port = flags.port ?? DEFAULT_ADMIN_PORT;
-
   const server = Bun.serve({
     port,
     async fetch(req: Request): Promise<Response> {

@@ -53,6 +53,8 @@ export interface AdminFlags extends BaseFlags {
   readonly verbose: boolean;
   readonly open: boolean;
   readonly temporalUrl: string | undefined;
+  /** Connect to a running koi serve instance (e.g. "localhost:9100"). */
+  readonly connect: string | undefined;
 }
 
 export interface DeployFlags extends BaseFlags {
@@ -312,6 +314,7 @@ export function parseAdminFlags(rest: readonly string[]): AdminFlags {
       open: { type: "boolean", default: true },
       "no-open": { type: "boolean", default: false },
       "temporal-url": { type: "string" },
+      connect: { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -331,6 +334,7 @@ export function parseAdminFlags(rest: readonly string[]): AdminFlags {
     verbose: (values.verbose as boolean | undefined) ?? false,
     open: shouldOpen,
     temporalUrl: values["temporal-url"] as string | undefined,
+    connect: values.connect as string | undefined,
   };
 }
 

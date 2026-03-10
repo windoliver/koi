@@ -14,6 +14,21 @@
  */
 
 export type {
+  HarnessAdminAdapter,
+  HarnessAdminClientLike,
+} from "./adapters/harness-admin-adapter.js";
+export { createHarnessAdminAdapter } from "./adapters/harness-admin-adapter.js";
+export type {
+  SchedulerAdminAdapter,
+  SchedulerAdminClientLike,
+} from "./adapters/scheduler-admin-adapter.js";
+export { createSchedulerAdminAdapter } from "./adapters/scheduler-admin-adapter.js";
+export type {
+  TaskBoardAdminAdapter,
+  TaskBoardAdminClientLike,
+} from "./adapters/task-board-admin-adapter.js";
+export { createTaskBoardAdminAdapter } from "./adapters/task-board-admin-adapter.js";
+export type {
   TemporalAdminAdapter,
   TemporalAdminAdapterOptions,
   TemporalAdminClientLike,

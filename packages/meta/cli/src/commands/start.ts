@@ -32,6 +32,7 @@ import {
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
+import { resolveOrchestrationFromAgent } from "../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 
 // ---------------------------------------------------------------------------
@@ -240,6 +241,12 @@ export async function runStart(flags: StartFlags): Promise<void> {
 
       temporalAdmin = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
 
+      const orch = resolveOrchestrationFromAgent({
+        agent: runtime.agent,
+        temporal: temporalAdmin,
+        verbose: flags.verbose,
+      });
+
       adminBridge = createAdminPanelBridge({
         agentName: manifest.name,
         agentType: manifest.lifecycle ?? "copilot",
@@ -247,10 +254,10 @@ export async function runStart(flags: StartFlags): Promise<void> {
         channels: channelNames,
         skills: skillNames,
         fileSystem: createLocalFileSystem(workspaceRoot),
-        ...(temporalAdmin !== undefined
+        ...(orch.hasAny
           ? {
-              orchestration: { temporal: temporalAdmin.views },
-              orchestrationCommands: temporalAdmin.commands,
+              orchestration: orch.orchestration,
+              orchestrationCommands: orch.orchestrationCommands,
             }
           : {}),
       });
