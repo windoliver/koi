@@ -1,5 +1,5 @@
 /**
- * System metrics endpoint — GET /dashboard/api/metrics
+ * System metrics endpoint — GET /admin/api/metrics
  */
 
 import type { DashboardDataSource } from "@koi/dashboard-types";

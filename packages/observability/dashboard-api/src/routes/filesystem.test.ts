@@ -4,7 +4,15 @@
 
 import { describe, expect, test } from "bun:test";
 import type { FileSystemBackend, KoiError, KoiErrorCode, Result } from "@koi/core";
-import { handleFsDelete, handleFsList, handleFsRead, handleFsSearch } from "./filesystem.js";
+import type { EditablePathMatcher } from "./filesystem.js";
+import {
+  createDefaultEditablePaths,
+  handleFsDelete,
+  handleFsList,
+  handleFsRead,
+  handleFsSearch,
+  handleFsWrite,
+} from "./filesystem.js";
 
 function ok<T>(value: T): Result<T, KoiError> {
   return { ok: true, value };
@@ -94,6 +102,42 @@ describe("handleFsRead", () => {
     const res = await handleFsRead(makeReq("/fs/read?path=/missing"), {}, fs);
     expect(res.status).toBe(404);
   });
+
+  test("includes editable=true for workspace paths", async () => {
+    const fs = createMockFs();
+    const matcher: EditablePathMatcher = (p) => /\/workspace\//.test(p);
+    const res = await handleFsRead(
+      makeReq("/fs/read?path=/agents/a1/workspace/notes.txt"),
+      {},
+      fs,
+      matcher,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect((body.data as Record<string, unknown>).editable).toBe(true);
+  });
+
+  test("includes editable=false for non-workspace paths", async () => {
+    const fs = createMockFs();
+    const matcher: EditablePathMatcher = (p) => /\/workspace\//.test(p);
+    const res = await handleFsRead(
+      makeReq("/fs/read?path=/agents/a1/bricks/tool.json"),
+      {},
+      fs,
+      matcher,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect((body.data as Record<string, unknown>).editable).toBe(false);
+  });
+
+  test("defaults editable to false when no matcher provided", async () => {
+    const fs = createMockFs();
+    const res = await handleFsRead(makeReq("/fs/read?path=/agents/a1/workspace/notes.txt"), {}, fs);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect((body.data as Record<string, unknown>).editable).toBe(false);
+  });
 });
 
 describe("handleFsSearch", () => {
@@ -118,16 +162,192 @@ describe("handleFsSearch", () => {
   });
 });
 
-describe("handleFsDelete", () => {
-  test("deletes file", async () => {
-    const fs = createMockFs();
-    const res = await handleFsDelete(makeReq("/fs/file?path=/test.txt", "DELETE"), {}, fs);
+describe("handleFsWrite", () => {
+  const workspaceMatcher: EditablePathMatcher = (p) => /\/workspace\//.test(p);
+
+  function makePutReq(url: string, body: unknown): Request {
+    return new Request(`http://localhost${url}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  test("writes file and returns 200 for editable workspace path", async () => {
+    let capturedPath: string | undefined;
+    let capturedContent: string | undefined;
+    const fs = createMockFs({
+      write: (path, content) => {
+        capturedPath = path;
+        capturedContent = content;
+        return ok({ path, bytesWritten: content.length });
+      },
+    });
+    const res = await handleFsWrite(
+      makePutReq("/fs/file", {
+        path: "/agents/a1/workspace/notes.txt",
+        content: "updated content",
+      }),
+      {},
+      fs,
+      workspaceMatcher,
+    );
     expect(res.status).toBe(200);
+    expect(capturedPath).toBe("/agents/a1/workspace/notes.txt");
+    expect(capturedContent).toBe("updated content");
+    const body = (await res.json()) as Record<string, unknown>;
+    expect((body.data as Record<string, unknown>).bytesWritten).toBe(15);
+  });
+
+  test("returns 403 for non-editable paths", async () => {
+    const fs = createMockFs();
+    const res = await handleFsWrite(
+      makePutReq("/fs/file", {
+        path: "/agents/a1/bricks/tool.json",
+        content: "{}",
+      }),
+      {},
+      fs,
+      workspaceMatcher,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("returns 403 for event paths", async () => {
+    const fs = createMockFs();
+    const res = await handleFsWrite(
+      makePutReq("/fs/file", {
+        path: "/agents/a1/events/stream.json",
+        content: "{}",
+      }),
+      {},
+      fs,
+      workspaceMatcher,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("returns 403 when no editablePaths matcher is provided", async () => {
+    const fs = createMockFs();
+    const res = await handleFsWrite(
+      makePutReq("/fs/file", {
+        path: "/agents/a1/workspace/notes.txt",
+        content: "data",
+      }),
+      {},
+      fs,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("returns 400 for missing path", async () => {
+    const fs = createMockFs();
+    const res = await handleFsWrite(
+      makePutReq("/fs/file", { content: "data" }),
+      {},
+      fs,
+      workspaceMatcher,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 400 for empty path", async () => {
+    const fs = createMockFs();
+    const res = await handleFsWrite(
+      makePutReq("/fs/file", { path: "", content: "data" }),
+      {},
+      fs,
+      workspaceMatcher,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 400 for missing content", async () => {
+    const fs = createMockFs();
+    const res = await handleFsWrite(
+      makePutReq("/fs/file", { path: "/agents/a1/workspace/notes.txt" }),
+      {},
+      fs,
+      workspaceMatcher,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 400 for invalid JSON body", async () => {
+    const fs = createMockFs();
+    const req = new Request("http://localhost/fs/file", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "not json",
+    });
+    const res = await handleFsWrite(req, {}, fs, workspaceMatcher);
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 500 for backend write failure", async () => {
+    const fs = createMockFs({
+      write: () => err("INTERNAL", "Disk full"),
+    });
+    const res = await handleFsWrite(
+      makePutReq("/fs/file", {
+        path: "/agents/a1/workspace/notes.txt",
+        content: "data",
+      }),
+      {},
+      fs,
+      workspaceMatcher,
+    );
+    expect(res.status).toBe(500);
+  });
+});
+
+describe("handleFsDelete", () => {
+  const workspaceMatcher: EditablePathMatcher = (p) => /\/workspace\//.test(p);
+
+  test("DELETE allows path matching editable paths", async () => {
+    let capturedPath: string | undefined;
+    const fs = createMockFs({
+      delete: (path) => {
+        capturedPath = path;
+        return ok({ path });
+      },
+    });
+    const res = await handleFsDelete(
+      makeReq("/fs/file?path=/agents/a1/workspace/notes.txt", "DELETE"),
+      {},
+      fs,
+      workspaceMatcher,
+    );
+    expect(res.status).toBe(200);
+    expect(capturedPath).toBe("/agents/a1/workspace/notes.txt");
+  });
+
+  test("DELETE rejects path not matching editable paths", async () => {
+    const fs = createMockFs();
+    const res = await handleFsDelete(
+      makeReq("/fs/file?path=/agents/a1/bricks/tool.json", "DELETE"),
+      {},
+      fs,
+      workspaceMatcher,
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect((body.error as Record<string, unknown>).code).toBe("FORBIDDEN");
+  });
+
+  test("returns 403 when no editablePaths matcher is provided", async () => {
+    const fs = createMockFs();
+    const res = await handleFsDelete(
+      makeReq("/fs/file?path=/agents/a1/workspace/notes.txt", "DELETE"),
+      {},
+      fs,
+    );
+    expect(res.status).toBe(403);
   });
 
   test("returns 400 when path is missing", async () => {
     const fs = createMockFs();
-    const res = await handleFsDelete(makeReq("/fs/file", "DELETE"), {}, fs);
+    const res = await handleFsDelete(makeReq("/fs/file", "DELETE"), {}, fs, workspaceMatcher);
     expect(res.status).toBe(400);
   });
 
@@ -136,10 +356,23 @@ describe("handleFsDelete", () => {
     // Remove delete to simulate a backend that doesn't support it
     const { delete: _, ...fsWithoutDelete } = fs;
     const res = await handleFsDelete(
-      makeReq("/fs/file?path=/test.txt", "DELETE"),
+      makeReq("/fs/file?path=/agents/a1/workspace/notes.txt", "DELETE"),
       {},
       fsWithoutDelete as FileSystemBackend,
+      workspaceMatcher,
     );
     expect(res.status).toBe(501);
+  });
+});
+
+describe("createDefaultEditablePaths", () => {
+  const matcher = createDefaultEditablePaths();
+
+  test("allows all paths (FileSystemBackend already scopes to workspace root)", () => {
+    expect(matcher("/agents/a1/workspace/notes.txt")).toBe(true);
+    expect(matcher("/agents/agent-2/workspace/deep/file.md")).toBe(true);
+    expect(matcher("/agents/a1/bricks/tool.json")).toBe(true);
+    expect(matcher("/manifest.json")).toBe(true);
+    expect(matcher("any-path.txt")).toBe(true);
   });
 });

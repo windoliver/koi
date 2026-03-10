@@ -21,7 +21,9 @@ import type {
   SandboxExecutor,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
-import { createHealthServer } from "@koi/deploy";
+import type { AdminPanelBridgeResult } from "@koi/dashboard-api";
+import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
+import { createHealthHandler, createHealthServer } from "@koi/deploy";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
 import { loadManifest } from "@koi/manifest";
@@ -31,10 +33,17 @@ import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
 import type { ServeFlags } from "../args.js";
-import { extractTextFromBlocks } from "../helpers.js";
+import {
+  createLocalFileSystem,
+  extractTextFromBlocks,
+  resolveDashboardAssetsDir,
+} from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
+import { resolveAutonomousOrWarn } from "../resolve-autonomous.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
+import { resolveOrchestrationFromAgent } from "../resolve-orchestration.js";
+import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -163,6 +172,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // 6b. Resolve Nexus stack (embed or remote)
   const nexus = await resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose);
 
+  // 6c. Resolve autonomous mode (harness + scheduler) when manifest opts in
+  const autonomous = await resolveAutonomousOrWarn(manifest, flags.verbose);
+
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
   const contextConfig = await mergeBootstrapContext(manifest.context, manifestPath, manifest.name);
@@ -219,6 +231,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       ...arenaMiddleware,
       ...nexus.middlewares,
       ...(forgeBootstrap?.middlewares ?? []),
+      ...(autonomous?.middleware ?? []),
     ],
     providers: [
       ...nexus.providers,
@@ -226,6 +239,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       ...(forgeBootstrap !== undefined
         ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
         : []),
+      ...(autonomous?.providers ?? []),
     ],
     extensions,
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
@@ -236,6 +250,44 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const channels = resolved.value.channels ?? [];
   for (const ch of channels) {
     await ch.connect();
+  }
+
+  // 7a. Create admin panel bridge (before message loop so metrics can be tracked)
+  // let justified: conditionally set when --admin, read in message loop for metrics
+  let adminBridge: AdminPanelBridgeResult | undefined;
+  // let justified: conditionally set when --temporal-url, disposed at cleanup
+  let temporalAdmin: Awaited<ReturnType<typeof resolveTemporalOrWarn>>;
+
+  if (flags.admin) {
+    const channelNames = (resolved.value.channels ?? []).map((ch) => ch.name);
+    const skillNames = (manifest.skills ?? []).map((s) => s.name);
+
+    const { dirname: pathDirname, resolve: pathResolve } = await import("node:path");
+    const workspaceRoot = pathResolve(pathDirname(manifestPath));
+
+    temporalAdmin = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
+
+    const orch = resolveOrchestrationFromAgent({
+      agent: runtime.agent,
+      temporal: temporalAdmin,
+      ...(autonomous !== undefined ? { harness: autonomous.harness } : {}),
+      verbose: flags.verbose,
+    });
+
+    adminBridge = createAdminPanelBridge({
+      agentName: manifest.name,
+      agentType: manifest.lifecycle ?? "copilot",
+      model: modelName,
+      channels: channelNames,
+      skills: skillNames,
+      fileSystem: createLocalFileSystem(workspaceRoot),
+      ...(orch.hasAny
+        ? {
+            orchestration: orch.orchestration,
+            orchestrationCommands: orch.orchestrationCommands,
+          }
+        : {}),
+    });
   }
 
   // Global serial queue — runtime enforces single-flight (throws on concurrent
@@ -265,6 +317,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
             if (event.kind === "text_delta") {
               deltas.push(event.delta);
             }
+            if (event.kind === "done" && adminBridge !== undefined) {
+              const m = event.output.metrics;
+              adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+            }
           }
 
           if (deltas.length > 0) {
@@ -287,25 +343,104 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     }),
   );
 
-  // 7. Start health server
-  const healthServer = createHealthServer({
-    port: healthPort,
-    onReady: () => true, // Agent is ready once serve starts
-  });
-
+  // 7b. Start health server (optionally with admin panel)
+  // let justified: shutdown callback set in either branch, called at cleanup
+  let stopServer: () => void = () => {};
   let healthInfo: { readonly url: string; readonly port: number };
-  try {
-    healthInfo = await healthServer.start();
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`Failed to start health server: ${message}\n`);
-    await runtime.dispose();
-    forgeBootstrap?.dispose();
-    if (sandboxBridge !== undefined) {
-      await sandboxBridge.dispose();
+
+  if (flags.admin && adminBridge !== undefined) {
+    // Compose admin panel + health into a single HTTP server
+    const assetsDir = resolveDashboardAssetsDir();
+    const dashboardResult = createDashboardHandler(adminBridge, {
+      cors: true,
+      ...(assetsDir !== undefined ? { assetsDir } : {}),
+    });
+
+    const healthHandler = createHealthHandler(() => true);
+    const adminPort = flags.adminPort ?? healthPort;
+
+    try {
+      const server = Bun.serve({
+        port: adminPort,
+        async fetch(req: Request): Promise<Response> {
+          // Try admin panel handler first (returns null for non-dashboard paths)
+          const adminResponse = await dashboardResult.handler(req);
+          if (adminResponse !== null) return adminResponse;
+
+          // Fall back to health handler
+          return healthHandler(req);
+        },
+      });
+
+      // When admin runs on a different port, start a separate health-only
+      // server on the original health port so probes/LB still reach /health.
+      // let justified: conditionally set, called at cleanup
+      let separateHealthStop: (() => void) | undefined;
+      if (adminPort !== healthPort) {
+        const healthServer = createHealthServer({
+          port: healthPort,
+          onReady: () => true,
+        });
+        const hi = await healthServer.start();
+        separateHealthStop = () => healthServer.stop();
+        if (flags.verbose) {
+          process.stderr.write(`Health server: ${hi.url}\n`);
+        }
+      }
+
+      stopServer = () => {
+        server.stop(true);
+        dashboardResult.dispose();
+        if (separateHealthStop !== undefined) {
+          separateHealthStop();
+        }
+      };
+      // When admin runs on a separate port, healthInfo should reflect the
+      // health server (the one load balancers and probes target), not admin.
+      if (adminPort !== healthPort) {
+        healthInfo = {
+          url: `http://localhost:${String(healthPort)}/`,
+          port: healthPort,
+        };
+      } else {
+        healthInfo = {
+          url: server.url.toString(),
+          port: server.port ?? adminPort,
+        };
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Failed to start admin server: ${message}\n`);
+      dashboardResult.dispose();
+      await runtime.dispose();
+      forgeBootstrap?.dispose();
+      if (sandboxBridge !== undefined) {
+        await sandboxBridge.dispose();
+      }
+      process.exit(EXIT_ERROR);
+      return; // unreachable but satisfies TypeScript
     }
-    process.exit(EXIT_ERROR);
-    return; // unreachable but satisfies TypeScript
+  } else {
+    // Standard health-only server
+    const healthServer = createHealthServer({
+      port: healthPort,
+      onReady: () => true,
+    });
+
+    try {
+      healthInfo = await healthServer.start();
+      stopServer = () => healthServer.stop();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Failed to start health server: ${message}\n`);
+      await runtime.dispose();
+      forgeBootstrap?.dispose();
+      if (sandboxBridge !== undefined) {
+        await sandboxBridge.dispose();
+      }
+      process.exit(EXIT_ERROR);
+      return; // unreachable but satisfies TypeScript
+    }
   }
 
   // 8. Set up graceful shutdown
@@ -337,10 +472,15 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`Agent: ${manifest.name} v${manifest.version}\n`);
     process.stderr.write(`Model: ${modelName}\n`);
     process.stderr.write(`Health: ${healthInfo.url}\n`);
+    if (flags.admin) {
+      const adminPort = flags.adminPort ?? healthInfo.port;
+      process.stderr.write(`Admin panel: http://localhost:${String(adminPort)}/admin\n`);
+    }
   }
 
+  const adminSuffix = flags.admin ? " (admin panel enabled)" : "";
   process.stderr.write(
-    `Agent "${manifest.name}" serving on port ${healthInfo.port}. Send SIGTERM to stop.\n`,
+    `Agent "${manifest.name}" serving on port ${healthInfo.port}${adminSuffix}. Send SIGTERM to stop.\n`,
   );
 
   // 10. Wait for abort signal (blocks until shutdown)
@@ -357,8 +497,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   for (const ch of channels) {
     await ch.disconnect();
   }
-  healthServer.stop();
+  stopServer();
+  if (temporalAdmin !== undefined) {
+    await temporalAdmin.dispose();
+  }
   await runtime.dispose();
+  if (autonomous !== undefined) {
+    await autonomous.dispose();
+  }
   forgeBootstrap?.dispose();
   if (sandboxBridge !== undefined) {
     await sandboxBridge.dispose();

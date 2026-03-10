@@ -6,6 +6,7 @@
 
 import type { CliFlags } from "./args.js";
 import {
+  isAdminFlags,
   isDeployFlags,
   isDoctorFlags,
   isInitFlags,
@@ -47,6 +48,14 @@ const COMMANDS: readonly CommandEntry[] = [
       return runServe(f as Parameters<typeof runServe>[0]);
     },
     description: "koi serve [manifest]   Run agent headless (for services)",
+  },
+  {
+    match: isAdminFlags,
+    run: async (f) => {
+      const { runAdmin } = await import("./commands/admin.js");
+      return runAdmin(f as Parameters<typeof runAdmin>[0]);
+    },
+    description: "koi admin [manifest]   Standalone admin panel server",
   },
   {
     match: isDeployFlags,
@@ -106,5 +115,10 @@ if (matched !== undefined) {
   for (const cmd of COMMANDS) {
     process.stderr.write(`  ${cmd.description}\n`);
   }
+  process.stderr.write("\nFlags:\n");
+  process.stderr.write("  --admin                Enable admin panel (serve, start)\n");
+  process.stderr.write(
+    "  --admin-port PORT      Admin panel port (serve only, defaults to health port)\n",
+  );
   process.exit(1);
 }

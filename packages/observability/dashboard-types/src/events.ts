@@ -155,6 +155,93 @@ export type GatewayDashboardEvent =
     };
 
 // ---------------------------------------------------------------------------
+// Temporal events (workflow lifecycle)
+// ---------------------------------------------------------------------------
+
+export type TemporalDashboardEvent =
+  | {
+      readonly kind: "temporal";
+      readonly subKind: "workflow_started";
+      readonly workflowId: string;
+      readonly workflowType: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "temporal";
+      readonly subKind: "workflow_completed";
+      readonly workflowId: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "temporal";
+      readonly subKind: "health_changed";
+      readonly healthy: boolean;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
+// Scheduler events (task lifecycle + cron)
+// ---------------------------------------------------------------------------
+
+export type SchedulerDashboardEvent =
+  | {
+      readonly kind: "scheduler";
+      readonly subKind: "task_submitted";
+      readonly taskId: string;
+      readonly agentId: AgentId;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "scheduler";
+      readonly subKind: "task_completed";
+      readonly taskId: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "scheduler";
+      readonly subKind: "task_dead_letter";
+      readonly taskId: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "scheduler";
+      readonly subKind: "schedule_fired";
+      readonly scheduleId: string;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
+// Task board events (DAG task status)
+// ---------------------------------------------------------------------------
+
+export type TaskBoardDashboardEvent = {
+  readonly kind: "taskboard";
+  readonly subKind: "task_status_changed";
+  readonly taskId: string;
+  readonly status: string;
+  readonly timestamp: number;
+};
+
+// ---------------------------------------------------------------------------
+// Harness events (long-running agent orchestration)
+// ---------------------------------------------------------------------------
+
+export type HarnessDashboardEvent =
+  | {
+      readonly kind: "harness";
+      readonly subKind: "checkpoint_created";
+      readonly checkpointType: "soft" | "hard";
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "harness";
+      readonly subKind: "phase_changed";
+      readonly from: string;
+      readonly to: string;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
 // Union + batch envelope
 // ---------------------------------------------------------------------------
 
@@ -164,7 +251,11 @@ export type DashboardEvent =
   | ChannelDashboardEvent
   | SystemDashboardEvent
   | NexusDashboardEvent
-  | GatewayDashboardEvent;
+  | GatewayDashboardEvent
+  | TemporalDashboardEvent
+  | SchedulerDashboardEvent
+  | TaskBoardDashboardEvent
+  | HarnessDashboardEvent;
 
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 export interface DashboardEventBatch {
@@ -177,7 +268,18 @@ export interface DashboardEventBatch {
 // Type guards
 // ---------------------------------------------------------------------------
 
-const VALID_KINDS = new Set(["agent", "skill", "channel", "system", "nexus", "gateway"]);
+const VALID_KINDS = new Set([
+  "agent",
+  "skill",
+  "channel",
+  "system",
+  "nexus",
+  "gateway",
+  "temporal",
+  "scheduler",
+  "taskboard",
+  "harness",
+]);
 
 /** Type guard for DashboardEvent. Validates kind + subKind presence. */
 export function isDashboardEvent(value: unknown): value is DashboardEvent {
@@ -219,4 +321,24 @@ export function isNexusEvent(event: DashboardEvent): event is NexusDashboardEven
 /** Type guard for gateway domain events. */
 export function isGatewayEvent(event: DashboardEvent): event is GatewayDashboardEvent {
   return event.kind === "gateway";
+}
+
+/** Type guard for temporal domain events. */
+export function isTemporalEvent(event: DashboardEvent): event is TemporalDashboardEvent {
+  return event.kind === "temporal";
+}
+
+/** Type guard for scheduler domain events. */
+export function isSchedulerEvent(event: DashboardEvent): event is SchedulerDashboardEvent {
+  return event.kind === "scheduler";
+}
+
+/** Type guard for task board domain events. */
+export function isTaskBoardEvent(event: DashboardEvent): event is TaskBoardDashboardEvent {
+  return event.kind === "taskboard";
+}
+
+/** Type guard for harness domain events. */
+export function isHarnessEvent(event: DashboardEvent): event is HarnessDashboardEvent {
+  return event.kind === "harness";
 }

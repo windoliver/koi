@@ -1,28 +1,236 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
-"import { FileSystemBackend } from '@koi/core';
-import { DashboardDataSource, RuntimeViewDataSource, CommandDispatcher, DashboardConfig } from '@koi/dashboard-types';
+"import { RuntimeViewDataSource, CommandDispatcher, DashboardDataSource, DashboardConfig, DashboardEvent } from '@koi/dashboard-types';
+import { FileSystemBackend } from '@koi/core';
 
 /**
- * createDashboardHandler — main factory for the dashboard HTTP handler.
+ * Harness admin adapter for the Koi dashboard.
  *
- * Returns a composable handler that returns \`Response | null\`.
- * Null means the request didn't match any dashboard route,
- * allowing the consumer to chain with other handlers.
+ * Wraps a structurally-typed LongRunningHarness to produce dashboard-compatible
+ * views (RuntimeViewDataSource['harness']) and commands (pauseHarness,
+ * resumeHarness).
+ *
+ * Uses structural typing to avoid direct dependency on @koi/long-running —
+ * the consumer injects a compatible harness at runtime.
+ *
+ * L2 package: imports from @koi/core and @koi/dashboard-types only.
  */
 
-interface DashboardHandlerOptions {
-    readonly dataSource: DashboardDataSource;
-    readonly fileSystem?: FileSystemBackend;
-    readonly runtimeViews?: RuntimeViewDataSource;
-    readonly commands?: CommandDispatcher;
+/** Minimal shape of harness metrics from the core HarnessStatus. */
+interface HarnessMetricsLike {
+    readonly totalSessions: number;
+    readonly totalTurns: number;
+    readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
+    readonly completedTaskCount: number;
+    readonly pendingTaskCount: number;
+    readonly elapsedMs: number;
 }
-interface DashboardHandlerResult {
-    readonly handler: (req: Request) => Promise<Response | null>;
-    readonly dispose: () => void;
+/** Minimal shape of a core HarnessStatus. */
+interface HarnessStatusLike {
+    readonly harnessId: string;
+    readonly phase: "idle" | "active" | "suspended" | "completed" | "failed";
+    readonly currentSessionSeq: number;
+    readonly metrics: HarnessMetricsLike;
+    readonly startedAt?: number | undefined;
 }
-declare function createDashboardHandler(dataSourceOrOptions: DashboardDataSource | DashboardHandlerOptions, config?: DashboardConfig): DashboardHandlerResult;
+/** Structural interface for the backing harness. */
+interface HarnessAdminClientLike {
+    readonly status: () => HarnessStatusLike;
+    /** Pause the harness (suspend execution). */
+    readonly pause?: (() => void | Promise<void>) | undefined;
+    /** Resume the harness from suspended state. */
+    readonly resume?: (() => void | Promise<void>) | undefined;
+}
+interface HarnessAdminAdapter {
+    readonly views: NonNullable<RuntimeViewDataSource["harness"]>;
+    readonly commands: Pick<CommandDispatcher, "pauseHarness" | "resumeHarness">;
+}
+declare function createHarnessAdminAdapter(client: HarnessAdminClientLike): HarnessAdminAdapter;
+
+/**
+ * Scheduler admin adapter for the Koi dashboard.
+ *
+ * Wraps a structurally-typed TaskScheduler to produce dashboard-compatible
+ * views (RuntimeViewDataSource['scheduler']) and commands (pauseSchedule,
+ * resumeSchedule, deleteSchedule, retrySchedulerDeadLetter).
+ *
+ * Uses structural typing to avoid direct dependency on @koi/scheduler —
+ * the consumer injects a compatible scheduler at runtime.
+ *
+ * L2 package: imports from @koi/core and @koi/dashboard-types only.
+ */
+
+/** Minimal shape of a scheduled task from the core scheduler. */
+interface ScheduledTaskLike {
+    readonly id: string;
+    readonly agentId: string;
+    readonly status: "pending" | "running" | "completed" | "failed" | "dead_letter";
+    readonly priority: number;
+    readonly createdAt: number;
+    readonly startedAt?: number | undefined;
+    readonly completedAt?: number | undefined;
+    readonly retries: number;
+    readonly lastError?: {
+        readonly message: string;
+    } | undefined;
+}
+/** Minimal shape of scheduler stats from the core scheduler. */
+interface SchedulerStatsLike {
+    readonly pending: number;
+    readonly running: number;
+    readonly completed: number;
+    readonly failed: number;
+    readonly deadLettered: number;
+    readonly activeSchedules: number;
+    readonly pausedSchedules: number;
+}
+/** Structural interface for the backing TaskScheduler. */
+interface SchedulerAdminClientLike {
+    readonly query: (filter: {
+        readonly status?: string | undefined;
+    }) => readonly ScheduledTaskLike[] | Promise<readonly ScheduledTaskLike[]>;
+    readonly stats: () => SchedulerStatsLike | Promise<SchedulerStatsLike>;
+    /** Pause a cron schedule by ID. Returns true if paused. */
+    readonly pause?: ((id: string) => boolean | Promise<boolean>) | undefined;
+    /** Resume a cron schedule by ID. Returns true if resumed. */
+    readonly resume?: ((id: string) => boolean | Promise<boolean>) | undefined;
+    /** Remove a cron schedule by ID. Returns true if removed. */
+    readonly unschedule?: ((id: string) => boolean | Promise<boolean>) | undefined;
+}
+interface SchedulerAdminAdapter {
+    readonly views: NonNullable<RuntimeViewDataSource["scheduler"]>;
+    readonly commands: Pick<CommandDispatcher, "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter">;
+}
+declare function createSchedulerAdminAdapter(client: SchedulerAdminClientLike): SchedulerAdminAdapter;
+
+/**
+ * Task board admin adapter for the Koi dashboard.
+ *
+ * Wraps a structurally-typed TaskBoard (or its snapshot) to produce
+ * dashboard-compatible views (RuntimeViewDataSource['taskBoard']).
+ *
+ * Uses structural typing to avoid direct dependency on @koi/task-board —
+ * the consumer injects a compatible board or snapshot provider at runtime.
+ *
+ * L2 package: imports from @koi/core and @koi/dashboard-types only.
+ */
+
+/** Minimal shape of a task item from the core TaskBoard. */
+interface TaskItemLike {
+    readonly id: string;
+    readonly description: string;
+    readonly status: "pending" | "assigned" | "completed" | "failed";
+    readonly assignedTo?: string | undefined;
+    readonly dependencies: readonly string[];
+    readonly error?: {
+        readonly message: string;
+    } | undefined;
+}
+/** Minimal shape of a task result from the core TaskBoard. */
+interface TaskResultLike {
+    readonly taskId: string;
+    readonly output: string;
+}
+/** Structural interface for a TaskBoard or snapshot provider. */
+interface TaskBoardAdminClientLike {
+    readonly all: () => readonly TaskItemLike[];
+    readonly completed: () => readonly TaskResultLike[];
+}
+interface TaskBoardAdminAdapter {
+    readonly views: NonNullable<RuntimeViewDataSource["taskBoard"]>;
+}
+declare function createTaskBoardAdminAdapter(client: TaskBoardAdminClientLike): TaskBoardAdminAdapter;
+
+/**
+ * Temporal admin adapter for the Koi dashboard.
+ *
+ * Wraps a structurally-typed Temporal client to produce dashboard-compatible
+ * views (RuntimeViewDataSource['temporal']) and commands (signalWorkflow,
+ * terminateWorkflow). Uses structural typing to avoid direct dependency on
+ * @temporalio/client — the consumer injects a compatible client at runtime.
+ *
+ * L2 package: imports from @koi/core and @koi/dashboard-types only.
+ */
+
+/** Minimal shape of a workflow execution returned by the Temporal SDK list API. */
+interface TemporalWorkflowExecutionLike {
+    readonly workflowId: string;
+    readonly type: {
+        readonly name: string;
+    };
+    readonly status: {
+        readonly name: string;
+    };
+    readonly startTime: Date;
+    readonly closeTime: Date | null;
+    readonly taskQueue: string;
+    readonly runId: string;
+    readonly searchAttributes: Readonly<Record<string, unknown>>;
+    readonly memo: Readonly<Record<string, unknown>>;
+}
+/** Shape returned by handle.describe() including pending state. */
+interface TemporalWorkflowDescriptionLike extends TemporalWorkflowExecutionLike {
+    readonly pendingActivities: readonly unknown[];
+    /** Pending signals (Temporal SDK >= 1.9). May be absent on older servers. */
+    readonly pendingNexusOperations?: readonly unknown[];
+}
+/** Minimal shape of a history event returned by fetchHistory(). */
+interface TemporalHistoryEventLike {
+    readonly eventType: string;
+    readonly eventTime: Date;
+    readonly [key: string]: unknown;
+}
+/** Minimal shape of the history returned by fetchHistory(). */
+interface TemporalHistoryLike {
+    readonly events: readonly TemporalHistoryEventLike[];
+}
+/** Minimal shape of a workflow handle returned by getHandle. */
+interface TemporalWorkflowHandleLike {
+    readonly describe: () => Promise<TemporalWorkflowDescriptionLike>;
+    readonly signal: (signalName: string, ...args: readonly unknown[]) => Promise<void>;
+    readonly terminate: (reason?: string) => Promise<void>;
+    readonly query: (queryType: string) => Promise<unknown>;
+    readonly fetchHistory: () => Promise<TemporalHistoryLike>;
+}
+/** Async iterable returned by workflow.list(). */
+interface TemporalWorkflowListLike {
+    readonly [Symbol.asyncIterator]: () => AsyncIterator<TemporalWorkflowExecutionLike>;
+}
+/**
+ * Structural type for the Temporal admin client.
+ *
+ * Mirrors the subset of \`@temporalio/client.Client\` needed for admin queries.
+ * Does NOT import from \`@temporalio/client\` — the consumer provides a
+ * compatible instance at runtime.
+ */
+interface TemporalAdminClientLike {
+    readonly workflow: {
+        readonly list: () => TemporalWorkflowListLike;
+        readonly getHandle: (workflowId: string) => TemporalWorkflowHandleLike;
+    };
+    readonly connection: {
+        readonly healthCheck: () => Promise<void>;
+    };
+}
+/** Options for the temporal admin adapter factory. */
+interface TemporalAdminAdapterOptions {
+    readonly namespace?: string;
+    readonly serverAddress?: string;
+}
+/** Return type of createTemporalAdminAdapter. */
+interface TemporalAdminAdapter {
+    readonly views: NonNullable<RuntimeViewDataSource["temporal"]>;
+    readonly commands: Required<Pick<CommandDispatcher, "signalWorkflow" | "terminateWorkflow">>;
+}
+/**
+ * Create a Temporal admin adapter for the dashboard.
+ *
+ * Returns views and commands that satisfy the RuntimeViewDataSource['temporal']
+ * and CommandDispatcher shapes respectively.
+ */
+declare function createTemporalAdminAdapter(client: TemporalAdminClientLike, options?: TemporalAdminAdapterOptions): TemporalAdminAdapter;
 
 /**
  * Lightweight URL pattern router for dashboard API.
@@ -49,6 +257,101 @@ interface RouteMatch {
 declare function createRouter(routes: readonly Route[]): Router;
 declare function jsonResponse<T>(data: T, status?: number): Response;
 declare function errorResponse(code: string, message: string, status: number): Response;
+/** Validate a required route parameter. Returns errorResponse(400) if missing. */
+declare function validateRequiredParam(params: RouteParams, name: string, label?: string): string | Response;
+/** Map a Result error to an HTTP error response. */
+declare function mapResultToResponse(result: {
+    readonly ok: boolean;
+    readonly error?: {
+        readonly code: string;
+        readonly message: string;
+    };
+}): Response | undefined;
+
+/**
+ * Filesystem REST routes — thin wrappers over FileSystemBackend (L0).
+ *
+ * GET    /fs/list?path=     — list directory contents
+ * GET    /fs/read?path=     — read file content
+ * GET    /fs/search?q=       — search file contents (optional: glob, maxResults, path)
+ * PUT    /fs/file           — write file content (JSON body: { path, content })
+ * DELETE /fs/file?path=     — delete a file
+ */
+
+/** Returns true if the given path is editable. */
+type EditablePathMatcher = (path: string) => boolean;
+/** Default: all files within the FileSystemBackend root are editable. */
+declare function createDefaultEditablePaths(): EditablePathMatcher;
+
+/**
+ * createDashboardHandler — main factory for the dashboard HTTP handler.
+ *
+ * Returns a composable handler that returns \`Response | null\`.
+ * Null means the request didn't match any dashboard route,
+ * allowing the consumer to chain with other handlers.
+ */
+
+interface DashboardHandlerOptions {
+    readonly dataSource: DashboardDataSource;
+    readonly fileSystem?: FileSystemBackend;
+    readonly runtimeViews?: RuntimeViewDataSource;
+    readonly commands?: CommandDispatcher;
+    /** Controls which file paths are writable via PUT /fs/file. Defaults to workspace paths only. */
+    readonly editablePaths?: EditablePathMatcher;
+}
+interface DashboardHandlerResult {
+    readonly handler: (req: Request) => Promise<Response | null>;
+    readonly dispose: () => void;
+}
+declare function createDashboardHandler(dataSourceOrOptions: DashboardDataSource | DashboardHandlerOptions, config?: DashboardConfig): DashboardHandlerResult;
+
+/**
+ * createAdminPanelBridge — adapts live CLI runtime state into
+ * DashboardHandlerOptions for the admin panel HTTP handler.
+ *
+ * The bridge accepts a minimal set of inputs from the CLI runtime and
+ * exposes them through the DashboardDataSource interface. It tracks
+ * a single primary agent with its channels and skills, providing
+ * system metrics from the Bun runtime.
+ *
+ * This is designed for CLI-hosted agents where there is exactly one
+ * agent running. For multi-agent deployments, use the engine registry
+ * directly with a full data source implementation.
+ */
+
+interface BridgeOptions {
+    /** Display name of the agent (from manifest). */
+    readonly agentName: string;
+    /** Agent type: copilot or worker. */
+    readonly agentType: "copilot" | "worker";
+    /** Model name (e.g. "anthropic:claude-sonnet-4-5-20250929"). */
+    readonly model?: string | undefined;
+    /** Channel type names (e.g. ["cli", "telegram"]). */
+    readonly channels: readonly string[];
+    /** Skill names (e.g. ["web-search", "code-review"]). */
+    readonly skills: readonly string[];
+    /** Optional filesystem backend for file browsing in the admin panel. */
+    readonly fileSystem?: FileSystemBackend | undefined;
+    /** Optional orchestration view sources to merge into runtimeViews. */
+    readonly orchestration?: {
+        readonly temporal?: RuntimeViewDataSource["temporal"];
+        readonly scheduler?: RuntimeViewDataSource["scheduler"];
+        readonly taskBoard?: RuntimeViewDataSource["taskBoard"];
+        readonly harness?: RuntimeViewDataSource["harness"];
+    } | undefined;
+    /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
+    readonly orchestrationCommands?: Pick<CommandDispatcher, "signalWorkflow" | "terminateWorkflow" | "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter" | "pauseHarness" | "resumeHarness"> | undefined;
+}
+interface AdminPanelBridgeResult extends DashboardHandlerOptions {
+    /** Emit a dashboard event to all subscribers. */
+    readonly emitEvent: (event: DashboardEvent) => void;
+    /** Update agent metrics (turns, tokens). Emits a metrics_updated event. */
+    readonly updateMetrics: (metrics: {
+        readonly turns: number;
+        readonly totalTokens: number;
+    }) => void;
+}
+declare function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridgeResult;
 
 /**
  * SSE message encoder — converts data payloads to SSE wire format.
@@ -93,6 +396,6 @@ interface StaticServeResult {
 }
 declare function createStaticServe(assetsDir: string): StaticServeResult;
 
-export { type DashboardHandlerOptions, type DashboardHandlerResult, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SseProducer, type StaticServeResult, createDashboardHandler, createRouter, createSseProducer, createStaticServe, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse };
+export { type AdminPanelBridgeResult, type BridgeOptions, type DashboardHandlerOptions, type DashboardHandlerResult, type EditablePathMatcher, type HarnessAdminAdapter, type HarnessAdminClientLike, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SchedulerAdminAdapter, type SchedulerAdminClientLike, type SseProducer, type StaticServeResult, type TaskBoardAdminAdapter, type TaskBoardAdminClientLike, type TemporalAdminAdapter, type TemporalAdminAdapterOptions, type TemporalAdminClientLike, type TemporalWorkflowExecutionLike, createAdminPanelBridge, createDashboardHandler, createDefaultEditablePaths, createHarnessAdminAdapter, createRouter, createSchedulerAdminAdapter, createSseProducer, createStaticServe, createTaskBoardAdminAdapter, createTemporalAdminAdapter, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse, mapResultToResponse, validateRequiredParam };
 "
 `;

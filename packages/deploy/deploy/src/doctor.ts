@@ -48,6 +48,7 @@ export interface DoctorConfig {
   readonly system: boolean;
   readonly port: number;
   readonly logDir?: string | undefined;
+  readonly repair?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,4 +246,79 @@ export async function runDiagnostics(config: DoctorConfig): Promise<DiagnosticRe
   const failures = checks.filter((c) => c.status === "fail").length;
 
   return { platform, serviceName, checks, passing, warnings, failures };
+}
+
+// ---------------------------------------------------------------------------
+// Repair — attempt to fix diagnosed issues automatically
+// ---------------------------------------------------------------------------
+
+export interface RepairResult {
+  readonly repaired: readonly string[];
+  readonly skipped: readonly string[];
+}
+
+/**
+ * Attempt automatic repair for diagnosed failures.
+ *
+ * Currently supports:
+ * - Restarting a stopped/failed service
+ * - Enabling loginctl linger on Linux
+ *
+ * Repair actions are conservative — only act on issues with known fixes.
+ */
+export async function runRepair(
+  report: DiagnosticReport,
+  config: DoctorConfig,
+): Promise<RepairResult> {
+  const repaired: string[] = [];
+  const skipped: string[] = [];
+
+  const manager: ServiceManager =
+    report.platform === "linux"
+      ? createSystemdManager(config.system)
+      : createLaunchdManager(
+          config.system,
+          config.logDir ?? resolveLogDir(report.platform, report.serviceName),
+        );
+
+  for (const check of report.checks) {
+    if (check.status === "pass") continue;
+
+    switch (check.name) {
+      case "Service status": {
+        if (check.status === "warn" || check.status === "fail") {
+          try {
+            await manager.start(report.serviceName);
+            repaired.push(`Restarted service "${report.serviceName}"`);
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            skipped.push(`Service restart failed: ${msg}`);
+          }
+        }
+        break;
+      }
+
+      case "loginctl linger": {
+        if (check.status === "warn" && report.platform === "linux") {
+          try {
+            const { execSync } = await import("node:child_process");
+            execSync("loginctl enable-linger $USER", { stdio: "pipe" });
+            repaired.push("Enabled loginctl linger");
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            skipped.push(`loginctl linger enable failed: ${msg}`);
+          }
+        }
+        break;
+      }
+
+      default:
+        if (check.fix !== undefined) {
+          skipped.push(`${check.name}: manual fix required — ${check.fix}`);
+        }
+        break;
+    }
+  }
+
+  return { repaired, skipped };
 }

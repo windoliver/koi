@@ -14,6 +14,8 @@
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineEvent, EngineInput, SandboxExecutor } from "@koi/core";
+import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
+import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
@@ -22,10 +24,17 @@ import type { SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
-import { extractTextFromBlocks } from "../helpers.js";
+import {
+  createLocalFileSystem,
+  extractTextFromBlocks,
+  resolveDashboardAssetsDir,
+} from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
+import { resolveAutonomousOrWarn } from "../resolve-autonomous.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
+import { resolveOrchestrationFromAgent } from "../resolve-orchestration.js";
+import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -183,6 +192,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // 6b. Resolve Nexus stack (embed or remote)
   const nexus = await resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose);
 
+  // 6c. Resolve autonomous mode (harness + scheduler) when manifest opts in
+  const autonomous = await resolveAutonomousOrWarn(manifest, flags.verbose);
+
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
   const contextConfig = await mergeBootstrapContext(manifest.context, manifestPath, manifest.name);
@@ -196,12 +208,14 @@ export async function runStart(flags: StartFlags): Promise<void> {
       ...resolved.value.middleware,
       ...nexus.middlewares,
       ...(forgeBootstrap?.middlewares ?? []),
+      ...(autonomous?.middleware ?? []),
     ],
     providers: [
       ...nexus.providers,
       ...(forgeBootstrap !== undefined
         ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
         : []),
+      ...(autonomous?.providers ?? []),
     ],
     extensions,
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
@@ -211,6 +225,75 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
   for (const ch of channels) {
     await ch.connect();
+  }
+
+  // 6c. Optional admin panel server (--admin flag)
+  const DEFAULT_ADMIN_PORT = 3100;
+  // let justified: conditionally set inside try/catch, called at cleanup
+  let stopAdmin: (() => void) | undefined;
+  // let justified: conditionally set when --admin, read in REPL loop for metrics
+  let adminBridge: AdminPanelBridgeResult | undefined;
+
+  // let justified: conditionally set when --temporal-url, disposed at cleanup
+  let temporalAdmin: Awaited<ReturnType<typeof resolveTemporalOrWarn>>;
+
+  if (flags.admin) {
+    try {
+      const channelNames = channels.map((ch) => ch.name);
+      const skillNames = (manifest.skills ?? []).map((s) => s.name);
+
+      const { dirname: pathDirname, resolve: pathResolve } = await import("node:path");
+      const workspaceRoot = pathResolve(pathDirname(manifestPath));
+
+      temporalAdmin = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
+
+      const orch = resolveOrchestrationFromAgent({
+        agent: runtime.agent,
+        temporal: temporalAdmin,
+        ...(autonomous !== undefined ? { harness: autonomous.harness } : {}),
+        verbose: flags.verbose,
+      });
+
+      adminBridge = createAdminPanelBridge({
+        agentName: manifest.name,
+        agentType: manifest.lifecycle ?? "copilot",
+        model: modelName,
+        channels: channelNames,
+        skills: skillNames,
+        fileSystem: createLocalFileSystem(workspaceRoot),
+        ...(orch.hasAny
+          ? {
+              orchestration: orch.orchestration,
+              orchestrationCommands: orch.orchestrationCommands,
+            }
+          : {}),
+      });
+
+      const assetsDir = resolveDashboardAssetsDir();
+      const dashboardResult: DashboardHandlerResult = createDashboardHandler(adminBridge, {
+        cors: true,
+        ...(assetsDir !== undefined ? { assetsDir } : {}),
+      });
+
+      const server = Bun.serve({
+        port: DEFAULT_ADMIN_PORT,
+        async fetch(req: Request): Promise<Response> {
+          const adminResponse = await dashboardResult.handler(req);
+          if (adminResponse !== null) return adminResponse;
+          return new Response("Not Found", { status: 404 });
+        },
+      });
+
+      stopAdmin = () => {
+        server.stop(true);
+        dashboardResult.dispose();
+      };
+
+      process.stderr.write(`Admin panel: http://localhost:${String(server.port)}/admin\n`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`warn: admin panel failed to start: ${message}\n`);
+    }
   }
 
   // 7. Set up AbortController for graceful shutdown
@@ -264,6 +347,10 @@ export async function runStart(flags: StartFlags): Promise<void> {
         for await (const event of runtime.run(input)) {
           if (controller.signal.aborted) break;
           renderEvent(event, flags.verbose);
+          if (event.kind === "done" && adminBridge !== undefined) {
+            const m = event.output.metrics;
+            adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+          }
         }
       } catch (error: unknown) {
         if (!controller.signal.aborted) {
@@ -290,7 +377,16 @@ export async function runStart(flags: StartFlags): Promise<void> {
   for (const ch of channels) {
     await ch.disconnect();
   }
+  if (stopAdmin !== undefined) {
+    stopAdmin();
+  }
+  if (temporalAdmin !== undefined) {
+    await temporalAdmin.dispose();
+  }
   await runtime.dispose();
+  if (autonomous !== undefined) {
+    await autonomous.dispose();
+  }
   forgeBootstrap?.dispose();
   if (sandboxBridge !== undefined) {
     await sandboxBridge.dispose();

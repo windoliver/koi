@@ -31,7 +31,7 @@ function createMockCommands(overrides?: Partial<CommandDispatcher>): CommandDisp
     resumeAgent: () => ok(),
     terminateAgent: () => ok(),
     retryDeadLetter: () => ({ ok: true as const, value: true }),
-    listMailbox: () => [],
+    listMailbox: () => ({ ok: true as const, value: [] }),
     ...overrides,
   };
 }
@@ -108,15 +108,18 @@ describe("handleRetryDeadLetter", () => {
 describe("handleListMailbox", () => {
   test("returns messages", async () => {
     const commands = createMockCommands({
-      listMailbox: () => [
-        {
-          id: "m1",
-          from: agentId("a1"),
-          to: agentId("a2"),
-          content: "hello",
-          timestamp: Date.now(),
-        },
-      ],
+      listMailbox: () => ({
+        ok: true as const,
+        value: [
+          {
+            id: "m1",
+            from: agentId("a1"),
+            to: agentId("a2"),
+            content: "hello",
+            timestamp: Date.now(),
+          },
+        ],
+      }),
     });
     const res = await handleListMailbox(
       makeReq("/cmd/mailbox/a1/list"),

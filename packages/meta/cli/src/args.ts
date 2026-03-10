@@ -31,6 +31,8 @@ export interface StartFlags extends BaseFlags {
   readonly verbose: boolean;
   readonly dryRun: boolean;
   readonly nexusUrl: string | undefined;
+  readonly admin: boolean;
+  readonly temporalUrl: string | undefined;
 }
 
 export interface ServeFlags extends BaseFlags {
@@ -39,6 +41,20 @@ export interface ServeFlags extends BaseFlags {
   readonly port: number | undefined;
   readonly verbose: boolean;
   readonly nexusUrl: string | undefined;
+  readonly admin: boolean;
+  readonly adminPort: number | undefined;
+  readonly temporalUrl: string | undefined;
+}
+
+export interface AdminFlags extends BaseFlags {
+  readonly command: "admin";
+  readonly manifest: string | undefined;
+  readonly port: number | undefined;
+  readonly verbose: boolean;
+  readonly open: boolean;
+  readonly temporalUrl: string | undefined;
+  /** Connect to a running koi serve instance (e.g. "localhost:9100"). */
+  readonly connect: string | undefined;
 }
 
 export interface DeployFlags extends BaseFlags {
@@ -70,12 +86,14 @@ export interface LogsFlags extends BaseFlags {
 export interface DoctorFlags extends BaseFlags {
   readonly command: "doctor";
   readonly manifest: string | undefined;
+  readonly repair: boolean;
 }
 
 export type CliFlags =
   | InitFlags
   | StartFlags
   | ServeFlags
+  | AdminFlags
   | DeployFlags
   | StatusFlags
   | StopFlags
@@ -141,6 +159,8 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
       verbose: { type: "boolean", short: "v", default: false },
       "dry-run": { type: "boolean", default: false },
       "nexus-url": { type: "string" },
+      admin: { type: "boolean", default: false },
+      "temporal-url": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -156,6 +176,8 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     verbose: (values.verbose as boolean | undefined) ?? false,
     dryRun: (values["dry-run"] as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
+    admin: (values.admin as boolean | undefined) ?? false,
+    temporalUrl: values["temporal-url"] as string | undefined,
   };
 }
 
@@ -167,6 +189,9 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
       port: { type: "string", short: "p" },
       verbose: { type: "boolean", short: "v", default: false },
       "nexus-url": { type: "string" },
+      admin: { type: "boolean", default: false },
+      "admin-port": { type: "string" },
+      "temporal-url": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -174,6 +199,7 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
 
   const positionalManifest = positionals[0] as string | undefined;
   const portStr = values.port as string | undefined;
+  const adminPortStr = values["admin-port"] as string | undefined;
 
   return {
     command: "serve" as const,
@@ -182,6 +208,9 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
     port: portStr !== undefined ? Number.parseInt(portStr, 10) : undefined,
     verbose: (values.verbose as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
+    admin: (values.admin as boolean | undefined) ?? false,
+    adminPort: adminPortStr !== undefined ? Number.parseInt(adminPortStr, 10) : undefined,
+    temporalUrl: values["temporal-url"] as string | undefined,
   };
 }
 
@@ -275,11 +304,46 @@ export function parseLogsFlags(rest: readonly string[]): LogsFlags {
   };
 }
 
+export function parseAdminFlags(rest: readonly string[]): AdminFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+      port: { type: "string", short: "p" },
+      verbose: { type: "boolean", short: "v", default: false },
+      open: { type: "boolean", default: true },
+      "no-open": { type: "boolean", default: false },
+      "temporal-url": { type: "string" },
+      connect: { type: "string" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const positionalManifest = positionals[0] as string | undefined;
+  const portStr = values.port as string | undefined;
+  // --no-open overrides --open (default true)
+  const shouldOpen =
+    values["no-open"] === true ? false : ((values.open as boolean | undefined) ?? true);
+
+  return {
+    command: "admin" as const,
+    directory: positionalManifest,
+    manifest: (values.manifest as string | undefined) ?? positionalManifest,
+    port: portStr !== undefined ? Number.parseInt(portStr, 10) : undefined,
+    verbose: (values.verbose as boolean | undefined) ?? false,
+    open: shouldOpen,
+    temporalUrl: values["temporal-url"] as string | undefined,
+    connect: values.connect as string | undefined,
+  };
+}
+
 export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
   const { values, positionals } = nodeParseArgs({
     args: rest as string[],
     options: {
       manifest: { type: "string" },
+      repair: { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -291,6 +355,7 @@ export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
     command: "doctor" as const,
     directory: positionalManifest,
     manifest: (values.manifest as string | undefined) ?? positionalManifest,
+    repair: (values.repair as boolean | undefined) ?? false,
   };
 }
 
@@ -308,6 +373,10 @@ export function isStartFlags(flags: CliFlags): flags is StartFlags {
 
 export function isServeFlags(flags: CliFlags): flags is ServeFlags {
   return flags.command === "serve";
+}
+
+export function isAdminFlags(flags: CliFlags): flags is AdminFlags {
+  return flags.command === "admin";
 }
 
 export function isDeployFlags(flags: CliFlags): flags is DeployFlags {
@@ -339,6 +408,7 @@ const COMMAND_PARSERS: Readonly<Record<string, (rest: readonly string[]) => CliF
   init: parseInitFlags,
   start: parseStartFlags,
   serve: parseServeFlags,
+  admin: parseAdminFlags,
   deploy: parseDeployFlags,
   status: parseStatusFlags,
   stop: parseStopFlags,

@@ -12,6 +12,7 @@ Object.assign(globalThis, {
   window,
   document: window.document,
   navigator: window.navigator,
+  localStorage: window.localStorage,
   HTMLElement: window.HTMLElement,
   HTMLDivElement: window.HTMLDivElement,
   HTMLSpanElement: window.HTMLSpanElement,
@@ -19,5 +20,7 @@ Object.assign(globalThis, {
   HTMLButtonElement: window.HTMLButtonElement,
   HTMLInputElement: window.HTMLInputElement,
   MutationObserver: window.MutationObserver,
+  CustomEvent: window.CustomEvent,
+  KeyboardEvent: window.KeyboardEvent,
   getComputedStyle: window.getComputedStyle.bind(window),
 });

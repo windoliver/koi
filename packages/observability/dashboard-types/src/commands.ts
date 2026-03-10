@@ -24,6 +24,7 @@ export interface AgentMessage {
 // ---------------------------------------------------------------------------
 
 export interface CommandDispatcher {
+  // Agent lifecycle
   readonly suspendAgent: (
     agentId: AgentId,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
@@ -36,11 +37,38 @@ export interface CommandDispatcher {
     agentId: AgentId,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
 
+  // Event DLQ
   readonly retryDeadLetter?: (
     entryId: string,
   ) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
 
+  // Mailbox (Decision 7A: standardized to Result)
   readonly listMailbox?: (
     agentId: AgentId,
-  ) => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
+  ) =>
+    | Result<readonly AgentMessage[], KoiError>
+    | Promise<Result<readonly AgentMessage[], KoiError>>;
+
+  // Phase 2: Temporal commands
+  readonly signalWorkflow?: (
+    id: string,
+    signal: string,
+    payload: unknown,
+  ) => Promise<Result<void, KoiError>>;
+
+  readonly terminateWorkflow?: (id: string) => Promise<Result<void, KoiError>>;
+
+  // Phase 2: Scheduler commands
+  readonly pauseSchedule?: (id: string) => Promise<Result<void, KoiError>>;
+
+  readonly resumeSchedule?: (id: string) => Promise<Result<void, KoiError>>;
+
+  readonly deleteSchedule?: (id: string) => Promise<Result<void, KoiError>>;
+
+  readonly retrySchedulerDeadLetter?: (id: string) => Promise<Result<void, KoiError>>;
+
+  // Phase 2: Harness commands
+  readonly pauseHarness?: () => Promise<Result<void, KoiError>>;
+
+  readonly resumeHarness?: () => Promise<Result<void, KoiError>>;
 }

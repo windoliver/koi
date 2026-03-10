@@ -3,9 +3,9 @@
  */
 
 export interface DashboardConfig {
-  /** URL path prefix for the dashboard UI. Default: "/dashboard" */
+  /** URL path prefix for the dashboard UI. Default: "/admin" */
   readonly basePath?: string;
-  /** URL path prefix for API endpoints. Default: "/dashboard/api" */
+  /** URL path prefix for API endpoints. Default: "/admin/api" */
   readonly apiPath?: string;
   /** Absolute path to built dashboard-ui dist/ directory. */
   readonly assetsDir?: string;
@@ -18,14 +18,14 @@ export interface DashboardConfig {
 }
 
 export const DEFAULT_DASHBOARD_CONFIG: Readonly<{
-  readonly basePath: "/dashboard";
-  readonly apiPath: "/dashboard/api";
+  readonly basePath: "/admin";
+  readonly apiPath: "/admin/api";
   readonly sseBatchIntervalMs: 100;
   readonly maxSseConnections: 50;
   readonly cors: false;
 }> = Object.freeze({
-  basePath: "/dashboard",
-  apiPath: "/dashboard/api",
+  basePath: "/admin",
+  apiPath: "/admin/api",
   sseBatchIntervalMs: 100,
   maxSseConnections: 50,
   cors: false,

@@ -1060,17 +1060,23 @@
       },
       "dependencies": {
         "@clack/prompts": "0.10.0",
+        "@koi/autonomous": "workspace:*",
         "@koi/bootstrap": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/context": "workspace:*",
         "@koi/context-arena": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/dashboard-api": "workspace:*",
+        "@koi/dashboard-types": "workspace:*",
+        "@koi/dashboard-ui": "workspace:*",
         "@koi/deploy": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-external": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/forge": "workspace:*",
+        "@koi/harness-scheduler": "workspace:*",
+        "@koi/long-running": "workspace:*",
         "@koi/manifest": "workspace:*",
         "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
@@ -2349,6 +2355,7 @@
         "@reactflow/core": "11.11.4",
         "@reactflow/minimap": "11.7.14",
         "@tanstack/react-query": "5.80.7",
+        "@tanstack/react-virtual": "3.13.21",
         "@uiw/react-codemirror": "4.23.10",
         "lucide-react": "0.525.0",
         "react": "19.1.0",
@@ -4312,6 +4319,10 @@
     "@tanstack/query-core": ["@tanstack/query-core@5.80.7", "", {}, "sha512-s09l5zeUKC8q7DCCCIkVSns8zZrK4ZDT6ryEjxNBFi68G4z2EBobBS7rdOY3r6W1WbUDpc1fe5oY+YO/+2UVUg=="],
 
     "@tanstack/react-query": ["@tanstack/react-query@5.80.7", "", { "dependencies": { "@tanstack/query-core": "5.80.7" }, "peerDependencies": { "react": "^18 || ^19" } }, "sha512-u2F0VK6+anItoEvB3+rfvTO9GEh2vb00Je05OwlUe/A0lkJBgW1HckiY3f9YZa+jx6IOe4dHPh10dyp9aY3iRQ=="],
+
+    "@tanstack/react-virtual": ["@tanstack/react-virtual@3.13.21", "", { "dependencies": { "@tanstack/virtual-core": "3.13.21" }, "peerDependencies": { "react": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0", "react-dom": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-SYXFrmrbPgXBvf+HsOsKhFgqSe4M6B29VHOsX9Jih9TlNkNkDWx0hWMiMLUghMEzyUz772ndzdEeCEBx+3GIZw=="],
+
+    "@tanstack/virtual-core": ["@tanstack/virtual-core@3.13.21", "", {}, "sha512-ww+fmLHyCbPSf7JNbWZP3g7wl6SdNo3ah5Aiw+0e9FDErkVHLKprYUrwTm7dF646FtEkN/KkAKPYezxpmvOjxw=="],
 
     "@temporalio/activity": ["@temporalio/activity@1.15.0", "", { "dependencies": { "@temporalio/client": "1.15.0", "@temporalio/common": "1.15.0", "abort-controller": "^3.0.0" } }, "sha512-kKEIrHMTsANiEpDVZd+v3OT6kU20UtcvAK7iibJNzQnoZUGC7XnqdKQlBuGYBxgpJzD9ppGgskXRczW+XU5Kng=="],
 

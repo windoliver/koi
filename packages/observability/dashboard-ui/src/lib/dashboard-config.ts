@@ -16,8 +16,8 @@ declare global {
   }
 }
 
-const DEFAULT_BASE_PATH = "/dashboard";
-const DEFAULT_API_PATH = "/dashboard/api";
+const DEFAULT_BASE_PATH = "/admin";
+const DEFAULT_API_PATH = "/admin/api";
 
 /** Resolve dashboard config from window globals or defaults. */
 export function getDashboardConfig(): DashboardRuntimeConfig {

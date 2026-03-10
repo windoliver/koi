@@ -103,3 +103,28 @@ export function errorResponse(code: string, message: string, status: number): Re
     headers: { "content-type": "application/json" },
   });
 }
+
+/** Validate a required route parameter. Returns errorResponse(400) if missing. */
+export function validateRequiredParam(
+  params: RouteParams,
+  name: string,
+  label?: string,
+): string | Response {
+  const value = params[name];
+  if (value === undefined) {
+    return errorResponse("VALIDATION", `Missing ${label ?? name}`, 400);
+  }
+  return value;
+}
+
+/** Map a Result error to an HTTP error response. */
+export function mapResultToResponse(result: {
+  readonly ok: boolean;
+  readonly error?: { readonly code: string; readonly message: string };
+}): Response | undefined {
+  if (result.ok || result.error === undefined) return undefined;
+  const code = result.error.code;
+  const status =
+    code === "NOT_FOUND" ? 404 : code === "PERMISSION" ? 403 : code === "CONFLICT" ? 409 : 500;
+  return errorResponse(code, result.error.message, status);
+}

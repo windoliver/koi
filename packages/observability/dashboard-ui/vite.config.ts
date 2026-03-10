@@ -4,14 +4,14 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  base: process.env.DASHBOARD_BASE_PATH ?? "/dashboard/",
+  base: process.env.DASHBOARD_BASE_PATH ?? "/admin/",
   build: {
     outDir: "dist",
     sourcemap: true,
   },
   server: {
     proxy: {
-      "/dashboard/api": {
+      "/admin/api": {
         target: "http://localhost:3000",
         changeOrigin: true,
       },

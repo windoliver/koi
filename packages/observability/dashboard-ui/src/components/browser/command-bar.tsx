@@ -7,7 +7,8 @@
  */
 
 import { Search, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { FOCUS_SEARCH_EVENT } from "../../hooks/use-keyboard-shortcuts.js";
 import { useSearch } from "../../hooks/use-search.js";
 import { useTreeStore } from "../../stores/tree-store.js";
 import { useViewStore } from "../../stores/view-store.js";
@@ -26,6 +27,17 @@ export function CommandBar(): React.ReactElement {
       ? { rootPaths: activeView.rootPaths, glob: activeView.globPattern }
       : { rootPaths: activeView.rootPaths };
   const { results, isSearching } = useSearch(query, searchOptions);
+
+  // Listen for global Ctrl/Cmd+K focus event
+  useEffect(() => {
+    const handleFocusSearch = (): void => {
+      inputRef.current?.focus();
+    };
+    document.addEventListener(FOCUS_SEARCH_EVENT, handleFocusSearch);
+    return () => {
+      document.removeEventListener(FOCUS_SEARCH_EVENT, handleFocusSearch);
+    };
+  }, []);
 
   const handleSelect = (path: string): void => {
     // Expand parent directories so the file is visible in the tree
@@ -66,7 +78,7 @@ export function CommandBar(): React.ReactElement {
             if (query.length >= 2) setIsOpen(true);
           }}
           onKeyDown={handleKeyDown}
-          placeholder="Search files..."
+          placeholder="Search files... (Ctrl+K)"
           className="flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--color-muted)]"
         />
         {query.length > 0 && (

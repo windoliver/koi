@@ -67,6 +67,36 @@ mock.module("@koi/nexus", () => ({
 }));
 
 // ---------------------------------------------------------------------------
+// Mock @koi/dashboard-api
+// ---------------------------------------------------------------------------
+
+mock.module("@koi/dashboard-api", () => ({
+  createAdminPanelBridge: (_opts: Record<string, unknown>) => ({
+    dataSource: {
+      listAgents: () => [],
+      getAgent: () => undefined,
+      terminateAgent: () => ({ ok: false, error: { code: "NOT_FOUND", message: "mock" } }),
+      listChannels: () => [],
+      listSkills: () => [],
+      getSystemMetrics: () => ({
+        uptimeMs: 0,
+        heapUsedMb: 0,
+        heapTotalMb: 0,
+        activeAgents: 0,
+        totalAgents: 0,
+        activeChannels: 0,
+      }),
+      subscribe: () => () => {},
+    },
+    emitEvent: () => {},
+  }),
+  createDashboardHandler: () => ({
+    handler: async () => null,
+    dispose: () => {},
+  }),
+}));
+
+// ---------------------------------------------------------------------------
 // Mock @koi/deploy health server
 // ---------------------------------------------------------------------------
 
@@ -81,6 +111,12 @@ mock.module("@koi/deploy", () => ({
     start: mockHealthStart,
     stop: mockHealthStop,
   }),
+  createHealthHandler: (onReady?: () => boolean) => async (req: Request) => {
+    const url = new URL(req.url);
+    if (url.pathname === "/health") return new Response("ok");
+    if (url.pathname === "/health/ready") return new Response(onReady?.() ? "ready" : "not ready");
+    return new Response("not found", { status: 404 });
+  },
 }));
 
 const { runServe } = await import("./serve.js");
@@ -97,6 +133,9 @@ function makeFlags(overrides: Partial<ServeFlags> = {}): ServeFlags {
     port: undefined,
     verbose: false,
     nexusUrl: undefined,
+    admin: false,
+    adminPort: undefined,
+    temporalUrl: undefined,
     ...overrides,
   };
 }

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import type { FsEntry } from "../lib/api-client.js";
 import { useTreeStore } from "./tree-store.js";
 
 describe("tree-store", () => {
@@ -6,7 +7,9 @@ describe("tree-store", () => {
     useTreeStore.setState({
       expanded: new Set<string>(),
       selectedPath: null,
+      selectedIsDirectory: false,
       lastInvalidatedAt: 0,
+      childrenCache: new Map<string, readonly FsEntry[]>(),
     });
   });
 
@@ -61,5 +64,43 @@ describe("tree-store", () => {
     const before = useTreeStore.getState().lastInvalidatedAt;
     useTreeStore.getState().invalidateTree();
     expect(useTreeStore.getState().lastInvalidatedAt).toBeGreaterThan(before);
+  });
+
+  test("invalidateTree clears children cache", () => {
+    const entries: readonly FsEntry[] = [{ name: "a.txt", path: "/a.txt", isDirectory: false }];
+    useTreeStore.getState().setChildren("/test", entries);
+    expect(useTreeStore.getState().childrenCache.size).toBe(1);
+    useTreeStore.getState().invalidateTree();
+    expect(useTreeStore.getState().childrenCache.size).toBe(0);
+  });
+
+  test("setChildren caches entries for a path", () => {
+    const entries: readonly FsEntry[] = [
+      { name: "child1", path: "/dir/child1", isDirectory: false },
+      { name: "child2", path: "/dir/child2", isDirectory: true },
+    ];
+    useTreeStore.getState().setChildren("/dir", entries);
+    const cached = useTreeStore.getState().childrenCache.get("/dir");
+    expect(cached).toEqual(entries);
+  });
+
+  test("setChildren does not mutate previous cache", () => {
+    const entries1: readonly FsEntry[] = [{ name: "a", path: "/a", isDirectory: false }];
+    const entries2: readonly FsEntry[] = [{ name: "b", path: "/b", isDirectory: false }];
+    useTreeStore.getState().setChildren("/dir1", entries1);
+    const cacheBefore = useTreeStore.getState().childrenCache;
+    useTreeStore.getState().setChildren("/dir2", entries2);
+    const cacheAfter = useTreeStore.getState().childrenCache;
+
+    // Previous cache reference should be different (immutable update)
+    expect(cacheBefore).not.toBe(cacheAfter);
+    expect(cacheAfter.size).toBe(2);
+  });
+
+  test("clearChildrenCache empties the cache", () => {
+    const entries: readonly FsEntry[] = [{ name: "a", path: "/a", isDirectory: false }];
+    useTreeStore.getState().setChildren("/dir", entries);
+    useTreeStore.getState().clearChildrenCache();
+    expect(useTreeStore.getState().childrenCache.size).toBe(0);
   });
 });

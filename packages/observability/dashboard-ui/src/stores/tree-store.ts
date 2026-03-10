@@ -3,9 +3,11 @@
  *
  * Source of truth for the browser shell's tree sidebar.
  * SSE nexus events trigger tree refreshes via invalidation.
+ * Also caches loaded directory children for the virtualized flat tree.
  */
 
 import { create } from "zustand";
+import type { FsEntry } from "../lib/api-client.js";
 
 export interface TreeStoreState {
   /** Set of expanded directory paths. */
@@ -16,6 +18,8 @@ export interface TreeStoreState {
   readonly selectedIsDirectory: boolean;
   /** Monotonic timestamp of last tree data invalidation (triggers refetch). */
   readonly lastInvalidatedAt: number;
+  /** Cache of loaded directory children (path -> sorted entries). */
+  readonly childrenCache: ReadonlyMap<string, readonly FsEntry[]>;
 
   readonly toggleExpanded: (path: string) => void;
   readonly setExpanded: (path: string, open: boolean) => void;
@@ -23,6 +27,8 @@ export interface TreeStoreState {
   readonly collapseAll: () => void;
   readonly select: (path: string | null, isDirectory?: boolean) => void;
   readonly invalidateTree: () => void;
+  readonly setChildren: (path: string, entries: readonly FsEntry[]) => void;
+  readonly clearChildrenCache: () => void;
 }
 
 export const useTreeStore = create<TreeStoreState>((set) => ({
@@ -30,6 +36,7 @@ export const useTreeStore = create<TreeStoreState>((set) => ({
   selectedPath: null,
   selectedIsDirectory: false,
   lastInvalidatedAt: 0,
+  childrenCache: new Map<string, readonly FsEntry[]>(),
 
   toggleExpanded: (path) =>
     set((state) => {
@@ -67,5 +74,18 @@ export const useTreeStore = create<TreeStoreState>((set) => ({
   select: (path, isDirectory) =>
     set({ selectedPath: path, selectedIsDirectory: isDirectory === true }),
 
-  invalidateTree: () => set({ lastInvalidatedAt: Date.now() }),
+  invalidateTree: () =>
+    set({
+      lastInvalidatedAt: Date.now(),
+      childrenCache: new Map<string, readonly FsEntry[]>(),
+    }),
+
+  setChildren: (path, entries) =>
+    set((state) => {
+      const next = new Map(state.childrenCache);
+      next.set(path, entries);
+      return { childrenCache: next };
+    }),
+
+  clearChildrenCache: () => set({ childrenCache: new Map<string, readonly FsEntry[]>() }),
 }));

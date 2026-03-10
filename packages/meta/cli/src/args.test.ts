@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { InitFlags, ServeFlags, StartFlags, StopFlags } from "./args.js";
+import type { AdminFlags, InitFlags, ServeFlags, StartFlags, StopFlags } from "./args.js";
 import { parseArgs } from "./args.js";
 
 describe("parseArgs", () => {
@@ -191,6 +191,123 @@ describe("parseArgs — nexus flags", () => {
   test("defaults nexus to false for stop", () => {
     const result = parseArgs(["stop"]) as StopFlags;
     expect(result.nexus).toBe(false);
+  });
+});
+
+describe("parseArgs — admin flags", () => {
+  test("parses --admin flag for serve command", () => {
+    const result = parseArgs(["serve", "--admin"]) as ServeFlags;
+    expect(result.command).toBe("serve");
+    expect(result.admin).toBe(true);
+  });
+
+  test("defaults admin to false for serve", () => {
+    const result = parseArgs(["serve"]) as ServeFlags;
+    expect(result.admin).toBe(false);
+  });
+
+  test("parses --admin-port for serve command", () => {
+    const result = parseArgs(["serve", "--admin", "--admin-port", "3000"]) as ServeFlags;
+    expect(result.admin).toBe(true);
+    expect(result.adminPort).toBe(3000);
+  });
+
+  test("defaults adminPort to undefined when not provided", () => {
+    const result = parseArgs(["serve", "--admin"]) as ServeFlags;
+    expect(result.adminPort).toBeUndefined();
+  });
+
+  test("parses --admin flag for start command", () => {
+    const result = parseArgs(["start", "--admin"]) as StartFlags;
+    expect(result.command).toBe("start");
+    expect(result.admin).toBe(true);
+  });
+
+  test("defaults admin to false for start", () => {
+    const result = parseArgs(["start"]) as StartFlags;
+    expect(result.admin).toBe(false);
+  });
+
+  test("parses --admin with other serve flags", () => {
+    const result = parseArgs([
+      "serve",
+      "--manifest",
+      "agent.yaml",
+      "--port",
+      "9200",
+      "--admin",
+      "--admin-port",
+      "4000",
+      "--verbose",
+    ]) as ServeFlags;
+    expect(result.command).toBe("serve");
+    expect(result.manifest).toBe("agent.yaml");
+    expect(result.port).toBe(9200);
+    expect(result.admin).toBe(true);
+    expect(result.adminPort).toBe(4000);
+    expect(result.verbose).toBe(true);
+  });
+});
+
+describe("parseArgs — koi admin flags", () => {
+  test("defaults open to true", () => {
+    const result = parseArgs(["admin"]) as AdminFlags;
+    expect(result.command).toBe("admin");
+    expect(result.open).toBe(true);
+  });
+
+  test("--no-open disables browser open", () => {
+    const result = parseArgs(["admin", "--no-open"]) as AdminFlags;
+    expect(result.open).toBe(false);
+  });
+
+  test("parses --port for admin", () => {
+    const result = parseArgs(["admin", "--port", "4000"]) as AdminFlags;
+    expect(result.port).toBe(4000);
+  });
+
+  test("parses positional manifest", () => {
+    const result = parseArgs(["admin", "agent.yaml"]) as AdminFlags;
+    expect(result.manifest).toBe("agent.yaml");
+  });
+
+  test("parses --temporal-url for admin", () => {
+    const result = parseArgs(["admin", "--temporal-url", "localhost:7233"]) as AdminFlags;
+    expect(result.temporalUrl).toBe("localhost:7233");
+  });
+
+  test("defaults temporalUrl to undefined", () => {
+    const result = parseArgs(["admin"]) as AdminFlags;
+    expect(result.temporalUrl).toBeUndefined();
+  });
+});
+
+describe("parseArgs — temporal-url flag", () => {
+  test("parses --temporal-url for start", () => {
+    const result = parseArgs([
+      "start",
+      "--admin",
+      "--temporal-url",
+      "localhost:7233",
+    ]) as StartFlags;
+    expect(result.temporalUrl).toBe("localhost:7233");
+    expect(result.admin).toBe(true);
+  });
+
+  test("parses --temporal-url for serve", () => {
+    const result = parseArgs(["serve", "--admin", "--temporal-url", "remote:7233"]) as ServeFlags;
+    expect(result.temporalUrl).toBe("remote:7233");
+    expect(result.admin).toBe(true);
+  });
+
+  test("defaults temporalUrl to undefined for start", () => {
+    const result = parseArgs(["start"]) as StartFlags;
+    expect(result.temporalUrl).toBeUndefined();
+  });
+
+  test("defaults temporalUrl to undefined for serve", () => {
+    const result = parseArgs(["serve"]) as ServeFlags;
+    expect(result.temporalUrl).toBeUndefined();
   });
 });
 

@@ -11,6 +11,7 @@ import { useTreeStore } from "../stores/tree-store.js";
 
 export function useFileContent(path: string | null): {
   readonly content: string | null;
+  readonly editable: boolean;
   readonly isLoading: boolean;
   readonly error: Error | null;
 } {
@@ -28,7 +29,8 @@ export function useFileContent(path: string | null): {
   });
 
   return {
-    content: query.data ?? null,
+    content: query.data?.content ?? null,
+    editable: query.data?.editable ?? false,
     isLoading: query.isLoading,
     error: query.error instanceof Error ? query.error : null,
   };
