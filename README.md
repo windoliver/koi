@@ -1,0 +1,350 @@
+<p align="center">
+  <img src="logo.svg" alt="Koi" width="200" />
+</p>
+
+<h1 align="center">Koi</h1>
+
+<p align="center">
+  <strong>The agent operating system.</strong><br/>
+  Self-extending agents that are safe by design.
+</p>
+
+<p align="center">
+  <a href="#quickstart">Quickstart</a> &middot;
+  <a href="#why-koi">Why Koi</a> &middot;
+  <a href="#architecture">Architecture</a> &middot;
+  <a href="#cli">CLI</a> &middot;
+  <a href="#admin-panel">Admin Panel</a> &middot;
+  <a href="#demos">Demos</a> &middot;
+  <a href="#contributing">Contributing</a>
+</p>
+
+---
+
+## Quickstart
+
+```bash
+bun add koi
+koi init my-agent
+cd my-agent
+koi start
+```
+
+That's it. Your agent is running. The YAML file **is** the agent:
+
+```yaml
+# koi.yaml
+name: my-agent
+version: 0.1.0
+model: "anthropic:claude-haiku-4-5-20251001"
+channels:
+  - name: "@koi/channel-cli"
+tools:
+  - name: "@koi/tools-web"
+  - name: "@koi/tool-ask-user"
+context:
+  bootstrap: true
+```
+
+Add a channel? One line. Add an MCP server? Two lines. Add budget controls? Three lines.
+
+```yaml
+channels:
+  - "@koi/channel-telegram": { token: ${TELEGRAM_BOT_TOKEN} }
+tools:
+  mcp:
+    - name: yahoo-finance
+      command: "npx yahoo-finance-mcp"
+middleware:
+  - "@koi/middleware-pay": { budget: { daily: 0.50 } }
+```
+
+## Why Koi
+
+**Koi is an agent operating system, not another agent framework.**
+
+| Problem | How Koi solves it |
+|---------|-------------------|
+| Agents can't build their own tools safely | **Forge**: 4-stage verification (static analysis, sandbox, adversarial probes, trust tiers) |
+| Terminal-only | **15 channels**: CLI, Telegram, Slack, Discord, WhatsApp, Voice, Email, Signal, Teams, Matrix, Mobile, AG-UI, Chat SDK, Canvas, Web |
+| No undo when agents break things | **Time travel**: rewind, fork, replay from any checkpoint |
+| Runaway costs | **Token economics**: cascade routing (Haiku/Sonnet/Opus), budget kill switch, circuit breaker |
+| Multi-agent = blind trust | **Governed delegation**: HMAC tokens, monotonic scope attenuation, cascading revocation |
+| No observability | **Admin panel**: real-time dashboard, AG-UI streaming, orchestration overlay |
+| Memory degrades over time | **3-tier memory**: hot (session), warm (cross-session), cold (archival) with consolidation |
+| Single-server ceiling | **Federation**: Raft consensus, mDNS discovery, offline queue, edge deployment |
+| Every data source is different | **Nexus**: 14 connectors unified under a path API — everything is a file |
+
+## Architecture
+
+Koi uses a strict four-layer architecture. Layer violations are build errors.
+
+```
+L0  @koi/core        Interfaces-only kernel. Types + contracts. Zero logic. Zero deps.
+L1  @koi/engine       Kernel runtime. Guards, lifecycle, middleware composition.
+L2  @koi/*            Feature packages. Each depends on L0 only. Never on L1 or peers.
+L3  Meta-packages     Convenience bundles (e.g., @koi/starter = L0 + L1 + selected L2).
+L4  koi               Single installable package. bun add koi — done.
+```
+
+### 216 packages, 7 contracts
+
+The kernel defines 7 extension contracts:
+
+| Contract | Purpose | Surface |
+|----------|---------|---------|
+| **Middleware** | Sole interposition layer for model/tool calls | 7 optional hooks |
+| **Message** | Inbound/outbound data format | `ContentBlock[]` |
+| **Channel** | I/O interface to users | `send()` + `onMessage()` |
+| **Resolver** | Discovery of tools/skills/agents | `discover()` + `load()` |
+| **Assembly** | What an agent IS (manifest) | Declarative YAML config |
+| **Engine** | Swappable agent loop | `stream()` |
+| **AgentRegistry** | Agent lifecycle management | CAS transitions + `watch()` |
+
+Plus ECS composition: Agent = entity, Tool = component, Middleware = system.
+
+### Key subsystems
+
+| Subsystem | Packages | What it does |
+|-----------|----------|-------------|
+| **Forge** | 9 packages | Safe self-extension: demand analysis, verification, crystallization, trust tiers |
+| **Governance** | 12 packages | Permissions, audit, budget, delegation, graduated sanctions, intent capsules |
+| **Channels** | 15 adapters | Every surface from CLI to Voice to AG-UI |
+| **Middleware** | 35 packages | Interposition for memory, retry, pay, PII, sandbox, permissions, and more |
+| **Engines** | 7 adapters | Pi (primary), Claude SDK, ReAct loop, external process, ACP, RLM, model-router |
+| **Sandbox** | 12 backends | Docker, E2B, Wasm, Cloudflare Workers, Vercel, Daytona, OS sandbox, and more |
+| **Nexus** | 14 connectors | Gmail, Calendar, Drive, Slack, GitHub, S3, PostgreSQL, and more as file paths |
+| **IPC** | 6 packages | Gateway, Node, mDNS, task board, agent spawner, federation |
+| **Observability** | 3 packages | Dashboard UI, API, types — real-time admin panel with SSE |
+
+## CLI
+
+```
+koi init [directory]     Create a new agent
+koi start [manifest]     Start agent interactively (REPL)
+koi serve [manifest]     Run agent headless (for services)
+koi deploy [manifest]    Install as OS service (launchd/systemd)
+koi status [manifest]    Check service status
+koi stop [manifest]      Stop the service
+koi logs [manifest]      View service logs
+koi doctor [manifest]    Diagnose service health
+```
+
+### `koi init`
+
+Scaffolds a new agent project with interactive wizard or `--yes` for defaults.
+
+```bash
+koi init my-agent --template minimal --model anthropic:claude-haiku-4-5-20251001
+```
+
+### `koi start`
+
+Runs an agent interactively with CLI channel for REPL.
+
+```bash
+koi start                     # uses ./koi.yaml
+koi start ./agents/copilot.yaml --verbose
+```
+
+### `koi serve`
+
+Headless mode for production services. HTTP health server, graceful shutdown, conversation persistence.
+
+```bash
+koi serve --port 9100 --nexus-url https://nexus.example.com
+koi serve --admin              # enable admin panel on health port
+```
+
+### `koi deploy`
+
+Install as a background OS service with automatic restart.
+
+```bash
+koi deploy                     # user service (launchd on macOS, systemd on Linux)
+koi deploy --system            # system-wide service
+koi deploy --uninstall         # remove the service
+```
+
+## Admin Panel
+
+The admin panel is a real-time browser UI for managing running agents.
+
+**Access it via:**
+- `koi serve --admin` — embedded alongside the headless agent
+- `koi admin` — standalone (coming in [#924](https://github.com/windoliver/koi/issues/924))
+
+**What it shows:**
+- Agent status, tool inventory, cost tracking, audit log
+- Nexus file browser (everything-is-a-file namespace tree)
+- Real-time SSE event stream
+- Runtime views: process tree, middleware chain, gateway topology
+- Commands: suspend, resume, terminate agents; retry dead-letter queue
+
+**Orchestration overlay** ([#924](https://github.com/windoliver/koi/issues/924)):
+- Temporal workflows: list, signal, terminate
+- Scheduler: kanban (pending/running/done), cron schedules, DLQ
+- Task board: DAG visualization with status-colored nodes
+- Harness: phase, checkpoints, token usage
+
+**Interactive console** ([#933](https://github.com/windoliver/koi/issues/933)):
+- Create and dispatch agents from the browser
+- Chat with running agents via AG-UI streaming
+- View tool calls, run lifecycle events in real time
+- Session history and replay
+
+## Manifest
+
+The `koi.yaml` manifest defines everything about an agent declaratively.
+
+```yaml
+name: daily-briefer
+version: 0.1.0
+model: "anthropic:claude-haiku-4-5-20251001"
+
+# Nexus: auto-starts locally in embed mode (SQLite + filesystem).
+# Set nexus.url for remote/shared Nexus.
+# nexus:
+#   url: https://nexus.example.com
+
+channels:
+  - name: "@koi/channel-cli"
+  - "@koi/channel-telegram": { token: ${TELEGRAM_BOT_TOKEN} }
+
+tools:
+  koi:
+    - name: "@koi/tools-web"
+    - name: "@koi/tool-ask-user"
+  mcp:
+    - name: reddit
+      command: "npx reddit-mcp-server"
+
+middleware:
+  - "@koi/middleware-hot-memory": {}
+  - "@koi/middleware-pay": { budget: { daily: 0.50 } }
+  - "@koi/middleware-permissions": { default: ask }
+
+forge:
+  enabled: true
+  maxForgesPerSession: 5
+
+schedule: "0 7 * * *"
+
+soul: "./soul.md"
+
+context:
+  bootstrap: true
+  sources:
+    - kind: text
+      text: "You are a concise personal assistant."
+    - kind: memory
+      query: "user preferences"
+```
+
+## Demos
+
+40 showcase demos across Personal (P1-P20) and Enterprise (E1-E20) tracks. All packages exist — every demo is buildable now.
+
+### Personal Track
+
+| # | Demo | Key Feature |
+|---|------|-------------|
+| P1 | **First Contact** | Time-to-magic < 60s, YAML IS the agent |
+| P2 | **Connected Agent** | Daily briefer via Gmail/Calendar/Drive (Nexus connectors) |
+| P3 | **Verified Forge** | Safe self-extension (4-stage verify vs 512 CVEs) |
+| P4 | **Omni-Channel** | One agent across CLI, Telegram, Slack, Voice — all 15 channels |
+| P5 | **Time Travel** | Rewind, fork, replay — zero competitors |
+| P6 | **Token Economics** | Cascade routing, budget kill switch, circuit breaker |
+| P7 | **Stock Monitor** | MCP: Yahoo Finance + Alpha Vantage + SEC EDGAR |
+| P8 | **Social Digest** | MCP: Reddit + YouTube + HN + RSS + GNews |
+| P9 | **Voice Agent** | LiveKit WebRTC + Deepgram STT + OpenAI TTS |
+| P10 | **Browser Autopilot** | A11y-tree-first automation + time-travel rollback |
+| P11 | **Smart Home** | Home Assistant MCP (80+ tools) + permissions |
+| P12 | **Content Pipeline** | Agent swarm: research, write, edit, publish |
+| P13 | **Personal CRM** | Nexus memory + HubSpot MCP + relationship tracking |
+| P14 | **Health Tracker** | Scheduled check-ins + memory + Telegram alerts |
+| P15 | **Second Brain** | Nexus search + memory consolidation + skill export |
+| P16 | **Learning Loops** | ACE + Ralph Loop + self-improvement |
+| P17 | **Evolving Ecosystem** | Natural selection, fitness scoring, crystallization |
+| P18 | **Code Copilot** | IDE integration, bidirectional MCP, LSP |
+| P19 | **Deploy & Operate** | systemd/launchd, health checks, crash recovery |
+| P20 | **Personal AI Symphony** | 24/7 personal AI — capstone (all features combined) |
+
+### Enterprise Track
+
+| # | Demo | Key Feature |
+|---|------|-------------|
+| E1 | **Everything-is-a-File** | 14 Nexus connectors unified under path API |
+| E2 | **Search & Memory** | BM25S + semantic + hybrid RRF + 3-tier memory |
+| E3 | **Agent Mesh** | Gateway + Node + HMAC delegation + mDNS |
+| E4 | **Agent Swarm** | Task board + worktree isolation + structured handoff |
+| E5 | **Governance Stack** | Graduated sanctions, permissions, audit |
+| E6 | **Permissions** | Zanzibar ReBAC (10M+ tuples) + Tiger Cache |
+| E7 | **Identity & Auth** | JWT-VC + Ed25519 + Agent Cards + delegation chains |
+| E8 | **Payments & Credits** | NexusPay + TigerBeetle ledger + X402 protocol |
+| E9 | **Compliance & Audit** | Immutable audit trail + WAL + event replay |
+| E10 | **Agent Company** | Org chart for agents, departments, budgets, skill sharing |
+| E11 | **Collusion Detection** | Governance graphs + fraud ring detection |
+| E12 | **Multi-Tenant SaaS** | Zone isolation + cross-zone sharing + capacity management |
+| E13 | **Workflow Automation** | Event bus + WAL + YAML workflows + triggers |
+| E14 | **Sandboxed Execution** | 12 backends: Docker, E2B, Wasm, Cloudflare, Vercel, Daytona |
+| E15 | **Agent Evaluation** | Graders, regression testing, baseline comparison |
+| E16 | **Skill Store** | 3-tier skills + multi-format exporters + approval workflows |
+| E17 | **Developer Platform** | Admin panel + AG-UI streaming + canvas workflow builder |
+| E18 | **Data Pipelines** | 14 connectors + sync pipeline + mount management |
+| E19 | **Federation & Edge** | Raft consensus + zone lifecycle + offline queue |
+| E20 | **Enterprise Symphony** | Full enterprise deployment — capstone |
+
+## MCP Servers
+
+Any MCP server works as a plug-and-play tool. Declare it in `koi.yaml`:
+
+```yaml
+tools:
+  mcp:
+    - name: yahoo-finance
+      command: "npx yahoo-finance-mcp"
+    - name: homeassistant
+      command: "npx homeassistant-mcp"
+    - name: playwright
+      command: "npx @anthropic/mcp-server-playwright"
+```
+
+The same MCP servers work in Claude Desktop, Cursor, VS Code, and Koi.
+
+## Toolchain
+
+| Tool | Choice |
+|------|--------|
+| Runtime | Bun 1.3.x |
+| Package manager | `bun install` |
+| Test runner | `bun:test` |
+| Build | tsup (ESM-only, `.d.ts`) |
+| Orchestration | Turborepo |
+| Lint/Format | Biome |
+
+## Development
+
+```bash
+git clone https://github.com/windoliver/koi.git
+cd koi
+bun install
+bun run build
+bun test
+```
+
+## Contributing
+
+Contributions welcome. Please read the project's `CLAUDE.md` for coding standards, architecture rules, and the anti-leak checklist before submitting PRs.
+
+Key rules:
+- `@koi/core` (L0) has zero runtime code — types and interfaces only
+- L2 packages import from L0 only — never from L1 or peer L2
+- All interface properties are `readonly`
+- No vendor types in L0 or L1
+- PRs under 300 lines of logic changes
+- 80% test coverage minimum
+
+## License
+
+See [LICENSE](LICENSE) for details.
