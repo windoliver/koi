@@ -246,7 +246,8 @@ describe("tool health integration", () => {
       }
     }
 
-    expect(forgeStore.update).toHaveBeenCalledTimes(1);
+    // 2 update calls: 1 for lifecycle → "failed", 1 for fitness flush before eviction
+    expect(forgeStore.update).toHaveBeenCalledTimes(2);
     expect(snapshotStore.record).toHaveBeenCalledTimes(1);
   });
 

@@ -471,6 +471,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   async function prefetchQuarantinedImpl(): Promise<void> {
     try {
       const searchResult = await config.forgeStore.search({
+        kind: "tool",
         lifecycle: "failed",
       });
       if (!searchResult.ok) return;
@@ -490,9 +491,19 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
    * Evict quarantined tool state after flush (Issue #937: 16A).
    * Keeps only a lightweight quarantine flag instead of the full ring buffer.
    */
-  function evictQuarantinedState(toolId: string): void {
+  /**
+   * Flush dirty fitness data, then evict the full ToolState for a quarantined tool.
+   * Async: must persist the final failure window before discarding state.
+   */
+  async function flushAndEvictQuarantinedState(toolId: string): Promise<void> {
     const ts = tools.get(toolId);
     if (ts === undefined || ts.state !== "quarantined") return;
+    // Flush dirty counters before eviction so the final failure window is persisted.
+    if (ts.flushState.dirty && !ts.flushState.flushing) {
+      await flushToolImpl(toolId).catch((e: unknown) => {
+        config.onFlushError?.(toolId, e);
+      });
+    }
     // Replace full state with minimal quarantine marker.
     // Keep a single failure entry so metrics report errorRate > 0.
     const marker = createToolState(1);
@@ -619,8 +630,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       // Notify callback (e.g., forgeProvider.invalidate())
       await config.onQuarantine?.(resolvedBrickId);
 
-      // Evict ring buffer to bound memory (Issue #937: 16A)
-      evictQuarantinedState(toolId);
+      // Flush final fitness data then evict ring buffer to bound memory (Issue #937: 16A)
+      await flushAndEvictQuarantinedState(toolId);
 
       return true;
     },

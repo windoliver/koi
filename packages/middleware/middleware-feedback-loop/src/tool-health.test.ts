@@ -352,8 +352,8 @@ describe("ToolHealthTracker", () => {
 
     const result = await tracker.checkAndQuarantine("forged-tool-1");
     expect(result).toBe(true);
-    expect(forgeStore.update).toHaveBeenCalledTimes(1);
-    expect(forgeStore.update).toHaveBeenCalledWith("brick-forged-tool-1", { lifecycle: "failed" });
+    // 2 update calls: 1 for lifecycle → "failed", 1 for fitness flush before eviction
+    expect(forgeStore.update).toHaveBeenCalledTimes(2);
     expect(snapshotStore.record).toHaveBeenCalledTimes(1);
     expect(onQuarantine).toHaveBeenCalledWith("brick-forged-tool-1");
   });
