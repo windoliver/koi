@@ -98,6 +98,8 @@ export interface WorkflowSummary {
   readonly startTime: number;
   readonly closeTime?: number;
   readonly taskQueue: string;
+  /** Whether this workflow is a copilot or worker agent. */
+  readonly entityType?: "copilot" | "worker";
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -105,6 +107,18 @@ export interface WorkflowDetail extends WorkflowSummary {
   readonly searchAttributes: Readonly<Record<string, unknown>>;
   readonly memo: Readonly<Record<string, unknown>>;
   readonly pendingActivities: number;
+  /** Number of pending (unprocessed) signals queued for this workflow. */
+  readonly pendingSignals: number;
+  /** How many times this workflow has restarted via Continue-As-New. */
+  readonly canCount: number;
+  /** Lightweight state references from the workflow's query handler. */
+  readonly stateRefs?: WorkflowStateRefs;
+}
+
+/** Agent state references exposed via workflow query. */
+export interface WorkflowStateRefs {
+  readonly lastTurnId?: string;
+  readonly turnsProcessed: number;
 }
 
 export interface TemporalHealth {

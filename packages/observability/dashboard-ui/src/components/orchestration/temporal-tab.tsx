@@ -84,6 +84,9 @@ function WorkflowRow({
       <td className="px-3 py-2 text-xs text-[var(--color-muted,#888)]">
         {workflow.workflowType}
       </td>
+      <td className="px-3 py-2 text-xs text-[var(--color-muted,#888)]">
+        {workflow.entityType ?? "—"}
+      </td>
       <td className={`px-3 py-2 text-xs font-medium ${statusColor}`}>
         {workflow.status}
       </td>
@@ -155,6 +158,7 @@ export function TemporalTab(): React.ReactElement {
             <tr className="border-b border-[var(--color-border,#444)] bg-[var(--color-card,#313244)]">
               <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">ID</th>
               <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Type</th>
+              <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Entity</th>
               <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Status</th>
               <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Duration</th>
               <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Actions</th>
@@ -173,7 +177,7 @@ export function TemporalTab(): React.ReactElement {
               ))
             ) : (
               <tr>
-                <td colSpan={5} className="px-3 py-8 text-center text-xs text-[var(--color-muted,#888)]">
+                <td colSpan={6} className="px-3 py-8 text-center text-xs text-[var(--color-muted,#888)]">
                   No workflows
                 </td>
               </tr>

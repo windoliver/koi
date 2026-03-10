@@ -133,8 +133,8 @@ function makeFlags(overrides: Partial<ServeFlags> = {}): ServeFlags {
     port: undefined,
     verbose: false,
     nexusUrl: undefined,
-    dashboard: false,
-    dashboardPort: undefined,
+    admin: false,
+    adminPort: undefined,
     ...overrides,
   };
 }

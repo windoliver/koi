@@ -35,15 +35,19 @@ export interface TemporalWorkflowExecutionLike {
   readonly memo: Readonly<Record<string, unknown>>;
 }
 
+/** Shape returned by handle.describe() including pending state. */
+interface TemporalWorkflowDescriptionLike extends TemporalWorkflowExecutionLike {
+  readonly pendingActivities: readonly unknown[];
+  /** Pending signals (Temporal SDK >= 1.9). May be absent on older servers. */
+  readonly pendingNexusOperations?: readonly unknown[];
+}
+
 /** Minimal shape of a workflow handle returned by getHandle. */
 interface TemporalWorkflowHandleLike {
-  readonly describe: () => Promise<
-    TemporalWorkflowExecutionLike & {
-      readonly pendingActivities: readonly unknown[];
-    }
-  >;
+  readonly describe: () => Promise<TemporalWorkflowDescriptionLike>;
   readonly signal: (signalName: string, ...args: readonly unknown[]) => Promise<void>;
   readonly terminate: (reason?: string) => Promise<void>;
+  readonly query: (queryType: string) => Promise<unknown>;
 }
 
 /** Async iterable returned by workflow.list(). */
@@ -136,12 +140,14 @@ function isWorkflowNotFoundError(e: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 function mapExecutionToSummary(exec: TemporalWorkflowExecutionLike): WorkflowSummary {
+  const entityType = inferEntityType(exec);
   const base = {
     workflowId: exec.workflowId,
     workflowType: exec.type.name,
     status: mapStatus(exec.status.name),
     startTime: exec.startTime.getTime(),
     taskQueue: exec.taskQueue,
+    ...(entityType !== undefined ? { entityType } : {}),
   } as const;
 
   if (exec.closeTime !== null) {
@@ -150,9 +156,27 @@ function mapExecutionToSummary(exec: TemporalWorkflowExecutionLike): WorkflowSum
   return base;
 }
 
+/**
+ * Infer entity type from search attributes or workflow type name.
+ * Koi workflows store agentType in search attributes when available.
+ */
+function inferEntityType(desc: TemporalWorkflowExecutionLike): "copilot" | "worker" | undefined {
+  const attrs = desc.searchAttributes;
+  const agentType = attrs["KoiAgentType"] ?? attrs["agentType"];
+  if (agentType === "copilot" || agentType === "worker") return agentType;
+
+  // Heuristic: workflow type containing "worker" suggests worker agent
+  const typeLower = desc.type.name.toLowerCase();
+  if (typeLower.includes("worker")) return "worker";
+  return undefined;
+}
+
 function mapDescriptionToDetail(
-  desc: TemporalWorkflowExecutionLike & { readonly pendingActivities: readonly unknown[] },
+  desc: TemporalWorkflowDescriptionLike,
+  stateRefs: { readonly lastTurnId?: string; readonly turnsProcessed: number } | undefined,
+  canCount: number,
 ): WorkflowDetail {
+  const entityType = inferEntityType(desc);
   const base = {
     workflowId: desc.workflowId,
     workflowType: desc.type.name,
@@ -163,6 +187,10 @@ function mapDescriptionToDetail(
     searchAttributes: desc.searchAttributes,
     memo: desc.memo,
     pendingActivities: desc.pendingActivities.length,
+    pendingSignals: desc.pendingNexusOperations?.length ?? 0,
+    canCount,
+    ...(entityType !== undefined ? { entityType } : {}),
+    ...(stateRefs !== undefined ? { stateRefs } : {}),
   } as const;
 
   if (desc.closeTime !== null) {
@@ -202,7 +230,39 @@ export function createTemporalAdminAdapter(
     try {
       const handle = client.workflow.getHandle(id);
       const desc = await handle.describe();
-      return { ok: true, value: mapDescriptionToDetail(desc) };
+
+      // Best-effort query for state refs and CAN count — non-fatal if unavailable
+      let stateRefs: { readonly lastTurnId?: string; readonly turnsProcessed: number } | undefined;
+      let canCount = 0;
+
+      try {
+        const rawState = await handle.query("getState");
+        if (
+          rawState !== null &&
+          rawState !== undefined &&
+          typeof rawState === "object" &&
+          "turnsProcessed" in rawState
+        ) {
+          const s = rawState as { lastTurnId?: string; turnsProcessed: number };
+          stateRefs = {
+            ...(s.lastTurnId !== undefined ? { lastTurnId: s.lastTurnId } : {}),
+            turnsProcessed: s.turnsProcessed,
+          };
+        }
+      } catch {
+        // Query not available — workflow may not support it
+      }
+
+      try {
+        const rawCan = await handle.query("getCanCount");
+        if (typeof rawCan === "number") {
+          canCount = rawCan;
+        }
+      } catch {
+        // Query not available
+      }
+
+      return { ok: true, value: mapDescriptionToDetail(desc, stateRefs, canCount) };
     } catch (e: unknown) {
       if (isWorkflowNotFoundError(e)) {
         return { ok: true, value: undefined };

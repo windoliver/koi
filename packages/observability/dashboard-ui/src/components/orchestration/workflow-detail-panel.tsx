@@ -98,6 +98,9 @@ export function WorkflowDetailPanel({
               <DetailRow label="Workflow ID" value={detail.workflowId} />
               <DetailRow label="Run ID" value={detail.runId} />
               <DetailRow label="Type" value={detail.workflowType} />
+              {detail.entityType !== undefined && (
+                <DetailRow label="Entity Type" value={detail.entityType} />
+              )}
               <DetailRow
                 label="Status"
                 value={detail.status}
@@ -115,7 +118,36 @@ export function WorkflowDetailPanel({
                 label="Pending Activities"
                 value={String(detail.pendingActivities)}
               />
+              <DetailRow
+                label="Pending Signals"
+                value={String(detail.pendingSignals)}
+              />
+              <DetailRow
+                label="Continue-As-New Count"
+                value={String(detail.canCount)}
+              />
             </div>
+
+            {/* State Refs (when available) */}
+            {detail.stateRefs !== undefined && (
+              <div>
+                <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted,#888)]">
+                  State
+                </span>
+                <div className="mt-1">
+                  <DetailRow
+                    label="Turns Processed"
+                    value={String(detail.stateRefs.turnsProcessed)}
+                  />
+                  {detail.stateRefs.lastTurnId !== undefined && (
+                    <DetailRow
+                      label="Last Turn ID"
+                      value={detail.stateRefs.lastTurnId}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Search Attributes */}
             <div>

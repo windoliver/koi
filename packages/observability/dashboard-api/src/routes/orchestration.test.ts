@@ -91,6 +91,8 @@ const MOCK_WORKFLOW_DETAIL: WorkflowDetail = {
   searchAttributes: {},
   memo: {},
   pendingActivities: 2,
+  pendingSignals: 0,
+  canCount: 0,
 };
 
 const MOCK_SCHEDULER_TASK: SchedulerTaskSummary = {

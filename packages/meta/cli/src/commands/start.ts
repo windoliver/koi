@@ -14,7 +14,7 @@
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineEvent, EngineInput, SandboxExecutor } from "@koi/core";
-import type { DashboardHandlerResult } from "@koi/dashboard-api";
+import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
@@ -215,17 +215,19 @@ export async function runStart(flags: StartFlags): Promise<void> {
     await ch.connect();
   }
 
-  // 6c. Optional dashboard server (--dashboard flag)
-  const DEFAULT_DASHBOARD_PORT = 3100;
+  // 6c. Optional admin panel server (--admin flag)
+  const DEFAULT_ADMIN_PORT = 3100;
   // let justified: conditionally set inside try/catch, called at cleanup
-  let stopDashboard: (() => void) | undefined;
+  let stopAdmin: (() => void) | undefined;
+  // let justified: conditionally set when --admin, read in REPL loop for metrics
+  let adminBridge: AdminPanelBridgeResult | undefined;
 
-  if (flags.dashboard) {
+  if (flags.admin) {
     try {
       const channelNames = channels.map((ch) => ch.name);
       const skillNames = (manifest.skills ?? []).map((s) => s.name);
 
-      const bridge = createAdminPanelBridge({
+      adminBridge = createAdminPanelBridge({
         agentName: manifest.name,
         agentType: manifest.lifecycle ?? "copilot",
         model: modelName,
@@ -233,28 +235,28 @@ export async function runStart(flags: StartFlags): Promise<void> {
         skills: skillNames,
       });
 
-      const dashboardResult: DashboardHandlerResult = createDashboardHandler(bridge, {
+      const dashboardResult: DashboardHandlerResult = createDashboardHandler(adminBridge, {
         cors: true,
       });
 
       const server = Bun.serve({
-        port: DEFAULT_DASHBOARD_PORT,
+        port: DEFAULT_ADMIN_PORT,
         async fetch(req: Request): Promise<Response> {
-          const dashboardResponse = await dashboardResult.handler(req);
-          if (dashboardResponse !== null) return dashboardResponse;
+          const adminResponse = await dashboardResult.handler(req);
+          if (adminResponse !== null) return adminResponse;
           return new Response("Not Found", { status: 404 });
         },
       });
 
-      stopDashboard = () => {
+      stopAdmin = () => {
         server.stop(true);
         dashboardResult.dispose();
       };
 
-      process.stderr.write(`Dashboard: http://localhost:${String(server.port)}\n`);
+      process.stderr.write(`Admin panel: http://localhost:${String(server.port)}\n`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`warn: dashboard failed to start: ${message}\n`);
+      process.stderr.write(`warn: admin panel failed to start: ${message}\n`);
     }
   }
 
@@ -309,6 +311,10 @@ export async function runStart(flags: StartFlags): Promise<void> {
         for await (const event of runtime.run(input)) {
           if (controller.signal.aborted) break;
           renderEvent(event, flags.verbose);
+          if (event.kind === "done" && adminBridge !== undefined) {
+            const m = event.output.metrics;
+            adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+          }
         }
       } catch (error: unknown) {
         if (!controller.signal.aborted) {
@@ -335,8 +341,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
   for (const ch of channels) {
     await ch.disconnect();
   }
-  if (stopDashboard !== undefined) {
-    stopDashboard();
+  if (stopAdmin !== undefined) {
+    stopAdmin();
   }
   await runtime.dispose();
   forgeBootstrap?.dispose();

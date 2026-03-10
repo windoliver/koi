@@ -432,4 +432,49 @@ describe("createAdminPanelBridge", () => {
     expect(topology.connections).toEqual([]);
     expect(topology.nodeCount).toBe(0);
   });
+
+  // ---------------------------------------------------------------------------
+  // updateMetrics
+  // ---------------------------------------------------------------------------
+
+  test("updateMetrics updates agent summary turns", async () => {
+    const result = createAdminPanelBridge(createTestOptions());
+    result.updateMetrics({ turns: 5, totalTokens: 1200 });
+
+    const agents = await result.dataSource.listAgents();
+    expect(first(agents).turns).toBe(5);
+  });
+
+  test("updateMetrics updates agent detail tokenCount", async () => {
+    const result = createAdminPanelBridge(createTestOptions());
+    result.updateMetrics({ turns: 3, totalTokens: 800 });
+
+    const agents = await result.dataSource.listAgents();
+    const detail = await result.dataSource.getAgent(first(agents).agentId);
+    expect(detail?.tokenCount).toBe(800);
+  });
+
+  test("updateMetrics updates procfs metrics", async () => {
+    const result = createAdminPanelBridge(createTestOptions());
+    const views = result.runtimeViews!;
+    result.updateMetrics({ turns: 7, totalTokens: 2000 });
+
+    const agents = await result.dataSource.listAgents();
+    const procfs = await views.getAgentProcfs(first(agents).agentId);
+    expect(procfs?.turns).toBe(7);
+    expect(procfs?.tokenCount).toBe(2000);
+  });
+
+  test("updateMetrics emits metrics_updated event", () => {
+    const result = createAdminPanelBridge(createTestOptions());
+
+    const events: DashboardEvent[] = [];
+    result.dataSource.subscribe((e) => events.push(e));
+
+    result.updateMetrics({ turns: 1, totalTokens: 500 });
+
+    expect(events).toHaveLength(1);
+    expect(first(events).kind).toBe("agent");
+    expect(first(events).subKind).toBe("metrics_updated");
+  });
 });

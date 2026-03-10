@@ -50,6 +50,11 @@ export interface BridgeOptions {
 export interface AdminPanelBridgeResult extends DashboardHandlerOptions {
   /** Emit a dashboard event to all subscribers. */
   readonly emitEvent: (event: DashboardEvent) => void;
+  /** Update agent metrics (turns, tokens). Emits a metrics_updated event. */
+  readonly updateMetrics: (metrics: {
+    readonly turns: number;
+    readonly totalTokens: number;
+  }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,6 +69,10 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   // Mutable agent state — tracks lifecycle transitions
   // let justified: state changes on terminate, read by list/get/terminate
   let agentState: ProcessState = "running";
+  // let justified: updated by CLI via updateMetrics(), read by list/get
+  let currentTurns = 0;
+  // let justified: updated by CLI via updateMetrics(), read by get
+  let currentTokenCount = 0;
 
   const emitEvent = (event: DashboardEvent): void => {
     for (const listener of listeners) {
@@ -78,7 +87,7 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     state: agentState,
     ...(options.model !== undefined ? { model: options.model } : {}),
     channels: [...options.channels],
-    turns: 0,
+    turns: currentTurns,
     startedAt,
     lastActivityAt: Date.now(),
   });
@@ -86,7 +95,7 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   const buildDetail = (): DashboardAgentDetail => ({
     ...buildSummary(),
     skills: [...options.skills],
-    tokenCount: 0,
+    tokenCount: currentTokenCount,
     metadata: {},
   });
 
@@ -208,8 +217,8 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
         agentType: options.agentType,
         ...(options.model !== undefined ? { model: options.model } : {}),
         channels: [...options.channels],
-        turns: 0,
-        tokenCount: 0,
+        turns: currentTurns,
+        tokenCount: currentTokenCount,
         startedAt,
         lastActivityAt: Date.now(),
         childCount: 0,
@@ -238,9 +247,27 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     },
   };
 
+  const updateMetrics = (metrics: {
+    readonly turns: number;
+    readonly totalTokens: number;
+  }): void => {
+    currentTurns = metrics.turns;
+    currentTokenCount = metrics.totalTokens;
+
+    emitEvent({
+      kind: "agent",
+      subKind: "metrics_updated",
+      agentId: primaryAgentId,
+      turns: metrics.turns,
+      tokenCount: metrics.totalTokens,
+      timestamp: Date.now(),
+    });
+  };
+
   return {
     dataSource,
     runtimeViews,
     emitEvent,
+    updateMetrics,
   };
 }

@@ -21,6 +21,7 @@ import type {
   SandboxExecutor,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
+import type { AdminPanelBridgeResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import { createHealthHandler, createHealthServer } from "@koi/deploy";
 import { createPiAdapter } from "@koi/engine-pi";
@@ -239,6 +240,23 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     await ch.connect();
   }
 
+  // 7a. Create admin panel bridge (before message loop so metrics can be tracked)
+  // let justified: conditionally set when --admin, read in message loop for metrics
+  let adminBridge: AdminPanelBridgeResult | undefined;
+
+  if (flags.admin) {
+    const channelNames = (resolved.value.channels ?? []).map((ch) => ch.name);
+    const skillNames = (manifest.skills ?? []).map((s) => s.name);
+
+    adminBridge = createAdminPanelBridge({
+      agentName: manifest.name,
+      agentType: manifest.lifecycle ?? "copilot",
+      model: modelName,
+      channels: channelNames,
+      skills: skillNames,
+    });
+  }
+
   // Global serial queue — runtime enforces single-flight (throws on concurrent
   // run() calls), so all messages serialize through one queue.
   // let justified: serial queue prevents concurrent runtime.run() calls
@@ -266,6 +284,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
             if (event.kind === "text_delta") {
               deltas.push(event.delta);
             }
+            if (event.kind === "done" && adminBridge !== undefined) {
+              const m = event.output.metrics;
+              adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+            }
           }
 
           if (deltas.length > 0) {
@@ -288,36 +310,25 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     }),
   );
 
-  // 7. Start health server (optionally with dashboard)
+  // 7b. Start health server (optionally with admin panel)
   // let justified: shutdown callback set in either branch, called at cleanup
   let stopServer: () => void = () => {};
   let healthInfo: { readonly url: string; readonly port: number };
 
-  if (flags.dashboard) {
-    // Compose dashboard + health into a single HTTP server
-    const channelNames = (resolved.value.channels ?? []).map((ch) => ch.name);
-    const skillNames = (manifest.skills ?? []).map((s) => s.name);
-
-    const bridge = createAdminPanelBridge({
-      agentName: manifest.name,
-      agentType: manifest.lifecycle ?? "copilot",
-      model: modelName,
-      channels: channelNames,
-      skills: skillNames,
-    });
-
-    const dashboardResult = createDashboardHandler(bridge, { cors: true });
+  if (flags.admin && adminBridge !== undefined) {
+    // Compose admin panel + health into a single HTTP server
+    const dashboardResult = createDashboardHandler(adminBridge, { cors: true });
 
     const healthHandler = createHealthHandler(() => true);
-    const dashboardPort = flags.dashboardPort ?? healthPort;
+    const adminPort = flags.adminPort ?? healthPort;
 
     try {
       const server = Bun.serve({
-        port: dashboardPort,
+        port: adminPort,
         async fetch(req: Request): Promise<Response> {
-          // Try dashboard handler first (returns null for non-dashboard paths)
-          const dashboardResponse = await dashboardResult.handler(req);
-          if (dashboardResponse !== null) return dashboardResponse;
+          // Try admin panel handler first (returns null for non-dashboard paths)
+          const adminResponse = await dashboardResult.handler(req);
+          if (adminResponse !== null) return adminResponse;
 
           // Fall back to health handler
           return healthHandler(req);
@@ -329,11 +340,11 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       };
       healthInfo = {
         url: server.url.toString(),
-        port: server.port ?? dashboardPort,
+        port: server.port ?? adminPort,
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`Failed to start dashboard server: ${message}\n`);
+      process.stderr.write(`Failed to start admin server: ${message}\n`);
       dashboardResult.dispose();
       await runtime.dispose();
       forgeBootstrap?.dispose();
@@ -395,14 +406,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`Agent: ${manifest.name} v${manifest.version}\n`);
     process.stderr.write(`Model: ${modelName}\n`);
     process.stderr.write(`Health: ${healthInfo.url}\n`);
-    if (flags.dashboard) {
-      process.stderr.write(`Dashboard: ${healthInfo.url}dashboard/api/health\n`);
+    if (flags.admin) {
+      process.stderr.write(`Admin panel: ${healthInfo.url}dashboard/api/health\n`);
     }
   }
 
-  const dashboardSuffix = flags.dashboard ? " (dashboard enabled)" : "";
+  const adminSuffix = flags.admin ? " (admin panel enabled)" : "";
   process.stderr.write(
-    `Agent "${manifest.name}" serving on port ${healthInfo.port}${dashboardSuffix}. Send SIGTERM to stop.\n`,
+    `Agent "${manifest.name}" serving on port ${healthInfo.port}${adminSuffix}. Send SIGTERM to stop.\n`,
   );
 
   // 10. Wait for abort signal (blocks until shutdown)

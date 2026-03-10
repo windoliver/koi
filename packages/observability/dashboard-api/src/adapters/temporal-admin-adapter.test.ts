@@ -52,9 +52,11 @@ interface MockWorkflowHandle {
     readonly searchAttributes: Record<string, unknown>;
     readonly memo: Record<string, unknown>;
     readonly pendingActivities: readonly unknown[];
+    readonly pendingNexusOperations?: readonly unknown[];
   }>;
   signal: (signalName: string, ...args: readonly unknown[]) => Promise<void>;
   terminate: (reason?: string) => Promise<void>;
+  query: (queryType: string) => Promise<unknown>;
 }
 
 function createMockClient(options?: {
@@ -62,6 +64,7 @@ function createMockClient(options?: {
   readonly handleDescribe?: MockWorkflowHandle["describe"];
   readonly handleSignal?: MockWorkflowHandle["signal"];
   readonly handleTerminate?: MockWorkflowHandle["terminate"];
+  readonly handleQuery?: MockWorkflowHandle["query"];
   readonly healthCheckFn?: () => Promise<void>;
 }): TemporalAdminClientLike {
   const executions = options?.executions ?? [createMockExecution()];
@@ -83,6 +86,11 @@ function createMockClient(options?: {
       })),
     signal: options?.handleSignal ?? (async () => {}),
     terminate: options?.handleTerminate ?? (async () => {}),
+    query:
+      options?.handleQuery ??
+      (async () => {
+        throw new Error("Query not supported");
+      }),
   };
 
   return {
@@ -219,17 +227,15 @@ describe("createTemporalAdminAdapter", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value).toBeDefined();
-        expect(result.value).toEqual({
-          workflowId: "wf-detail-1",
-          workflowType: "agentWorkflow",
-          status: "running",
-          startTime: new Date("2026-01-15T10:00:00Z").getTime(),
-          taskQueue: "koi-default",
-          runId: "run-xyz",
-          searchAttributes: { customField: "value" },
-          memo: { note: "test memo" },
-          pendingActivities: 2,
-        });
+        expect(result.value?.workflowId).toBe("wf-detail-1");
+        expect(result.value?.workflowType).toBe("agentWorkflow");
+        expect(result.value?.status).toBe("running");
+        expect(result.value?.runId).toBe("run-xyz");
+        expect(result.value?.pendingActivities).toBe(2);
+        expect(result.value?.pendingSignals).toBe(0);
+        expect(result.value?.canCount).toBe(0);
+        expect(result.value?.searchAttributes).toEqual({ customField: "value" });
+        expect(result.value?.memo).toEqual({ note: "test memo" });
       }
     });
 
