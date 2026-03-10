@@ -101,15 +101,18 @@ describe("processPendingMessages", () => {
 
     const count = await processPendingMessages(client, "b", handlers, seen, 50, onError);
 
-    // Both messages attempted but neither counted as processed (handler failed)
-    expect(count).toBe(0);
-    // Good handler is still called for each message before the throwing one fails
+    // Both messages processed — marked as seen even when a handler fails.
+    // Message-level retry would cause duplicate deliveries to handlers that
+    // already succeeded. Handlers needing retry should implement their own
+    // at-least-once logic.
+    expect(count).toBe(2);
+    // Good handler is still called for each message
     expect(goodHandler).toHaveBeenCalledTimes(2);
     // Error callback receives context for each failure
     expect(onError).toHaveBeenCalledTimes(2);
   });
 
-  test("failed messages are not marked as seen and remain eligible for retry", async () => {
+  test("failed messages are still marked as seen (no message-level retry)", async () => {
     const client = createMockClient([ENVELOPE_A]);
     const throwingHandler = mock(() => {
       throw new Error("transient failure");
@@ -120,8 +123,10 @@ describe("processPendingMessages", () => {
 
     await processPendingMessages(client, "b", handlers, seen, 50, onError);
 
-    // Message was not marked as seen — eligible for retry on next poll
-    expect(seen.has("msg-1")).toBe(false);
+    // Message marked as seen after dispatch — even if a handler failed.
+    // Message-level retry would cause duplicate deliveries to handlers that
+    // already succeeded.
+    expect(seen.has("msg-1")).toBe(true);
   });
 
   test("onHandlerError callback receives agent ID, message ID, and error", async () => {
