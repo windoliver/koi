@@ -5,7 +5,7 @@
 import { ChevronRight } from "lucide-react";
 import { useTreeStore } from "../../stores/tree-store.js";
 
-function pathSegments(path: string): readonly { readonly label: string; readonly path: string }[] {
+export function pathSegments(path: string): readonly { readonly label: string; readonly path: string }[] {
   const parts = path.split("/").filter((p) => p.length > 0);
   const segments: { readonly label: string; readonly path: string }[] = [];
   let current = "";
@@ -47,9 +47,9 @@ export function Breadcrumb(): React.ReactElement {
             type="button"
             onClick={() => {
               if (i < segments.length - 1) {
-                // Navigate to parent directory
+                // Navigate to parent directory (always a directory)
                 setExpanded(seg.path, true);
-                select(seg.path);
+                select(seg.path, true);
               }
             }}
             className={
