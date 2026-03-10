@@ -108,15 +108,14 @@ Plus ECS composition: Agent = entity, Tool = component, Middleware = system.
 
 | Subsystem | Packages | What it does |
 |-----------|----------|-------------|
-| **Forge** | 6 packages | Safe self-extension: demand analysis, verification, crystallization, trust tiers |
-| **Governance** | 14 packages | Permissions, audit, budget, delegation, graduated sanctions, intent capsules |
-| **Channels** | 14 adapters | Every surface from CLI to Voice to AG-UI |
-| **Middleware** | 21 packages | Interposition for memory, retry, pay, PII, sandbox, permissions, and more |
-| **Engines** | 6 adapters | Pi (primary), Claude SDK, ReAct loop, external process, ACP, RLM |
-| **Sandbox** | 9 packages | Docker, E2B, Wasm, Cloudflare Workers, Vercel, Daytona, OS sandbox, and more |
-| **Nexus** | 14 connectors | Gmail, Calendar, Drive, Slack, GitHub, S3, PostgreSQL, and more as file paths |
-| **IPC** | 8 packages | Gateway, Node, mDNS, task board, agent spawner, federation |
-| **Observability** | 11 packages | Dashboard, eval, tracing, monitoring, debug — real-time admin panel with SSE |
+| **Forge** | 9 | Safe self-extension: demand analysis, verification, crystallization, trust tiers |
+| **Security** | 20 | Permissions, audit, budget, delegation, graduated sanctions, intent capsules |
+| **Channels** | 15 | Every surface from CLI to Voice to AG-UI (includes channel-base) |
+| **Middleware** | 18 | Interposition for memory, retry, pay, PII, sandbox, permissions, and more |
+| **Engines** | 5 adapters | Pi (primary), Claude SDK, ReAct loop, external process, ACP |
+| **Sandbox** | 11 | Docker, E2B, Wasm, Cloudflare Workers, Vercel, Daytona, OS sandbox, and more |
+| **IPC** | 9 | Gateway, Node, mDNS, task board, agent spawner, federation |
+| **Observability** | 11 | Dashboard, eval, tracing, monitoring, debug — real-time admin panel with SSE |
 
 ## CLI
 
@@ -272,22 +271,10 @@ bun run build
 
 ### Running an agent from source
 
-After building, use the CLI via turbo:
-
-```bash
-# Scaffold a new agent
-bunx turbo run build --filter=@koi/cli
-bun packages/meta/cli/dist/bin.js init my-agent
-
-# Start the agent
-cd my-agent
-bun ../packages/meta/cli/dist/bin.js start
-```
-
-Or write a minimal script directly against the API:
+Write a script against the Koi API directly (Bun runs `.ts` natively):
 
 ```typescript
-// run.ts
+// run.ts — minimal agent runner
 import { loadManifest } from "@koi/manifest";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createKoi } from "@koi/engine";
@@ -300,6 +287,8 @@ for await (const event of runtime.run({ kind: "text", text: "Hello!" })) {
   if (event.kind === "text_delta") process.stdout.write(event.delta);
 }
 ```
+
+> The `koi` CLI (`packages/meta/cli`) requires a full monorepo build (`bun run build`) to resolve all transitive workspace dependencies. The programmatic API above is the most reliable path for development.
 
 ### Running tests
 
