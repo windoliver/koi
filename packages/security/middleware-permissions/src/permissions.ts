@@ -422,7 +422,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 function computeApprovalCacheKey(
   backendFingerprint: number,
   userId: string,
-  agentId: string,
+  _agentId: string,
   toolId: string,
   input: unknown,
 ): number {
@@ -442,5 +442,9 @@ function computeApprovalCacheKey(
       { context: { toolId } },
     );
   }
-  return fnv1a(`${backendFingerprint}\0${userId}\0${agentId}\0${toolId}\0${serialized}`);
+  // agentId intentionally excluded: approvals are user-scoped, not agent-scoped.
+  // If the same user approves tool X with input Y, that approval is valid across
+  // agents sharing the same middleware instance. The userId + backendFingerprint
+  // already scope the cache appropriately.
+  return fnv1a(`${backendFingerprint}\0${userId}\0${toolId}\0${serialized}`);
 }
