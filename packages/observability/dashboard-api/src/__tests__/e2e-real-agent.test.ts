@@ -18,15 +18,6 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type {
-  DashboardAgentDetail,
-  DashboardAgentSummary,
-  DashboardChannelSummary,
-  DashboardDataSource,
-  DashboardEvent,
-  DashboardSkillSummary,
-  DashboardSystemMetrics,
-} from "@koi/admin-types";
-import type {
   AgentId,
   AgentManifest,
   ComponentProvider,
@@ -36,6 +27,15 @@ import type {
   Tool,
 } from "@koi/core";
 import { agentId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
+import type {
+  DashboardAgentDetail,
+  DashboardAgentSummary,
+  DashboardChannelSummary,
+  DashboardDataSource,
+  DashboardEvent,
+  DashboardSkillSummary,
+  DashboardSystemMetrics,
+} from "@koi/dashboard-types";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import type { AgentHost } from "@koi/node";
