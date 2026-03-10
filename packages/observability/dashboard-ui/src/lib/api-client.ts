@@ -110,11 +110,11 @@ export function deleteFsFile(path: string): Promise<null> {
 // ---------------------------------------------------------------------------
 
 export function fetchProcessTree(): Promise<ProcessTreeSnapshot> {
-  return fetchApi<ProcessTreeSnapshot>("/view/process-tree");
+  return fetchApi<ProcessTreeSnapshot>("/view/agents/tree");
 }
 
 export function fetchAgentProcfs(agentId: string): Promise<AgentProcfs> {
-  return fetchApi<AgentProcfs>(`/view/procfs/${encodeURIComponent(agentId)}`);
+  return fetchApi<AgentProcfs>(`/view/agents/${encodeURIComponent(agentId)}/procfs`);
 }
 
 export function fetchMiddlewareChain(agentId: string): Promise<MiddlewareChain> {
@@ -122,7 +122,7 @@ export function fetchMiddlewareChain(agentId: string): Promise<MiddlewareChain> 
 }
 
 export function fetchGatewayTopology(): Promise<GatewayTopology> {
-  return fetchApi<GatewayTopology>("/view/gateway");
+  return fetchApi<GatewayTopology>("/view/gateway/topology");
 }
 
 // ---------------------------------------------------------------------------

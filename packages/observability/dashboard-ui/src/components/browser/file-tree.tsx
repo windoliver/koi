@@ -15,14 +15,29 @@ export function FileTree(): React.ReactElement {
   return (
     <div data-tree-root className="flex-1 overflow-y-auto py-1">
       {activeView.rootPaths.map((rootPath) => (
-        <RootSection key={rootPath} path={rootPath} />
+        <RootSection
+          key={rootPath}
+          path={rootPath}
+          {...(activeView.globPattern !== undefined
+            ? { globPattern: activeView.globPattern }
+            : {})}
+        />
       ))}
     </div>
   );
 }
 
-function RootSection({ path }: { readonly path: string }): React.ReactElement {
-  const { entries, isLoading, error } = useFileTree(path);
+function RootSection({
+  path,
+  globPattern,
+}: {
+  readonly path: string;
+  readonly globPattern?: string;
+}): React.ReactElement {
+  const { entries, isLoading, error } = useFileTree(
+    path,
+    globPattern !== undefined ? { glob: globPattern } : undefined,
+  );
 
   if (isLoading) {
     return (

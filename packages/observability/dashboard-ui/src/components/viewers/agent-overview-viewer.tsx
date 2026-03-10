@@ -2,11 +2,22 @@
  * AgentOverviewViewer — renders agent namespace root overview.
  *
  * Shows agent name, type, state badges, middleware chain, channels,
- * child agent count, and placeholder action buttons.
+ * child agent count, and action buttons (suspend/resume/terminate).
  */
 
-import { useState } from "react";
-import { User, Settings, MessageSquare, GitBranch, Play, Pause, XCircle } from "lucide-react";
+import { useCallback } from "react";
+import {
+  GitBranch,
+  Loader2,
+  MessageSquare,
+  Pause,
+  Play,
+  Settings,
+  User,
+  XCircle,
+} from "lucide-react";
+import { useCommand } from "../../hooks/use-command.js";
+import { resumeAgent, suspendAgent, terminateAgent } from "../../lib/api-client.js";
 
 interface AgentOverviewData {
   readonly name?: string;
@@ -27,7 +38,20 @@ const STATE_COLORS: Readonly<Record<string, string>> = {
 };
 
 function stateColorClass(state: string): string {
-  return STATE_COLORS[state.toLowerCase()] ?? "bg-[var(--color-primary)]/10 text-[var(--color-primary)]";
+  return (
+    STATE_COLORS[state.toLowerCase()] ??
+    "bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
+  );
+}
+
+/** Extract agent ID from a Nexus namespace path like /agents/<id>/overview.json */
+function extractAgentId(path: string): string | undefined {
+  const segments = path.split("/");
+  const agentsIdx = segments.indexOf("agents");
+  if (agentsIdx >= 0) {
+    return segments[agentsIdx + 1];
+  }
+  return undefined;
 }
 
 export function AgentOverviewViewer({
@@ -37,8 +61,6 @@ export function AgentOverviewViewer({
   readonly content: string;
   readonly path: string;
 }): React.ReactElement {
-  const [actionLog, setActionLog] = useState<string | null>(null);
-
   let data: AgentOverviewData;
   try {
     data = JSON.parse(content) as AgentOverviewData;
@@ -50,16 +72,11 @@ export function AgentOverviewViewer({
     );
   }
 
+  const agentId = extractAgentId(path) ?? data.name ?? "";
   const childCount = data.childAgentCount ?? data.childAgents?.length ?? 0;
 
-  const handleAction = (action: string): void => {
-    console.log(`[AgentOverview] Action: ${action} for agent "${data.name ?? "unknown"}"`);
-    setActionLog(`${action} triggered`);
-    setTimeout(() => setActionLog(null), 2000);
-  };
-
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-4 py-2">
         <User className="h-4 w-4 text-[var(--color-muted)]" />
         <span className="text-sm font-medium">
@@ -71,7 +88,9 @@ export function AgentOverviewViewer({
           </span>
         )}
         {data.state !== undefined && (
-          <span className={`rounded px-2 py-0.5 text-xs ${stateColorClass(data.state)}`}>
+          <span
+            className={`rounded px-2 py-0.5 text-xs ${stateColorClass(data.state)}`}
+          >
             {data.state}
           </span>
         )}
@@ -88,8 +107,12 @@ export function AgentOverviewViewer({
               <ol className="mt-2 space-y-1">
                 {data.middleware.map((mw, i) => (
                   <li key={mw} className="flex items-center gap-2 text-xs">
-                    <span className="shrink-0 text-[var(--color-muted)]">{i + 1}.</span>
-                    <span className="rounded bg-[var(--color-muted)]/10 px-2 py-0.5">{mw}</span>
+                    <span className="shrink-0 text-[var(--color-muted)]">
+                      {i + 1}.
+                    </span>
+                    <span className="rounded bg-[var(--color-muted)]/10 px-2 py-0.5">
+                      {mw}
+                    </span>
                   </li>
                 ))}
               </ol>
@@ -127,35 +150,7 @@ export function AgentOverviewViewer({
         </div>
 
         {/* Action buttons */}
-        <div className="mt-6 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => handleAction("resume")}
-            className="flex items-center gap-1 rounded border border-[var(--color-border)] px-3 py-1.5 text-xs hover:bg-[var(--color-muted)]/10"
-          >
-            <Play className="h-3.5 w-3.5" />
-            Resume
-          </button>
-          <button
-            type="button"
-            onClick={() => handleAction("suspend")}
-            className="flex items-center gap-1 rounded border border-[var(--color-border)] px-3 py-1.5 text-xs hover:bg-[var(--color-muted)]/10"
-          >
-            <Pause className="h-3.5 w-3.5" />
-            Suspend
-          </button>
-          <button
-            type="button"
-            onClick={() => handleAction("terminate")}
-            className="flex items-center gap-1 rounded border border-red-500/30 px-3 py-1.5 text-xs text-red-500 hover:bg-red-500/10"
-          >
-            <XCircle className="h-3.5 w-3.5" />
-            Terminate
-          </button>
-          {actionLog !== null && (
-            <span className="text-xs text-[var(--color-muted)]">{actionLog}</span>
-          )}
-        </div>
+        <AgentActions agentId={agentId} />
 
         <details className="mt-6">
           <summary className="cursor-pointer text-xs text-[var(--color-muted)] hover:text-[var(--color-foreground)]">
@@ -166,6 +161,79 @@ export function AgentOverviewViewer({
           </pre>
         </details>
       </div>
+    </div>
+  );
+}
+
+/** Action buttons wired to real API commands. Extracted to satisfy hooks rules. */
+function AgentActions({
+  agentId,
+}: {
+  readonly agentId: string;
+}): React.ReactElement {
+  const resumeCmd = useCommand(
+    useCallback(() => resumeAgent(agentId), [agentId]),
+  );
+  const suspendCmd = useCommand(
+    useCallback(() => suspendAgent(agentId), [agentId]),
+  );
+  const terminateCmd = useCommand(
+    useCallback(() => terminateAgent(agentId), [agentId]),
+  );
+
+  const anyExecuting =
+    resumeCmd.isExecuting ||
+    suspendCmd.isExecuting ||
+    terminateCmd.isExecuting;
+  const error =
+    resumeCmd.error ?? suspendCmd.error ?? terminateCmd.error;
+
+  return (
+    <div className="mt-6">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={anyExecuting}
+          onClick={() => void resumeCmd.execute()}
+          className="flex items-center gap-1 rounded border border-[var(--color-border)] px-3 py-1.5 text-xs hover:bg-[var(--color-muted)]/10 disabled:opacity-50"
+        >
+          {resumeCmd.isExecuting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Play className="h-3.5 w-3.5" />
+          )}
+          Resume
+        </button>
+        <button
+          type="button"
+          disabled={anyExecuting}
+          onClick={() => void suspendCmd.execute()}
+          className="flex items-center gap-1 rounded border border-[var(--color-border)] px-3 py-1.5 text-xs hover:bg-[var(--color-muted)]/10 disabled:opacity-50"
+        >
+          {suspendCmd.isExecuting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Pause className="h-3.5 w-3.5" />
+          )}
+          Suspend
+        </button>
+        <button
+          type="button"
+          disabled={anyExecuting}
+          onClick={() => void terminateCmd.execute()}
+          className="flex items-center gap-1 rounded border border-red-500/30 px-3 py-1.5 text-xs text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+        >
+          {terminateCmd.isExecuting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <XCircle className="h-3.5 w-3.5" />
+          )}
+          Terminate
+        </button>
+      </div>
+      {error !== null && (
+        <div className="mt-2 text-xs text-red-500">{error.message}</div>
+      )}
     </div>
   );
 }

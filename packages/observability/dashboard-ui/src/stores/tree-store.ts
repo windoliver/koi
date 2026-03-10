@@ -12,6 +12,8 @@ export interface TreeStoreState {
   readonly expanded: ReadonlySet<string>;
   /** Currently selected file/directory path, or null. */
   readonly selectedPath: string | null;
+  /** Whether the currently selected path is a directory. */
+  readonly selectedIsDirectory: boolean;
   /** Monotonic timestamp of last tree data invalidation (triggers refetch). */
   readonly lastInvalidatedAt: number;
 
@@ -19,13 +21,14 @@ export interface TreeStoreState {
   readonly setExpanded: (path: string, open: boolean) => void;
   readonly expandAll: (paths: readonly string[]) => void;
   readonly collapseAll: () => void;
-  readonly select: (path: string | null) => void;
+  readonly select: (path: string | null, isDirectory?: boolean) => void;
   readonly invalidateTree: () => void;
 }
 
 export const useTreeStore = create<TreeStoreState>((set) => ({
   expanded: new Set<string>(),
   selectedPath: null,
+  selectedIsDirectory: false,
   lastInvalidatedAt: 0,
 
   toggleExpanded: (path) =>
@@ -61,7 +64,8 @@ export const useTreeStore = create<TreeStoreState>((set) => ({
 
   collapseAll: () => set({ expanded: new Set<string>() }),
 
-  select: (path) => set({ selectedPath: path }),
+  select: (path, isDirectory) =>
+    set({ selectedPath: path, selectedIsDirectory: isDirectory === true }),
 
   invalidateTree: () => set({ lastInvalidatedAt: Date.now() }),
 }));

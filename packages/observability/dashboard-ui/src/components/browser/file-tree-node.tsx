@@ -33,9 +33,8 @@ export function FileTreeNode({
   const handleClick = (): void => {
     if (entry.isDirectory) {
       toggleExpanded(entry.path);
-    } else {
-      select(entry.path);
     }
+    select(entry.path, entry.isDirectory);
   };
 
   const handleKeyDown = useCallback(
@@ -46,9 +45,8 @@ export function FileTreeNode({
         case "Enter": {
           if (entry.isDirectory) {
             toggleExpanded(entry.path);
-          } else {
-            select(entry.path);
           }
+          select(entry.path, entry.isDirectory);
           e.preventDefault();
           break;
         }

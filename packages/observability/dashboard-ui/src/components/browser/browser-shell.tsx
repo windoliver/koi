@@ -8,6 +8,7 @@
 import { FolderTree } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useTreeStore } from "../../stores/tree-store.js";
+import { DirectoryViewer } from "../viewers/directory-viewer.js";
 import { ViewerRouter } from "../viewers/viewer-router.js";
 import { Breadcrumb } from "./breadcrumb.js";
 import { CommandBar } from "./command-bar.js";
@@ -17,6 +18,7 @@ import { StatusBar } from "./status-bar.js";
 
 export function BrowserShell(): React.ReactElement {
   const selectedPath = useTreeStore((s) => s.selectedPath);
+  const selectedIsDirectory = useTreeStore((s) => s.selectedIsDirectory);
 
   return (
     <div className="flex h-full flex-col">
@@ -38,7 +40,11 @@ export function BrowserShell(): React.ReactElement {
             <Breadcrumb />
             <div className="flex-1 overflow-auto">
               {selectedPath !== null ? (
-                <ViewerRouter path={selectedPath} />
+                selectedIsDirectory ? (
+                  <DirectoryViewer path={selectedPath} />
+                ) : (
+                  <ViewerRouter path={selectedPath} />
+                )
               ) : (
                 <EmptyState />
               )}

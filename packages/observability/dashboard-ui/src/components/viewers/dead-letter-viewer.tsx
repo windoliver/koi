@@ -2,11 +2,11 @@
  * DeadLetterViewer — renders dead letter queue entry files.
  *
  * Shows the dead letter metadata (original event, failure reason, retry count,
- * last attempted) and a "Retry" button (placeholder that logs to console).
+ * last attempted) and a "Retry" button wired to the retry API.
  */
 
-import { useState } from "react";
-import { AlertTriangle, RotateCcw, Clock } from "lucide-react";
+import { AlertTriangle, Clock, Loader2, RotateCcw } from "lucide-react";
+import { useRetryDeadLetter } from "../../hooks/use-command.js";
 
 interface DeadLetterData {
   readonly originalEvent?: unknown;
@@ -26,6 +26,12 @@ function formatTimestamp(ts: number): string {
   });
 }
 
+/** Extract event ID from a DLQ path like /events/dlq/<eventId>.json */
+function extractEventId(path: string): string {
+  const filename = path.split("/").pop() ?? "";
+  return filename.replace(/\.json$/, "");
+}
+
 export function DeadLetterViewer({
   content,
   path,
@@ -33,7 +39,8 @@ export function DeadLetterViewer({
   readonly content: string;
   readonly path: string;
 }): React.ReactElement {
-  const [retryLog, setRetryLog] = useState<string | null>(null);
+  const eventId = extractEventId(path);
+  const retryCmd = useRetryDeadLetter(eventId);
 
   let data: DeadLetterData;
   try {
@@ -46,14 +53,8 @@ export function DeadLetterViewer({
     );
   }
 
-  const handleRetry = (): void => {
-    console.log(`[DeadLetter] Retry requested for: ${path}`);
-    setRetryLog("Retry triggered");
-    setTimeout(() => setRetryLog(null), 2000);
-  };
-
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-4 py-2">
         <AlertTriangle className="h-4 w-4 text-yellow-500" />
         <span className="text-sm font-medium">{path.split("/").pop()}</span>
@@ -69,8 +70,12 @@ export function DeadLetterViewer({
           <div className="grid gap-3">
             {data.failureReason !== undefined && (
               <div className="text-sm">
-                <span className="text-xs text-[var(--color-muted)]">Failure Reason</span>
-                <div className="mt-0.5 font-medium text-red-500">{data.failureReason}</div>
+                <span className="text-xs text-[var(--color-muted)]">
+                  Failure Reason
+                </span>
+                <div className="mt-0.5 font-medium text-red-500">
+                  {data.failureReason}
+                </div>
               </div>
             )}
             <div className="flex flex-wrap gap-4 text-xs text-[var(--color-muted)]">
@@ -100,24 +105,35 @@ export function DeadLetterViewer({
         </div>
 
         {/* Retry button */}
-        <div className="mb-4 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleRetry}
-            className="flex items-center gap-1 rounded border border-[var(--color-border)] px-3 py-1.5 text-xs hover:bg-[var(--color-muted)]/10"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Retry
-          </button>
-          {retryLog !== null && (
-            <span className="text-xs text-[var(--color-muted)]">{retryLog}</span>
+        <div className="mb-4">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={retryCmd.isExecuting}
+              onClick={() => void retryCmd.execute()}
+              className="flex items-center gap-1 rounded border border-[var(--color-border)] px-3 py-1.5 text-xs hover:bg-[var(--color-muted)]/10 disabled:opacity-50"
+            >
+              {retryCmd.isExecuting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3.5 w-3.5" />
+              )}
+              Retry
+            </button>
+          </div>
+          {retryCmd.error !== null && (
+            <div className="mt-2 text-xs text-red-500">
+              {retryCmd.error.message}
+            </div>
           )}
         </div>
 
         {/* Original event */}
         {data.originalEvent !== undefined && (
           <div>
-            <h3 className="mb-2 text-xs font-medium text-[var(--color-muted)]">Original Event</h3>
+            <h3 className="mb-2 text-xs font-medium text-[var(--color-muted)]">
+              Original Event
+            </h3>
             <pre className="overflow-auto rounded bg-[var(--color-muted)]/5 p-3 font-mono text-xs">
               {JSON.stringify(data.originalEvent, null, 2)}
             </pre>

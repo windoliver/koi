@@ -22,17 +22,18 @@ export interface FileTreeNode {
  */
 export function useFileTree(
   path: string,
-  options?: { readonly enabled?: boolean },
+  options?: { readonly enabled?: boolean; readonly glob?: string },
 ): {
   readonly entries: readonly FsEntry[];
   readonly isLoading: boolean;
   readonly error: Error | null;
 } {
   const lastInvalidatedAt = useTreeStore((s) => s.lastInvalidatedAt);
+  const glob = options?.glob;
 
   const query = useQuery({
-    queryKey: ["fs-list", path, lastInvalidatedAt],
-    queryFn: () => fetchFsList(path),
+    queryKey: ["fs-list", path, glob, lastInvalidatedAt],
+    queryFn: () => fetchFsList(path, glob !== undefined ? { glob } : undefined),
     enabled: options?.enabled !== false,
     staleTime: 30_000,
   });

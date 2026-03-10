@@ -30,7 +30,7 @@ export function App(): React.ReactElement {
         <SseProvider>
           <Routes>
             <Route element={<PageShell />}>
-              <Route index element={<Navigate to="/agents" replace />} />
+              <Route index element={<Navigate to="/browser" replace />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/browser" element={<BrowserPage />} />
             </Route>
