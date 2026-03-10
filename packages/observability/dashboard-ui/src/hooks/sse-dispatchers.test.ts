@@ -17,6 +17,7 @@ import type {
   TemporalDashboardEvent,
 } from "@koi/dashboard-types";
 import { useAgentsStore } from "../stores/agents-store.js";
+import { useOrchestrationStore } from "../stores/orchestration-store.js";
 import { useTreeStore } from "../stores/tree-store.js";
 import { dispatchDashboardEvent } from "./sse-dispatchers.js";
 
@@ -94,6 +95,11 @@ beforeEach(() => {
     expanded: new Set<string>(),
     selectedPath: null,
     selectedIsDirectory: false,
+    lastInvalidatedAt: 0,
+  });
+
+  // Reset orchestration store to clean state
+  useOrchestrationStore.setState({
     lastInvalidatedAt: 0,
   });
 
@@ -611,11 +617,11 @@ describe("gateway events", () => {
 });
 
 // ===========================================================================
-// 8. No-op domain dispatchers — temporal, scheduler, taskboard, harness
+// 8. Orchestration dispatchers — temporal, scheduler, taskboard, harness
 // ===========================================================================
 
-describe("no-op domain dispatchers", () => {
-  test("temporal workflow_started is a no-op", () => {
+describe("orchestration dispatchers — temporal", () => {
+  test("temporal workflow_started triggers orchestration invalidation", async () => {
     const event: TemporalDashboardEvent = {
       kind: "temporal",
       subKind: "workflow_started",
@@ -624,14 +630,24 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
+    dispatchDashboardEvent(event);
 
-    // Stores should be untouched
+    // Not yet invalidated (debounce has not fired)
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBe(0);
+
+    // Agent and tree stores should be untouched
     expect(useAgentsStore.getState().agents).toEqual({});
     expect(useTreeStore.getState().lastInvalidatedAt).toBe(0);
+
+    // Wait for debounce to fire
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
   });
 
-  test("temporal workflow_completed is a no-op", () => {
+  test("temporal workflow_completed triggers orchestration invalidation", async () => {
     const event: TemporalDashboardEvent = {
       kind: "temporal",
       subKind: "workflow_completed",
@@ -639,10 +655,16 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
+    dispatchDashboardEvent(event);
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
   });
 
-  test("temporal health_changed is a no-op", () => {
+  test("temporal health_changed triggers orchestration invalidation", async () => {
     const event: TemporalDashboardEvent = {
       kind: "temporal",
       subKind: "health_changed",
@@ -650,10 +672,18 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
-  });
+    dispatchDashboardEvent(event);
 
-  test("scheduler task_submitted is a no-op", () => {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
+  });
+});
+
+describe("orchestration dispatchers — scheduler", () => {
+  test("scheduler task_submitted triggers orchestration invalidation", async () => {
     const event: SchedulerDashboardEvent = {
       kind: "scheduler",
       subKind: "task_submitted",
@@ -662,10 +692,19 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
+    dispatchDashboardEvent(event);
+
+    // Not yet invalidated (debounce has not fired)
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBe(0);
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
   });
 
-  test("scheduler task_completed is a no-op", () => {
+  test("scheduler task_completed triggers orchestration invalidation", async () => {
     const event: SchedulerDashboardEvent = {
       kind: "scheduler",
       subKind: "task_completed",
@@ -673,10 +712,16 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
+    dispatchDashboardEvent(event);
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
   });
 
-  test("scheduler task_dead_letter is a no-op", () => {
+  test("scheduler task_dead_letter triggers orchestration invalidation", async () => {
     const event: SchedulerDashboardEvent = {
       kind: "scheduler",
       subKind: "task_dead_letter",
@@ -684,10 +729,16 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
+    dispatchDashboardEvent(event);
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
   });
 
-  test("scheduler schedule_fired is a no-op", () => {
+  test("scheduler schedule_fired triggers orchestration invalidation", async () => {
     const event: SchedulerDashboardEvent = {
       kind: "scheduler",
       subKind: "schedule_fired",
@@ -695,10 +746,18 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
-  });
+    dispatchDashboardEvent(event);
 
-  test("taskboard task_status_changed is a no-op", () => {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
+  });
+});
+
+describe("orchestration dispatchers — taskboard", () => {
+  test("taskboard task_status_changed triggers orchestration invalidation", async () => {
     const event: TaskBoardDashboardEvent = {
       kind: "taskboard",
       subKind: "task_status_changed",
@@ -707,10 +766,21 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
-  });
+    dispatchDashboardEvent(event);
 
-  test("harness checkpoint_created is a no-op", () => {
+    // Not yet invalidated (debounce has not fired)
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBe(0);
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
+  });
+});
+
+describe("orchestration dispatchers — harness", () => {
+  test("harness checkpoint_created triggers orchestration invalidation", async () => {
     const event: HarnessDashboardEvent = {
       kind: "harness",
       subKind: "checkpoint_created",
@@ -718,10 +788,19 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
+    dispatchDashboardEvent(event);
+
+    // Not yet invalidated (debounce has not fired)
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBe(0);
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
   });
 
-  test("harness phase_changed is a no-op", () => {
+  test("harness phase_changed triggers orchestration invalidation", async () => {
     const event: HarnessDashboardEvent = {
       kind: "harness",
       subKind: "phase_changed",
@@ -730,7 +809,69 @@ describe("no-op domain dispatchers", () => {
       timestamp: NOW,
     };
 
-    expect(() => dispatchDashboardEvent(event)).not.toThrow();
+    dispatchDashboardEvent(event);
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBeGreaterThan(0);
+  });
+});
+
+describe("orchestration debounce coalescing", () => {
+  test("multiple orchestration events within 200ms coalesce into one invalidation", async () => {
+    const temporalEvent: TemporalDashboardEvent = {
+      kind: "temporal",
+      subKind: "workflow_started",
+      workflowId: "wf-1",
+      workflowType: "agent-loop",
+      timestamp: NOW,
+    };
+
+    const schedulerEvent: SchedulerDashboardEvent = {
+      kind: "scheduler",
+      subKind: "task_submitted",
+      taskId: "t-1",
+      agentId: AGENT_ID,
+      timestamp: NOW,
+    };
+
+    const taskboardEvent: TaskBoardDashboardEvent = {
+      kind: "taskboard",
+      subKind: "task_status_changed",
+      taskId: "tb-1",
+      status: "running",
+      timestamp: NOW,
+    };
+
+    const harnessEvent: HarnessDashboardEvent = {
+      kind: "harness",
+      subKind: "checkpoint_created",
+      checkpointType: "soft",
+      timestamp: NOW,
+    };
+
+    // Fire 4 events in quick succession across different domains
+    dispatchDashboardEvent(temporalEvent);
+    dispatchDashboardEvent(schedulerEvent);
+    dispatchDashboardEvent(taskboardEvent);
+    dispatchDashboardEvent(harnessEvent);
+
+    // Wait for debounce to fire
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    const invalidatedAt = useOrchestrationStore.getState().lastInvalidatedAt;
+    expect(invalidatedAt).toBeGreaterThan(0);
+
+    // Wait again — no second invalidation should occur
+    await new Promise((resolve) => {
+      setTimeout(resolve, 250);
+    });
+
+    expect(useOrchestrationStore.getState().lastInvalidatedAt).toBe(invalidatedAt);
   });
 });
 

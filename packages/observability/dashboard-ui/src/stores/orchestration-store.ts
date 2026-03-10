@@ -35,6 +35,9 @@ interface OrchestrationState {
   readonly harnessStatus: HarnessStatus | null;
   readonly checkpoints: readonly CheckpointEntry[];
 
+  // Invalidation (SSE-driven refetch signal)
+  readonly lastInvalidatedAt: number;
+
   // Actions
   readonly setTemporalHealth: (health: TemporalHealth) => void;
   readonly setWorkflows: (workflows: readonly WorkflowSummary[]) => void;
@@ -45,6 +48,7 @@ interface OrchestrationState {
   readonly setTaskBoardSnapshot: (snapshot: TaskBoardSnapshot) => void;
   readonly setHarnessStatus: (status: HarnessStatus) => void;
   readonly setCheckpoints: (checkpoints: readonly CheckpointEntry[]) => void;
+  readonly invalidate: () => void;
 }
 
 export const useOrchestrationStore = create<OrchestrationState>((set) => ({
@@ -57,6 +61,7 @@ export const useOrchestrationStore = create<OrchestrationState>((set) => ({
   taskBoardSnapshot: null,
   harnessStatus: null,
   checkpoints: [],
+  lastInvalidatedAt: 0,
 
   setTemporalHealth: (health) => set({ temporalHealth: health }),
   setWorkflows: (workflows) => set({ workflows }),
@@ -67,4 +72,5 @@ export const useOrchestrationStore = create<OrchestrationState>((set) => ({
   setTaskBoardSnapshot: (snapshot) => set({ taskBoardSnapshot: snapshot }),
   setHarnessStatus: (status) => set({ harnessStatus: status }),
   setCheckpoints: (checkpoints) => set({ checkpoints }),
+  invalidate: () => set({ lastInvalidatedAt: Date.now() }),
 }));

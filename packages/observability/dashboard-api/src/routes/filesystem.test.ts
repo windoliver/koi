@@ -302,15 +302,52 @@ describe("handleFsWrite", () => {
 });
 
 describe("handleFsDelete", () => {
-  test("deletes file", async () => {
-    const fs = createMockFs();
-    const res = await handleFsDelete(makeReq("/fs/file?path=/test.txt", "DELETE"), {}, fs);
+  const workspaceMatcher: EditablePathMatcher = (p) => /\/workspace\//.test(p);
+
+  test("DELETE allows path matching editable paths", async () => {
+    let capturedPath: string | undefined;
+    const fs = createMockFs({
+      delete: (path) => {
+        capturedPath = path;
+        return ok({ path });
+      },
+    });
+    const res = await handleFsDelete(
+      makeReq("/fs/file?path=/agents/a1/workspace/notes.txt", "DELETE"),
+      {},
+      fs,
+      workspaceMatcher,
+    );
     expect(res.status).toBe(200);
+    expect(capturedPath).toBe("/agents/a1/workspace/notes.txt");
+  });
+
+  test("DELETE rejects path not matching editable paths", async () => {
+    const fs = createMockFs();
+    const res = await handleFsDelete(
+      makeReq("/fs/file?path=/agents/a1/bricks/tool.json", "DELETE"),
+      {},
+      fs,
+      workspaceMatcher,
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect((body.error as Record<string, unknown>).code).toBe("FORBIDDEN");
+  });
+
+  test("returns 403 when no editablePaths matcher is provided", async () => {
+    const fs = createMockFs();
+    const res = await handleFsDelete(
+      makeReq("/fs/file?path=/agents/a1/workspace/notes.txt", "DELETE"),
+      {},
+      fs,
+    );
+    expect(res.status).toBe(403);
   });
 
   test("returns 400 when path is missing", async () => {
     const fs = createMockFs();
-    const res = await handleFsDelete(makeReq("/fs/file", "DELETE"), {}, fs);
+    const res = await handleFsDelete(makeReq("/fs/file", "DELETE"), {}, fs, workspaceMatcher);
     expect(res.status).toBe(400);
   });
 
@@ -319,9 +356,10 @@ describe("handleFsDelete", () => {
     // Remove delete to simulate a backend that doesn't support it
     const { delete: _, ...fsWithoutDelete } = fs;
     const res = await handleFsDelete(
-      makeReq("/fs/file?path=/test.txt", "DELETE"),
+      makeReq("/fs/file?path=/agents/a1/workspace/notes.txt", "DELETE"),
       {},
       fsWithoutDelete as FileSystemBackend,
+      workspaceMatcher,
     );
     expect(res.status).toBe(501);
   });

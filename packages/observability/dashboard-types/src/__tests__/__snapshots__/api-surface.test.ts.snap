@@ -468,7 +468,7 @@ interface RuntimeViewDataSource {
     readonly temporal?: {
         readonly getHealth: () => TemporalHealth | Promise<TemporalHealth>;
         readonly listWorkflows: () => Promise<readonly WorkflowSummary[]>;
-        readonly getWorkflow: (id: string) => Promise<WorkflowDetail | undefined>;
+        readonly getWorkflow: (id: string) => Promise<Result<WorkflowDetail | undefined, KoiError>>;
     };
     readonly scheduler?: {
         readonly listTasks: () => Promise<readonly SchedulerTaskSummary[]>;

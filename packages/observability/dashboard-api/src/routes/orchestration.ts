@@ -53,11 +53,14 @@ export async function handleTemporalWorkflow(
   const id = validateRequiredParam(params, "id", "workflow ID");
   if (id instanceof Response) return id;
 
-  const workflow = await runtimeViews.temporal.getWorkflow(id);
-  if (workflow === undefined) {
+  const result = await runtimeViews.temporal.getWorkflow(id);
+  if (!result.ok) {
+    return errorResponse("EXTERNAL", result.error.message, 502);
+  }
+  if (result.value === undefined) {
     return errorResponse("NOT_FOUND", `Workflow "${id}" not found`, 404);
   }
-  return jsonResponse(workflow);
+  return jsonResponse(result.value);
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@
 import type { AgentId, KoiError, ProcessState, Result } from "@koi/core";
 import { agentId } from "@koi/core";
 import type {
+  AgentProcfs,
   DashboardAgentDetail,
   DashboardAgentSummary,
   DashboardChannelSummary,
@@ -22,6 +23,10 @@ import type {
   DashboardEvent,
   DashboardSkillSummary,
   DashboardSystemMetrics,
+  GatewayTopology,
+  MiddlewareChain,
+  ProcessTreeSnapshot,
+  RuntimeViewDataSource,
 } from "@koi/dashboard-types";
 import type { DashboardHandlerOptions } from "./handler.js";
 
@@ -175,8 +180,67 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     },
   };
 
+  const runtimeViews: RuntimeViewDataSource = {
+    getProcessTree(): ProcessTreeSnapshot {
+      return {
+        roots: [
+          {
+            agentId: primaryAgentId,
+            name: options.agentName,
+            state: agentState,
+            agentType: options.agentType,
+            depth: 0,
+            children: [],
+          },
+        ],
+        totalAgents: 1,
+        timestamp: Date.now(),
+      };
+    },
+
+    getAgentProcfs(id: AgentId): AgentProcfs | undefined {
+      if (id !== primaryAgentId) return undefined;
+
+      return {
+        agentId: primaryAgentId,
+        name: options.agentName,
+        state: agentState,
+        agentType: options.agentType,
+        ...(options.model !== undefined ? { model: options.model } : {}),
+        channels: [...options.channels],
+        turns: 0,
+        tokenCount: 0,
+        startedAt,
+        lastActivityAt: Date.now(),
+        childCount: 0,
+      };
+    },
+
+    getMiddlewareChain(id: AgentId): MiddlewareChain {
+      return {
+        agentId: id,
+        entries: [],
+      };
+    },
+
+    getGatewayTopology(): GatewayTopology {
+      return {
+        connections: options.channels.map((channelType, index) => ({
+          channelId: `${channelType}:${String(index)}`,
+          channelType,
+          agentId: primaryAgentId,
+          connected: true,
+          connectedAt: startedAt,
+        })),
+        nodeCount: options.channels.length,
+        timestamp: Date.now(),
+      };
+    },
+  };
+
   return {
     dataSource,
+    runtimeViews,
     emitEvent,
   };
 }

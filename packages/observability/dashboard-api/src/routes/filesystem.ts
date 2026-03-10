@@ -165,10 +165,17 @@ export async function handleFsDelete(
   req: Request,
   _params: RouteParams,
   fileSystem: FileSystemBackend,
+  editablePaths?: EditablePathMatcher,
 ): Promise<Response> {
   const path = getQueryParam(req, "path");
   if (path === undefined) {
     return errorResponse("VALIDATION", "Missing 'path' query parameter", 400);
+  }
+
+  // Permission check — deny by default when no matcher is configured
+  const isEditable = editablePaths !== undefined ? editablePaths(path) : false;
+  if (!isEditable) {
+    return errorResponse("FORBIDDEN", `Path is not editable: ${path}`, 403);
   }
 
   if (fileSystem.delete === undefined) {

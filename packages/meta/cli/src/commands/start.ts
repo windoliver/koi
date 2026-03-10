@@ -14,6 +14,8 @@
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineEvent, EngineInput, SandboxExecutor } from "@koi/core";
+import type { DashboardHandlerResult } from "@koi/dashboard-api";
+import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
@@ -213,6 +215,49 @@ export async function runStart(flags: StartFlags): Promise<void> {
     await ch.connect();
   }
 
+  // 6c. Optional dashboard server (--dashboard flag)
+  const DEFAULT_DASHBOARD_PORT = 3100;
+  // let justified: conditionally set inside try/catch, called at cleanup
+  let stopDashboard: (() => void) | undefined;
+
+  if (flags.dashboard) {
+    try {
+      const channelNames = channels.map((ch) => ch.name);
+      const skillNames = (manifest.skills ?? []).map((s) => s.name);
+
+      const bridge = createAdminPanelBridge({
+        agentName: manifest.name,
+        agentType: manifest.lifecycle ?? "copilot",
+        model: modelName,
+        channels: channelNames,
+        skills: skillNames,
+      });
+
+      const dashboardResult: DashboardHandlerResult = createDashboardHandler(bridge, {
+        cors: true,
+      });
+
+      const server = Bun.serve({
+        port: DEFAULT_DASHBOARD_PORT,
+        async fetch(req: Request): Promise<Response> {
+          const dashboardResponse = await dashboardResult.handler(req);
+          if (dashboardResponse !== null) return dashboardResponse;
+          return new Response("Not Found", { status: 404 });
+        },
+      });
+
+      stopDashboard = () => {
+        server.stop(true);
+        dashboardResult.dispose();
+      };
+
+      process.stderr.write(`Dashboard: http://localhost:${String(server.port)}\n`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`warn: dashboard failed to start: ${message}\n`);
+    }
+  }
+
   // 7. Set up AbortController for graceful shutdown
   const controller = new AbortController();
   let shuttingDown = false;
@@ -289,6 +334,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
   for (const ch of channels) {
     await ch.disconnect();
+  }
+  if (stopDashboard !== undefined) {
+    stopDashboard();
   }
   await runtime.dispose();
   forgeBootstrap?.dispose();

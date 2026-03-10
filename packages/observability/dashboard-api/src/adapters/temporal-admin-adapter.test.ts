@@ -216,21 +216,24 @@ describe("createTemporalAdminAdapter", () => {
       const adapter = createTemporalAdminAdapter(client);
       const result = await adapter.views.getWorkflow("wf-detail-1");
 
-      expect(result).toBeDefined();
-      expect(result).toEqual({
-        workflowId: "wf-detail-1",
-        workflowType: "agentWorkflow",
-        status: "running",
-        startTime: new Date("2026-01-15T10:00:00Z").getTime(),
-        taskQueue: "koi-default",
-        runId: "run-xyz",
-        searchAttributes: { customField: "value" },
-        memo: { note: "test memo" },
-        pendingActivities: 2,
-      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toBeDefined();
+        expect(result.value).toEqual({
+          workflowId: "wf-detail-1",
+          workflowType: "agentWorkflow",
+          status: "running",
+          startTime: new Date("2026-01-15T10:00:00Z").getTime(),
+          taskQueue: "koi-default",
+          runId: "run-xyz",
+          searchAttributes: { customField: "value" },
+          memo: { note: "test memo" },
+          pendingActivities: 2,
+        });
+      }
     });
 
-    test("returns undefined when describe throws not-found", async () => {
+    test("returns ok with undefined for not-found error", async () => {
       const client = createMockClient({
         handleDescribe: async () => {
           throw new Error("Workflow not found");
@@ -240,7 +243,29 @@ describe("createTemporalAdminAdapter", () => {
       const adapter = createTemporalAdminAdapter(client);
       const result = await adapter.views.getWorkflow("nonexistent");
 
-      expect(result).toBeUndefined();
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toBeUndefined();
+      }
+    });
+
+    test("returns error result for operational failures", async () => {
+      const client = createMockClient({
+        handleDescribe: async () => {
+          throw new Error("Connection refused: Temporal server unavailable");
+        },
+      });
+
+      const adapter = createTemporalAdminAdapter(client);
+      const result = await adapter.views.getWorkflow("wf-1");
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("EXTERNAL");
+        expect(result.error.message).toContain("Connection refused");
+        expect(result.error.retryable).toBe(true);
+        expect(result.error.context).toEqual({ workflowId: "wf-1" });
+      }
     });
   });
 

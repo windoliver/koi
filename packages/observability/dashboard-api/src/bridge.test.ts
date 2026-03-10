@@ -305,4 +305,131 @@ describe("createAdminPanelBridge", () => {
     expect(channels).toEqual([]);
     expect(skills).toEqual([]);
   });
+
+  // ---------------------------------------------------------------------------
+  // runtimeViews
+  // ---------------------------------------------------------------------------
+
+  test("returns runtimeViews in result", () => {
+    const result = createAdminPanelBridge(createTestOptions());
+
+    expect(result.runtimeViews).toBeDefined();
+    expect(typeof result.runtimeViews?.getProcessTree).toBe("function");
+    expect(typeof result.runtimeViews?.getAgentProcfs).toBe("function");
+    expect(typeof result.runtimeViews?.getMiddlewareChain).toBe("function");
+    expect(typeof result.runtimeViews?.getGatewayTopology).toBe("function");
+  });
+
+  test("getProcessTree returns single agent node", async () => {
+    const opts = createTestOptions({
+      agentName: "tree-agent",
+      agentType: "worker",
+    });
+    const { runtimeViews, dataSource } = createAdminPanelBridge(opts);
+    expect(runtimeViews).toBeDefined();
+    const views = runtimeViews!;
+
+    const tree = await views.getProcessTree();
+    expect(tree.totalAgents).toBe(1);
+    expect(tree.roots).toHaveLength(1);
+    expect(typeof tree.timestamp).toBe("number");
+
+    const root = first(tree.roots);
+    expect(root.name).toBe("tree-agent");
+    expect(root.agentType).toBe("worker");
+    expect(root.state).toBe("running");
+    expect(root.depth).toBe(0);
+    expect(root.children).toEqual([]);
+
+    // Verify agentId matches the primary agent
+    const agents = await dataSource.listAgents();
+    expect(root.agentId).toBe(first(agents).agentId);
+  });
+
+  test("getAgentProcfs returns data for primary agent", async () => {
+    const opts = createTestOptions({
+      agentName: "procfs-agent",
+      agentType: "copilot",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      channels: ["cli", "slack"],
+    });
+    const result = createAdminPanelBridge(opts);
+    const views = result.runtimeViews!;
+    const { dataSource } = result;
+
+    const agents = await dataSource.listAgents();
+    const primaryId = first(agents).agentId;
+    const procfs = await views.getAgentProcfs(primaryId);
+
+    expect(procfs).toBeDefined();
+    expect(procfs?.agentId).toBe(primaryId);
+    expect(procfs?.name).toBe("procfs-agent");
+    expect(procfs?.agentType).toBe("copilot");
+    expect(procfs?.model).toBe("anthropic:claude-sonnet-4-5-20250929");
+    expect(procfs?.channels).toEqual(["cli", "slack"]);
+    expect(procfs?.turns).toBe(0);
+    expect(procfs?.tokenCount).toBe(0);
+    expect(typeof procfs?.startedAt).toBe("number");
+    expect(typeof procfs?.lastActivityAt).toBe("number");
+    expect(procfs?.childCount).toBe(0);
+    expect(procfs?.parentId).toBeUndefined();
+  });
+
+  test("getAgentProcfs returns undefined for unknown ID", async () => {
+    const { runtimeViews } = createAdminPanelBridge(createTestOptions());
+    const views = runtimeViews!;
+
+    const procfs = await views.getAgentProcfs(agentId("unknown-id"));
+    expect(procfs).toBeUndefined();
+  });
+
+  test("getMiddlewareChain returns empty entries", async () => {
+    const result = createAdminPanelBridge(createTestOptions());
+    const views = result.runtimeViews!;
+    const { dataSource } = result;
+
+    const agents = await dataSource.listAgents();
+    const chain = await views.getMiddlewareChain(first(agents).agentId);
+
+    expect(chain.agentId).toBe(first(agents).agentId);
+    expect(chain.entries).toEqual([]);
+  });
+
+  test("getGatewayTopology returns connected channels", async () => {
+    const opts = createTestOptions({
+      channels: ["cli", "telegram"],
+    });
+    const result = createAdminPanelBridge(opts);
+    const views = result.runtimeViews!;
+    const { dataSource } = result;
+
+    const topology = await views.getGatewayTopology();
+    expect(topology.connections).toHaveLength(2);
+    expect(topology.nodeCount).toBe(2);
+    expect(typeof topology.timestamp).toBe("number");
+
+    const agents = await dataSource.listAgents();
+    const primaryId = first(agents).agentId;
+
+    const conn0 = first(topology.connections);
+    expect(conn0.channelType).toBe("cli");
+    expect(conn0.agentId).toBe(primaryId);
+    expect(conn0.connected).toBe(true);
+    expect(typeof conn0.connectedAt).toBe("number");
+
+    const conn1 = topology.connections[1];
+    expect(conn1).toBeDefined();
+    expect(conn1?.channelType).toBe("telegram");
+    expect(conn1?.agentId).toBe(primaryId);
+    expect(conn1?.connected).toBe(true);
+  });
+
+  test("getGatewayTopology returns empty when no channels", async () => {
+    const { runtimeViews } = createAdminPanelBridge(createTestOptions({ channels: [] }));
+    const views = runtimeViews!;
+
+    const topology = await views.getGatewayTopology();
+    expect(topology.connections).toEqual([]);
+    expect(topology.nodeCount).toBe(0);
+  });
 });

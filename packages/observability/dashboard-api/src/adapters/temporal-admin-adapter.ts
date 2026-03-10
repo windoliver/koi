@@ -103,15 +103,32 @@ function mapStatus(sdkStatus: string): WorkflowStatus {
 // Error mapping
 // ---------------------------------------------------------------------------
 
-function mapToKoiError(e: unknown, context: Readonly<Record<string, unknown>>): KoiError {
+function mapToKoiError(
+  e: unknown,
+  context: Readonly<Record<string, unknown>>,
+  retryable = false,
+): KoiError {
   const message = e instanceof Error ? e.message : String(e);
   return {
     code: "EXTERNAL",
     message,
-    retryable: false,
+    retryable,
     cause: e,
     context,
   };
+}
+
+/**
+ * Detect whether a Temporal error indicates "workflow not found" vs an
+ * operational failure (server down, network timeout, etc.).
+ *
+ * Temporal SDK throws `WorkflowNotFoundError` whose message includes
+ * "not found" — we use a message heuristic to avoid importing the SDK.
+ */
+function isWorkflowNotFoundError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const msg = e.message.toLowerCase();
+  return msg.includes("workflow not found") || msg.includes("not found");
 }
 
 // ---------------------------------------------------------------------------
@@ -181,13 +198,19 @@ export function createTemporalAdminAdapter(
     return summaries;
   };
 
-  const getWorkflow = async (id: string): Promise<WorkflowDetail | undefined> => {
+  const getWorkflow = async (id: string): Promise<Result<WorkflowDetail | undefined, KoiError>> => {
     try {
       const handle = client.workflow.getHandle(id);
       const desc = await handle.describe();
-      return mapDescriptionToDetail(desc);
-    } catch {
-      return undefined;
+      return { ok: true, value: mapDescriptionToDetail(desc) };
+    } catch (e: unknown) {
+      if (isWorkflowNotFoundError(e)) {
+        return { ok: true, value: undefined };
+      }
+      return {
+        ok: false,
+        error: mapToKoiError(e, { workflowId: id }, true),
+      };
     }
   };
 

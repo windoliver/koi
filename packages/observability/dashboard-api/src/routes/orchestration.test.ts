@@ -172,7 +172,8 @@ function createMockViews(options?: {
     temporal: {
       getHealth: () => MOCK_TEMPORAL_HEALTH,
       listWorkflows: async () => [MOCK_WORKFLOW_SUMMARY],
-      getWorkflow: async (id) => (id === "wf-1" ? MOCK_WORKFLOW_DETAIL : undefined),
+      getWorkflow: async (id) =>
+        id === "wf-1" ? { ok: true, value: MOCK_WORKFLOW_DETAIL } : { ok: true, value: undefined },
     },
     scheduler: {
       listTasks: async () => [MOCK_SCHEDULER_TASK],
@@ -299,6 +300,35 @@ describe("handleTemporalWorkflow", () => {
     expect(data.workflowId).toBe("wf-1");
     expect(data.runId).toBe("run-abc-123");
     expect(data.pendingActivities).toBe(2);
+  });
+
+  test("returns 502 when getWorkflow returns an error result", async () => {
+    const views: RuntimeViewDataSource = {
+      ...createMockViews(),
+      temporal: {
+        getHealth: () => MOCK_TEMPORAL_HEALTH,
+        listWorkflows: async () => [MOCK_WORKFLOW_SUMMARY],
+        getWorkflow: async () => ({
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: "Connection refused: Temporal server unavailable",
+            retryable: true,
+            context: {},
+          },
+        }),
+      },
+    };
+    const res = await handleTemporalWorkflow(
+      makeReq("/view/temporal/workflows/wf-1"),
+      { id: "wf-1" },
+      views,
+    );
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as Record<string, unknown>;
+    const error = body.error as Record<string, unknown>;
+    expect(error.code).toBe("EXTERNAL");
+    expect(error.message).toContain("Connection refused");
   });
 });
 

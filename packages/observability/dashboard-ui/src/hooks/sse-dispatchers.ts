@@ -17,6 +17,7 @@ import {
 } from "@koi/dashboard-types";
 import { fetchAgents } from "../lib/api-client.js";
 import { useAgentsStore } from "../stores/agents-store.js";
+import { useOrchestrationStore } from "../stores/orchestration-store.js";
 import { useTreeStore } from "../stores/tree-store.js";
 
 /** Dispatch an agent domain event to the agents store. */
@@ -62,6 +63,19 @@ function invalidateTreeDebounced(): void {
   }, 200);
 }
 
+/** Orchestration invalidation debounce timer (200ms coalescing). */
+let orchestrationInvalidateTimer: ReturnType<typeof setTimeout> | undefined;
+
+function invalidateOrchestrationDebounced(): void {
+  if (orchestrationInvalidateTimer !== undefined) {
+    clearTimeout(orchestrationInvalidateTimer);
+  }
+  orchestrationInvalidateTimer = setTimeout(() => {
+    useOrchestrationStore.getState().invalidate();
+    orchestrationInvalidateTimer = undefined;
+  }, 200);
+}
+
 /** Dispatch a nexus event — debounced tree invalidation. */
 function dispatchNexusEvent(event: DashboardEvent): void {
   if (!isNexusEvent(event)) return;
@@ -74,26 +88,28 @@ function dispatchGatewayEvent(event: DashboardEvent): void {
   invalidateTreeDebounced();
 }
 
-/** Dispatch a temporal event — currently a no-op (store refreshed via REST). */
+/** Dispatch a temporal event — debounced orchestration invalidation. */
 function dispatchTemporalEvent(event: DashboardEvent): void {
   if (!isTemporalEvent(event)) return;
-  // Temporal events invalidate the orchestration tab to trigger REST refetch.
-  // Direct store mutation will be added when the SSE→store bridge is wired.
+  invalidateOrchestrationDebounced();
 }
 
-/** Dispatch a scheduler event — currently a no-op (store refreshed via REST). */
+/** Dispatch a scheduler event — debounced orchestration invalidation. */
 function dispatchSchedulerEvent(event: DashboardEvent): void {
   if (!isSchedulerEvent(event)) return;
+  invalidateOrchestrationDebounced();
 }
 
-/** Dispatch a task board event — currently a no-op (store refreshed via REST). */
+/** Dispatch a task board event — debounced orchestration invalidation. */
 function dispatchTaskBoardEvent(event: DashboardEvent): void {
   if (!isTaskBoardEvent(event)) return;
+  invalidateOrchestrationDebounced();
 }
 
-/** Dispatch a harness event — currently a no-op (store refreshed via REST). */
+/** Dispatch a harness event — debounced orchestration invalidation. */
 function dispatchHarnessEvent(event: DashboardEvent): void {
   if (!isHarnessEvent(event)) return;
+  invalidateOrchestrationDebounced();
 }
 
 /**

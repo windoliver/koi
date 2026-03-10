@@ -183,7 +183,7 @@ export function createDashboardHandler(
       {
         method: "DELETE",
         pattern: "/fs/file",
-        handler: (req, params) => handleFsDelete(req, params, fileSystem),
+        handler: (req, params) => handleFsDelete(req, params, fileSystem, editablePaths),
       },
     );
   }

@@ -8,7 +8,7 @@
  * sync (in-memory engine registry) or async (remote query).
  */
 
-import type { AgentId, ProcessState } from "@koi/core";
+import type { AgentId, KoiError, ProcessState, Result } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Process tree — recursive agent hierarchy
@@ -219,7 +219,7 @@ export interface RuntimeViewDataSource {
   readonly temporal?: {
     readonly getHealth: () => TemporalHealth | Promise<TemporalHealth>;
     readonly listWorkflows: () => Promise<readonly WorkflowSummary[]>;
-    readonly getWorkflow: (id: string) => Promise<WorkflowDetail | undefined>;
+    readonly getWorkflow: (id: string) => Promise<Result<WorkflowDetail | undefined, KoiError>>;
   };
 
   readonly scheduler?: {
