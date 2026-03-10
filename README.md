@@ -15,7 +15,6 @@
   <a href="#architecture">Architecture</a> &middot;
   <a href="#cli">CLI</a> &middot;
   <a href="#admin-panel">Admin Panel</a> &middot;
-  <a href="#demos">Demos</a> &middot;
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -240,60 +239,6 @@ context:
     - kind: memory
       query: "user preferences"
 ```
-
-## Demos
-
-40 showcase demos across Personal (P1-P20) and Enterprise (E1-E20) tracks. All packages exist — every demo is buildable now.
-
-### Personal Track
-
-| # | Demo | Key Feature |
-|---|------|-------------|
-| P1 | **First Contact** | Time-to-magic < 60s, YAML IS the agent |
-| P2 | **Connected Agent** | Daily briefer via Gmail/Calendar/Drive (Nexus connectors) |
-| P3 | **Verified Forge** | Safe self-extension (4-stage verify vs 512 CVEs) |
-| P4 | **Omni-Channel** | One agent across CLI, Telegram, Slack, Voice — all 15 channels |
-| P5 | **Time Travel** | Rewind, fork, replay — zero competitors |
-| P6 | **Token Economics** | Cascade routing, budget kill switch, circuit breaker |
-| P7 | **Stock Monitor** | MCP: Yahoo Finance + Alpha Vantage + SEC EDGAR |
-| P8 | **Social Digest** | MCP: Reddit + YouTube + HN + RSS + GNews |
-| P9 | **Voice Agent** | LiveKit WebRTC + Deepgram STT + OpenAI TTS |
-| P10 | **Browser Autopilot** | A11y-tree-first automation + time-travel rollback |
-| P11 | **Smart Home** | Home Assistant MCP (80+ tools) + permissions |
-| P12 | **Content Pipeline** | Agent swarm: research, write, edit, publish |
-| P13 | **Personal CRM** | Nexus memory + HubSpot MCP + relationship tracking |
-| P14 | **Health Tracker** | Scheduled check-ins + memory + Telegram alerts |
-| P15 | **Second Brain** | Nexus search + memory consolidation + skill export |
-| P16 | **Learning Loops** | ACE + Ralph Loop + self-improvement |
-| P17 | **Evolving Ecosystem** | Natural selection, fitness scoring, crystallization |
-| P18 | **Code Copilot** | IDE integration, bidirectional MCP, LSP |
-| P19 | **Deploy & Operate** | systemd/launchd, health checks, crash recovery |
-| P20 | **Personal AI Symphony** | 24/7 personal AI — capstone (all features combined) |
-
-### Enterprise Track
-
-| # | Demo | Key Feature |
-|---|------|-------------|
-| E1 | **Everything-is-a-File** | 14 Nexus connectors unified under path API |
-| E2 | **Search & Memory** | BM25S + semantic + hybrid RRF + 3-tier memory |
-| E3 | **Agent Mesh** | Gateway + Node + HMAC delegation + mDNS |
-| E4 | **Agent Swarm** | Task board + worktree isolation + structured handoff |
-| E5 | **Governance Stack** | Graduated sanctions, permissions, audit |
-| E6 | **Permissions** | Zanzibar ReBAC (10M+ tuples) + Tiger Cache |
-| E7 | **Identity & Auth** | JWT-VC + Ed25519 + Agent Cards + delegation chains |
-| E8 | **Payments & Credits** | NexusPay + TigerBeetle ledger + X402 protocol |
-| E9 | **Compliance & Audit** | Immutable audit trail + WAL + event replay |
-| E10 | **Agent Company** | Org chart for agents, departments, budgets, skill sharing |
-| E11 | **Collusion Detection** | Governance graphs + fraud ring detection |
-| E12 | **Multi-Tenant SaaS** | Zone isolation + cross-zone sharing + capacity management |
-| E13 | **Workflow Automation** | Event bus + WAL + YAML workflows + triggers |
-| E14 | **Sandboxed Execution** | 12 backends: Docker, E2B, Wasm, Cloudflare, Vercel, Daytona |
-| E15 | **Agent Evaluation** | Graders, regression testing, baseline comparison |
-| E16 | **Skill Store** | 3-tier skills + multi-format exporters + approval workflows |
-| E17 | **Developer Platform** | Admin panel + AG-UI streaming + canvas workflow builder |
-| E18 | **Data Pipelines** | 14 connectors + sync pipeline + mount management |
-| E19 | **Federation & Edge** | Raft consensus + zone lifecycle + offline queue |
-| E20 | **Enterprise Symphony** | Full enterprise deployment — capstone |
 
 ## MCP Servers
 
