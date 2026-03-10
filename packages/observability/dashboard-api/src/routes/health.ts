@@ -6,9 +6,16 @@ import { jsonResponse } from "../router.js";
 
 const startedAt = Date.now();
 
-export function handleHealth(): Response {
+export interface DashboardCapabilities {
+  readonly fileSystem: boolean;
+  readonly runtimeViews: boolean;
+  readonly commands: boolean;
+}
+
+export function handleHealth(capabilities?: DashboardCapabilities): Response {
   return jsonResponse({
     status: "ok",
     uptimeMs: Date.now() - startedAt,
+    ...(capabilities !== undefined ? { capabilities } : {}),
   });
 }

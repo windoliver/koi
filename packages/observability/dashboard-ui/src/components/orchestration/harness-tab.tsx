@@ -7,6 +7,7 @@ import { useCallback } from "react";
 import { useRuntimeView } from "../../hooks/use-runtime-view.js";
 import { pauseHarness, resumeHarness } from "../../lib/api-client.js";
 import { formatDuration, formatRelativeTime } from "../../lib/format.js";
+import { useOrchestrationStore } from "../../stores/orchestration-store.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
 
 // ---------------------------------------------------------------------------
@@ -157,13 +158,15 @@ function CheckpointTimeline({
 // ---------------------------------------------------------------------------
 
 export function HarnessTab(): React.ReactElement {
+  const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
+
   const { data: status, isLoading: statusLoading, refetch: refetchStatus } = useRuntimeView<HarnessStatus>(
     "/harness/status",
-    { refetchInterval: 5_000 },
+    { refetchInterval: 5_000, invalidationKey: lastInvalidatedAt },
   );
   const { data: checkpoints, isLoading: cpLoading } = useRuntimeView<readonly CheckpointEntry[]>(
     "/harness/checkpoints",
-    { refetchInterval: 10_000 },
+    { refetchInterval: 10_000, invalidationKey: lastInvalidatedAt },
   );
 
   const handlePause = useCallback(() => {

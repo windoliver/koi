@@ -8,6 +8,7 @@
 import type { WorkflowDetail } from "@koi/dashboard-types";
 import { useRuntimeView } from "../../hooks/use-runtime-view.js";
 import { formatDuration, formatRelativeTime } from "../../lib/format.js";
+import { useOrchestrationStore } from "../../stores/orchestration-store.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
 
 const STATUS_COLORS: Readonly<Record<string, string>> = {
@@ -57,9 +58,10 @@ export function WorkflowDetailPanel({
   readonly workflowId: string;
   readonly onClose: () => void;
 }): React.ReactElement {
+  const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
   const { data: detail, isLoading } = useRuntimeView<WorkflowDetail>(
     `/temporal/workflows/${encodeURIComponent(workflowId)}`,
-    { refetchInterval: 5_000 },
+    { refetchInterval: 5_000, invalidationKey: lastInvalidatedAt },
   );
 
   return (

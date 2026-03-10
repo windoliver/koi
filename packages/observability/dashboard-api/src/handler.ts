@@ -35,6 +35,7 @@ import {
   handleFsSearch,
   handleFsWrite,
 } from "./routes/filesystem.js";
+import type { DashboardCapabilities } from "./routes/health.js";
 import { handleHealth } from "./routes/health.js";
 import { handleMetrics } from "./routes/metrics.js";
 import {
@@ -107,6 +108,13 @@ export function createDashboardHandler(
   const batchIntervalMs = config?.sseBatchIntervalMs ?? DEFAULT_DASHBOARD_CONFIG.sseBatchIntervalMs;
   const maxConnections = config?.maxSseConnections ?? DEFAULT_DASHBOARD_CONFIG.maxSseConnections;
 
+  // Compute capabilities from provided options
+  const capabilities: DashboardCapabilities = {
+    fileSystem: fileSystem !== undefined,
+    runtimeViews: runtimeViews !== undefined,
+    commands: commands !== undefined,
+  };
+
   // SSE producer
   const sseProducer = createSseProducer(dataSource, {
     batchIntervalMs,
@@ -124,7 +132,7 @@ export function createDashboardHandler(
     readonly handler: (req: Request, params: RouteParams) => Response | Promise<Response>;
   }> = [
     // Core routes (always available)
-    { method: "GET", pattern: "/health", handler: (_req, _params) => handleHealth() },
+    { method: "GET", pattern: "/health", handler: (_req, _params) => handleHealth(capabilities) },
     {
       method: "GET",
       pattern: "/agents",

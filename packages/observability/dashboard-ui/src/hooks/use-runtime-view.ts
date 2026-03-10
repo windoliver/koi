@@ -24,7 +24,12 @@ async function fetchView<T>(viewPath: string): Promise<T> {
 
 export function useRuntimeView<T>(
   viewPath: string,
-  options?: { readonly enabled?: boolean; readonly refetchInterval?: number },
+  options?: {
+    readonly enabled?: boolean;
+    readonly refetchInterval?: number;
+    /** Include in query key to trigger refetch on SSE invalidation. */
+    readonly invalidationKey?: string | number;
+  },
 ): {
   readonly data: T | undefined;
   readonly isLoading: boolean;
@@ -32,7 +37,7 @@ export function useRuntimeView<T>(
   readonly refetch: () => void;
 } {
   const query = useQuery<T>({
-    queryKey: ["runtime-view", viewPath],
+    queryKey: ["runtime-view", viewPath, options?.invalidationKey],
     queryFn: () => fetchView<T>(viewPath),
     enabled: options?.enabled !== false,
     ...(options?.refetchInterval !== undefined ? { refetchInterval: options.refetchInterval } : {}),

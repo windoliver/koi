@@ -5,8 +5,9 @@
 import type { TemporalHealth, WorkflowSummary } from "@koi/dashboard-types";
 import { useCallback, useState } from "react";
 import { useRuntimeView } from "../../hooks/use-runtime-view.js";
-import { formatDuration, formatRelativeTime } from "../../lib/format.js";
 import { signalWorkflow, terminateWorkflow } from "../../lib/api-client.js";
+import { formatDuration } from "../../lib/format.js";
+import { useOrchestrationStore } from "../../stores/orchestration-store.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
 import { WorkflowDetailPanel } from "./workflow-detail-panel.js";
 
@@ -57,6 +58,119 @@ function HealthIndicator({ health }: { readonly health: TemporalHealth }): React
   );
 }
 
+// ---------------------------------------------------------------------------
+// Signal dialog — lets user choose signal name and optional JSON payload
+// ---------------------------------------------------------------------------
+
+function SignalDialog({
+  workflowId,
+  onClose,
+  onSent,
+}: {
+  readonly workflowId: string;
+  readonly onClose: () => void;
+  readonly onSent: () => void;
+}): React.ReactElement {
+  const [signalName, setSignalName] = useState("refresh");
+  const [payloadText, setPayloadText] = useState("");
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [sending, setSending] = useState(false);
+
+  const handleSubmit = useCallback((): void => {
+    setError(undefined);
+
+    let payload: unknown;
+    if (payloadText.trim().length > 0) {
+      try {
+        payload = JSON.parse(payloadText);
+      } catch {
+        setError("Invalid JSON payload");
+        return;
+      }
+    }
+
+    setSending(true);
+    void signalWorkflow(workflowId, signalName, payload)
+      .then(() => {
+        onSent();
+        onClose();
+      })
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        setSending(false);
+      });
+  }, [workflowId, signalName, payloadText, onSent, onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center">
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/50"
+        onClick={onClose}
+        aria-label="Close dialog"
+      />
+      <div className="relative z-10 w-full max-w-sm rounded-lg border border-[var(--color-border,#444)] bg-[var(--color-background,#1e1e2e)] p-4 shadow-xl">
+        <h3 className="mb-3 text-sm font-semibold text-[var(--color-foreground,#cdd6f4)]">
+          Signal Workflow
+        </h3>
+        <div className="mb-2 text-xs text-[var(--color-muted,#888)] font-mono truncate">
+          {workflowId}
+        </div>
+
+        {/* Signal name */}
+        <label className="mb-1 block text-xs text-[var(--color-muted,#888)]">Signal Name</label>
+        <input
+          type="text"
+          value={signalName}
+          onChange={(e) => setSignalName(e.target.value)}
+          className="mb-3 w-full rounded border border-[var(--color-border,#444)] bg-[var(--color-card,#313244)] px-2 py-1.5 text-xs text-[var(--color-foreground,#cdd6f4)] outline-none focus:border-[var(--color-primary,#89b4fa)]"
+        />
+
+        {/* Payload */}
+        <label className="mb-1 block text-xs text-[var(--color-muted,#888)]">
+          Payload (JSON, optional)
+        </label>
+        <textarea
+          value={payloadText}
+          onChange={(e) => setPayloadText(e.target.value)}
+          placeholder='e.g. {"key": "value"}'
+          rows={3}
+          className="mb-3 w-full rounded border border-[var(--color-border,#444)] bg-[var(--color-card,#313244)] px-2 py-1.5 text-xs font-mono text-[var(--color-foreground,#cdd6f4)] outline-none focus:border-[var(--color-primary,#89b4fa)] resize-none"
+        />
+
+        {/* Error */}
+        {error !== undefined && (
+          <div className="mb-2 text-xs text-red-400">{error}</div>
+        )}
+
+        {/* Actions */}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded px-3 py-1.5 text-xs text-[var(--color-muted,#888)] hover:text-[var(--color-foreground,#cdd6f4)]"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={sending || signalName.trim().length === 0}
+            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            onClick={handleSubmit}
+          >
+            {sending ? "Sending..." : "Send Signal"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Workflow row
+// ---------------------------------------------------------------------------
+
 function WorkflowRow({
   workflow,
   onSignal,
@@ -85,7 +199,7 @@ function WorkflowRow({
         {workflow.workflowType}
       </td>
       <td className="px-3 py-2 text-xs text-[var(--color-muted,#888)]">
-        {workflow.entityType ?? "—"}
+        {workflow.entityType ?? "\u2014"}
       </td>
       <td className={`px-3 py-2 text-xs font-medium ${statusColor}`}>
         {workflow.status}
@@ -99,14 +213,14 @@ function WorkflowRow({
             <button
               type="button"
               className="rounded bg-blue-600/20 px-2 py-0.5 text-xs text-blue-400 hover:bg-blue-600/30"
-              onClick={() => onSignal(workflow.workflowId)}
+              onClick={(e) => { e.stopPropagation(); onSignal(workflow.workflowId); }}
             >
               Signal
             </button>
             <button
               type="button"
               className="rounded bg-red-600/20 px-2 py-0.5 text-xs text-red-400 hover:bg-red-600/30"
-              onClick={() => onTerminate(workflow.workflowId)}
+              onClick={(e) => { e.stopPropagation(); onTerminate(workflow.workflowId); }}
             >
               Terminate
             </button>
@@ -117,22 +231,27 @@ function WorkflowRow({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export function TemporalTab(): React.ReactElement {
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | undefined>(undefined);
+  const [signalTarget, setSignalTarget] = useState<string | undefined>(undefined);
+  const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
 
   const { data: health, isLoading: healthLoading } = useRuntimeView<TemporalHealth>(
     "/temporal/health",
-    { refetchInterval: 15_000 },
+    { refetchInterval: 15_000, invalidationKey: lastInvalidatedAt },
   );
   const { data: workflows, isLoading: wfLoading, refetch } = useRuntimeView<readonly WorkflowSummary[]>(
     "/temporal/workflows",
-    { refetchInterval: 5_000 },
+    { refetchInterval: 5_000, invalidationKey: lastInvalidatedAt },
   );
 
   const handleSignal = useCallback((id: string) => {
-    // Simple signal with empty payload — a modal could be added later
-    void signalWorkflow(id, "refresh", undefined).then(() => refetch());
-  }, [refetch]);
+    setSignalTarget(id);
+  }, []);
 
   const handleTerminate = useCallback((id: string) => {
     void terminateWorkflow(id).then(() => refetch());
@@ -191,6 +310,15 @@ export function TemporalTab(): React.ReactElement {
         <WorkflowDetailPanel
           workflowId={selectedWorkflowId}
           onClose={() => setSelectedWorkflowId(undefined)}
+        />
+      )}
+
+      {/* Signal dialog */}
+      {signalTarget !== undefined && (
+        <SignalDialog
+          workflowId={signalTarget}
+          onClose={() => setSignalTarget(undefined)}
+          onSent={() => refetch()}
         />
       )}
     </div>

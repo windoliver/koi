@@ -31,13 +31,18 @@ interface TemporalWorkflowExecutionLike {
     readonly searchAttributes: Readonly<Record<string, unknown>>;
     readonly memo: Readonly<Record<string, unknown>>;
 }
+/** Shape returned by handle.describe() including pending state. */
+interface TemporalWorkflowDescriptionLike extends TemporalWorkflowExecutionLike {
+    readonly pendingActivities: readonly unknown[];
+    /** Pending signals (Temporal SDK >= 1.9). May be absent on older servers. */
+    readonly pendingNexusOperations?: readonly unknown[];
+}
 /** Minimal shape of a workflow handle returned by getHandle. */
 interface TemporalWorkflowHandleLike {
-    readonly describe: () => Promise<TemporalWorkflowExecutionLike & {
-        readonly pendingActivities: readonly unknown[];
-    }>;
+    readonly describe: () => Promise<TemporalWorkflowDescriptionLike>;
     readonly signal: (signalName: string, ...args: readonly unknown[]) => Promise<void>;
     readonly terminate: (reason?: string) => Promise<void>;
+    readonly query: (queryType: string) => Promise<unknown>;
 }
 /** Async iterable returned by workflow.list(). */
 interface TemporalWorkflowListLike {
@@ -179,6 +184,11 @@ interface BridgeOptions {
 interface AdminPanelBridgeResult extends DashboardHandlerOptions {
     /** Emit a dashboard event to all subscribers. */
     readonly emitEvent: (event: DashboardEvent) => void;
+    /** Update agent metrics (turns, tokens). Emits a metrics_updated event. */
+    readonly updateMetrics: (metrics: {
+        readonly turns: number;
+        readonly totalTokens: number;
+    }) => void;
 }
 declare function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridgeResult;
 

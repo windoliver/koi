@@ -15,6 +15,7 @@ import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-a
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { AdminFlags } from "../args.js";
+import { resolveDashboardAssetsDir } from "../helpers.js";
 
 const DEFAULT_ADMIN_PORT = 3100;
 
@@ -49,7 +50,11 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     skills: skillNames,
   });
 
-  const dashboardResult = createDashboardHandler(bridge, { cors: true });
+  const assetsDir = resolveDashboardAssetsDir();
+  const dashboardResult = createDashboardHandler(bridge, {
+    cors: true,
+    ...(assetsDir !== undefined ? { assetsDir } : {}),
+  });
 
   // 3. Start HTTP server
   const port = flags.port ?? DEFAULT_ADMIN_PORT;

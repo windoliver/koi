@@ -5,7 +5,9 @@
  * Each tab is only visible when its data source is available (graceful degradation).
  */
 
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import type { DashboardCapabilities } from "../../lib/api-client.js";
+import { fetchHealth } from "../../lib/api-client.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
 
 // Lazy-load tab contents — drawer is hidden by default so this avoids
@@ -56,6 +58,30 @@ export function OrchestrationDrawer({
   readonly onClose: () => void;
 }): React.ReactElement | null {
   const [activeTab, setActiveTab] = useState<TabId>("temporal");
+  const [capabilities, setCapabilities] = useState<DashboardCapabilities | undefined>(undefined);
+
+  // Fetch capabilities once when drawer opens
+  useEffect(() => {
+    if (!open) return;
+    void fetchHealth().then((health) => {
+      setCapabilities(health.capabilities);
+    });
+  }, [open]);
+
+  // Only show tabs when runtimeViews is available
+  const visibleTabs = useMemo(() => {
+    if (capabilities === undefined) return TABS;
+    if (!capabilities.runtimeViews) return [];
+    return TABS;
+  }, [capabilities]);
+
+  // Reset active tab if it's no longer visible
+  useEffect(() => {
+    if (visibleTabs.length > 0 && !visibleTabs.some((t) => t.id === activeTab)) {
+      const first = visibleTabs[0];
+      if (first !== undefined) setActiveTab(first.id);
+    }
+  }, [visibleTabs, activeTab]);
 
   // Close drawer on Escape key
   useEffect(() => {
@@ -103,28 +129,36 @@ export function OrchestrationDrawer({
           </button>
         </div>
 
-        {/* Tab bar */}
-        <div className="flex border-b border-[var(--color-border,#444)]">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
-                activeTab === tab.id
-                  ? "border-b-2 border-[var(--color-primary,#89b4fa)] text-[var(--color-primary,#89b4fa)]"
-                  : "text-[var(--color-muted,#888)] hover:text-[var(--color-foreground,#cdd6f4)]"
-              }`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        {visibleTabs.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center text-xs text-[var(--color-muted,#888)]">
+            Orchestration views not available
+          </div>
+        ) : (
+          <>
+            {/* Tab bar */}
+            <div className="flex border-b border-[var(--color-border,#444)]">
+              {visibleTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                    activeTab === tab.id
+                      ? "border-b-2 border-[var(--color-primary,#89b4fa)] text-[var(--color-primary,#89b4fa)]"
+                      : "text-[var(--color-muted,#888)] hover:text-[var(--color-foreground,#cdd6f4)]"
+                  }`}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
-        {/* Tab content */}
-        <div className="flex-1 overflow-y-auto">
-          <TabContent tabId={activeTab} />
-        </div>
+            {/* Tab content */}
+            <div className="flex-1 overflow-y-auto">
+              <TabContent tabId={activeTab} />
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

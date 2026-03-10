@@ -57,6 +57,26 @@ export function fetchMetrics(): Promise<DashboardSystemMetrics> {
 }
 
 // ---------------------------------------------------------------------------
+// Health / capabilities
+// ---------------------------------------------------------------------------
+
+export interface DashboardCapabilities {
+  readonly fileSystem: boolean;
+  readonly runtimeViews: boolean;
+  readonly commands: boolean;
+}
+
+export interface HealthResponse {
+  readonly status: string;
+  readonly uptimeMs: number;
+  readonly capabilities?: DashboardCapabilities;
+}
+
+export function fetchHealth(): Promise<HealthResponse> {
+  return fetchApi<HealthResponse>("/health");
+}
+
+// ---------------------------------------------------------------------------
 // Filesystem endpoints
 // ---------------------------------------------------------------------------
 

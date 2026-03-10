@@ -24,7 +24,7 @@ import type { SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
-import { extractTextFromBlocks } from "../helpers.js";
+import { extractTextFromBlocks, resolveDashboardAssetsDir } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
@@ -235,8 +235,10 @@ export async function runStart(flags: StartFlags): Promise<void> {
         skills: skillNames,
       });
 
+      const assetsDir = resolveDashboardAssetsDir();
       const dashboardResult: DashboardHandlerResult = createDashboardHandler(adminBridge, {
         cors: true,
+        ...(assetsDir !== undefined ? { assetsDir } : {}),
       });
 
       const server = Bun.serve({

@@ -10,6 +10,7 @@ import ReactFlow, { Background, Controls } from "reactflow";
 import type { Edge, Node, NodeProps } from "reactflow";
 import "reactflow/dist/style.css";
 import { useRuntimeView } from "../../hooks/use-runtime-view.js";
+import { useOrchestrationStore } from "../../stores/orchestration-store.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
 import { TaskNodeDetailPanel } from "./task-node-detail-panel.js";
 
@@ -173,10 +174,11 @@ function computeLayout(snapshot: TaskBoardSnapshot): {
 
 export function TaskDagTab(): React.ReactElement {
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(undefined);
+  const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
 
   const { data: snapshot, isLoading } = useRuntimeView<TaskBoardSnapshot>(
     "/taskboard",
-    { refetchInterval: 5_000 },
+    { refetchInterval: 5_000, invalidationKey: lastInvalidatedAt },
   );
 
   const layout = useMemo(

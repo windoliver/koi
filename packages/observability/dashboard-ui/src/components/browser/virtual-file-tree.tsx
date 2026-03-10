@@ -6,6 +6,7 @@
  * context menus, and lazy directory loading from the original FileTreeNode.
  */
 
+import type { Virtualizer } from "@tanstack/react-virtual";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useRef } from "react";
 import type { FlatTreeItem } from "../../hooks/use-flat-tree.js";
@@ -103,7 +104,7 @@ function VirtualFileTreeInner({
               setExpanded(item.path, true);
             } else {
               // Move focus to first child (next item in flat list)
-              focusTreeNodeAtIndex(parentRef.current, index + 1);
+              focusTreeNodeAtIndex(parentRef.current, index + 1, virtualizer);
             }
           }
           e.preventDefault();
@@ -117,7 +118,7 @@ function VirtualFileTreeInner({
             // Move to parent: find the nearest item at depth - 1
             const parentIndex = findParentIndex(flatItems, index);
             if (parentIndex >= 0) {
-              focusTreeNodeAtIndex(parentRef.current, parentIndex);
+              focusTreeNodeAtIndex(parentRef.current, parentIndex, virtualizer);
             }
           }
           e.preventDefault();
@@ -125,13 +126,13 @@ function VirtualFileTreeInner({
         }
 
         case "ArrowDown": {
-          focusTreeNodeAtIndex(parentRef.current, index + 1);
+          focusTreeNodeAtIndex(parentRef.current, index + 1, virtualizer);
           e.preventDefault();
           break;
         }
 
         case "ArrowUp": {
-          focusTreeNodeAtIndex(parentRef.current, index - 1);
+          focusTreeNodeAtIndex(parentRef.current, index - 1, virtualizer);
           e.preventDefault();
           break;
         }
@@ -140,7 +141,7 @@ function VirtualFileTreeInner({
           break;
       }
     },
-    [flatItems, toggleExpanded, setExpanded, select],
+    [flatItems, toggleExpanded, setExpanded, select, virtualizer],
   );
 
   if (flatItems.length === 0) {
@@ -294,14 +295,32 @@ function findParentIndex(
   return -1;
 }
 
-/** Focus a tree node button at a given flat index. */
+/** Focus a tree node button at a given flat index, scrolling into view if needed. */
 function focusTreeNodeAtIndex(
   container: HTMLElement | null,
   index: number,
+  virtualizer?: Virtualizer<HTMLDivElement, Element>,
 ): void {
-  if (container === null) return;
+  if (container === null || index < 0) return;
+
+  // Try to focus immediately (element is already in the virtual window)
   const button = container.querySelector<HTMLButtonElement>(
     `button[data-tree-index="${index}"]`,
   );
-  button?.focus();
+  if (button !== null) {
+    button.focus();
+    return;
+  }
+
+  // Element is outside the virtual window — scroll it into view first
+  if (virtualizer !== undefined) {
+    virtualizer.scrollToIndex(index, { align: "auto" });
+    // Wait for the virtualizer to render the row, then focus
+    requestAnimationFrame(() => {
+      const el = container.querySelector<HTMLButtonElement>(
+        `button[data-tree-index="${index}"]`,
+      );
+      el?.focus();
+    });
+  }
 }

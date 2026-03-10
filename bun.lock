@@ -1067,6 +1067,7 @@
         "@koi/core": "workspace:*",
         "@koi/dashboard-api": "workspace:*",
         "@koi/dashboard-types": "workspace:*",
+        "@koi/dashboard-ui": "workspace:*",
         "@koi/deploy": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-external": "workspace:*",

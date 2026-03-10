@@ -19,6 +19,7 @@ import {
   retrySchedulerDlq,
 } from "../../lib/api-client.js";
 import { formatRelativeTime } from "../../lib/format.js";
+import { useOrchestrationStore } from "../../stores/orchestration-store.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
 
 // ---------------------------------------------------------------------------
@@ -205,21 +206,23 @@ function DlqRow({
 // ---------------------------------------------------------------------------
 
 export function SchedulerTab(): React.ReactElement {
+  const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
+
   const { data: stats, isLoading: statsLoading } = useRuntimeView<SchedulerStats>(
     "/scheduler/stats",
-    { refetchInterval: 5_000 },
+    { refetchInterval: 5_000, invalidationKey: lastInvalidatedAt },
   );
   const { data: tasks, isLoading: tasksLoading } = useRuntimeView<readonly SchedulerTaskSummary[]>(
     "/scheduler/tasks",
-    { refetchInterval: 5_000 },
+    { refetchInterval: 5_000, invalidationKey: lastInvalidatedAt },
   );
   const { data: schedules, isLoading: schedLoading, refetch: refetchSchedules } = useRuntimeView<readonly CronSchedule[]>(
     "/scheduler/schedules",
-    { refetchInterval: 10_000 },
+    { refetchInterval: 10_000, invalidationKey: lastInvalidatedAt },
   );
   const { data: dlq, isLoading: dlqLoading, refetch: refetchDlq } = useRuntimeView<readonly SchedulerDeadLetterEntry[]>(
     "/scheduler/dlq",
-    { refetchInterval: 10_000 },
+    { refetchInterval: 10_000, invalidationKey: lastInvalidatedAt },
   );
 
   const handlePauseSchedule = useCallback((id: string) => {

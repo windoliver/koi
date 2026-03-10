@@ -33,7 +33,7 @@ import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
 import type { ServeFlags } from "../args.js";
-import { extractTextFromBlocks } from "../helpers.js";
+import { extractTextFromBlocks, resolveDashboardAssetsDir } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
@@ -317,7 +317,11 @@ export async function runServe(flags: ServeFlags): Promise<void> {
 
   if (flags.admin && adminBridge !== undefined) {
     // Compose admin panel + health into a single HTTP server
-    const dashboardResult = createDashboardHandler(adminBridge, { cors: true });
+    const assetsDir = resolveDashboardAssetsDir();
+    const dashboardResult = createDashboardHandler(adminBridge, {
+      cors: true,
+      ...(assetsDir !== undefined ? { assetsDir } : {}),
+    });
 
     const healthHandler = createHealthHandler(() => true);
     const adminPort = flags.adminPort ?? healthPort;
