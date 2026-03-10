@@ -117,12 +117,14 @@ export function validateRequiredParam(
   return value;
 }
 
-/** Map a Result error to an HTTP error response. NOT_FOUND → 404, all others → 500. */
+/** Map a Result error to an HTTP error response. */
 export function mapResultToResponse(result: {
   readonly ok: boolean;
   readonly error?: { readonly code: string; readonly message: string };
 }): Response | undefined {
   if (result.ok || result.error === undefined) return undefined;
-  const status = result.error.code === "NOT_FOUND" ? 404 : 500;
-  return errorResponse(result.error.code, result.error.message, status);
+  const code = result.error.code;
+  const status =
+    code === "NOT_FOUND" ? 404 : code === "PERMISSION" ? 403 : code === "CONFLICT" ? 409 : 500;
+  return errorResponse(code, result.error.message, status);
 }

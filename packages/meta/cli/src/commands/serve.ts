@@ -371,9 +371,29 @@ export async function runServe(flags: ServeFlags): Promise<void> {
           return healthHandler(req);
         },
       });
+
+      // When admin runs on a different port, start a separate health-only
+      // server on the original health port so probes/LB still reach /health.
+      // let justified: conditionally set, called at cleanup
+      let separateHealthStop: (() => void) | undefined;
+      if (adminPort !== healthPort) {
+        const healthServer = createHealthServer({
+          port: healthPort,
+          onReady: () => true,
+        });
+        const hi = await healthServer.start();
+        separateHealthStop = () => healthServer.stop();
+        if (flags.verbose) {
+          process.stderr.write(`Health server: ${hi.url}\n`);
+        }
+      }
+
       stopServer = () => {
         server.stop(true);
         dashboardResult.dispose();
+        if (separateHealthStop !== undefined) {
+          separateHealthStop();
+        }
       };
       healthInfo = {
         url: server.url.toString(),

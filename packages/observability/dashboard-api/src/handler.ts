@@ -119,6 +119,15 @@ export function createDashboardHandler(
       taskBoard: runtimeViews?.taskBoard !== undefined,
       harness: runtimeViews?.harness !== undefined,
     },
+    ...(commands !== undefined
+      ? {
+          commandsDetail: {
+            pauseHarness: commands.pauseHarness !== undefined,
+            resumeHarness: commands.resumeHarness !== undefined,
+            retryDlq: commands.retrySchedulerDeadLetter !== undefined,
+          },
+        }
+      : {}),
   };
 
   // SSE producer

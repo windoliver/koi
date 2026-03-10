@@ -19,9 +19,9 @@ import { errorResponse, jsonResponse } from "../router.js";
 /** Returns true if the given path is editable. */
 export type EditablePathMatcher = (path: string) => boolean;
 
-/** Default: only workspace files are editable. */
+/** Default: all files within the FileSystemBackend root are editable. */
 export function createDefaultEditablePaths(): EditablePathMatcher {
-  return (path: string) => /\/workspace\//.test(path);
+  return () => true;
 }
 
 function getQueryParam(req: Request, name: string): string | undefined {

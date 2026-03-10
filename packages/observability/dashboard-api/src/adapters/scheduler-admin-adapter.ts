@@ -82,11 +82,9 @@ export interface SchedulerAdminClientWithSchedules extends SchedulerAdminClientL
 
 export interface SchedulerAdminAdapter {
   readonly views: NonNullable<RuntimeViewDataSource["scheduler"]>;
-  readonly commands: Required<
-    Pick<
-      CommandDispatcher,
-      "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter"
-    >
+  readonly commands: Pick<
+    CommandDispatcher,
+    "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter"
   >;
 }
 
@@ -169,69 +167,60 @@ export function createSchedulerAdminAdapter(
     },
   };
 
+  // Capture supported operations — only provide commands the client supports.
+  // When omitted, the route handler returns 501 and the UI hides the button.
+  const pauseFn = client.pause;
+  const resumeFn = client.resume;
+  const unscheduleFn = client.unschedule;
+
   const commands: SchedulerAdminAdapter["commands"] = {
-    async pauseSchedule(id: string): Promise<Result<void, KoiError>> {
-      if (client.pause === undefined) {
-        return {
-          ok: false,
-          error: { code: "PERMISSION", message: "Pause not supported", retryable: false },
-        };
-      }
-      const ok = await client.pause(id);
-      if (!ok) {
-        return {
-          ok: false,
-          error: { code: "NOT_FOUND", message: `Schedule ${id} not found`, retryable: false },
-        };
-      }
-      return { ok: true, value: undefined };
-    },
+    ...(pauseFn !== undefined
+      ? {
+          async pauseSchedule(id: string): Promise<Result<void, KoiError>> {
+            const ok = await pauseFn(id);
+            if (!ok) {
+              return {
+                ok: false,
+                error: { code: "NOT_FOUND", message: `Schedule ${id} not found`, retryable: false },
+              };
+            }
+            return { ok: true, value: undefined };
+          },
+        }
+      : {}),
 
-    async resumeSchedule(id: string): Promise<Result<void, KoiError>> {
-      if (client.resume === undefined) {
-        return {
-          ok: false,
-          error: { code: "PERMISSION", message: "Resume not supported", retryable: false },
-        };
-      }
-      const ok = await client.resume(id);
-      if (!ok) {
-        return {
-          ok: false,
-          error: { code: "NOT_FOUND", message: `Schedule ${id} not found`, retryable: false },
-        };
-      }
-      return { ok: true, value: undefined };
-    },
+    ...(resumeFn !== undefined
+      ? {
+          async resumeSchedule(id: string): Promise<Result<void, KoiError>> {
+            const ok = await resumeFn(id);
+            if (!ok) {
+              return {
+                ok: false,
+                error: { code: "NOT_FOUND", message: `Schedule ${id} not found`, retryable: false },
+              };
+            }
+            return { ok: true, value: undefined };
+          },
+        }
+      : {}),
 
-    async deleteSchedule(id: string): Promise<Result<void, KoiError>> {
-      if (client.unschedule === undefined) {
-        return {
-          ok: false,
-          error: { code: "PERMISSION", message: "Unschedule not supported", retryable: false },
-        };
-      }
-      const ok = await client.unschedule(id);
-      if (!ok) {
-        return {
-          ok: false,
-          error: { code: "NOT_FOUND", message: `Schedule ${id} not found`, retryable: false },
-        };
-      }
-      return { ok: true, value: undefined };
-    },
+    ...(unscheduleFn !== undefined
+      ? {
+          async deleteSchedule(id: string): Promise<Result<void, KoiError>> {
+            const ok = await unscheduleFn(id);
+            if (!ok) {
+              return {
+                ok: false,
+                error: { code: "NOT_FOUND", message: `Schedule ${id} not found`, retryable: false },
+              };
+            }
+            return { ok: true, value: undefined };
+          },
+        }
+      : {}),
 
-    // Dead letter retry is a re-submit — not directly supported by core scheduler
-    async retrySchedulerDeadLetter(_id: string): Promise<Result<void, KoiError>> {
-      return {
-        ok: false,
-        error: {
-          code: "PERMISSION",
-          message: "Dead letter retry not yet supported",
-          retryable: false,
-        },
-      };
-    },
+    // Dead letter retry is a re-submit — not directly supported by core scheduler.
+    // Omitted so the route handler returns 501 and the UI hides the Retry button.
   };
 
   return { views, commands };

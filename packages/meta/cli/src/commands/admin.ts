@@ -45,6 +45,31 @@ function createProxyHandler(remoteBaseUrl: string): DashboardHandlerResult {
   const handler = async (req: Request): Promise<Response | null> => {
     const url = new URL(req.url);
 
+    // Forward SSE events endpoint (must be checked before generic API forwarding
+    // because /admin/api/events would otherwise match the apiPath prefix)
+    if (url.pathname === `${apiPath}/events` || url.pathname === `${basePath}/events`) {
+      try {
+        const targetUrl = `${remoteBaseUrl}${url.pathname}${url.search}`;
+        const proxyRes = await fetch(targetUrl, {
+          headers: req.headers,
+          signal: AbortSignal.timeout(300_000),
+        });
+
+        const headers = new Headers(proxyRes.headers);
+        headers.set("Access-Control-Allow-Origin", "*");
+
+        return new Response(proxyRes.body, {
+          status: proxyRes.status,
+          headers,
+        });
+      } catch {
+        return new Response("event: error\ndata: upstream unavailable\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+    }
+
     // Forward API requests to remote server
     if (url.pathname.startsWith(apiPath)) {
       try {
@@ -74,41 +99,21 @@ function createProxyHandler(remoteBaseUrl: string): DashboardHandlerResult {
       }
     }
 
-    // Forward SSE events endpoint
-    if (
-      url.pathname === `${apiPath.replace("/api", "")}/events` ||
-      url.pathname === `${apiPath}/events`
-    ) {
-      try {
-        const targetUrl = `${remoteBaseUrl}${url.pathname}${url.search}`;
-        const proxyRes = await fetch(targetUrl, {
-          headers: req.headers,
-          signal: AbortSignal.timeout(300_000),
-        });
-
-        const headers = new Headers(proxyRes.headers);
-        headers.set("Access-Control-Allow-Origin", "*");
-
-        return new Response(proxyRes.body, {
-          status: proxyRes.status,
-          headers,
-        });
-      } catch {
-        return new Response("event: error\ndata: upstream unavailable\n\n", {
-          status: 200,
-          headers: { "Content-Type": "text/event-stream" },
-        });
-      }
-    }
-
-    // Serve static assets locally
+    // Serve static assets locally (strip basePath like handler.ts does)
     if (url.pathname.startsWith(basePath) && assetsDir !== undefined) {
       if (staticServeFn === undefined) {
         const { createStaticServe } = await import("@koi/dashboard-api");
         const result = createStaticServe(assetsDir);
         staticServeFn = result.serve;
       }
-      return staticServeFn(url.pathname);
+      const assetPath = url.pathname.slice(basePath.length) || "/index.html";
+      const response = await staticServeFn(assetPath);
+      if (response !== null) return response;
+
+      // SPA fallback — serve index.html for non-file paths
+      if (!assetPath.includes(".")) {
+        return staticServeFn("/index.html");
+      }
     }
 
     return null;
@@ -135,6 +140,22 @@ async function probeRemoteHealth(baseUrl: string): Promise<boolean> {
   }
 }
 
+/**
+ * Probe whether the admin panel is actually running at the given base URL.
+ * Checks the dashboard-specific health endpoint (/admin/api/health) which
+ * only exists when --admin is enabled. A plain koi serve without --admin
+ * passes probeRemoteHealth but fails this check.
+ */
+async function probeAdminPanel(baseUrl: string): Promise<boolean> {
+  try {
+    const apiPath = DEFAULT_DASHBOARD_CONFIG.apiPath; // "/admin/api"
+    const res = await fetch(`${baseUrl}${apiPath}/health`, { signal: AbortSignal.timeout(3_000) });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main command
 // ---------------------------------------------------------------------------
@@ -151,6 +172,14 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     if (!healthy) {
       process.stderr.write(`Cannot connect to running agent at ${remoteUrl}\n`);
       process.stderr.write("Make sure koi serve --admin is running at that address.\n");
+      process.exit(1);
+    }
+
+    // Verify that the admin panel is actually running (not just a plain koi serve)
+    const adminAvailable = await probeAdminPanel(remoteUrl);
+    if (!adminAvailable) {
+      process.stderr.write(`Agent at ${remoteUrl} is reachable but admin panel is not enabled.\n`);
+      process.stderr.write("Start with: koi serve --admin\n");
       process.exit(1);
     }
 
@@ -209,10 +238,12 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   }
 
   // ── Auto-discovery: probe default serve port before manifest fallback ──
+  // Uses probeAdminPanel (not probeRemoteHealth) so a plain koi serve
+  // without --admin doesn't trigger a broken proxy.
 
   const DEFAULT_SERVE_PORT = 9100;
   const probeUrl = `http://localhost:${String(DEFAULT_SERVE_PORT)}`;
-  const discovered = await probeRemoteHealth(probeUrl);
+  const discovered = await probeAdminPanel(probeUrl);
 
   if (discovered) {
     if (flags.verbose) {

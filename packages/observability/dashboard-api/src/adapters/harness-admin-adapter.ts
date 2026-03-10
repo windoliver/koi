@@ -73,7 +73,7 @@ export interface HarnessAdminClientWithCheckpoints extends HarnessAdminClientLik
 
 export interface HarnessAdminAdapter {
   readonly views: NonNullable<RuntimeViewDataSource["harness"]>;
-  readonly commands: Required<Pick<CommandDispatcher, "pauseHarness" | "resumeHarness">>;
+  readonly commands: Pick<CommandDispatcher, "pauseHarness" | "resumeHarness">;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,28 +145,30 @@ export function createHarnessAdminAdapter(client: HarnessAdminClientLike): Harne
     },
   };
 
-  const commands: HarnessAdminAdapter["commands"] = {
-    async pauseHarness(): Promise<Result<void, KoiError>> {
-      if (client.pause === undefined) {
-        return {
-          ok: false,
-          error: { code: "PERMISSION", message: "Pause not supported", retryable: false },
-        };
-      }
-      await client.pause();
-      return { ok: true, value: undefined };
-    },
+  // Capture supported operations before building the command object.
+  // Only provide commands the backing client actually supports — when omitted
+  // the route handler returns 501 and the UI can hide the button via capabilities.
+  const pauseFn = client.pause;
+  const resumeFn = client.resume;
 
-    async resumeHarness(): Promise<Result<void, KoiError>> {
-      if (client.resume === undefined) {
-        return {
-          ok: false,
-          error: { code: "PERMISSION", message: "Resume not supported", retryable: false },
-        };
-      }
-      await client.resume();
-      return { ok: true, value: undefined };
-    },
+  const commands: HarnessAdminAdapter["commands"] = {
+    ...(pauseFn !== undefined
+      ? {
+          async pauseHarness(): Promise<Result<void, KoiError>> {
+            await pauseFn();
+            return { ok: true, value: undefined };
+          },
+        }
+      : {}),
+
+    ...(resumeFn !== undefined
+      ? {
+          async resumeHarness(): Promise<Result<void, KoiError>> {
+            await resumeFn();
+            return { ok: true, value: undefined };
+          },
+        }
+      : {}),
   };
 
   return { views, commands };

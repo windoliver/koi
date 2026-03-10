@@ -159,6 +159,7 @@ function CheckpointTimeline({
 
 export function HarnessTab(): React.ReactElement {
   const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
+  const commandsDetail = useOrchestrationStore((s) => s.commandsDetail);
 
   const { data: status, isLoading: statusLoading, refetch: refetchStatus } = useRuntimeView<HarnessStatus>(
     "/harness/status",
@@ -169,12 +170,23 @@ export function HarnessTab(): React.ReactElement {
     { refetchInterval: 10_000, invalidationKey: lastInvalidatedAt },
   );
 
+  const canPause = commandsDetail?.pauseHarness === true;
+  const canResume = commandsDetail?.resumeHarness === true;
+
   const handlePause = useCallback(() => {
-    void pauseHarness().then(() => refetchStatus());
+    void pauseHarness()
+      .then(() => refetchStatus())
+      .catch(() => {
+        // Command may be unsupported (501) or forbidden (403)
+      });
   }, [refetchStatus]);
 
   const handleResume = useCallback(() => {
-    void resumeHarness().then(() => refetchStatus());
+    void resumeHarness()
+      .then(() => refetchStatus())
+      .catch(() => {
+        // Command may be unsupported (501) or forbidden (403)
+      });
   }, [refetchStatus]);
 
   if (statusLoading) {
@@ -195,7 +207,7 @@ export function HarnessTab(): React.ReactElement {
       <div className="flex items-center justify-between">
         <PhaseIndicator status={status} />
         <div className="flex gap-2">
-          {status.phase === "running" && (
+          {canPause && status.phase === "running" && (
             <button
               type="button"
               className="rounded bg-yellow-600/20 px-3 py-1.5 text-xs font-medium text-yellow-400 hover:bg-yellow-600/30"
@@ -204,7 +216,7 @@ export function HarnessTab(): React.ReactElement {
               Pause
             </button>
           )}
-          {status.phase === "paused" && (
+          {canResume && status.phase === "paused" && (
             <button
               type="button"
               className="rounded bg-green-600/20 px-3 py-1.5 text-xs font-medium text-green-400 hover:bg-green-600/30"

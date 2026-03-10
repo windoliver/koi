@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createRouter, errorResponse, jsonResponse } from "./router.js";
+import { createRouter, errorResponse, jsonResponse, mapResultToResponse } from "./router.js";
 
 describe("createRouter", () => {
   test("matches exact path", () => {
@@ -84,5 +84,41 @@ describe("errorResponse", () => {
       ok: false,
       error: { code: "NOT_FOUND", message: "Agent not found" },
     });
+  });
+});
+
+describe("mapResultToResponse", () => {
+  test("returns undefined for ok result", () => {
+    expect(mapResultToResponse({ ok: true })).toBeUndefined();
+  });
+
+  test("maps NOT_FOUND to 404", () => {
+    const res = mapResultToResponse({ ok: false, error: { code: "NOT_FOUND", message: "gone" } });
+    if (res === undefined) throw new Error("expected a response");
+    expect(res.status).toBe(404);
+  });
+
+  test("maps PERMISSION to 403", () => {
+    const res = mapResultToResponse({
+      ok: false,
+      error: { code: "PERMISSION", message: "denied" },
+    });
+    if (res === undefined) throw new Error("expected a response");
+    expect(res.status).toBe(403);
+  });
+
+  test("maps CONFLICT to 409", () => {
+    const res = mapResultToResponse({
+      ok: false,
+      error: { code: "CONFLICT", message: "already terminated" },
+    });
+    if (res === undefined) throw new Error("expected a response");
+    expect(res.status).toBe(409);
+  });
+
+  test("maps unknown codes to 500", () => {
+    const res = mapResultToResponse({ ok: false, error: { code: "INTERNAL", message: "oops" } });
+    if (res === undefined) throw new Error("expected a response");
+    expect(res.status).toBe(500);
   });
 });

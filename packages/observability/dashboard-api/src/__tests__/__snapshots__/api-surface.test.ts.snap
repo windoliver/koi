@@ -5,6 +5,145 @@ exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
 import { FileSystemBackend } from '@koi/core';
 
 /**
+ * Harness admin adapter for the Koi dashboard.
+ *
+ * Wraps a structurally-typed LongRunningHarness to produce dashboard-compatible
+ * views (RuntimeViewDataSource['harness']) and commands (pauseHarness,
+ * resumeHarness).
+ *
+ * Uses structural typing to avoid direct dependency on @koi/long-running —
+ * the consumer injects a compatible harness at runtime.
+ *
+ * L2 package: imports from @koi/core and @koi/dashboard-types only.
+ */
+
+/** Minimal shape of harness metrics from the core HarnessStatus. */
+interface HarnessMetricsLike {
+    readonly totalSessions: number;
+    readonly totalTurns: number;
+    readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
+    readonly completedTaskCount: number;
+    readonly pendingTaskCount: number;
+    readonly elapsedMs: number;
+}
+/** Minimal shape of a core HarnessStatus. */
+interface HarnessStatusLike {
+    readonly harnessId: string;
+    readonly phase: "idle" | "active" | "suspended" | "completed" | "failed";
+    readonly currentSessionSeq: number;
+    readonly metrics: HarnessMetricsLike;
+    readonly startedAt?: number | undefined;
+}
+/** Structural interface for the backing harness. */
+interface HarnessAdminClientLike {
+    readonly status: () => HarnessStatusLike;
+    /** Pause the harness (suspend execution). */
+    readonly pause?: (() => void | Promise<void>) | undefined;
+    /** Resume the harness from suspended state. */
+    readonly resume?: (() => void | Promise<void>) | undefined;
+}
+interface HarnessAdminAdapter {
+    readonly views: NonNullable<RuntimeViewDataSource["harness"]>;
+    readonly commands: Required<Pick<CommandDispatcher, "pauseHarness" | "resumeHarness">>;
+}
+declare function createHarnessAdminAdapter(client: HarnessAdminClientLike): HarnessAdminAdapter;
+
+/**
+ * Scheduler admin adapter for the Koi dashboard.
+ *
+ * Wraps a structurally-typed TaskScheduler to produce dashboard-compatible
+ * views (RuntimeViewDataSource['scheduler']) and commands (pauseSchedule,
+ * resumeSchedule, deleteSchedule, retrySchedulerDeadLetter).
+ *
+ * Uses structural typing to avoid direct dependency on @koi/scheduler —
+ * the consumer injects a compatible scheduler at runtime.
+ *
+ * L2 package: imports from @koi/core and @koi/dashboard-types only.
+ */
+
+/** Minimal shape of a scheduled task from the core scheduler. */
+interface ScheduledTaskLike {
+    readonly id: string;
+    readonly agentId: string;
+    readonly status: "pending" | "running" | "completed" | "failed" | "dead_letter";
+    readonly priority: number;
+    readonly createdAt: number;
+    readonly startedAt?: number | undefined;
+    readonly completedAt?: number | undefined;
+    readonly retries: number;
+    readonly lastError?: {
+        readonly message: string;
+    } | undefined;
+}
+/** Minimal shape of scheduler stats from the core scheduler. */
+interface SchedulerStatsLike {
+    readonly pending: number;
+    readonly running: number;
+    readonly completed: number;
+    readonly failed: number;
+    readonly deadLettered: number;
+    readonly activeSchedules: number;
+    readonly pausedSchedules: number;
+}
+/** Structural interface for the backing TaskScheduler. */
+interface SchedulerAdminClientLike {
+    readonly query: (filter: {
+        readonly status?: string | undefined;
+    }) => readonly ScheduledTaskLike[] | Promise<readonly ScheduledTaskLike[]>;
+    readonly stats: () => SchedulerStatsLike | Promise<SchedulerStatsLike>;
+    /** Pause a cron schedule by ID. Returns true if paused. */
+    readonly pause?: ((id: string) => boolean | Promise<boolean>) | undefined;
+    /** Resume a cron schedule by ID. Returns true if resumed. */
+    readonly resume?: ((id: string) => boolean | Promise<boolean>) | undefined;
+    /** Remove a cron schedule by ID. Returns true if removed. */
+    readonly unschedule?: ((id: string) => boolean | Promise<boolean>) | undefined;
+}
+interface SchedulerAdminAdapter {
+    readonly views: NonNullable<RuntimeViewDataSource["scheduler"]>;
+    readonly commands: Required<Pick<CommandDispatcher, "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter">>;
+}
+declare function createSchedulerAdminAdapter(client: SchedulerAdminClientLike): SchedulerAdminAdapter;
+
+/**
+ * Task board admin adapter for the Koi dashboard.
+ *
+ * Wraps a structurally-typed TaskBoard (or its snapshot) to produce
+ * dashboard-compatible views (RuntimeViewDataSource['taskBoard']).
+ *
+ * Uses structural typing to avoid direct dependency on @koi/task-board —
+ * the consumer injects a compatible board or snapshot provider at runtime.
+ *
+ * L2 package: imports from @koi/core and @koi/dashboard-types only.
+ */
+
+/** Minimal shape of a task item from the core TaskBoard. */
+interface TaskItemLike {
+    readonly id: string;
+    readonly description: string;
+    readonly status: "pending" | "assigned" | "completed" | "failed";
+    readonly assignedTo?: string | undefined;
+    readonly dependencies: readonly string[];
+    readonly error?: {
+        readonly message: string;
+    } | undefined;
+}
+/** Minimal shape of a task result from the core TaskBoard. */
+interface TaskResultLike {
+    readonly taskId: string;
+    readonly output: string;
+}
+/** Structural interface for a TaskBoard or snapshot provider. */
+interface TaskBoardAdminClientLike {
+    readonly all: () => readonly TaskItemLike[];
+    readonly completed: () => readonly TaskResultLike[];
+}
+interface TaskBoardAdminAdapter {
+    readonly views: NonNullable<RuntimeViewDataSource["taskBoard"]>;
+}
+declare function createTaskBoardAdminAdapter(client: TaskBoardAdminClientLike): TaskBoardAdminAdapter;
+
+/**
  * Temporal admin adapter for the Koi dashboard.
  *
  * Wraps a structurally-typed Temporal client to produce dashboard-compatible
@@ -257,6 +396,6 @@ interface StaticServeResult {
 }
 declare function createStaticServe(assetsDir: string): StaticServeResult;
 
-export { type AdminPanelBridgeResult, type BridgeOptions, type DashboardHandlerOptions, type DashboardHandlerResult, type EditablePathMatcher, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SseProducer, type StaticServeResult, type TemporalAdminAdapter, type TemporalAdminAdapterOptions, type TemporalAdminClientLike, type TemporalWorkflowExecutionLike, createAdminPanelBridge, createDashboardHandler, createDefaultEditablePaths, createRouter, createSseProducer, createStaticServe, createTemporalAdminAdapter, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse, mapResultToResponse, validateRequiredParam };
+export { type AdminPanelBridgeResult, type BridgeOptions, type DashboardHandlerOptions, type DashboardHandlerResult, type EditablePathMatcher, type HarnessAdminAdapter, type HarnessAdminClientLike, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SchedulerAdminAdapter, type SchedulerAdminClientLike, type SseProducer, type StaticServeResult, type TaskBoardAdminAdapter, type TaskBoardAdminClientLike, type TemporalAdminAdapter, type TemporalAdminAdapterOptions, type TemporalAdminClientLike, type TemporalWorkflowExecutionLike, createAdminPanelBridge, createDashboardHandler, createDefaultEditablePaths, createHarnessAdminAdapter, createRouter, createSchedulerAdminAdapter, createSseProducer, createStaticServe, createTaskBoardAdminAdapter, createTemporalAdminAdapter, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse, mapResultToResponse, validateRequiredParam };
 "
 `;

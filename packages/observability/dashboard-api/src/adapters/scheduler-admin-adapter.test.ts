@@ -130,37 +130,49 @@ describe("createSchedulerAdminAdapter", () => {
   test("pauseSchedule delegates to client.pause", async () => {
     const client = createMockClient({ pause: () => true });
     const adapter = createSchedulerAdminAdapter(client);
-    const result = await adapter.commands.pauseSchedule("sched-1");
+    const cmd = adapter.commands.pauseSchedule;
+    if (cmd === undefined) throw new Error("expected pauseSchedule command");
+    const result = await cmd("sched-1");
     expect(result.ok).toBe(true);
   });
 
-  test("pauseSchedule returns error when not supported", async () => {
+  test("pauseSchedule is undefined when client.pause is not provided", () => {
     const adapter = createSchedulerAdminAdapter(createMockClient());
-    const result = await adapter.commands.pauseSchedule("sched-1");
-    expect(result.ok).toBe(false);
+    expect(adapter.commands.pauseSchedule).toBeUndefined();
   });
 
   test("resumeSchedule delegates to client.resume", async () => {
     const client = createMockClient({ resume: () => true });
     const adapter = createSchedulerAdminAdapter(client);
-    const result = await adapter.commands.resumeSchedule("sched-1");
+    const cmd = adapter.commands.resumeSchedule;
+    if (cmd === undefined) throw new Error("expected resumeSchedule command");
+    const result = await cmd("sched-1");
     expect(result.ok).toBe(true);
   });
 
   test("deleteSchedule delegates to client.unschedule", async () => {
     const client = createMockClient({ unschedule: () => true });
     const adapter = createSchedulerAdminAdapter(client);
-    const result = await adapter.commands.deleteSchedule("sched-1");
+    const cmd = adapter.commands.deleteSchedule;
+    if (cmd === undefined) throw new Error("expected deleteSchedule command");
+    const result = await cmd("sched-1");
     expect(result.ok).toBe(true);
   });
 
   test("deleteSchedule returns NOT_FOUND when unschedule fails", async () => {
     const client = createMockClient({ unschedule: () => false });
     const adapter = createSchedulerAdminAdapter(client);
-    const result = await adapter.commands.deleteSchedule("sched-1");
+    const cmd = adapter.commands.deleteSchedule;
+    if (cmd === undefined) throw new Error("expected deleteSchedule command");
+    const result = await cmd("sched-1");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("NOT_FOUND");
     }
+  });
+
+  test("retrySchedulerDeadLetter is always undefined (not yet supported)", () => {
+    const adapter = createSchedulerAdminAdapter(createMockClient());
+    expect(adapter.commands.retrySchedulerDeadLetter).toBeUndefined();
   });
 });

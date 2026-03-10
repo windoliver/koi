@@ -8,6 +8,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { DashboardCapabilities } from "../../lib/api-client.js";
 import { fetchHealth } from "../../lib/api-client.js";
+import { useOrchestrationStore } from "../../stores/orchestration-store.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
 
 // Lazy-load tab contents — drawer is hidden by default so this avoids
@@ -59,14 +60,16 @@ export function OrchestrationDrawer({
 }): React.ReactElement | null {
   const [activeTab, setActiveTab] = useState<TabId>("temporal");
   const [capabilities, setCapabilities] = useState<DashboardCapabilities | undefined>(undefined);
+  const setCommandsDetail = useOrchestrationStore((s) => s.setCommandsDetail);
 
   // Fetch capabilities once when drawer opens
   useEffect(() => {
     if (!open) return;
     void fetchHealth().then((health) => {
       setCapabilities(health.capabilities);
+      setCommandsDetail(health.capabilities?.commandsDetail ?? null);
     });
-  }, [open]);
+  }, [open, setCommandsDetail]);
 
   // Show only tabs whose backing orchestration sources are present
   const visibleTabs = useMemo(() => {

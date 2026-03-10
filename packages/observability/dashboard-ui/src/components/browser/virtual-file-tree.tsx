@@ -258,6 +258,17 @@ function useLazyDirectoryLoader(flatItems: readonly FlatTreeItem[]): void {
     .filter((item) => item.needsLoad && !childrenCache.has(item.path))
     .map((item) => item.path);
 
+  // Clear cached children when the glob filter changes so stale entries
+  // from the previous view don't persist.
+  const clearChildrenCache = useTreeStore((s) => s.clearChildrenCache);
+  const prevGlobRef = useRef(globPattern);
+  useEffect(() => {
+    if (prevGlobRef.current !== globPattern) {
+      prevGlobRef.current = globPattern;
+      clearChildrenCache();
+    }
+  }, [globPattern, clearChildrenCache]);
+
   useEffect(() => {
     if (pathsToLoad.length === 0) return;
 
@@ -275,7 +286,7 @@ function useLazyDirectoryLoader(flatItems: readonly FlatTreeItem[]): void {
       void loadChildren(path);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathsToLoad.join(","), lastInvalidatedAt]);
+  }, [pathsToLoad.join(","), lastInvalidatedAt, globPattern]);
 }
 
 /** Find the parent node index (nearest item at depth - 1 before current). */

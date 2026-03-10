@@ -368,25 +368,11 @@ describe("handleFsDelete", () => {
 describe("createDefaultEditablePaths", () => {
   const matcher = createDefaultEditablePaths();
 
-  test("allows workspace paths", () => {
+  test("allows all paths (FileSystemBackend already scopes to workspace root)", () => {
     expect(matcher("/agents/a1/workspace/notes.txt")).toBe(true);
     expect(matcher("/agents/agent-2/workspace/deep/file.md")).toBe(true);
-  });
-
-  test("denies brick paths", () => {
-    expect(matcher("/agents/a1/bricks/tool.json")).toBe(false);
-    expect(matcher("/global/bricks/index.json")).toBe(false);
-  });
-
-  test("denies event paths", () => {
-    expect(matcher("/agents/a1/events/stream.json")).toBe(false);
-  });
-
-  test("denies session paths", () => {
-    expect(matcher("/agents/a1/session/current.json")).toBe(false);
-  });
-
-  test("denies root paths", () => {
-    expect(matcher("/manifest.json")).toBe(false);
+    expect(matcher("/agents/a1/bricks/tool.json")).toBe(true);
+    expect(matcher("/manifest.json")).toBe(true);
+    expect(matcher("any-path.txt")).toBe(true);
   });
 });

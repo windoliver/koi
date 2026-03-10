@@ -35,10 +35,18 @@ interface OrchestrationState {
   readonly harnessStatus: HarnessStatus | null;
   readonly checkpoints: readonly CheckpointEntry[];
 
+  // Command capabilities (from health endpoint)
+  readonly commandsDetail: {
+    readonly pauseHarness: boolean;
+    readonly resumeHarness: boolean;
+    readonly retryDlq: boolean;
+  } | null;
+
   // Invalidation (SSE-driven refetch signal)
   readonly lastInvalidatedAt: number;
 
   // Actions
+  readonly setCommandsDetail: (detail: OrchestrationState["commandsDetail"]) => void;
   readonly setTemporalHealth: (health: TemporalHealth) => void;
   readonly setWorkflows: (workflows: readonly WorkflowSummary[]) => void;
   readonly setSchedulerStats: (stats: SchedulerStats) => void;
@@ -61,8 +69,10 @@ export const useOrchestrationStore = create<OrchestrationState>((set) => ({
   taskBoardSnapshot: null,
   harnessStatus: null,
   checkpoints: [],
+  commandsDetail: null,
   lastInvalidatedAt: 0,
 
+  setCommandsDetail: (detail) => set({ commandsDetail: detail }),
   setTemporalHealth: (health) => set({ temporalHealth: health }),
   setWorkflows: (workflows) => set({ workflows }),
   setSchedulerStats: (stats) => set({ schedulerStats: stats }),

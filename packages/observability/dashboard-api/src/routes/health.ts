@@ -16,6 +16,12 @@ export interface DashboardCapabilities {
     readonly taskBoard: boolean;
     readonly harness: boolean;
   };
+  /** Per-command availability — only present when commands are available. */
+  readonly commandsDetail?: {
+    readonly pauseHarness: boolean;
+    readonly resumeHarness: boolean;
+    readonly retryDlq: boolean;
+  };
 }
 
 export function handleHealth(capabilities?: DashboardCapabilities): Response {

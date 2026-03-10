@@ -150,15 +150,16 @@ describe("createHarnessAdminAdapter", () => {
         },
       }),
     );
-    const result = await adapter.commands.pauseHarness();
+    const pauseCmd = adapter.commands.pauseHarness;
+    if (pauseCmd === undefined) throw new Error("expected pauseHarness command");
+    const result = await pauseCmd();
     expect(result.ok).toBe(true);
     expect(pauseCalled).toBe(true);
   });
 
-  test("pauseHarness returns error when not supported", async () => {
+  test("pauseHarness is undefined when client.pause is not provided", () => {
     const adapter = createHarnessAdminAdapter(createMockClient());
-    const result = await adapter.commands.pauseHarness();
-    expect(result.ok).toBe(false);
+    expect(adapter.commands.pauseHarness).toBeUndefined();
   });
 
   test("resumeHarness delegates to client.resume", async () => {
@@ -171,14 +172,15 @@ describe("createHarnessAdminAdapter", () => {
         },
       }),
     );
-    const result = await adapter.commands.resumeHarness();
+    const resumeCmd = adapter.commands.resumeHarness;
+    if (resumeCmd === undefined) throw new Error("expected resumeHarness command");
+    const result = await resumeCmd();
     expect(result.ok).toBe(true);
     expect(resumeCalled).toBe(true);
   });
 
-  test("resumeHarness returns error when not supported", async () => {
+  test("resumeHarness is undefined when client.resume is not provided", () => {
     const adapter = createHarnessAdminAdapter(createMockClient());
-    const result = await adapter.commands.resumeHarness();
-    expect(result.ok).toBe(false);
+    expect(adapter.commands.resumeHarness).toBeUndefined();
   });
 });

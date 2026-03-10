@@ -172,9 +172,11 @@ function ScheduleRow({
 
 function DlqRow({
   entry,
+  canRetry,
   onRetry,
 }: {
   readonly entry: SchedulerDeadLetterEntry;
+  readonly canRetry: boolean;
   readonly onRetry: (id: string) => void;
 }): React.ReactElement {
   return (
@@ -188,15 +190,17 @@ function DlqRow({
       <td className="px-3 py-2 text-xs text-[var(--color-muted,#888)]">
         {entry.retryCount}
       </td>
-      <td className="px-3 py-2 text-xs">
-        <button
-          type="button"
-          className="rounded bg-blue-600/20 px-2 py-0.5 text-xs text-blue-400 hover:bg-blue-600/30"
-          onClick={() => onRetry(entry.entryId)}
-        >
-          Retry
-        </button>
-      </td>
+      {canRetry && (
+        <td className="px-3 py-2 text-xs">
+          <button
+            type="button"
+            className="rounded bg-blue-600/20 px-2 py-0.5 text-xs text-blue-400 hover:bg-blue-600/30"
+            onClick={() => onRetry(entry.entryId)}
+          >
+            Retry
+          </button>
+        </td>
+      )}
     </tr>
   );
 }
@@ -207,6 +211,8 @@ function DlqRow({
 
 export function SchedulerTab(): React.ReactElement {
   const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
+  const commandsDetail = useOrchestrationStore((s) => s.commandsDetail);
+  const canRetryDlq = commandsDetail?.retryDlq === true;
 
   const { data: stats, isLoading: statsLoading } = useRuntimeView<SchedulerStats>(
     "/scheduler/stats",
@@ -238,7 +244,11 @@ export function SchedulerTab(): React.ReactElement {
   }, [refetchSchedules]);
 
   const handleRetryDlq = useCallback((id: string) => {
-    void retrySchedulerDlq(id).then(() => refetchDlq());
+    void retrySchedulerDlq(id)
+      .then(() => refetchDlq())
+      .catch(() => {
+        // DLQ retry may be unsupported (501) or forbidden (403) — ignore gracefully
+      });
   }, [refetchDlq]);
 
   if (statsLoading || tasksLoading) {
@@ -303,12 +313,14 @@ export function SchedulerTab(): React.ReactElement {
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Task</th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Error</th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Retries</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Actions</th>
+                  {canRetryDlq && (
+                    <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Actions</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {dlq.map((entry) => (
-                  <DlqRow key={entry.entryId} entry={entry} onRetry={handleRetryDlq} />
+                  <DlqRow key={entry.entryId} entry={entry} canRetry={canRetryDlq} onRetry={handleRetryDlq} />
                 ))}
               </tbody>
             </table>
