@@ -21,6 +21,7 @@ import type {
   Result,
   SandboxExecutor,
   SigningBackend,
+  SnapshotStore,
   ToolPolicy,
   TurnTrace,
 } from "@koi/core";
@@ -63,6 +64,8 @@ export interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
   readonly resolveSessionId?: (() => string) | undefined;
   /** Trace reader for crystallize middleware. */
   readonly readTraces?: (() => Promise<Result<readonly TurnTrace[], KoiError>>) | undefined;
+  /** Optional SnapshotStore for quarantine/demotion event recording. */
+  readonly forgeSnapshotStore?: SnapshotStore | undefined;
 }
 
 /** Return type for createForgeConfiguredKoi — runtime + optional forge system handle. */
@@ -188,6 +191,7 @@ export async function createForgeConfiguredKoi(
       return instance.lookupBrickId?.(toolName);
     },
     ...(options.forgeSigner !== undefined ? { signer: options.forgeSigner } : {}),
+    snapshotStore: options.forgeSnapshotStore,
   });
 
   // Build forge tools provider (5 tools + companion skill, created at attach time)

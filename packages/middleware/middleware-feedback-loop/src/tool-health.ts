@@ -43,6 +43,8 @@ export interface ToolHealthTracker {
   readonly flushTool: (toolId: string) => Promise<void>;
   /** Flushes all dirty tools' fitness data to ForgeStore. */
   readonly flush: () => Promise<void>;
+  /** Batch-prefetch quarantined bricks from ForgeStore into local cache. */
+  readonly prefetchQuarantined: () => Promise<void>;
   /** Final drain: flushes all dirty tools, then clears internal state. */
   readonly dispose: () => Promise<void>;
 }
@@ -462,6 +464,55 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     await Promise.allSettled(promises);
   }
 
+  /**
+   * Batch-prefetch quarantined bricks from ForgeStore (Issue #937: 14A).
+   * Pre-populates the quarantine cache so `isQuarantinedAsync` hits the warm path.
+   */
+  async function prefetchQuarantinedImpl(): Promise<void> {
+    try {
+      const searchResult = await config.forgeStore.search({
+        kind: "tool",
+        lifecycle: "failed",
+      });
+      if (!searchResult.ok) return;
+      for (const brick of searchResult.value) {
+        // Reverse-resolve: we need the toolId, but we only have brickId.
+        // Pre-populate local state using the brick name as the toolId
+        // (forge tools use brick name as tool name).
+        const localTs = getOrCreate(brick.name);
+        localTs.state = "quarantined";
+      }
+    } catch (_e: unknown) {
+      // Store unavailable — graceful degradation, individual async checks still work
+    }
+  }
+
+  /**
+   * Flush dirty fitness data, then evict the full ToolState for a quarantined tool.
+   * Only evicts if the flush succeeded (dirty → false). On transient flush failure
+   * the full state is preserved so dispose()/later flushes can retry.
+   */
+  async function flushAndEvictQuarantinedState(toolId: string): Promise<void> {
+    const ts = tools.get(toolId);
+    if (ts === undefined || ts.state !== "quarantined") return;
+    // Flush dirty counters before eviction so the final failure window is persisted.
+    if (ts.flushState.dirty && !ts.flushState.flushing) {
+      await flushToolImpl(toolId);
+    }
+    // Only evict if flush succeeded (dirty cleared) or there was nothing to flush.
+    // On transient failure flushToolImpl keeps dirty=true — preserve full state
+    // so dispose() or a later flush cycle can retry.
+    if (ts.flushState.dirty) return;
+    // Replace full state with minimal quarantine marker.
+    // Keep a single failure entry so metrics report errorRate > 0.
+    const marker = createToolState(1);
+    marker.state = "quarantined";
+    marker.ring[0] = { success: false, latencyMs: 0 };
+    marker.filledSlots = 1;
+    marker.lastUpdatedAt = ts.lastUpdatedAt;
+    tools.set(toolId, marker);
+  }
+
   async function disposeImpl(): Promise<void> {
     await flushAllImpl();
     tools.clear();
@@ -578,6 +629,9 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       // Notify callback (e.g., forgeProvider.invalidate())
       await config.onQuarantine?.(resolvedBrickId);
 
+      // Flush final fitness data then evict ring buffer to bound memory (Issue #937: 16A)
+      await flushAndEvictQuarantinedState(toolId);
+
       return true;
     },
 
@@ -686,6 +740,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     shouldFlushTool: shouldFlushToolImpl,
     flushTool: flushToolImpl,
     flush: flushAllImpl,
+    prefetchQuarantined: prefetchQuarantinedImpl,
     dispose: disposeImpl,
   };
 }

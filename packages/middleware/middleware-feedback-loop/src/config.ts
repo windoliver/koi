@@ -12,7 +12,7 @@ import { z } from "zod";
 import type {
   DemotionCriteria,
   DiscoveryMissRecord,
-  RepairStrategy,
+  RepairStrategyInput,
   RetryConfig,
   TrustDemotionEvent,
   ValidationError,
@@ -63,8 +63,8 @@ export interface FeedbackLoopConfig {
   readonly toolGates?: readonly Validator[];
   /** Category-aware retry budget configuration. */
   readonly retry?: RetryConfig;
-  /** Custom repair strategy (default appends errors as user message). */
-  readonly repairStrategy?: RepairStrategy;
+  /** Custom repair strategy or lazy factory (default appends errors as user message). */
+  readonly repairStrategy?: RepairStrategyInput;
   /** Called on each validation retry attempt. */
   readonly onRetry?: (attempt: number, errors: readonly ValidationError[]) => void;
   /** Called when a gate check fails. */
@@ -254,16 +254,19 @@ export function validateFeedbackLoopConfig(config: unknown): Result<FeedbackLoop
     }
   }
 
-  // Validate repairStrategy (duck-type)
+  // Validate repairStrategy (duck-type: RepairStrategy object or lazy factory function)
   if (c.repairStrategy !== undefined) {
-    if (
-      typeof c.repairStrategy !== "object" ||
-      c.repairStrategy === null ||
-      typeof (c.repairStrategy as Record<string, unknown>).buildRetryRequest !== "function"
-    ) {
+    const isFactory = typeof c.repairStrategy === "function";
+    const isStrategy =
+      typeof c.repairStrategy === "object" &&
+      c.repairStrategy !== null &&
+      typeof (c.repairStrategy as Record<string, unknown>).buildRetryRequest === "function";
+    if (!isFactory && !isStrategy) {
       return {
         ok: false,
-        error: validationError("repairStrategy must have a 'buildRetryRequest' function"),
+        error: validationError(
+          "repairStrategy must have a 'buildRetryRequest' function or be a factory function",
+        ),
       };
     }
   }

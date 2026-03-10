@@ -4,7 +4,7 @@
 
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
-import type { RepairStrategy, RetryConfig, ValidationError } from "./types.js";
+import type { RepairStrategy, RepairStrategyInput, RetryConfig, ValidationError } from "./types.js";
 
 const DEFAULT_VALIDATION_MAX_ATTEMPTS = 3;
 const DEFAULT_VALIDATION_DELAY_MS = 0;
@@ -53,12 +53,20 @@ function serializeErrors(errors: readonly ValidationError[]): readonly Record<st
   }));
 }
 
+/** Resolve a RepairStrategyInput to a concrete RepairStrategy. */
+export function resolveRepairStrategy(input: RepairStrategyInput): RepairStrategy {
+  if (typeof input === "function" && !("buildRetryRequest" in input)) {
+    return input();
+  }
+  return input as RepairStrategy;
+}
+
 /** Retry loop instance with category-aware budgets. */
 export interface RetryLoop {
   readonly execute: (
     fn: (request: ModelRequest) => Promise<ModelResponse>,
     initialRequest: ModelRequest,
-    repair: RepairStrategy,
+    repair: RepairStrategyInput,
     onRetry?: (attempt: number, errors: readonly ValidationError[]) => void,
   ) => Promise<ModelResponse>;
 }
@@ -75,7 +83,7 @@ export function createRetryLoop(config: RetryConfig): RetryLoop {
     async execute(
       fn: (request: ModelRequest) => Promise<ModelResponse>,
       initialRequest: ModelRequest,
-      repair: RepairStrategy,
+      repair: RepairStrategyInput,
       onRetry?: (attempt: number, errors: readonly ValidationError[]) => void,
     ): Promise<ModelResponse> {
       // let: retry state — mutated across loop iterations
@@ -83,6 +91,8 @@ export function createRetryLoop(config: RetryConfig): RetryLoop {
       let validationAttempts = 0;
       let transportAttempts = 0;
       const allValidationErrors: ValidationError[] = [];
+      // let: lazily resolved on first validation retry
+      let resolvedRepair: RepairStrategy | undefined;
 
       for (;;) {
         try {
@@ -120,9 +130,31 @@ export function createRetryLoop(config: RetryConfig): RetryLoop {
               );
             }
 
+            // Lazily resolve on first retry (enables post-construction wiring)
+            if (resolvedRepair === undefined) {
+              resolvedRepair = resolveRepairStrategy(repair);
+            }
+
+            // Static pre-check: abort if repair strategy says stop (Issue #937: 13A)
+            if (resolvedRepair.shouldRetry !== undefined) {
+              const shouldContinue = await resolvedRepair.shouldRetry(e.errors, validationAttempts);
+              if (!shouldContinue) {
+                throw KoiRuntimeError.from(
+                  "VALIDATION",
+                  `Repair strategy aborted retry at attempt ${validationAttempts}`,
+                  {
+                    context: {
+                      attempts: validationAttempts,
+                      errors: serializeErrors(allValidationErrors),
+                    },
+                  },
+                );
+              }
+            }
+
             onRetry?.(validationAttempts, e.errors);
             await delay(validationDelay);
-            currentRequest = await repair.buildRetryRequest(
+            currentRequest = await resolvedRepair.buildRetryRequest(
               initialRequest,
               e.response,
               e.errors,

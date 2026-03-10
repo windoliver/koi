@@ -1,8 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
 import { defaultRepairStrategy } from "./repair.js";
-import { computeTransportDelay, createRetryLoop, ValidationFailure } from "./retry.js";
+import {
+  computeTransportDelay,
+  createRetryLoop,
+  resolveRepairStrategy,
+  ValidationFailure,
+} from "./retry.js";
 
 const baseRequest: ModelRequest = {
   messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }],
@@ -194,5 +199,120 @@ describe("createRetryLoop", () => {
     expect(requests).toHaveLength(2);
     // Second request should have repair message appended
     expect(requests[1]?.messages).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveRepairStrategy (Issue #937: 12A — lazy repair)
+// ---------------------------------------------------------------------------
+
+describe("resolveRepairStrategy", () => {
+  test("returns a concrete RepairStrategy as-is", () => {
+    const strategy = { buildRetryRequest: mock(() => baseRequest) };
+    const resolved = resolveRepairStrategy(strategy);
+    expect(resolved).toBe(strategy);
+  });
+
+  test("calls factory function and returns the strategy", () => {
+    const strategy = { buildRetryRequest: mock(() => baseRequest) };
+    const factory = mock(() => strategy);
+    const resolved = resolveRepairStrategy(factory);
+    expect(resolved).toBe(strategy);
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  test("factory is not invoked until resolveRepairStrategy is called", () => {
+    const factory = mock(() => ({ buildRetryRequest: mock(() => baseRequest) }));
+    // Factory should not have been called yet
+    expect(factory).toHaveBeenCalledTimes(0);
+    resolveRepairStrategy(factory);
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("createRetryLoop with lazy repair", () => {
+  test("does not resolve lazy factory when no retries needed", async () => {
+    const loop = createRetryLoop({});
+    const factory = mock(() => defaultRepairStrategy);
+    await loop.execute(async () => goodResponse, baseRequest, factory);
+    expect(factory).toHaveBeenCalledTimes(0);
+  });
+
+  test("resolves lazy factory on first validation retry only", async () => {
+    const loop = createRetryLoop({ validation: { maxAttempts: 3 } });
+    const factory = mock(() => defaultRepairStrategy);
+    // let: counter mutated across retries
+    let attempt = 0;
+    await loop.execute(
+      async () => {
+        attempt++;
+        if (attempt < 3) {
+          throw new ValidationFailure([{ validator: "v1", message: "bad" }], {
+            content: "bad",
+            model: "m",
+          });
+        }
+        return goodResponse;
+      },
+      baseRequest,
+      factory,
+    );
+    // Factory should be resolved exactly once, even though there were 2 retries
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  test("backward compatible: accepts concrete strategy directly", async () => {
+    const loop = createRetryLoop({ validation: { maxAttempts: 2 } });
+    // let: counter for tracking
+    let attempt = 0;
+    const result = await loop.execute(
+      async () => {
+        attempt++;
+        if (attempt < 2) {
+          throw new ValidationFailure([{ validator: "v1", message: "bad" }], {
+            content: "bad",
+            model: "m",
+          });
+        }
+        return goodResponse;
+      },
+      baseRequest,
+      defaultRepairStrategy,
+    );
+    expect(result).toBe(goodResponse);
+  });
+
+  test("aborts retry when shouldRetry returns false (Issue #937: 13A)", async () => {
+    const loop = createRetryLoop({ validation: { maxAttempts: 5 } });
+    // let: counter
+    let attempts = 0;
+    const repairWithPreCheck = {
+      shouldRetry: mock((_errors: readonly unknown[], attempt: number) => attempt < 2),
+      buildRetryRequest: defaultRepairStrategy.buildRetryRequest,
+    };
+
+    try {
+      await loop.execute(
+        async () => {
+          attempts++;
+          throw new ValidationFailure([{ validator: "v1", message: "always bad" }], {
+            content: "bad",
+            model: "m",
+          });
+        },
+        baseRequest,
+        repairWithPreCheck,
+      );
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.message).toContain("aborted retry");
+      }
+    }
+    // Should have executed 2 attempts: first always runs, second triggers shouldRetry(1) → true,
+    // third triggers shouldRetry(2) → false → abort before executing fn
+    expect(attempts).toBe(2);
+    expect(repairWithPreCheck.shouldRetry).toHaveBeenCalledTimes(2);
   });
 });

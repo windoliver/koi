@@ -33,7 +33,19 @@ interface Validator {
 /** Strategy for injecting error feedback into the retry request. */
 interface RepairStrategy {
     readonly buildRetryRequest: (original: ModelRequest, response: ModelResponse, errors: readonly ValidationError[], attempt: number) => ModelRequest | Promise<ModelRequest>;
+    /**
+     * Optional static pre-check before each retry (Issue #937: 13A).
+     * Return false to abort the retry loop early without another LLM call.
+     * Useful for checking if referenced tools were quarantined between retries.
+     */
+    readonly shouldRetry?: (errors: readonly ValidationError[], attempt: number) => boolean | Promise<boolean>;
 }
+/**
+ * Repair strategy input — accepts either a concrete strategy or a lazy factory.
+ * Lazy factories are resolved on first retry, enabling post-construction wiring
+ * (e.g., creating the strategy after the FeedbackLoopHandle is available).
+ */
+type RepairStrategyInput = RepairStrategy | (() => RepairStrategy);
 
 /** Enriched error feedback returned to the agent when a tool is quarantined or degraded. */
 interface ForgeToolErrorFeedback {
@@ -137,8 +149,8 @@ interface FeedbackLoopConfig {
     readonly toolGates?: readonly Validator[];
     /** Category-aware retry budget configuration. */
     readonly retry?: RetryConfig;
-    /** Custom repair strategy (default appends errors as user message). */
-    readonly repairStrategy?: RepairStrategy;
+    /** Custom repair strategy or lazy factory (default appends errors as user message). */
+    readonly repairStrategy?: RepairStrategyInput;
     /** Called on each validation retry attempt. */
     readonly onRetry?: (attempt: number, errors: readonly ValidationError[]) => void;
     /** Called when a gate check fails. */
@@ -192,6 +204,8 @@ interface ToolHealthTracker {
     readonly flushTool: (toolId: string) => Promise<void>;
     /** Flushes all dirty tools' fitness data to ForgeStore. */
     readonly flush: () => Promise<void>;
+    /** Batch-prefetch quarantined bricks from ForgeStore into local cache. */
+    readonly prefetchQuarantined: () => Promise<void>;
     /** Final drain: flushes all dirty tools, then clears internal state. */
     readonly dispose: () => Promise<void>;
 }
@@ -247,10 +261,15 @@ declare function computeMergedFitness(deltas: FlushDeltas, existing: BrickFitnes
  * test cases, health metrics, and a computed suggestion.
  */
 
+/** Minimal health read interface for the repair strategy (subset of ToolHealthTracker). */
+interface HealthSnapshotReader {
+    readonly getSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
+}
 /** Configuration for forge-aware repair strategy. */
 interface ForgeRepairConfig {
     readonly forgeStore: ForgeStore;
-    readonly healthTracker: ToolHealthTracker;
+    /** Health snapshot reader — accepts a ToolHealthTracker or FeedbackLoopHandle. */
+    readonly healthTracker: HealthSnapshotReader;
     readonly resolveBrickId: (toolId: string) => string | undefined;
 }
 /**
@@ -271,6 +290,13 @@ declare function formatErrors(errors: readonly ValidationError[]): string;
 /** Default repair: appends assistant response + error summary as messages (~200 tokens). */
 declare const defaultRepairStrategy: RepairStrategy;
 
-export { type DiscoveryMissRecord, type FeedbackLoopConfig, type FeedbackLoopHandle, type FlushDeltas, type ForgeHealthConfig, type ForgeRepairConfig, type ForgeToolErrorFeedback, type RepairStrategy, type RetryConfig, type ToolFlushState, type ToolHealthTracker, type TrustDemotionReason, type ValidationError, type ValidationResult, type Validator, computeMergedFitness, createFeedbackLoopMiddleware, createForgeRepairStrategy, createToolHealthTracker, defaultRepairStrategy, formatErrors, shouldFlush, validateFeedbackLoopConfig };
+/**
+ * Category-aware retry loop with validation and transport budgets.
+ */
+
+/** Resolve a RepairStrategyInput to a concrete RepairStrategy. */
+declare function resolveRepairStrategy(input: RepairStrategyInput): RepairStrategy;
+
+export { type DiscoveryMissRecord, type FeedbackLoopConfig, type FeedbackLoopHandle, type FlushDeltas, type ForgeHealthConfig, type ForgeRepairConfig, type ForgeToolErrorFeedback, type HealthSnapshotReader, type RepairStrategy, type RepairStrategyInput, type RetryConfig, type ToolFlushState, type ToolHealthTracker, type TrustDemotionReason, type ValidationError, type ValidationResult, type Validator, computeMergedFitness, createFeedbackLoopMiddleware, createForgeRepairStrategy, createToolHealthTracker, defaultRepairStrategy, formatErrors, resolveRepairStrategy, shouldFlush, validateFeedbackLoopConfig };
 "
 `;

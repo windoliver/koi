@@ -24,6 +24,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type {
   AgentManifest,
+  BrickArtifact,
   EngineEvent,
   EngineOutput,
   KoiMiddleware,
@@ -32,7 +33,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { DEFAULT_SANDBOXED_POLICY, skillToken, toolToken } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, skillToken, toolToken } from "@koi/core";
 import { createPiAdapter } from "@koi/engine-pi";
 import type { ForgeDeps } from "@koi/forge-tools";
 import { createForgeToolTool, createInMemoryForgeStore } from "@koi/forge-tools";
@@ -641,6 +642,112 @@ describeE2E("e2e: createForgeConfiguredKoi + Pi adapter + OpenRouter", () => {
       // Text should contain 22
       const text = extractText(events);
       expect(text).toContain("22");
+
+      await result.runtime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  // ── 11. Feedback-loop health tracking works through full forge stack ──
+
+  test(
+    "forged tool health tracked through forge middleware stack with real LLM",
+    async () => {
+      const forgeStore = createInMemoryForgeStore();
+
+      // Seed a "forged" tool brick so ForgeComponentProvider picks it up
+      // and health tracking can resolve toolId → brickId.
+      // Must use SANDBOXED policy — ForgeComponentProvider enforces
+      // SANDBOX_REQUIRED_BY_KIND["tool"] === true, skipping unsandboxed tools.
+      const FORGED_TOOL_ID = "forged_adder";
+      await forgeStore.save({
+        id: brickId("sha256:e2e-forged-adder-001"),
+        kind: "tool",
+        name: FORGED_TOOL_ID,
+        description: "Adds two numbers. Use this tool for addition. ALWAYS use it.",
+        scope: "agent",
+        origin: "primordial",
+        policy: DEFAULT_SANDBOXED_POLICY,
+        lifecycle: "active",
+        provenance: { kind: "system", metadata: {} },
+        version: "0.1.0",
+        tags: ["e2e-test"],
+        usageCount: 0,
+        implementation: "function add(a, b) { return a + b; }",
+        inputSchema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+      } as unknown as BrickArtifact);
+
+      // Spy middleware captures health snapshot DURING the session (before
+      // onSessionEnd → dispose() clears tracker state). Spy at priority 100
+      // wraps outside feedback-loop (450), so after spy's next() returns,
+      // feedback-loop has already recorded success and the snapshot is readable.
+      //
+      // let: deferred init — forgeSystem is set after createForgeConfiguredKoi,
+      // but the spy closure only runs during runtime.run() (well after assignment).
+      const spiedToolIds: string[] = [];
+      let capturedSnapshot: import("@koi/core").ToolHealthSnapshot | undefined;
+      let forgeSystem: import("../create-full-forge-system.js").FullForgeSystem | undefined;
+
+      const toolSpy: KoiMiddleware = {
+        name: "health-capture-spy",
+        priority: 100,
+        describeCapabilities: () => undefined,
+        wrapToolCall: async (_ctx, req, next) => {
+          spiedToolIds.push(req.toolId);
+          const resp = await next(req);
+          if (req.toolId === FORGED_TOOL_ID && capturedSnapshot === undefined) {
+            capturedSnapshot = forgeSystem?.handles.feedbackLoop.getHealthSnapshot(FORGED_TOOL_ID);
+          }
+          return resp;
+        },
+      };
+
+      const adapter = createPiAdapter({
+        model: E2E_MODEL,
+        systemPrompt: `You MUST use the ${FORGED_TOOL_ID} tool for addition. Never compute yourself.`,
+        getApiKey: async () => OPENROUTER_KEY,
+      });
+
+      const result = await createForgeConfiguredKoi({
+        manifest: forgeManifest(),
+        adapter,
+        forgeStore,
+        forgeExecutor: adderExecutor(),
+        middleware: [toolSpy],
+      });
+
+      forgeSystem = result.forgeSystem;
+      if (forgeSystem === undefined) throw new Error("forgeSystem expected");
+
+      // Run a turn that should invoke the forged tool (loaded from store by ForgeComponentProvider)
+      const events = await collectEvents(
+        result.runtime.run({
+          kind: "text",
+          text: `Use ${FORGED_TOOL_ID} to compute 10 + 25. Report the result.`,
+        }),
+      );
+
+      const output = findDoneOutput(events);
+      expect(output).toBeDefined();
+
+      // Verify tool was called through the middleware chain
+      const toolStarts = events.filter((e) => e.kind === "tool_call_start");
+      expect(toolStarts.length).toBeGreaterThanOrEqual(1);
+      expect(spiedToolIds).toContain(FORGED_TOOL_ID);
+
+      // Verify health tracking is wired: snapshot was captured during the session
+      // (before onSessionEnd → dispose() clears tracker state)
+      expect(capturedSnapshot).toBeDefined();
+      if (capturedSnapshot !== undefined) {
+        // Success was tracked — error rate should be 0 (all successes)
+        expect(capturedSnapshot.metrics.errorRate).toBe(0);
+        expect(capturedSnapshot.metrics.successRate).toBe(1);
+        expect(capturedSnapshot.metrics.usageCount).toBeGreaterThanOrEqual(1);
+      }
 
       await result.runtime.dispose();
     },

@@ -35,7 +35,23 @@ export interface RepairStrategy {
     errors: readonly ValidationError[],
     attempt: number,
   ) => ModelRequest | Promise<ModelRequest>;
+  /**
+   * Optional static pre-check before each retry (Issue #937: 13A).
+   * Return false to abort the retry loop early without another LLM call.
+   * Useful for checking if referenced tools were quarantined between retries.
+   */
+  readonly shouldRetry?: (
+    errors: readonly ValidationError[],
+    attempt: number,
+  ) => boolean | Promise<boolean>;
 }
+
+/**
+ * Repair strategy input — accepts either a concrete strategy or a lazy factory.
+ * Lazy factories are resolved on first retry, enabling post-construction wiring
+ * (e.g., creating the strategy after the FeedbackLoopHandle is available).
+ */
+export type RepairStrategyInput = RepairStrategy | (() => RepairStrategy);
 
 // ---------------------------------------------------------------------------
 // Tool health tracking types — re-exported from L0 (@koi/core)

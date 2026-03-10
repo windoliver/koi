@@ -21,7 +21,7 @@ import { runGates } from "./gate.js";
 import { defaultRepairStrategy } from "./repair.js";
 import { createRetryLoop, ValidationFailure } from "./retry.js";
 import { createToolHealthTracker, type ToolHealthTracker } from "./tool-health.js";
-import type { ForgeToolErrorFeedback } from "./types.js";
+import type { ForgeToolErrorFeedback, RepairStrategyInput } from "./types.js";
 import { runValidators } from "./validators.js";
 
 /** Handle returned by the feedback-loop factory — bundles middleware + health read API. */
@@ -38,7 +38,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
   const gates = config.gates ?? [];
   const toolValidators = config.toolValidators ?? [];
   const toolGates = config.toolGates ?? [];
-  const repair = config.repairStrategy ?? defaultRepairStrategy;
+  const repair: RepairStrategyInput = config.repairStrategy ?? defaultRepairStrategy;
   const retryLoop = createRetryLoop(config.retry ?? {});
 
   // Health tracking: only created when forgeHealth config is present
@@ -47,6 +47,52 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
     : undefined;
   const healthClock = config.forgeHealth?.clock ?? Date.now;
   const resolveBrickId = config.forgeHealth?.resolveBrickId;
+
+  // Circuit breaker for flush failures (Issue #937: 15A)
+  // let: mutable counter reset on successful flush
+  let consecutiveFlushFailures = 0;
+  const MAX_CONSECUTIVE_FLUSH_FAILURES = 3;
+
+  /** Record failure, check quarantine/demotion, and maybe flush. DRY helper (Issue #937: 5A). */
+  async function recordFailureAndCheck(
+    tracker: ToolHealthTracker,
+    toolId: string,
+    latencyMs: number,
+    errorMsg: string,
+  ): Promise<void> {
+    tracker.recordFailure(toolId, latencyMs, errorMsg);
+    const quarantined = await tracker.checkAndQuarantine(toolId);
+    if (!quarantined) {
+      await tracker.checkAndDemote(toolId).catch((demotionErr: unknown) => {
+        config.forgeHealth?.onDemotionError?.(toolId, demotionErr);
+      });
+    }
+    maybeFlush(tracker, toolId);
+  }
+
+  /** Fire-and-forget flush check with circuit breaker. */
+  function maybeFlush(tracker: ToolHealthTracker, toolId: string): void {
+    if (consecutiveFlushFailures >= MAX_CONSECUTIVE_FLUSH_FAILURES) return;
+    if (tracker.shouldFlushTool(toolId)) {
+      tracker.flushTool(toolId).then(
+        () => {
+          consecutiveFlushFailures = 0;
+        },
+        (e: unknown) => {
+          consecutiveFlushFailures++;
+          config.forgeHealth?.onFlushError?.(toolId, e);
+          if (consecutiveFlushFailures >= MAX_CONSECUTIVE_FLUSH_FAILURES) {
+            config.forgeHealth?.onFlushError?.(
+              toolId,
+              new Error(
+                `Flush circuit breaker open after ${String(MAX_CONSECUTIVE_FLUSH_FAILURES)} consecutive failures — flush disabled for session`,
+              ),
+            );
+          }
+        },
+      );
+    }
+  }
 
   const middleware: KoiMiddleware = {
     name: "feedback-loop",
@@ -159,17 +205,10 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       try {
         response = await next(request);
       } catch (e: unknown) {
-        // Record failure for forged tools
+        // Record failure for forged tools (DRY helper)
         if (isForgedTool && healthTracker !== undefined) {
           const latencyMs = healthClock() - start;
-          healthTracker.recordFailure(toolId, latencyMs, extractMessage(e));
-          const quarantined = await healthTracker.checkAndQuarantine(toolId);
-          if (!quarantined) {
-            await healthTracker.checkAndDemote(toolId).catch((demotionErr: unknown) => {
-              config.forgeHealth?.onDemotionError?.(toolId, demotionErr);
-            });
-          }
-          maybeFlush(healthTracker, toolId, config.forgeHealth?.onFlushError);
+          await recordFailureAndCheck(healthTracker, toolId, latencyMs, extractMessage(e));
         }
         throw e;
       }
@@ -178,21 +217,15 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       if (toolGates.length > 0) {
         const outputResult = await runGates(response.output, toolGates, ctx);
         if (!outputResult.valid) {
-          // Gate failure counts as tool failure for health tracking
+          // Gate failure counts as tool failure for health tracking (DRY helper)
           if (isForgedTool && healthTracker !== undefined) {
             const latencyMs = healthClock() - start;
-            healthTracker.recordFailure(
+            await recordFailureAndCheck(
+              healthTracker,
               toolId,
               latencyMs,
               `Gate "${outputResult.failedGate}" failed`,
             );
-            const quarantined = await healthTracker.checkAndQuarantine(toolId);
-            if (!quarantined) {
-              await healthTracker.checkAndDemote(toolId).catch((demotionErr: unknown) => {
-                config.forgeHealth?.onDemotionError?.(toolId, demotionErr);
-              });
-            }
-            maybeFlush(healthTracker, toolId, config.forgeHealth?.onFlushError);
           }
           config.onGateFail?.(outputResult.failedGate, outputResult.errors);
           throw KoiRuntimeError.from(
@@ -216,18 +249,22 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       if (isForgedTool && healthTracker !== undefined) {
         const latencyMs = healthClock() - start;
         healthTracker.recordSuccess(toolId, latencyMs);
-        maybeFlush(healthTracker, toolId, config.forgeHealth?.onFlushError);
+        maybeFlush(healthTracker, toolId);
       }
 
       return response;
     },
   };
 
-  // Attach session lifecycle hook when health tracking is active
+  // Attach session lifecycle hooks when health tracking is active
   const fullMiddleware: KoiMiddleware =
     healthTracker !== undefined
       ? {
           ...middleware,
+          async onSessionStart(_ctx: SessionContext): Promise<void> {
+            // Batch prefetch quarantined bricks (Issue #937: 14A)
+            await healthTracker.prefetchQuarantined();
+          },
           async onSessionEnd(_ctx: SessionContext): Promise<void> {
             await healthTracker.dispose();
           },
@@ -242,17 +279,4 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
       healthTracker?.getAllSnapshots() ?? [],
     isQuarantined: (toolId: string): boolean => healthTracker?.isQuarantined(toolId) ?? false,
   };
-}
-
-/** Fire-and-forget flush check — errors routed to onFlushError callback. */
-function maybeFlush(
-  tracker: ToolHealthTracker,
-  toolId: string,
-  onFlushError: ((toolId: string, error: unknown) => void) | undefined,
-): void {
-  if (tracker.shouldFlushTool(toolId)) {
-    tracker.flushTool(toolId).catch((e: unknown) => {
-      onFlushError?.(toolId, e);
-    });
-  }
 }
