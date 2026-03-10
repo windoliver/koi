@@ -488,22 +488,21 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   }
 
   /**
-   * Evict quarantined tool state after flush (Issue #937: 16A).
-   * Keeps only a lightweight quarantine flag instead of the full ring buffer.
-   */
-  /**
    * Flush dirty fitness data, then evict the full ToolState for a quarantined tool.
-   * Async: must persist the final failure window before discarding state.
+   * Only evicts if the flush succeeded (dirty → false). On transient flush failure
+   * the full state is preserved so dispose()/later flushes can retry.
    */
   async function flushAndEvictQuarantinedState(toolId: string): Promise<void> {
     const ts = tools.get(toolId);
     if (ts === undefined || ts.state !== "quarantined") return;
     // Flush dirty counters before eviction so the final failure window is persisted.
     if (ts.flushState.dirty && !ts.flushState.flushing) {
-      await flushToolImpl(toolId).catch((e: unknown) => {
-        config.onFlushError?.(toolId, e);
-      });
+      await flushToolImpl(toolId);
     }
+    // Only evict if flush succeeded (dirty cleared) or there was nothing to flush.
+    // On transient failure flushToolImpl keeps dirty=true — preserve full state
+    // so dispose() or a later flush cycle can retry.
+    if (ts.flushState.dirty) return;
     // Replace full state with minimal quarantine marker.
     // Keep a single failure entry so metrics report errorRate > 0.
     const marker = createToolState(1);

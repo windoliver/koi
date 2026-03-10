@@ -358,6 +358,49 @@ describe("ToolHealthTracker", () => {
     expect(onQuarantine).toHaveBeenCalledWith("brick-forged-tool-1");
   });
 
+  test("checkAndQuarantine preserves state when fitness flush fails transiently", async () => {
+    const onFlushError = mock(() => {});
+    // let: call counter to make only the fitness-flush update fail
+    let updateCallCount = 0;
+    const forgeStore = createMockForgeStore();
+    forgeStore.update = mock((): Promise<StoreResult<undefined>> => {
+      updateCallCount++;
+      // First call: lifecycle → "failed" (succeed)
+      if (updateCallCount === 1) {
+        return Promise.resolve({ ok: true as const, value: undefined });
+      }
+      // Second call: fitness flush (fail transiently)
+      return Promise.resolve({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "transient db error", retryable: true },
+      });
+    });
+    const snapshotStore = createMockSnapshotStore();
+
+    const tracker = createToolHealthTracker(
+      createTestConfig({
+        forgeStore,
+        snapshotStore,
+        windowSize: 2,
+        quarantineThreshold: 0.5,
+        onFlushError,
+      }),
+    );
+
+    tracker.recordFailure("forged-tool-1", 10, "e1");
+    tracker.recordFailure("forged-tool-1", 10, "e2");
+    expect(tracker.isQuarantined("forged-tool-1")).toBe(true);
+
+    await tracker.checkAndQuarantine("forged-tool-1");
+
+    // Fitness flush failed → full state preserved (not evicted to marker)
+    const snapshot = tracker.getSnapshot("forged-tool-1");
+    expect(snapshot).toBeDefined();
+    // Full ring buffer preserved: 2 filled slots, not the evicted marker's 1
+    expect(snapshot?.metrics.usageCount).toBe(2);
+    expect(onFlushError).toHaveBeenCalled();
+  });
+
   test("checkAndQuarantine returns false when tool is not quarantined", async () => {
     const tracker = createToolHealthTracker(createTestConfig());
     tracker.recordSuccess("forged-tool-1", 10);
