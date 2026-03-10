@@ -1,22 +1,38 @@
 /**
- * AgentDirectoryViewer — shown when selecting an agent root directory.
+ * AgentDirectoryViewer — full agent root directory overview.
  *
- * Combines runtime status data (via procfs API) with the agent's namespace
- * contents listing. Per admin-panel.md contract: /agents/{id}/ → AgentOverviewViewer.
+ * Per admin-panel.md contract: /agents/{id}/ → AgentOverviewViewer.
+ * Combines runtime procfs data, middleware chain, channels, namespace
+ * contents, and action controls (suspend/resume/terminate).
  */
 
 import { useQuery } from "@tanstack/react-query";
+import type { AgentProcfs, MiddlewareChain } from "@koi/dashboard-types";
 import {
   Activity,
   Clock,
   Folder,
   GitBranch,
+  Loader2,
   MessageSquare,
+  Pause,
+  Play,
+  Settings,
   User,
+  XCircle,
 } from "lucide-react";
-import type { AgentProcfs } from "@koi/dashboard-types";
+import { useCallback } from "react";
 import { useFileTree } from "../../hooks/use-file-tree.js";
-import { fetchAgentProcfs } from "../../lib/api-client.js";
+import {
+  useCommand,
+  useResumeAgent,
+  useSuspendAgent,
+} from "../../hooks/use-command.js";
+import {
+  fetchAgentProcfs,
+  fetchMiddlewareChain,
+  terminateAgent,
+} from "../../lib/api-client.js";
 import { useTreeStore } from "../../stores/tree-store.js";
 import { useViewStore } from "../../stores/view-store.js";
 import { ProcessStateBadge } from "../shared/process-state-badge.js";
@@ -65,8 +81,18 @@ export function AgentDirectoryViewer({
     retry: 1,
   });
 
+  const middlewareQuery = useQuery({
+    queryKey: ["middleware-chain", agentId],
+    queryFn: () => fetchMiddlewareChain(agentId),
+    enabled: agentId.length > 0,
+    staleTime: 30_000,
+    retry: 1,
+  });
+
   const agent: AgentProcfs | undefined =
     procfs.data !== undefined ? procfs.data : undefined;
+  const chain: MiddlewareChain | undefined =
+    middlewareQuery.data !== undefined ? middlewareQuery.data : undefined;
 
   const sorted = [...entries].sort((a, b) => {
     if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
@@ -92,7 +118,7 @@ export function AgentDirectoryViewer({
       </div>
 
       <div className="flex-1 overflow-auto p-4">
-        {/* Runtime overview card (from procfs API) */}
+        {/* Runtime overview card */}
         {agent !== undefined && (
           <div className="mb-4 grid gap-3 rounded-lg border border-[var(--color-border)] p-4 sm:grid-cols-2 lg:grid-cols-4">
             {agent.model !== undefined && (
@@ -121,20 +147,6 @@ export function AgentDirectoryViewer({
                 {formatTokens(agent.tokenCount)}
               </div>
             </div>
-            <div className="text-xs">
-              <span className="text-[var(--color-muted)]">Channels</span>
-              <div className="mt-0.5 flex items-center gap-1 font-medium">
-                <MessageSquare className="h-3 w-3" />
-                {agent.channels.length}
-              </div>
-            </div>
-            <div className="text-xs">
-              <span className="text-[var(--color-muted)]">Children</span>
-              <div className="mt-0.5 flex items-center gap-1 font-medium">
-                <GitBranch className="h-3 w-3" />
-                {agent.childCount}
-              </div>
-            </div>
           </div>
         )}
 
@@ -144,8 +156,70 @@ export function AgentDirectoryViewer({
           </div>
         )}
 
+        <div className="mb-4 grid gap-4 sm:grid-cols-2">
+          {/* Channels */}
+          {agent !== undefined && agent.channels.length > 0 && (
+            <div className="rounded-lg border border-[var(--color-border)] p-3">
+              <div className="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+                <MessageSquare className="h-3.5 w-3.5" />
+                Channels ({agent.channels.length})
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {agent.channels.map((ch) => (
+                  <span
+                    key={ch}
+                    className="rounded bg-[var(--color-muted)]/10 px-2 py-0.5 text-xs"
+                  >
+                    {ch}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Middleware chain */}
+          {chain !== undefined && chain.entries.length > 0 && (
+            <div className="rounded-lg border border-[var(--color-border)] p-3">
+              <div className="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+                <Settings className="h-3.5 w-3.5" />
+                Middleware Chain ({chain.entries.length})
+              </div>
+              <ol className="mt-2 space-y-1">
+                {chain.entries.map((mw, i) => (
+                  <li key={mw.name} className="flex items-center gap-2 text-xs">
+                    <span className="shrink-0 text-[var(--color-muted)]">
+                      {i + 1}.
+                    </span>
+                    <span className="rounded bg-[var(--color-muted)]/10 px-2 py-0.5">
+                      {mw.name}
+                    </span>
+                    <span className="text-[var(--color-muted)]">{mw.phase}</span>
+                    {!mw.enabled && (
+                      <span className="text-yellow-500">disabled</span>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {/* Children */}
+          {agent !== undefined && (
+            <div className="rounded-lg border border-[var(--color-border)] p-3">
+              <div className="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+                <GitBranch className="h-3.5 w-3.5" />
+                Child Agents
+              </div>
+              <div className="mt-1 text-sm font-medium">{agent.childCount}</div>
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <AgentActions agentId={agentId} />
+
         {/* Namespace contents */}
-        <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-[var(--color-muted)]">
+        <h3 className="mb-2 mt-6 flex items-center gap-1.5 text-xs font-medium text-[var(--color-muted)]">
           <Folder className="h-3.5 w-3.5" />
           Namespace Contents
           {!treeLoading && (
@@ -180,6 +254,72 @@ export function AgentDirectoryViewer({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Action buttons wired to real API commands. Extracted to satisfy hooks rules. */
+function AgentActions({
+  agentId,
+}: {
+  readonly agentId: string;
+}): React.ReactElement {
+  const resumeCmd = useResumeAgent(agentId);
+  const suspendCmd = useSuspendAgent(agentId);
+  const terminateCmd = useCommand(
+    useCallback(() => terminateAgent(agentId), [agentId]),
+  );
+
+  const anyExecuting =
+    resumeCmd.isExecuting || suspendCmd.isExecuting || terminateCmd.isExecuting;
+  const error = resumeCmd.error ?? suspendCmd.error ?? terminateCmd.error;
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={anyExecuting}
+          onClick={() => void resumeCmd.execute()}
+          className="flex items-center gap-1 rounded border border-[var(--color-border)] px-3 py-1.5 text-xs hover:bg-[var(--color-muted)]/10 disabled:opacity-50"
+        >
+          {resumeCmd.isExecuting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Play className="h-3.5 w-3.5" />
+          )}
+          Resume
+        </button>
+        <button
+          type="button"
+          disabled={anyExecuting}
+          onClick={() => void suspendCmd.execute()}
+          className="flex items-center gap-1 rounded border border-[var(--color-border)] px-3 py-1.5 text-xs hover:bg-[var(--color-muted)]/10 disabled:opacity-50"
+        >
+          {suspendCmd.isExecuting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Pause className="h-3.5 w-3.5" />
+          )}
+          Suspend
+        </button>
+        <button
+          type="button"
+          disabled={anyExecuting}
+          onClick={() => void terminateCmd.execute()}
+          className="flex items-center gap-1 rounded border border-red-500/30 px-3 py-1.5 text-xs text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+        >
+          {terminateCmd.isExecuting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <XCircle className="h-3.5 w-3.5" />
+          )}
+          Terminate
+        </button>
+      </div>
+      {error !== null && (
+        <div className="mt-2 text-xs text-red-500">{error.message}</div>
+      )}
     </div>
   );
 }

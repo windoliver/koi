@@ -1,9 +1,11 @@
 /**
  * ViewerRouter — routes a file or directory path to the appropriate viewer.
  *
- * Uses regex patterns from the namespace contract (admin-panel.md) for path
+ * Uses regex patterns from the namespace contract (admin-panel.md §5) for path
  * matching. Files load content via useFileContent; directories route to
  * specialized directory viewers or a generic listing.
+ *
+ * resolveViewerName / resolveDirectoryViewerName are exported for testing.
  */
 
 import { useFileContent } from "../../hooks/use-file-content.js";
@@ -17,6 +19,7 @@ import { DirectoryViewer } from "./directory-viewer.js";
 import { EventDetailViewer } from "./event-detail-viewer.js";
 import { EventLogViewer } from "./event-log-viewer.js";
 import { EventStreamViewer } from "./event-stream-viewer.js";
+import { GatewayDirectoryViewer } from "./gateway-directory-viewer.js";
 import { GatewayNodeViewer } from "./gateway-node-viewer.js";
 import { GatewaySessionViewer } from "./gateway-session-viewer.js";
 import { GatewayViewer } from "./gateway-viewer.js";
@@ -27,6 +30,18 @@ import { ManifestViewer } from "./manifest-viewer.js";
 import { MemoryEntityViewer } from "./memory-entity-viewer.js";
 import { MemoryOverviewViewer } from "./memory-overview-viewer.js";
 import { MemoryViewer } from "./memory-viewer.js";
+import {
+  BricksDirectoryViewer,
+  DeadLetterDirectoryViewer,
+  EventStreamsDirectoryViewer,
+  EventsDirectoryViewer,
+  MemoryDirectoryViewer,
+  PendingFramesDirectoryViewer,
+  SessionDirectoryViewer,
+  SessionRecordsDirectoryViewer,
+  SnapshotsDirectoryViewer,
+  SubscriptionsDirectoryViewer,
+} from "./namespace-directory-viewers.js";
 import { PendingFramesViewer } from "./pending-frames-viewer.js";
 import { ScratchpadViewer } from "./scratchpad-viewer.js";
 import { SessionListViewer } from "./session-list-viewer.js";
@@ -49,6 +64,7 @@ type FileViewer = React.ComponentType<{
 }>;
 
 const VIEWER_RULES: readonly {
+  readonly name: string;
   readonly match: (path: string) => boolean;
   readonly Viewer: FileViewer;
 }[] = [
@@ -56,18 +72,21 @@ const VIEWER_RULES: readonly {
 
   // Manifest files
   {
+    name: "manifest",
     match: (p) => /\/manifest\.(json|yaml)$/.test(p),
     Viewer: ManifestViewer,
   },
 
   // Agent overview/index files
   {
+    name: "agent-overview",
     match: (p) => /\/agents\/[^/]+\/(overview|index)\.json$/.test(p),
     Viewer: AgentOverviewViewer,
   },
 
   // Forge bricks — individual brick files
   {
+    name: "brick",
     match: (p) =>
       /^\/(agents\/[^/]+|global)\/bricks\/[^/]+\.json$/.test(p),
     Viewer: BrickViewer,
@@ -75,6 +94,7 @@ const VIEWER_RULES: readonly {
 
   // Event stream metadata
   {
+    name: "event-stream",
     match: (p) =>
       /\/agents\/[^/]+\/events\/streams\/[^/]+\/meta\.json$/.test(p),
     Viewer: EventStreamViewer,
@@ -82,6 +102,7 @@ const VIEWER_RULES: readonly {
 
   // Event detail — numeric stream event files
   {
+    name: "event-detail",
     match: (p) =>
       /\/agents\/[^/]+\/events\/streams\/[^/]+\/events\/\d+\.json$/.test(p),
     Viewer: EventDetailViewer,
@@ -89,6 +110,7 @@ const VIEWER_RULES: readonly {
 
   // Dead letter entries
   {
+    name: "dead-letter",
     match: (p) =>
       /\/agents\/[^/]+\/events\/dead-letters\/[^/]+\.json$/.test(p),
     Viewer: DeadLetterViewer,
@@ -96,6 +118,7 @@ const VIEWER_RULES: readonly {
 
   // Subscription files
   {
+    name: "subscription",
     match: (p) =>
       /\/agents\/[^/]+\/events\/subscriptions\/[^/]+\.json$/.test(p),
     Viewer: SubscriptionViewer,
@@ -103,6 +126,7 @@ const VIEWER_RULES: readonly {
 
   // Session records
   {
+    name: "session-record",
     match: (p) =>
       /\/agents\/[^/]+\/session\/records\/[^/]+\.json$/.test(p),
     Viewer: SessionRecordViewer,
@@ -110,6 +134,7 @@ const VIEWER_RULES: readonly {
 
   // Pending frames
   {
+    name: "pending-frames",
     match: (p) =>
       /\/agents\/[^/]+\/session\/pending\/[^/]+\.json$/.test(p),
     Viewer: PendingFramesViewer,
@@ -117,12 +142,14 @@ const VIEWER_RULES: readonly {
 
   // Session files (catch-all under session/)
   {
+    name: "session",
     match: (p) => /\/agents\/[^/]+\/session\/[^/]+\.json$/.test(p),
     Viewer: SessionViewer,
   },
 
   // Memory overview (index/overview files)
   {
+    name: "memory-overview",
     match: (p) =>
       /\/agents\/[^/]+\/memory\/(index|overview)\.json$/.test(p),
     Viewer: MemoryOverviewViewer,
@@ -130,6 +157,7 @@ const VIEWER_RULES: readonly {
 
   // Memory entities
   {
+    name: "memory-entity",
     match: (p) =>
       /\/agents\/[^/]+\/memory\/entities\/[^/]+\.json$/.test(p),
     Viewer: MemoryEntityViewer,
@@ -137,12 +165,14 @@ const VIEWER_RULES: readonly {
 
   // Memory files (non-JSON catch-all)
   {
+    name: "memory",
     match: (p) => /\/agents\/[^/]+\/memory\//.test(p),
     Viewer: MemoryViewer,
   },
 
   // Snapshot chain metadata (meta.json per contract)
   {
+    name: "snapshot-chain",
     match: (p) =>
       /\/agents\/[^/]+\/snapshots\/[^/]+\/meta\.json$/.test(p),
     Viewer: SnapshotChainViewer,
@@ -150,6 +180,7 @@ const VIEWER_RULES: readonly {
 
   // Snapshot overview (index/overview in snapshots root)
   {
+    name: "snapshot-overview",
     match: (p) =>
       /\/agents\/[^/]+\/snapshots\/(index|overview)\.json$/.test(p),
     Viewer: SnapshotOverviewViewer,
@@ -157,6 +188,7 @@ const VIEWER_RULES: readonly {
 
   // Snapshot node files
   {
+    name: "snapshot-node",
     match: (p) =>
       /\/agents\/[^/]+\/snapshots\/[^/]+\/[^/]+\.json$/.test(p),
     Viewer: SnapshotNodeViewer,
@@ -164,42 +196,49 @@ const VIEWER_RULES: readonly {
 
   // Mailbox message files
   {
+    name: "mailbox",
     match: (p) => /\/agents\/[^/]+\/mailbox\/[^/]+\.json$/.test(p),
     Viewer: MailboxViewer,
   },
 
   // Gateway sessions
   {
+    name: "gateway-session",
     match: (p) => /\/global\/gateway\/sessions\/[^/]+\.json$/.test(p),
     Viewer: GatewaySessionViewer,
   },
 
   // Gateway nodes
   {
+    name: "gateway-node",
     match: (p) => /\/global\/gateway\/nodes\/[^/]+\.json$/.test(p),
     Viewer: GatewayNodeViewer,
   },
 
   // Gateway files (catch-all under gateway/)
   {
+    name: "gateway",
     match: (p) => /\/global\/gateway\/[^/]+\.json$/.test(p),
     Viewer: GatewayViewer,
   },
 
   // Workspace files
   {
+    name: "workspace",
     match: (p) => /\/agents\/[^/]+\/workspace\//.test(p),
     Viewer: WorkspaceViewer,
   },
 
   // Group scratchpad
   {
+    name: "scratchpad",
     match: (p) => /\/groups\/[^/]+\/scratch\//.test(p),
     Viewer: ScratchpadViewer,
   },
 
   // Event log files (catch-all under events/)
   {
+    name: "event-log",
     match: (p) =>
       /\/agents\/[^/]+\/events\//.test(p) && /\.(jsonl?|log)$/.test(p),
     Viewer: EventLogViewer,
@@ -209,6 +248,7 @@ const VIEWER_RULES: readonly {
 
   // Brick list files (index/list in bricks directory)
   {
+    name: "brick-list",
     match: (p) =>
       p.includes("/bricks/") &&
       (p.endsWith("/index.json") || p.endsWith("/list.json")),
@@ -217,6 +257,7 @@ const VIEWER_RULES: readonly {
 
   // Session list files
   {
+    name: "session-list",
     match: (p) =>
       p.includes("/session/") &&
       (p.endsWith("/index.json") ||
@@ -227,12 +268,14 @@ const VIEWER_RULES: readonly {
 
   // Generic JSON
   {
+    name: "json",
     match: (p) => /\.jsonl?$/.test(p),
     Viewer: JsonViewer,
   },
 
   // Text files
   {
+    name: "text",
     match: (p) => /\.(md|txt|log|yaml|yml|toml|ts|js|py)$/.test(p),
     Viewer: TextViewer,
   },
@@ -245,19 +288,99 @@ const VIEWER_RULES: readonly {
 type DirectoryComponent = React.ComponentType<{ readonly path: string }>;
 
 const DIRECTORY_RULES: readonly {
+  readonly name: string;
   readonly match: (path: string) => boolean;
   readonly Component: DirectoryComponent;
 }[] = [
-  // Agent root — runtime overview + namespace contents
+  // Agent root — full overview with runtime data + actions
   {
+    name: "agent-overview",
     match: (p) => /\/agents\/[^/]+\/?$/.test(p),
     Component: AgentDirectoryViewer,
   },
 
   // Mailbox — command-backed (listMailbox API)
   {
+    name: "mailbox",
     match: (p) => /\/agents\/[^/]+\/mailbox\/?$/.test(p),
     Component: MailboxDirectoryViewer,
+  },
+
+  // Bricks (per-agent and global)
+  {
+    name: "bricks",
+    match: (p) => /\/(agents\/[^/]+|global)\/bricks\/?$/.test(p),
+    Component: BricksDirectoryViewer,
+  },
+
+  // Events root
+  {
+    name: "events",
+    match: (p) => /\/agents\/[^/]+\/events\/?$/.test(p),
+    Component: EventsDirectoryViewer,
+  },
+
+  // Event streams
+  {
+    name: "event-streams",
+    match: (p) => /\/agents\/[^/]+\/events\/streams\/?$/.test(p),
+    Component: EventStreamsDirectoryViewer,
+  },
+
+  // Dead-letter queue
+  {
+    name: "dead-letters",
+    match: (p) => /\/agents\/[^/]+\/events\/dead-letters\/?$/.test(p),
+    Component: DeadLetterDirectoryViewer,
+  },
+
+  // Subscriptions
+  {
+    name: "subscriptions",
+    match: (p) => /\/agents\/[^/]+\/events\/subscriptions\/?$/.test(p),
+    Component: SubscriptionsDirectoryViewer,
+  },
+
+  // Session root
+  {
+    name: "session",
+    match: (p) => /\/agents\/[^/]+\/session\/?$/.test(p),
+    Component: SessionDirectoryViewer,
+  },
+
+  // Session records
+  {
+    name: "session-records",
+    match: (p) => /\/agents\/[^/]+\/session\/records\/?$/.test(p),
+    Component: SessionRecordsDirectoryViewer,
+  },
+
+  // Pending frames (per session)
+  {
+    name: "pending-frames",
+    match: (p) => /\/agents\/[^/]+\/session\/pending\/[^/]+\/?$/.test(p),
+    Component: PendingFramesDirectoryViewer,
+  },
+
+  // Memory
+  {
+    name: "memory",
+    match: (p) => /\/agents\/[^/]+\/memory\/?$/.test(p),
+    Component: MemoryDirectoryViewer,
+  },
+
+  // Snapshots
+  {
+    name: "snapshots",
+    match: (p) => /\/agents\/[^/]+\/snapshots\/?$/.test(p),
+    Component: SnapshotsDirectoryViewer,
+  },
+
+  // Global gateway
+  {
+    name: "gateway",
+    match: (p) => /\/global\/gateway\/?$/.test(p),
+    Component: GatewayDirectoryViewer,
   },
 ];
 
@@ -273,6 +396,26 @@ function resolveDirectoryViewer(
 ): DirectoryComponent | undefined {
   for (const rule of DIRECTORY_RULES) {
     if (rule.match(path)) return rule.Component;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Exported for testing — returns the rule name that matched
+// ---------------------------------------------------------------------------
+
+export function resolveViewerName(path: string): string {
+  for (const rule of VIEWER_RULES) {
+    if (rule.match(path)) return rule.name;
+  }
+  return "text";
+}
+
+export function resolveDirectoryViewerName(
+  path: string,
+): string | undefined {
+  for (const rule of DIRECTORY_RULES) {
+    if (rule.match(path)) return rule.name;
   }
   return undefined;
 }
