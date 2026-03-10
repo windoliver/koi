@@ -6,6 +6,7 @@ import { NavLink } from "react-router-dom";
 
 const NAV_ITEMS = [
   { to: "/agents", label: "Agents" },
+  { to: "/browser", label: "Browser" },
 ] as const;
 
 export function Sidebar(): React.ReactElement {

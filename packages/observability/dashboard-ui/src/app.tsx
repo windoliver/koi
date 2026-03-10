@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { PageShell } from "./components/layout/page-shell.js";
 import { AgentsPage } from "./pages/agents-page.js";
+import { BrowserPage } from "./pages/browser-page.js";
 import { useSse } from "./hooks/use-sse.js";
 import { getDashboardConfig } from "./lib/dashboard-config.js";
 
@@ -29,8 +30,9 @@ export function App(): React.ReactElement {
         <SseProvider>
           <Routes>
             <Route element={<PageShell />}>
-              <Route index element={<Navigate to="/agents" replace />} />
+              <Route index element={<BrowserPage />} />
               <Route path="/agents" element={<AgentsPage />} />
+              <Route path="/browser" element={<BrowserPage />} />
             </Route>
           </Routes>
         </SseProvider>
