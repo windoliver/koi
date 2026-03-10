@@ -7,7 +7,7 @@
  * data source so the admin panel reflects the manifest configuration.
  *
  * Three ways to access the admin panel:
- * - `koi admin [manifest]`              — standalone (manifest-only metadata)
+ * - `koi admin [manifest]`              — standalone (embedded agent with manifest fallback)
  * - `koi admin --connect localhost:9100` — proxy to running koi serve
  * - `koi serve --admin [manifest]`      — embedded with the running agent
  */
@@ -304,11 +304,58 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   const temporal = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
   const autonomous = await resolveAutonomousOrWarn(manifest, flags.verbose);
 
-  const orch = resolveOrchestrationFromAgent({
-    temporal,
-    ...(autonomous !== undefined ? { harness: autonomous.harness } : {}),
-    verbose: flags.verbose,
-  });
+  // 3. Try to boot embedded agent runtime for live orchestration + ECS scan.
+  //    Falls back to manifest-only mode if resolution fails (e.g., missing API keys).
+  // let justified: set in try when embedded runtime boots, read for bridge orchestration
+  let embeddedOrch: ReturnType<typeof resolveOrchestrationFromAgent> | undefined;
+  // let justified: set in try when runtime created, called at cleanup
+  let runtimeDispose: (() => Promise<void>) | undefined;
+
+  try {
+    const [{ resolveAgent }, { createForgeConfiguredKoi }, { createPiAdapter }] = await Promise.all(
+      [import("../resolve-agent.js"), import("@koi/forge"), import("@koi/engine-pi")],
+    );
+
+    const resolved = await resolveAgent({ manifestPath, manifest });
+    if (resolved.ok) {
+      const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
+      const { runtime } = await createForgeConfiguredKoi({
+        manifest,
+        adapter,
+        middleware: [...resolved.value.middleware, ...(autonomous?.middleware ?? [])],
+        providers: [...(autonomous?.providers ?? [])],
+        extensions: [],
+      });
+
+      embeddedOrch = resolveOrchestrationFromAgent({
+        agent: runtime.agent,
+        temporal,
+        ...(autonomous !== undefined ? { harness: autonomous.harness } : {}),
+        verbose: flags.verbose,
+      });
+      runtimeDispose = () => runtime.dispose();
+
+      if (flags.verbose) {
+        process.stderr.write("Embedded agent runtime: active\n");
+      }
+    } else if (flags.verbose) {
+      process.stderr.write("warn: agent resolution failed, using manifest-only mode\n");
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (flags.verbose) {
+      process.stderr.write(`warn: embedded agent unavailable: ${msg}\n`);
+    }
+  }
+
+  // Fall back to non-agent orchestration if embedded runtime unavailable
+  const orch =
+    embeddedOrch ??
+    resolveOrchestrationFromAgent({
+      temporal,
+      ...(autonomous !== undefined ? { harness: autonomous.harness } : {}),
+      verbose: flags.verbose,
+    });
 
   const bridge = createAdminPanelBridge({
     agentName: manifest.name,
@@ -386,6 +433,9 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   process.removeListener("SIGTERM", shutdown);
   server.stop(true);
   dashboardResult.dispose();
+  if (runtimeDispose !== undefined) {
+    await runtimeDispose();
+  }
   if (temporal !== undefined) {
     await temporal.dispose();
   }

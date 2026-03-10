@@ -290,6 +290,19 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   // Command dispatcher for the single-agent bridge.
   // Merges core agent lifecycle commands with optional orchestration commands.
   const orchCmds = options.orchestrationCommands;
+
+  /** Wraps an async orchestration command to emit a DashboardEvent on success. */
+  function withEvent<A extends unknown[]>(
+    fn: (...args: A) => Promise<Result<void, KoiError>>,
+    makeEvent: (...args: A) => DashboardEvent,
+  ): (...args: A) => Promise<Result<void, KoiError>> {
+    return async (...args: A): Promise<Result<void, KoiError>> => {
+      const result = await fn(...args);
+      if (result.ok) emitEvent(makeEvent(...args));
+      return result;
+    };
+  }
+
   const commands: CommandDispatcher = {
     suspendAgent(id: AgentId): Result<void, KoiError> {
       if (id !== primaryAgentId) {
@@ -347,19 +360,90 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       return dataSource.terminateAgent(id);
     },
 
-    // Phase 2 orchestration commands — pass-through from adapter when provided
-    ...(orchCmds?.signalWorkflow !== undefined ? { signalWorkflow: orchCmds.signalWorkflow } : {}),
+    // Phase 2 orchestration commands — wrapped to emit SSE events on success
+    ...(orchCmds?.signalWorkflow !== undefined
+      ? {
+          signalWorkflow: withEvent(orchCmds.signalWorkflow, (id, signal) => ({
+            kind: "system",
+            subKind: "activity",
+            message: `Workflow ${id} signaled: ${signal}`,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
     ...(orchCmds?.terminateWorkflow !== undefined
-      ? { terminateWorkflow: orchCmds.terminateWorkflow }
+      ? {
+          terminateWorkflow: withEvent(orchCmds.terminateWorkflow, (id) => ({
+            kind: "temporal",
+            subKind: "workflow_completed",
+            workflowId: id,
+            timestamp: Date.now(),
+          })),
+        }
       : {}),
-    ...(orchCmds?.pauseSchedule !== undefined ? { pauseSchedule: orchCmds.pauseSchedule } : {}),
-    ...(orchCmds?.resumeSchedule !== undefined ? { resumeSchedule: orchCmds.resumeSchedule } : {}),
-    ...(orchCmds?.deleteSchedule !== undefined ? { deleteSchedule: orchCmds.deleteSchedule } : {}),
+    ...(orchCmds?.pauseSchedule !== undefined
+      ? {
+          pauseSchedule: withEvent(orchCmds.pauseSchedule, (id) => ({
+            kind: "system",
+            subKind: "activity",
+            message: `Schedule ${id} paused`,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.resumeSchedule !== undefined
+      ? {
+          resumeSchedule: withEvent(orchCmds.resumeSchedule, (id) => ({
+            kind: "system",
+            subKind: "activity",
+            message: `Schedule ${id} resumed`,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.deleteSchedule !== undefined
+      ? {
+          deleteSchedule: withEvent(orchCmds.deleteSchedule, (id) => ({
+            kind: "system",
+            subKind: "activity",
+            message: `Schedule ${id} deleted`,
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
     ...(orchCmds?.retrySchedulerDeadLetter !== undefined
-      ? { retrySchedulerDeadLetter: orchCmds.retrySchedulerDeadLetter }
+      ? {
+          retrySchedulerDeadLetter: withEvent(orchCmds.retrySchedulerDeadLetter, (id) => ({
+            kind: "scheduler",
+            subKind: "task_submitted",
+            taskId: id,
+            agentId: primaryAgentId,
+            timestamp: Date.now(),
+          })),
+        }
       : {}),
-    ...(orchCmds?.pauseHarness !== undefined ? { pauseHarness: orchCmds.pauseHarness } : {}),
-    ...(orchCmds?.resumeHarness !== undefined ? { resumeHarness: orchCmds.resumeHarness } : {}),
+    ...(orchCmds?.pauseHarness !== undefined
+      ? {
+          pauseHarness: withEvent(orchCmds.pauseHarness, () => ({
+            kind: "harness",
+            subKind: "phase_changed",
+            from: "running",
+            to: "paused",
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
+    ...(orchCmds?.resumeHarness !== undefined
+      ? {
+          resumeHarness: withEvent(orchCmds.resumeHarness, () => ({
+            kind: "harness",
+            subKind: "phase_changed",
+            from: "paused",
+            to: "running",
+            timestamp: Date.now(),
+          })),
+        }
+      : {}),
   };
 
   const updateMetrics = (metrics: {

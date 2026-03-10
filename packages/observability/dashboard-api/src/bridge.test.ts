@@ -465,6 +465,100 @@ describe("createAdminPanelBridge", () => {
     expect(procfs?.tokenCount).toBe(2000);
   });
 
+  // ---------------------------------------------------------------------------
+  // Orchestration command SSE events
+  // ---------------------------------------------------------------------------
+
+  test("orchestration command emits SSE event on success", async () => {
+    const pauseHarness = mock(
+      async (): Promise<{ readonly ok: true; readonly value: undefined }> => ({
+        ok: true,
+        value: undefined,
+      }),
+    );
+    const result = createAdminPanelBridge(
+      createTestOptions({
+        orchestrationCommands: {
+          pauseHarness,
+        },
+      }),
+    );
+
+    const events: DashboardEvent[] = [];
+    result.dataSource.subscribe((e) => events.push(e));
+
+    const cmd = result.commands?.pauseHarness;
+    if (cmd === undefined) throw new Error("expected pauseHarness command");
+    const cmdResult = await cmd();
+    expect(cmdResult.ok).toBe(true);
+    expect(pauseHarness).toHaveBeenCalledTimes(1);
+
+    const harnessEvents = events.filter((e) => e.kind === "harness");
+    expect(harnessEvents).toHaveLength(1);
+    expect(first(harnessEvents).subKind).toBe("phase_changed");
+  });
+
+  test("orchestration command does not emit event on failure", async () => {
+    const pauseHarness = mock(
+      async (): Promise<{
+        readonly ok: false;
+        readonly error: {
+          readonly code: "CONFLICT";
+          readonly message: string;
+          readonly retryable: false;
+        };
+      }> => ({
+        ok: false,
+        error: { code: "CONFLICT", message: "already paused", retryable: false },
+      }),
+    );
+    const result = createAdminPanelBridge(
+      createTestOptions({
+        orchestrationCommands: {
+          pauseHarness,
+        },
+      }),
+    );
+
+    const events: DashboardEvent[] = [];
+    result.dataSource.subscribe((e) => events.push(e));
+
+    const cmd = result.commands?.pauseHarness;
+    if (cmd === undefined) throw new Error("expected pauseHarness command");
+    const cmdResult = await cmd();
+    expect(cmdResult.ok).toBe(false);
+
+    const harnessEvents = events.filter((e) => e.kind === "harness");
+    expect(harnessEvents).toHaveLength(0);
+  });
+
+  test("terminateWorkflow emits temporal:workflow_completed event", async () => {
+    const terminateWorkflow = mock(
+      async (_id: string): Promise<{ readonly ok: true; readonly value: undefined }> => ({
+        ok: true,
+        value: undefined,
+      }),
+    );
+    const result = createAdminPanelBridge(
+      createTestOptions({
+        orchestrationCommands: {
+          terminateWorkflow,
+        },
+      }),
+    );
+
+    const events: DashboardEvent[] = [];
+    result.dataSource.subscribe((e) => events.push(e));
+
+    const cmd = result.commands?.terminateWorkflow;
+    if (cmd === undefined) throw new Error("expected terminateWorkflow command");
+    await cmd("wf-123");
+
+    const temporalEvents = events.filter((e) => e.kind === "temporal");
+    expect(temporalEvents).toHaveLength(1);
+    expect(first(temporalEvents).subKind).toBe("workflow_completed");
+  });
+
   test("updateMetrics emits metrics_updated event", () => {
     const result = createAdminPanelBridge(createTestOptions());
 
