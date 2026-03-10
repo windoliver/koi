@@ -12,13 +12,14 @@
  */
 
 import type { DashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
-import { isAgentEvent } from "@koi/dashboard-types";
+import { isAgentEvent, isNexusEvent } from "@koi/dashboard-types";
 import { useEffect } from "react";
 import { fetchAgents } from "../lib/api-client.js";
 import { getDashboardConfig } from "../lib/dashboard-config.js";
 import { createSseClient } from "../lib/sse-client.js";
 import { useAgentsStore } from "../stores/agents-store.js";
 import { useConnectionStore } from "../stores/connection-store.js";
+import { useTreeStore } from "../stores/tree-store.js";
 
 function handleEvent(event: DashboardEvent): void {
   if (isAgentEvent(event)) {
@@ -48,6 +49,11 @@ function handleEvent(event: DashboardEvent): void {
         });
         break;
     }
+  }
+
+  // Nexus events — invalidate file tree so React Query refetches
+  if (isNexusEvent(event)) {
+    useTreeStore.getState().invalidateTree();
   }
 }
 

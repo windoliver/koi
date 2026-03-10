@@ -10,6 +10,8 @@ import type { RenderResult } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { useAgentsStore } from "../stores/agents-store.js";
 import { useConnectionStore } from "../stores/connection-store.js";
+import { useTreeStore } from "../stores/tree-store.js";
+import { useViewStore } from "../stores/view-store.js";
 import { render } from "./setup.js";
 
 /** Create a fresh QueryClient for testing — no retries, no refetch. */
@@ -35,6 +37,15 @@ export function resetStores(): void {
   });
   useConnectionStore.setState({
     status: "disconnected",
+  });
+  useTreeStore.setState({
+    expanded: new Set<string>(),
+    selectedPath: null,
+    lastInvalidatedAt: 0,
+  });
+  useViewStore.setState({
+    activeViewId: "all",
+    activeView: { id: "all", label: "All Files", rootPaths: ["/"], urlParam: "all" },
   });
 }
 
