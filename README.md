@@ -266,9 +266,8 @@ The same MCP servers work in Claude Desktop, Cursor, VS Code, and Koi.
 git clone https://github.com/windoliver/koi.git
 cd koi
 bun install
+bun run build
 ```
-
-> **Build status**: The full monorepo build (`bun run build`) has intermittent failures in some packages. Individual packages can be built and tested independently with `bunx turbo run build --filter=@koi/<name>`. A clean full-build CI pipeline is in progress.
 
 ### Running tests
 
