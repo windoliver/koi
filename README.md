@@ -23,13 +23,14 @@
 ## Quickstart
 
 ```bash
-bun add koi
-koi init my-agent
+# From the monorepo (development)
+bun install
+bun run --filter @koi/cli -- koi init my-agent
 cd my-agent
-koi start
+bun run --filter @koi/cli -- koi start
 ```
 
-That's it. Your agent is running. The YAML file **is** the agent:
+Your agent is running. The YAML file **is** the agent:
 
 ```yaml
 # koi.yaml
@@ -69,7 +70,7 @@ middleware:
 | No undo when agents break things | **Time travel**: rewind, fork, replay from any checkpoint |
 | Runaway costs | **Token economics**: cascade routing (Haiku/Sonnet/Opus), budget kill switch, circuit breaker |
 | Multi-agent = blind trust | **Governed delegation**: HMAC tokens, monotonic scope attenuation, cascading revocation |
-| No observability | **Admin panel**: real-time dashboard, AG-UI streaming, orchestration overlay |
+| No observability | **Admin panel**: real-time dashboard with agent status, cost tracking, and event streams ([planned](https://github.com/windoliver/koi/issues/924)) |
 | Memory degrades over time | **3-tier memory**: hot (session), warm (cross-session), cold (archival) with consolidation |
 | Single-server ceiling | **Federation**: Raft consensus, mDNS discovery, offline queue, edge deployment |
 | Every data source is different | **Nexus**: 14 connectors unified under a path API — everything is a file |
@@ -152,7 +153,6 @@ Headless mode for production services. HTTP health server, graceful shutdown, co
 
 ```bash
 koi serve --port 9100 --nexus-url https://nexus.example.com
-koi serve --admin              # enable admin panel on health port
 ```
 
 ### `koi deploy`
@@ -167,30 +167,22 @@ koi deploy --uninstall         # remove the service
 
 ## Admin Panel
 
-The admin panel is a real-time browser UI for managing running agents.
+> **Status**: The dashboard packages (`@koi/dashboard-ui`, `@koi/dashboard-api`, `@koi/dashboard-types`) exist. CLI integration (`koi serve --admin`, `koi admin`) is tracked in [#924](https://github.com/windoliver/koi/issues/924).
 
-**Access it via:**
-- `koi serve --admin` — embedded alongside the headless agent
-- `koi admin` — standalone (coming in [#924](https://github.com/windoliver/koi/issues/924))
+A browser-based UI for managing running agents, built on React 19 + Vite.
 
-**What it shows:**
+**Core views:**
 - Agent status, tool inventory, cost tracking, audit log
 - Nexus file browser (everything-is-a-file namespace tree)
 - Real-time SSE event stream
 - Runtime views: process tree, middleware chain, gateway topology
 - Commands: suspend, resume, terminate agents; retry dead-letter queue
 
-**Orchestration overlay** ([#924](https://github.com/windoliver/koi/issues/924)):
-- Temporal workflows: list, signal, terminate
-- Scheduler: kanban (pending/running/done), cron schedules, DLQ
-- Task board: DAG visualization with status-colored nodes
-- Harness: phase, checkpoints, token usage
+**Planned — orchestration overlay** ([#924](https://github.com/windoliver/koi/issues/924)):
+- Temporal workflows, scheduler kanban, task board DAG, harness checkpoints
 
-**Interactive console** ([#933](https://github.com/windoliver/koi/issues/933)):
-- Create and dispatch agents from the browser
-- Chat with running agents via AG-UI streaming
-- View tool calls, run lifecycle events in real time
-- Session history and replay
+**Planned — interactive console** ([#933](https://github.com/windoliver/koi/issues/933)):
+- Create/dispatch agents from the browser, chat via AG-UI streaming
 
 ## Manifest
 
