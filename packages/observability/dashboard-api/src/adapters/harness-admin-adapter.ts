@@ -73,7 +73,7 @@ export interface HarnessAdminClientWithCheckpoints extends HarnessAdminClientLik
 
 export interface HarnessAdminAdapter {
   readonly views: NonNullable<RuntimeViewDataSource["harness"]>;
-  readonly commands: Pick<CommandDispatcher, "pauseHarness" | "resumeHarness">;
+  readonly commands: Required<Pick<CommandDispatcher, "pauseHarness" | "resumeHarness">>;
 }
 
 // ---------------------------------------------------------------------------

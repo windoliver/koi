@@ -32,9 +32,9 @@ function createMockClient(overrides?: Partial<HarnessAdminClientLike>): HarnessA
 // ---------------------------------------------------------------------------
 
 describe("createHarnessAdminAdapter", () => {
-  test("getStatus maps core harness status to dashboard format", () => {
+  test("getStatus maps core harness status to dashboard format", async () => {
     const adapter = createHarnessAdminAdapter(createMockClient());
-    const status = adapter.views.getStatus();
+    const status = await adapter.views.getStatus();
 
     expect(status.phase).toBe("running"); // active → running
     expect(status.sessionCount).toBe(3);
@@ -44,7 +44,7 @@ describe("createHarnessAdminAdapter", () => {
     expect(status.startedAt).toBe(1000);
   });
 
-  test("maps idle phase correctly", () => {
+  test("maps idle phase correctly", async () => {
     const adapter = createHarnessAdminAdapter(
       createMockClient({
         status: () => ({
@@ -63,10 +63,11 @@ describe("createHarnessAdminAdapter", () => {
         }),
       }),
     );
-    expect(adapter.views.getStatus().phase).toBe("idle");
+    const status = await adapter.views.getStatus();
+    expect(status.phase).toBe("idle");
   });
 
-  test("maps suspended phase to paused", () => {
+  test("maps suspended phase to paused", async () => {
     const adapter = createHarnessAdminAdapter(
       createMockClient({
         status: () => ({
@@ -85,10 +86,11 @@ describe("createHarnessAdminAdapter", () => {
         }),
       }),
     );
-    expect(adapter.views.getStatus().phase).toBe("paused");
+    const status = await adapter.views.getStatus();
+    expect(status.phase).toBe("paused");
   });
 
-  test("maps completed and failed phases", () => {
+  test("maps completed and failed phases", async () => {
     const mkClient = (phase: "completed" | "failed"): HarnessAdminClientLike =>
       createMockClient({
         status: () => ({
@@ -106,10 +108,12 @@ describe("createHarnessAdminAdapter", () => {
           },
         }),
       });
-    expect(createHarnessAdminAdapter(mkClient("completed")).views.getStatus().phase).toBe(
-      "completed",
-    );
-    expect(createHarnessAdminAdapter(mkClient("failed")).views.getStatus().phase).toBe("failed");
+    const completedStatus = await createHarnessAdminAdapter(
+      mkClient("completed"),
+    ).views.getStatus();
+    expect(completedStatus.phase).toBe("completed");
+    const failedStatus = await createHarnessAdminAdapter(mkClient("failed")).views.getStatus();
+    expect(failedStatus.phase).toBe("failed");
   });
 
   test("getCheckpoints returns empty when client lacks listCheckpoints", async () => {

@@ -82,9 +82,11 @@ export interface SchedulerAdminClientWithSchedules extends SchedulerAdminClientL
 
 export interface SchedulerAdminAdapter {
   readonly views: NonNullable<RuntimeViewDataSource["scheduler"]>;
-  readonly commands: Pick<
-    CommandDispatcher,
-    "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter"
+  readonly commands: Required<
+    Pick<
+      CommandDispatcher,
+      "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter"
+    >
   >;
 }
 

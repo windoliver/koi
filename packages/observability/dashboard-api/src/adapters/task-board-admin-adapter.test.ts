@@ -21,16 +21,16 @@ function createMockClient(
 // ---------------------------------------------------------------------------
 
 describe("createTaskBoardAdminAdapter", () => {
-  test("returns empty snapshot for empty board", () => {
+  test("returns empty snapshot for empty board", async () => {
     const adapter = createTaskBoardAdminAdapter(createMockClient());
-    const snapshot = adapter.views.getSnapshot();
+    const snapshot = await adapter.views.getSnapshot();
 
     expect(snapshot.nodes).toHaveLength(0);
     expect(snapshot.edges).toHaveLength(0);
     expect(snapshot.timestamp).toBeGreaterThan(0);
   });
 
-  test("maps task items to nodes with correct status", () => {
+  test("maps task items to nodes with correct status", async () => {
     const items: TaskItemLike[] = [
       { id: "t1", description: "Task 1", status: "pending", dependencies: [] },
       {
@@ -52,7 +52,7 @@ describe("createTaskBoardAdminAdapter", () => {
     const results = [{ taskId: "t3", output: "done" }];
 
     const adapter = createTaskBoardAdminAdapter(createMockClient(items, results));
-    const snapshot = adapter.views.getSnapshot();
+    const snapshot = await adapter.views.getSnapshot();
 
     expect(snapshot.nodes).toHaveLength(4);
     expect(snapshot.nodes[0]?.status).toBe("pending");
@@ -63,7 +63,7 @@ describe("createTaskBoardAdminAdapter", () => {
     expect(snapshot.nodes[3]?.error).toBe("boom");
   });
 
-  test("builds edges from dependencies", () => {
+  test("builds edges from dependencies", async () => {
     const items: TaskItemLike[] = [
       { id: "t1", description: "Root", status: "completed", dependencies: [] },
       { id: "t2", description: "Child A", status: "pending", dependencies: ["t1"] },
@@ -71,7 +71,7 @@ describe("createTaskBoardAdminAdapter", () => {
     ];
 
     const adapter = createTaskBoardAdminAdapter(createMockClient(items));
-    const snapshot = adapter.views.getSnapshot();
+    const snapshot = await adapter.views.getSnapshot();
 
     expect(snapshot.edges).toHaveLength(3);
     expect(snapshot.edges).toContainEqual({ from: "t1", to: "t2" });
@@ -79,13 +79,13 @@ describe("createTaskBoardAdminAdapter", () => {
     expect(snapshot.edges).toContainEqual({ from: "t2", to: "t3" });
   });
 
-  test("uses labels from task descriptions", () => {
+  test("uses labels from task descriptions", async () => {
     const items: TaskItemLike[] = [
       { id: "t1", description: "Research AI papers", status: "pending", dependencies: [] },
     ];
 
     const adapter = createTaskBoardAdminAdapter(createMockClient(items));
-    const snapshot = adapter.views.getSnapshot();
+    const snapshot = await adapter.views.getSnapshot();
 
     expect(snapshot.nodes[0]?.label).toBe("Research AI papers");
   });
