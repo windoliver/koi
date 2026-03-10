@@ -119,6 +119,8 @@ export interface WorkflowDetail extends WorkflowSummary {
 export interface WorkflowStateRefs {
   readonly lastTurnId?: string;
   readonly turnsProcessed: number;
+  /** Activity status from the getStatus query (idle/working/shutting_down). */
+  readonly activityStatus?: string;
 }
 
 export interface TemporalHealth {

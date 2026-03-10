@@ -24,7 +24,11 @@ import type { SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
-import { extractTextFromBlocks, resolveDashboardAssetsDir } from "../helpers.js";
+import {
+  createLocalFileSystem,
+  extractTextFromBlocks,
+  resolveDashboardAssetsDir,
+} from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
@@ -227,12 +231,16 @@ export async function runStart(flags: StartFlags): Promise<void> {
       const channelNames = channels.map((ch) => ch.name);
       const skillNames = (manifest.skills ?? []).map((s) => s.name);
 
+      const { dirname: pathDirname, resolve: pathResolve } = await import("node:path");
+      const workspaceRoot = pathResolve(pathDirname(manifestPath));
+
       adminBridge = createAdminPanelBridge({
         agentName: manifest.name,
         agentType: manifest.lifecycle ?? "copilot",
         model: modelName,
         channels: channelNames,
         skills: skillNames,
+        fileSystem: createLocalFileSystem(workspaceRoot),
       });
 
       const assetsDir = resolveDashboardAssetsDir();

@@ -33,7 +33,11 @@ import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
 import type { ServeFlags } from "../args.js";
-import { extractTextFromBlocks, resolveDashboardAssetsDir } from "../helpers.js";
+import {
+  createLocalFileSystem,
+  extractTextFromBlocks,
+  resolveDashboardAssetsDir,
+} from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
@@ -248,12 +252,16 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     const channelNames = (resolved.value.channels ?? []).map((ch) => ch.name);
     const skillNames = (manifest.skills ?? []).map((s) => s.name);
 
+    const { dirname: pathDirname, resolve: pathResolve } = await import("node:path");
+    const workspaceRoot = pathResolve(pathDirname(manifestPath));
+
     adminBridge = createAdminPanelBridge({
       agentName: manifest.name,
       agentType: manifest.lifecycle ?? "copilot",
       model: modelName,
       channels: channelNames,
       skills: skillNames,
+      fileSystem: createLocalFileSystem(workspaceRoot),
     });
   }
 

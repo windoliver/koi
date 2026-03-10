@@ -6,6 +6,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ContentBlock } from "@koi/core";
 
+export { createLocalFileSystem } from "./local-filesystem.js";
+
 /**
  * Extracts text from an array of content blocks, joining with newlines.
  */

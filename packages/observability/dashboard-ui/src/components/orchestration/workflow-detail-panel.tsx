@@ -11,6 +11,16 @@ import { formatDuration, formatRelativeTime } from "../../lib/format.js";
 import { useOrchestrationStore } from "../../stores/orchestration-store.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
 
+// ---------------------------------------------------------------------------
+// Signal log entry (tracked per-session for the timeline)
+// ---------------------------------------------------------------------------
+
+export interface SignalLogEntry {
+  readonly signalName: string;
+  readonly sentAt: number;
+  readonly workflowId: string;
+}
+
 const STATUS_COLORS: Readonly<Record<string, string>> = {
   running: "text-blue-400",
   completed: "text-green-400",
@@ -51,12 +61,84 @@ function JsonBlock({ data }: { readonly data: Readonly<Record<string, unknown>> 
   );
 }
 
+// ---------------------------------------------------------------------------
+// Signal timeline — chronological view of workflow events + sent signals
+// ---------------------------------------------------------------------------
+
+function SignalTimeline({
+  detail,
+  signalLog,
+}: {
+  readonly detail: WorkflowDetail;
+  readonly signalLog: readonly SignalLogEntry[];
+}): React.ReactElement {
+  // Build chronological entries from workflow state + sent signals
+  type TimelineEntry = { readonly time: number; readonly label: string; readonly color: string };
+  const entries: TimelineEntry[] = [
+    { time: detail.startTime, label: "Workflow started", color: "bg-blue-400" },
+  ];
+
+  // Add signals sent via the dashboard
+  for (const sig of signalLog) {
+    if (sig.workflowId === detail.workflowId) {
+      entries.push({ time: sig.sentAt, label: `Signal: ${sig.signalName}`, color: "bg-purple-400" });
+    }
+  }
+
+  if (detail.closeTime !== undefined) {
+    const closeColor = detail.status === "completed" ? "bg-green-400" : "bg-red-400";
+    entries.push({ time: detail.closeTime, label: `Workflow ${detail.status}`, color: closeColor });
+  }
+
+  // Sort chronologically
+  entries.sort((a, b) => a.time - b.time);
+
+  return (
+    <div className="flex flex-col gap-0">
+      {entries.map((entry, idx) => (
+        <div key={`${entry.time}-${String(idx)}`} className="flex items-start gap-2 py-1.5">
+          <div className="flex flex-col items-center pt-0.5">
+            <div className={`h-2 w-2 rounded-full ${entry.color}`} />
+            {idx < entries.length - 1 && (
+              <div className="w-px flex-1 bg-[var(--color-border,#444)]" style={{ minHeight: 16 }} />
+            )}
+          </div>
+          <div className="flex flex-col">
+            <span className="text-xs text-[var(--color-foreground,#cdd6f4)]">{entry.label}</span>
+            <span className="text-[10px] text-[var(--color-muted,#888)]">
+              {formatRelativeTime(entry.time)}
+            </span>
+          </div>
+        </div>
+      ))}
+
+      {/* Live state indicators */}
+      {detail.stateRefs?.activityStatus !== undefined && (
+        <div className="mt-1 flex items-center gap-2 rounded border border-[var(--color-border,#333)] px-2 py-1">
+          <div className={`h-1.5 w-1.5 rounded-full ${detail.stateRefs.activityStatus === "working" ? "bg-blue-400 animate-pulse" : "bg-[var(--color-muted,#888)]"}`} />
+          <span className="text-[10px] text-[var(--color-muted,#888)]">
+            Activity: {detail.stateRefs.activityStatus}
+          </span>
+        </div>
+      )}
+
+      {detail.pendingSignals > 0 && (
+        <div className="mt-1 text-[10px] text-yellow-400">
+          {detail.pendingSignals} pending signal{detail.pendingSignals !== 1 ? "s" : ""}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WorkflowDetailPanel({
   workflowId,
   onClose,
+  signalLog,
 }: {
   readonly workflowId: string;
   readonly onClose: () => void;
+  readonly signalLog?: readonly SignalLogEntry[];
 }): React.ReactElement {
   const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
   const { data: detail, isLoading } = useRuntimeView<WorkflowDetail>(
@@ -157,6 +239,16 @@ export function WorkflowDetailPanel({
                 Search Attributes
               </span>
               <JsonBlock data={detail.searchAttributes} />
+            </div>
+
+            {/* Timeline */}
+            <div>
+              <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted,#888)]">
+                Timeline
+              </span>
+              <div className="mt-1">
+                <SignalTimeline detail={detail} signalLog={signalLog ?? []} />
+              </div>
             </div>
 
             {/* Memo */}

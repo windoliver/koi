@@ -15,7 +15,7 @@ import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-a
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { AdminFlags } from "../args.js";
-import { resolveDashboardAssetsDir } from "../helpers.js";
+import { createLocalFileSystem, resolveDashboardAssetsDir } from "../helpers.js";
 
 const DEFAULT_ADMIN_PORT = 3100;
 
@@ -42,12 +42,18 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   });
   const skillNames = (manifest.skills ?? []).map((s) => s.name);
 
+  // Resolve workspace root from manifest path for file browsing
+  const { dirname: pathDirname, resolve: pathResolve } = await import("node:path");
+  const workspaceRoot = pathResolve(pathDirname(manifestPath));
+  const fileSystem = createLocalFileSystem(workspaceRoot);
+
   const bridge = createAdminPanelBridge({
     agentName: manifest.name,
     agentType: manifest.lifecycle ?? "copilot",
     model: manifest.model.name,
     channels: channelNames,
     skills: skillNames,
+    fileSystem,
   });
 
   const assetsDir = resolveDashboardAssetsDir();

@@ -68,11 +68,20 @@ export function OrchestrationDrawer({
     });
   }, [open]);
 
-  // Only show tabs when runtimeViews is available
+  // Show only tabs whose backing orchestration sources are present
   const visibleTabs = useMemo(() => {
     if (capabilities === undefined) return TABS;
     if (!capabilities.runtimeViews) return [];
-    return TABS;
+    const orch = capabilities.orchestration;
+    return TABS.filter((tab) => {
+      switch (tab.id) {
+        case "temporal": return orch.temporal;
+        case "scheduler": return orch.scheduler;
+        case "taskboard": return orch.taskBoard;
+        case "harness": return orch.harness;
+        default: return false;
+      }
+    });
   }, [capabilities]);
 
   // Reset active tab if it's no longer visible

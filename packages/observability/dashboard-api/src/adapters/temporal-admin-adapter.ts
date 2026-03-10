@@ -173,8 +173,14 @@ function inferEntityType(desc: TemporalWorkflowExecutionLike): "copilot" | "work
 
 function mapDescriptionToDetail(
   desc: TemporalWorkflowDescriptionLike,
-  stateRefs: { readonly lastTurnId?: string; readonly turnsProcessed: number } | undefined,
-  canCount: number,
+  stateRefs:
+    | {
+        readonly lastTurnId?: string;
+        readonly turnsProcessed: number;
+        readonly activityStatus?: string;
+      }
+    | undefined,
+  pendingMessageCount: number,
 ): WorkflowDetail {
   const entityType = inferEntityType(desc);
   const base = {
@@ -187,8 +193,8 @@ function mapDescriptionToDetail(
     searchAttributes: desc.searchAttributes,
     memo: desc.memo,
     pendingActivities: desc.pendingActivities.length,
-    pendingSignals: desc.pendingNexusOperations?.length ?? 0,
-    canCount,
+    pendingSignals: pendingMessageCount,
+    canCount: 0,
     ...(entityType !== undefined ? { entityType } : {}),
     ...(stateRefs !== undefined ? { stateRefs } : {}),
   } as const;
@@ -231,10 +237,17 @@ export function createTemporalAdminAdapter(
       const handle = client.workflow.getHandle(id);
       const desc = await handle.describe();
 
-      // Best-effort query for state refs and CAN count — non-fatal if unavailable
-      let stateRefs: { readonly lastTurnId?: string; readonly turnsProcessed: number } | undefined;
-      let canCount = 0;
+      // Best-effort queries for state refs, activity status, pending count — non-fatal if unavailable
+      let stateRefs:
+        | {
+            readonly lastTurnId?: string;
+            readonly turnsProcessed: number;
+            readonly activityStatus?: string;
+          }
+        | undefined;
+      let pendingMessageCount = 0;
 
+      // Query "getState" — agent state references (STATE_QUERY_NAME)
       try {
         const rawState = await handle.query("getState");
         if (
@@ -253,16 +266,27 @@ export function createTemporalAdminAdapter(
         // Query not available — workflow may not support it
       }
 
+      // Query "getStatus" — activity status (STATUS_QUERY_NAME)
       try {
-        const rawCan = await handle.query("getCanCount");
-        if (typeof rawCan === "number") {
-          canCount = rawCan;
+        const rawStatus = await handle.query("getStatus");
+        if (typeof rawStatus === "string" && stateRefs !== undefined) {
+          stateRefs = { ...stateRefs, activityStatus: rawStatus };
         }
       } catch {
         // Query not available
       }
 
-      return { ok: true, value: mapDescriptionToDetail(desc, stateRefs, canCount) };
+      // Query "getPendingCount" — pending message count (PENDING_COUNT_QUERY_NAME)
+      try {
+        const rawCount = await handle.query("getPendingCount");
+        if (typeof rawCount === "number") {
+          pendingMessageCount = rawCount;
+        }
+      } catch {
+        // Query not available
+      }
+
+      return { ok: true, value: mapDescriptionToDetail(desc, stateRefs, pendingMessageCount) };
     } catch (e: unknown) {
       if (isWorkflowNotFoundError(e)) {
         return { ok: true, value: undefined };

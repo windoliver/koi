@@ -108,11 +108,17 @@ export function createDashboardHandler(
   const batchIntervalMs = config?.sseBatchIntervalMs ?? DEFAULT_DASHBOARD_CONFIG.sseBatchIntervalMs;
   const maxConnections = config?.maxSseConnections ?? DEFAULT_DASHBOARD_CONFIG.maxSseConnections;
 
-  // Compute capabilities from provided options
+  // Compute capabilities from provided options (per-subsystem granularity)
   const capabilities: DashboardCapabilities = {
     fileSystem: fileSystem !== undefined,
     runtimeViews: runtimeViews !== undefined,
     commands: commands !== undefined,
+    orchestration: {
+      temporal: runtimeViews?.temporal !== undefined,
+      scheduler: runtimeViews?.scheduler !== undefined,
+      taskBoard: runtimeViews?.taskBoard !== undefined,
+      harness: runtimeViews?.harness !== undefined,
+    },
   };
 
   // SSE producer

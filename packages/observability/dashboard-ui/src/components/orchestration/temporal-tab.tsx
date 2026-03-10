@@ -9,6 +9,7 @@ import { signalWorkflow, terminateWorkflow } from "../../lib/api-client.js";
 import { formatDuration } from "../../lib/format.js";
 import { useOrchestrationStore } from "../../stores/orchestration-store.js";
 import { LoadingSkeleton } from "../shared/loading-skeleton.js";
+import type { SignalLogEntry } from "./workflow-detail-panel.js";
 import { WorkflowDetailPanel } from "./workflow-detail-panel.js";
 
 const STATUS_COLORS: Readonly<Record<string, string>> = {
@@ -69,7 +70,7 @@ function SignalDialog({
 }: {
   readonly workflowId: string;
   readonly onClose: () => void;
-  readonly onSent: () => void;
+  readonly onSent: (signalName: string) => void;
 }): React.ReactElement {
   const [signalName, setSignalName] = useState("refresh");
   const [payloadText, setPayloadText] = useState("");
@@ -92,7 +93,7 @@ function SignalDialog({
     setSending(true);
     void signalWorkflow(workflowId, signalName, payload)
       .then(() => {
-        onSent();
+        onSent(signalName);
         onClose();
       })
       .catch((e: unknown) => {
@@ -238,6 +239,7 @@ function WorkflowRow({
 export function TemporalTab(): React.ReactElement {
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | undefined>(undefined);
   const [signalTarget, setSignalTarget] = useState<string | undefined>(undefined);
+  const [signalLog, setSignalLog] = useState<readonly SignalLogEntry[]>([]);
   const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
 
   const { data: health, isLoading: healthLoading } = useRuntimeView<TemporalHealth>(
@@ -310,6 +312,7 @@ export function TemporalTab(): React.ReactElement {
         <WorkflowDetailPanel
           workflowId={selectedWorkflowId}
           onClose={() => setSelectedWorkflowId(undefined)}
+          signalLog={signalLog}
         />
       )}
 
@@ -318,7 +321,14 @@ export function TemporalTab(): React.ReactElement {
         <SignalDialog
           workflowId={signalTarget}
           onClose={() => setSignalTarget(undefined)}
-          onSent={() => refetch()}
+          onSent={(sentSignalName: string) => {
+            // Log the sent signal for the timeline
+            setSignalLog((prev) => [
+              ...prev,
+              { signalName: sentSignalName, sentAt: Date.now(), workflowId: signalTarget },
+            ]);
+            refetch();
+          }}
         />
       )}
     </div>

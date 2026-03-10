@@ -12,10 +12,11 @@
  * directly with a full data source implementation.
  */
 
-import type { AgentId, KoiError, ProcessState, Result } from "@koi/core";
+import type { AgentId, FileSystemBackend, KoiError, ProcessState, Result } from "@koi/core";
 import { agentId } from "@koi/core";
 import type {
   AgentProcfs,
+  CommandDispatcher,
   DashboardAgentDetail,
   DashboardAgentSummary,
   DashboardChannelSummary,
@@ -45,6 +46,17 @@ export interface BridgeOptions {
   readonly channels: readonly string[];
   /** Skill names (e.g. ["web-search", "code-review"]). */
   readonly skills: readonly string[];
+  /** Optional filesystem backend for file browsing in the admin panel. */
+  readonly fileSystem?: FileSystemBackend | undefined;
+  /** Optional orchestration view sources to merge into runtimeViews. */
+  readonly orchestration?:
+    | {
+        readonly temporal?: RuntimeViewDataSource["temporal"];
+        readonly scheduler?: RuntimeViewDataSource["scheduler"];
+        readonly taskBoard?: RuntimeViewDataSource["taskBoard"];
+        readonly harness?: RuntimeViewDataSource["harness"];
+      }
+    | undefined;
 }
 
 export interface AdminPanelBridgeResult extends DashboardHandlerOptions {
@@ -245,6 +257,79 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
         timestamp: Date.now(),
       };
     },
+
+    // Phase 2 orchestration sources (pass-through from caller)
+    ...(options.orchestration?.temporal !== undefined
+      ? { temporal: options.orchestration.temporal }
+      : {}),
+    ...(options.orchestration?.scheduler !== undefined
+      ? { scheduler: options.orchestration.scheduler }
+      : {}),
+    ...(options.orchestration?.taskBoard !== undefined
+      ? { taskBoard: options.orchestration.taskBoard }
+      : {}),
+    ...(options.orchestration?.harness !== undefined
+      ? { harness: options.orchestration.harness }
+      : {}),
+  };
+
+  // Command dispatcher for the single-agent bridge
+  const commands: CommandDispatcher = {
+    suspendAgent(id: AgentId): Result<void, KoiError> {
+      if (id !== primaryAgentId) {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: `Agent ${id} not found`, retryable: false },
+        };
+      }
+      if (agentState !== "running") {
+        return {
+          ok: false,
+          error: { code: "CONFLICT", message: `Agent ${id} is not running`, retryable: false },
+        };
+      }
+      const prev = agentState;
+      agentState = "suspended";
+      emitEvent({
+        kind: "agent",
+        subKind: "status_changed",
+        agentId: primaryAgentId,
+        from: prev,
+        to: "suspended",
+        timestamp: Date.now(),
+      });
+      return { ok: true, value: undefined };
+    },
+
+    resumeAgent(id: AgentId): Result<void, KoiError> {
+      if (id !== primaryAgentId) {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: `Agent ${id} not found`, retryable: false },
+        };
+      }
+      if (agentState !== "suspended") {
+        return {
+          ok: false,
+          error: { code: "CONFLICT", message: `Agent ${id} is not suspended`, retryable: false },
+        };
+      }
+      const prev = agentState;
+      agentState = "running";
+      emitEvent({
+        kind: "agent",
+        subKind: "status_changed",
+        agentId: primaryAgentId,
+        from: prev,
+        to: "running",
+        timestamp: Date.now(),
+      });
+      return { ok: true, value: undefined };
+    },
+
+    terminateAgent(id: AgentId): Result<void, KoiError> | Promise<Result<void, KoiError>> {
+      return dataSource.terminateAgent(id);
+    },
   };
 
   const updateMetrics = (metrics: {
@@ -267,6 +352,8 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   return {
     dataSource,
     runtimeViews,
+    commands,
+    ...(options.fileSystem !== undefined ? { fileSystem: options.fileSystem } : {}),
     emitEvent,
     updateMetrics,
   };

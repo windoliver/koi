@@ -64,6 +64,12 @@ export interface DashboardCapabilities {
   readonly fileSystem: boolean;
   readonly runtimeViews: boolean;
   readonly commands: boolean;
+  readonly orchestration: {
+    readonly temporal: boolean;
+    readonly scheduler: boolean;
+    readonly taskBoard: boolean;
+    readonly harness: boolean;
+  };
 }
 
 export interface HealthResponse {

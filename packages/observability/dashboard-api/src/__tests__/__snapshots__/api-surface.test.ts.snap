@@ -180,6 +180,15 @@ interface BridgeOptions {
     readonly channels: readonly string[];
     /** Skill names (e.g. ["web-search", "code-review"]). */
     readonly skills: readonly string[];
+    /** Optional filesystem backend for file browsing in the admin panel. */
+    readonly fileSystem?: FileSystemBackend | undefined;
+    /** Optional orchestration view sources to merge into runtimeViews. */
+    readonly orchestration?: {
+        readonly temporal?: RuntimeViewDataSource["temporal"];
+        readonly scheduler?: RuntimeViewDataSource["scheduler"];
+        readonly taskBoard?: RuntimeViewDataSource["taskBoard"];
+        readonly harness?: RuntimeViewDataSource["harness"];
+    } | undefined;
 }
 interface AdminPanelBridgeResult extends DashboardHandlerOptions {
     /** Emit a dashboard event to all subscribers. */
