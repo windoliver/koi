@@ -41,6 +41,7 @@ import {
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
+import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -247,6 +248,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // 7a. Create admin panel bridge (before message loop so metrics can be tracked)
   // let justified: conditionally set when --admin, read in message loop for metrics
   let adminBridge: AdminPanelBridgeResult | undefined;
+  // let justified: conditionally set when --temporal-url, disposed at cleanup
+  let temporalAdmin: Awaited<ReturnType<typeof resolveTemporalOrWarn>>;
 
   if (flags.admin) {
     const channelNames = (resolved.value.channels ?? []).map((ch) => ch.name);
@@ -255,6 +258,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     const { dirname: pathDirname, resolve: pathResolve } = await import("node:path");
     const workspaceRoot = pathResolve(pathDirname(manifestPath));
 
+    temporalAdmin = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
+
     adminBridge = createAdminPanelBridge({
       agentName: manifest.name,
       agentType: manifest.lifecycle ?? "copilot",
@@ -262,6 +267,12 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       channels: channelNames,
       skills: skillNames,
       fileSystem: createLocalFileSystem(workspaceRoot),
+      ...(temporalAdmin !== undefined
+        ? {
+            orchestration: { temporal: temporalAdmin.views },
+            orchestrationCommands: temporalAdmin.commands,
+          }
+        : {}),
     });
   }
 
@@ -443,6 +454,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     await ch.disconnect();
   }
   stopServer();
+  if (temporalAdmin !== undefined) {
+    await temporalAdmin.dispose();
+  }
   await runtime.dispose();
   forgeBootstrap?.dispose();
   if (sandboxBridge !== undefined) {

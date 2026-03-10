@@ -16,6 +16,7 @@ import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { AdminFlags } from "../args.js";
 import { createLocalFileSystem, resolveDashboardAssetsDir } from "../helpers.js";
+import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 
 const DEFAULT_ADMIN_PORT = 3100;
 
@@ -47,6 +48,9 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   const workspaceRoot = pathResolve(pathDirname(manifestPath));
   const fileSystem = createLocalFileSystem(workspaceRoot);
 
+  // 2b. Optionally connect to Temporal for orchestration views/commands
+  const temporal = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
+
   const bridge = createAdminPanelBridge({
     agentName: manifest.name,
     agentType: manifest.lifecycle ?? "copilot",
@@ -54,6 +58,12 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     channels: channelNames,
     skills: skillNames,
     fileSystem,
+    ...(temporal !== undefined
+      ? {
+          orchestration: { temporal: temporal.views },
+          orchestrationCommands: temporal.commands,
+        }
+      : {}),
   });
 
   const assetsDir = resolveDashboardAssetsDir();
@@ -119,6 +129,9 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   process.removeListener("SIGTERM", shutdown);
   server.stop(true);
   dashboardResult.dispose();
+  if (temporal !== undefined) {
+    await temporal.dispose();
+  }
 
   process.stderr.write("Goodbye.\n");
 }

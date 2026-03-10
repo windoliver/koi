@@ -32,6 +32,7 @@ export interface StartFlags extends BaseFlags {
   readonly dryRun: boolean;
   readonly nexusUrl: string | undefined;
   readonly admin: boolean;
+  readonly temporalUrl: string | undefined;
 }
 
 export interface ServeFlags extends BaseFlags {
@@ -42,6 +43,7 @@ export interface ServeFlags extends BaseFlags {
   readonly nexusUrl: string | undefined;
   readonly admin: boolean;
   readonly adminPort: number | undefined;
+  readonly temporalUrl: string | undefined;
 }
 
 export interface AdminFlags extends BaseFlags {
@@ -50,6 +52,7 @@ export interface AdminFlags extends BaseFlags {
   readonly port: number | undefined;
   readonly verbose: boolean;
   readonly open: boolean;
+  readonly temporalUrl: string | undefined;
 }
 
 export interface DeployFlags extends BaseFlags {
@@ -155,6 +158,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
       "dry-run": { type: "boolean", default: false },
       "nexus-url": { type: "string" },
       admin: { type: "boolean", default: false },
+      "temporal-url": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -171,6 +175,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     dryRun: (values["dry-run"] as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
     admin: (values.admin as boolean | undefined) ?? false,
+    temporalUrl: values["temporal-url"] as string | undefined,
   };
 }
 
@@ -184,6 +189,7 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
       "nexus-url": { type: "string" },
       admin: { type: "boolean", default: false },
       "admin-port": { type: "string" },
+      "temporal-url": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -202,6 +208,7 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
     nexusUrl: values["nexus-url"] as string | undefined,
     admin: (values.admin as boolean | undefined) ?? false,
     adminPort: adminPortStr !== undefined ? Number.parseInt(adminPortStr, 10) : undefined,
+    temporalUrl: values["temporal-url"] as string | undefined,
   };
 }
 
@@ -304,6 +311,7 @@ export function parseAdminFlags(rest: readonly string[]): AdminFlags {
       verbose: { type: "boolean", short: "v", default: false },
       open: { type: "boolean", default: true },
       "no-open": { type: "boolean", default: false },
+      "temporal-url": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -322,6 +330,7 @@ export function parseAdminFlags(rest: readonly string[]): AdminFlags {
     port: portStr !== undefined ? Number.parseInt(portStr, 10) : undefined,
     verbose: (values.verbose as boolean | undefined) ?? false,
     open: shouldOpen,
+    temporalUrl: values["temporal-url"] as string | undefined,
   };
 }
 

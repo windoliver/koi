@@ -135,6 +135,7 @@ function makeFlags(overrides: Partial<ServeFlags> = {}): ServeFlags {
     nexusUrl: undefined,
     admin: false,
     adminPort: undefined,
+    temporalUrl: undefined,
     ...overrides,
   };
 }

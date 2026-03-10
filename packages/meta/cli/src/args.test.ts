@@ -270,6 +270,45 @@ describe("parseArgs — koi admin flags", () => {
     const result = parseArgs(["admin", "agent.yaml"]) as AdminFlags;
     expect(result.manifest).toBe("agent.yaml");
   });
+
+  test("parses --temporal-url for admin", () => {
+    const result = parseArgs(["admin", "--temporal-url", "localhost:7233"]) as AdminFlags;
+    expect(result.temporalUrl).toBe("localhost:7233");
+  });
+
+  test("defaults temporalUrl to undefined", () => {
+    const result = parseArgs(["admin"]) as AdminFlags;
+    expect(result.temporalUrl).toBeUndefined();
+  });
+});
+
+describe("parseArgs — temporal-url flag", () => {
+  test("parses --temporal-url for start", () => {
+    const result = parseArgs([
+      "start",
+      "--admin",
+      "--temporal-url",
+      "localhost:7233",
+    ]) as StartFlags;
+    expect(result.temporalUrl).toBe("localhost:7233");
+    expect(result.admin).toBe(true);
+  });
+
+  test("parses --temporal-url for serve", () => {
+    const result = parseArgs(["serve", "--admin", "--temporal-url", "remote:7233"]) as ServeFlags;
+    expect(result.temporalUrl).toBe("remote:7233");
+    expect(result.admin).toBe(true);
+  });
+
+  test("defaults temporalUrl to undefined for start", () => {
+    const result = parseArgs(["start"]) as StartFlags;
+    expect(result.temporalUrl).toBeUndefined();
+  });
+
+  test("defaults temporalUrl to undefined for serve", () => {
+    const result = parseArgs(["serve"]) as ServeFlags;
+    expect(result.temporalUrl).toBeUndefined();
+  });
 });
 
 describe("parseArgs — unknown command", () => {
