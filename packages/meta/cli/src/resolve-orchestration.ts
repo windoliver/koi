@@ -2,9 +2,9 @@
  * resolveOrchestrationFromAgent — extract orchestration views from the Agent entity.
  *
  * Queries the Agent's ECS components for known subsystem tokens (SCHEDULER)
- * and wraps them in dashboard-compatible adapters. For Temporal, delegates to
- * resolveTemporalOrWarn. For harness/task-board, accepts optional injected
- * instances (since they're created by @koi/autonomous, not attached as tokens).
+ * and scans the component map for harness/task-board instances that match
+ * structurally. For Temporal, delegates to resolveTemporalOrWarn. Also
+ * accepts optional explicitly-injected instances for autonomous agent mode.
  *
  * Returns orchestration views and commands suitable for createAdminPanelBridge.
  */
@@ -72,6 +72,63 @@ export interface OrchestrationResult {
 }
 
 // ---------------------------------------------------------------------------
+// Structural detection helpers
+// ---------------------------------------------------------------------------
+
+/** Check if a value structurally matches HarnessAdminClientLike (has status()). */
+function isHarnessLike(value: unknown): value is HarnessAdminClientLike {
+  if (value === null || value === undefined || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.status !== "function") return false;
+
+  // Verify status() returns something with phase and metrics
+  try {
+    const status = (obj.status as () => unknown)();
+    if (status === null || status === undefined || typeof status !== "object") return false;
+    const s = status as Record<string, unknown>;
+    return typeof s.phase === "string" && typeof s.metrics === "object" && s.metrics !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Check if a value structurally matches TaskBoardAdminClientLike (has all() and completed()). */
+function isTaskBoardLike(value: unknown): value is TaskBoardAdminClientLike {
+  if (value === null || value === undefined || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return typeof obj.all === "function" && typeof obj.completed === "function";
+}
+
+/**
+ * Derive a TaskBoardAdminClientLike from a HarnessAdminClientLike.
+ * Extracts the task board snapshot from harness status and wraps it
+ * in the adapter interface.
+ */
+function deriveTaskBoardFromHarness(
+  harness: HarnessAdminClientLike,
+): TaskBoardAdminClientLike | undefined {
+  try {
+    const status = harness.status();
+    const s = status as unknown as Record<string, unknown>;
+    const board = s.taskBoard as
+      | { readonly items?: unknown; readonly results?: unknown }
+      | undefined;
+    if (board === undefined || board === null) return undefined;
+    if (!Array.isArray(board.items)) return undefined;
+
+    return {
+      all: () => board.items as unknown as ReturnType<TaskBoardAdminClientLike["all"]>,
+      completed: () =>
+        Array.isArray(board.results)
+          ? (board.results as unknown as ReturnType<TaskBoardAdminClientLike["completed"]>)
+          : [],
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -86,6 +143,10 @@ export function resolveOrchestrationFromAgent(
   } = {};
 
   const commands: OrchestrationResult["orchestrationCommands"] = {};
+
+  // Track resolved sources for task-board derivation
+  // let justified: set in step 3 or 4, read in step 5 for harness→taskBoard derivation
+  let resolvedHarness: HarnessAdminClientLike | undefined;
 
   // 1. Temporal — pass through from resolveTemporalOrWarn
   if (options.temporal !== undefined) {
@@ -112,7 +173,32 @@ export function resolveOrchestrationFromAgent(
     }
   }
 
-  // 3. Task Board — injected from autonomous agent builder
+  // 3. Harness — prefer explicit injection, then scan agent components
+  if (options.harness !== undefined) {
+    resolvedHarness = options.harness;
+  } else if (options.agent !== undefined) {
+    // Scan agent components for anything that looks like a harness
+    const components = options.agent.components();
+    for (const [, value] of components) {
+      if (isHarnessLike(value)) {
+        resolvedHarness = value;
+        break;
+      }
+    }
+  }
+
+  if (resolvedHarness !== undefined) {
+    const adapter = createHarnessAdminAdapter(resolvedHarness);
+    orchestration.harness = adapter.views;
+    Object.assign(commands, adapter.commands);
+
+    if (options.verbose) {
+      process.stderr.write("Orchestration: harness wired\n");
+    }
+  }
+
+  // 4. Task Board — prefer explicit injection, then scan agent components,
+  //    then derive from harness status (harness.status().taskBoard)
   if (options.taskBoard !== undefined) {
     const adapter = createTaskBoardAdminAdapter(options.taskBoard);
     orchestration.taskBoard = adapter.views;
@@ -120,16 +206,33 @@ export function resolveOrchestrationFromAgent(
     if (options.verbose) {
       process.stderr.write("Orchestration: task board wired\n");
     }
+  } else if (options.agent !== undefined) {
+    // Scan agent components for anything that looks like a task board
+    const components = options.agent.components();
+    for (const [, value] of components) {
+      if (isTaskBoardLike(value)) {
+        const adapter = createTaskBoardAdminAdapter(value);
+        orchestration.taskBoard = adapter.views;
+
+        if (options.verbose) {
+          process.stderr.write("Orchestration: task board wired from agent component\n");
+        }
+        break;
+      }
+    }
   }
 
-  // 4. Harness — injected from autonomous agent builder
-  if (options.harness !== undefined) {
-    const adapter = createHarnessAdminAdapter(options.harness);
-    orchestration.harness = adapter.views;
-    Object.assign(commands, adapter.commands);
+  // 5. If task board is still not found but harness is available,
+  //    derive task board from harness status (HarnessStatus.taskBoard)
+  if (orchestration.taskBoard === undefined && resolvedHarness !== undefined) {
+    const derived = deriveTaskBoardFromHarness(resolvedHarness);
+    if (derived !== undefined) {
+      const adapter = createTaskBoardAdminAdapter(derived);
+      orchestration.taskBoard = adapter.views;
 
-    if (options.verbose) {
-      process.stderr.write("Orchestration: harness wired\n");
+      if (options.verbose) {
+        process.stderr.write("Orchestration: task board derived from harness status\n");
+      }
     }
   }
 

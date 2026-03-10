@@ -207,7 +207,70 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     return;
   }
 
-  // ── Standalone mode (manifest-based) ───────────────────────────────────
+  // ── Auto-discovery: probe default serve port before manifest fallback ──
+
+  const DEFAULT_SERVE_PORT = 9100;
+  const probeUrl = `http://localhost:${String(DEFAULT_SERVE_PORT)}`;
+  const discovered = await probeRemoteHealth(probeUrl);
+
+  if (discovered) {
+    if (flags.verbose) {
+      process.stderr.write(`Discovered running agent at ${probeUrl} — proxying\n`);
+    }
+
+    const dashboardResult = createProxyHandler(probeUrl);
+
+    const server = Bun.serve({
+      port,
+      async fetch(req: Request): Promise<Response> {
+        const adminResponse = await dashboardResult.handler(req);
+        if (adminResponse !== null) return adminResponse;
+        return new Response("Not Found", { status: 404 });
+      },
+    });
+
+    const adminUrl = `http://localhost:${String(server.port)}/admin`;
+    process.stderr.write(
+      `Admin panel (discovered agent at :${String(DEFAULT_SERVE_PORT)}) on ${adminUrl}\n`,
+    );
+
+    if (flags.open) {
+      try {
+        const { exec } = await import("node:child_process");
+        const openCmd =
+          process.platform === "darwin"
+            ? "open"
+            : process.platform === "win32"
+              ? "start"
+              : "xdg-open";
+        exec(`${openCmd} ${adminUrl}`);
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    process.stderr.write("Press Ctrl+C to stop.\n");
+
+    const controller = new AbortController();
+    function shutdown(): void {
+      controller.abort();
+    }
+    process.on("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+
+    await new Promise<void>((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+
+    process.removeListener("SIGINT", shutdown);
+    process.removeListener("SIGTERM", shutdown);
+    server.stop(true);
+    dashboardResult.dispose();
+    process.stderr.write("Goodbye.\n");
+    return;
+  }
+
+  // ── Standalone mode (manifest-based fallback) ──────────────────────────
 
   // 1. Load manifest for agent metadata
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
