@@ -100,6 +100,8 @@ export interface WorkflowSummary {
   readonly taskQueue: string;
   /** Whether this workflow is a copilot or worker agent. */
   readonly entityType?: "copilot" | "worker";
+  /** How many times this workflow has restarted via Continue-As-New (when available). */
+  readonly canCount?: number;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {

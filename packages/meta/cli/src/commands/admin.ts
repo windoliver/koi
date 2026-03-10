@@ -18,7 +18,7 @@ import type { AdminFlags } from "../args.js";
 import { createLocalFileSystem, resolveDashboardAssetsDir } from "../helpers.js";
 import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 
-const DEFAULT_ADMIN_PORT = 3100;
+const DEFAULT_ADMIN_PORT = 9200;
 
 export async function runAdmin(flags: AdminFlags): Promise<void> {
   // 1. Load manifest for agent metadata
@@ -84,8 +84,8 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     },
   });
 
-  const dashboardUrl = `http://localhost:${String(server.port)}/dashboard`;
-  process.stderr.write(`Admin panel for "${manifest.name}" on ${dashboardUrl}\n`);
+  const adminUrl = `http://localhost:${String(server.port)}/admin`;
+  process.stderr.write(`Admin panel for "${manifest.name}" on ${adminUrl}\n`);
 
   if (flags.verbose) {
     process.stderr.write(`Manifest: ${manifestPath}\n`);
@@ -102,7 +102,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
           : process.platform === "win32"
             ? "start"
             : "xdg-open";
-      exec(`${openCmd} ${dashboardUrl}`);
+      exec(`${openCmd} ${adminUrl}`);
     } catch {
       // Non-fatal — browser open is best-effort
     }

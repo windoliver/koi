@@ -37,9 +37,9 @@ interface CommandDispatcher {
  * Dashboard configuration types and defaults.
  */
 interface DashboardConfig {
-    /** URL path prefix for the dashboard UI. Default: "/dashboard" */
+    /** URL path prefix for the dashboard UI. Default: "/admin" */
     readonly basePath?: string;
-    /** URL path prefix for API endpoints. Default: "/dashboard/api" */
+    /** URL path prefix for API endpoints. Default: "/admin/api" */
     readonly apiPath?: string;
     /** Absolute path to built dashboard-ui dist/ directory. */
     readonly assetsDir?: string;
@@ -51,8 +51,8 @@ interface DashboardConfig {
     readonly cors?: boolean;
 }
 declare const DEFAULT_DASHBOARD_CONFIG: Readonly<{
-    readonly basePath: "/dashboard";
-    readonly apiPath: "/dashboard/api";
+    readonly basePath: "/admin";
+    readonly apiPath: "/admin/api";
     readonly sseBatchIntervalMs: 100;
     readonly maxSseConnections: 50;
     readonly cors: false;
@@ -379,6 +379,8 @@ interface WorkflowSummary {
     readonly taskQueue: string;
     /** Whether this workflow is a copilot or worker agent. */
     readonly entityType?: "copilot" | "worker";
+    /** How many times this workflow has restarted via Continue-As-New (when available). */
+    readonly canCount?: number;
 }
 interface WorkflowDetail extends WorkflowSummary {
     readonly runId: string;

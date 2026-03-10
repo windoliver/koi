@@ -208,6 +208,9 @@ function WorkflowRow({
       <td className="px-3 py-2 text-xs text-[var(--color-muted,#888)]">
         {duration}
       </td>
+      <td className="px-3 py-2 text-xs text-[var(--color-muted,#888)]">
+        {workflow.canCount !== undefined ? String(workflow.canCount) : "\u2014"}
+      </td>
       <td className="px-3 py-2 text-xs">
         {workflow.status === "running" && (
           <div className="flex gap-1">
@@ -282,6 +285,7 @@ export function TemporalTab(): React.ReactElement {
               <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Entity</th>
               <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Status</th>
               <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Duration</th>
+              <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">CAN</th>
               <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Actions</th>
             </tr>
           </thead>
@@ -298,7 +302,7 @@ export function TemporalTab(): React.ReactElement {
               ))
             ) : (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-xs text-[var(--color-muted,#888)]">
+                <td colSpan={7} className="px-3 py-8 text-center text-xs text-[var(--color-muted,#888)]">
                   No workflows
                 </td>
               </tr>

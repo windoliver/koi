@@ -1,5 +1,5 @@
 /**
- * Health check endpoint — GET /dashboard/api/health
+ * Health check endpoint — GET /admin/api/health
  */
 
 import { jsonResponse } from "../router.js";

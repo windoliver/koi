@@ -1,5 +1,5 @@
 /**
- * Channels endpoint — GET /dashboard/api/channels
+ * Channels endpoint — GET /admin/api/channels
  */
 
 import type { DashboardDataSource } from "@koi/dashboard-types";

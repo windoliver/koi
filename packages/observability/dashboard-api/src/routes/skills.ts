@@ -1,5 +1,5 @@
 /**
- * Skills endpoint — GET /dashboard/api/skills
+ * Skills endpoint — GET /admin/api/skills
  */
 
 import type { DashboardDataSource } from "@koi/dashboard-types";

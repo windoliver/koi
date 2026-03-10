@@ -128,8 +128,8 @@ afterAll(() => {
 });
 
 describe("REST endpoints", () => {
-  test("GET /dashboard/api/health returns ok", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/health`);
+  test("GET /admin/api/health returns ok", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/health`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       readonly ok: boolean;
@@ -139,8 +139,8 @@ describe("REST endpoints", () => {
     expect(body.data.status).toBe("ok");
   });
 
-  test("GET /dashboard/api/agents returns agent list", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/agents`);
+  test("GET /admin/api/agents returns agent list", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/agents`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       readonly ok: boolean;
@@ -151,8 +151,8 @@ describe("REST endpoints", () => {
     expect(body.data[0].agentId).toBe("agent-1");
   });
 
-  test("GET /dashboard/api/agents/:id returns agent detail", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/agents/agent-1`);
+  test("GET /admin/api/agents/:id returns agent detail", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/agents/agent-1`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       readonly ok: boolean;
@@ -162,8 +162,8 @@ describe("REST endpoints", () => {
     expect(body.data.skills).toEqual(["code-review"]);
   });
 
-  test("GET /dashboard/api/agents/:id returns 404 for missing agent", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/agents/missing`);
+  test("GET /admin/api/agents/:id returns 404 for missing agent", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/agents/missing`);
     expect(response.status).toBe(404);
     const body = (await response.json()) as {
       readonly ok: boolean;
@@ -173,8 +173,8 @@ describe("REST endpoints", () => {
     expect(body.error.code).toBe("NOT_FOUND");
   });
 
-  test("POST /dashboard/api/agents/:id/terminate succeeds", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/agents/agent-1/terminate`, {
+  test("POST /admin/api/agents/:id/terminate succeeds", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/agents/agent-1/terminate`, {
       method: "POST",
     });
     expect(response.status).toBe(200);
@@ -182,15 +182,15 @@ describe("REST endpoints", () => {
     expect(body.ok).toBe(true);
   });
 
-  test("POST /dashboard/api/agents/:id/terminate returns 404 for missing", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/agents/missing/terminate`, {
+  test("POST /admin/api/agents/:id/terminate returns 404 for missing", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/agents/missing/terminate`, {
       method: "POST",
     });
     expect(response.status).toBe(404);
   });
 
-  test("GET /dashboard/api/channels returns channel list", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/channels`);
+  test("GET /admin/api/channels returns channel list", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/channels`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       readonly ok: boolean;
@@ -201,8 +201,8 @@ describe("REST endpoints", () => {
     expect(body.data[0].channelId).toBe("ch-1");
   });
 
-  test("GET /dashboard/api/skills returns skill list", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/skills`);
+  test("GET /admin/api/skills returns skill list", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/skills`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       readonly ok: boolean;
@@ -213,8 +213,8 @@ describe("REST endpoints", () => {
     expect(body.data[0].name).toBe("code-review");
   });
 
-  test("GET /dashboard/api/metrics returns system metrics", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/metrics`);
+  test("GET /admin/api/metrics returns system metrics", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/metrics`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       readonly ok: boolean;
@@ -224,18 +224,18 @@ describe("REST endpoints", () => {
     expect(body.data.activeAgents).toBe(1);
   });
 
-  test("GET /dashboard/api/unknown returns 404", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/unknown`);
+  test("GET /admin/api/unknown returns 404", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/unknown`);
     expect(response.status).toBe(404);
   });
 
   test("CORS headers are present", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/health`);
+    const response = await fetch(`${baseUrl}/admin/api/health`);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
   });
 
   test("OPTIONS preflight returns 204", async () => {
-    const response = await fetch(`${baseUrl}/dashboard/api/health`, {
+    const response = await fetch(`${baseUrl}/admin/api/health`, {
       method: "OPTIONS",
     });
     expect(response.status).toBe(204);
@@ -249,10 +249,10 @@ describe("REST endpoints", () => {
 });
 
 describe("SSE endpoint", () => {
-  test("GET /dashboard/api/events returns SSE stream with events", async () => {
+  test("GET /admin/api/events returns SSE stream with events", async () => {
     const ac = new AbortController();
 
-    const response = await fetch(`${baseUrl}/dashboard/api/events`, {
+    const response = await fetch(`${baseUrl}/admin/api/events`, {
       signal: ac.signal,
     });
     expect(response.status).toBe(200);
@@ -296,9 +296,9 @@ describe("SSE endpoint", () => {
     ac.abort();
   });
 
-  test("GET /dashboard/api/events returns correct headers", async () => {
+  test("GET /admin/api/events returns correct headers", async () => {
     const ac = new AbortController();
-    const response = await fetch(`${baseUrl}/dashboard/api/events`, {
+    const response = await fetch(`${baseUrl}/admin/api/events`, {
       signal: ac.signal,
     });
     expect(response.headers.get("content-type")).toBe("text/event-stream");

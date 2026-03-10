@@ -18,6 +18,15 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type {
+  DashboardAgentDetail,
+  DashboardAgentSummary,
+  DashboardChannelSummary,
+  DashboardDataSource,
+  DashboardEvent,
+  DashboardSkillSummary,
+  DashboardSystemMetrics,
+} from "@koi/admin-types";
+import type {
   AgentId,
   AgentManifest,
   ComponentProvider,
@@ -27,15 +36,6 @@ import type {
   Tool,
 } from "@koi/core";
 import { agentId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
-import type {
-  DashboardAgentDetail,
-  DashboardAgentSummary,
-  DashboardChannelSummary,
-  DashboardDataSource,
-  DashboardEvent,
-  DashboardSkillSummary,
-  DashboardSystemMetrics,
-} from "@koi/dashboard-types";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import type { AgentHost } from "@koi/node";
@@ -217,8 +217,8 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     bridge = createHostBridge(host);
 
     const dashboard = createDashboardHandler(bridge.dataSource, {
-      basePath: "/dashboard",
-      apiPath: "/dashboard/api",
+      basePath: "/admin",
+      apiPath: "/admin/api",
       sseBatchIntervalMs: 100,
       maxSseConnections: 10,
       cors: true,
@@ -242,7 +242,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
   // ── Test 1: Dashboard starts clean ────────────────────────────────────
 
   test("dashboard serves health and empty agent list", async () => {
-    const healthRes = await fetch(`${baseUrl}/dashboard/api/health`);
+    const healthRes = await fetch(`${baseUrl}/admin/api/health`);
     expect(healthRes.status).toBe(200);
     const health = (await healthRes.json()) as {
       readonly ok: boolean;
@@ -251,7 +251,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     expect(health.ok).toBe(true);
     expect(health.data.status).toBe("ok");
 
-    const agentsRes = await fetch(`${baseUrl}/dashboard/api/agents`);
+    const agentsRes = await fetch(`${baseUrl}/admin/api/agents`);
     expect(agentsRes.status).toBe(200);
     const agents = (await agentsRes.json()) as {
       readonly ok: boolean;
@@ -260,7 +260,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     expect(agents.ok).toBe(true);
     expect(agents.data).toHaveLength(0);
 
-    const metricsRes = await fetch(`${baseUrl}/dashboard/api/metrics`);
+    const metricsRes = await fetch(`${baseUrl}/admin/api/metrics`);
     expect(metricsRes.status).toBe(200);
     const metrics = (await metricsRes.json()) as {
       readonly ok: boolean;
@@ -296,7 +296,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
       expect(result.ok).toBe(true);
 
       // REST: agent list should show the agent
-      const agentsRes = await fetch(`${baseUrl}/dashboard/api/agents`);
+      const agentsRes = await fetch(`${baseUrl}/admin/api/agents`);
       const agents = (await agentsRes.json()) as {
         readonly ok: boolean;
         readonly data: readonly DashboardAgentSummary[];
@@ -307,7 +307,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
       expect(agents.data[0]?.agentType).toBe("copilot");
 
       // REST: agent detail
-      const detailRes = await fetch(`${baseUrl}/dashboard/api/agents/e2e-agent-001`);
+      const detailRes = await fetch(`${baseUrl}/admin/api/agents/e2e-agent-001`);
       const detail = (await detailRes.json()) as {
         readonly ok: boolean;
         readonly data: DashboardAgentDetail;
@@ -317,7 +317,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
       expect(detail.data.model).toBe("claude-haiku-4-5");
 
       // REST: metrics should show 1 active agent
-      const metricsRes = await fetch(`${baseUrl}/dashboard/api/metrics`);
+      const metricsRes = await fetch(`${baseUrl}/admin/api/metrics`);
       const metrics = (await metricsRes.json()) as {
         readonly ok: boolean;
         readonly data: DashboardSystemMetrics;
@@ -334,7 +334,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     async () => {
       // Connect SSE client
       const ac = new AbortController();
-      const sseRes = await fetch(`${baseUrl}/dashboard/api/events`, {
+      const sseRes = await fetch(`${baseUrl}/admin/api/events`, {
         signal: ac.signal,
       });
       expect(sseRes.status).toBe(200);
@@ -422,11 +422,11 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
 
   test("terminate agent via dashboard REST API", async () => {
     // Verify agent exists
-    const beforeRes = await fetch(`${baseUrl}/dashboard/api/agents/e2e-agent-001`);
+    const beforeRes = await fetch(`${baseUrl}/admin/api/agents/e2e-agent-001`);
     expect(beforeRes.status).toBe(200);
 
     // Terminate via dashboard
-    const terminateRes = await fetch(`${baseUrl}/dashboard/api/agents/e2e-agent-001/terminate`, {
+    const terminateRes = await fetch(`${baseUrl}/admin/api/agents/e2e-agent-001/terminate`, {
       method: "POST",
     });
     expect(terminateRes.status).toBe(200);
@@ -434,7 +434,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     expect(terminateBody.ok).toBe(true);
 
     // Verify agent is gone from list
-    const afterRes = await fetch(`${baseUrl}/dashboard/api/agents`);
+    const afterRes = await fetch(`${baseUrl}/admin/api/agents`);
     const afterBody = (await afterRes.json()) as {
       readonly ok: boolean;
       readonly data: readonly DashboardAgentSummary[];
@@ -442,11 +442,11 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     expect(afterBody.data).toHaveLength(0);
 
     // Verify 404 on detail
-    const goneRes = await fetch(`${baseUrl}/dashboard/api/agents/e2e-agent-001`);
+    const goneRes = await fetch(`${baseUrl}/admin/api/agents/e2e-agent-001`);
     expect(goneRes.status).toBe(404);
 
     // Metrics should show 0 active
-    const metricsRes = await fetch(`${baseUrl}/dashboard/api/metrics`);
+    const metricsRes = await fetch(`${baseUrl}/admin/api/metrics`);
     const metricsBody = (await metricsRes.json()) as {
       readonly ok: boolean;
       readonly data: DashboardSystemMetrics;
@@ -478,7 +478,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
       }
 
       // REST: all 3 agents visible
-      const agentsRes = await fetch(`${baseUrl}/dashboard/api/agents`);
+      const agentsRes = await fetch(`${baseUrl}/admin/api/agents`);
       const agentsBody = (await agentsRes.json()) as {
         readonly ok: boolean;
         readonly data: readonly DashboardAgentSummary[];
@@ -495,7 +495,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
       }
 
       // Metrics shows 3 active
-      const metricsRes = await fetch(`${baseUrl}/dashboard/api/metrics`);
+      const metricsRes = await fetch(`${baseUrl}/admin/api/metrics`);
       const metricsBody = (await metricsRes.json()) as {
         readonly ok: boolean;
         readonly data: DashboardSystemMetrics;
@@ -504,14 +504,14 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
 
       // Terminate all
       for (const name of agents) {
-        const res = await fetch(`${baseUrl}/dashboard/api/agents/e2e-multi-${name}/terminate`, {
+        const res = await fetch(`${baseUrl}/admin/api/agents/e2e-multi-${name}/terminate`, {
           method: "POST",
         });
         expect(res.status).toBe(200);
       }
 
       // Verify all gone
-      const emptyRes = await fetch(`${baseUrl}/dashboard/api/agents`);
+      const emptyRes = await fetch(`${baseUrl}/admin/api/agents`);
       const emptyBody = (await emptyRes.json()) as {
         readonly ok: boolean;
         readonly data: readonly DashboardAgentSummary[];
@@ -528,7 +528,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     async () => {
       // 1. Connect SSE before dispatching
       const ac = new AbortController();
-      const sseRes = await fetch(`${baseUrl}/dashboard/api/events`, {
+      const sseRes = await fetch(`${baseUrl}/admin/api/events`, {
         signal: ac.signal,
       });
       const reader = sseRes.body?.getReader();
@@ -619,14 +619,13 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
       }
 
       // 8. Terminate via dashboard REST API
-      const terminateRes = await fetch(
-        `${baseUrl}/dashboard/api/agents/e2e-lifecycle-001/terminate`,
-        { method: "POST" },
-      );
+      const terminateRes = await fetch(`${baseUrl}/admin/api/agents/e2e-lifecycle-001/terminate`, {
+        method: "POST",
+      });
       expect(terminateRes.status).toBe(200);
 
       // 9. Verify agent removed
-      const agentsRes = await fetch(`${baseUrl}/dashboard/api/agents`);
+      const agentsRes = await fetch(`${baseUrl}/admin/api/agents`);
       const agentsBody = (await agentsRes.json()) as {
         readonly ok: boolean;
         readonly data: readonly DashboardAgentSummary[];
@@ -651,7 +650,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     for (let i = 0; i < 10; i++) {
       const ac = new AbortController();
       controllers.push(ac);
-      const res = await fetch(`${baseUrl}/dashboard/api/events`, {
+      const res = await fetch(`${baseUrl}/admin/api/events`, {
         signal: ac.signal,
       });
       responses.push(res);
@@ -659,7 +658,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     }
 
     // 11th should get 503
-    const overflow = await fetch(`${baseUrl}/dashboard/api/events`);
+    const overflow = await fetch(`${baseUrl}/admin/api/events`);
     expect(overflow.status).toBe(503);
 
     // Cleanup
@@ -672,7 +671,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
 
   test("error paths return proper envelopes", async () => {
     // Terminate nonexistent agent
-    const terminateRes = await fetch(`${baseUrl}/dashboard/api/agents/nonexistent/terminate`, {
+    const terminateRes = await fetch(`${baseUrl}/admin/api/agents/nonexistent/terminate`, {
       method: "POST",
     });
     expect(terminateRes.status).toBe(404);
@@ -684,15 +683,15 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
     expect(terminateBody.error.code).toBe("NOT_FOUND");
 
     // Get nonexistent agent
-    const getRes = await fetch(`${baseUrl}/dashboard/api/agents/nonexistent`);
+    const getRes = await fetch(`${baseUrl}/admin/api/agents/nonexistent`);
     expect(getRes.status).toBe(404);
 
     // Unknown route
-    const unknownRes = await fetch(`${baseUrl}/dashboard/api/unknown`);
+    const unknownRes = await fetch(`${baseUrl}/admin/api/unknown`);
     expect(unknownRes.status).toBe(404);
 
     // CORS preflight
-    const corsRes = await fetch(`${baseUrl}/dashboard/api/agents`, {
+    const corsRes = await fetch(`${baseUrl}/admin/api/agents`, {
       method: "OPTIONS",
     });
     expect(corsRes.status).toBe(204);
@@ -702,7 +701,7 @@ describeE2E("e2e: dashboard + real agent + real LLM", () => {
   // ── Test 9: Real system metrics reflect actual process state ───────────
 
   test("system metrics reflect real process memory", async () => {
-    const res = await fetch(`${baseUrl}/dashboard/api/metrics`);
+    const res = await fetch(`${baseUrl}/admin/api/metrics`);
     const body = (await res.json()) as {
       readonly ok: boolean;
       readonly data: DashboardSystemMetrics;
