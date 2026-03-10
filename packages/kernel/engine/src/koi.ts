@@ -484,41 +484,58 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           if (options.registry !== undefined) {
             const registryEntry = await options.registry.lookup(pid.id);
             if (registryEntry?.status.phase === "suspended") {
-              // let justified: mutable flag set when suspension resolves to a terminal state
-              let suspendedTerminal = false;
-
-              const resolvedPhase = await new Promise<"running" | "terminated" | "deregistered">(
-                (resolve) => {
-                  // let justified: mutable ref to unsubscribe the suspension watcher
-                  let unsub: (() => void) | undefined;
-                  unsub = options.registry?.watch((watchEvent) => {
-                    if (watchEvent.kind === "deregistered" && watchEvent.agentId === pid.id) {
-                      unsub?.();
-                      unsub = undefined;
-                      resolve("deregistered");
-                      return;
-                    }
-                    if (watchEvent.kind === "transitioned" && watchEvent.agentId === pid.id) {
-                      if (watchEvent.to === "running") {
-                        unsub?.();
-                        unsub = undefined;
-                        resolve("running");
-                      } else if (watchEvent.to === "terminated") {
-                        unsub?.();
-                        unsub = undefined;
-                        resolve("terminated");
-                      }
-                    }
-                  });
-                },
-              );
-
-              // If resolved to a terminal state, exit the turn loop gracefully
-              if (resolvedPhase === "terminated" || resolvedPhase === "deregistered") {
-                suspendedTerminal = true;
+              // Fast path: already aborted — skip suspension wait entirely
+              if (runSignal.aborted) {
+                agent.transition({ kind: "complete", stopReason: "interrupted" });
+                return;
               }
 
-              if (suspendedTerminal) {
+              const resolvedPhase = await new Promise<
+                "running" | "terminated" | "deregistered" | "aborted"
+              >((resolve) => {
+                // let justified: mutable ref to unsubscribe the suspension watcher
+                let unsub: (() => void) | undefined;
+
+                const cleanup = (): void => {
+                  if (unsub !== undefined) {
+                    unsub();
+                    unsub = undefined;
+                  }
+                  runSignal.removeEventListener("abort", onSuspendAbort);
+                };
+
+                const onSuspendAbort = (): void => {
+                  cleanup();
+                  resolve("aborted");
+                };
+
+                // Abort signal — resolve immediately so the loop can exit gracefully
+                runSignal.addEventListener("abort", onSuspendAbort, { once: true });
+
+                unsub = options.registry?.watch((watchEvent) => {
+                  if (watchEvent.kind === "deregistered" && watchEvent.agentId === pid.id) {
+                    cleanup();
+                    resolve("deregistered");
+                    return;
+                  }
+                  if (watchEvent.kind === "transitioned" && watchEvent.agentId === pid.id) {
+                    if (watchEvent.to === "running") {
+                      cleanup();
+                      resolve("running");
+                    } else if (watchEvent.to === "terminated") {
+                      cleanup();
+                      resolve("terminated");
+                    }
+                  }
+                });
+              });
+
+              // If resolved to a terminal state or aborted, exit the turn loop gracefully
+              if (
+                resolvedPhase === "terminated" ||
+                resolvedPhase === "deregistered" ||
+                resolvedPhase === "aborted"
+              ) {
                 agent.transition({ kind: "complete", stopReason: "interrupted" });
                 return;
               }

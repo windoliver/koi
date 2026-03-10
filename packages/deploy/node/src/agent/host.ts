@@ -215,7 +215,11 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
             void provider.detach?.(detachSnapshot)?.catch(() => {});
           }
           agents.delete(agentId);
-          emit("agent_terminated", { agentId, exitCode: 130 });
+          emit("agent_terminated", {
+            agentId,
+            exitCode: 130,
+            ...(managed.pid.groupId !== undefined ? { groupId: managed.pid.groupId } : {}),
+          });
         }
         break;
       }
@@ -339,7 +343,11 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
         // Best-effort cleanup — engine disposal is not critical
       });
 
-      emit("agent_terminated", { agentId, exitCode });
+      emit("agent_terminated", {
+        agentId,
+        exitCode,
+        ...(managed.pid.groupId !== undefined ? { groupId: managed.pid.groupId } : {}),
+      });
       return { ok: true, value: undefined };
     },
 
@@ -434,7 +442,10 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
         }
 
         void managed.engine.dispose?.().catch(() => {});
-        emit("agent_terminated", { agentId });
+        emit("agent_terminated", {
+          agentId,
+          ...(managed.pid.groupId !== undefined ? { groupId: managed.pid.groupId } : {}),
+        });
       }
       agents.clear();
     },

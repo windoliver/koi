@@ -582,7 +582,7 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
 
       const abortHandler = (): void => {
         interruptSubprocess();
-        currentQueue?.end();
+        queue.end();
         rejectAbort?.(new Error("ACP prompt aborted"));
       };
       input.signal?.addEventListener("abort", abortHandler, { once: true });
@@ -593,7 +593,7 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
       if (timeoutMs > 0) {
         timeoutHandle = setTimeout(() => {
           interruptSubprocess();
-          currentQueue?.end();
+          queue.end();
           rejectAbort?.(new Error("ACP prompt timed out"));
         }, timeoutMs);
       }
@@ -621,8 +621,12 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
         .finally(() => {
           if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
           input.signal?.removeEventListener("abort", abortHandler);
-          currentQueue?.end();
-          currentQueue = undefined;
+          queue.end();
+          // Only clear the shared reference if it still points to this run's queue.
+          // Prevents a stale .finally() from clobbering a subsequent run's queue.
+          if (currentQueue === queue) {
+            currentQueue = undefined;
+          }
         });
 
       // Yield events from the queue while prompt is running

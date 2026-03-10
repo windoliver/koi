@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { AgentManifest, ComponentProvider, EngineAdapter, ProcessId } from "@koi/core";
-import { agentId, token } from "@koi/core";
+import { agentGroupId, agentId, token } from "@koi/core";
 import type { NodeEvent } from "../types.js";
 import { createAgentHost } from "./host.js";
 
@@ -190,6 +190,43 @@ describe("AgentHost", () => {
 
       expect(events.length).toBe(2);
       expect(events[1]?.type).toBe("agent_terminated");
+    });
+
+    it("emits agent_terminated event with groupId when agent has a group", async () => {
+      const host = createAgentHost(config);
+      const events: NodeEvent[] = [];
+      host.onEvent((e) => events.push(e));
+
+      const pidWithGroup: ProcessId = {
+        id: agentId("a1"),
+        name: "Agent a1",
+        type: "worker",
+        depth: 0,
+        groupId: agentGroupId("group-1"),
+      };
+      await host.dispatch(pidWithGroup, testManifest, makeEngine(), emptyProviders);
+      host.terminate("a1");
+
+      expect(events.length).toBe(2);
+      const termEvent = events[1];
+      expect(termEvent?.type).toBe("agent_terminated");
+      const data = termEvent?.data as { agentId: string; groupId?: string };
+      expect(data.groupId).toBe("group-1");
+    });
+
+    it("emits agent_terminated event without groupId when agent has no group", async () => {
+      const host = createAgentHost(config);
+      const events: NodeEvent[] = [];
+      host.onEvent((e) => events.push(e));
+
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      host.terminate("a1");
+
+      expect(events.length).toBe(2);
+      const termEvent = events[1];
+      expect(termEvent?.type).toBe("agent_terminated");
+      const data = termEvent?.data as Record<string, unknown>;
+      expect("groupId" in data).toBe(false);
     });
 
     it("unsubscribes correctly", async () => {

@@ -43,6 +43,7 @@ export function createStatusReporter(
         state: agent.state,
         turnCount: agentMetrics?.turnCount ?? 0,
         lastActivityMs: agentMetrics?.lastActivityMs ?? 0,
+        ...(agent.pid.groupId !== undefined ? { groupId: agent.pid.groupId } : {}),
       });
     }
     return statuses;

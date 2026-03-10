@@ -331,6 +331,161 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
 });
 
 // ---------------------------------------------------------------------------
+// fetch — cross-origin credential stripping
+// ---------------------------------------------------------------------------
+
+describe("createWebExecutor.fetch cross-origin credential stripping", () => {
+  test("strips sensitive headers on cross-origin redirect", async () => {
+    const mutableHeaderSnaps: Record<string, string>[] = [];
+    const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      // Capture headers passed to each hop
+      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      if (reqUrl === "https://origin-a.com/start") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://origin-b.com/landing" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    const result = await executor.fetch("https://origin-a.com/start", {
+      headers: {
+        Authorization: "Bearer secret",
+        Cookie: "session=abc",
+        "Proxy-Authorization": "Basic xyz",
+        "Content-Type": "text/plain",
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    // First hop: all headers present
+    expect(mutableHeaderSnaps[0]).toEqual({
+      Authorization: "Bearer secret",
+      Cookie: "session=abc",
+      "Proxy-Authorization": "Basic xyz",
+      "Content-Type": "text/plain",
+    });
+    // Second hop (cross-origin): sensitive headers stripped, non-sensitive kept
+    expect(mutableHeaderSnaps[1]).toEqual({
+      "Content-Type": "text/plain",
+    });
+  });
+
+  test("preserves all headers on same-origin redirect", async () => {
+    const mutableHeaderSnaps: Record<string, string>[] = [];
+    const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      if (reqUrl === "https://example.com/a") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://example.com/b" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    await executor.fetch("https://example.com/a", {
+      headers: { Authorization: "Bearer secret", "X-Custom": "keep" },
+    });
+
+    // Same origin — all headers preserved on second hop
+    expect(mutableHeaderSnaps[1]).toEqual({
+      Authorization: "Bearer secret",
+      "X-Custom": "keep",
+    });
+  });
+
+  test("strips credentials once on cross-origin and keeps them stripped for subsequent hops", async () => {
+    const mutableHeaderSnaps: Record<string, string>[] = [];
+    const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      if (reqUrl === "https://a.com/start") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://b.com/step2" },
+        });
+      }
+      if (reqUrl === "https://b.com/step2") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://c.com/final" },
+        });
+      }
+      return new Response("done", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    await executor.fetch("https://a.com/start", {
+      headers: { Authorization: "Bearer token", Accept: "text/html" },
+    });
+
+    // Hop 0 (a.com): all headers
+    expect(mutableHeaderSnaps[0]?.Authorization).toBe("Bearer token");
+    expect(mutableHeaderSnaps[0]?.Accept).toBe("text/html");
+    // Hop 1 (b.com, cross-origin): Authorization stripped
+    expect(mutableHeaderSnaps[1]?.Authorization).toBeUndefined();
+    expect(mutableHeaderSnaps[1]?.Accept).toBe("text/html");
+    // Hop 2 (c.com, cross-origin from b.com): still stripped
+    expect(mutableHeaderSnaps[2]?.Authorization).toBeUndefined();
+    expect(mutableHeaderSnaps[2]?.Accept).toBe("text/html");
+  });
+
+  test("handles case-insensitive header names for stripping", async () => {
+    const mutableHeaderSnaps: Record<string, string>[] = [];
+    const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      if (reqUrl === "https://a.com/") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://b.com/" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    await executor.fetch("https://a.com/", {
+      headers: { AUTHORIZATION: "Bearer upper", cookie: "lower=val" },
+    });
+
+    // Cross-origin: both should be stripped regardless of case
+    expect(mutableHeaderSnaps[1]?.AUTHORIZATION).toBeUndefined();
+    expect(mutableHeaderSnaps[1]?.cookie).toBeUndefined();
+  });
+
+  test("does not strip headers when no headers are provided", async () => {
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (reqUrl === "https://a.com/") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://b.com/" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    const result = await executor.fetch("https://a.com/");
+
+    // Should succeed without errors when there are no headers to strip
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // fetch — caching
 // ---------------------------------------------------------------------------
 

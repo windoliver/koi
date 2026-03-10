@@ -484,6 +484,10 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
         // Capture engine state asynchronously, then persist the session record
         const captureAndSave = async (): Promise<void> => {
           const engineState = await engineAdapter?.saveState?.();
+          // Guard: if the agent was terminated while saveState() was in-flight,
+          // sessionByAgent.has() will be false (terminate() deletes it synchronously).
+          // Without this check, the fire-and-forget save could resurrect a dead session.
+          if (!sessionByAgent.has(agent.pid.id)) return;
           const record: SessionRecord = {
             sessionId: toSessionId(sid),
             agentId: agent.pid.id,
@@ -568,7 +572,9 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
       // so the gateway can resolve waitForAgent() without waiting for the next cycle.
       unsubTerminal = host.onEvent((event) => {
         if (event.type === "agent_terminated") {
-          const data = event.data as { agentId: string; exitCode: number } | undefined;
+          const data = event.data as
+            | { agentId: string; exitCode: number; groupId?: string }
+            | undefined;
           if (data?.agentId !== undefined) {
             // Capture metrics before they are lost to termination cleanup.
             // host.metrics() may return undefined if the agent was already removed.
@@ -579,6 +585,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
               turnCount: agentMetrics?.turnCount ?? 0,
               lastActivityMs: agentMetrics?.lastActivityMs ?? Date.now(),
               exitCode: data.exitCode,
+              ...(data.groupId !== undefined ? { groupId: data.groupId } : {}),
             };
             sendFrame({
               nodeId,

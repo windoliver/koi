@@ -78,10 +78,11 @@ function createGovernanceGuard(
 
       try {
         const response = await next(request);
-        // Record spawn count on successful spawn — the check above is pre-flight only
-        if (spawnToolIds.has(request.toolId)) {
-          await controller.record({ kind: "spawn", depth: 0 });
-        }
+        // Spawn concurrency is tracked by the SpawnLedger in spawn-child.ts
+        // (acquire on spawn, release on child termination). No governance record
+        // needed here — recording { kind: "spawn" } without a corresponding
+        // spawn_release would make the counter monotonically increasing, turning
+        // maxFanOut into "max total spawns ever" instead of "max concurrent children".
         await controller.record({ kind: "tool_success", toolName: request.toolId });
         return response;
       } catch (e: unknown) {
@@ -119,26 +120,31 @@ function createGovernanceGuard(
       let accInputTokens = 0;
       let accOutputTokens = 0;
 
-      for await (const chunk of next(request)) {
-        if (chunk.kind === "usage") {
-          accInputTokens += chunk.inputTokens;
-          accOutputTokens += chunk.outputTokens;
-        } else if (chunk.kind === "done" && chunk.response.usage !== undefined) {
-          // "done" carries the authoritative final usage — prefer it over incremental accumulation
-          accInputTokens = chunk.response.usage.inputTokens;
-          accOutputTokens = chunk.response.usage.outputTokens;
+      try {
+        for await (const chunk of next(request)) {
+          if (chunk.kind === "usage") {
+            accInputTokens += chunk.inputTokens;
+            accOutputTokens += chunk.outputTokens;
+          } else if (chunk.kind === "done" && chunk.response.usage !== undefined) {
+            // "done" carries the authoritative final usage — prefer it over incremental accumulation
+            accInputTokens = chunk.response.usage.inputTokens;
+            accOutputTokens = chunk.response.usage.outputTokens;
+          }
+          yield chunk;
         }
-        yield chunk;
-      }
-
-      const total = accInputTokens + accOutputTokens;
-      if (total > 0) {
-        await controller.record({
-          kind: "token_usage",
-          count: total,
-          inputTokens: accInputTokens,
-          outputTokens: accOutputTokens,
-        });
+      } finally {
+        // Record accumulated usage regardless of how the stream exits (normal
+        // completion, throw, or abort). Without this, an errored/aborted stream
+        // would silently drop all accumulated token accounting.
+        const total = accInputTokens + accOutputTokens;
+        if (total > 0) {
+          await controller.record({
+            kind: "token_usage",
+            count: total,
+            inputTokens: accInputTokens,
+            outputTokens: accOutputTokens,
+          });
+        }
       }
     },
   };

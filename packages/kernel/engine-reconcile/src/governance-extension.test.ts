@@ -211,10 +211,40 @@ describe("createGovernanceExtension", () => {
     await expect(getOnBeforeTurn(guard)(ctx)).rejects.toThrow(KoiRuntimeError);
   });
 
-  test("guard wrapToolCall tracks spawn tools", async () => {
+  test("guard wrapToolCall checks spawn depth and count for spawn tools", async () => {
+    const ext = createGovernanceExtension();
+    // Depth 5 exceeds maxDepth 3 — should reject spawn tools
+    const builder = createGovernanceController(
+      { spawn: { maxDepth: 3, maxFanOut: 10 } },
+      { agentDepth: 5 },
+    );
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 5,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    expect(guardList).toBeDefined();
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    const next = mock(() => Promise.resolve({ output: "ok" } as ToolResponse));
+
+    // Spawn tool rejected due to depth violation
+    await expect(
+      getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, next),
+    ).rejects.toThrow(KoiRuntimeError);
+
+    // Non-spawn tool is allowed even at depth > maxDepth
+    await getWrapToolCall(guard)(ctx, { toolId: "some_tool", input: {} }, next);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  test("guard wrapToolCall does not record spawn count (ledger handles concurrency)", async () => {
     const ext = createGovernanceExtension();
     const builder = createGovernanceController({
-      spawn: { maxDepth: 3, maxFanOut: 1 },
+      spawn: { maxDepth: 3, maxFanOut: 10 },
     });
     const agent = mockAgent(builder);
     const guardList = await ext.guards?.({
@@ -229,13 +259,10 @@ describe("createGovernanceExtension", () => {
     const ctx = mockTurnContext();
     const next = mock(() => Promise.resolve({ output: "ok" } as ToolResponse));
 
-    // First spawn — ok (auto-records spawn count on success)
+    // Spawn count remains 0 — concurrency is tracked by SpawnLedger, not governance
+    expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
     await getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, next);
-
-    // Second spawn — should fail (count 1 >= maxFanOut 1)
-    await expect(
-      getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, next),
-    ).rejects.toThrow(KoiRuntimeError);
+    expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
   });
 
   test("guard wrapToolCall records success on non-spawn tools", async () => {
@@ -308,7 +335,7 @@ describe("createGovernanceExtension", () => {
     expect(reading?.current).toBe(50);
   });
 
-  test("guard wrapToolCall auto-records spawn count on success", async () => {
+  test("guard wrapToolCall records tool_success for spawn tools without incrementing spawn count", async () => {
     const ext = createGovernanceExtension();
     const builder = createGovernanceController({
       spawn: { maxDepth: 3, maxFanOut: 3 },
@@ -326,19 +353,16 @@ describe("createGovernanceExtension", () => {
     const ctx = mockTurnContext();
     const next = mock(() => Promise.resolve({ output: "ok" } as ToolResponse));
 
-    // Spawn count starts at 0
+    // Spawn count stays at 0 — SpawnLedger in spawn-child.ts manages concurrency
+    await getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, next);
     expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
 
-    // After successful spawn, count should be 1
     await getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, next);
-    expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(1);
-
-    // After second successful spawn, count should be 2
-    await getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, next);
-    expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(2);
+    expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
+    expect(next).toHaveBeenCalledTimes(2);
   });
 
-  test("guard wrapToolCall does not record spawn on failure", async () => {
+  test("guard wrapToolCall records tool_error for failed spawn tools without incrementing spawn count", async () => {
     const ext = createGovernanceExtension();
     const builder = createGovernanceController({
       spawn: { maxDepth: 3, maxFanOut: 3 },
@@ -360,7 +384,7 @@ describe("createGovernanceExtension", () => {
       getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, failNext),
     ).rejects.toThrow("spawn failed");
 
-    // Spawn count should remain 0 — no recording on failure
+    // Spawn count should remain 0 — governance guard does not track spawns
     expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
   });
 
@@ -480,6 +504,77 @@ describe("createGovernanceExtension", () => {
     }
 
     // No usage in stream — token count should remain 0
+    const reading = builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE);
+    expect(reading?.current).toBe(0);
+  });
+
+  test("guard wrapModelStream records accumulated usage when stream throws", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 1000, maxDurationMs: 300000 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    expect(guardList).toBeDefined();
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+
+    // Stream yields usage chunks then throws before completion
+    const next: ModelStreamHandler = async function* (_req: ModelRequest) {
+      yield { kind: "usage", inputTokens: 20, outputTokens: 10 } as ModelChunk;
+      yield { kind: "text_delta", delta: "partial" } as ModelChunk;
+      throw new Error("stream aborted");
+    };
+
+    const collected: ModelChunk[] = [];
+    await expect(async () => {
+      for await (const chunk of getWrapModelStream(guard)(ctx, { messages: [] }, next)) {
+        collected.push(chunk);
+      }
+    }).toThrow("stream aborted");
+
+    // Chunks yielded before the error should have been forwarded
+    expect(collected).toHaveLength(2);
+
+    // Token usage should still be recorded despite the stream error
+    const reading = builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE);
+    expect(reading?.current).toBe(30); // 20 + 10
+  });
+
+  test("guard wrapModelStream records zero usage when stream throws before any usage", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController();
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    expect(guardList).toBeDefined();
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+
+    // Stream throws immediately with no usage chunks
+    const next: ModelStreamHandler = async function* (_req: ModelRequest) {
+      yield { kind: "text_delta", delta: "hi" } as ModelChunk;
+      throw new Error("early failure");
+    };
+
+    await expect(async () => {
+      for await (const _chunk of getWrapModelStream(guard)(ctx, { messages: [] }, next)) {
+        // consume
+      }
+    }).toThrow("early failure");
+
+    // No usage accumulated — should remain 0 (no spurious recording)
     const reading = builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE);
     expect(reading?.current).toBe(0);
   });

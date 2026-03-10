@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { AgentManifest, EngineAdapter, ProcessId } from "@koi/core";
-import { agentId } from "@koi/core";
-import type { NodeFrame } from "../types.js";
+import { agentGroupId, agentId } from "@koi/core";
+import type { AgentStatusPayload, NodeFrame } from "../types.js";
 import { createAgentHost } from "./host.js";
 import { createStatusReporter } from "./status.js";
 
@@ -95,6 +95,35 @@ describe("StatusReporter", () => {
 
       expect(statuses[0]?.turnCount).toBe(2);
       expect(statuses[0]?.lastActivityMs).toBeGreaterThan(0);
+    });
+
+    it("includes groupId when agent has a process group", async () => {
+      const host = createAgentHost(hostConfig);
+      const pidWithGroup: ProcessId = {
+        id: agentId("a1"),
+        name: "Agent a1",
+        type: "worker",
+        depth: 0,
+        groupId: agentGroupId("group-1"),
+      };
+      await host.dispatch(pidWithGroup, testManifest, makeEngine(), []);
+
+      const reporter = createStatusReporter("node-1", host, mock());
+      const statuses = reporter.collect();
+
+      expect(statuses.length).toBe(1);
+      expect(statuses[0]?.groupId).toBe("group-1");
+    });
+
+    it("omits groupId when agent has no process group", async () => {
+      const host = createAgentHost(hostConfig);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
+
+      const reporter = createStatusReporter("node-1", host, mock());
+      const statuses = reporter.collect();
+
+      expect(statuses.length).toBe(1);
+      expect("groupId" in (statuses[0] as AgentStatusPayload)).toBe(false);
     });
 
     it("reflects terminated agents (not collected)", async () => {

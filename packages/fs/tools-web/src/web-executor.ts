@@ -95,6 +95,16 @@ export const MAX_REDIRECTS = 10;
 
 const REDIRECT_STATUS_CODES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
+/**
+ * Headers stripped on cross-origin redirects per RFC 7231 / browser behavior.
+ * Prevents credential leakage when a redirect crosses origin boundaries.
+ */
+const CROSS_ORIGIN_SENSITIVE_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+]);
+
 // ---------------------------------------------------------------------------
 // Internal cache (LRU + TTL)
 // ---------------------------------------------------------------------------
@@ -206,7 +216,7 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
         // Manual redirect loop: validate each redirect URL BEFORE following it
         let currentUrl = url;
         let currentMethod = method;
-        const currentHeaders = options?.headers;
+        let currentHeaders: Readonly<Record<string, string>> | undefined = options?.headers;
         let currentBody = options?.body;
         let response: Response | undefined;
 
@@ -238,6 +248,19 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
                 retryable: false,
               },
             };
+          }
+
+          // Strip sensitive headers on cross-origin redirects (RFC 7231 / browser behavior)
+          if (currentHeaders !== undefined) {
+            const currentOrigin = new URL(currentUrl).origin;
+            const nextOrigin = new URL(nextUrl).origin;
+            if (currentOrigin !== nextOrigin) {
+              currentHeaders = Object.fromEntries(
+                Object.entries(currentHeaders).filter(
+                  ([k]) => !CROSS_ORIGIN_SENSITIVE_HEADERS.has(k.toLowerCase()),
+                ),
+              );
+            }
           }
 
           currentUrl = nextUrl;
