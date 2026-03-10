@@ -61,14 +61,10 @@ export async function processPendingMessages(
       const message = mapNexusToKoi(envelope);
       if (message === undefined) continue;
 
-      // let justified: tracks whether any handler failed for this message
-      let handlerFailed = false;
-
       for (const handler of handlers) {
         try {
           await handler(message);
         } catch (err: unknown) {
-          handlerFailed = true;
           const errorContext = {
             agentId,
             messageId: envelope.id,
