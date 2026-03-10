@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { InitFlags, ServeFlags, StartFlags, StopFlags } from "./args.js";
+import type { AdminFlags, InitFlags, ServeFlags, StartFlags, StopFlags } from "./args.js";
 import { parseArgs } from "./args.js";
 
 describe("parseArgs", () => {
@@ -246,6 +246,29 @@ describe("parseArgs — admin flags", () => {
     expect(result.admin).toBe(true);
     expect(result.adminPort).toBe(4000);
     expect(result.verbose).toBe(true);
+  });
+});
+
+describe("parseArgs — koi admin flags", () => {
+  test("defaults open to true", () => {
+    const result = parseArgs(["admin"]) as AdminFlags;
+    expect(result.command).toBe("admin");
+    expect(result.open).toBe(true);
+  });
+
+  test("--no-open disables browser open", () => {
+    const result = parseArgs(["admin", "--no-open"]) as AdminFlags;
+    expect(result.open).toBe(false);
+  });
+
+  test("parses --port for admin", () => {
+    const result = parseArgs(["admin", "--port", "4000"]) as AdminFlags;
+    expect(result.port).toBe(4000);
+  });
+
+  test("parses positional manifest", () => {
+    const result = parseArgs(["admin", "agent.yaml"]) as AdminFlags;
+    expect(result.manifest).toBe("agent.yaml");
   });
 });
 

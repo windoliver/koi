@@ -49,6 +49,7 @@ export interface AdminFlags extends BaseFlags {
   readonly manifest: string | undefined;
   readonly port: number | undefined;
   readonly verbose: boolean;
+  readonly open: boolean;
 }
 
 export interface DeployFlags extends BaseFlags {
@@ -301,6 +302,8 @@ export function parseAdminFlags(rest: readonly string[]): AdminFlags {
       manifest: { type: "string" },
       port: { type: "string", short: "p" },
       verbose: { type: "boolean", short: "v", default: false },
+      open: { type: "boolean", default: true },
+      "no-open": { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -308,6 +311,9 @@ export function parseAdminFlags(rest: readonly string[]): AdminFlags {
 
   const positionalManifest = positionals[0] as string | undefined;
   const portStr = values.port as string | undefined;
+  // --no-open overrides --open (default true)
+  const shouldOpen =
+    values["no-open"] === true ? false : ((values.open as boolean | undefined) ?? true);
 
   return {
     command: "admin" as const,
@@ -315,6 +321,7 @@ export function parseAdminFlags(rest: readonly string[]): AdminFlags {
     manifest: (values.manifest as string | undefined) ?? positionalManifest,
     port: portStr !== undefined ? Number.parseInt(portStr, 10) : undefined,
     verbose: (values.verbose as boolean | undefined) ?? false,
+    open: shouldOpen,
   };
 }
 

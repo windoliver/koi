@@ -57,6 +57,20 @@ export interface BridgeOptions {
         readonly harness?: RuntimeViewDataSource["harness"];
       }
     | undefined;
+  /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
+  readonly orchestrationCommands?:
+    | Pick<
+        CommandDispatcher,
+        | "signalWorkflow"
+        | "terminateWorkflow"
+        | "pauseSchedule"
+        | "resumeSchedule"
+        | "deleteSchedule"
+        | "retrySchedulerDeadLetter"
+        | "pauseHarness"
+        | "resumeHarness"
+      >
+    | undefined;
 }
 
 export interface AdminPanelBridgeResult extends DashboardHandlerOptions {
@@ -273,7 +287,9 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       : {}),
   };
 
-  // Command dispatcher for the single-agent bridge
+  // Command dispatcher for the single-agent bridge.
+  // Merges core agent lifecycle commands with optional orchestration commands.
+  const orchCmds = options.orchestrationCommands;
   const commands: CommandDispatcher = {
     suspendAgent(id: AgentId): Result<void, KoiError> {
       if (id !== primaryAgentId) {
@@ -330,6 +346,20 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     terminateAgent(id: AgentId): Result<void, KoiError> | Promise<Result<void, KoiError>> {
       return dataSource.terminateAgent(id);
     },
+
+    // Phase 2 orchestration commands — pass-through from adapter when provided
+    ...(orchCmds?.signalWorkflow !== undefined ? { signalWorkflow: orchCmds.signalWorkflow } : {}),
+    ...(orchCmds?.terminateWorkflow !== undefined
+      ? { terminateWorkflow: orchCmds.terminateWorkflow }
+      : {}),
+    ...(orchCmds?.pauseSchedule !== undefined ? { pauseSchedule: orchCmds.pauseSchedule } : {}),
+    ...(orchCmds?.resumeSchedule !== undefined ? { resumeSchedule: orchCmds.resumeSchedule } : {}),
+    ...(orchCmds?.deleteSchedule !== undefined ? { deleteSchedule: orchCmds.deleteSchedule } : {}),
+    ...(orchCmds?.retrySchedulerDeadLetter !== undefined
+      ? { retrySchedulerDeadLetter: orchCmds.retrySchedulerDeadLetter }
+      : {}),
+    ...(orchCmds?.pauseHarness !== undefined ? { pauseHarness: orchCmds.pauseHarness } : {}),
+    ...(orchCmds?.resumeHarness !== undefined ? { resumeHarness: orchCmds.resumeHarness } : {}),
   };
 
   const updateMetrics = (metrics: {

@@ -419,7 +419,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`Model: ${modelName}\n`);
     process.stderr.write(`Health: ${healthInfo.url}\n`);
     if (flags.admin) {
-      process.stderr.write(`Admin panel: ${healthInfo.url}dashboard/api/health\n`);
+      process.stderr.write(`Admin panel: ${healthInfo.url}dashboard\n`);
     }
   }
 

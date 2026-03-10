@@ -40,11 +40,15 @@ function err(code: KoiErrorCode, message: string, cause?: unknown): KoiError {
 export function createLocalFileSystem(rootPath: string): FileSystemBackend {
   const root = resolve(rootPath);
 
+  // Append path separator so /Users/taofeng/koi doesn't match /Users/taofeng/koi2
+  const rootPrefix = root.endsWith("/") ? root : `${root}/`;
+
   /** Resolve and validate that a path is within the workspace root. */
   function safePath(path: string): Result<string, KoiError> {
     const normalized = path.startsWith("/") ? path.slice(1) : path;
     const resolved = resolve(root, normalized);
-    if (!resolved.startsWith(root)) {
+    // Allow exact root or any child path (prefix includes trailing slash)
+    if (resolved !== root && !resolved.startsWith(rootPrefix)) {
       return { ok: false, error: err("PERMISSION", `Path outside workspace: ${path}`) };
     }
     return { ok: true, value: resolved };

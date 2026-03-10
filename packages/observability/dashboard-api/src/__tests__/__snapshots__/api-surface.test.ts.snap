@@ -189,6 +189,8 @@ interface BridgeOptions {
         readonly taskBoard?: RuntimeViewDataSource["taskBoard"];
         readonly harness?: RuntimeViewDataSource["harness"];
     } | undefined;
+    /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
+    readonly orchestrationCommands?: Pick<CommandDispatcher, "signalWorkflow" | "terminateWorkflow" | "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter" | "pauseHarness" | "resumeHarness"> | undefined;
 }
 interface AdminPanelBridgeResult extends DashboardHandlerOptions {
     /** Emit a dashboard event to all subscribers. */

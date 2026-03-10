@@ -74,13 +74,28 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     },
   });
 
-  process.stderr.write(
-    `Admin panel for "${manifest.name}" on http://localhost:${String(server.port)}\n`,
-  );
+  const dashboardUrl = `http://localhost:${String(server.port)}/dashboard`;
+  process.stderr.write(`Admin panel for "${manifest.name}" on ${dashboardUrl}\n`);
 
   if (flags.verbose) {
     process.stderr.write(`Manifest: ${manifestPath}\n`);
     process.stderr.write(`Model: ${manifest.model.name}\n`);
+  }
+
+  // Auto-open browser unless --no-open
+  if (flags.open) {
+    try {
+      const { exec } = await import("node:child_process");
+      const openCmd =
+        process.platform === "darwin"
+          ? "open"
+          : process.platform === "win32"
+            ? "start"
+            : "xdg-open";
+      exec(`${openCmd} ${dashboardUrl}`);
+    } catch {
+      // Non-fatal — browser open is best-effort
+    }
   }
 
   process.stderr.write("Press Ctrl+C to stop.\n");
