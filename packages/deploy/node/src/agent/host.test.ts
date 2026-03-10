@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { AgentManifest, ComponentProvider, EngineAdapter, ProcessId } from "@koi/core";
-import { agentId, token } from "@koi/core";
+import { agentGroupId, agentId, token } from "@koi/core";
 import type { NodeEvent } from "../types.js";
 import { createAgentHost } from "./host.js";
 
@@ -192,6 +192,43 @@ describe("AgentHost", () => {
       expect(events[1]?.type).toBe("agent_terminated");
     });
 
+    it("emits agent_terminated event with groupId when agent has a group", async () => {
+      const host = createAgentHost(config);
+      const events: NodeEvent[] = [];
+      host.onEvent((e) => events.push(e));
+
+      const pidWithGroup: ProcessId = {
+        id: agentId("a1"),
+        name: "Agent a1",
+        type: "worker",
+        depth: 0,
+        groupId: agentGroupId("group-1"),
+      };
+      await host.dispatch(pidWithGroup, testManifest, makeEngine(), emptyProviders);
+      host.terminate("a1");
+
+      expect(events.length).toBe(2);
+      const termEvent = events[1];
+      expect(termEvent?.type).toBe("agent_terminated");
+      const data = termEvent?.data as { agentId: string; groupId?: string };
+      expect(data.groupId).toBe("group-1");
+    });
+
+    it("emits agent_terminated event without groupId when agent has no group", async () => {
+      const host = createAgentHost(config);
+      const events: NodeEvent[] = [];
+      host.onEvent((e) => events.push(e));
+
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      host.terminate("a1");
+
+      expect(events.length).toBe(2);
+      const termEvent = events[1];
+      expect(termEvent?.type).toBe("agent_terminated");
+      const data = termEvent?.data as Record<string, unknown>;
+      expect("groupId" in data).toBe(false);
+    });
+
     it("unsubscribes correctly", async () => {
       const host = createAgentHost(config);
       const events: NodeEvent[] = [];
@@ -203,6 +240,55 @@ describe("AgentHost", () => {
       unsub();
       await host.dispatch(makePid("a2"), testManifest, makeEngine(), emptyProviders);
       expect(events.length).toBe(1); // no new events after unsub
+    });
+  });
+
+  describe("recordTurn and metrics", () => {
+    it("metrics returns zero turnCount and recent lastActivityMs after dispatch", async () => {
+      const host = createAgentHost(config);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+
+      const m = host.metrics("a1");
+      expect(m).toBeDefined();
+      expect(m?.turnCount).toBe(0);
+      expect(m?.lastActivityMs).toBeGreaterThan(0);
+    });
+
+    it("recordTurn increments turnCount and updates lastActivityMs", async () => {
+      const host = createAgentHost(config);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+
+      const before = host.metrics("a1");
+      // Small delay to ensure lastActivityMs differs
+      await new Promise((r) => setTimeout(r, 5));
+      host.recordTurn("a1");
+
+      const after = host.metrics("a1");
+      expect(after?.turnCount).toBe(1);
+      expect(after?.lastActivityMs).toBeGreaterThanOrEqual(before?.lastActivityMs ?? 0);
+    });
+
+    it("recordTurn is cumulative", async () => {
+      const host = createAgentHost(config);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+
+      host.recordTurn("a1");
+      host.recordTurn("a1");
+      host.recordTurn("a1");
+
+      const m = host.metrics("a1");
+      expect(m?.turnCount).toBe(3);
+    });
+
+    it("metrics returns undefined for unknown agent", () => {
+      const host = createAgentHost(config);
+      expect(host.metrics("nonexistent")).toBeUndefined();
+    });
+
+    it("recordTurn is a no-op for unknown agent", () => {
+      const host = createAgentHost(config);
+      // Should not throw
+      host.recordTurn("nonexistent");
     });
   });
 

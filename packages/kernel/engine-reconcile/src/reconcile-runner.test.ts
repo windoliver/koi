@@ -632,4 +632,116 @@ describe("createReconcileRunner", () => {
 
     expect(callCount).toBe(3);
   });
+
+  // ---------------------------------------------------------------------------
+  // Async overlap prevention
+  // ---------------------------------------------------------------------------
+
+  test("async overlap: event during in-flight async is buffered as dirty, not double-processed", async () => {
+    let resolveFirst: ((v: ReconcileResult) => void) | undefined;
+    let callCount = 0;
+    const controller = createMockController("test", () => {
+      callCount += 1;
+      if (callCount === 1) {
+        // First call: return a promise that we control
+        return new Promise<ReconcileResult>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      // Subsequent calls: sync converged
+      return { kind: "converged" };
+    });
+
+    createRunner({ reconcileTimeoutMs: 60_000 });
+    runner.register(controller);
+    runner.start();
+
+    const id = agentId("agent-1");
+    manifests.set(id, MANIFEST);
+    registry.register(entry("agent-1"));
+
+    // First tick: starts async reconcile for agent-1
+    clock.advance(100);
+    expect(callCount).toBe(1);
+
+    // While async reconcile is in-flight, a new event arrives for the same agent.
+    // Before the fix, queue.complete() was called synchronously, so this enqueue
+    // would bypass the dirty buffer and allow a second overlapping reconcile.
+    registry.transition(id, "running", 0, { kind: "assembly_complete" });
+
+    // Another tick: agent-1 should NOT be dequeued again because it is still
+    // in processing (async promise has not settled).
+    clock.advance(100);
+    expect(callCount).toBe(1); // no overlapping reconcile
+
+    // Now resolve the first async reconcile
+    resolveFirst?.({ kind: "converged" });
+    // Flush microtasks so the .then() callback runs
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The dirty event should now be re-enqueued by queue.complete()
+    // Next tick processes the buffered event
+    clock.advance(100);
+    expect(callCount).toBe(2); // exactly one re-reconcile, no overlap
+  });
+
+  test("async overlap: multiple async controllers all settle before complete", async () => {
+    let resolveCtrl1: ((v: ReconcileResult) => void) | undefined;
+    let resolveCtrl2: ((v: ReconcileResult) => void) | undefined;
+    let ctrl1Calls = 0;
+    let ctrl2Calls = 0;
+
+    const controller1 = createMockController("ctrl-1", () => {
+      ctrl1Calls += 1;
+      return new Promise<ReconcileResult>((resolve) => {
+        resolveCtrl1 = resolve;
+      });
+    });
+    const controller2 = createMockController("ctrl-2", () => {
+      ctrl2Calls += 1;
+      return new Promise<ReconcileResult>((resolve) => {
+        resolveCtrl2 = resolve;
+      });
+    });
+
+    createRunner({ reconcileTimeoutMs: 60_000 });
+    runner.register(controller1);
+    runner.register(controller2);
+    runner.start();
+
+    const id = agentId("agent-1");
+    manifests.set(id, MANIFEST);
+    registry.register(entry("agent-1"));
+
+    // First tick: both async controllers start for agent-1
+    clock.advance(100);
+    expect(ctrl1Calls).toBe(1);
+    expect(ctrl2Calls).toBe(1);
+
+    // Trigger an event while both are in-flight
+    registry.transition(id, "running", 0, { kind: "assembly_complete" });
+
+    // Resolve only ctrl-1 — agent should still be in processing
+    resolveCtrl1?.({ kind: "converged" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Tick: agent should NOT be re-processed yet (ctrl-2 still pending)
+    clock.advance(100);
+    expect(ctrl1Calls).toBe(1);
+    expect(ctrl2Calls).toBe(1);
+
+    // Now resolve ctrl-2 — all async work done, complete() fires
+    resolveCtrl2?.({ kind: "converged" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Tick: dirty event is now re-enqueued and processed
+    clock.advance(100);
+    expect(ctrl1Calls).toBe(2);
+    expect(ctrl2Calls).toBe(2);
+  });
 });

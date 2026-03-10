@@ -384,15 +384,23 @@ export function createModelRouter(
 
         const modelRequest: ModelRequest = { ...request, model: targetConfig.model };
 
+        // Track whether any chunks have been yielded to the caller.
+        // If the stream fails mid-response, we must NOT fall through to
+        // the next provider — that would splice two partial responses.
+        let chunksYielded = false;
         try {
           const stream = adapter.stream(modelRequest);
           for await (const chunk of stream) {
+            chunksYielded = true;
             yield chunk;
           }
           cb?.recordSuccess();
           return;
         } catch (error: unknown) {
           cb?.recordFailure();
+          if (chunksYielded) {
+            throw error;
+          }
           const koiError: KoiError = {
             code: "EXTERNAL",
             message: error instanceof Error ? error.message : String(error),

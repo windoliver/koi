@@ -278,6 +278,8 @@ export interface AgentStatusPayload {
   readonly lastActivityMs: number;
   /** Present when state is "terminated" — numeric exit code from exitCodeForTransitionReason(). */
   readonly exitCode?: number | undefined;
+  /** Process group this agent belongs to. Included so the gateway can maintain its group index. */
+  readonly groupId?: string | undefined;
 }
 
 /** Gateway → Node: signal a single agent. agentId is carried in the NodeFrame envelope. */

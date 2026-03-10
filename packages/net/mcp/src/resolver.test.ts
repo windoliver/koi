@@ -267,6 +267,54 @@ describe("createMcpResolver onChange", () => {
     expect(callCount2).toBe(1);
   });
 
+  test("dispose unsubscribes from manager notifications", async () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+    let callCount = 0;
+
+    resolver.onChange?.(() => {
+      callCount++;
+    });
+
+    // Dispose the resolver
+    resolver.dispose();
+
+    // Trigger a tool change — should NOT fire listener
+    managers[0]?.simulateToolsChanged();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(callCount).toBe(0);
+  });
+
+  test("dispose clears all external change listeners", async () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+    let callCount = 0;
+
+    resolver.onChange?.(() => {
+      callCount++;
+    });
+
+    // Dispose clears listeners — even if manager somehow fires, no listener runs
+    resolver.dispose();
+
+    // Re-subscribe a fresh manager listener manually won't help
+    // because changeListeners was cleared
+    managers[0]?.simulateToolsChanged();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(callCount).toBe(0);
+  });
+
+  test("dispose is idempotent", () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+
+    // Should not throw when called multiple times
+    resolver.dispose();
+    resolver.dispose();
+  });
+
   test("onChange invalidates tool cache so next discover re-fetches", async () => {
     const managers = createTestManagers();
     const resolver = createMcpResolver(managers);

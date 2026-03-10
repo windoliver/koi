@@ -396,6 +396,7 @@ export function createSubprocessExecutor(): SandboxExecutor {
         // Stream both stdout and stderr with size caps to prevent OOM.
         // Protocol output is framed in stderr (via __KOI_RESULT__ marker).
         // stdout is free for brick user code and is discarded.
+        // Start drains BEFORE awaiting exit to prevent pipe-buffer deadlock.
         const [stdoutResult, stderrResult] = await Promise.all([
           collectWithLimit(proc.stdout, MAX_OUTPUT_BYTES, () => proc.kill("SIGKILL")),
           collectWithLimit(proc.stderr, MAX_OUTPUT_BYTES, () => proc.kill("SIGKILL")),

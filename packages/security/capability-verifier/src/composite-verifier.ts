@@ -19,6 +19,7 @@ import type {
   VerifierCache,
   VerifyContext,
 } from "@koi/core";
+import type { PublicKeyRegistry } from "./ed25519-verifier.js";
 import { createEd25519Verifier } from "./ed25519-verifier.js";
 import { createHmacVerifier } from "./hmac-verifier.js";
 
@@ -29,6 +30,8 @@ export interface CompositeVerifierConfig {
   readonly cache?: VerifierCache | undefined;
   /** Optional pluggable scope checker — when provided, verifiers delegate scope checking to it. */
   readonly scopeChecker?: ScopeChecker | undefined;
+  /** Optional public key registry for Ed25519 issuer-key binding verification. */
+  readonly keyRegistry?: PublicKeyRegistry | undefined;
 }
 
 /**
@@ -41,7 +44,7 @@ export interface CompositeVerifierConfig {
  */
 export function createCompositeVerifier(config: CompositeVerifierConfig): CapabilityVerifier {
   const hmacVerifier = createHmacVerifier(config.hmacSecret, config.scopeChecker);
-  const ed25519Verifier = createEd25519Verifier(config.scopeChecker);
+  const ed25519Verifier = createEd25519Verifier(config.scopeChecker, config.keyRegistry);
 
   function verify(token: CapabilityToken, context: VerifyContext): CapabilityVerifyResult {
     // Check cache first — but re-check expiry and session revocation before returning

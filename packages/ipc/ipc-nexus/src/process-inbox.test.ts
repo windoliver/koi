@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AgentMessage } from "@koi/core";
 import type { NexusClient, NexusMessageEnvelope } from "./nexus-client.js";
-import type { MessageHandler } from "./process-inbox.js";
+import type { HandlerErrorCallback, MessageHandler } from "./process-inbox.js";
 import { processPendingMessages } from "./process-inbox.js";
 
 function createMockClient(messages: readonly NexusMessageEnvelope[]): NexusClient {
@@ -97,12 +97,87 @@ describe("processPendingMessages", () => {
     const goodHandler = mock(() => {});
     const handlers = new Set<MessageHandler>([throwingHandler, goodHandler]);
     const seen = new Set<string>();
+    const onError = mock(() => {});
 
-    const count = await processPendingMessages(client, "b", handlers, seen, 50);
+    const count = await processPendingMessages(client, "b", handlers, seen, 50, onError);
 
-    // Both messages processed despite handler errors
+    // Both messages processed — marked as seen even when a handler fails.
+    // Message-level retry would cause duplicate deliveries to handlers that
+    // already succeeded. Handlers needing retry should implement their own
+    // at-least-once logic.
     expect(count).toBe(2);
+    // Good handler is still called for each message
     expect(goodHandler).toHaveBeenCalledTimes(2);
+    // Error callback receives context for each failure
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  test("failed messages are still marked as seen (no message-level retry)", async () => {
+    const client = createMockClient([ENVELOPE_A]);
+    const throwingHandler = mock(() => {
+      throw new Error("transient failure");
+    });
+    const handlers = new Set<MessageHandler>([throwingHandler]);
+    const seen = new Set<string>();
+    const onError = mock(() => {});
+
+    await processPendingMessages(client, "b", handlers, seen, 50, onError);
+
+    // Message marked as seen after dispatch — even if a handler failed.
+    // Message-level retry would cause duplicate deliveries to handlers that
+    // already succeeded.
+    expect(seen.has("msg-1")).toBe(true);
+  });
+
+  test("onHandlerError callback receives agent ID, message ID, and error", async () => {
+    const client = createMockClient([ENVELOPE_A]);
+    const boom = new Error("kaboom");
+    const throwingHandler = mock(() => {
+      throw boom;
+    });
+    const handlers = new Set<MessageHandler>([throwingHandler]);
+    const seen = new Set<string>();
+    const errors: ReadonlyArray<{
+      readonly agentId: string;
+      readonly messageId: string;
+      readonly error: unknown;
+    }> = [];
+    const onError: HandlerErrorCallback = (ctx) => {
+      (
+        errors as {
+          readonly agentId: string;
+          readonly messageId: string;
+          readonly error: unknown;
+        }[]
+      ).push(ctx);
+    };
+
+    await processPendingMessages(client, "agent-x", handlers, seen, 50, onError);
+
+    expect(errors).toHaveLength(1);
+    const [first] = errors;
+    expect(first?.agentId).toBe("agent-x");
+    expect(first?.messageId).toBe("msg-1");
+    expect(first?.error).toBe(boom);
+  });
+
+  test("falls back to console.error when no onHandlerError callback provided", async () => {
+    const client = createMockClient([ENVELOPE_A]);
+    const throwingHandler = mock(() => {
+      throw new Error("no callback boom");
+    });
+    const handlers = new Set<MessageHandler>([throwingHandler]);
+    const seen = new Set<string>();
+
+    const originalConsoleError = console.error;
+    const consoleErrorMock = mock(() => {});
+    console.error = consoleErrorMock;
+    try {
+      await processPendingMessages(client, "b", handlers, seen, 50);
+      expect(consoleErrorMock).toHaveBeenCalledTimes(1);
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 
   test("returns 0 when listInbox fails", async () => {

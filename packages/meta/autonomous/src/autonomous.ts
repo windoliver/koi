@@ -207,12 +207,28 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
       name: innerProvider.name,
       ...(innerProvider.priority !== undefined ? { priority: innerProvider.priority } : {}),
       attach: async (agent: Agent) => {
+        if (attachedAgent !== undefined && attachedAgent.pid.id !== agent.pid.id) {
+          throw new Error(
+            `Provider is single-agent; cannot attach agent ${agent.pid.id} while agent ${attachedAgent.pid.id} is attached.`,
+          );
+        }
         // Capture agent reference so inbox middleware getters can
         // resolve MAILBOX/INBOX components via agent.component()
         attachedAgent = agent;
         return innerProvider.attach(agent);
       },
-      ...(innerProvider.detach !== undefined ? { detach: innerProvider.detach } : {}),
+      ...(innerProvider.detach !== undefined
+        ? {
+            detach: async (agent: Agent) => {
+              attachedAgent = undefined;
+              return innerProvider.detach?.(agent);
+            },
+          }
+        : {
+            detach: async () => {
+              attachedAgent = undefined;
+            },
+          }),
       ...(innerProvider.watch !== undefined ? { watch: innerProvider.watch } : {}),
     };
 

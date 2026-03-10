@@ -569,9 +569,21 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
         }
       };
 
+      // Abort promise — rejects when the signal fires so we can race against
+      // promptPromise and avoid hanging forever if the subprocess ignores SIGINT.
+      // let: abort reject function for cleanup
+      let rejectAbort: ((reason: Error) => void) | undefined;
+      const abortPromise = new Promise<never>((_resolve, reject) => {
+        rejectAbort = reject;
+      });
+      // Prevent unhandled rejection if promptPromise wins the race but the
+      // abort handler fires concurrently (e.g., signal during finally cleanup).
+      abortPromise.catch(() => {});
+
       const abortHandler = (): void => {
         interruptSubprocess();
-        currentQueue?.end();
+        queue.end();
+        rejectAbort?.(new Error("ACP prompt aborted"));
       };
       input.signal?.addEventListener("abort", abortHandler, { once: true });
 
@@ -581,7 +593,8 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
       if (timeoutMs > 0) {
         timeoutHandle = setTimeout(() => {
           interruptSubprocess();
-          currentQueue?.end();
+          queue.end();
+          rejectAbort?.(new Error("ACP prompt timed out"));
         }, timeoutMs);
       }
 
@@ -608,8 +621,12 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
         .finally(() => {
           if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
           input.signal?.removeEventListener("abort", abortHandler);
-          currentQueue?.end();
-          currentQueue = undefined;
+          queue.end();
+          // Only clear the shared reference if it still points to this run's queue.
+          // Prevents a stale .finally() from clobbering a subsequent run's queue.
+          if (currentQueue === queue) {
+            currentQueue = undefined;
+          }
         });
 
       // Yield events from the queue while prompt is running
@@ -617,8 +634,15 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
         yield event;
       }
 
-      // Await the final stop reason from session/prompt
-      const promptResult = await promptPromise;
+      // Await the final stop reason from session/prompt, racing against abort
+      // so we don't hang forever when the subprocess ignores SIGINT.
+      const promptResult = await Promise.race([promptPromise, abortPromise]).catch(
+        (error: unknown) => {
+          // Abort/timeout won the race — return an interrupted result
+          console.warn("[engine-acp] prompt interrupted:", error);
+          return { stopReason: "cancelled" as const, usage: undefined };
+        },
+      );
       const stopReason = input.signal?.aborted
         ? ("interrupted" as const)
         : mapStopReason(promptResult.stopReason);

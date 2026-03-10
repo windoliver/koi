@@ -28,6 +28,7 @@ export { createNexusMailbox } from "./mailbox-adapter.js";
 // provider
 export type { IpcNexusProviderConfig } from "./mailbox-provider.js";
 export { createIpcNexusProvider } from "./mailbox-provider.js";
+export type { HandlerErrorCallback } from "./process-inbox.js";
 export type { SseEvent } from "./sse-stream.js";
 // tool factories — for advanced usage (custom tool composition)
 export { createDiscoverTool } from "./tools/discover.js";

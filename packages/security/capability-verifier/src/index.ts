@@ -26,6 +26,7 @@ export {
   createCompositeVerifier as createCapabilityVerifier,
   createInMemoryVerifierCache,
 } from "./composite-verifier.js";
+export type { PublicKeyRegistry } from "./ed25519-verifier.js";
 export { createEd25519Verifier } from "./ed25519-verifier.js";
 export { createHmacVerifier } from "./hmac-verifier.js";
 export type { SessionRevocationStore } from "./session-revocation.js";

@@ -87,8 +87,10 @@ describe("inbox integration", () => {
 
     await collectEvents(runtime.run({ kind: "text", text: "go" }));
 
-    // After the run, inbox should be drained
-    expect(inbox.depth()).toBe(0);
+    // After the run, collect/followup items are retained for middleware
+    // consumption in the next turn (not discarded). Only steer items
+    // with a present adapter.inject are consumed immediately.
+    expect(inbox.depth()).toBe(2);
   });
 
   test("steer items trigger adapter.inject()", async () => {

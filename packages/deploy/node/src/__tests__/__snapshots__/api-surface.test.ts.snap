@@ -118,6 +118,8 @@ interface AgentStatusPayload {
     readonly lastActivityMs: number;
     /** Present when state is "terminated" — numeric exit code from exitCodeForTransitionReason(). */
     readonly exitCode?: number | undefined;
+    /** Process group this agent belongs to. Included so the gateway can maintain its group index. */
+    readonly groupId?: string | undefined;
 }
 /** Gateway → Node: signal a single agent. agentId is carried in the NodeFrame envelope. */
 interface AgentSignalPayload {
@@ -155,6 +157,11 @@ type NodeSessionStore = Pick<SessionPersistence, "saveSession" | "removeSession"
  * admission control and provides dispatch/terminate/query operations.
  */
 
+/** Runtime metrics for an agent — exposed for status reporting without leaking ManagedAgent. */
+interface AgentMetrics {
+    readonly turnCount: number;
+    readonly lastActivityMs: number;
+}
 interface AgentHost {
     /** Dispatch (create) a new agent on this node. */
     readonly dispatch: (pid: ProcessId, manifest: AgentManifest, engine: EngineAdapter, providers: readonly ComponentProvider[]) => Promise<Result<Agent, KoiError>>;
@@ -177,6 +184,16 @@ interface AgentHost {
     readonly onEvent: (listener: NodeEventListener) => () => void;
     /** Terminate all agents (used during shutdown). */
     readonly terminateAll: () => void;
+    /**
+     * Record a completed turn for an agent. Increments turnCount and
+     * updates lastActivityMs to the current time.
+     */
+    readonly recordTurn: (agentId: AgentId | string) => void;
+    /**
+     * Return runtime metrics (turnCount, lastActivityMs) for an agent.
+     * Returns undefined if the agent is not found.
+     */
+    readonly metrics: (agentId: AgentId | string) => AgentMetrics | undefined;
     /**
      * Send a POSIX-style signal to a single agent.
      * stop → suspended at next turn boundary  (idempotent)

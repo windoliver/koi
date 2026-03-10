@@ -34,7 +34,7 @@ import {
 import { mapKoiToNexus, mapNexusToKoi } from "./map-message.js";
 import type { NexusClient } from "./nexus-client.js";
 import { createNexusClient } from "./nexus-client.js";
-import type { MessageHandler } from "./process-inbox.js";
+import type { HandlerErrorCallback, MessageHandler } from "./process-inbox.js";
 import { processPendingMessages } from "./process-inbox.js";
 import { createSeenBuffer } from "./seen-buffer.js";
 import type { SseTransport } from "./sse-transport.js";
@@ -57,6 +57,8 @@ export interface NexusMailboxConfig {
   readonly timeoutMs?: number | undefined;
   /** Called when SSE delivery falls back to polling. */
   readonly onDeliveryFallback?: ((from: DeliveryMode, to: DeliveryMode) => void) | undefined;
+  /** Called when a message handler throws. Receives agent ID, message ID, and the error. */
+  readonly onHandlerError?: HandlerErrorCallback | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +79,7 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
     pageLimit = DEFAULT_INBOX_PAGE_LIMIT,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     onDeliveryFallback,
+    onHandlerError,
   } = config;
 
   const client: NexusClient = createNexusClient({ baseUrl, timeoutMs, authToken });
@@ -96,7 +99,14 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
 
   async function fetchAndDispatch(): Promise<void> {
     if (disposed || handlers.size === 0) return;
-    await processPendingMessages(client, agentId as string, handlers, seen, pageLimit);
+    await processPendingMessages(
+      client,
+      agentId as string,
+      handlers,
+      seen,
+      pageLimit,
+      onHandlerError,
+    );
   }
 
   // ----- Polling lifecycle -----
@@ -118,6 +128,7 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
         handlers,
         seen,
         pageLimit,
+        onHandlerError,
       );
 
       // Reset backoff on message received, otherwise increase

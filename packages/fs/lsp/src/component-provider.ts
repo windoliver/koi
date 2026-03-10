@@ -10,7 +10,7 @@
  * use is needed.
  */
 
-import type { Agent, ComponentProvider, KoiError } from "@koi/core";
+import type { Agent, AgentId, ComponentProvider, KoiError } from "@koi/core";
 import { toolToken } from "@koi/core";
 import type { CreateTransportFn, LspClient } from "./client.js";
 import { createLspClient } from "./client.js";
@@ -181,16 +181,27 @@ export async function createLspComponentProvider(
 
   // let: ref-count for safe client disposal — only close when last agent detaches
   let refCount = 0;
+  // let: track attached agent for single-agent safety check
+  let attachedAgent: AgentId | undefined;
 
   const provider: ComponentProvider = {
     name: "lsp",
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
+      if (attachedAgent !== undefined && attachedAgent !== _agent.pid.id) {
+        throw new Error(
+          `Provider is single-agent; cannot attach agent ${_agent.pid.id} while agent ${attachedAgent} is attached.`,
+        );
+      }
       refCount++;
+      if (attachedAgent === undefined) {
+        attachedAgent = _agent.pid.id;
+      }
       return allTools;
     },
     detach: async (_agent: Agent): Promise<void> => {
       refCount--;
       if (refCount <= 0) {
+        attachedAgent = undefined;
         await Promise.all(clients.map((c) => c.close()));
       }
     },

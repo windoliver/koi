@@ -116,6 +116,67 @@ describe("createCompositeVerifier — routing", () => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// keyRegistry wiring
+// ─────────────────────────────────────────────────────────────
+
+describe("createCompositeVerifier — keyRegistry", () => {
+  test("rejects ed25519 token when keyRegistry returns a different key", async () => {
+    const wrongKeyRegistry = {
+      resolve: (_issuerId: string) => "wrong-key-base64",
+    };
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      keyRegistry: wrongKeyRegistry,
+    });
+    const token = makeEd25519Token("ed25519-key-mismatch");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("rejects ed25519 token when keyRegistry returns undefined (unknown issuer)", async () => {
+    const emptyRegistry = {
+      resolve: (_issuerId: string) => undefined,
+    };
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      keyRegistry: emptyRegistry,
+    });
+    const token = makeEd25519Token("ed25519-unknown-issuer");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("accepts ed25519 token when keyRegistry returns matching key", async () => {
+    const correctKey = Buffer.from(ed25519Public).toString("base64");
+    const matchingRegistry = {
+      resolve: (_issuerId: string) => correctKey,
+    };
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      keyRegistry: matchingRegistry,
+    });
+    const token = makeEd25519Token("ed25519-matching-key");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(true);
+  });
+
+  test("hmac tokens are unaffected by keyRegistry", async () => {
+    const wrongKeyRegistry = {
+      resolve: (_issuerId: string) => "wrong-key-base64",
+    };
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      keyRegistry: wrongKeyRegistry,
+    });
+    const token = makeHmacToken("hmac-with-registry");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
 // Caching behavior
 // ─────────────────────────────────────────────────────────────
 

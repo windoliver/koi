@@ -312,6 +312,55 @@ describe("routeStream", () => {
     }
   });
 
+  test("propagates error instead of falling back when chunks already yielded", async () => {
+    async function* partialStream(): AsyncGenerator<StreamChunk> {
+      yield { kind: "text_delta", text: "partial" };
+      throw new Error("mid-stream failure");
+    }
+    async function* okStream(): AsyncGenerator<StreamChunk> {
+      yield { kind: "text_delta", text: "from fallback" };
+      yield { kind: "finish", reason: "completed" };
+    }
+
+    const config = makeConfig([makeTarget("openai", "gpt-4o"), makeTarget("anthropic", "claude")]);
+    const adapters = new Map<string, ProviderAdapter>([
+      [
+        "openai",
+        makeStreamAdapter(
+          "openai",
+          () => Promise.resolve(makeResponse("", "gpt-4o")),
+          partialStream,
+        ),
+      ],
+      [
+        "anthropic",
+        makeStreamAdapter("anthropic", () => Promise.resolve(makeResponse("", "claude")), okStream),
+      ],
+    ]);
+    const router = createModelRouter(config, adapters);
+
+    const chunks: StreamChunk[] = [];
+    let thrownError: unknown;
+    try {
+      for await (const chunk of router.routeStream(makeRequest())) {
+        chunks.push(chunk);
+      }
+    } catch (error: unknown) {
+      thrownError = error;
+    }
+
+    // Should have yielded the partial chunk before the error
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.kind).toBe("text_delta");
+    if (chunks[0]?.kind === "text_delta") {
+      expect(chunks[0].text).toBe("partial");
+    }
+
+    // Should propagate the error, not fall back to anthropic
+    expect(thrownError).toBeInstanceOf(Error);
+    expect((thrownError as Error).message).toBe("mid-stream failure");
+  });
+
   test("yields error when all stream targets fail", async () => {
     // biome-ignore lint/correctness/useYield: intentionally models a stream that fails before yielding
     async function* failStream(): AsyncGenerator<StreamChunk> {

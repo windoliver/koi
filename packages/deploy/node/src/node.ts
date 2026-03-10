@@ -396,6 +396,8 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
     // sessionId → agentId mapping for delivery routing
     const sessionByAgent = new Map<string, string>();
+    // agentId → connectedAt timestamp for session persistence
+    const connectedAtByAgent = new Map<string, number>();
 
     const deliveryMgr: DeliveryManager | undefined =
       deps?.sessionStore !== undefined
@@ -404,10 +406,15 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
               store: deps.sessionStore,
               isConnected: () => transport.state() === "connected",
               sendFrame: (frame) => {
+                // Preserve the original correlationId during replay to maintain
+                // idempotency. frameId is `pf-${correlationId}` (see enqueueSend).
+                const originalCorrelationId = frame.frameId.startsWith("pf-")
+                  ? frame.frameId.slice(3)
+                  : generateCorrelationId(nodeId);
                 transport.send({
                   nodeId,
                   agentId: String(frame.agentId),
-                  correlationId: generateCorrelationId(nodeId),
+                  correlationId: originalCorrelationId,
                   kind: frame.frameType as NodeFrame["kind"],
                   payload: frame.payload,
                 });
@@ -458,6 +465,74 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
     const statusReporter: StatusReporter = createStatusReporter(nodeId, host, sendFrame);
 
+    // -- Periodic session persistence (Fix 2: keep seq/remoteSeq/engineState current) --
+    // let: started/stopped alongside status reporter
+    let sessionPersistTimer: ReturnType<typeof setInterval> | undefined;
+
+    /** Persist current seq/remoteSeq and engine state for all active sessions. */
+    function persistAllSessions(): void {
+      const store = deps?.sessionStore;
+      if (store === undefined) return;
+
+      for (const agent of host.list()) {
+        const sid = sessionByAgent.get(agent.pid.id);
+        if (sid === undefined) continue;
+
+        const counters = frameCounters.get(agent.pid.id);
+        const engineAdapter = engines.get(agent.pid.id);
+
+        // Capture engine state asynchronously, then persist the session record
+        const captureAndSave = async (): Promise<void> => {
+          const engineState = await engineAdapter?.saveState?.();
+          // Guard: if the agent was terminated (or terminated+re-dispatched with the
+          // same pid.id) while saveState() was in-flight, bail out. Checking both
+          // has() and identity prevents a stale save from overwriting a new session
+          // when the same agentId is reused between terminate() and this point.
+          if (sessionByAgent.get(agent.pid.id) !== sid) return;
+          const record: SessionRecord = {
+            sessionId: toSessionId(sid),
+            agentId: agent.pid.id,
+            manifestSnapshot: agent.manifest,
+            seq: counters.seq,
+            remoteSeq: counters.remoteSeq,
+            connectedAt: connectedAtByAgent.get(agent.pid.id) ?? 0,
+            lastPersistedAt: Date.now(),
+            lastEngineState: engineState,
+            metadata: {},
+          };
+          const saveResult = await store.saveSession(record);
+          if (!saveResult.ok) {
+            emit("agent_crashed", {
+              agentId: agent.pid.id,
+              reason: "Periodic session persistence failed",
+              error: saveResult.error,
+            });
+          }
+        };
+
+        captureAndSave().catch((e: unknown) => {
+          emit("agent_crashed", {
+            agentId: agent.pid.id,
+            reason: "Periodic session persistence failed",
+            error: e,
+          });
+        });
+      }
+    }
+
+    function startSessionPersistence(): void {
+      if (deps?.sessionStore === undefined || sessionPersistTimer !== undefined) return;
+      // Persist every 10s — same cadence as status reporting
+      sessionPersistTimer = setInterval(persistAllSessions, 10_000);
+    }
+
+    function stopSessionPersistence(): void {
+      if (sessionPersistTimer !== undefined) {
+        clearInterval(sessionPersistTimer);
+        sessionPersistTimer = undefined;
+      }
+    }
+
     // let: set during start(), used during stop()
     let shutdown: ShutdownHandler | undefined;
 
@@ -498,14 +573,20 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
       // so the gateway can resolve waitForAgent() without waiting for the next cycle.
       unsubTerminal = host.onEvent((event) => {
         if (event.type === "agent_terminated") {
-          const data = event.data as { agentId: string; exitCode: number } | undefined;
+          const data = event.data as
+            | { agentId: string; exitCode: number; groupId?: string }
+            | undefined;
           if (data?.agentId !== undefined) {
+            // Capture metrics before they are lost to termination cleanup.
+            // host.metrics() may return undefined if the agent was already removed.
+            const agentMetrics = host.metrics(data.agentId);
             const payload: AgentStatusPayload = {
               agentId: data.agentId,
               state: "terminated",
-              turnCount: 0,
-              lastActivityMs: Date.now(),
+              turnCount: agentMetrics?.turnCount ?? 0,
+              lastActivityMs: agentMetrics?.lastActivityMs ?? Date.now(),
               exitCode: data.exitCode,
+              ...(data.groupId !== undefined ? { groupId: data.groupId } : {}),
             };
             sendFrame({
               nodeId,
@@ -551,6 +632,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
             });
           } else {
             inbox.push(frame.agentId, frame.payload);
+            host.recordTurn(frame.agentId);
           }
           break;
         }
@@ -582,6 +664,9 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           break;
         }
         case "tool_call": {
+          if (frame.agentId.length > 0) {
+            host.recordTurn(frame.agentId);
+          }
           dispatchToolCall(frame);
           break;
         }
@@ -653,6 +738,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           if (dispatchResult.ok) {
             engines.set(result.pid.id, effectiveEngine);
             sessionByAgent.set(result.pid.id, session.sessionId);
+            connectedAtByAgent.set(result.pid.id, session.connectedAt);
             if (deliveryMgr !== undefined && pendingFrames.has(session.sessionId)) {
               await deliveryMgr.replayPendingFrames(session.sessionId);
             }
@@ -744,6 +830,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
         monitor.start();
         statusReporter.start();
+        startSessionPersistence();
 
         const shutdownEmit = (type: string, data?: unknown): void => {
           if (type === "shutdown_started" || type === "shutdown_complete") {
@@ -761,6 +848,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
             },
             async onCleanup() {
               deliveryMgr?.dispose();
+              stopSessionPersistence();
               statusReporter.stop();
               monitor.stop();
               unsubTransport();
@@ -784,6 +872,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           shutdown.uninstall();
         } else {
           deliveryMgr?.dispose();
+          stopSessionPersistence();
           statusReporter.stop();
           monitor.stop();
           unsubTransport();
@@ -824,8 +913,10 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
         const result = await host.dispatch(pid, manifest, effectiveEngine, providers);
         if (result.ok) {
+          const now = Date.now();
           engines.set(pid.id, effectiveEngine);
           sessionByAgent.set(pid.id, sid);
+          connectedAtByAgent.set(pid.id, now);
 
           // Persist session for crash recovery
           if (deps?.sessionStore !== undefined) {
@@ -836,8 +927,8 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
               manifestSnapshot: manifest,
               seq: counters.seq,
               remoteSeq: counters.remoteSeq,
-              connectedAt: Date.now(),
-              lastPersistedAt: Date.now(),
+              connectedAt: now,
+              lastPersistedAt: now,
               metadata: {},
             };
             const saveResult = await deps.sessionStore.saveSession(record);
@@ -859,6 +950,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
         if (result.ok) {
           engines.delete(agentId);
           sessionByAgent.delete(agentId);
+          connectedAtByAgent.delete(agentId);
           frameCounters.remove(agentId);
           inbox.clear(agentId);
 

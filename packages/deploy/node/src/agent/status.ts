@@ -37,11 +37,13 @@ export function createStatusReporter(
   function collect(): readonly AgentStatusPayload[] {
     const statuses: AgentStatusPayload[] = [];
     for (const agent of host.agents()) {
+      const agentMetrics = host.metrics(agent.pid.id);
       statuses.push({
         agentId: agent.pid.id,
         state: agent.state,
-        turnCount: 0, // TODO: wire to engine metrics when available
-        lastActivityMs: Date.now(),
+        turnCount: agentMetrics?.turnCount ?? 0,
+        lastActivityMs: agentMetrics?.lastActivityMs ?? 0,
+        ...(agent.pid.groupId !== undefined ? { groupId: agent.pid.groupId } : {}),
       });
     }
     return statuses;

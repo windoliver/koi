@@ -13,15 +13,25 @@ import { RETRYABLE_DEFAULTS } from "@koi/core";
 import type { McpClientManager, McpToolInfo } from "./client-manager.js";
 import { mapMcpToolToKoi } from "./tool-adapter.js";
 
+// ---------------------------------------------------------------------------
+// Extended resolver type with lifecycle cleanup
+// ---------------------------------------------------------------------------
+
+export interface McpResolver extends Resolver<ToolDescriptor, Tool> {
+  /** Unsubscribe from all manager tool-change notifications and clear listeners. */
+  readonly dispose: () => void;
+}
+
 /**
  * Creates a Resolver that discovers and loads MCP tools across managers.
  *
  * Tool IDs follow the namespace pattern: `mcp/{serverName}/{toolName}`.
  * The resolver parses this pattern to find the correct manager and tool.
+ *
+ * Call `dispose()` when the resolver is no longer needed to unsubscribe
+ * from manager tool-change notifications and prevent listener leaks.
  */
-export function createMcpResolver(
-  managers: readonly McpClientManager[],
-): Resolver<ToolDescriptor, Tool> {
+export function createMcpResolver(managers: readonly McpClientManager[]): McpResolver {
   // Cache tool lists per server to avoid network calls on every load()
   const toolCache = new Map<string, readonly McpToolInfo[]>();
 
@@ -130,9 +140,13 @@ export function createMcpResolver(
     }, DEBOUNCE_MS);
   };
 
-  // Subscribe to each manager's onToolsChanged
+  // Subscribe to each manager's onToolsChanged and store unsubscribe handles
+  const managerUnsubs: Array<() => void> = [];
   for (const manager of managers) {
-    manager.onToolsChanged?.(notifyListeners);
+    const unsub = manager.onToolsChanged?.(notifyListeners);
+    if (unsub !== undefined) {
+      managerUnsubs.push(unsub);
+    }
   }
 
   const onChange = (listener: () => void): (() => void) => {
@@ -142,7 +156,27 @@ export function createMcpResolver(
     };
   };
 
-  return { discover, load, onChange };
+  const dispose = (): void => {
+    // Unsubscribe from all manager tool-change notifications
+    for (const unsub of managerUnsubs) {
+      unsub();
+    }
+    managerUnsubs.length = 0;
+
+    // Clear all external change listeners
+    changeListeners.clear();
+
+    // Cancel any pending debounce timer
+    if (debounceTimer !== undefined) {
+      clearTimeout(debounceTimer);
+      debounceTimer = undefined;
+    }
+
+    // Clear tool cache
+    toolCache.clear();
+  };
+
+  return { discover, load, onChange, dispose };
 }
 
 // ---------------------------------------------------------------------------

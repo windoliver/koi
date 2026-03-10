@@ -81,6 +81,11 @@ export function createReconcileRunner(deps: {
   let totalCircuitBroken = 0; // let: incremented on circuit break
   let inFlightCount = 0; // let: incremented/decremented for async concurrency cap
 
+  // --- Per-agent in-flight async tracking ---
+  // Tracks the number of outstanding async reconcile promises per agent.
+  // While > 0, the agent stays in `processing` to prevent overlapping reconciles.
+  const asyncPending = new Map<AgentId, number>();
+
   // --- Circuit breaker: "agentId:controllerName" → consecutive failure count ---
   const consecutiveFailures = new Map<string, number>();
 
@@ -140,6 +145,7 @@ export function createReconcileRunner(deps: {
       }
     }
     lastReconciledAt.delete(agentId);
+    asyncPending.delete(agentId);
   }
 
   // ---------------------------------------------------------------------------
@@ -220,7 +226,11 @@ export function createReconcileRunner(deps: {
     }
 
     inFlightCount += 1;
+    asyncPending.set(agentId, (asyncPending.get(agentId) ?? 0) + 1);
     const key = circuitKey(agentId, controller.name);
+
+    // let justified: settled flag prevents stale callback after timeout
+    let settled = false;
 
     let timeoutHandle: TimerHandle | undefined; // let: set in Promise constructor, cleared on resolve
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
@@ -232,19 +242,41 @@ export function createReconcileRunner(deps: {
 
     void Promise.race([resultPromise, timeoutPromise]).then(
       (result) => {
+        if (settled) return;
+        settled = true;
         inFlightCount -= 1;
         timeoutHandle?.clear(); // prevent timer leak on success
         handleResult(agentId, key, result);
+        settleAsyncPending(agentId);
       },
       (err: unknown) => {
+        if (settled) return;
+        settled = true;
         inFlightCount -= 1;
+        timeoutHandle?.clear();
         console.error(
           `[reconcile-runner] async controller "${controller.name}" failed for agent "${agentId}"`,
           err,
         );
         handleError(agentId, key);
+        settleAsyncPending(agentId);
       },
     );
+  }
+
+  /**
+   * Decrement the async pending count for an agent. When it reaches zero,
+   * all async controllers for this agent's tick have settled — now it is
+   * safe to call queue.complete() and allow re-processing.
+   */
+  function settleAsyncPending(agentId: AgentId): void {
+    const remaining = (asyncPending.get(agentId) ?? 1) - 1;
+    if (remaining <= 0) {
+      asyncPending.delete(agentId);
+      queue.complete(agentId);
+    } else {
+      asyncPending.set(agentId, remaining);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -338,7 +370,15 @@ export function createReconcileRunner(deps: {
     }
 
     lastReconciledAt.set(agentId, clock.now());
-    queue.complete(agentId);
+
+    // Only complete synchronously when no async controllers are in-flight.
+    // If async controllers were dispatched, settleAsyncPending() will call
+    // queue.complete() when the last promise settles — keeping the agent in
+    // `processing` so new events are buffered as `dirty` instead of causing
+    // overlapping reconciles.
+    if (!asyncPending.has(agentId)) {
+      queue.complete(agentId);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -419,6 +459,7 @@ export function createReconcileRunner(deps: {
     consecutiveFailures.clear();
     backoffState.clear();
     lastReconciledAt.clear();
+    asyncPending.clear();
     queue.clear();
   }
 

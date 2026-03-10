@@ -15,6 +15,20 @@ declare const OPERATIONS: readonly ["send", "list"];
 type IpcOperation = (typeof OPERATIONS)[number];
 
 /**
+ * Pure function for processing pending inbox messages.
+ *
+ * Extracted from the polling loop for testability (decision #11C).
+ * Fetches one page, dispatches new messages to handlers, deduplicates.
+ */
+
+/** Optional error callback for handler failures. */
+type HandlerErrorCallback = (context: {
+    readonly agentId: string;
+    readonly messageId: string;
+    readonly error: unknown;
+}) => void;
+
+/**
  * MailboxComponent implementation backed by Nexus IPC REST API.
  *
  * - send: maps to Nexus, returns Result<AgentMessage, KoiError>
@@ -39,6 +53,8 @@ interface NexusMailboxConfig {
     readonly timeoutMs?: number | undefined;
     /** Called when SSE delivery falls back to polling. */
     readonly onDeliveryFallback?: ((from: DeliveryMode, to: DeliveryMode) => void) | undefined;
+    /** Called when a message handler throws. Receives agent ID, message ID, and the error. */
+    readonly onHandlerError?: HandlerErrorCallback | undefined;
 }
 /** Create a MailboxComponent backed by Nexus IPC. Implements Disposable for cleanup. */
 declare function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent & Disposable;
@@ -107,6 +123,6 @@ declare function createListTool(component: MailboxComponent, prefix: string, pol
 
 declare function createSendTool(component: MailboxComponent, prefix: string, policy: ToolPolicy): Tool;
 
-export { DEFAULT_DELIVERY_MODE, DEFAULT_PREFIX, type DeliveryMode, type IpcNexusProviderConfig, type IpcOperation, type NexusMailboxConfig, OPERATIONS, type SseEvent, createDiscoverTool, createIpcNexusProvider, createListTool, createNexusMailbox, createSendTool };
+export { DEFAULT_DELIVERY_MODE, DEFAULT_PREFIX, type DeliveryMode, type HandlerErrorCallback, type IpcNexusProviderConfig, type IpcOperation, type NexusMailboxConfig, OPERATIONS, type SseEvent, createDiscoverTool, createIpcNexusProvider, createListTool, createNexusMailbox, createSendTool };
 "
 `;

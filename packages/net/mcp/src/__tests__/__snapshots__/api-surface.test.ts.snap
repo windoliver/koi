@@ -208,13 +208,20 @@ declare function reconnectExhaustedError(serverName: string, attempts: number): 
  * repeated load() invocations. Cache is invalidated on listTools failure.
  */
 
+interface McpResolver extends Resolver<ToolDescriptor, Tool> {
+    /** Unsubscribe from all manager tool-change notifications and clear listeners. */
+    readonly dispose: () => void;
+}
 /**
  * Creates a Resolver that discovers and loads MCP tools across managers.
  *
  * Tool IDs follow the namespace pattern: \`mcp/{serverName}/{toolName}\`.
  * The resolver parses this pattern to find the correct manager and tool.
+ *
+ * Call \`dispose()\` when the resolver is no longer needed to unsubscribe
+ * from manager tool-change notifications and prevent listener leaks.
  */
-declare function createMcpResolver(managers: readonly McpClientManager[]): Resolver<ToolDescriptor, Tool>;
+declare function createMcpResolver(managers: readonly McpClientManager[]): McpResolver;
 
 /**
  * Tool adapter — wraps MCP tools as Koi Tool components.
@@ -232,6 +239,6 @@ declare function createMcpResolver(managers: readonly McpClientManager[]): Resol
  */
 declare function mapMcpToolToKoi(toolInfo: McpToolInfo, client: McpClientManager, serverName: string): Tool;
 
-export { type CreateManagerFn, type HttpTransportConfig, type McpClientManager, type McpComponentProviderResult, type McpProviderConfig, type McpServerConfig, type McpServerFailure, type McpServerMode, type McpToolInfo, type McpTransportConfig, type ResolvedMcpProviderConfig, type ResolvedMcpServerConfig, type SseTransportConfig, type StdioTransportConfig, connectionTimeoutError, createExecuteTool, createMcpClientManager, createMcpComponentProvider, createMcpResolver, createSearchTool, mapMcpError, mapMcpToolToKoi, notConnectedError, reconnectExhaustedError, resolveProviderConfig, resolveServerConfig, serverStartError, validateMcpProviderConfig, validateMcpServerConfig };
+export { type CreateManagerFn, type HttpTransportConfig, type McpClientManager, type McpComponentProviderResult, type McpProviderConfig, type McpResolver, type McpServerConfig, type McpServerFailure, type McpServerMode, type McpToolInfo, type McpTransportConfig, type ResolvedMcpProviderConfig, type ResolvedMcpServerConfig, type SseTransportConfig, type StdioTransportConfig, connectionTimeoutError, createExecuteTool, createMcpClientManager, createMcpComponentProvider, createMcpResolver, createSearchTool, mapMcpError, mapMcpToolToKoi, notConnectedError, reconnectExhaustedError, resolveProviderConfig, resolveServerConfig, serverStartError, validateMcpProviderConfig, validateMcpServerConfig };
 "
 `;

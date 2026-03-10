@@ -209,6 +209,11 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
   let attachedAgent: AgentId | undefined;
 
   function guardAttach(agent: Agent): void {
+    if (attachedAgent !== undefined && attachedAgent !== agent.pid.id) {
+      throw new Error(
+        `Provider is single-agent; cannot attach agent ${agent.pid.id} while agent ${attachedAgent} is attached.`,
+      );
+    }
     refCount++;
     if (attachedAgent === undefined) {
       attachedAgent = agent.pid.id;
