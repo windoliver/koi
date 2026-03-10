@@ -3,7 +3,7 @@
  * DashboardDataSource for the admin panel.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { agentId } from "@koi/core";
 import type { DashboardEvent } from "@koi/dashboard-types";
 import type { BridgeOptions } from "./bridge.js";
@@ -22,6 +22,13 @@ function createTestOptions(overrides?: Partial<BridgeOptions>): BridgeOptions {
     skills: [],
     ...overrides,
   };
+}
+
+/** Helper to safely get the first element of an array, throwing if absent. */
+function first<T>(arr: readonly T[]): T {
+  const item = arr[0];
+  if (item === undefined) throw new Error("Expected at least one element");
+  return item;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +61,7 @@ describe("createAdminPanelBridge", () => {
     const agents = await dataSource.listAgents();
     expect(agents).toHaveLength(1);
 
-    const agent = agents[0];
+    const agent = first(agents);
     expect(agent.name).toBe("my-worker");
     expect(agent.agentType).toBe("worker");
     expect(agent.model).toBe("openai:gpt-4o");
@@ -72,7 +79,7 @@ describe("createAdminPanelBridge", () => {
     const { dataSource } = createAdminPanelBridge(opts);
 
     const agents = await dataSource.listAgents();
-    const detail = await dataSource.getAgent(agents[0].agentId);
+    const detail = await dataSource.getAgent(first(agents).agentId);
 
     expect(detail).toBeDefined();
     expect(detail?.name).toBe("detail-agent");
@@ -102,7 +109,7 @@ describe("createAdminPanelBridge", () => {
     const { dataSource } = createAdminPanelBridge(createTestOptions());
 
     const agents = await dataSource.listAgents();
-    const result = await dataSource.terminateAgent(agents[0].agentId);
+    const result = await dataSource.terminateAgent(first(agents).agentId);
     expect(result.ok).toBe(true);
   });
 
@@ -114,9 +121,9 @@ describe("createAdminPanelBridge", () => {
 
     const channels = await dataSource.listChannels();
     expect(channels).toHaveLength(3);
-    expect(channels[0].channelType).toBe("cli");
-    expect(channels[1].channelType).toBe("telegram");
-    expect(channels[2].channelType).toBe("slack");
+    expect(first(channels).channelType).toBe("cli");
+    expect(channels[1]?.channelType).toBe("telegram");
+    expect(channels[2]?.channelType).toBe("slack");
     // All channels should be marked as connected
     for (const ch of channels) {
       expect(ch.connected).toBe(true);
@@ -138,8 +145,8 @@ describe("createAdminPanelBridge", () => {
 
     const skills = await dataSource.listSkills();
     expect(skills).toHaveLength(2);
-    expect(skills[0].name).toBe("web-search");
-    expect(skills[1].name).toBe("code-review");
+    expect(first(skills).name).toBe("web-search");
+    expect(skills[1]?.name).toBe("code-review");
   });
 
   test("listSkills returns empty array when no skills", async () => {
@@ -196,7 +203,7 @@ describe("createAdminPanelBridge", () => {
     });
 
     expect(events).toHaveLength(1);
-    expect(events[0].kind).toBe("system");
+    expect(first(events).kind).toBe("system");
   });
 
   test("unsubscribe prevents further event delivery", () => {
@@ -249,12 +256,12 @@ describe("createAdminPanelBridge", () => {
     const { dataSource } = createAdminPanelBridge(createTestOptions());
 
     const agents = await dataSource.listAgents();
-    const id = agents[0].agentId;
+    const id = first(agents).agentId;
 
     await dataSource.terminateAgent(id);
 
     const agentsAfter = await dataSource.listAgents();
-    expect(agentsAfter[0].state).toBe("terminated");
+    expect(first(agentsAfter).state).toBe("terminated");
 
     const detail = await dataSource.getAgent(id);
     expect(detail?.state).toBe("terminated");
@@ -264,11 +271,11 @@ describe("createAdminPanelBridge", () => {
     const { dataSource } = createAdminPanelBridge(createTestOptions());
 
     const agents = await dataSource.listAgents();
-    const id = agents[0].agentId;
+    const id = first(agents).agentId;
 
     // First termination succeeds
-    const first = await dataSource.terminateAgent(id);
-    expect(first.ok).toBe(true);
+    const firstResult = await dataSource.terminateAgent(id);
+    expect(firstResult.ok).toBe(true);
 
     // Second termination fails
     const second = await dataSource.terminateAgent(id);
@@ -285,7 +292,7 @@ describe("createAdminPanelBridge", () => {
     result.dataSource.subscribe((e) => events.push(e));
 
     const agents = await result.dataSource.listAgents();
-    await result.dataSource.terminateAgent(agents[0].agentId);
+    await result.dataSource.terminateAgent(first(agents).agentId);
 
     expect(events.some((e) => e.kind === "agent" && e.subKind === "status_changed")).toBe(true);
   });
