@@ -87,6 +87,7 @@ export type {
   TaskBoardNode,
   TaskBoardSnapshot,
   TemporalHealth,
+  TimelineEvent,
   WorkflowDetail,
   WorkflowSummary,
 } from "./runtime-views.js";

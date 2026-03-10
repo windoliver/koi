@@ -5,7 +5,7 @@
  * run info, search attributes, memo, and pending activities.
  */
 
-import type { WorkflowDetail } from "@koi/dashboard-types";
+import type { TimelineEvent, WorkflowDetail } from "@koi/dashboard-types";
 import { useRuntimeView } from "../../hooks/use-runtime-view.js";
 import { formatDuration, formatRelativeTime } from "../../lib/format.js";
 import { useOrchestrationStore } from "../../stores/orchestration-store.js";
@@ -62,36 +62,84 @@ function JsonBlock({ data }: { readonly data: Readonly<Record<string, unknown>> 
 }
 
 // ---------------------------------------------------------------------------
-// Signal timeline — chronological view of workflow events + sent signals
+// Timeline — server-backed from Temporal history, with client signal log fallback
 // ---------------------------------------------------------------------------
 
-function SignalTimeline({
+const CATEGORY_COLORS: Readonly<Record<TimelineEvent["category"], string>> = {
+  lifecycle: "bg-blue-400",
+  activity: "bg-cyan-400",
+  signal: "bg-purple-400",
+  timer: "bg-yellow-400",
+  error: "bg-red-400",
+} as const;
+
+function buildTimelineEntries(
+  detail: WorkflowDetail,
+  signalLog: readonly SignalLogEntry[],
+): readonly { readonly time: number; readonly label: string; readonly color: string }[] {
+  // Prefer server-backed timeline when available
+  if (detail.timeline !== undefined && detail.timeline.length > 0) {
+    const entries = detail.timeline.map((evt) => ({
+      time: evt.time,
+      label: evt.label,
+      color: CATEGORY_COLORS[evt.category],
+    }));
+    // Merge any client-side signals not yet reflected in history
+    // (signals sent in the current session may not be in history yet)
+    for (const sig of signalLog) {
+      if (sig.workflowId === detail.workflowId) {
+        const alreadyInHistory = entries.some(
+          (e) => e.label.includes(sig.signalName) && Math.abs(e.time - sig.sentAt) < 5_000,
+        );
+        if (!alreadyInHistory) {
+          entries.push({
+            time: sig.sentAt,
+            label: `Signal: ${sig.signalName} (pending)`,
+            color: "bg-purple-300",
+          });
+        }
+      }
+    }
+    entries.sort((a, b) => a.time - b.time);
+    return entries;
+  }
+
+  // Fallback: construct from workflow metadata + client signal log
+  const entries: { readonly time: number; readonly label: string; readonly color: string }[] = [
+    { time: detail.startTime, label: "Workflow started", color: "bg-blue-400" },
+  ];
+
+  for (const sig of signalLog) {
+    if (sig.workflowId === detail.workflowId) {
+      entries.push({
+        time: sig.sentAt,
+        label: `Signal: ${sig.signalName}`,
+        color: "bg-purple-400",
+      });
+    }
+  }
+
+  if (detail.closeTime !== undefined) {
+    const closeColor = detail.status === "completed" ? "bg-green-400" : "bg-red-400";
+    entries.push({
+      time: detail.closeTime,
+      label: `Workflow ${detail.status}`,
+      color: closeColor,
+    });
+  }
+
+  entries.sort((a, b) => a.time - b.time);
+  return entries;
+}
+
+function WorkflowTimeline({
   detail,
   signalLog,
 }: {
   readonly detail: WorkflowDetail;
   readonly signalLog: readonly SignalLogEntry[];
 }): React.ReactElement {
-  // Build chronological entries from workflow state + sent signals
-  type TimelineEntry = { readonly time: number; readonly label: string; readonly color: string };
-  const entries: TimelineEntry[] = [
-    { time: detail.startTime, label: "Workflow started", color: "bg-blue-400" },
-  ];
-
-  // Add signals sent via the dashboard
-  for (const sig of signalLog) {
-    if (sig.workflowId === detail.workflowId) {
-      entries.push({ time: sig.sentAt, label: `Signal: ${sig.signalName}`, color: "bg-purple-400" });
-    }
-  }
-
-  if (detail.closeTime !== undefined) {
-    const closeColor = detail.status === "completed" ? "bg-green-400" : "bg-red-400";
-    entries.push({ time: detail.closeTime, label: `Workflow ${detail.status}`, color: closeColor });
-  }
-
-  // Sort chronologically
-  entries.sort((a, b) => a.time - b.time);
+  const entries = buildTimelineEntries(detail, signalLog);
 
   return (
     <div className="flex flex-col gap-0">
@@ -247,7 +295,7 @@ export function WorkflowDetailPanel({
                 Timeline
               </span>
               <div className="mt-1">
-                <SignalTimeline detail={detail} signalLog={signalLog ?? []} />
+                <WorkflowTimeline detail={detail} signalLog={signalLog ?? []} />
               </div>
             </div>
 

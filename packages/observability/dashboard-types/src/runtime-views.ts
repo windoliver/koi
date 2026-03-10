@@ -113,6 +113,15 @@ export interface WorkflowDetail extends WorkflowSummary {
   readonly canCount: number;
   /** Lightweight state references from the workflow's query handler. */
   readonly stateRefs?: WorkflowStateRefs;
+  /** Server-backed event timeline from Temporal workflow history. */
+  readonly timeline?: readonly TimelineEvent[];
+}
+
+/** A single event in the workflow timeline, derived from Temporal history. */
+export interface TimelineEvent {
+  readonly time: number;
+  readonly label: string;
+  readonly category: "lifecycle" | "activity" | "signal" | "timer" | "error";
 }
 
 /** Agent state references exposed via workflow query. */

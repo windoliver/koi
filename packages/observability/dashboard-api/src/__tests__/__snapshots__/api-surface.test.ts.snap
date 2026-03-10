@@ -37,12 +37,23 @@ interface TemporalWorkflowDescriptionLike extends TemporalWorkflowExecutionLike 
     /** Pending signals (Temporal SDK >= 1.9). May be absent on older servers. */
     readonly pendingNexusOperations?: readonly unknown[];
 }
+/** Minimal shape of a history event returned by fetchHistory(). */
+interface TemporalHistoryEventLike {
+    readonly eventType: string;
+    readonly eventTime: Date;
+    readonly [key: string]: unknown;
+}
+/** Minimal shape of the history returned by fetchHistory(). */
+interface TemporalHistoryLike {
+    readonly events: readonly TemporalHistoryEventLike[];
+}
 /** Minimal shape of a workflow handle returned by getHandle. */
 interface TemporalWorkflowHandleLike {
     readonly describe: () => Promise<TemporalWorkflowDescriptionLike>;
     readonly signal: (signalName: string, ...args: readonly unknown[]) => Promise<void>;
     readonly terminate: (reason?: string) => Promise<void>;
     readonly query: (queryType: string) => Promise<unknown>;
+    readonly fetchHistory: () => Promise<TemporalHistoryLike>;
 }
 /** Async iterable returned by workflow.list(). */
 interface TemporalWorkflowListLike {

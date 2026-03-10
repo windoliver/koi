@@ -40,6 +40,12 @@ function createMockExecution(overrides?: Partial<MockWorkflowExecution>): MockWo
   };
 }
 
+interface MockHistoryEvent {
+  readonly eventType: string;
+  readonly eventTime: Date;
+  readonly [key: string]: unknown;
+}
+
 interface MockWorkflowHandle {
   describe: () => Promise<{
     readonly workflowId: string;
@@ -57,6 +63,7 @@ interface MockWorkflowHandle {
   signal: (signalName: string, ...args: readonly unknown[]) => Promise<void>;
   terminate: (reason?: string) => Promise<void>;
   query: (queryType: string) => Promise<unknown>;
+  fetchHistory: () => Promise<{ readonly events: readonly MockHistoryEvent[] }>;
 }
 
 function createMockClient(options?: {
@@ -65,6 +72,7 @@ function createMockClient(options?: {
   readonly handleSignal?: MockWorkflowHandle["signal"];
   readonly handleTerminate?: MockWorkflowHandle["terminate"];
   readonly handleQuery?: MockWorkflowHandle["query"];
+  readonly handleFetchHistory?: MockWorkflowHandle["fetchHistory"];
   readonly healthCheckFn?: () => Promise<void>;
 }): TemporalAdminClientLike {
   const executions = options?.executions ?? [createMockExecution()];
@@ -90,6 +98,11 @@ function createMockClient(options?: {
       options?.handleQuery ??
       (async () => {
         throw new Error("Query not supported");
+      }),
+    fetchHistory:
+      options?.handleFetchHistory ??
+      (async () => {
+        throw new Error("History not available");
       }),
   };
 
@@ -271,6 +284,120 @@ describe("createTemporalAdminAdapter", () => {
         expect(result.error.message).toContain("Connection refused");
         expect(result.error.retryable).toBe(true);
         expect(result.error.context).toEqual({ workflowId: "wf-1" });
+      }
+    });
+
+    test("includes timeline from workflow history when available", async () => {
+      const client = createMockClient({
+        handleFetchHistory: async () => ({
+          events: [
+            {
+              eventType: "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+              eventTime: new Date("2026-01-15T10:00:00Z"),
+            },
+            {
+              eventType: "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+              eventTime: new Date("2026-01-15T10:00:01Z"),
+              activityTaskScheduledEventAttributes: {
+                activityType: { name: "runTool" },
+              },
+            },
+            {
+              eventType: "EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED",
+              eventTime: new Date("2026-01-15T10:00:05Z"),
+              workflowExecutionSignaledEventAttributes: {
+                signalName: "refresh",
+              },
+            },
+            {
+              eventType: "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+              eventTime: new Date("2026-01-15T10:00:10Z"),
+            },
+          ],
+        }),
+      });
+
+      const adapter = createTemporalAdminAdapter(client);
+      const result = await adapter.views.getWorkflow("wf-test-1");
+
+      expect(result.ok).toBe(true);
+      if (result.ok && result.value !== undefined) {
+        expect(result.value.timeline).toBeDefined();
+        const timeline = result.value.timeline!;
+        expect(timeline).toHaveLength(4);
+
+        expect(timeline[0]).toEqual({
+          time: new Date("2026-01-15T10:00:00Z").getTime(),
+          label: "Workflow started",
+          category: "lifecycle",
+        });
+        expect(timeline[1]).toEqual({
+          time: new Date("2026-01-15T10:00:01Z").getTime(),
+          label: "Activity: runTool",
+          category: "activity",
+        });
+        expect(timeline[2]).toEqual({
+          time: new Date("2026-01-15T10:00:05Z").getTime(),
+          label: "Signal: refresh",
+          category: "signal",
+        });
+        expect(timeline[3]).toEqual({
+          time: new Date("2026-01-15T10:00:10Z").getTime(),
+          label: "Activity completed",
+          category: "activity",
+        });
+      }
+    });
+
+    test("omits timeline when fetchHistory throws", async () => {
+      const client = createMockClient({
+        handleFetchHistory: async () => {
+          throw new Error("History not available");
+        },
+      });
+
+      const adapter = createTemporalAdminAdapter(client);
+      const result = await adapter.views.getWorkflow("wf-test-1");
+
+      expect(result.ok).toBe(true);
+      if (result.ok && result.value !== undefined) {
+        expect(result.value.timeline).toBeUndefined();
+      }
+    });
+
+    test("filters out non-interesting event types from timeline", async () => {
+      const client = createMockClient({
+        handleFetchHistory: async () => ({
+          events: [
+            {
+              eventType: "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+              eventTime: new Date("2026-01-15T10:00:00Z"),
+            },
+            {
+              eventType: "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+              eventTime: new Date("2026-01-15T10:00:00Z"),
+            },
+            {
+              eventType: "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+              eventTime: new Date("2026-01-15T10:00:00Z"),
+            },
+            {
+              eventType: "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+              eventTime: new Date("2026-01-15T10:00:00Z"),
+            },
+          ],
+        }),
+      });
+
+      const adapter = createTemporalAdminAdapter(client);
+      const result = await adapter.views.getWorkflow("wf-test-1");
+
+      expect(result.ok).toBe(true);
+      if (result.ok && result.value !== undefined) {
+        // Only the STARTED event should be in the timeline
+        // Workflow task events are internal and filtered out
+        expect(result.value.timeline).toHaveLength(1);
+        expect(result.value.timeline![0]!.label).toBe("Workflow started");
       }
     });
   });

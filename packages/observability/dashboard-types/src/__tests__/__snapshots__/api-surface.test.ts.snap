@@ -391,6 +391,14 @@ interface WorkflowDetail extends WorkflowSummary {
     readonly canCount: number;
     /** Lightweight state references from the workflow's query handler. */
     readonly stateRefs?: WorkflowStateRefs;
+    /** Server-backed event timeline from Temporal workflow history. */
+    readonly timeline?: readonly TimelineEvent[];
+}
+/** A single event in the workflow timeline, derived from Temporal history. */
+interface TimelineEvent {
+    readonly time: number;
+    readonly label: string;
+    readonly category: "lifecycle" | "activity" | "signal" | "timer" | "error";
 }
 /** Agent state references exposed via workflow query. */
 interface WorkflowStateRefs {
@@ -563,6 +571,6 @@ interface ApiError {
     readonly message: string;
 }
 
-export { type AdminPanelConfig, type AdminPanelDataSources, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type ApiError, type ApiResult, type ChannelDashboardEvent, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RuntimeViewDataSource, SAVED_VIEWS, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type WorkflowDetail, type WorkflowSummary, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent };
+export { type AdminPanelConfig, type AdminPanelDataSources, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type ApiError, type ApiResult, type ChannelDashboardEvent, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RuntimeViewDataSource, SAVED_VIEWS, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent };
 "
 `;

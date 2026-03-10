@@ -14,6 +14,7 @@ import type {
   CommandDispatcher,
   RuntimeViewDataSource,
   TemporalHealth,
+  TimelineEvent,
   WorkflowDetail,
   WorkflowSummary,
 } from "@koi/dashboard-types";
@@ -42,12 +43,25 @@ interface TemporalWorkflowDescriptionLike extends TemporalWorkflowExecutionLike 
   readonly pendingNexusOperations?: readonly unknown[];
 }
 
+/** Minimal shape of a history event returned by fetchHistory(). */
+interface TemporalHistoryEventLike {
+  readonly eventType: string;
+  readonly eventTime: Date;
+  readonly [key: string]: unknown;
+}
+
+/** Minimal shape of the history returned by fetchHistory(). */
+interface TemporalHistoryLike {
+  readonly events: readonly TemporalHistoryEventLike[];
+}
+
 /** Minimal shape of a workflow handle returned by getHandle. */
 interface TemporalWorkflowHandleLike {
   readonly describe: () => Promise<TemporalWorkflowDescriptionLike>;
   readonly signal: (signalName: string, ...args: readonly unknown[]) => Promise<void>;
   readonly terminate: (reason?: string) => Promise<void>;
   readonly query: (queryType: string) => Promise<unknown>;
+  readonly fetchHistory: () => Promise<TemporalHistoryLike>;
 }
 
 /** Async iterable returned by workflow.list(). */
@@ -136,6 +150,81 @@ function isWorkflowNotFoundError(e: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// History → Timeline mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Temporal event types we extract for the timeline.
+ * Maps SDK event type strings to human-readable labels + categories.
+ */
+const TIMELINE_EVENT_MAP: Readonly<
+  Record<string, { readonly label: string; readonly category: TimelineEvent["category"] }>
+> = {
+  EVENT_TYPE_WORKFLOW_EXECUTION_STARTED: { label: "Workflow started", category: "lifecycle" },
+  EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED: { label: "Workflow completed", category: "lifecycle" },
+  EVENT_TYPE_WORKFLOW_EXECUTION_FAILED: { label: "Workflow failed", category: "error" },
+  EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT: { label: "Workflow timed out", category: "error" },
+  EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED: { label: "Workflow cancelled", category: "lifecycle" },
+  EVENT_TYPE_WORKFLOW_EXECUTION_TERMINATED: { label: "Workflow terminated", category: "lifecycle" },
+  EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW: {
+    label: "Workflow continued-as-new",
+    category: "lifecycle",
+  },
+  EVENT_TYPE_ACTIVITY_TASK_SCHEDULED: { label: "Activity scheduled", category: "activity" },
+  EVENT_TYPE_ACTIVITY_TASK_COMPLETED: { label: "Activity completed", category: "activity" },
+  EVENT_TYPE_ACTIVITY_TASK_FAILED: { label: "Activity failed", category: "error" },
+  EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT: { label: "Activity timed out", category: "error" },
+  EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED: { label: "Signal received", category: "signal" },
+  EVENT_TYPE_TIMER_STARTED: { label: "Timer started", category: "timer" },
+  EVENT_TYPE_TIMER_FIRED: { label: "Timer fired", category: "timer" },
+};
+
+function mapHistoryToTimeline(history: TemporalHistoryLike): readonly TimelineEvent[] {
+  const events: TimelineEvent[] = [];
+  for (const evt of history.events) {
+    const mapping = TIMELINE_EVENT_MAP[evt.eventType];
+    if (mapping !== undefined) {
+      let label = mapping.label;
+
+      // Enrich signal events with signal name when available
+      if (
+        evt.eventType === "EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED" &&
+        typeof evt.workflowExecutionSignaledEventAttributes === "object" &&
+        evt.workflowExecutionSignaledEventAttributes !== null
+      ) {
+        const attrs = evt.workflowExecutionSignaledEventAttributes as {
+          readonly signalName?: string;
+        };
+        if (attrs.signalName !== undefined) {
+          label = `Signal: ${attrs.signalName}`;
+        }
+      }
+
+      // Enrich activity events with activity type when available
+      if (
+        evt.eventType === "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED" &&
+        typeof evt.activityTaskScheduledEventAttributes === "object" &&
+        evt.activityTaskScheduledEventAttributes !== null
+      ) {
+        const attrs = evt.activityTaskScheduledEventAttributes as {
+          readonly activityType?: { readonly name?: string };
+        };
+        if (attrs.activityType?.name !== undefined) {
+          label = `Activity: ${attrs.activityType.name}`;
+        }
+      }
+
+      events.push({
+        time: evt.eventTime.getTime(),
+        label,
+        category: mapping.category,
+      });
+    }
+  }
+  return events;
+}
+
+// ---------------------------------------------------------------------------
 // Mapping helpers
 // ---------------------------------------------------------------------------
 
@@ -181,6 +270,7 @@ function mapDescriptionToDetail(
       }
     | undefined,
   pendingMessageCount: number,
+  timeline: readonly TimelineEvent[] | undefined,
 ): WorkflowDetail {
   const entityType = inferEntityType(desc);
   const base = {
@@ -197,6 +287,7 @@ function mapDescriptionToDetail(
     canCount: 0,
     ...(entityType !== undefined ? { entityType } : {}),
     ...(stateRefs !== undefined ? { stateRefs } : {}),
+    ...(timeline !== undefined ? { timeline } : {}),
   } as const;
 
   if (desc.closeTime !== null) {
@@ -286,7 +377,19 @@ export function createTemporalAdminAdapter(
         // Query not available
       }
 
-      return { ok: true, value: mapDescriptionToDetail(desc, stateRefs, pendingMessageCount) };
+      // Fetch workflow history for timeline — best-effort, non-fatal
+      let timeline: readonly TimelineEvent[] | undefined;
+      try {
+        const history = await handle.fetchHistory();
+        timeline = mapHistoryToTimeline(history);
+      } catch {
+        // History fetch not available — timeline will be undefined
+      }
+
+      return {
+        ok: true,
+        value: mapDescriptionToDetail(desc, stateRefs, pendingMessageCount, timeline),
+      };
     } catch (e: unknown) {
       if (isWorkflowNotFoundError(e)) {
         return { ok: true, value: undefined };
