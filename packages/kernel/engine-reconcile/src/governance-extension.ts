@@ -15,8 +15,10 @@ import type {
   GuardContext,
   KernelExtension,
   KoiMiddleware,
+  ModelChunk,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   ToolRequest,
   ToolResponse,
   TurnContext,
@@ -76,6 +78,10 @@ function createGovernanceGuard(
 
       try {
         const response = await next(request);
+        // Record spawn count on successful spawn — the check above is pre-flight only
+        if (spawnToolIds.has(request.toolId)) {
+          await controller.record({ kind: "spawn", depth: 0 });
+        }
         await controller.record({ kind: "tool_success", toolName: request.toolId });
         return response;
       } catch (e: unknown) {
@@ -102,6 +108,38 @@ function createGovernanceGuard(
         }
       }
       return response;
+    },
+
+    async *wrapModelStream(
+      _ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      // let justified: mutable accumulators for streamed usage across chunks
+      let accInputTokens = 0;
+      let accOutputTokens = 0;
+
+      for await (const chunk of next(request)) {
+        if (chunk.kind === "usage") {
+          accInputTokens += chunk.inputTokens;
+          accOutputTokens += chunk.outputTokens;
+        } else if (chunk.kind === "done" && chunk.response.usage !== undefined) {
+          // "done" carries the authoritative final usage — prefer it over incremental accumulation
+          accInputTokens = chunk.response.usage.inputTokens;
+          accOutputTokens = chunk.response.usage.outputTokens;
+        }
+        yield chunk;
+      }
+
+      const total = accInputTokens + accOutputTokens;
+      if (total > 0) {
+        await controller.record({
+          kind: "token_usage",
+          count: total,
+          inputTokens: accInputTokens,
+          outputTokens: accOutputTokens,
+        });
+      }
     },
   };
 }

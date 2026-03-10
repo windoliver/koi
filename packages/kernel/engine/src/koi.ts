@@ -484,41 +484,71 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           if (options.registry !== undefined) {
             const registryEntry = await options.registry.lookup(pid.id);
             if (registryEntry?.status.phase === "suspended") {
-              await new Promise<void>((resolve) => {
-                // let justified: mutable ref to unsubscribe the suspension watcher
-                let unsub: (() => void) | undefined;
-                unsub = options.registry?.watch((watchEvent) => {
-                  if (
-                    watchEvent.kind === "transitioned" &&
-                    watchEvent.agentId === pid.id &&
-                    watchEvent.to === "running"
-                  ) {
-                    unsub?.();
-                    unsub = undefined;
-                    resolve();
-                  }
-                });
-              });
+              // let justified: mutable flag set when suspension resolves to a terminal state
+              let suspendedTerminal = false;
+
+              const resolvedPhase = await new Promise<"running" | "terminated" | "deregistered">(
+                (resolve) => {
+                  // let justified: mutable ref to unsubscribe the suspension watcher
+                  let unsub: (() => void) | undefined;
+                  unsub = options.registry?.watch((watchEvent) => {
+                    if (watchEvent.kind === "deregistered" && watchEvent.agentId === pid.id) {
+                      unsub?.();
+                      unsub = undefined;
+                      resolve("deregistered");
+                      return;
+                    }
+                    if (watchEvent.kind === "transitioned" && watchEvent.agentId === pid.id) {
+                      if (watchEvent.to === "running") {
+                        unsub?.();
+                        unsub = undefined;
+                        resolve("running");
+                      } else if (watchEvent.to === "terminated") {
+                        unsub?.();
+                        unsub = undefined;
+                        resolve("terminated");
+                      }
+                    }
+                  });
+                },
+              );
+
+              // If resolved to a terminal state, exit the turn loop gracefully
+              if (resolvedPhase === "terminated" || resolvedPhase === "deregistered") {
+                suspendedTerminal = true;
+              }
+
+              if (suspendedTerminal) {
+                agent.transition({ kind: "complete", stopReason: "interrupted" });
+                return;
+              }
             }
           }
 
           // Inbox drain: process queued messages at turn boundary.
-          // Steer items → adapter.inject() if available; fallback to followup.
-          // Collect/followup items accumulate for next turn context.
+          // Steer items → adapter.inject() if available; degrade to followup otherwise.
+          // Collect/followup items are pushed back so middleware (e.g., inbox-middleware
+          // in L2) can route them into the next turn's context during onBeforeTurn hooks.
           const inboxComponent: InboxComponent | undefined = agent.component(INBOX);
           if (inboxComponent !== undefined && inboxComponent.depth() > 0) {
             const inboxItems: readonly InboxItem[] = inboxComponent.drain();
             for (const item of inboxItems) {
-              if (item.mode === "steer" && adapter.inject !== undefined) {
-                await adapter.inject({
-                  senderId: item.from,
-                  content: [{ kind: "text", text: item.content }],
-                  timestamp: item.createdAt,
-                });
+              if (item.mode === "steer") {
+                if (adapter.inject !== undefined) {
+                  await adapter.inject({
+                    senderId: item.from,
+                    content: [{ kind: "text", text: item.content }],
+                    timestamp: item.createdAt,
+                  });
+                } else {
+                  // Degrade steer → followup when adapter lacks inject (L0 contract)
+                  inboxComponent.push({ ...item, mode: "followup" });
+                }
+              } else {
+                // collect/followup items: push back for middleware to access in
+                // onBeforeTurn hooks (e.g., inbox-middleware in L2)
+                inboxComponent.push(item);
               }
-              // collect/followup items: no immediate action needed here —
-              // middleware (e.g., inbox-middleware in L2) will route them
-              // into the next turn's context during onBeforeTurn hooks.
             }
           }
 
@@ -688,13 +718,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // Abort signal — resolve immediately so finally block can terminate
           runSignal.addEventListener("abort", onIdleAbort, { once: true });
 
-          // Poll inbox every 1s — unref'd so it doesn't keep the process alive
+          // Poll inbox at 50ms — InboxComponent has no push notification, so we
+          // use a short interval to minimise wake latency. The timer is unref'd so
+          // it does not keep the process alive.
           timer = setInterval(() => {
             if (idleInbox !== undefined && idleInbox.depth() > 0) {
               cleanup();
               resolve();
             }
-          }, 1_000);
+          }, 50);
           // Bun's setInterval returns a Timer with .unref() — prevent keeping process alive
           unrefTimer(timer);
 

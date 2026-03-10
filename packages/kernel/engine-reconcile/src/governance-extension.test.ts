@@ -5,8 +5,10 @@ import type {
   GovernanceVariableContributor,
   GuardContext,
   KoiMiddleware,
+  ModelChunk,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SubsystemToken,
   ToolRequest,
   ToolResponse,
@@ -93,6 +95,13 @@ function getWrapModelCall(
 ) => Promise<ModelResponse> {
   if (mw.wrapModelCall === undefined) throw new Error("wrapModelCall missing");
   return mw.wrapModelCall;
+}
+
+function getWrapModelStream(
+  mw: KoiMiddleware,
+): (ctx: TurnContext, req: ModelRequest, next: ModelStreamHandler) => AsyncIterable<ModelChunk> {
+  if (mw.wrapModelStream === undefined) throw new Error("wrapModelStream missing");
+  return mw.wrapModelStream;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,11 +229,8 @@ describe("createGovernanceExtension", () => {
     const ctx = mockTurnContext();
     const next = mock(() => Promise.resolve({ output: "ok" } as ToolResponse));
 
-    // First spawn — ok
+    // First spawn — ok (auto-records spawn count on success)
     await getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, next);
-
-    // Need to record spawn event manually (governance guard doesn't auto-increment spawn count)
-    builder.record({ kind: "spawn", depth: 1 });
 
     // Second spawn — should fail (count 1 >= maxFanOut 1)
     await expect(
@@ -300,6 +306,182 @@ describe("createGovernanceExtension", () => {
     await getWrapModelCall(guard)(ctx, { messages: [] }, next);
     const reading = builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE);
     expect(reading?.current).toBe(50);
+  });
+
+  test("guard wrapToolCall auto-records spawn count on success", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      spawn: { maxDepth: 3, maxFanOut: 3 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    expect(guardList).toBeDefined();
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    const next = mock(() => Promise.resolve({ output: "ok" } as ToolResponse));
+
+    // Spawn count starts at 0
+    expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
+
+    // After successful spawn, count should be 1
+    await getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, next);
+    expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(1);
+
+    // After second successful spawn, count should be 2
+    await getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, next);
+    expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(2);
+  });
+
+  test("guard wrapToolCall does not record spawn on failure", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      spawn: { maxDepth: 3, maxFanOut: 3 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    expect(guardList).toBeDefined();
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    const failNext = mock(() => Promise.reject(new Error("spawn failed")));
+
+    await expect(
+      getWrapToolCall(guard)(ctx, { toolId: "forge_agent", input: {} }, failNext),
+    ).rejects.toThrow("spawn failed");
+
+    // Spawn count should remain 0 — no recording on failure
+    expect(builder.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
+  });
+
+  test("guard wrapModelStream records token usage from done chunk", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 1000, maxDurationMs: 300000 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    expect(guardList).toBeDefined();
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+
+    const chunks: readonly ModelChunk[] = [
+      { kind: "text_delta", delta: "hello " },
+      { kind: "text_delta", delta: "world" },
+      {
+        kind: "done",
+        response: {
+          content: "hello world",
+          model: "test",
+          usage: { inputTokens: 40, outputTokens: 30 },
+        },
+      },
+    ];
+    const next: ModelStreamHandler = async function* (_req: ModelRequest) {
+      for (const chunk of chunks) {
+        yield chunk;
+      }
+    };
+
+    const collected: ModelChunk[] = [];
+    for await (const chunk of getWrapModelStream(guard)(ctx, { messages: [] }, next)) {
+      collected.push(chunk);
+    }
+
+    // All chunks should be yielded through
+    expect(collected).toHaveLength(3);
+    // Token usage should be recorded from the done chunk
+    const reading = builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE);
+    expect(reading?.current).toBe(70); // 40 + 30
+  });
+
+  test("guard wrapModelStream accumulates usage from incremental chunks", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 1000, maxDurationMs: 300000 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    expect(guardList).toBeDefined();
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+
+    // Stream with incremental usage chunks but no done response usage
+    const chunks: readonly ModelChunk[] = [
+      { kind: "usage", inputTokens: 10, outputTokens: 5 },
+      { kind: "text_delta", delta: "hello" },
+      { kind: "usage", inputTokens: 15, outputTokens: 10 },
+      { kind: "done", response: { content: "hello", model: "test" } },
+    ];
+    const next: ModelStreamHandler = async function* (_req: ModelRequest) {
+      for (const chunk of chunks) {
+        yield chunk;
+      }
+    };
+
+    for await (const _chunk of getWrapModelStream(guard)(ctx, { messages: [] }, next)) {
+      // consume
+    }
+
+    // Should accumulate: (10+15) input + (5+10) output = 40
+    const reading = builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE);
+    expect(reading?.current).toBe(40);
+  });
+
+  test("guard wrapModelStream records zero usage when stream has none", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController();
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    expect(guardList).toBeDefined();
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+
+    const chunks: readonly ModelChunk[] = [
+      { kind: "text_delta", delta: "hello" },
+      { kind: "done", response: { content: "hello", model: "test" } },
+    ];
+    const next: ModelStreamHandler = async function* (_req: ModelRequest) {
+      for (const chunk of chunks) {
+        yield chunk;
+      }
+    };
+
+    for await (const _chunk of getWrapModelStream(guard)(ctx, { messages: [] }, next)) {
+      // consume
+    }
+
+    // No usage in stream — token count should remain 0
+    const reading = builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE);
+    expect(reading?.current).toBe(0);
   });
 
   // -------------------------------------------------------------------------

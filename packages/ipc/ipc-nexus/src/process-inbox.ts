@@ -18,8 +18,19 @@ export interface SeenSet {
   readonly add: (id: string) => void;
 }
 
+/** Optional error callback for handler failures. */
+export type HandlerErrorCallback = (context: {
+  readonly agentId: string;
+  readonly messageId: string;
+  readonly error: unknown;
+}) => void;
+
 /**
  * Fetch one page of inbox messages, dispatch unseen ones to all handlers.
+ *
+ * When a handler throws, the error is reported via `onHandlerError` (or
+ * `console.error` when no callback is provided) and the message remains
+ * eligible for retry on the next poll cycle.
  *
  * @returns Number of newly processed messages.
  */
@@ -29,6 +40,7 @@ export async function processPendingMessages(
   handlers: ReadonlySet<MessageHandler>,
   seen: SeenSet,
   limit: number,
+  onHandlerError?: HandlerErrorCallback | undefined,
 ): Promise<number> {
   // let justified: count mutated in loop
   let processed = 0;
@@ -49,19 +61,39 @@ export async function processPendingMessages(
       const message = mapNexusToKoi(envelope);
       if (message === undefined) continue;
 
-      // Mark as seen only after successful parse — unmappable messages
-      // remain eligible for retry after a code fix/redeploy.
-      seen.add(envelope.id);
+      // let justified: tracks whether any handler failed for this message
+      let handlerFailed = false;
 
       for (const handler of handlers) {
         try {
           await handler(message);
-        } catch (_err: unknown) {
-          // Handler errors must not crash the polling loop.
-          // Logging would be added by middleware/telemetry at a higher layer.
+        } catch (err: unknown) {
+          handlerFailed = true;
+          const errorContext = {
+            agentId,
+            messageId: envelope.id,
+            error: err,
+          } as const;
+
+          if (onHandlerError !== undefined) {
+            onHandlerError(errorContext);
+          } else {
+            console.error(
+              `[ipc-nexus] Handler error for message ${envelope.id} (agent ${agentId}):`,
+              err,
+            );
+          }
         }
       }
 
+      if (handlerFailed) {
+        // Leave message eligible for retry on the next poll cycle.
+        continue;
+      }
+
+      // Mark as seen only after all handlers succeed — failed messages
+      // remain eligible for retry on the next poll cycle.
+      seen.add(envelope.id);
       processed += 1;
     }
 

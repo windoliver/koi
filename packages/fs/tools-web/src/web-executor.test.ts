@@ -119,16 +119,25 @@ describe("createWebExecutor.fetch", () => {
 });
 
 // ---------------------------------------------------------------------------
-// fetch — post-redirect SSRF check
+// fetch — pre-redirect SSRF check (manual redirect following)
 // ---------------------------------------------------------------------------
 
-describe("createWebExecutor.fetch post-redirect SSRF", () => {
-  test("blocks redirect to localhost", async () => {
-    const fetchFn = mock(async () => {
-      const resp = new Response("secret", { status: 200 });
-      // Simulate redirect by setting url property
-      Object.defineProperty(resp, "url", { value: "http://localhost/admin" });
-      return resp;
+describe("createWebExecutor.fetch redirect SSRF", () => {
+  test("blocks redirect to localhost BEFORE following", async () => {
+    const mutableCalls: string[] = [];
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableCalls.push(reqUrl);
+      // First call: return a 302 redirecting to localhost
+      if (reqUrl.includes("evil-redirect")) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://localhost/admin" },
+        });
+      }
+      // Should never reach here — redirect must be blocked
+      return new Response("secret", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
     const executor = createWebExecutor({ fetchFn });
@@ -140,13 +149,24 @@ describe("createWebExecutor.fetch post-redirect SSRF", () => {
       expect(result.error.message).toContain("Redirect");
       expect(result.error.message).toContain("localhost");
     }
+    // Verify we never fetched the localhost URL
+    expect(mutableCalls).toHaveLength(1);
+    expect(mutableCalls[0]).toBe("https://evil-redirect.example.com");
   });
 
-  test("blocks redirect to AWS metadata", async () => {
-    const fetchFn = mock(async () => {
-      const resp = new Response("", { status: 200 });
-      Object.defineProperty(resp, "url", { value: "http://169.254.169.254/latest/meta-data/" });
-      return resp;
+  test("blocks redirect to AWS metadata BEFORE following", async () => {
+    const mutableCalls: string[] = [];
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableCalls.push(reqUrl);
+      if (reqUrl.includes("evil.example.com")) {
+        return new Response(null, {
+          status: 301,
+          headers: { location: "http://169.254.169.254/latest/meta-data/" },
+        });
+      }
+      return new Response("", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
     const executor = createWebExecutor({ fetchFn });
@@ -156,13 +176,21 @@ describe("createWebExecutor.fetch post-redirect SSRF", () => {
     if (!result.ok) {
       expect(result.error.code).toBe("PERMISSION");
     }
+    // Verify the metadata URL was never actually fetched
+    expect(mutableCalls).toHaveLength(1);
   });
 
   test("allows redirect to public URL", async () => {
-    const fetchFn = mock(async () => {
-      const resp = new Response("ok", { status: 200 });
-      Object.defineProperty(resp, "url", { value: "https://www.example.com/redirected" });
-      return resp;
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (reqUrl === "https://example.com") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://www.example.com/redirected" },
+        });
+      }
+      return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
     const executor = createWebExecutor({ fetchFn });
@@ -172,6 +200,133 @@ describe("createWebExecutor.fetch post-redirect SSRF", () => {
     if (result.ok) {
       expect(result.value.finalUrl).toBe("https://www.example.com/redirected");
     }
+  });
+
+  test("follows multiple redirects and tracks finalUrl", async () => {
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (reqUrl === "https://a.example.com") {
+        return new Response(null, {
+          status: 301,
+          headers: { location: "https://b.example.com/step2" },
+        });
+      }
+      if (reqUrl === "https://b.example.com/step2") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://c.example.com/final" },
+        });
+      }
+      return new Response("done", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    const result = await executor.fetch("https://a.example.com");
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.finalUrl).toBe("https://c.example.com/final");
+      expect(result.value.body).toBe("done");
+    }
+  });
+
+  test("blocks SSRF on intermediate redirect hop", async () => {
+    const mutableCalls: string[] = [];
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableCalls.push(reqUrl);
+      if (reqUrl === "https://a.example.com") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://b.example.com/step2" },
+        });
+      }
+      if (reqUrl === "https://b.example.com/step2") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://10.0.0.1/internal" },
+        });
+      }
+      return new Response("secret", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    const result = await executor.fetch("https://a.example.com");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.message).toContain("10.0.0.1");
+    }
+    // a.example.com and b.example.com were fetched, but 10.0.0.1 was not
+    expect(mutableCalls).toHaveLength(2);
+  });
+
+  test("returns error when exceeding max redirects", async () => {
+    const fetchFn = mock(async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://loop.example.com/next" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    const result = await executor.fetch("https://loop.example.com");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.message).toContain("Too many redirects");
+    }
+  });
+
+  test("resolves relative redirect URLs", async () => {
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (reqUrl === "https://example.com/old") {
+        return new Response(null, {
+          status: 301,
+          headers: { location: "/new-path" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    const result = await executor.fetch("https://example.com/old");
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.finalUrl).toBe("https://example.com/new-path");
+    }
+  });
+
+  test("303 converts POST to GET", async () => {
+    const mutableMethods: string[] = [];
+    const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableMethods.push(init?.method ?? "GET");
+      if (reqUrl === "https://example.com/submit") {
+        return new Response(null, {
+          status: 303,
+          headers: { location: "https://example.com/result" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn });
+    const result = await executor.fetch("https://example.com/submit", {
+      method: "POST",
+      body: "data",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mutableMethods).toEqual(["POST", "GET"]);
   });
 });
 

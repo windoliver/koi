@@ -82,6 +82,21 @@ describe("StatusReporter", () => {
       expect(statuses[0]?.state).toBe("running");
     });
 
+    it("reports turnCount and lastActivityMs from host metrics", async () => {
+      const host = createAgentHost(hostConfig);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
+
+      // Record some turns to increment the counter
+      host.recordTurn("a1");
+      host.recordTurn("a1");
+
+      const reporter = createStatusReporter("node-1", host, mock());
+      const statuses = reporter.collect();
+
+      expect(statuses[0]?.turnCount).toBe(2);
+      expect(statuses[0]?.lastActivityMs).toBeGreaterThan(0);
+    });
+
     it("reflects terminated agents (not collected)", async () => {
       const host = createAgentHost(hostConfig);
       await host.dispatch(makePid("a1"), testManifest, makeEngine(), []);

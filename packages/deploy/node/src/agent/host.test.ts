@@ -206,6 +206,55 @@ describe("AgentHost", () => {
     });
   });
 
+  describe("recordTurn and metrics", () => {
+    it("metrics returns zero turnCount and recent lastActivityMs after dispatch", async () => {
+      const host = createAgentHost(config);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+
+      const m = host.metrics("a1");
+      expect(m).toBeDefined();
+      expect(m?.turnCount).toBe(0);
+      expect(m?.lastActivityMs).toBeGreaterThan(0);
+    });
+
+    it("recordTurn increments turnCount and updates lastActivityMs", async () => {
+      const host = createAgentHost(config);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+
+      const before = host.metrics("a1");
+      // Small delay to ensure lastActivityMs differs
+      await new Promise((r) => setTimeout(r, 5));
+      host.recordTurn("a1");
+
+      const after = host.metrics("a1");
+      expect(after?.turnCount).toBe(1);
+      expect(after?.lastActivityMs).toBeGreaterThanOrEqual(before?.lastActivityMs ?? 0);
+    });
+
+    it("recordTurn is cumulative", async () => {
+      const host = createAgentHost(config);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+
+      host.recordTurn("a1");
+      host.recordTurn("a1");
+      host.recordTurn("a1");
+
+      const m = host.metrics("a1");
+      expect(m?.turnCount).toBe(3);
+    });
+
+    it("metrics returns undefined for unknown agent", () => {
+      const host = createAgentHost(config);
+      expect(host.metrics("nonexistent")).toBeUndefined();
+    });
+
+    it("recordTurn is a no-op for unknown agent", () => {
+      const host = createAgentHost(config);
+      // Should not throw
+      host.recordTurn("nonexistent");
+    });
+  });
+
   describe("agent crash isolation (P0)", () => {
     it("one agent's component error does not affect others", async () => {
       const host = createAgentHost(config);

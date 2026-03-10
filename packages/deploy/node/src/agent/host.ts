@@ -42,6 +42,12 @@ interface ManagedAgent {
   readonly components: Map<string, unknown>;
 }
 
+/** Runtime metrics for an agent — exposed for status reporting without leaking ManagedAgent. */
+export interface AgentMetrics {
+  readonly turnCount: number;
+  readonly lastActivityMs: number;
+}
+
 export interface AgentHost {
   /** Dispatch (create) a new agent on this node. */
   readonly dispatch: (
@@ -69,6 +75,16 @@ export interface AgentHost {
   readonly onEvent: (listener: NodeEventListener) => () => void;
   /** Terminate all agents (used during shutdown). */
   readonly terminateAll: () => void;
+  /**
+   * Record a completed turn for an agent. Increments turnCount and
+   * updates lastActivityMs to the current time.
+   */
+  readonly recordTurn: (agentId: AgentId | string) => void;
+  /**
+   * Return runtime metrics (turnCount, lastActivityMs) for an agent.
+   * Returns undefined if the agent is not found.
+   */
+  readonly metrics: (agentId: AgentId | string) => AgentMetrics | undefined;
   /**
    * Send a POSIX-style signal to a single agent.
    * stop → suspended at next turn boundary  (idempotent)
@@ -351,6 +367,20 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
           setTimeout(() => reject(new Error("signalGroup timeout")), deadlineMs),
         ),
       ]);
+    },
+
+    recordTurn(agentId) {
+      const managed = agents.get(agentId);
+      if (managed !== undefined) {
+        managed.turnCount += 1;
+        managed.lastActivityMs = Date.now();
+      }
+    },
+
+    metrics(agentId) {
+      const managed = agents.get(agentId);
+      if (managed === undefined) return undefined;
+      return { turnCount: managed.turnCount, lastActivityMs: managed.lastActivityMs };
     },
 
     get(agentId) {

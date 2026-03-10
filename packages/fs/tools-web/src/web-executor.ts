@@ -91,6 +91,9 @@ export const DEFAULT_TIMEOUT_MS = 15_000;
 export const MAX_TIMEOUT_MS = 60_000;
 export const DEFAULT_CACHE_TTL_MS = 0;
 export const DEFAULT_MAX_CACHE_ENTRIES = 100;
+export const MAX_REDIRECTS = 10;
+
+const REDIRECT_STATUS_CODES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
 // ---------------------------------------------------------------------------
 // Internal cache (LRU + TTL)
@@ -200,29 +203,87 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
         }
 
-        const response = await fetchFn(url, {
-          method,
-          headers: options?.headers,
-          body: options?.body,
-          signal: controller.signal,
-          redirect: "follow",
-        });
+        // Manual redirect loop: validate each redirect URL BEFORE following it
+        let currentUrl = url;
+        let currentMethod = method;
+        const currentHeaders = options?.headers;
+        let currentBody = options?.body;
+        let response: Response | undefined;
 
-        clearTimeout(timer);
+        for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+          response = await fetchFn(currentUrl, {
+            method: currentMethod,
+            headers: currentHeaders,
+            body: currentBody,
+            signal: controller.signal,
+            redirect: "manual",
+          });
 
-        // Post-redirect SSRF check: verify final URL after redirects
-        const finalUrl = response.url || url;
-        if (finalUrl !== url && isBlockedUrl(finalUrl)) {
+          if (!REDIRECT_STATUS_CODES.has(response.status)) break;
+
+          const location = response.headers.get("location");
+          if (location === null || location === "") break;
+
+          // Resolve relative redirect URLs against the current URL
+          const nextUrl = new URL(location, currentUrl).href;
+
+          // Validate redirect target BEFORE following it
+          if (isBlockedUrl(nextUrl)) {
+            clearTimeout(timer);
+            return {
+              ok: false,
+              error: {
+                code: "PERMISSION",
+                message: `Redirect to private/internal URL blocked: ${nextUrl}`,
+                retryable: false,
+              },
+            };
+          }
+
+          currentUrl = nextUrl;
+
+          // 303 always converts to GET with no body; 301/302 convert to GET for
+          // non-GET/HEAD methods per HTTP spec (browser behavior)
+          if (
+            response.status === 303 ||
+            ((response.status === 301 || response.status === 302) &&
+              currentMethod !== "GET" &&
+              currentMethod !== "HEAD")
+          ) {
+            currentMethod = "GET";
+            currentBody = undefined;
+          }
+        }
+
+        // Should not happen — loop always assigns before break — but satisfies TS narrowing
+        if (response === undefined) {
+          clearTimeout(timer);
           return {
             ok: false,
             error: {
-              code: "PERMISSION",
-              message: `Redirect to private/internal URL blocked: ${finalUrl}`,
+              code: "EXTERNAL",
+              message: `Fetch failed for ${url}: no response received`,
+              retryable: true,
+            },
+          };
+        }
+
+        // Too many redirects
+        if (REDIRECT_STATUS_CODES.has(response.status)) {
+          clearTimeout(timer);
+          return {
+            ok: false,
+            error: {
+              code: "EXTERNAL",
+              message: `Too many redirects (>${MAX_REDIRECTS}) for ${url}`,
               retryable: false,
             },
           };
         }
 
+        clearTimeout(timer);
+
+        const finalUrl = currentUrl;
         const rawBody = await response.text();
         const truncated = rawBody.length > maxBodyChars;
         const body = truncated ? rawBody.slice(0, maxBodyChars) : rawBody;
