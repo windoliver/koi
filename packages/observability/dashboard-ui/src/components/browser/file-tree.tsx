@@ -13,7 +13,7 @@ export function FileTree(): React.ReactElement {
   const activeView = useViewStore((s) => s.activeView);
 
   return (
-    <div className="flex-1 overflow-y-auto py-1">
+    <div data-tree-root className="flex-1 overflow-y-auto py-1">
       {activeView.rootPaths.map((rootPath) => (
         <RootSection key={rootPath} path={rootPath} />
       ))}

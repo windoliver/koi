@@ -1,11 +1,12 @@
 /**
  * BrowserShell — main layout for the Nexus namespace browser.
  *
- * Split panel: left sidebar (search + view tabs + file tree) and
- * right content area (breadcrumb + viewer).
+ * Resizable split panel: left sidebar (search + view tabs + file tree) and
+ * right content area (breadcrumb + viewer). Uses react-resizable-panels.
  */
 
 import { FolderTree } from "lucide-react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useTreeStore } from "../../stores/tree-store.js";
 import { ViewerRouter } from "../viewers/viewer-router.js";
 import { Breadcrumb } from "./breadcrumb.js";
@@ -19,26 +20,32 @@ export function BrowserShell(): React.ReactElement {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-1 overflow-hidden">
+      <PanelGroup direction="horizontal" className="flex-1">
         {/* Left sidebar: search + tabs + file tree */}
-        <div className="flex w-72 shrink-0 flex-col border-r border-[var(--color-border)]">
-          <CommandBar />
-          <SavedViewTabs />
-          <FileTree />
-        </div>
+        <Panel defaultSize={25} minSize={15} maxSize={50}>
+          <div className="flex h-full flex-col border-r border-[var(--color-border)]">
+            <CommandBar />
+            <SavedViewTabs />
+            <FileTree />
+          </div>
+        </Panel>
+
+        <PanelResizeHandle className="w-1 bg-[var(--color-border)] hover:bg-[var(--color-primary)]/30 transition-colors" />
 
         {/* Right content area: breadcrumb + viewer */}
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <Breadcrumb />
-          <div className="flex-1 overflow-auto">
-            {selectedPath !== null ? (
-              <ViewerRouter path={selectedPath} />
-            ) : (
-              <EmptyState />
-            )}
+        <Panel defaultSize={75} minSize={30}>
+          <div className="flex h-full flex-col overflow-hidden">
+            <Breadcrumb />
+            <div className="flex-1 overflow-auto">
+              {selectedPath !== null ? (
+                <ViewerRouter path={selectedPath} />
+              ) : (
+                <EmptyState />
+              )}
+            </div>
           </div>
-        </div>
-      </div>
+        </Panel>
+      </PanelGroup>
       <StatusBar />
     </div>
   );

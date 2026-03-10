@@ -3,13 +3,21 @@
  *
  * Directories are expandable; files are selectable.
  * Uses tree store for expanded/selected state.
+ * Supports right-click context menu and keyboard navigation.
  */
 
+import { useCallback, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { FsEntry } from "../../lib/api-client.js";
 import { useFileTree } from "../../hooks/use-file-tree.js";
 import { useTreeStore } from "../../stores/tree-store.js";
+import { FileContextMenu } from "./file-context-menu.js";
 import { FileIcon } from "./file-icon.js";
+
+interface ContextMenuState {
+  readonly x: number;
+  readonly y: number;
+}
 
 export function FileTreeNode({
   entry,
@@ -21,7 +29,12 @@ export function FileTreeNode({
   const expanded = useTreeStore((s) => s.expanded);
   const selectedPath = useTreeStore((s) => s.selectedPath);
   const toggleExpanded = useTreeStore((s) => s.toggleExpanded);
+  const setExpanded = useTreeStore((s) => s.setExpanded);
   const select = useTreeStore((s) => s.select);
+
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(
+    null,
+  );
 
   const isExpanded = expanded.has(entry.path);
   const isSelected = selectedPath === entry.path;
@@ -34,11 +47,121 @@ export function FileTreeNode({
     }
   };
 
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent): void => {
+      e.preventDefault();
+      setContextMenu({ x: e.clientX, y: e.clientY });
+    },
+    [],
+  );
+
+  const handleCloseContextMenu = useCallback((): void => {
+    setContextMenu(null);
+  }, []);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLButtonElement>): void => {
+      const target = e.currentTarget;
+
+      switch (e.key) {
+        case "Enter": {
+          if (entry.isDirectory) {
+            toggleExpanded(entry.path);
+          } else {
+            select(entry.path);
+          }
+          e.preventDefault();
+          break;
+        }
+
+        case "ArrowRight": {
+          if (entry.isDirectory) {
+            if (!isExpanded) {
+              setExpanded(entry.path, true);
+            } else {
+              // Move focus to first child
+              const container = target.closest("div")?.parentElement;
+              const nextButton =
+                container?.querySelector<HTMLButtonElement>(
+                  ":scope > div:last-child button",
+                );
+              nextButton?.focus();
+            }
+          }
+          e.preventDefault();
+          break;
+        }
+
+        case "ArrowLeft": {
+          if (entry.isDirectory && isExpanded) {
+            setExpanded(entry.path, false);
+          } else {
+            // Move focus to parent node button
+            const parentContainer =
+              target.closest("div")?.parentElement?.closest("div")
+                ?.parentElement;
+            const parentButton =
+              parentContainer?.querySelector<HTMLButtonElement>(
+                ":scope > button",
+              );
+            parentButton?.focus();
+          }
+          e.preventDefault();
+          break;
+        }
+
+        case "ArrowDown": {
+          // Move focus to next visible node
+          const allButtons = Array.from(
+            target
+              .closest("[data-tree-root]")
+              ?.querySelectorAll<HTMLButtonElement>(
+                "button[data-tree-node]",
+              ) ?? [],
+          );
+          const currentIndex = allButtons.indexOf(target);
+          const nextButton = allButtons[currentIndex + 1];
+          if (nextButton !== undefined) {
+            nextButton.focus();
+          }
+          e.preventDefault();
+          break;
+        }
+
+        case "ArrowUp": {
+          // Move focus to previous visible node
+          const allBtns = Array.from(
+            target
+              .closest("[data-tree-root]")
+              ?.querySelectorAll<HTMLButtonElement>(
+                "button[data-tree-node]",
+              ) ?? [],
+          );
+          const idx = allBtns.indexOf(target);
+          const prevButton = allBtns[idx - 1];
+          if (prevButton !== undefined) {
+            prevButton.focus();
+          }
+          e.preventDefault();
+          break;
+        }
+
+        default:
+          break;
+      }
+    },
+    [entry.isDirectory, entry.path, isExpanded, toggleExpanded, setExpanded, select],
+  );
+
   return (
     <div>
       <button
         type="button"
+        data-tree-node
+        tabIndex={0}
         onClick={handleClick}
+        onContextMenu={handleContextMenu}
+        onKeyDown={handleKeyDown}
         className={`flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-sm transition-colors hover:bg-[var(--color-muted)]/10 ${
           isSelected ? "bg-[var(--color-primary)]/10 text-[var(--color-primary)]" : ""
         }`}
@@ -63,6 +186,15 @@ export function FileTreeNode({
       </button>
       {entry.isDirectory && isExpanded && (
         <DirectoryChildren path={entry.path} depth={depth + 1} />
+      )}
+      {contextMenu !== null && (
+        <FileContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          path={entry.path}
+          isDirectory={entry.isDirectory}
+          onClose={handleCloseContextMenu}
+        />
       )}
     </div>
   );

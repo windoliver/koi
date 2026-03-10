@@ -12,7 +12,7 @@
  */
 
 import type { DashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
-import { isAgentEvent, isNexusEvent } from "@koi/dashboard-types";
+import { isAgentEvent, isGatewayEvent, isNexusEvent } from "@koi/dashboard-types";
 import { useEffect } from "react";
 import { fetchAgents } from "../lib/api-client.js";
 import { getDashboardConfig } from "../lib/dashboard-config.js";
@@ -53,6 +53,11 @@ function handleEvent(event: DashboardEvent): void {
 
   // Nexus events — invalidate file tree so React Query refetches
   if (isNexusEvent(event)) {
+    useTreeStore.getState().invalidateTree();
+  }
+
+  // Gateway events — also invalidate tree (gateway state files may change)
+  if (isGatewayEvent(event)) {
     useTreeStore.getState().invalidateTree();
   }
 }

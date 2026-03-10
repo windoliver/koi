@@ -124,3 +124,32 @@ export function fetchMiddlewareChain(agentId: string): Promise<MiddlewareChain> 
 export function fetchGatewayTopology(): Promise<GatewayTopology> {
   return fetchApi<GatewayTopology>("/view/gateway");
 }
+
+// ---------------------------------------------------------------------------
+// Command endpoints
+// ---------------------------------------------------------------------------
+
+export function suspendAgent(agentId: string): Promise<void> {
+  return fetchApi<void>(`/cmd/agents/${encodeURIComponent(agentId)}/suspend`, {
+    method: "POST",
+  });
+}
+
+export function resumeAgent(agentId: string): Promise<void> {
+  return fetchApi<void>(`/cmd/agents/${encodeURIComponent(agentId)}/resume`, {
+    method: "POST",
+  });
+}
+
+export function retryDeadLetter(eventId: string): Promise<{ readonly retried: boolean }> {
+  return fetchApi<{ readonly retried: boolean }>(
+    `/cmd/events/dlq/${encodeURIComponent(eventId)}/retry`,
+    { method: "POST" },
+  );
+}
+
+export function listMailbox(agentId: string): Promise<readonly unknown[]> {
+  return fetchApi<readonly unknown[]>(`/cmd/mailbox/${encodeURIComponent(agentId)}/list`, {
+    method: "POST",
+  });
+}
