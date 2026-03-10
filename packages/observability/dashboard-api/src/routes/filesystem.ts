@@ -147,9 +147,13 @@ export async function handleFsSearch(
 
   let matches = result.value.matches;
 
-  // Filter by path scope(s) server-side before truncating
+  // Filter by path scope(s) server-side before truncating.
+  // Append "/" to each scope so "/app" doesn't match "/app2/...".
   if (scopePaths.length > 0) {
-    matches = matches.filter((m) => scopePaths.some((sp) => m.path.startsWith(sp)));
+    const normalizedScopes = scopePaths.map((sp) => (sp.endsWith("/") ? sp : `${sp}/`));
+    matches = matches.filter((m) =>
+      normalizedScopes.some((sp) => m.path === sp.slice(0, -1) || m.path.startsWith(sp)),
+    );
   }
 
   // Truncate to requested maxResults after path filtering

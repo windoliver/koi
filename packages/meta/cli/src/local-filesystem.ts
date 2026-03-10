@@ -6,7 +6,7 @@
  */
 
 import { mkdir, readdir, stat, unlink } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import type {
   FileDeleteResult,
   FileEdit,
@@ -37,11 +37,16 @@ function err(code: KoiErrorCode, message: string, cause?: unknown): KoiError {
   };
 }
 
+/** Normalize a path to forward slashes for consistent API responses. */
+function toApiPath(p: string): string {
+  return sep === "\\" ? p.replaceAll("\\", "/") : p;
+}
+
 export function createLocalFileSystem(rootPath: string): FileSystemBackend {
   const root = resolve(rootPath);
 
   // Append path separator so /Users/taofeng/koi doesn't match /Users/taofeng/koi2
-  const rootPrefix = root.endsWith("/") ? root : `${root}/`;
+  const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
 
   /** Resolve and validate that a path is within the workspace root. */
   function safePath(path: string): Result<string, KoiError> {
@@ -152,7 +157,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
             try {
               const s = await stat(fullPath);
               entries.push({
-                path: join(path, match),
+                path: toApiPath(join(path, match)),
                 kind: s.isDirectory() ? "directory" : "file",
                 ...(s.isFile() ? { size: s.size } : {}),
               });
@@ -183,7 +188,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
             }
           }
           entries.push({
-            path: join(path, entry.name),
+            path: toApiPath(join(path, entry.name)),
             kind,
             ...(size !== undefined ? { size } : {}),
           });
@@ -216,7 +221,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
             for (let i = 0; i < lines.length && matches.length < maxResults; i++) {
               const line = lines[i];
               if (line !== undefined && regex.test(line)) {
-                matches.push({ path: filePath, line: i + 1, text: line.trim() });
+                matches.push({ path: toApiPath(filePath), line: i + 1, text: line.trim() });
               }
             }
           } catch {

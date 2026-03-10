@@ -289,7 +289,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
         dashboardResult.dispose();
       };
 
-      process.stderr.write(`Admin panel: http://localhost:${String(server.port)}\n`);
+      process.stderr.write(`Admin panel: http://localhost:${String(server.port)}/admin\n`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`warn: admin panel failed to start: ${message}\n`);
