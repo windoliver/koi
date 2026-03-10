@@ -34,7 +34,7 @@ function StatsBar({ stats }: { readonly stats: SchedulerStats }): React.ReactEle
         { label: "Completed", value: stats.completed },
         { label: "Failed", value: stats.failed },
         { label: "DLQ", value: stats.deadLetterCount },
-        { label: "Concurrency", value: `${stats.currentConcurrency}/${stats.concurrencyLimit}` },
+        { label: "Concurrency", value: stats.concurrencyLimit !== undefined ? `${stats.currentConcurrency}/${stats.concurrencyLimit}` : String(stats.currentConcurrency) },
       ].map((item) => (
         <div
           key={item.label}
@@ -114,54 +114,68 @@ function KanbanColumn({
 
 function ScheduleRow({
   schedule,
+  canPause,
+  canResume,
+  canDelete,
   onPause,
   onResume,
   onDelete,
 }: {
   readonly schedule: CronSchedule;
+  readonly canPause: boolean;
+  readonly canResume: boolean;
+  readonly canDelete: boolean;
   readonly onPause: (id: string) => void;
   readonly onResume: (id: string) => void;
   readonly onDelete: (id: string) => void;
 }): React.ReactElement {
+  const hasActions = canPause || canResume || canDelete;
   return (
     <tr className="border-b border-[var(--color-border,#333)] hover:bg-[var(--color-card,#313244)]">
       <td className="px-3 py-2 text-xs font-mono text-[var(--color-foreground,#cdd6f4)]">
         {schedule.pattern}
       </td>
       <td className="px-3 py-2 text-xs text-[var(--color-muted,#888)]">
-        {new Date(schedule.nextFireTime).toLocaleTimeString()}
+        {schedule.nextFireTime !== undefined
+          ? new Date(schedule.nextFireTime).toLocaleTimeString()
+          : "—"}
       </td>
       <td className={`px-3 py-2 text-xs font-medium ${schedule.active ? "text-green-400" : "text-yellow-400"}`}>
         {schedule.active ? "Active" : "Paused"}
       </td>
-      <td className="px-3 py-2 text-xs">
-        <div className="flex gap-1">
-          {schedule.active ? (
-            <button
-              type="button"
-              className="rounded bg-yellow-600/20 px-2 py-0.5 text-xs text-yellow-400 hover:bg-yellow-600/30"
-              onClick={() => onPause(schedule.scheduleId)}
-            >
-              Pause
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="rounded bg-green-600/20 px-2 py-0.5 text-xs text-green-400 hover:bg-green-600/30"
-              onClick={() => onResume(schedule.scheduleId)}
-            >
-              Resume
-            </button>
-          )}
-          <button
-            type="button"
-            className="rounded bg-red-600/20 px-2 py-0.5 text-xs text-red-400 hover:bg-red-600/30"
-            onClick={() => onDelete(schedule.scheduleId)}
-          >
-            Delete
-          </button>
-        </div>
-      </td>
+      {hasActions && (
+        <td className="px-3 py-2 text-xs">
+          <div className="flex gap-1">
+            {schedule.active && canPause && (
+              <button
+                type="button"
+                className="rounded bg-yellow-600/20 px-2 py-0.5 text-xs text-yellow-400 hover:bg-yellow-600/30"
+                onClick={() => onPause(schedule.scheduleId)}
+              >
+                Pause
+              </button>
+            )}
+            {!schedule.active && canResume && (
+              <button
+                type="button"
+                className="rounded bg-green-600/20 px-2 py-0.5 text-xs text-green-400 hover:bg-green-600/30"
+                onClick={() => onResume(schedule.scheduleId)}
+              >
+                Resume
+              </button>
+            )}
+            {canDelete && (
+              <button
+                type="button"
+                className="rounded bg-red-600/20 px-2 py-0.5 text-xs text-red-400 hover:bg-red-600/30"
+                onClick={() => onDelete(schedule.scheduleId)}
+              >
+                Delete
+              </button>
+            )}
+          </div>
+        </td>
+      )}
     </tr>
   );
 }
@@ -213,6 +227,10 @@ export function SchedulerTab(): React.ReactElement {
   const lastInvalidatedAt = useOrchestrationStore((s) => s.lastInvalidatedAt);
   const commandsDetail = useOrchestrationStore((s) => s.commandsDetail);
   const canRetryDlq = commandsDetail?.retryDlq === true;
+  const canPauseSchedule = commandsDetail?.pauseSchedule === true;
+  const canResumeSchedule = commandsDetail?.resumeSchedule === true;
+  const canDeleteSchedule = commandsDetail?.deleteSchedule === true;
+  const hasScheduleActions = canPauseSchedule || canResumeSchedule || canDeleteSchedule;
 
   const { data: stats, isLoading: statsLoading } = useRuntimeView<SchedulerStats>(
     "/scheduler/stats",
@@ -232,15 +250,21 @@ export function SchedulerTab(): React.ReactElement {
   );
 
   const handlePauseSchedule = useCallback((id: string) => {
-    void pauseSchedule(id).then(() => refetchSchedules());
+    void pauseSchedule(id)
+      .then(() => refetchSchedules())
+      .catch(() => { /* 501/403 — button hidden when unsupported */ });
   }, [refetchSchedules]);
 
   const handleResumeSchedule = useCallback((id: string) => {
-    void resumeSchedule(id).then(() => refetchSchedules());
+    void resumeSchedule(id)
+      .then(() => refetchSchedules())
+      .catch(() => { /* 501/403 — button hidden when unsupported */ });
   }, [refetchSchedules]);
 
   const handleDeleteSchedule = useCallback((id: string) => {
-    void deleteSchedule(id).then(() => refetchSchedules());
+    void deleteSchedule(id)
+      .then(() => refetchSchedules())
+      .catch(() => { /* 501/403 — button hidden when unsupported */ });
   }, [refetchSchedules]);
 
   const handleRetryDlq = useCallback((id: string) => {
@@ -283,7 +307,9 @@ export function SchedulerTab(): React.ReactElement {
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Pattern</th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Next Fire</th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Status</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Actions</th>
+                  {hasScheduleActions && (
+                    <th className="px-3 py-2 text-left text-xs font-medium text-[var(--color-muted,#888)]">Actions</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -291,6 +317,9 @@ export function SchedulerTab(): React.ReactElement {
                   <ScheduleRow
                     key={s.scheduleId}
                     schedule={s}
+                    canPause={canPauseSchedule}
+                    canResume={canResumeSchedule}
+                    canDelete={canDeleteSchedule}
                     onPause={handlePauseSchedule}
                     onResume={handleResumeSchedule}
                     onDelete={handleDeleteSchedule}

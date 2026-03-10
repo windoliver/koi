@@ -395,10 +395,19 @@ export async function runServe(flags: ServeFlags): Promise<void> {
           separateHealthStop();
         }
       };
-      healthInfo = {
-        url: server.url.toString(),
-        port: server.port ?? adminPort,
-      };
+      // When admin runs on a separate port, healthInfo should reflect the
+      // health server (the one load balancers and probes target), not admin.
+      if (adminPort !== healthPort) {
+        healthInfo = {
+          url: `http://localhost:${String(healthPort)}/`,
+          port: healthPort,
+        };
+      } else {
+        healthInfo = {
+          url: server.url.toString(),
+          port: server.port ?? adminPort,
+        };
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`Failed to start admin server: ${message}\n`);
@@ -464,7 +473,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`Model: ${modelName}\n`);
     process.stderr.write(`Health: ${healthInfo.url}\n`);
     if (flags.admin) {
-      process.stderr.write(`Admin panel: ${healthInfo.url}admin\n`);
+      const adminPort = flags.adminPort ?? healthInfo.port;
+      process.stderr.write(`Admin panel: http://localhost:${String(adminPort)}/admin\n`);
     }
   }
 

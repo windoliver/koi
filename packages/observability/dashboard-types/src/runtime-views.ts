@@ -161,14 +161,14 @@ export interface SchedulerStats {
   readonly completed: number;
   readonly failed: number;
   readonly deadLetterCount: number;
-  readonly concurrencyLimit: number;
+  readonly concurrencyLimit?: number | undefined;
   readonly currentConcurrency: number;
 }
 
 export interface CronSchedule {
   readonly scheduleId: string;
   readonly pattern: string;
-  readonly nextFireTime: number;
+  readonly nextFireTime?: number | undefined;
   readonly active: boolean;
   readonly description?: string;
 }

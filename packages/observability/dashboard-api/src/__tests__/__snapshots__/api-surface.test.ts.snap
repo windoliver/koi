@@ -45,7 +45,7 @@ interface HarnessAdminClientLike {
 }
 interface HarnessAdminAdapter {
     readonly views: NonNullable<RuntimeViewDataSource["harness"]>;
-    readonly commands: Required<Pick<CommandDispatcher, "pauseHarness" | "resumeHarness">>;
+    readonly commands: Pick<CommandDispatcher, "pauseHarness" | "resumeHarness">;
 }
 declare function createHarnessAdminAdapter(client: HarnessAdminClientLike): HarnessAdminAdapter;
 
@@ -101,7 +101,7 @@ interface SchedulerAdminClientLike {
 }
 interface SchedulerAdminAdapter {
     readonly views: NonNullable<RuntimeViewDataSource["scheduler"]>;
-    readonly commands: Required<Pick<CommandDispatcher, "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter">>;
+    readonly commands: Pick<CommandDispatcher, "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter">;
 }
 declare function createSchedulerAdminAdapter(client: SchedulerAdminClientLike): SchedulerAdminAdapter;
 
@@ -259,7 +259,7 @@ declare function jsonResponse<T>(data: T, status?: number): Response;
 declare function errorResponse(code: string, message: string, status: number): Response;
 /** Validate a required route parameter. Returns errorResponse(400) if missing. */
 declare function validateRequiredParam(params: RouteParams, name: string, label?: string): string | Response;
-/** Map a Result error to an HTTP error response. NOT_FOUND → 404, all others → 500. */
+/** Map a Result error to an HTTP error response. */
 declare function mapResultToResponse(result: {
     readonly ok: boolean;
     readonly error?: {
@@ -280,7 +280,7 @@ declare function mapResultToResponse(result: {
 
 /** Returns true if the given path is editable. */
 type EditablePathMatcher = (path: string) => boolean;
-/** Default: only workspace files are editable. */
+/** Default: all files within the FileSystemBackend root are editable. */
 declare function createDefaultEditablePaths(): EditablePathMatcher;
 
 /**

@@ -109,7 +109,6 @@ function mapScheduleToDashboard(schedule: CronScheduleLike): DashboardCronSchedu
   return {
     scheduleId: schedule.id,
     pattern: schedule.expression,
-    nextFireTime: 0, // Not available from core type
     active: !schedule.paused,
   };
 }
@@ -120,7 +119,6 @@ function mapStatsToDashboard(stats: SchedulerStatsLike): DashboardSchedulerStats
     completed: stats.completed,
     failed: stats.failed,
     deadLetterCount: stats.deadLettered,
-    concurrencyLimit: 0, // Not available from stats alone
     currentConcurrency: stats.running,
   };
 }

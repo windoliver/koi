@@ -125,6 +125,9 @@ export function createDashboardHandler(
             pauseHarness: commands.pauseHarness !== undefined,
             resumeHarness: commands.resumeHarness !== undefined,
             retryDlq: commands.retrySchedulerDeadLetter !== undefined,
+            pauseSchedule: commands.pauseSchedule !== undefined,
+            resumeSchedule: commands.resumeSchedule !== undefined,
+            deleteSchedule: commands.deleteSchedule !== undefined,
           },
         }
       : {}),

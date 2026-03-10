@@ -75,6 +75,9 @@ export interface DashboardCapabilities {
     readonly pauseHarness: boolean;
     readonly resumeHarness: boolean;
     readonly retryDlq: boolean;
+    readonly pauseSchedule: boolean;
+    readonly resumeSchedule: boolean;
+    readonly deleteSchedule: boolean;
   };
 }
 

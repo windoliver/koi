@@ -65,10 +65,21 @@ export function OrchestrationDrawer({
   // Fetch capabilities once when drawer opens
   useEffect(() => {
     if (!open) return;
-    void fetchHealth().then((health) => {
-      setCapabilities(health.capabilities);
-      setCommandsDetail(health.capabilities?.commandsDetail ?? null);
-    });
+    void fetchHealth()
+      .then((health) => {
+        setCapabilities(health.capabilities);
+        setCommandsDetail(health.capabilities?.commandsDetail ?? null);
+      })
+      .catch(() => {
+        // Health probe failed — degrade to empty orchestration views
+        setCapabilities({
+          fileSystem: false,
+          runtimeViews: false,
+          commands: false,
+          orchestration: { temporal: false, scheduler: false, taskBoard: false, harness: false },
+        });
+        setCommandsDetail(null);
+      });
   }, [open, setCommandsDetail]);
 
   // Show only tabs whose backing orchestration sources are present

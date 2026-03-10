@@ -50,9 +50,11 @@ function createProxyHandler(remoteBaseUrl: string): DashboardHandlerResult {
     if (url.pathname === `${apiPath}/events` || url.pathname === `${basePath}/events`) {
       try {
         const targetUrl = `${remoteBaseUrl}${url.pathname}${url.search}`;
+        // SSE is indefinite — use the client's own abort signal so the
+        // connection lives as long as the browser tab stays open.
         const proxyRes = await fetch(targetUrl, {
           headers: req.headers,
-          signal: AbortSignal.timeout(300_000),
+          signal: req.signal,
         });
 
         const headers = new Headers(proxyRes.headers);
