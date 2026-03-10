@@ -22,21 +22,13 @@
 
 ## Quickstart
 
-> **Note**: Koi is not yet published to npm. For now, run from the monorepo source.
+> **Pre-release**: Koi is not yet published to npm. The target experience is below — see [Development](#development) for building from source.
 
 ```bash
-git clone https://github.com/windoliver/koi.git
-cd koi
-bun install
-bun run build
-```
-
-Then create and start an agent:
-
-```bash
-bun packages/meta/cli/src/bin.ts init my-agent
+bun add koi
+koi init my-agent
 cd my-agent
-bun ../packages/meta/cli/src/bin.ts start
+koi start
 ```
 
 The YAML file **is** the agent:
@@ -93,10 +85,10 @@ L0  @koi/core        Interfaces-only kernel. Types + contracts. Zero logic. Zero
 L1  @koi/engine       Kernel runtime. Guards, lifecycle, middleware composition.
 L2  @koi/*            Feature packages. Each depends on L0 only. Never on L1 or peers.
 L3  Meta-packages     Convenience bundles (e.g., @koi/starter = L0 + L1 + selected L2).
-L4  koi               Single installable package. bun add koi — done.
+L4  koi               Single installable package (planned — not yet published).
 ```
 
-### 225 packages, 7 contracts
+### 222 packages, 7 contracts
 
 The kernel defines 7 extension contracts:
 
