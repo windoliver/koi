@@ -484,10 +484,11 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
         // Capture engine state asynchronously, then persist the session record
         const captureAndSave = async (): Promise<void> => {
           const engineState = await engineAdapter?.saveState?.();
-          // Guard: if the agent was terminated while saveState() was in-flight,
-          // sessionByAgent.has() will be false (terminate() deletes it synchronously).
-          // Without this check, the fire-and-forget save could resurrect a dead session.
-          if (!sessionByAgent.has(agent.pid.id)) return;
+          // Guard: if the agent was terminated (or terminated+re-dispatched with the
+          // same pid.id) while saveState() was in-flight, bail out. Checking both
+          // has() and identity prevents a stale save from overwriting a new session
+          // when the same agentId is reused between terminate() and this point.
+          if (sessionByAgent.get(agent.pid.id) !== sid) return;
           const record: SessionRecord = {
             sessionId: toSessionId(sid),
             agentId: agent.pid.id,
