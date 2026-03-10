@@ -338,6 +338,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         const approvalKey = computeApprovalCacheKey(
           backendFingerprint,
           userId,
+          ctx.session.agentId,
           request.toolId,
           request.input,
         );
@@ -389,6 +390,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           const approvalKey = computeApprovalCacheKey(
             backendFingerprint,
             userId,
+            ctx.session.agentId,
             request.toolId,
             request.input,
           );
@@ -420,6 +422,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 function computeApprovalCacheKey(
   backendFingerprint: number,
   userId: string,
+  agentId: string,
   toolId: string,
   input: unknown,
 ): number {
@@ -439,5 +442,5 @@ function computeApprovalCacheKey(
       { context: { toolId } },
     );
   }
-  return fnv1a(`${backendFingerprint}\0${userId}\0${toolId}\0${serialized}`);
+  return fnv1a(`${backendFingerprint}\0${userId}\0${agentId}\0${toolId}\0${serialized}`);
 }

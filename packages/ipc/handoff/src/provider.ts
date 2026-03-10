@@ -2,7 +2,7 @@
  * ComponentProvider that attaches handoff tools to an agent.
  */
 
-import type { ComponentProvider } from "@koi/core";
+import type { Agent, ComponentProvider } from "@koi/core";
 import { skillToken } from "@koi/core";
 import { createAcceptTool } from "./accept-tool.js";
 import { createPrepareTool } from "./prepare-tool.js";
@@ -29,7 +29,13 @@ export function createHandoffProvider(config: HandoffConfig): ComponentProvider 
   return {
     name: "handoff",
 
-    async attach(): Promise<ReadonlyMap<string, unknown>> {
+    async attach(agent: Agent): Promise<ReadonlyMap<string, unknown>> {
+      if (agent.pid.id !== config.agentId) {
+        throw new Error(
+          `Provider is single-agent; cannot attach agent ${agent.pid.id} while agent ${config.agentId} is attached.`,
+        );
+      }
+
       if (cached !== undefined) return cached;
 
       const prepareTool = createPrepareTool({

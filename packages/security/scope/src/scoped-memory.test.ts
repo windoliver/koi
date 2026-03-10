@@ -101,8 +101,9 @@ describe("createScopedMemory", () => {
     expect(found[0]?.content).toBe("match");
   });
 
-  test("recall filters client-side when backend ignores namespace", async () => {
-    // Backend returns results without namespace metadata — should pass through
+  test("recall rejects untagged records when backend ignores namespace", async () => {
+    // Backend returns results without namespace metadata — should be rejected
+    // to prevent leaking untagged records across scope boundaries
     const results: readonly MemoryResult[] = [
       { content: "no-meta" },
       { content: "with-meta", metadata: { namespace: "agent-b" } },
@@ -110,10 +111,8 @@ describe("createScopedMemory", () => {
     const backend = createMockMemory(results);
     const scoped = createScopedMemory(backend, { namespace: "agent-a" });
     const found = await scoped.recall("query");
-    // "no-meta" passes (metadata.namespace is undefined — graceful degradation)
-    // "with-meta" with agent-b namespace is filtered out
-    expect(found).toHaveLength(1);
-    expect(found[0]?.content).toBe("no-meta");
+    // Both are filtered out: "no-meta" has no namespace, "with-meta" has wrong namespace
+    expect(found).toHaveLength(0);
   });
 
   test("empty recall returns empty array", async () => {

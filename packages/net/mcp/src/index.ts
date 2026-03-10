@@ -50,6 +50,8 @@ export {
   reconnectExhaustedError,
   serverStartError,
 } from "./errors.js";
+// types — resolver
+export type { McpResolver } from "./resolver.js";
 // runtime values — resolver
 export { createMcpResolver } from "./resolver.js";
 // runtime values — tool adapter

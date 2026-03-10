@@ -40,9 +40,7 @@ export function createScopedMemory(
       const results = await component.recall(query, { ...options, namespace: scope.namespace });
       // Client-side filter for graceful degradation: if the backend ignores
       // the namespace parameter, we still enforce isolation by filtering.
-      return results.filter(
-        (r) => r.metadata?.namespace === undefined || r.metadata.namespace === scope.namespace,
-      );
+      return results.filter((r) => r.metadata?.namespace === scope.namespace);
     },
   };
 }

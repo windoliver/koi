@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import type { AttachResult, Tool } from "@koi/core";
-import { isAttachResult, toolToken } from "@koi/core";
+import type { Agent, AttachResult, Tool } from "@koi/core";
+import { agentId, isAttachResult, toolToken } from "@koi/core";
 import type { LspClient } from "./client.js";
 import type { CreateClientFn } from "./component-provider.js";
 import { createLspComponentProvider } from "./component-provider.js";
@@ -12,6 +12,9 @@ function extractMap(
 ): ReadonlyMap<string, unknown> {
   return isAttachResult(result) ? result.components : result;
 }
+
+/** Minimal mock Agent with a stable pid for provider attach/detach tests. */
+const MOCK_AGENT = { pid: { id: agentId("test-agent") } } as Agent;
 
 // ---------------------------------------------------------------------------
 // Mock client factory
@@ -90,7 +93,7 @@ describe("createLspComponentProvider", () => {
     expect(result.clients).toHaveLength(1);
 
     // Attach should return tools
-    const tools = extractMap(await result.provider.attach({} as never));
+    const tools = extractMap(await result.provider.attach(MOCK_AGENT));
     expect(tools.size).toBe(8); // 3 always + 5 capability tools
   });
 
@@ -113,7 +116,7 @@ describe("createLspComponentProvider", () => {
     expect(result.failures[0]?.serverName).toBe("bad");
 
     // Still have tools from the good server
-    const tools = extractMap(await result.provider.attach({} as never));
+    const tools = extractMap(await result.provider.attach(MOCK_AGENT));
     expect(tools.size).toBe(8);
   });
 
@@ -125,7 +128,7 @@ describe("createLspComponentProvider", () => {
     const factory = createMockClientFactory([{ name: "minimal", capabilities: {} }]);
     const result = await createLspComponentProvider(config, factory);
 
-    const tools = extractMap(await result.provider.attach({} as never));
+    const tools = extractMap(await result.provider.attach(MOCK_AGENT));
     expect(tools.size).toBe(3); // open + close + get_diagnostics
   });
 
@@ -142,7 +145,7 @@ describe("createLspComponentProvider", () => {
 
     expect(result.clients).toHaveLength(2);
 
-    const tools = extractMap(await result.provider.attach({} as never));
+    const tools = extractMap(await result.provider.attach(MOCK_AGENT));
     expect(tools.size).toBe(16); // 8 per server
 
     // Verify namespacing
@@ -169,7 +172,7 @@ describe("createLspComponentProvider", () => {
     expect(result.clients).toHaveLength(0);
     expect(result.failures).toHaveLength(2);
 
-    const tools = extractMap(await result.provider.attach({} as never));
+    const tools = extractMap(await result.provider.attach(MOCK_AGENT));
     expect(tools.size).toBe(0);
   });
 
@@ -207,7 +210,7 @@ describe("createLspComponentProvider", () => {
     const result = await createLspComponentProvider(config, factory);
     expect(closed).toBe(false);
 
-    await result.provider.detach?.({} as never);
+    await result.provider.detach?.(MOCK_AGENT);
     expect(closed).toBe(true);
   });
 
@@ -250,7 +253,7 @@ describe("createLspComponentProvider", () => {
     expect(result.clients).toHaveLength(2);
     expect(result.failures).toHaveLength(0);
 
-    const tools = extractMap(await result.provider.attach({} as never));
+    const tools = extractMap(await result.provider.attach(MOCK_AGENT));
     expect(tools.size).toBe(16); // 8 per server
   });
 

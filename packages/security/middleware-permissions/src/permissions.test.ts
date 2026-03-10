@@ -441,6 +441,34 @@ describe("approval cache", () => {
     expect(requestApproval).toHaveBeenCalledTimes(2);
   });
 
+  test("different agentId triggers separate approval", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const askBackend = createPatternPermissionBackend({
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+    });
+    const mw = createPermissionsMiddleware({
+      backend: askBackend,
+      approvalHandler,
+      cache: true,
+    });
+    const spy = createSpyToolHandler();
+    const ctxAgent1 = createMockTurnContext({
+      session: createMockSessionContext({ agentId: "agent-1", userId: "same-user" }),
+    });
+    const ctxAgent2 = createMockTurnContext({
+      session: createMockSessionContext({ agentId: "agent-2", userId: "same-user" }),
+    });
+
+    // Approve for agent-1
+    await mw.wrapToolCall?.(ctxAgent1, makeToolRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+
+    // Same user, different agent — cache miss, prompts again
+    await mw.wrapToolCall?.(ctxAgent2, makeToolRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+  });
+
   test("anonymous userId does not leak to authenticated userId", async () => {
     const requestApproval = mock(async () => true);
     const approvalHandler: ApprovalHandler = { requestApproval };

@@ -6,6 +6,7 @@
  */
 
 import type {
+  Agent,
   AgentGroupId,
   AgentId,
   ComponentProvider,
@@ -123,7 +124,7 @@ export function createScratchpadNexusProvider(
     },
   };
 
-  const provider = createServiceProvider<ScratchpadComponent, ScratchpadOperation>({
+  const inner = createServiceProvider<ScratchpadComponent, ScratchpadOperation>({
     name: "scratchpad-nexus",
     singletonToken: SCRATCHPAD,
     backend: adapter,
@@ -136,6 +137,20 @@ export function createScratchpadNexusProvider(
       generationCache.clear();
     },
   });
+
+  const provider: ComponentProvider = {
+    name: inner.name,
+    ...(inner.priority !== undefined ? { priority: inner.priority } : {}),
+    attach: async (agent: Agent) => {
+      if (agent.pid.id !== agentId) {
+        throw new Error(
+          `Provider is single-agent; cannot attach agent ${agent.pid.id} while agent ${agentId} is attached.`,
+        );
+      }
+      return inner.attach(agent);
+    },
+    ...(inner.detach !== undefined ? { detach: inner.detach } : {}),
+  };
 
   return { provider, middleware };
 }

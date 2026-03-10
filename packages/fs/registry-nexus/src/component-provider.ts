@@ -52,11 +52,22 @@ export function createNexusRegistryProvider(config: NexusRegistryConfig): Compon
         metadata,
         ...(config.zoneId !== undefined ? { zone_id: config.zoneId } : {}),
       };
-      await nexusRegisterAgent(config, registerParams);
+      const registerResult = await nexusRegisterAgent(config, registerParams);
+      if (!registerResult.ok) {
+        throw new Error(
+          `Failed to register agent "${id}" in Nexus: ${registerResult.error.message}`,
+          { cause: registerResult.error },
+        );
+      }
 
       // Transition from UNKNOWN → CONNECTED
       const nexusState = mapKoiToNexus(agent.state);
-      await nexusTransition(config, id, nexusState, 0);
+      const transitionResult = await nexusTransition(config, id, nexusState, 0);
+      if (!transitionResult.ok) {
+        console.warn(
+          `[registry-nexus] Failed to transition agent "${id}" to "${nexusState}": ${transitionResult.error.message}`,
+        );
+      }
 
       // No components to attach — this provider only manages Nexus lifecycle
       return {
@@ -66,7 +77,12 @@ export function createNexusRegistryProvider(config: NexusRegistryConfig): Compon
     },
 
     async detach(agent: Agent): Promise<void> {
-      await nexusDeleteAgent(config, agent.pid.id);
+      const deleteResult = await nexusDeleteAgent(config, agent.pid.id);
+      if (!deleteResult.ok) {
+        console.warn(
+          `[registry-nexus] Failed to deregister agent "${agent.pid.id}" from Nexus: ${deleteResult.error.message}`,
+        );
+      }
     },
   };
 }

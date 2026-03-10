@@ -202,6 +202,23 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
         const drainResult: AgentTurnResult = await runAgentTurn(drainInput);
 
         stateRefs = drainResult.updatedStateRefs;
+
+        // Spawn child workflow if requested (same as normal turn processing)
+        if (drainResult.spawnChild !== undefined) {
+          const childConfig: WorkerWorkflowConfig = {
+            agentId: drainResult.spawnChild.childAgentId,
+            sessionId: config.sessionId,
+            parentAgentId: config.agentId,
+            stateRefs: drainResult.spawnChild.childConfig.stateRefs,
+            initialMessage: drainResult.spawnChild.childConfig.initialMessage,
+          };
+
+          await startChild("workerWorkflow", {
+            args: [childConfig],
+            workflowId: `worker:${drainResult.spawnChild.childAgentId}`,
+            parentClosePolicy: "TERMINATE",
+          });
+        }
       }
 
       // Wait for all in-flight signal/update handlers to complete

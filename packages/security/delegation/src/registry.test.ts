@@ -42,11 +42,8 @@ describe("createInMemoryRegistry", () => {
     expect(ids.size).toBe(2);
   });
 
-  test("respects maxEntries by evicting oldest entries", () => {
-    const registry = createInMemoryRegistry({
-      maxEntries: 3,
-      cleanupIntervalMs: 60_000, // won't trigger during test
-    });
+  test("revocations are permanent — never evicted regardless of count", () => {
+    const registry = createInMemoryRegistry();
     dispose = registry.dispose;
 
     registry.revoke("a" as DelegationId, false);
@@ -54,9 +51,11 @@ describe("createInMemoryRegistry", () => {
     registry.revoke("c" as DelegationId, false);
     registry.revoke("d" as DelegationId, false);
 
-    // Oldest entry "a" should be evicted
-    expect(registry.revokedIds().size).toBe(3);
-    expect(registry.isRevoked("a" as DelegationId)).toBe(false);
+    // All revocations are retained — no eviction
+    expect(registry.revokedIds().size).toBe(4);
+    expect(registry.isRevoked("a" as DelegationId)).toBe(true);
+    expect(registry.isRevoked("b" as DelegationId)).toBe(true);
+    expect(registry.isRevoked("c" as DelegationId)).toBe(true);
     expect(registry.isRevoked("d" as DelegationId)).toBe(true);
   });
 

@@ -62,6 +62,18 @@ function defaultSpawnFn(
     serialization: options.serialization,
   });
 
+  // Drain stdout/stderr concurrently to prevent pipe deadlock.
+  // The bridge communicates via IPC, not stdio, but the child may still
+  // write to stdout/stderr (e.g., warnings, uncaught errors). If nobody
+  // reads these pipes and the child exceeds the OS pipe buffer (~64KB),
+  // the child blocks on write while we wait for exit — classic deadlock.
+  if (proc.stdout) {
+    new Response(proc.stdout).text().catch(() => {});
+  }
+  if (proc.stderr) {
+    new Response(proc.stderr).text().catch(() => {});
+  }
+
   return {
     pid: proc.pid,
     exited: proc.exited,

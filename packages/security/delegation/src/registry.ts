@@ -11,10 +11,6 @@ import type { DelegationGrant, DelegationId, RevocationRegistry } from "@koi/cor
 // In-memory revocation registry
 // ---------------------------------------------------------------------------
 
-interface RegistryEntry {
-  readonly revokedAt: number;
-}
-
 /** Concrete return type for the in-memory registry with convenience methods. */
 export interface InMemoryRegistry extends RevocationRegistry {
   /** Returns all currently revoked IDs (convenience — not part of the L0 interface). */
@@ -24,42 +20,45 @@ export interface InMemoryRegistry extends RevocationRegistry {
 }
 
 /**
- * Creates an in-memory revocation registry with configurable max entries
- * and periodic cleanup. `maxEntries` and `cleanupIntervalMs` are local
- * configuration for this implementation, not part of L0 DelegationConfig.
+ * Creates an in-memory revocation registry.
+ *
+ * Revocations are permanent — revoked IDs are stored in a Set that is never
+ * evicted. Previously, revocations and grants shared a single Map with LRU
+ * eviction, which allowed previously-revoked IDs to silently become valid
+ * again when the map exceeded `maxEntries`.
+ *
+ * `cleanupIntervalMs` is retained for API compatibility but is currently
+ * a no-op since revocations are never evicted.
  */
 export function createInMemoryRegistry(config?: {
-  readonly maxEntries?: number;
   readonly cleanupIntervalMs?: number;
 }): InMemoryRegistry {
-  const maxEntries = config?.maxEntries ?? 10_000;
-  const cleanupIntervalMs = config?.cleanupIntervalMs ?? 60_000;
+  // Revoked IDs are stored in a Set that never evicts — revocations are permanent.
+  const revoked = new Set<DelegationId>();
 
-  const entries = new Map<DelegationId, RegistryEntry>();
-
-  // Lazy timer — started on first revoke(), avoids leaks when registry is unused
+  // Lazy timer — retained for dispose() API compatibility
   let timer: ReturnType<typeof setInterval> | undefined;
+  const cleanupIntervalMs = config?.cleanupIntervalMs ?? 60_000;
 
   function ensureTimer(): void {
     if (timer === undefined) {
       timer = setInterval(() => {
-        evictIfOverCapacity(entries, maxEntries);
+        // no-op — revocations are never evicted
       }, cleanupIntervalMs);
     }
   }
 
   function isRevoked(id: DelegationId): boolean {
-    return entries.has(id);
+    return revoked.has(id);
   }
 
   function revoke(id: DelegationId, _cascade: boolean): void {
     ensureTimer();
-    entries.set(id, { revokedAt: Date.now() });
-    evictIfOverCapacity(entries, maxEntries);
+    revoked.add(id);
   }
 
   function revokedIds(): ReadonlySet<DelegationId> {
-    return new Set(entries.keys());
+    return new Set(revoked);
   }
 
   function dispose(): void {
@@ -70,20 +69,6 @@ export function createInMemoryRegistry(config?: {
   }
 
   return { isRevoked, revoke, revokedIds, dispose };
-}
-
-/** Evicts the oldest entries when the map exceeds maxEntries. */
-function evictIfOverCapacity(entries: Map<DelegationId, RegistryEntry>, maxEntries: number): void {
-  if (entries.size <= maxEntries) return;
-
-  // Map iteration order is insertion order — delete from the front
-  const toRemove = entries.size - maxEntries;
-  let removed = 0;
-  for (const key of entries.keys()) {
-    if (removed >= toRemove) break;
-    entries.delete(key);
-    removed++;
-  }
 }
 
 // ---------------------------------------------------------------------------

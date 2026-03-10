@@ -320,10 +320,16 @@ export function createSubprocessExecutor(): SandboxExecutor {
           proc.kill("SIGKILL");
         }, timeoutMs);
 
+        // Start draining stdout/stderr concurrently with waiting for exit.
+        // If the child writes more than the OS pipe buffer (~64KB) and nobody
+        // reads, the child blocks on write while we wait for exit — deadlock.
+        const stdoutPromise = new Response(proc.stdout).text();
+        const stderrPromise = new Response(proc.stderr).text();
+
         const exitCode = await proc.exited;
         clearTimeout(timeoutId);
 
-        const stdout = await new Response(proc.stdout).text();
+        const stdout = await stdoutPromise;
         const durationMs = performance.now() - start;
 
         if (stdout.length > MAX_STDOUT_BYTES) {
@@ -348,7 +354,7 @@ export function createSubprocessExecutor(): SandboxExecutor {
             // Fallback to stderr
           }
 
-          const stderr = await new Response(proc.stderr).text();
+          const stderr = await stderrPromise;
           const errorMsg =
             stderr.length > 0 ? stderr : `Subprocess exited with code ${String(exitCode)}`;
           return { ok: false, error: classifyError(new Error(errorMsg), durationMs) };

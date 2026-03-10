@@ -464,7 +464,18 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     // Persist engine state in session record for fast recovery
     if (currentSessionId !== undefined) {
       const record = buildSessionRecord(currentSessionId, sessionResult.engineState);
-      await sessionPersistence.saveSession(record);
+      const saveResult = await sessionPersistence.saveSession(record);
+      if (!saveResult.ok) {
+        return {
+          ok: false,
+          error: {
+            code: saveResult.error.code,
+            message: `Failed to save session "${currentSessionId}" during pause: ${saveResult.error.message}`,
+            retryable: saveResult.error.retryable,
+            cause: saveResult.error,
+          },
+        };
+      }
     }
 
     // Limit artifacts
