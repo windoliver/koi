@@ -661,9 +661,15 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
         ) {
           // Capture real engine state if callback provided
           const engineState = saveState !== undefined ? await saveState() : undefined;
-          // Persist engine state in session record (fire-and-forget)
+          // Persist engine state in session record — best-effort, log on failure
           const record = buildSessionRecord(currentSessionId, engineState);
-          void sessionPersistence.saveSession(record);
+          void sessionPersistence.saveSession(record).then((result) => {
+            if (!result.ok) {
+              console.warn(
+                `[long-running] Soft checkpoint failed for session ${currentSessionId}: ${result.error.message}`,
+              );
+            }
+          });
         }
       },
 

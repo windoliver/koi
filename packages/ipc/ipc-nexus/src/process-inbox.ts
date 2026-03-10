@@ -76,7 +76,11 @@ export async function processPendingMessages(
           } as const;
 
           if (onHandlerError !== undefined) {
-            onHandlerError(errorContext);
+            try {
+              onHandlerError(errorContext);
+            } catch {
+              // Prevent a throwing onHandlerError from stalling the poll loop
+            }
           } else {
             console.error(
               `[ipc-nexus] Handler error for message ${envelope.id} (agent ${agentId}):`,

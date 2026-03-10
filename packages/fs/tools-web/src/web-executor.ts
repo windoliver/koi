@@ -103,6 +103,11 @@ const CROSS_ORIGIN_SENSITIVE_HEADERS: ReadonlySet<string> = new Set([
   "authorization",
   "cookie",
   "proxy-authorization",
+  "x-api-key",
+  "x-amz-security-token",
+  "x-auth-token",
+  "x-csrf-token",
+  "x-forwarded-for",
 ]);
 
 // ---------------------------------------------------------------------------

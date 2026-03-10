@@ -229,6 +229,9 @@ export function createReconcileRunner(deps: {
     asyncPending.set(agentId, (asyncPending.get(agentId) ?? 0) + 1);
     const key = circuitKey(agentId, controller.name);
 
+    // let justified: settled flag prevents stale callback after timeout
+    let settled = false;
+
     let timeoutHandle: TimerHandle | undefined; // let: set in Promise constructor, cleared on resolve
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
       timeoutHandle = clock.setTimeout(
@@ -239,13 +242,18 @@ export function createReconcileRunner(deps: {
 
     void Promise.race([resultPromise, timeoutPromise]).then(
       (result) => {
+        if (settled) return;
+        settled = true;
         inFlightCount -= 1;
         timeoutHandle?.clear(); // prevent timer leak on success
         handleResult(agentId, key, result);
         settleAsyncPending(agentId);
       },
       (err: unknown) => {
+        if (settled) return;
+        settled = true;
         inFlightCount -= 1;
+        timeoutHandle?.clear();
         console.error(
           `[reconcile-runner] async controller "${controller.name}" failed for agent "${agentId}"`,
           err,

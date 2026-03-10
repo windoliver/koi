@@ -217,7 +217,18 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
         attachedAgent = agent;
         return innerProvider.attach(agent);
       },
-      ...(innerProvider.detach !== undefined ? { detach: innerProvider.detach } : {}),
+      ...(innerProvider.detach !== undefined
+        ? {
+            detach: async (agent: Agent) => {
+              attachedAgent = undefined;
+              return innerProvider.detach?.(agent);
+            },
+          }
+        : {
+            detach: async () => {
+              attachedAgent = undefined;
+            },
+          }),
       ...(innerProvider.watch !== undefined ? { watch: innerProvider.watch } : {}),
     };
 
