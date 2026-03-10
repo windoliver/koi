@@ -266,35 +266,15 @@ The same MCP servers work in Claude Desktop, Cursor, VS Code, and Koi.
 git clone https://github.com/windoliver/koi.git
 cd koi
 bun install
-bun run build
 ```
 
-### Running an agent from source
-
-Write a script against the Koi API directly (Bun runs `.ts` natively):
-
-```typescript
-// run.ts — minimal agent runner
-import { loadManifest } from "@koi/manifest";
-import { createPiAdapter } from "@koi/engine-pi";
-import { createKoi } from "@koi/engine";
-
-const { manifest } = (await loadManifest("./koi.yaml")).value;
-const adapter = createPiAdapter({ model: manifest.model.name });
-const { runtime } = await createKoi({ manifest, adapter });
-
-for await (const event of runtime.run({ kind: "text", text: "Hello!" })) {
-  if (event.kind === "text_delta") process.stdout.write(event.delta);
-}
-```
-
-> The `koi` CLI (`packages/meta/cli`) requires a full monorepo build (`bun run build`) to resolve all transitive workspace dependencies. The programmatic API above is the most reliable path for development.
+> **Build status**: The full monorepo build (`bun run build`) has intermittent failures in some packages. Individual packages can be built and tested independently with `bunx turbo run build --filter=@koi/<name>`. A clean full-build CI pipeline is in progress.
 
 ### Running tests
 
 ```bash
-bun test                    # all tests
-bun test --filter @koi/core # single package
+bun test                              # all tests
+bunx turbo run test --filter=@koi/core  # single package
 ```
 
 ## Contributing
