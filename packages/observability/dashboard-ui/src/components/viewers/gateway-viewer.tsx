@@ -3,6 +3,7 @@
  */
 
 import { Network } from "lucide-react";
+import { TopologyDiagram } from "../shared/topology-diagram.js";
 
 interface GatewayData {
   readonly connections?: readonly GatewayConnectionEntry[];
@@ -80,6 +81,17 @@ export function GatewayViewer({
           <pre className="overflow-auto rounded bg-[var(--color-muted)]/5 p-3 font-mono text-xs">
             {JSON.stringify(data, null, 2)}
           </pre>
+        )}
+
+        {data.connections !== undefined && data.connections.length > 0 && (
+          <details className="mt-4">
+            <summary className="cursor-pointer text-xs text-[var(--color-muted)] hover:text-[var(--color-foreground)]">
+              Topology Diagram
+            </summary>
+            <div className="mt-2">
+              <TopologyDiagram connections={data.connections} />
+            </div>
+          </details>
         )}
       </div>
     </div>

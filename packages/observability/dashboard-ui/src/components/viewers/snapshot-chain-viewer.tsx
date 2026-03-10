@@ -6,6 +6,7 @@
  */
 
 import { GitBranch, Clock, Link } from "lucide-react";
+import { SnapshotDag } from "../shared/snapshot-dag.js";
 
 interface SnapshotChainData {
   readonly chainId?: string;
@@ -138,6 +139,17 @@ export function SnapshotChainViewer({
           <div className="px-4 py-8 text-center text-sm text-[var(--color-muted)]">
             No nodes in chain
           </div>
+        )}
+
+        {data.nodes !== undefined && data.nodes.length > 0 && (
+          <details className="mt-4">
+            <summary className="cursor-pointer text-xs text-[var(--color-muted)] hover:text-[var(--color-foreground)]">
+              Chain Visualization
+            </summary>
+            <div className="mt-2">
+              <SnapshotDag nodes={data.nodes} />
+            </div>
+          </details>
         )}
 
         <details className="mt-4">
