@@ -90,13 +90,9 @@ export async function processPendingMessages(
         }
       }
 
-      if (handlerFailed) {
-        // Leave message eligible for retry on the next poll cycle.
-        continue;
-      }
-
-      // Mark as seen only after all handlers succeed — failed messages
-      // remain eligible for retry on the next poll cycle.
+      // Mark as seen after dispatch — even if a handler failed. Message-level
+      // retry would cause duplicate deliveries to handlers that already succeeded.
+      // Handlers needing retry should implement their own at-least-once logic.
       seen.add(envelope.id);
       processed += 1;
     }
