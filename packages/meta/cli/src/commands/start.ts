@@ -30,6 +30,7 @@ import {
   resolveDashboardAssetsDir,
 } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
+import { resolveAutonomousOrWarn } from "../resolve-autonomous.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
 import { resolveOrchestrationFromAgent } from "../resolve-orchestration.js";
@@ -191,6 +192,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // 6b. Resolve Nexus stack (embed or remote)
   const nexus = await resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose);
 
+  // 6c. Resolve autonomous mode (harness + scheduler) when manifest opts in
+  const autonomous = await resolveAutonomousOrWarn(manifest, flags.verbose);
+
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
   const contextConfig = await mergeBootstrapContext(manifest.context, manifestPath, manifest.name);
@@ -204,12 +208,14 @@ export async function runStart(flags: StartFlags): Promise<void> {
       ...resolved.value.middleware,
       ...nexus.middlewares,
       ...(forgeBootstrap?.middlewares ?? []),
+      ...(autonomous?.middleware ?? []),
     ],
     providers: [
       ...nexus.providers,
       ...(forgeBootstrap !== undefined
         ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
         : []),
+      ...(autonomous?.providers ?? []),
     ],
     extensions,
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
@@ -244,6 +250,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
       const orch = resolveOrchestrationFromAgent({
         agent: runtime.agent,
         temporal: temporalAdmin,
+        ...(autonomous !== undefined ? { harness: autonomous.harness } : {}),
         verbose: flags.verbose,
       });
 
@@ -377,6 +384,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
     await temporalAdmin.dispose();
   }
   await runtime.dispose();
+  if (autonomous !== undefined) {
+    await autonomous.dispose();
+  }
   forgeBootstrap?.dispose();
   if (sandboxBridge !== undefined) {
     await sandboxBridge.dispose();

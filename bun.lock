@@ -1060,6 +1060,7 @@
       },
       "dependencies": {
         "@clack/prompts": "0.10.0",
+        "@koi/autonomous": "workspace:*",
         "@koi/bootstrap": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/context": "workspace:*",
@@ -1074,6 +1075,8 @@
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/forge": "workspace:*",
+        "@koi/harness-scheduler": "workspace:*",
+        "@koi/long-running": "workspace:*",
         "@koi/manifest": "workspace:*",
         "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",

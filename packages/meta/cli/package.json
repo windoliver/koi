@@ -62,6 +62,9 @@
     "@koi/shutdown": "workspace:*",
     "@koi/sandbox": "workspace:*",
     "@koi/sandbox-ipc": "workspace:*",
-    "@koi/snapshot-chain-store": "workspace:*"
+    "@koi/snapshot-chain-store": "workspace:*",
+    "@koi/autonomous": "workspace:*",
+    "@koi/long-running": "workspace:*",
+    "@koi/harness-scheduler": "workspace:*"
   }
 }
