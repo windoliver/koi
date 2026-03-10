@@ -1,0 +1,4 @@
+[test]
+# Preload happy-dom environment before test imports resolve,
+# so @testing-library/react's `screen` export finds document.body.
+preload = ["./src/__tests__/dom-env.ts"]

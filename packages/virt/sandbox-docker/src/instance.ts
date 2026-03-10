@@ -46,14 +46,32 @@ export function createDockerInstance(
           iptablesApplied = true;
         }
 
-        const fullCmd = args.length > 0 ? `${command} ${args.map(shellEscape).join(" ")}` : command;
+        const baseCmd = args.length > 0 ? `${command} ${args.map(shellEscape).join(" ")}` : command;
+        // Prepend cd for cwd support — Docker exec doesn't natively support workdir
+        const fullCmd =
+          options?.cwd !== undefined ? `cd ${shellEscape(options.cwd)} && ${baseCmd}` : baseCmd;
 
         const execOpts = {
           ...(options?.env !== undefined ? { env: options.env } : {}),
           ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
         };
 
-        const result = await container.exec(fullCmd, execOpts);
+        // Enforce timeoutMs via a race with a timeout promise
+        const timeoutMs = options?.timeoutMs;
+        const execPromise = container.exec(fullCmd, execOpts);
+
+        const result =
+          timeoutMs !== undefined
+            ? await Promise.race([
+                execPromise,
+                new Promise<never>((_, reject) =>
+                  setTimeout(
+                    () => reject(new Error(`Docker exec timed out after ${String(timeoutMs)}ms`)),
+                    timeoutMs,
+                  ),
+                ),
+              ])
+            : await execPromise;
         const durationMs = performance.now() - startTime;
 
         // Accumulate output for truncation tracking

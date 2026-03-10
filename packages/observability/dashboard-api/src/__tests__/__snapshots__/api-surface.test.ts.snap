@@ -1,7 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
-"import { DashboardDataSource, DashboardConfig } from '@koi/dashboard-types';
+"import { FileSystemBackend } from '@koi/core';
+import { DashboardDataSource, RuntimeViewDataSource, CommandDispatcher, DashboardConfig } from '@koi/dashboard-types';
 
 /**
  * createDashboardHandler — main factory for the dashboard HTTP handler.
@@ -11,11 +12,17 @@ exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
  * allowing the consumer to chain with other handlers.
  */
 
+interface DashboardHandlerOptions {
+    readonly dataSource: DashboardDataSource;
+    readonly fileSystem?: FileSystemBackend;
+    readonly runtimeViews?: RuntimeViewDataSource;
+    readonly commands?: CommandDispatcher;
+}
 interface DashboardHandlerResult {
     readonly handler: (req: Request) => Promise<Response | null>;
     readonly dispose: () => void;
 }
-declare function createDashboardHandler(dataSource: DashboardDataSource, config?: DashboardConfig): DashboardHandlerResult;
+declare function createDashboardHandler(dataSourceOrOptions: DashboardDataSource | DashboardHandlerOptions, config?: DashboardConfig): DashboardHandlerResult;
 
 /**
  * Lightweight URL pattern router for dashboard API.
@@ -86,6 +93,6 @@ interface StaticServeResult {
 }
 declare function createStaticServe(assetsDir: string): StaticServeResult;
 
-export { type DashboardHandlerResult, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SseProducer, type StaticServeResult, createDashboardHandler, createRouter, createSseProducer, createStaticServe, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse };
+export { type DashboardHandlerOptions, type DashboardHandlerResult, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SseProducer, type StaticServeResult, createDashboardHandler, createRouter, createSseProducer, createStaticServe, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse };
 "
 `;

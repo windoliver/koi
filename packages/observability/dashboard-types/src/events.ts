@@ -115,6 +115,46 @@ export type SystemDashboardEvent =
     };
 
 // ---------------------------------------------------------------------------
+// Nexus events (file tree changes)
+// ---------------------------------------------------------------------------
+
+export type NexusDashboardEvent =
+  | {
+      readonly kind: "nexus";
+      readonly subKind: "file_changed";
+      readonly path: string;
+      readonly changeType: "created" | "updated" | "deleted";
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "nexus";
+      readonly subKind: "namespace_changed";
+      readonly agentId: AgentId;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
+// Gateway events (connection changes)
+// ---------------------------------------------------------------------------
+
+export type GatewayDashboardEvent =
+  | {
+      readonly kind: "gateway";
+      readonly subKind: "connection_changed";
+      readonly channelId: string;
+      readonly channelType: string;
+      readonly connected: boolean;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "gateway";
+      readonly subKind: "topology_changed";
+      readonly nodeCount: number;
+      readonly connectionCount: number;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
 // Union + batch envelope
 // ---------------------------------------------------------------------------
 
@@ -122,7 +162,9 @@ export type DashboardEvent =
   | AgentDashboardEvent
   | SkillDashboardEvent
   | ChannelDashboardEvent
-  | SystemDashboardEvent;
+  | SystemDashboardEvent
+  | NexusDashboardEvent
+  | GatewayDashboardEvent;
 
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 export interface DashboardEventBatch {
@@ -135,7 +177,7 @@ export interface DashboardEventBatch {
 // Type guards
 // ---------------------------------------------------------------------------
 
-const VALID_KINDS = new Set(["agent", "skill", "channel", "system"]);
+const VALID_KINDS = new Set(["agent", "skill", "channel", "system", "nexus", "gateway"]);
 
 /** Type guard for DashboardEvent. Validates kind + subKind presence. */
 export function isDashboardEvent(value: unknown): value is DashboardEvent {
@@ -167,4 +209,14 @@ export function isChannelEvent(event: DashboardEvent): event is ChannelDashboard
 /** Type guard for system domain events. */
 export function isSystemEvent(event: DashboardEvent): event is SystemDashboardEvent {
   return event.kind === "system";
+}
+
+/** Type guard for nexus domain events. */
+export function isNexusEvent(event: DashboardEvent): event is NexusDashboardEvent {
+  return event.kind === "nexus";
+}
+
+/** Type guard for gateway domain events. */
+export function isGatewayEvent(event: DashboardEvent): event is GatewayDashboardEvent {
+  return event.kind === "gateway";
 }

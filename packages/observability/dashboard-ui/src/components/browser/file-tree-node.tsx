@@ -1,0 +1,233 @@
+/**
+ * FileTreeNode — a single row in the file tree sidebar.
+ *
+ * Directories are expandable; files are selectable.
+ * Uses tree store for expanded/selected state.
+ * Supports right-click context menu (Radix) and keyboard navigation.
+ */
+
+import { useCallback } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import type { FsEntry } from "../../lib/api-client.js";
+import { useFileTree } from "../../hooks/use-file-tree.js";
+import { useTreeStore } from "../../stores/tree-store.js";
+import { useViewStore } from "../../stores/view-store.js";
+import { FileContextMenu } from "./file-context-menu.js";
+import { FileIcon } from "./file-icon.js";
+
+export function FileTreeNode({
+  entry,
+  depth,
+}: {
+  readonly entry: FsEntry;
+  readonly depth: number;
+}): React.ReactElement {
+  const expanded = useTreeStore((s) => s.expanded);
+  const selectedPath = useTreeStore((s) => s.selectedPath);
+  const toggleExpanded = useTreeStore((s) => s.toggleExpanded);
+  const setExpanded = useTreeStore((s) => s.setExpanded);
+  const select = useTreeStore((s) => s.select);
+
+  const isExpanded = expanded.has(entry.path);
+  const isSelected = selectedPath === entry.path;
+
+  const handleClick = (): void => {
+    if (entry.isDirectory) {
+      toggleExpanded(entry.path);
+    }
+    select(entry.path, entry.isDirectory);
+  };
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLButtonElement>): void => {
+      const target = e.currentTarget;
+
+      switch (e.key) {
+        case "Enter": {
+          if (entry.isDirectory) {
+            toggleExpanded(entry.path);
+          }
+          select(entry.path, entry.isDirectory);
+          e.preventDefault();
+          break;
+        }
+
+        case "ArrowRight": {
+          if (entry.isDirectory) {
+            if (!isExpanded) {
+              setExpanded(entry.path, true);
+            } else {
+              // Move focus to first child
+              const container = target.closest("div")?.parentElement;
+              const nextButton =
+                container?.querySelector<HTMLButtonElement>(
+                  ":scope > div:last-child button",
+                );
+              nextButton?.focus();
+            }
+          }
+          e.preventDefault();
+          break;
+        }
+
+        case "ArrowLeft": {
+          if (entry.isDirectory && isExpanded) {
+            setExpanded(entry.path, false);
+          } else {
+            // Move focus to parent node button
+            const parentContainer =
+              target.closest("div")?.parentElement?.closest("div")
+                ?.parentElement;
+            const parentButton =
+              parentContainer?.querySelector<HTMLButtonElement>(
+                ":scope > button",
+              );
+            parentButton?.focus();
+          }
+          e.preventDefault();
+          break;
+        }
+
+        case "ArrowDown": {
+          // Move focus to next visible node
+          const allButtons = Array.from(
+            target
+              .closest("[data-tree-root]")
+              ?.querySelectorAll<HTMLButtonElement>(
+                "button[data-tree-node]",
+              ) ?? [],
+          );
+          const currentIndex = allButtons.indexOf(target);
+          const nextButton = allButtons[currentIndex + 1];
+          if (nextButton !== undefined) {
+            nextButton.focus();
+          }
+          e.preventDefault();
+          break;
+        }
+
+        case "ArrowUp": {
+          // Move focus to previous visible node
+          const allBtns = Array.from(
+            target
+              .closest("[data-tree-root]")
+              ?.querySelectorAll<HTMLButtonElement>(
+                "button[data-tree-node]",
+              ) ?? [],
+          );
+          const idx = allBtns.indexOf(target);
+          const prevButton = allBtns[idx - 1];
+          if (prevButton !== undefined) {
+            prevButton.focus();
+          }
+          e.preventDefault();
+          break;
+        }
+
+        default:
+          break;
+      }
+    },
+    [entry.isDirectory, entry.path, isExpanded, toggleExpanded, setExpanded, select],
+  );
+
+  return (
+    <div>
+      <FileContextMenu path={entry.path} isDirectory={entry.isDirectory}>
+        <button
+          type="button"
+          data-tree-node
+          tabIndex={0}
+          onClick={handleClick}
+          onKeyDown={handleKeyDown}
+          className={`flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-sm transition-colors hover:bg-[var(--color-muted)]/10 ${
+            isSelected ? "bg-[var(--color-primary)]/10 text-[var(--color-primary)]" : ""
+          }`}
+          style={{ paddingLeft: `${depth * 16 + 8}px` }}
+        >
+          {entry.isDirectory ? (
+            isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-muted)]" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-muted)]" />
+            )
+          ) : (
+            <span className="w-3.5 shrink-0" />
+          )}
+          <FileIcon
+            name={entry.name}
+            isDirectory={entry.isDirectory}
+            isOpen={isExpanded}
+            className="h-4 w-4 shrink-0 text-[var(--color-muted)]"
+          />
+          <span className="truncate">{entry.name}</span>
+        </button>
+      </FileContextMenu>
+      {entry.isDirectory && isExpanded && (
+        <DirectoryChildren path={entry.path} depth={depth + 1} />
+      )}
+    </div>
+  );
+}
+
+/** Lazily loads children when a directory is expanded. */
+function DirectoryChildren({
+  path,
+  depth,
+}: {
+  readonly path: string;
+  readonly depth: number;
+}): React.ReactElement {
+  const globPattern = useViewStore((s) => s.activeView.globPattern);
+  const { entries, isLoading, error } = useFileTree(
+    path,
+    globPattern !== undefined ? { glob: globPattern } : undefined,
+  );
+
+  if (isLoading) {
+    return (
+      <div
+        className="px-2 py-1 text-xs text-[var(--color-muted)]"
+        style={{ paddingLeft: `${depth * 16 + 8}px` }}
+      >
+        Loading...
+      </div>
+    );
+  }
+
+  if (error !== null) {
+    return (
+      <div
+        className="px-2 py-1 text-xs text-red-500"
+        style={{ paddingLeft: `${depth * 16 + 8}px` }}
+      >
+        Error loading
+      </div>
+    );
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div
+        className="px-2 py-1 text-xs text-[var(--color-muted)] italic"
+        style={{ paddingLeft: `${depth * 16 + 8}px` }}
+      >
+        Empty
+      </div>
+    );
+  }
+
+  // Sort: directories first, then alphabetically
+  const sorted = [...entries].sort((a, b) => {
+    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return (
+    <div>
+      {sorted.map((child) => (
+        <FileTreeNode key={child.path} entry={child} depth={depth} />
+      ))}
+    </div>
+  );
+}

@@ -61,8 +61,11 @@ function resolveRunnerPath(): string {
 
 const RUNNER_PATH = resolveRunnerPath();
 
-/** Maximum stdout size from subprocess (10 MB). Prevents OOM from malicious output. */
-const MAX_STDOUT_BYTES = 10 * 1024 * 1024;
+/** Maximum output size from subprocess (10 MB). Prevents OOM from malicious output. */
+const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+
+/** Framing marker for protocol JSON in stderr — must match subprocess-runner.ts. */
+const RESULT_MARKER = "__KOI_RESULT__";
 
 /** Environment variables safe to forward to child processes. */
 const SAFE_ENV_KEYS = new Set(["PATH", "HOME", "TMPDIR", "NODE_ENV", "BUN_INSTALL"]);
@@ -273,6 +276,76 @@ function classifyError(e: unknown, durationMs: number): SandboxError {
 }
 
 // ---------------------------------------------------------------------------
+// Protocol extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract protocol JSON from stderr output using the framing marker.
+ * Returns null if no marker is found.
+ */
+function extractProtocolJson(stderr: string): string | null {
+  const idx = stderr.lastIndexOf(RESULT_MARKER);
+  if (idx === -1) return null;
+
+  const start = idx + RESULT_MARKER.length;
+  const end = stderr.indexOf("\n", start);
+  return end === -1 ? stderr.slice(start) : stderr.slice(start, end);
+}
+
+// ---------------------------------------------------------------------------
+// Streaming output collection with byte limit
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect a ReadableStream into a string, stopping at `maxBytes`.
+ * Calls `onExceeded` (e.g., to kill the process) if the limit is hit
+ * so we don't keep buffering data we'll discard.
+ */
+async function collectWithLimit(
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  onExceeded: () => void,
+): Promise<{ readonly text: string; readonly exceeded: boolean }> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  // Justified `let`: accumulated byte count
+  let totalBytes = 0;
+  // Justified `let`: flag set when limit exceeded
+  let exceeded = false;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        exceeded = true;
+        onExceeded();
+        break;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (exceeded) {
+    return { text: "", exceeded: true };
+  }
+
+  const merged = new Uint8Array(totalBytes);
+  // Justified `let`: write offset into merged buffer
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return { text: new TextDecoder().decode(merged), exceeded: false };
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -320,55 +393,60 @@ export function createSubprocessExecutor(): SandboxExecutor {
           proc.kill("SIGKILL");
         }, timeoutMs);
 
-        // Start draining stdout/stderr concurrently with waiting for exit.
-        // If the child writes more than the OS pipe buffer (~64KB) and nobody
-        // reads, the child blocks on write while we wait for exit — deadlock.
-        const stdoutPromise = new Response(proc.stdout).text();
-        const stderrPromise = new Response(proc.stderr).text();
+        // Stream both stdout and stderr with size caps to prevent OOM.
+        // Protocol output is framed in stderr (via __KOI_RESULT__ marker).
+        // stdout is free for brick user code and is discarded.
+        // Start drains BEFORE awaiting exit to prevent pipe-buffer deadlock.
+        const [stdoutResult, stderrResult] = await Promise.all([
+          collectWithLimit(proc.stdout, MAX_OUTPUT_BYTES, () => proc.kill("SIGKILL")),
+          collectWithLimit(proc.stderr, MAX_OUTPUT_BYTES, () => proc.kill("SIGKILL")),
+        ]);
 
         const exitCode = await proc.exited;
         clearTimeout(timeoutId);
-
-        const stdout = await stdoutPromise;
         const durationMs = performance.now() - start;
 
-        if (stdout.length > MAX_STDOUT_BYTES) {
+        if (stdoutResult.exceeded || stderrResult.exceeded) {
           return {
             ok: false,
             error: {
               code: "CRASH",
-              message: `Subprocess output exceeded ${String(MAX_STDOUT_BYTES)} byte limit`,
+              message: `Subprocess output exceeded ${String(MAX_OUTPUT_BYTES)} byte limit`,
               durationMs,
             },
           };
         }
 
-        if (exitCode !== 0) {
-          // Try to parse structured error from stdout
-          try {
-            const parsed = JSON.parse(stdout) as SubprocessOutput;
-            if (parsed.error !== undefined) {
-              return { ok: false, error: classifyError(new Error(parsed.error), durationMs) };
-            }
-          } catch (_: unknown) {
-            // Fallback to stderr
-          }
+        // Extract protocol JSON from stderr using the framing marker.
+        // Any stderr output before/after the marker is non-protocol (e.g., warnings).
+        const protocolJson = extractProtocolJson(stderrResult.text);
 
-          const stderr = await stderrPromise;
-          const errorMsg =
-            stderr.length > 0 ? stderr : `Subprocess exited with code ${String(exitCode)}`;
-          return { ok: false, error: classifyError(new Error(errorMsg), durationMs) };
+        if (protocolJson === null) {
+          if (exitCode !== 0) {
+            const errorMsg =
+              stderrResult.text.length > 0
+                ? stderrResult.text
+                : `Subprocess exited with code ${String(exitCode)}`;
+            return { ok: false, error: classifyError(new Error(errorMsg), durationMs) };
+          }
+          return {
+            ok: false,
+            error: { code: "CRASH", message: "No protocol output from subprocess", durationMs },
+          };
         }
 
-        // Parse structured output
-        // let justified: result is parsed from stdout JSON
+        // let justified: result is parsed from protocol JSON
         let result: SubprocessOutput;
         try {
-          result = JSON.parse(stdout) as SubprocessOutput;
+          result = JSON.parse(protocolJson) as SubprocessOutput;
         } catch (_: unknown) {
           return {
             ok: false,
-            error: { code: "CRASH", message: "Failed to parse subprocess output", durationMs },
+            error: {
+              code: "CRASH",
+              message: "Failed to parse subprocess protocol output",
+              durationMs,
+            },
           };
         }
 

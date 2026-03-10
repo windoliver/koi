@@ -1,7 +1,29 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/dashboard-types API surface . has stable type surface 1`] = `
-"import { AgentId, ProcessState, Result, KoiError } from '@koi/core';
+"import { AgentId, Result, KoiError, ProcessState, FileSystemBackend } from '@koi/core';
+
+/**
+ * CommandDispatcher — imperative operations for the admin panel.
+ *
+ * These are non-file actions exposed via POST /api/cmd/* endpoints.
+ * All methods return Result<T, KoiError> for expected failures.
+ */
+
+interface AgentMessage {
+    readonly id: string;
+    readonly from: AgentId;
+    readonly to: AgentId;
+    readonly content: string;
+    readonly timestamp: number;
+}
+interface CommandDispatcher {
+    readonly suspendAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly resumeAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly terminateAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly retryDeadLetter?: (entryId: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+    readonly listMailbox?: (agentId: AgentId) => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
+}
 
 /**
  * Dashboard configuration types and defaults.
@@ -27,20 +49,6 @@ declare const DEFAULT_DASHBOARD_CONFIG: Readonly<{
     readonly maxSseConnections: 50;
     readonly cors: false;
 }>;
-
-/**
- * Cursor-based pagination types for Phase 3 conversation history.
- * Defined now for API stability — unused until Phase 3.
- */
-interface CursorRequest {
-    readonly cursor?: string;
-    readonly limit?: number;
-}
-interface CursorPage<T> {
-    readonly items: readonly T[];
-    readonly nextCursor?: string;
-    readonly hasMore: boolean;
-}
 
 /**
  * Dashboard event types — namespaced discriminated unions for SSE streaming.
@@ -124,7 +132,33 @@ type SystemDashboardEvent = {
     readonly message: string;
     readonly timestamp: number;
 };
-type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent;
+type NexusDashboardEvent = {
+    readonly kind: "nexus";
+    readonly subKind: "file_changed";
+    readonly path: string;
+    readonly changeType: "created" | "updated" | "deleted";
+    readonly timestamp: number;
+} | {
+    readonly kind: "nexus";
+    readonly subKind: "namespace_changed";
+    readonly agentId: AgentId;
+    readonly timestamp: number;
+};
+type GatewayDashboardEvent = {
+    readonly kind: "gateway";
+    readonly subKind: "connection_changed";
+    readonly channelId: string;
+    readonly channelType: string;
+    readonly connected: boolean;
+    readonly timestamp: number;
+} | {
+    readonly kind: "gateway";
+    readonly subKind: "topology_changed";
+    readonly nodeCount: number;
+    readonly connectionCount: number;
+    readonly timestamp: number;
+};
+type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent;
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 interface DashboardEventBatch {
     readonly events: readonly DashboardEvent[];
@@ -141,6 +175,10 @@ declare function isSkillEvent(event: DashboardEvent): event is SkillDashboardEve
 declare function isChannelEvent(event: DashboardEvent): event is ChannelDashboardEvent;
 /** Type guard for system domain events. */
 declare function isSystemEvent(event: DashboardEvent): event is SystemDashboardEvent;
+/** Type guard for nexus domain events. */
+declare function isNexusEvent(event: DashboardEvent): event is NexusDashboardEvent;
+/** Type guard for gateway domain events. */
+declare function isGatewayEvent(event: DashboardEvent): event is GatewayDashboardEvent;
 
 /**
  * DashboardDataSource — adapter interface for dashboard data access.
@@ -200,6 +238,117 @@ interface DashboardDataSource {
 }
 
 /**
+ * RuntimeViewDataSource — computed state views for the admin panel.
+ *
+ * These are read-only projections of engine/gateway state that are
+ * NOT file-backed. Surfaced via GET /api/view/* endpoints.
+ *
+ * All methods return \`T | Promise<T>\` so implementations can be
+ * sync (in-memory engine registry) or async (remote query).
+ */
+
+interface ProcessTreeNode {
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly state: ProcessState;
+    readonly agentType: "copilot" | "worker";
+    readonly depth: number;
+    readonly children: readonly ProcessTreeNode[];
+}
+interface ProcessTreeSnapshot {
+    readonly roots: readonly ProcessTreeNode[];
+    readonly totalAgents: number;
+    readonly timestamp: number;
+}
+interface AgentProcfs {
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly state: ProcessState;
+    readonly agentType: "copilot" | "worker";
+    readonly model?: string;
+    readonly channels: readonly string[];
+    readonly turns: number;
+    readonly tokenCount: number;
+    readonly startedAt: number;
+    readonly lastActivityAt: number;
+    readonly parentId?: AgentId;
+    readonly childCount: number;
+}
+interface MiddlewareEntry {
+    readonly name: string;
+    readonly phase: "intercept" | "observe" | "resolve";
+    readonly enabled: boolean;
+}
+interface MiddlewareChain {
+    readonly agentId: AgentId;
+    readonly entries: readonly MiddlewareEntry[];
+}
+interface GatewayConnection {
+    readonly channelId: string;
+    readonly channelType: string;
+    readonly agentId: AgentId;
+    readonly connected: boolean;
+    readonly connectedAt: number;
+}
+interface GatewayTopology {
+    readonly connections: readonly GatewayConnection[];
+    readonly nodeCount: number;
+    readonly timestamp: number;
+}
+
+interface RuntimeViewDataSource {
+    readonly getProcessTree: () => ProcessTreeSnapshot | Promise<ProcessTreeSnapshot>;
+    readonly getAgentProcfs: (agentId: AgentId) => AgentProcfs | undefined | Promise<AgentProcfs | undefined>;
+    readonly getMiddlewareChain: (agentId: AgentId) => MiddlewareChain | Promise<MiddlewareChain>;
+    readonly getGatewayTopology: () => GatewayTopology | Promise<GatewayTopology>;
+}
+
+/**
+ * Admin panel configuration and saved view definitions.
+ */
+
+interface SavedViewDefinition {
+    readonly id: string;
+    readonly label: string;
+    /** Root path(s) to filter the file tree. */
+    readonly rootPaths: readonly string[];
+    /** Optional glob to further filter entries. */
+    readonly globPattern?: string;
+    /** URL query param value for this view. */
+    readonly urlParam: string;
+}
+/** Built-in saved views — hardcoded, not user-configurable in Phase 1. */
+declare const SAVED_VIEWS: readonly SavedViewDefinition[];
+interface AdminPanelDataSources {
+    /** V1 data source (agents, channels, skills, metrics, SSE). */
+    readonly dataSource: DashboardDataSource;
+    /** File operations via Nexus filesystem backend. */
+    readonly fileSystem?: FileSystemBackend;
+    /** Computed runtime views (process tree, procfs, middleware, gateway). */
+    readonly runtimeViews?: RuntimeViewDataSource;
+    /** Imperative commands (suspend, resume, terminate, DLQ retry). */
+    readonly commands?: CommandDispatcher;
+}
+interface AdminPanelConfig extends DashboardConfig {
+    /** Data sources for the admin panel. When absent, uses dataSource only. */
+    readonly dataSources?: Omit<AdminPanelDataSources, "dataSource">;
+}
+
+/**
+ * Cursor-based pagination types for Phase 3 conversation history.
+ * Defined now for API stability — unused until Phase 3.
+ */
+interface CursorRequest {
+    readonly cursor?: string;
+    readonly limit?: number;
+}
+interface CursorPage<T> {
+    readonly items: readonly T[];
+    readonly nextCursor?: string;
+    readonly hasMore: boolean;
+}
+
+/**
  * REST API response types for the dashboard.
  *
  * All responses use the ApiResult<T> envelope — a discriminated union
@@ -217,6 +366,6 @@ interface ApiError {
     readonly message: string;
 }
 
-export { type AgentDashboardEvent, type ApiError, type ApiResult, type ChannelDashboardEvent, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type SkillDashboardEvent, type SystemDashboardEvent, isAgentEvent, isChannelEvent, isDashboardEvent, isSkillEvent, isSystemEvent };
+export { type AdminPanelConfig, type AdminPanelDataSources, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type ApiError, type ApiResult, type ChannelDashboardEvent, type CommandDispatcher, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RuntimeViewDataSource, SAVED_VIEWS, type SavedViewDefinition, type SkillDashboardEvent, type SystemDashboardEvent, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isNexusEvent, isSkillEvent, isSystemEvent };
 "
 `;
