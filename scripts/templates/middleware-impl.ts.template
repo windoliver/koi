@@ -1,0 +1,54 @@
+/**
+ * create{{PASCAL_NAME}}Middleware — {{DESCRIPTION}}.
+ */
+
+import type {
+  KoiMiddleware,
+  ModelHandler,
+  ModelRequest,
+  ModelResponse,
+  SessionContext,
+  TurnContext,
+} from "@koi/core/middleware";
+import { createSessionState } from "@koi/session-state";
+import type { {{PASCAL_NAME}}Config, {{PASCAL_NAME}}SessionState } from "./types.js";
+
+export function create{{PASCAL_NAME}}Middleware(config?: {{PASCAL_NAME}}Config): KoiMiddleware {
+  const enabled = config?.enabled ?? true;
+
+  const sessions = createSessionState<{{PASCAL_NAME}}SessionState>(() => ({
+    turnCount: 0,
+  }));
+
+  return {
+    name: "{{KEBAB_NAME}}",
+    priority: 300,
+
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      if (enabled) {
+        sessions.getOrCreate(ctx.sessionId as string);
+      }
+    },
+
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      sessions.delete(ctx.sessionId as string);
+    },
+
+    async wrapModelCall(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelHandler,
+    ): Promise<ModelResponse> {
+      if (!enabled) return next(request);
+
+      const sessionId = ctx.session.sessionId as string;
+      const state = sessions.get(sessionId);
+      if (!state) return next(request);
+
+      // Update turn count immutably
+      sessions.update(sessionId, (s) => ({ ...s, turnCount: s.turnCount + 1 }));
+
+      return next(request);
+    },
+  };
+}

@@ -113,3 +113,18 @@ bun scripts/add-descriptions.ts
 
 The script inserts `"description"` immediately after `"name"` in each `package.json`,
 preserving all other fields and formatting.
+
+---
+
+## New Packages (Post Engine Split)
+
+The following packages were introduced during the engine split (#871):
+
+| Package | Layer | Description |
+|---------|-------|-------------|
+| `@koi/engine-compose` | L1 | Compose middleware chains into onion-wrapped engine adapters |
+| `@koi/engine-reconcile` | L1 | K8s-style desired-state reconciliation with Erlang/OTP supervision strategies |
+| `@koi/session-state` | L0u | Per-session state management with FIFO eviction for middleware authors |
+| `@koi/test-utils-contracts` | L0u | Interface conformance test suites for L0 contracts |
+| `@koi/test-utils-mocks` | L0u | Mock agent, registry, and middleware implementations for testing |
+| `@koi/test-utils-store-contracts` | L0u | Storage backend conformance test suites |

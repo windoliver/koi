@@ -195,6 +195,38 @@ export function createSupervisionReconciler(deps: {
   }
 
   // ---------------------------------------------------------------------------
+  // Shared spawn helper (DRY: used by all 3 strategies)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Spawns a child agent, registers it in the supervised set, and transitions
+   * it to "running" with the appropriate restart reason.
+   */
+  async function spawnAndTransition(
+    parentId: AgentId,
+    spec: ChildSpec,
+    manifest: AgentManifest,
+    state: SupervisorState,
+    strategy: "one_for_one" | "one_for_all" | "rest_for_one",
+  ): Promise<AgentId> {
+    const attempt = state.tracker.attemptsInWindow(spec.name);
+    const newChildId = await deps.spawnChild(parentId, spec, manifest);
+    state.childMap.set(spec.name, newChildId);
+    supervisedChildIds.add(newChildId);
+
+    const entry = deps.registry.lookup(newChildId);
+    if (entry !== undefined && !isPromise(entry)) {
+      const reason: TransitionReason = {
+        kind: "restarted",
+        attempt,
+        strategy,
+      };
+      deps.registry.transition(newChildId, "running", entry.status.generation, reason);
+    }
+    return newChildId;
+  }
+
+  // ---------------------------------------------------------------------------
   // Strategy implementations
   // ---------------------------------------------------------------------------
 
@@ -213,26 +245,12 @@ export function createSupervisionReconciler(deps: {
       }
 
       state.tracker.record(spec.name);
-      const attempt = state.tracker.attemptsInWindow(spec.name);
 
       // Remove old child from supervised set before spawning replacement
       const oldChildId = state.childMap.get(spec.name);
       if (oldChildId !== undefined) supervisedChildIds.delete(oldChildId);
 
-      const newChildId = await deps.spawnChild(parentId, spec, manifest);
-      state.childMap.set(spec.name, newChildId);
-      supervisedChildIds.add(newChildId);
-
-      // Transition to running with restart reason
-      const entry = deps.registry.lookup(newChildId);
-      if (entry !== undefined && !isPromise(entry)) {
-        const reason: TransitionReason = {
-          kind: "restarted",
-          attempt,
-          strategy: "one_for_one",
-        };
-        deps.registry.transition(newChildId, "running", entry.status.generation, reason);
-      }
+      await spawnAndTransition(parentId, spec, manifest, state, "one_for_one");
     }
     return { kind: "converged" };
   }
@@ -260,23 +278,34 @@ export function createSupervisionReconciler(deps: {
       terminateChild(childId, { kind: "restarted", attempt: 0, strategy: "one_for_all" });
     }
 
-    // Restart all children in declaration order
-    for (const spec of config.children) {
-      const attempt = state.tracker.attemptsInWindow(spec.name);
-      const newChildId = await deps.spawnChild(parentId, spec, manifest);
-      state.childMap.set(spec.name, newChildId);
-      supervisedChildIds.add(newChildId);
+    // Restart all children in parallel (one_for_all = tightly coupled, no ordering dependency)
+    const results: readonly PromiseSettledResult<AgentId>[] = await Promise.allSettled(
+      config.children.map((childSpec: ChildSpec) =>
+        spawnAndTransition(parentId, childSpec, manifest, state, "one_for_all"),
+      ),
+    );
 
-      const entry = deps.registry.lookup(newChildId);
-      if (entry !== undefined && !isPromise(entry)) {
-        const reason: TransitionReason = {
-          kind: "restarted",
-          attempt,
-          strategy: "one_for_all",
-        };
-        deps.registry.transition(newChildId, "running", entry.status.generation, reason);
+    // Handle partial failure: if any spawn failed, terminate the successful ones and escalate
+    const failures = results.filter(
+      (result: PromiseSettledResult<AgentId>): result is PromiseRejectedResult =>
+        result.status === "rejected",
+    );
+    if (failures.length > 0) {
+      // Rollback: terminate successfully spawned children
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          supervisedChildIds.delete(result.value);
+          terminateChild(result.value, {
+            kind: "restarted",
+            attempt: 0,
+            strategy: "one_for_all",
+          });
+        }
       }
+      // Surface the first failure
+      throw failures[0]?.reason;
     }
+
     return { kind: "converged" };
   }
 
@@ -314,23 +343,11 @@ export function createSupervisionReconciler(deps: {
     }
 
     // Restart from earliestIdx onward in declaration order
+    // (rest_for_one preserves ordering — sequential spawn is intentional)
     for (let i = earliestIdx; i < config.children.length; i++) {
       const spec = config.children[i];
       if (spec === undefined) continue;
-      const attempt = state.tracker.attemptsInWindow(spec.name);
-      const newChildId = await deps.spawnChild(parentId, spec, manifest);
-      state.childMap.set(spec.name, newChildId);
-      supervisedChildIds.add(newChildId);
-
-      const entry = deps.registry.lookup(newChildId);
-      if (entry !== undefined && !isPromise(entry)) {
-        const reason: TransitionReason = {
-          kind: "restarted",
-          attempt,
-          strategy: "rest_for_one",
-        };
-        deps.registry.transition(newChildId, "running", entry.status.generation, reason);
-      }
+      await spawnAndTransition(parentId, spec, manifest, state, "rest_for_one");
     }
     return { kind: "converged" };
   }

@@ -1,0 +1,26 @@
+{
+  "name": "@koi/middleware-{{KEBAB_NAME}}",
+  "description": "{{DESCRIPTION}}",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "bun test",
+    "lint": "biome check src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/session-state": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils-mocks": "workspace:*"
+  }
+}

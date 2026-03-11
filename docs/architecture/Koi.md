@@ -30,7 +30,7 @@ A **self-extending agent runtime** — agents that can create, discover, and com
 
 | Component | Technology | Role |
 |-----------|------------|------|
-| **Engine Runtime** | @koi/engine | Guards, validation, middleware composition, adapter dispatch |
+| **Engine Runtime** | @koi/engine + @koi/engine-compose + @koi/engine-reconcile | Guards, validation, middleware composition, reconciliation, adapter dispatch |
 | **Engine Adapter** | Swappable | The actual agent loop (`stream()` is the only required method) |
 | **Agent Body** | Gateway + Node | Multi-channel, local devices, sessions |
 | **Self-Extension** | @koi/forge | Runtime brick creation, verification, discovery |
@@ -149,9 +149,10 @@ ChannelAdapter, Resolver     L0      Channel + Discovery contracts
 EngineAdapter                L0      Engine contract
 AgentRegistry                L0      Lifecycle contract (7th core contract)
 
-Engine runtime (guards)      L1      createKoi(), IterationGuard, SpawnGuard
+Engine runtime (guards)      L1      @koi/engine: createKoi(), IterationGuard, SpawnGuard
+Reconciliation controllers   L1      @koi/engine-reconcile: supervision, K8s-style convergence
+Middleware chain composition L1      @koi/engine-compose: wraps adapter in onion
 SupervisionController        L1      Unified health/timeout/governance/signals
-Middleware chain composition L1      Wraps adapter in onion
 ProcessState transitions     L1      Lifecycle state machine (single authority)
 
 Gateway, Node                L2      World Services
@@ -185,10 +186,12 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 │  ComponentProvider impls attach components during assembly.   │
 │  Forge creates new components AT RUNTIME.                    │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 1: ENGINE (@koi/engine — kernel runtime)              │
-│  createKoi() → assembly → ComponentProvider.attach()         │
+│  Layer 1: ENGINE (3-package kernel runtime)                   │
+│  @koi/engine:          createKoi(), guards, lifecycle FSM    │
+│  @koi/engine-compose:  Middleware chain composition           │
+│  @koi/engine-reconcile: K8s-style reconciliation controllers │
 │  IterationGuard, LoopDetector, SpawnGuard                    │
-│  SupervisionController (unified health/timeout/governance)   │
+│  SupervisionController (Erlang/OTP-style, parallel spawns)   │
 │  ProcessState transitions (lifecycle state machine)          │
 │  Middleware chain composition → EngineAdapter dispatch        │
 ├─────────────────────────────────────────────────────────────┤
@@ -215,7 +218,7 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 
 | Property | Kernel (L0) | Utilities (L0u) | Engine (L1) | Features (L2) | Meta (L3) |
 |----------|-------------|-----------------|-------------|----------------|-----------|
-| **Contains** | 7 core contracts + extended contracts, ECS (types only) | Pure functions, error types, validation, hashing | Guards, validation, dispatch, supervision | Channels, middleware, providers | Dependency bundles |
+| **Contains** | 7 core contracts + extended contracts, ECS (types only) | Pure functions, error types, validation, hashing, session state | Guards, validation, dispatch, supervision, reconciliation | Channels, middleware, providers | Dependency bundles |
 | **Dependencies** | Zero | @koi/core only | @koi/core + L0u | @koi/core + L0u | L0 + L0u + L1 + selected L2 |
 | **Breakage scope** | All packages | Consumers only | Engine only | Own package only | None |
 | **Can be swapped?** | Never | Yes (per package) | No (it IS the runtime) | Yes (per package) | Yes |
@@ -267,6 +270,7 @@ Additional L0 contracts for subsystems that need pluggable backends:
 | **ContextCompactor** | `context.ts` | Context window management — compaction and token estimation |
 | **EvictionPolicy** | `eviction.ts` | Agent eviction strategies (idle, LRU, priority-based) |
 | **ModelProvider** | `model-provider.ts` | LLM provider abstraction with capabilities discovery |
+| **ReconciliationController** | `reconciliation.ts` | K8s-style desired-state convergence — observe, diff, act loops |
 
 ### ECS Compositional Layer
 

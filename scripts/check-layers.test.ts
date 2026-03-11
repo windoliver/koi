@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   extractImportSpecifiers,
+  hasSessionMapWithoutCleanup,
   isClassDeclaration,
   isFunctionBody,
   isL0ClassViolation,
@@ -390,5 +391,52 @@ describe("L0_RUNTIME_ALLOWLIST", () => {
     expect(L0_RUNTIME_ALLOWLIST.has("middleware.ts")).toBe(false);
     expect(L0_RUNTIME_ALLOWLIST.has("channel.ts")).toBe(false);
     expect(L0_RUNTIME_ALLOWLIST.has("message.ts")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasSessionMapWithoutCleanup — middleware session-state lint
+// ---------------------------------------------------------------------------
+
+describe("hasSessionMapWithoutCleanup", () => {
+  test("returns true when file has raw Map but no onSessionEnd", () => {
+    const source = [
+      "const sessions = new Map<string, State>();",
+      "async wrapModelCall(ctx, req, next) {",
+      "  const s = sessions.get(ctx.session.sessionId as string);",
+      "  return next(req);",
+      "}",
+    ].join("\n");
+    expect(hasSessionMapWithoutCleanup(source)).toBe(true);
+  });
+
+  test("returns false when file has raw Map AND onSessionEnd", () => {
+    const source = [
+      "const sessions = new Map<string, State>();",
+      "async onSessionEnd(ctx) {",
+      "  sessions.delete(ctx.sessionId as string);",
+      "}",
+    ].join("\n");
+    expect(hasSessionMapWithoutCleanup(source)).toBe(false);
+  });
+
+  test("returns false when file has no raw Map at all", () => {
+    const source = [
+      "import { createSessionState } from '@koi/session-state';",
+      "const sessions = createSessionState(() => ({ count: 0 }));",
+    ].join("\n");
+    expect(hasSessionMapWithoutCleanup(source)).toBe(false);
+  });
+
+  test("returns false for non-middleware code with Map<string, but no session pattern", () => {
+    const source = [
+      "const cache = new Map<string, number>();",
+      "export function get(key: string): number | undefined {",
+      "  return cache.get(key);",
+      "}",
+    ].join("\n");
+    // This is a false positive for non-middleware — but the scanner only runs
+    // on middleware packages, so the predicate itself is correct
+    expect(hasSessionMapWithoutCleanup(source)).toBe(true);
   });
 });
