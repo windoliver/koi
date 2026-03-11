@@ -171,7 +171,7 @@ describe("handleDispatchAgent", () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { readonly data: DispatchAgentResponse };
-    expect(body.data.agentId).toBe("new-1");
+    expect(body.data.agentId).toBe(agentId("new-1"));
     expect(body.data.name).toBe("my-agent");
   });
 
