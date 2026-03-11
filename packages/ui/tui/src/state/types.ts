@@ -37,6 +37,14 @@ export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
 
 // ─── Application State ──────────────────────────────────────────────
 
+/** A saved session entry for the session picker. */
+export interface SessionPickerEntry {
+  readonly sessionId: string;
+  readonly agentName: string;
+  readonly connectedAt: number;
+  readonly messageCount: number;
+}
+
 /** Complete TUI application state. Immutable — new object on every update. */
 export interface TuiState {
   readonly view: TuiView;
@@ -48,6 +56,10 @@ export interface TuiState {
   readonly adminUrl: string;
   /** Last received SSE sequence number for gap detection. */
   readonly lastEventSeq: number;
+  /** Session picker entries. */
+  readonly sessionPickerEntries: readonly SessionPickerEntry[];
+  /** Whether the session picker is loading. */
+  readonly sessionPickerLoading: boolean;
 }
 
 /** Create initial TUI state for a given admin URL. */
@@ -61,6 +73,8 @@ export function createInitialState(adminUrl: string): TuiState {
     error: null,
     adminUrl,
     lastEventSeq: 0,
+    sessionPickerEntries: [],
+    sessionPickerLoading: false,
   };
 }
 
@@ -98,6 +112,11 @@ export type TuiAction =
   | {
       readonly kind: "apply_event_batch";
       readonly batch: DashboardEventBatch;
+    }
+  | {
+      readonly kind: "set_session_picker";
+      readonly entries: readonly SessionPickerEntry[];
+      readonly loading: boolean;
     };
 
 /** Maximum messages kept in session memory (sliding window). */

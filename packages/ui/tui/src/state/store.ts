@@ -146,6 +146,13 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_error":
       return { ...state, error: action.error };
 
+    case "set_session_picker":
+      return {
+        ...state,
+        sessionPickerEntries: action.entries,
+        sessionPickerLoading: action.loading,
+      };
+
     case "apply_event_batch": {
       const { batch } = action;
       let updatedAgents: readonly DashboardAgentSummary[] | null = null;

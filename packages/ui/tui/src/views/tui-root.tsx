@@ -1,23 +1,20 @@
 /**
- * TUI root component — top-level SolidJS component composing all views.
+ * TUI root component — top-level React component composing all views.
  *
  * Renders status bar, switches between agent list, console, and session views,
  * overlays command palette, and delegates keyboard shortcuts to the app handler.
  */
 
-import type { CliRenderer, KeyEvent, SyntaxStyle } from "@opentui/core";
-import type { JSX } from "@opentui/solid";
-import { useKeyboard, useRenderer } from "@opentui/solid";
-import { type Accessor, Match, Switch, onMount } from "solid-js";
+import type { KeyEvent, SyntaxStyle } from "@opentui/core";
+import { useKeyboard } from "@opentui/react";
 import type { TuiStore } from "../state/store.js";
 import { COLORS } from "../theme.js";
 import { AgentListView } from "./agent-list-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { ConsoleView } from "./console-view.js";
-import type { SessionPickerEntry } from "./session-picker-view.js";
 import { SessionPickerView } from "./session-picker-view.js";
 import { StatusBarView } from "./status-bar-view.js";
-import { createStoreSignal } from "./store-bridge.js";
+import { useStoreState } from "./store-bridge.js";
 
 /** Props for the root TUI component. */
 export interface TuiRootProps {
@@ -29,10 +26,7 @@ export interface TuiRootProps {
   /** Global keyboard shortcut handler — returns true if consumed. */
   readonly onKeyInput: (sequence: string) => boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
-  readonly onRendererReady?: ((renderer: CliRenderer) => void) | undefined;
-  /** Session picker data. */
-  readonly sessions?: Accessor<readonly SessionPickerEntry[]> | undefined;
-  readonly sessionsLoading?: Accessor<boolean> | undefined;
+  /** Session picker callbacks. */
   readonly onSessionSelect?: ((sessionId: string) => void) | undefined;
   readonly onSessionCancel?: (() => void) | undefined;
 }
@@ -58,15 +52,8 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
 }
 
 /** Root component for the TUI application. */
-export function TuiRoot(props: TuiRootProps): JSX.Element {
-  const state = createStoreSignal(props.store);
-  const renderer = useRenderer();
-
-  onMount(() => {
-    if (props.onRendererReady !== undefined) {
-      props.onRendererReady(renderer);
-    }
-  });
+export function TuiRoot(props: TuiRootProps): React.ReactNode {
+  const state = useStoreState(props.store);
 
   // Delegate all keyboard shortcuts to the app-level handler
   useKeyboard((key: KeyEvent) => {
@@ -76,12 +63,12 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     }
   });
 
-  const view = () => state().view;
-  const agents = () => state().agents;
-  const session = () => state().activeSession;
-  const pendingText = () => session()?.pendingText ?? "";
-  const isPalette = () => view() === "palette";
-  const backgroundView = () => (session() !== null ? "console" : "agents");
+  const view = state.view;
+  const agents = state.agents;
+  const session = state.activeSession;
+  const pendingText = session?.pendingText ?? "";
+  const isPalette = view === "palette";
+  const backgroundView = session !== null ? "console" : "agents";
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS.bg}>
@@ -89,42 +76,40 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
 
       <box flexGrow={1}>
         {/* Main content area — show agents, console, or sessions */}
-        <Switch>
-          <Match when={view() === "agents" || (isPalette() && backgroundView() === "agents")}>
-            <AgentListView
-              agents={agents}
-              onSelect={props.onAgentSelect}
-              focused={view() === "agents"}
-            />
-          </Match>
+        {(view === "agents" || (isPalette && backgroundView === "agents")) && (
+          <AgentListView
+            agents={agents}
+            onSelect={props.onAgentSelect}
+            focused={view === "agents"}
+          />
+        )}
 
-          <Match when={view() === "console" || (isPalette() && backgroundView() === "console")}>
-            <ConsoleView
-              session={session}
-              pendingText={() => pendingText()}
-              onSubmit={props.onConsoleInput}
-              focused={view() === "console"}
-              syntaxStyle={props.syntaxStyle}
-            />
-          </Match>
+        {(view === "console" || (isPalette && backgroundView === "console")) && (
+          <ConsoleView
+            session={session}
+            pendingText={pendingText}
+            onSubmit={props.onConsoleInput}
+            focused={view === "console"}
+            syntaxStyle={props.syntaxStyle}
+          />
+        )}
 
-          <Match when={view() === "sessions"}>
-            <SessionPickerView
-              sessions={props.sessions ?? (() => [])}
-              onSelect={props.onSessionSelect ?? (() => {})}
-              onCancel={props.onSessionCancel ?? (() => {})}
-              focused={true}
-              loading={props.sessionsLoading ?? (() => false)}
-            />
-          </Match>
-        </Switch>
+        {view === "sessions" && (
+          <SessionPickerView
+            sessions={state.sessionPickerEntries}
+            onSelect={props.onSessionSelect ?? (() => {})}
+            onCancel={props.onSessionCancel ?? (() => {})}
+            focused={true}
+            loading={state.sessionPickerLoading}
+          />
+        )}
 
         {/* Command palette overlay */}
         <CommandPaletteView
           visible={isPalette}
           onSelect={props.onPaletteSelect}
           onCancel={props.onPaletteCancel}
-          focused={isPalette()}
+          focused={isPalette}
         />
       </box>
     </box>

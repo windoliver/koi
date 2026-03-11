@@ -1,7 +1,7 @@
 /**
  * TUI application — wires views, store, clients, and OpenTUI together.
  *
- * Uses OpenTUI's CliRenderer with SolidJS reconciler for declarative UI.
+ * Uses OpenTUI's CliRenderer with React reconciler for declarative UI.
  * Owns the renderer, manages view switching, input routing,
  * store subscriptions, AG-UI streaming, and SSE event feed.
  */
@@ -20,13 +20,12 @@ import {
 } from "@koi/dashboard-client";
 import type { AgentDashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
 import { isAgentEvent } from "@koi/dashboard-types";
-import { type CliRenderer, SyntaxStyle } from "@opentui/core";
-import { render } from "@opentui/solid";
-import { createSignal } from "solid-js";
+import { type CliRenderer, createCliRenderer, SyntaxStyle } from "@opentui/core";
+import { createRoot, type Root } from "@opentui/react";
+import { createElement } from "react";
 import { createStore, type TuiStore } from "../state/store.js";
-import { createInitialState, type TuiView } from "../state/types.js";
+import { createInitialState, type SessionPickerEntry, type TuiView } from "../state/types.js";
 import { createAguiEventHandler } from "./agui-event-handler.js";
-import type { SessionPickerEntry } from "./session-picker-view.js";
 import { createKeyboardHandler } from "./tui-keyboard.js";
 import { TuiRoot } from "./tui-root.js";
 import { fetchRecentAgentActivity, persistCurrentSession, restoreSession } from "./tui-session.js";
@@ -102,11 +101,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     persistCurrentSession(store, client).catch(() => {});
   }, 500);
 
-  // ─── Session picker state ─────────────────────────────────────────
-  const [sessions, setSessions] = createSignal<readonly SessionPickerEntry[]>([]);
-  const [sessionsLoading, setSessionsLoading] = createSignal(false);
-
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  let reactRoot: Root | null = null;
 
   // ─── Agent console wiring ──────────────────────────────────────────
   function openAgentConsole(agentId: string): void {
@@ -506,7 +502,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   // ─── Session picker ────────────────────────────────────────────────
 
   async function openSessionPicker(): Promise<void> {
-    setSessionsLoading(true);
+    store.dispatch({ kind: "set_session_picker", entries: [], loading: true });
     store.dispatch({ kind: "set_view", view: "sessions" });
 
     const agents = store.getState().agents;
@@ -537,13 +533,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
     // Sort by most recent first
     entries.sort((a, b) => b.connectedAt - a.connectedAt);
-    setSessions(entries);
-    setSessionsLoading(false);
+    store.dispatch({ kind: "set_session_picker", entries, loading: false });
   }
 
   function handleSessionSelect(sessionId: string): void {
     // Find which agent owns this session
-    const entry = sessions().find((s) => s.sessionId === sessionId);
+    const entry = store.getState().sessionPickerEntries.find((s) => s.sessionId === sessionId);
     if (entry === undefined) return;
 
     // Find the agent by name
@@ -653,26 +648,26 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }, refreshIntervalMs);
 
     // Start OpenTUI rendering — enters raw mode, takes over terminal
-    await render(
-      () =>
-        TuiRoot({
-          store,
-          onConsoleInput: handleConsoleInput,
-          onPaletteSelect: handlePaletteSelect,
-          onAgentSelect: handleAgentSelect,
-          onPaletteCancel: hidePalette,
-          onKeyInput: keyboardHandler,
-          syntaxStyle: syntaxStyle ?? undefined,
-          onRendererReady: (r) => {
-            tuiRenderer = r;
-            syntaxStyle = SyntaxStyle.create();
-          },
-          sessions,
-          sessionsLoading,
-          onSessionSelect: handleSessionSelect,
-          onSessionCancel: closeSessions,
-        }),
-      { exitOnCtrlC: false, useAlternateScreen: true, useMouse: true },
+    tuiRenderer = await createCliRenderer({
+      exitOnCtrlC: false,
+      useAlternateScreen: true,
+      useMouse: true,
+    });
+    syntaxStyle = SyntaxStyle.create();
+
+    reactRoot = createRoot(tuiRenderer);
+    reactRoot.render(
+      createElement(TuiRoot, {
+        store,
+        onConsoleInput: handleConsoleInput,
+        onPaletteSelect: handlePaletteSelect,
+        onAgentSelect: handleAgentSelect,
+        onPaletteCancel: hidePalette,
+        onKeyInput: keyboardHandler,
+        syntaxStyle,
+        onSessionSelect: handleSessionSelect,
+        onSessionCancel: closeSessions,
+      }),
     );
   }
 
@@ -686,6 +681,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     cancelActiveStream();
     await persistCurrentSession(store, client).catch(() => {});
     stopEventStream();
+    if (reactRoot !== null) {
+      reactRoot.unmount();
+      reactRoot = null;
+    }
     if (syntaxStyle !== null) {
       syntaxStyle.destroy();
       syntaxStyle = null;

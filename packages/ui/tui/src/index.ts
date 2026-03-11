@@ -57,6 +57,7 @@ export type { StateListener, TuiStore } from "./state/store.js";
 export { createStore, reduce } from "./state/store.js";
 export type {
   ConnectionStatus,
+  SessionPickerEntry,
   SessionState,
   TuiAction,
   TuiError,
@@ -83,7 +84,7 @@ export type { ConsoleViewProps } from "./views/console-view.js";
 export { ConsoleView } from "./views/console-view.js";
 export type { MessageRowProps } from "./views/message-row.js";
 export { MessageRow } from "./views/message-row.js";
-export type { SessionPickerEntry, SessionPickerViewProps } from "./views/session-picker-view.js";
+export type { SessionPickerViewProps } from "./views/session-picker-view.js";
 export { SessionPickerView } from "./views/session-picker-view.js";
 // Views — status bar
 export type { StatusBarData } from "./views/status-bar.js";
@@ -94,7 +95,7 @@ export {
 } from "./views/status-bar.js";
 export type { StatusBarViewProps } from "./views/status-bar-view.js";
 export { StatusBarView } from "./views/status-bar-view.js";
-export { createDerivedSignal, createStoreSignal } from "./views/store-bridge.js";
+export { useDerivedState, useStoreState } from "./views/store-bridge.js";
 // App
 export type { TuiAppConfig, TuiAppHandle } from "./views/tui-app.js";
 export { createTuiApp } from "./views/tui-app.js";

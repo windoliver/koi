@@ -7,8 +7,6 @@
 
 import type { ChatMessage } from "@koi/dashboard-client";
 import type { SyntaxStyle } from "@opentui/core";
-import type { JSX } from "@opentui/solid";
-import { Show } from "solid-js";
 import { COLORS } from "../theme.js";
 
 /** Maximum characters to show for tool call args/result inline. */
@@ -27,65 +25,55 @@ function truncate(text: string, maxLen: number): string {
   return `${text.slice(0, maxLen)}…`;
 }
 
-/** Extract text from user or assistant message, empty string otherwise. */
-function messageText(msg: ChatMessage): string {
-  if (msg.kind === "user" || msg.kind === "assistant") return msg.text;
-  return "";
-}
-
 /** Render a single chat message row. */
-export function MessageRow(props: MessageRowProps): JSX.Element {
-  return (
-    <>
-      <Show when={props.message.kind === "user"}>
+export function MessageRow(props: MessageRowProps): React.ReactNode {
+  const msg = props.message;
+
+  if (msg.kind === "user") {
+    return (
+      <box flexDirection="row">
+        <text fg={COLORS.green}><b>{"❯ "}</b></text>
+        <text fg={COLORS.white}>{msg.text}</text>
+      </box>
+    );
+  }
+
+  if (msg.kind === "assistant") {
+    if (props.syntaxStyle !== undefined) {
+      return (
+        <markdown
+          content={msg.text}
+          streaming={props.isStreaming === true}
+          syntaxStyle={props.syntaxStyle}
+        />
+      );
+    }
+    return <text fg={COLORS.white}>{msg.text}</text>;
+  }
+
+  if (msg.kind === "tool_call") {
+    return (
+      <box flexDirection="column">
         <box flexDirection="row">
-          <text fg={COLORS.green}><b>{"❯ "}</b></text>
-          <text fg={COLORS.white}>{messageText(props.message)}</text>
+          <text fg={COLORS.dim}>{"⚙ "}</text>
+          <text fg={COLORS.cyan}>{msg.name}</text>
+          <text fg={COLORS.dim}>{`(${truncate(msg.args, MAX_INLINE_LENGTH)})`}</text>
         </box>
-      </Show>
-
-      <Show when={props.message.kind === "assistant"}>
-        {props.syntaxStyle !== undefined ? (
-          <markdown
-            content={messageText(props.message)}
-            streaming={props.isStreaming === true}
-            syntaxStyle={props.syntaxStyle}
-          />
-        ) : (
-          <text fg={COLORS.white}>{messageText(props.message)}</text>
+        {msg.result !== undefined && (
+          <text fg={COLORS.dim}>{`  → ${truncate(msg.result, MAX_INLINE_LENGTH)}`}</text>
         )}
-      </Show>
+      </box>
+    );
+  }
 
-      <Show when={props.message.kind === "tool_call"}>
-        {(() => {
-          const m = props.message;
-          if (m.kind !== "tool_call") return null;
-          return (
-            <box flexDirection="column">
-              <box flexDirection="row">
-                <text fg={COLORS.dim}>{"⚙ "}</text>
-                <text fg={COLORS.cyan}>{m.name}</text>
-                <text fg={COLORS.dim}>{`(${truncate(m.args, MAX_INLINE_LENGTH)})`}</text>
-              </box>
-              <Show when={m.result !== undefined}>
-                <text fg={COLORS.dim}>{`  → ${truncate(m.result ?? "", MAX_INLINE_LENGTH)}`}</text>
-              </Show>
-            </box>
-          );
-        })()}
-      </Show>
+  if (msg.kind === "lifecycle") {
+    return (
+      <text fg={COLORS.yellow}>
+        <i>{`  ${msg.event}`}</i>
+      </text>
+    );
+  }
 
-      <Show when={props.message.kind === "lifecycle"}>
-        {(() => {
-          const m = props.message;
-          if (m.kind !== "lifecycle") return null;
-          return (
-            <text fg={COLORS.yellow}>
-              <i>{`  ${m.event}`}</i>
-            </text>
-          );
-        })()}
-      </Show>
-    </>
-  );
+  // Exhaustive — should never reach here
+  return <></>;
 }

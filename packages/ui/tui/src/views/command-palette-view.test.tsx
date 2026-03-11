@@ -3,8 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { testRender } from "@opentui/solid";
-import { createSignal } from "solid-js";
+import { testRender } from "@opentui/react/test-utils";
 import { CommandPaletteView } from "./command-palette-view.js";
 
 /** Render multiple passes so the select component populates its items. */
@@ -15,15 +14,15 @@ async function settle(renderOnce: () => Promise<void>): Promise<void> {
 
 describe("CommandPaletteView", () => {
   test("renders command header when visible", async () => {
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [visible] = createSignal(true);
-      return CommandPaletteView({
-        visible,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: true,
-      });
-    }, { width: 80, height: 30 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <CommandPaletteView
+        visible={true}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={true}
+      />,
+      { width: 80, height: 30 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -31,15 +30,15 @@ describe("CommandPaletteView", () => {
   });
 
   test("renders nothing when not visible", async () => {
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [visible] = createSignal(false);
-      return CommandPaletteView({
-        visible,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: false,
-      });
-    }, { width: 80, height: 30 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <CommandPaletteView
+        visible={false}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={false}
+      />,
+      { width: 80, height: 30 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -47,15 +46,15 @@ describe("CommandPaletteView", () => {
   });
 
   test("shows default commands in select list", async () => {
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [visible] = createSignal(true);
-      return CommandPaletteView({
-        visible,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: true,
-      });
-    }, { width: 80, height: 30 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <CommandPaletteView
+        visible={true}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={true}
+      />,
+      { width: 80, height: 30 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -64,15 +63,15 @@ describe("CommandPaletteView", () => {
   });
 
   test("shows filter input placeholder", async () => {
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [visible] = createSignal(true);
-      return CommandPaletteView({
-        visible,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: true,
-      });
-    }, { width: 80, height: 30 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <CommandPaletteView
+        visible={true}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={true}
+      />,
+      { width: 80, height: 30 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -80,15 +79,15 @@ describe("CommandPaletteView", () => {
   });
 
   test("shows border and overlay styling", async () => {
-    const { captureSpans, renderOnce } = await testRender(() => {
-      const [visible] = createSignal(true);
-      return CommandPaletteView({
-        visible,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: true,
-      });
-    }, { width: 80, height: 30 });
+    const { captureSpans, renderOnce } = await testRender(
+      <CommandPaletteView
+        visible={true}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={true}
+      />,
+      { width: 80, height: 30 },
+    );
 
     await settle(renderOnce);
     const spans = captureSpans();

@@ -4,14 +4,14 @@
 
 import { describe, expect, test } from "bun:test";
 import type { ChatMessage } from "@koi/dashboard-client";
-import { testRender } from "@opentui/solid";
+import { testRender } from "@opentui/react/test-utils";
 import { MessageRow } from "./message-row.js";
 
 describe("MessageRow", () => {
   test("renders user message with prompt indicator", async () => {
     const msg: ChatMessage = { kind: "user", text: "Hello world", timestamp: Date.now() };
     const { captureCharFrame, renderOnce } = await testRender(
-      () => MessageRow({ message: msg }),
+      <MessageRow message={msg} />,
       { width: 80, height: 10 },
     );
     await renderOnce();
@@ -22,7 +22,7 @@ describe("MessageRow", () => {
   test("renders assistant message as plain text without syntaxStyle", async () => {
     const msg: ChatMessage = { kind: "assistant", text: "I can help with that.", timestamp: Date.now() };
     const { captureCharFrame, renderOnce } = await testRender(
-      () => MessageRow({ message: msg }),
+      <MessageRow message={msg} />,
       { width: 80, height: 10 },
     );
     await renderOnce();
@@ -40,7 +40,7 @@ describe("MessageRow", () => {
       timestamp: Date.now(),
     };
     const { captureCharFrame, renderOnce } = await testRender(
-      () => MessageRow({ message: msg }),
+      <MessageRow message={msg} />,
       { width: 80, height: 10 },
     );
     await renderOnce();
@@ -59,7 +59,7 @@ describe("MessageRow", () => {
       timestamp: Date.now(),
     };
     const { captureCharFrame, renderOnce } = await testRender(
-      () => MessageRow({ message: msg }),
+      <MessageRow message={msg} />,
       { width: 80, height: 10 },
     );
     await renderOnce();
@@ -71,11 +71,11 @@ describe("MessageRow", () => {
   test("renders lifecycle event in italic", async () => {
     const msg: ChatMessage = {
       kind: "lifecycle",
-      event: "Agent state: idle → running",
+      event: "Agent state: idle \u2192 running",
       timestamp: Date.now(),
     };
     const { captureCharFrame, renderOnce } = await testRender(
-      () => MessageRow({ message: msg }),
+      <MessageRow message={msg} />,
       { width: 80, height: 10 },
     );
     await renderOnce();
@@ -94,7 +94,7 @@ describe("MessageRow", () => {
       timestamp: Date.now(),
     };
     const { captureCharFrame, renderOnce } = await testRender(
-      () => MessageRow({ message: msg }),
+      <MessageRow message={msg} />,
       { width: 80, height: 10 },
     );
     await renderOnce();

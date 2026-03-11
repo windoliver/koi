@@ -6,38 +6,37 @@
  */
 
 import { type SyntaxStyle, type TextareaRenderable } from "@opentui/core";
-import type { JSX } from "@opentui/solid";
-import { type Accessor, For, Show, createSignal } from "solid-js";
+import { useCallback, useRef, useState } from "react";
 import { COLORS } from "../theme.js";
 import type { SessionState } from "../state/types.js";
 import { MessageRow } from "./message-row.js";
 
 /** Props for the console view. */
 export interface ConsoleViewProps {
-  readonly session: Accessor<SessionState | null>;
-  readonly pendingText: Accessor<string>;
+  readonly session: SessionState | null;
+  readonly pendingText: string;
   readonly onSubmit: (text: string) => void;
   readonly focused: boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
 }
 
 /** Console view with scrollable message list and text input. */
-export function ConsoleView(props: ConsoleViewProps): JSX.Element {
-  let textareaRef: TextareaRenderable | null = null;
-  const [inputText, setInputText] = createSignal("");
+export function ConsoleView(props: ConsoleViewProps): React.ReactNode {
+  const textareaRef = useRef<TextareaRenderable | null>(null);
+  const [inputText, setInputText] = useState("");
 
-  function handleSubmit(): void {
-    const text = inputText().trim();
+  const handleSubmit = useCallback((): void => {
+    const text = inputText.trim();
     if (text === "") return;
     props.onSubmit(text);
     setInputText("");
-    if (textareaRef !== null) {
-      textareaRef.setText("");
+    if (textareaRef.current !== null) {
+      textareaRef.current.setText("");
     }
-  }
+  }, [inputText, props.onSubmit]);
 
-  const messages = () => props.session()?.messages ?? [];
-  const hasPending = () => props.pendingText().length > 0;
+  const messages = props.session?.messages ?? [];
+  const hasPending = props.pendingText.length > 0;
 
   return (
     <box flexGrow={1} flexDirection="column">
@@ -49,21 +48,21 @@ export function ConsoleView(props: ConsoleViewProps): JSX.Element {
         scrollY={true}
       >
         <box flexDirection="column" gap={1}>
-          <For each={messages()}>
-            {(message) => <MessageRow message={message} syntaxStyle={props.syntaxStyle} />}
-          </For>
+          {messages.map((message, i) => (
+            <MessageRow key={i} message={message} syntaxStyle={props.syntaxStyle} />
+          ))}
 
-          <Show when={hasPending()}>
+          {hasPending && (
             <MessageRow
               message={{
                 kind: "assistant",
-                text: props.pendingText(),
+                text: props.pendingText,
                 timestamp: Date.now(),
               }}
               isStreaming={true}
               syntaxStyle={props.syntaxStyle}
             />
-          </Show>
+          )}
         </box>
       </scrollbox>
 
@@ -74,7 +73,7 @@ export function ConsoleView(props: ConsoleViewProps): JSX.Element {
 
       {/* Text input */}
       <textarea
-        ref={(el: TextareaRenderable) => { textareaRef = el; }}
+        ref={(el: TextareaRenderable) => { textareaRef.current = el; }}
         height={3}
         focused={props.focused}
         placeholder="Type a message... (Enter to send, / for commands)"
@@ -84,8 +83,8 @@ export function ConsoleView(props: ConsoleViewProps): JSX.Element {
         focusedBackgroundColor="#001a33"
         focusedTextColor={COLORS.white}
         onContentChange={() => {
-          if (textareaRef !== null) {
-            setInputText(textareaRef.plainText);
+          if (textareaRef.current !== null) {
+            setInputText(textareaRef.current.plainText);
           }
         }}
         onSubmit={handleSubmit}

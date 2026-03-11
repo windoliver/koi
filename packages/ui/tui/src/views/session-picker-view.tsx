@@ -1,25 +1,19 @@
 /** Session picker view — displays saved sessions for an agent. */
 
 import type { SelectOption } from "@opentui/core";
-import type { JSX } from "@opentui/solid";
-import { type Accessor, Show } from "solid-js";
+import { useMemo } from "react";
+import type { SessionPickerEntry } from "../state/types.js";
 import { COLORS } from "../theme.js";
 
-/** A single saved session entry. */
-export interface SessionPickerEntry {
-  readonly sessionId: string;
-  readonly agentName: string;
-  readonly connectedAt: number;
-  readonly messageCount: number;
-}
+export type { SessionPickerEntry } from "../state/types.js";
 
 /** Props for the session picker view. */
 export interface SessionPickerViewProps {
-  readonly sessions: Accessor<readonly SessionPickerEntry[]>;
+  readonly sessions: readonly SessionPickerEntry[];
   readonly onSelect: (sessionId: string) => void;
   readonly onCancel: () => void;
   readonly focused: boolean;
-  readonly loading: Accessor<boolean>;
+  readonly loading: boolean;
 }
 
 function formatTimeAgo(timestamp: number): string {
@@ -39,9 +33,10 @@ function sessionsToOptions(sessions: readonly SessionPickerEntry[]): readonly Se
 }
 
 /** Session picker view with selectable session entries. */
-export function SessionPickerView(props: SessionPickerViewProps): JSX.Element {
-  const options = () => sessionsToOptions(props.sessions());
-  const empty = (msg: string) => (
+export function SessionPickerView(props: SessionPickerViewProps): React.ReactNode {
+  const options = useMemo(() => sessionsToOptions(props.sessions), [props.sessions]);
+
+  const empty = (msg: string): React.ReactNode => (
     <box flexGrow={1} justifyContent="center" alignItems="center">
       <text fg={COLORS.dim}>{msg}</text>
     </box>
@@ -51,28 +46,30 @@ export function SessionPickerView(props: SessionPickerViewProps): JSX.Element {
     <box flexGrow={1} flexDirection="column">
       <box height={1} flexDirection="row">
         <text fg={COLORS.cyan}><b>{" Sessions"}</b></text>
-        <text fg={COLORS.dim}>{` (${String(props.sessions().length)})`}</text>
+        <text fg={COLORS.dim}>{` (${String(props.sessions.length)})`}</text>
       </box>
 
-      <Show when={!props.loading()} fallback={empty("Loading sessions...")}>
-        <Show when={props.sessions().length > 0} fallback={empty("No saved sessions")}>
-          <select
-            options={options() as SelectOption[]}
-            focused={props.focused}
-            showDescription={true}
-            wrapSelection={true}
-            flexGrow={1}
-            selectedBackgroundColor={COLORS.blue}
-            selectedTextColor={COLORS.white}
-            descriptionColor={COLORS.dim}
-            onSelect={(_index: number, option: SelectOption | null) => {
-              if (option?.value !== undefined) {
-                props.onSelect(option.value as string);
-              }
-            }}
-          />
-        </Show>
-      </Show>
+      {props.loading ? (
+        empty("Loading sessions...")
+      ) : props.sessions.length > 0 ? (
+        <select
+          options={options as SelectOption[]}
+          focused={props.focused}
+          showDescription={true}
+          wrapSelection={true}
+          flexGrow={1}
+          selectedBackgroundColor={COLORS.blue}
+          selectedTextColor={COLORS.white}
+          descriptionColor={COLORS.dim}
+          onSelect={(_index: number, option: SelectOption | null) => {
+            if (option?.value !== undefined) {
+              props.onSelect(option.value as string);
+            }
+          }}
+        />
+      ) : (
+        empty("No saved sessions")
+      )}
     </box>
   );
 }

@@ -3,9 +3,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { testRender } from "@opentui/solid";
-import { createSignal } from "solid-js";
-import type { SessionPickerEntry } from "./session-picker-view.js";
+import { testRender } from "@opentui/react/test-utils";
+import type { SessionPickerEntry } from "../state/types.js";
 import { SessionPickerView } from "./session-picker-view.js";
 
 function makeSession(overrides: Partial<SessionPickerEntry> = {}): SessionPickerEntry {
@@ -27,17 +26,16 @@ async function settle(renderOnce: () => Promise<void>): Promise<void> {
 describe("SessionPickerView", () => {
   test("renders header with session count", async () => {
     const sessions = [makeSession(), makeSession({ sessionId: "s2", agentName: "other" })];
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [list] = createSignal(sessions);
-      const [loading] = createSignal(false);
-      return SessionPickerView({
-        sessions: list,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: true,
-        loading,
-      });
-    }, { width: 80, height: 20 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <SessionPickerView
+        sessions={sessions}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={true}
+        loading={false}
+      />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -46,17 +44,16 @@ describe("SessionPickerView", () => {
   });
 
   test("shows empty state when no sessions", async () => {
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [list] = createSignal<readonly SessionPickerEntry[]>([]);
-      const [loading] = createSignal(false);
-      return SessionPickerView({
-        sessions: list,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: true,
-        loading,
-      });
-    }, { width: 80, height: 20 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <SessionPickerView
+        sessions={[]}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={true}
+        loading={false}
+      />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -64,17 +61,16 @@ describe("SessionPickerView", () => {
   });
 
   test("shows loading state", async () => {
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [list] = createSignal<readonly SessionPickerEntry[]>([]);
-      const [loading] = createSignal(true);
-      return SessionPickerView({
-        sessions: list,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: true,
-        loading,
-      });
-    }, { width: 80, height: 20 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <SessionPickerView
+        sessions={[]}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={true}
+        loading={true}
+      />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -86,17 +82,16 @@ describe("SessionPickerView", () => {
       makeSession({ agentName: "alpha-agent" }),
       makeSession({ sessionId: "s2", agentName: "beta-agent" }),
     ];
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [list] = createSignal(sessions);
-      const [loading] = createSignal(false);
-      return SessionPickerView({
-        sessions: list,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: true,
-        loading,
-      });
-    }, { width: 80, height: 20 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <SessionPickerView
+        sessions={sessions}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={true}
+        loading={false}
+      />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -106,17 +101,16 @@ describe("SessionPickerView", () => {
 
   test("shows message count in description", async () => {
     const sessions = [makeSession({ messageCount: 42 })];
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [list] = createSignal(sessions);
-      const [loading] = createSignal(false);
-      return SessionPickerView({
-        sessions: list,
-        onSelect: () => {},
-        onCancel: () => {},
-        focused: true,
-        loading,
-      });
-    }, { width: 80, height: 20 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <SessionPickerView
+        sessions={sessions}
+        onSelect={() => {}}
+        onCancel={() => {}}
+        focused={true}
+        loading={false}
+      />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -126,17 +120,16 @@ describe("SessionPickerView", () => {
   test("calls onSelect when session is selected", async () => {
     const sessions = [makeSession({ sessionId: "pick-me" })];
     let selectedId = "";
-    const { mockInput, renderOnce } = await testRender(() => {
-      const [list] = createSignal(sessions);
-      const [loading] = createSignal(false);
-      return SessionPickerView({
-        sessions: list,
-        onSelect: (id) => { selectedId = id; },
-        onCancel: () => {},
-        focused: true,
-        loading,
-      });
-    }, { width: 80, height: 20 });
+    const { mockInput, renderOnce } = await testRender(
+      <SessionPickerView
+        sessions={sessions}
+        onSelect={(id) => { selectedId = id; }}
+        onCancel={() => {}}
+        focused={true}
+        loading={false}
+      />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     mockInput.pressEnter();

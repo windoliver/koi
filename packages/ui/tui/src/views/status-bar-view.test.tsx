@@ -1,13 +1,12 @@
 /**
- * Tests for StatusBarView — OpenTUI component rendering.
+ * Tests for StatusBarView — OpenTUI React component rendering.
  */
 
 import { describe, expect, test } from "bun:test";
 import { agentId } from "@koi/core";
-import { testRender } from "@opentui/solid";
+import { testRender } from "@opentui/react/test-utils";
 import { createStore } from "../state/store.js";
 import { createInitialState } from "../state/types.js";
-import { createStoreSignal } from "./store-bridge.js";
 import { StatusBarView } from "./status-bar-view.js";
 
 function makeStore() {
@@ -17,10 +16,11 @@ function makeStore() {
 describe("StatusBarView", () => {
   test("renders KOI branding", async () => {
     const store = makeStore();
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const state = createStoreSignal(store);
-      return StatusBarView({ state });
-    }, { width: 100, height: 3 });
+    const state = store.getState();
+    const { captureCharFrame, renderOnce } = await testRender(
+      <StatusBarView state={state} />,
+      { width: 100, height: 3 },
+    );
 
     await renderOnce();
     const frame = captureCharFrame();
@@ -37,10 +37,11 @@ describe("StatusBarView", () => {
       ],
     });
 
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const state = createStoreSignal(store);
-      return StatusBarView({ state });
-    }, { width: 100, height: 3 });
+    const state = store.getState();
+    const { captureCharFrame, renderOnce } = await testRender(
+      <StatusBarView state={state} />,
+      { width: 100, height: 3 },
+    );
 
     await renderOnce();
     const frame = captureCharFrame();
@@ -51,14 +52,15 @@ describe("StatusBarView", () => {
     const store = makeStore();
     store.dispatch({ kind: "set_connection_status", status: "connected" });
 
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const state = createStoreSignal(store);
-      return StatusBarView({ state });
-    }, { width: 100, height: 3 });
+    const state = store.getState();
+    const { captureCharFrame, renderOnce } = await testRender(
+      <StatusBarView state={state} />,
+      { width: 100, height: 3 },
+    );
 
     await renderOnce();
     const frame = captureCharFrame();
-    expect(frame).toContain("●");
+    expect(frame).toContain("\u25CF");
   });
 
   test("shows active agent name when in session", async () => {
@@ -74,10 +76,11 @@ describe("StatusBarView", () => {
       session: { agentId: "a1", sessionId: "s1", messages: [], pendingText: "", isStreaming: false },
     });
 
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const state = createStoreSignal(store);
-      return StatusBarView({ state });
-    }, { width: 100, height: 3 });
+    const state = store.getState();
+    const { captureCharFrame, renderOnce } = await testRender(
+      <StatusBarView state={state} />,
+      { width: 100, height: 3 },
+    );
 
     await renderOnce();
     const frame = captureCharFrame();
@@ -86,10 +89,11 @@ describe("StatusBarView", () => {
 
   test("shows keyboard hints for agents view", async () => {
     const store = makeStore();
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const state = createStoreSignal(store);
-      return StatusBarView({ state });
-    }, { width: 120, height: 3 });
+    const state = store.getState();
+    const { captureCharFrame, renderOnce } = await testRender(
+      <StatusBarView state={state} />,
+      { width: 120, height: 3 },
+    );
 
     await renderOnce();
     const frame = captureCharFrame();

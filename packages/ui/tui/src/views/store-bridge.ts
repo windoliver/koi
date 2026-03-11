@@ -1,27 +1,21 @@
 /**
- * Store bridge — connects TuiStore to SolidJS reactive signals.
+ * Store bridge — connects TuiStore to React state.
  *
- * Creates fine-grained SolidJS accessors from the TuiStore's
- * subscribe/getState pattern. Cleanup handled by onCleanup.
+ * Uses useSyncExternalStore for tear-free reads from the TuiStore.
+ * This ensures React always sees a consistent snapshot of the store.
  */
 
-import { type Accessor, createMemo, createSignal, onCleanup } from "solid-js";
+import { useMemo, useSyncExternalStore } from "react";
 import type { TuiStore } from "../state/store.js";
 import type { TuiState } from "../state/types.js";
 
-/** Create a SolidJS signal that tracks the full TuiState. */
-export function createStoreSignal(store: TuiStore): Accessor<TuiState> {
-  const [state, setState] = createSignal(store.getState());
-  const unsub = store.subscribe((s) => setState(() => s));
-  onCleanup(unsub);
-  return state;
+/** Hook that tracks the full TuiState. */
+export function useStoreState(store: TuiStore): TuiState {
+  return useSyncExternalStore(store.subscribe, store.getState);
 }
 
-/** Create a derived signal that only updates when the selected slice changes. */
-export function createDerivedSignal<T>(
-  store: TuiStore,
-  selector: (state: TuiState) => T,
-): Accessor<T> {
-  const state = createStoreSignal(store);
-  return createMemo(() => selector(state()));
+/** Hook that selects a derived slice of TuiState. */
+export function useDerivedState<T>(store: TuiStore, selector: (state: TuiState) => T): T {
+  const state = useStoreState(store);
+  return useMemo(() => selector(state), [state, selector]);
 }

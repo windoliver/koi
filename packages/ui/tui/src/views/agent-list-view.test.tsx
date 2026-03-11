@@ -1,12 +1,11 @@
 /**
- * Tests for AgentListView — OpenTUI component rendering.
+ * Tests for AgentListView — OpenTUI React component rendering.
  */
 
 import { describe, expect, test } from "bun:test";
 import { agentId } from "@koi/core";
 import type { DashboardAgentSummary } from "@koi/dashboard-types";
-import { testRender } from "@opentui/solid";
-import { createSignal } from "solid-js";
+import { testRender } from "@opentui/react/test-utils";
 import { AgentListView } from "./agent-list-view.js";
 
 function makeAgent(overrides: Partial<DashboardAgentSummary> = {}): DashboardAgentSummary {
@@ -33,10 +32,10 @@ async function settle(renderOnce: () => Promise<void>): Promise<void> {
 describe("AgentListView", () => {
   test("renders header with agent count", async () => {
     const agents = [makeAgent(), makeAgent({ agentId: agentId("a2"), name: "second" })];
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [agentList] = createSignal(agents);
-      return AgentListView({ agents: agentList, onSelect: () => {}, focused: true });
-    }, { width: 80, height: 20 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <AgentListView agents={agents} onSelect={() => {}} focused={true} />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -45,10 +44,10 @@ describe("AgentListView", () => {
   });
 
   test("shows empty state when no agents", async () => {
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [agentList] = createSignal<readonly DashboardAgentSummary[]>([]);
-      return AgentListView({ agents: agentList, onSelect: () => {}, focused: true });
-    }, { width: 80, height: 20 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <AgentListView agents={[]} onSelect={() => {}} focused={true} />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -60,10 +59,10 @@ describe("AgentListView", () => {
       makeAgent({ name: "alpha-agent" }),
       makeAgent({ agentId: agentId("a2"), name: "beta-agent" }),
     ];
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [agentList] = createSignal(agents);
-      return AgentListView({ agents: agentList, onSelect: () => {}, focused: true });
-    }, { width: 80, height: 20 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <AgentListView agents={agents} onSelect={() => {}} focused={true} />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -73,10 +72,10 @@ describe("AgentListView", () => {
 
   test("shows agent state in description", async () => {
     const agents = [makeAgent({ state: "running", model: "claude-3" })];
-    const { captureCharFrame, renderOnce } = await testRender(() => {
-      const [agentList] = createSignal(agents);
-      return AgentListView({ agents: agentList, onSelect: () => {}, focused: true });
-    }, { width: 80, height: 20 });
+    const { captureCharFrame, renderOnce } = await testRender(
+      <AgentListView agents={agents} onSelect={() => {}} focused={true} />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     const frame = captureCharFrame();
@@ -87,14 +86,14 @@ describe("AgentListView", () => {
   test("calls onSelect when agent is selected", async () => {
     const agents = [makeAgent({ agentId: agentId("select-me") })];
     let selectedId = "";
-    const { mockInput, renderOnce } = await testRender(() => {
-      const [agentList] = createSignal(agents);
-      return AgentListView({
-        agents: agentList,
-        onSelect: (id) => { selectedId = id; },
-        focused: true,
-      });
-    }, { width: 80, height: 20 });
+    const { mockInput, renderOnce } = await testRender(
+      <AgentListView
+        agents={agents}
+        onSelect={(id) => { selectedId = id; }}
+        focused={true}
+      />,
+      { width: 80, height: 20 },
+    );
 
     await settle(renderOnce);
     mockInput.pressEnter();

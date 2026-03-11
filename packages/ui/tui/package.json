@@ -15,11 +15,12 @@
     "@koi/dashboard-client": "workspace:*",
     "@koi/dashboard-types": "workspace:*",
     "@opentui/core": "0.1.87",
-    "@opentui/solid": "0.1.87",
-    "solid-js": "1.9.5"
+    "@opentui/react": "0.1.87",
+    "react": "19.1.0"
   },
   "devDependencies": {
-    "@koi/test-utils": "workspace:*"
+    "@koi/test-utils": "workspace:*",
+    "@types/react": "19"
   },
   "scripts": {
     "build": "tsup",
