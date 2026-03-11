@@ -85,12 +85,16 @@ export interface LogsFlags extends BaseFlags {
 
 export interface TuiFlags extends BaseFlags {
   readonly command: "tui";
-  /** Admin API URL (e.g., "http://localhost:3100/admin/api"). */
+  /** Admin API URL (e.g., "http://localhost:3100/admin/api"). --url or --admin-url. */
   readonly url: string | undefined;
   /** Auth token for the admin API. */
   readonly authToken: string | undefined;
   /** Refresh interval in seconds (default: 5). */
   readonly refresh: number;
+  /** Auto-attach to a specific agent on launch. */
+  readonly agent: string | undefined;
+  /** Resume a specific session (requires --agent). */
+  readonly session: string | undefined;
 }
 
 export interface DoctorFlags extends BaseFlags {
@@ -354,21 +358,29 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     args: rest as string[],
     options: {
       url: { type: "string" },
+      "admin-url": { type: "string" },
       token: { type: "string" },
       refresh: { type: "string" },
+      agent: { type: "string" },
+      session: { type: "string" },
     },
     strict: false,
     allowPositionals: true,
   });
 
   const refreshStr = values.refresh as string | undefined;
+  // --admin-url is an alias for --url
+  const urlValue =
+    (values.url as string | undefined) ?? (values["admin-url"] as string | undefined);
 
   return {
     command: "tui" as const,
     directory: undefined,
-    url: values.url as string | undefined,
+    url: urlValue,
     authToken: values.token as string | undefined,
     refresh: refreshStr !== undefined ? Number.parseInt(refreshStr, 10) : 5,
+    agent: values.agent as string | undefined,
+    session: values.session as string | undefined,
   };
 }
 

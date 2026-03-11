@@ -77,8 +77,17 @@ export type { PaletteCallbacks, PaletteCommand } from "./views/command-palette.j
 export { createCommandPalette, DEFAULT_COMMANDS } from "./views/command-palette.js";
 export type { ConsoleCallbacks } from "./views/console-view.js";
 export { createConsoleView } from "./views/console-view.js";
-export type { SessionPickerDeps, SessionPickerHandle } from "./views/session-picker.js";
-export { createSessionPicker, parseSessionMessages } from "./views/session-picker.js";
+export type {
+  SessionInfo,
+  SessionPickerDeps,
+  SessionPickerHandle,
+} from "./views/session-picker.js";
+export {
+  createSessionPicker,
+  parseSessionRecord,
+  parseTuiChatLog,
+  TUI_SESSION_PREFIX,
+} from "./views/session-picker.js";
 // Views
 export type { StatusBarData } from "./views/status-bar.js";
 export { createStatusBar } from "./views/status-bar.js";

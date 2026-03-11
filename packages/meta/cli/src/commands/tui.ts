@@ -23,12 +23,12 @@ export async function runTui(flags: TuiFlags): Promise<void> {
   // Dynamic import to keep @koi/tui out of the main CLI bundle
   const { createTuiApp } = await import("@koi/tui");
 
-  const authConfig = flags.authToken !== undefined ? { authToken: flags.authToken } : {};
-
   const app = createTuiApp({
     adminUrl,
     refreshIntervalMs: refreshMs,
-    ...authConfig,
+    ...(flags.authToken !== undefined ? { authToken: flags.authToken } : {}),
+    ...(flags.agent !== undefined ? { initialAgentId: flags.agent } : {}),
+    ...(flags.session !== undefined ? { initialSessionId: flags.session } : {}),
   });
 
   // Graceful shutdown on signals

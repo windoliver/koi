@@ -5,7 +5,8 @@
  * store subscriptions, AG-UI streaming, and SSE event feed.
  */
 
-import type { DashboardEventBatch } from "@koi/dashboard-types";
+import type { AgentDashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
+import { isAgentEvent } from "@koi/dashboard-types";
 import {
   Key,
   matchesKey,
@@ -14,15 +15,16 @@ import {
   Spacer,
   TUI,
 } from "@mariozechner/pi-tui";
-import { type AdminClient, createAdminClient } from "../client/admin-client.js";
-import { type AguiEvent, type AguiStreamHandle, startChatStream } from "../client/agui-client.js";
+import { type AdminClient, type ClientResult, createAdminClient } from "../client/admin-client.js";
+import { type AguiStreamHandle, startChatStream } from "../client/agui-client.js";
 import { createReconnectingStream, type ReconnectHandle } from "../client/reconnect.js";
 import { createStore, type TuiStore } from "../state/store.js";
 import { type ChatMessage, createInitialState, type TuiView } from "../state/types.js";
 import { createAgentListView } from "./agent-list-view.js";
+import { createAguiEventHandler } from "./agui-event-handler.js";
 import { createCommandPalette } from "./command-palette.js";
 import { createConsoleView } from "./console-view.js";
-import { createSessionPicker } from "./session-picker.js";
+import { createSessionPicker, TUI_SESSION_PREFIX } from "./session-picker.js";
 import { createStatusBar, type StatusBarData } from "./status-bar.js";
 
 /** Configuration for the TUI application. */
@@ -31,6 +33,10 @@ export interface TuiAppConfig {
   readonly authToken?: string;
   /** Refresh interval for agent list in ms (default: 5000). */
   readonly refreshIntervalMs?: number;
+  /** Auto-attach to this agent on launch. */
+  readonly initialAgentId?: string;
+  /** Resume a specific session (requires initialAgentId). */
+  readonly initialSessionId?: string;
 }
 
 /** Handle returned from createTuiApp for lifecycle management. */
@@ -45,7 +51,13 @@ export interface TuiAppHandle {
 
 /** Create and wire the complete TUI application. */
 export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
-  const { adminUrl, authToken, refreshIntervalMs = 5_000 } = config;
+  const {
+    adminUrl,
+    authToken,
+    refreshIntervalMs = 5_000,
+    initialAgentId,
+    initialSessionId,
+  } = config;
 
   // ─── State ──────────────────────────────────────────────────────────
   const store = createStore(createInitialState(adminUrl));
@@ -63,9 +75,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   let activeChatStream: AguiStreamHandle | null = null;
   let sseStream: ReconnectHandle | null = null;
 
-  // Accumulator for tool call args (streamed incrementally via TOOL_CALL_ARGS)
-  let pendingToolCallName = "";
-  let pendingToolCallArgs = "";
+  const aguiHandler = createAguiEventHandler(store);
 
   // ─── Views ──────────────────────────────────────────────────────────
   const statusBar = createStatusBar();
@@ -130,15 +140,34 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     });
     store.dispatch({ kind: "set_view", view: "console" });
 
-    // Add lifecycle event
-    store.dispatch({
-      kind: "add_message",
-      message: {
-        kind: "lifecycle",
-        event: `Connected to agent ${agentId}`,
-        timestamp: Date.now(),
-      },
-    });
+    // Show agent info from the known agent list
+    const agent = store.getState().agents.find((a) => a.agentId === agentId);
+    const label = agent !== undefined ? `${agent.name} (${agent.state})` : agentId;
+    addLifecycleMessage(`Attached to agent ${label}`);
+
+    // Fetch recent logs to populate the console with live history
+    fetchRecentAgentActivity(agentId).catch(() => {});
+  }
+
+  /** Fetch recent agent logs/events and display them as lifecycle messages. */
+  async function fetchRecentAgentActivity(agentId: string): Promise<void> {
+    const result = await client.fsList(`/agents/${agentId}/events`);
+    if (!result.ok || result.value.length === 0) return;
+
+    // Read most recent log file
+    const recent = result.value[result.value.length - 1];
+    if (recent === undefined) return;
+
+    const content = await client.fsRead(recent.path);
+    if (!content.ok) return;
+
+    const text = typeof content.value === "string" ? content.value : "";
+    const lines = text.split("\n").filter((l) => l.trim() !== "");
+    // Show last 10 lines of recent activity
+    const tail = lines.slice(-10);
+    if (tail.length > 0) {
+      addLifecycleMessage(`Recent activity:\n${tail.join("\n")}`);
+    }
   }
 
   function sendChatMessage(text: string): void {
@@ -189,9 +218,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         history,
       },
       {
-        onEvent: (event: AguiEvent) => {
-          handleAguiEvent(event);
-        },
+        onEvent: aguiHandler.handle,
         onClose: () => {
           // Flush any pending tokens
           store.dispatch({ kind: "flush_tokens" });
@@ -215,118 +242,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         },
       },
     );
-  }
-
-  function handleAguiEvent(event: AguiEvent): void {
-    switch (event.type) {
-      case "TEXT_MESSAGE_CONTENT":
-        store.dispatch({ kind: "append_tokens", text: event.delta });
-        break;
-
-      case "TEXT_MESSAGE_END":
-        store.dispatch({ kind: "flush_tokens" });
-        break;
-
-      case "TOOL_CALL_START":
-        // Begin accumulating tool call
-        pendingToolCallName = event.toolCallName;
-        pendingToolCallArgs = "";
-        break;
-
-      case "TOOL_CALL_ARGS":
-        // Accumulate streamed argument chunks
-        pendingToolCallArgs += event.delta;
-        break;
-
-      case "TOOL_CALL_END":
-        // Emit the complete tool call message with accumulated args
-        store.dispatch({
-          kind: "add_message",
-          message: {
-            kind: "tool_call",
-            name: pendingToolCallName,
-            args: pendingToolCallArgs,
-            result: undefined,
-            timestamp: Date.now(),
-          },
-        });
-        pendingToolCallName = "";
-        pendingToolCallArgs = "";
-        break;
-
-      case "TOOL_CALL_RESULT":
-        store.dispatch({
-          kind: "add_message",
-          message: {
-            kind: "tool_call",
-            name: pendingToolCallName,
-            args: "",
-            result: event.result,
-            timestamp: Date.now(),
-          },
-        });
-        break;
-
-      case "RUN_STARTED":
-        store.dispatch({ kind: "set_streaming", isStreaming: true });
-        store.dispatch({
-          kind: "add_message",
-          message: {
-            kind: "lifecycle",
-            event: "Run started",
-            timestamp: Date.now(),
-          },
-        });
-        break;
-
-      case "RUN_FINISHED":
-        store.dispatch({ kind: "set_streaming", isStreaming: false });
-        store.dispatch({
-          kind: "add_message",
-          message: {
-            kind: "lifecycle",
-            event: "Run finished",
-            timestamp: Date.now(),
-          },
-        });
-        break;
-
-      case "RUN_ERROR":
-        store.dispatch({ kind: "set_streaming", isStreaming: false });
-        store.dispatch({
-          kind: "add_message",
-          message: {
-            kind: "lifecycle",
-            event: `Error: ${event.message}`,
-            timestamp: Date.now(),
-          },
-        });
-        break;
-
-      case "STEP_STARTED":
-        store.dispatch({
-          kind: "add_message",
-          message: {
-            kind: "lifecycle",
-            event: `Step: ${event.stepName}`,
-            timestamp: Date.now(),
-          },
-        });
-        break;
-
-      // Reasoning events are displayed as streaming text
-      case "REASONING_MESSAGE_CONTENT":
-        store.dispatch({ kind: "append_tokens", text: event.delta });
-        break;
-
-      case "REASONING_MESSAGE_END":
-        store.dispatch({ kind: "flush_tokens" });
-        break;
-
-      default:
-        // TEXT_MESSAGE_START, STEP_FINISHED, STATE_*, CUSTOM, etc. — no-op
-        break;
-    }
   }
 
   function cancelActiveStream(): void {
@@ -369,12 +284,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
               "seq" in batch &&
               "timestamp" in batch
             ) {
-              store.dispatch({
-                kind: "apply_event_batch",
-                batch: batch as DashboardEventBatch,
-              });
+              const typedBatch = batch as DashboardEventBatch;
+              store.dispatch({ kind: "apply_event_batch", batch: typedBatch });
               // Refresh agents on any agent event
               refreshAgents().catch(() => {});
+              // Forward agent lifecycle events to the console if attached
+              forwardAgentEventsToConsole(typedBatch);
             }
           } catch {
             // Malformed SSE data — skip
@@ -482,48 +397,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         dispatchNewAgent().catch(() => {});
         break;
 
-      case "suspend": {
-        const session = store.getState().activeSession;
-        if (session !== null) {
-          client
-            .suspendAgent(session.agentId)
-            .then((r) => {
-              addLifecycleMessage(r.ok ? "Agent suspended" : `Suspend failed: ${r.error.kind}`);
-              refreshAgents().catch(() => {});
-            })
-            .catch(() => {});
-        }
+      case "suspend":
+        runAgentCommand("suspend", (id) => client.suspendAgent(id));
         break;
-      }
 
-      case "resume": {
-        const session = store.getState().activeSession;
-        if (session !== null) {
-          client
-            .resumeAgent(session.agentId)
-            .then((r) => {
-              addLifecycleMessage(r.ok ? "Agent resumed" : `Resume failed: ${r.error.kind}`);
-              refreshAgents().catch(() => {});
-            })
-            .catch(() => {});
-        }
+      case "resume":
+        runAgentCommand("resume", (id) => client.resumeAgent(id));
         break;
-      }
 
-      case "terminate": {
-        const session = store.getState().activeSession;
-        if (session !== null) {
-          cancelActiveStream();
-          client
-            .terminateAgent(session.agentId)
-            .then((r) => {
-              addLifecycleMessage(r.ok ? "Agent terminated" : `Terminate failed: ${r.error.kind}`);
-              refreshAgents().catch(() => {});
-            })
-            .catch(() => {});
-        }
+      case "terminate":
+        cancelActiveStream();
+        runAgentCommand("terminate", (id) => client.terminateAgent(id));
         break;
-      }
 
       case "cancel":
         cancelActiveStream();
@@ -561,7 +446,56 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
   }
 
+  // ─── Command helpers ────────────────────────────────────────────────
+
+  /** Run an agent lifecycle command (suspend/resume/terminate) on the active session. */
+  function runAgentCommand(
+    label: string,
+    fn: (agentId: string) => Promise<ClientResult<null>>,
+  ): void {
+    const session = store.getState().activeSession;
+    if (session === null) return;
+    fn(session.agentId)
+      .then((r) => {
+        addLifecycleMessage(r.ok ? `Agent ${label}ed` : `${label} failed: ${r.error.kind}`);
+        refreshAgents().catch(() => {});
+      })
+      .catch(() => {});
+  }
+
   // ─── Command implementations ──────────────────────────────────────
+
+  /** Forward SSE agent events to the console for the attached agent. */
+  function forwardAgentEventsToConsole(batch: DashboardEventBatch): void {
+    const session = store.getState().activeSession;
+    if (session === null) return;
+
+    for (const evt of batch.events) {
+      if (!isAgentEvent(evt)) continue;
+      if (evt.agentId !== session.agentId) continue;
+
+      const desc = formatAgentEvent(evt);
+      if (desc !== null) {
+        addLifecycleMessage(desc);
+      }
+    }
+  }
+
+  /** Format an agent SSE event as a human-readable string. */
+  function formatAgentEvent(evt: AgentDashboardEvent): string | null {
+    switch (evt.subKind) {
+      case "status_changed":
+        return `Agent state: ${evt.from} → ${evt.to}`;
+      case "dispatched":
+        return `Agent dispatched: ${evt.name}`;
+      case "terminated":
+        return `Agent terminated${evt.reason !== undefined ? `: ${evt.reason}` : ""}`;
+      case "metrics_updated":
+        return `Turns: ${String(evt.turns)}, tokens: ${String(evt.tokenCount)}`;
+      default:
+        return null;
+    }
+  }
 
   function addLifecycleMessage(event: string): void {
     store.dispatch({
@@ -600,7 +534,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const session = store.getState().activeSession;
     if (session === null || session.messages.length === 0) return;
 
-    const sessionPath = `/agents/${session.agentId}/session/${session.sessionId}.jsonl`;
+    const sessionPath = `/agents/${session.agentId}${TUI_SESSION_PREFIX}/${session.sessionId}.jsonl`;
     const content = session.messages.map((m) => JSON.stringify(m)).join("\n");
 
     // Best-effort write — don't block on failure
@@ -613,30 +547,23 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       addLifecycleMessage("No active agent — select an agent first");
       return;
     }
-
     const result = await client.fsList(`/agents/${session.agentId}/events`);
-    if (result.ok) {
-      const entries = result.value;
-      if (entries.length === 0) {
-        addLifecycleMessage("No log entries found");
-      } else {
-        // Read the most recent log file
-        const recent = entries[entries.length - 1];
-        if (recent !== undefined) {
-          const content = await client.fsRead(recent.path);
-          if (content.ok) {
-            // Show last 20 lines
-            const lines = (typeof content.value === "string" ? content.value : "").split("\n");
-            const tail = lines.slice(-20).join("\n");
-            addLifecycleMessage(`Recent logs:\n${tail}`);
-          } else {
-            addLifecycleMessage(`Failed to read log: ${content.error.kind}`);
-          }
-        }
-      }
-    } else {
+    if (!result.ok) {
       addLifecycleMessage(`Failed to list logs: ${result.error.kind}`);
+      return;
     }
+    const recent = result.value[result.value.length - 1];
+    if (recent === undefined) {
+      addLifecycleMessage("No log entries found");
+      return;
+    }
+    const content = await client.fsRead(recent.path);
+    if (!content.ok) {
+      addLifecycleMessage(`Failed to read log: ${content.error.kind}`);
+      return;
+    }
+    const lines = (typeof content.value === "string" ? content.value : "").split("\n");
+    addLifecycleMessage(`Recent logs:\n${lines.slice(-20).join("\n")}`);
   }
 
   function openInBrowser(): void {
@@ -770,8 +697,30 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     // Start SSE event stream for live updates
     startEventStream();
 
-    // Start with agent list view
-    switchView("agents");
+    // Auto-attach to agent if --agent was specified
+    if (initialAgentId !== undefined) {
+      if (initialSessionId !== undefined) {
+        // Resume specific session
+        store.dispatch({
+          kind: "set_session",
+          session: {
+            agentId: initialAgentId,
+            sessionId: initialSessionId,
+            messages: [],
+            pendingText: "",
+            isStreaming: false,
+          },
+        });
+        store.dispatch({ kind: "set_view", view: "console" });
+        addLifecycleMessage(`Attached to agent ${initialAgentId}, session ${initialSessionId}`);
+        fetchRecentAgentActivity(initialAgentId).catch(() => {});
+      } else {
+        openAgentConsole(initialAgentId);
+      }
+    } else {
+      // Start with agent list view
+      switchView("agents");
+    }
     tui.requestRender();
 
     // Periodic agent refresh as fallback

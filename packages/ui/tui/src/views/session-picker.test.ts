@@ -1,10 +1,68 @@
 import { describe, expect, test } from "bun:test";
-import { parseSessionMessages } from "./session-picker.js";
+import { parseSessionRecord, parseTuiChatLog, TUI_SESSION_PREFIX } from "./session-picker.js";
 
-describe("parseSessionMessages", () => {
+describe("TUI_SESSION_PREFIX", () => {
+  test("has correct value", () => {
+    expect(TUI_SESSION_PREFIX).toBe("/session/tui");
+  });
+});
+
+describe("parseSessionRecord", () => {
+  test("returns null for empty content", () => {
+    expect(parseSessionRecord("")).toBeNull();
+    expect(parseSessionRecord("   ")).toBeNull();
+  });
+
+  test("parses valid SessionRecord JSON", () => {
+    const record = {
+      sessionId: "sess-abc123",
+      agentId: "agent-1",
+      manifestSnapshot: { name: "my-agent", version: "1.0" },
+      seq: 5,
+      remoteSeq: 3,
+      connectedAt: 1700000000000,
+      lastPersistedAt: 1700001000000,
+      metadata: {},
+    };
+
+    const info = parseSessionRecord(JSON.stringify(record));
+    expect(info).not.toBeNull();
+    expect(info?.sessionId).toBe("sess-abc123");
+    expect(info?.connectedAt).toBe(1700000000000);
+    expect(info?.agentName).toBe("my-agent");
+  });
+
+  test("returns null for missing sessionId", () => {
+    const record = { agentId: "agent-1", seq: 0 };
+    expect(parseSessionRecord(JSON.stringify(record))).toBeNull();
+  });
+
+  test("defaults agentName to unknown when manifest has no name", () => {
+    const record = { sessionId: "sess-1", connectedAt: 1000, manifestSnapshot: {} };
+    const info = parseSessionRecord(JSON.stringify(record));
+    expect(info?.agentName).toBe("unknown");
+  });
+
+  test("defaults agentName when no manifestSnapshot", () => {
+    const record = { sessionId: "sess-1", connectedAt: 1000 };
+    const info = parseSessionRecord(JSON.stringify(record));
+    expect(info?.agentName).toBe("unknown");
+  });
+
+  test("returns null for non-JSON content", () => {
+    expect(parseSessionRecord("not json")).toBeNull();
+  });
+
+  test("returns null for non-object JSON", () => {
+    expect(parseSessionRecord('"just a string"')).toBeNull();
+    expect(parseSessionRecord("42")).toBeNull();
+  });
+});
+
+describe("parseTuiChatLog", () => {
   test("returns empty array for empty content", () => {
-    expect(parseSessionMessages("")).toEqual([]);
-    expect(parseSessionMessages("   ")).toEqual([]);
+    expect(parseTuiChatLog("")).toEqual([]);
+    expect(parseTuiChatLog("   ")).toEqual([]);
   });
 
   test("parses JSON-lines with known message kinds", () => {
@@ -14,7 +72,7 @@ describe("parseSessionMessages", () => {
       JSON.stringify({ kind: "lifecycle", event: "Run started", timestamp: 300 }),
     ].join("\n");
 
-    const messages = parseSessionMessages(content);
+    const messages = parseTuiChatLog(content);
     expect(messages).toHaveLength(3);
     expect(messages[0]?.kind).toBe("user");
     expect(messages[1]?.kind).toBe("assistant");
@@ -30,7 +88,7 @@ describe("parseSessionMessages", () => {
       timestamp: 400,
     });
 
-    const messages = parseSessionMessages(content);
+    const messages = parseTuiChatLog(content);
     expect(messages).toHaveLength(1);
     if (messages[0]?.kind === "tool_call") {
       expect(messages[0].name).toBe("search");
@@ -45,7 +103,7 @@ describe("parseSessionMessages", () => {
       JSON.stringify({ kind: "assistant", text: "bye", timestamp: 2 }),
     ].join("\n");
 
-    const messages = parseSessionMessages(content);
+    const messages = parseTuiChatLog(content);
     expect(messages).toHaveLength(2);
   });
 
@@ -56,28 +114,13 @@ describe("parseSessionMessages", () => {
       JSON.stringify({ kind: "assistant", text: "bye", timestamp: 2 }),
     ].join("\n");
 
-    const messages = parseSessionMessages(content);
+    const messages = parseTuiChatLog(content);
     expect(messages).toHaveLength(2);
   });
 
-  test("falls back to lifecycle event for non-JSON content", () => {
+  test("returns empty for all-invalid content (no fallback)", () => {
     const content = "Some plain text log output\nAnother line";
-
-    const messages = parseSessionMessages(content);
-    expect(messages).toHaveLength(1);
-    expect(messages[0]?.kind).toBe("lifecycle");
-    if (messages[0]?.kind === "lifecycle") {
-      expect(messages[0].event).toContain("Some plain text");
-    }
-  });
-
-  test("truncates long fallback content to 2000 chars", () => {
-    const longContent = "x".repeat(3000);
-
-    const messages = parseSessionMessages(longContent);
-    expect(messages).toHaveLength(1);
-    if (messages[0]?.kind === "lifecycle") {
-      expect(messages[0].event.length).toBe(2000);
-    }
+    const messages = parseTuiChatLog(content);
+    expect(messages).toHaveLength(0);
   });
 });

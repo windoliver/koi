@@ -1,8 +1,10 @@
 /**
  * Session picker — interactive overlay for browsing and reopening saved sessions.
  *
- * Shows a SelectList of available sessions for the current agent.
- * On selection, loads session content and populates the active session state.
+ * Lists engine SessionRecord files from `/agents/{id}/session/records/`
+ * and TUI chat logs from `/agents/{id}/session/tui/`. On selection,
+ * restores the session context (threadId for AG-UI continuity) and
+ * replays any saved TUI chat history.
  */
 
 import { type OverlayHandle, type SelectItem, SelectList, type TUI } from "@mariozechner/pi-tui";
@@ -10,6 +12,20 @@ import type { AdminClient } from "../client/admin-client.js";
 import type { TuiStore } from "../state/store.js";
 import type { ChatMessage } from "../state/types.js";
 import { KOI_SELECT_THEME } from "../theme.js";
+
+/** TUI session persistence path prefix (separate from engine session records). */
+export const TUI_SESSION_PREFIX = "/session/tui";
+
+/** Engine session records path prefix (canonical SessionRecord storage). */
+const ENGINE_SESSION_PREFIX = "/session/records";
+
+/** Parsed metadata from a SessionRecord JSON file. */
+export interface SessionInfo {
+  readonly sessionId: string;
+  readonly connectedAt: number;
+  readonly agentName: string;
+  readonly path: string;
+}
 
 /** Dependencies injected from the main app. */
 export interface SessionPickerDeps {
@@ -40,29 +56,53 @@ export function createSessionPicker(deps: SessionPickerDeps): SessionPickerHandl
     }
 
     const agentId = session.agentId;
-    const result = await client.fsList(`/agents/${agentId}/session`);
-    if (!result.ok) {
-      addLifecycleMessage(`Failed to list sessions: ${result.error.kind}`);
-      return false;
+
+    // List engine session records and TUI chat logs in parallel
+    const [recordsResult, tuiResult] = await Promise.all([
+      client.fsList(`/agents/${agentId}${ENGINE_SESSION_PREFIX}`),
+      client.fsList(`/agents/${agentId}${TUI_SESSION_PREFIX}`),
+    ]);
+
+    const items: SelectItem[] = [];
+
+    // Parse engine SessionRecord files for session metadata
+    if (recordsResult.ok) {
+      const infos = await loadSessionInfos(agentId, recordsResult.value);
+      for (const info of infos) {
+        const date = new Date(info.connectedAt).toLocaleString();
+        items.push({
+          value: info.sessionId,
+          label: `${info.sessionId.slice(0, 12)}…`,
+          description: `${info.agentName} — ${date}`,
+        });
+      }
     }
 
-    const sessions = result.value;
-    if (sessions.length === 0) {
+    // Add TUI chat log entries (these have local message history)
+    if (tuiResult.ok) {
+      for (const entry of tuiResult.value) {
+        if (!entry.name.endsWith(".jsonl")) continue;
+        const sid = entry.name.replace(/\.jsonl$/, "");
+        // Skip if already listed from engine records
+        if (items.some((i) => i.value === sid)) continue;
+        items.push({
+          value: sid,
+          label: sid,
+          description: "TUI chat log",
+        });
+      }
+    }
+
+    if (items.length === 0) {
       addLifecycleMessage("No saved sessions found");
       return false;
     }
 
-    const items: readonly SelectItem[] = sessions.map((entry) => ({
-      value: entry.path,
-      label: entry.name,
-      description: entry.isDirectory ? "session folder" : "session file",
-    }));
-
-    const picker = new SelectList([...items], Math.min(sessions.length, 10), KOI_SELECT_THEME);
+    const picker = new SelectList([...items], Math.min(items.length, 10), KOI_SELECT_THEME);
 
     picker.onSelect = (item: SelectItem) => {
       hide();
-      loadSession(agentId, item.value, item.label).catch(() => {
+      loadSession(agentId, item.value).catch(() => {
         addLifecycleMessage("Failed to load session");
       });
     };
@@ -88,41 +128,92 @@ export function createSessionPicker(deps: SessionPickerDeps): SessionPickerHandl
     }
   }
 
-  async function loadSession(
-    agentId: string,
-    sessionPath: string,
-    sessionName: string,
-  ): Promise<void> {
-    const content = await client.fsRead(sessionPath);
-    if (!content.ok) {
-      addLifecycleMessage(`Failed to load session: ${content.error.kind}`);
-      return;
+  /** Load SessionRecord files and extract metadata. */
+  async function loadSessionInfos(
+    _agentId: string,
+    entries: readonly {
+      readonly name: string;
+      readonly path: string;
+      readonly isDirectory: boolean;
+    }[],
+  ): Promise<readonly SessionInfo[]> {
+    const infos: SessionInfo[] = [];
+    const jsonFiles = entries.filter((e) => e.name.endsWith(".json") && !e.isDirectory);
+    // Load up to 20 most recent records
+    const toLoad = jsonFiles.slice(-20);
+
+    for (const entry of toLoad) {
+      const content = await client.fsRead(entry.path);
+      if (!content.ok) continue;
+      const info = parseSessionRecord(typeof content.value === "string" ? content.value : "");
+      if (info !== null) {
+        infos.push({ ...info, path: entry.path });
+      }
     }
 
-    const messages = parseSessionMessages(typeof content.value === "string" ? content.value : "");
+    return infos;
+  }
+
+  /** Load a session by sessionId — tries TUI chat log first, then creates fresh. */
+  async function loadSession(agentId: string, sessionId: string): Promise<void> {
+    // Try to load TUI chat log for message history
+    const tuiLogPath = `/agents/${agentId}${TUI_SESSION_PREFIX}/${sessionId}.jsonl`;
+    const logResult = await client.fsRead(tuiLogPath);
+    const messages = logResult.ok
+      ? parseTuiChatLog(typeof logResult.value === "string" ? logResult.value : "")
+      : [];
 
     store.dispatch({
       kind: "set_session",
       session: {
         agentId,
-        sessionId: sessionName,
+        sessionId,
         messages,
         pendingText: "",
         isStreaming: false,
       },
     });
     store.dispatch({ kind: "set_view", view: "console" });
-    addLifecycleMessage(`Loaded session: ${sessionName} (${String(messages.length)} messages)`);
+    addLifecycleMessage(`Loaded session: ${sessionId} (${String(messages.length)} messages)`);
   }
 
   return { show, hide };
 }
 
-/** Parse stored session content into ChatMessage array. */
-export function parseSessionMessages(content: string): readonly ChatMessage[] {
+/** Parse a SessionRecord JSON file to extract session metadata. */
+export function parseSessionRecord(content: string): Omit<SessionInfo, "path"> | null {
+  if (content.trim() === "") return null;
+
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (typeof parsed !== "object" || parsed === null) return null;
+
+    const record = parsed as Record<string, unknown>;
+    const sessionId = record.sessionId;
+    if (typeof sessionId !== "string") return null;
+
+    const connectedAt = typeof record.connectedAt === "number" ? record.connectedAt : Date.now();
+
+    // Extract agent name from manifest snapshot if available
+    let agentName = "unknown";
+    const manifest = record.manifestSnapshot;
+    if (typeof manifest === "object" && manifest !== null) {
+      const name = (manifest as Record<string, unknown>).name;
+      if (typeof name === "string") {
+        agentName = name;
+      }
+    }
+
+    return { sessionId, connectedAt, agentName };
+  } catch {
+    return null;
+  }
+}
+
+/** Parse TUI chat log (JSON-lines format) into ChatMessage array. */
+export function parseTuiChatLog(content: string): readonly ChatMessage[] {
   if (content.trim() === "") return [];
 
-  // Try JSON-lines format (one JSON message per line)
   const lines = content.split("\n").filter((l) => l.trim() !== "");
   const messages: ChatMessage[] = [];
   for (const line of lines) {
@@ -145,9 +236,5 @@ export function parseSessionMessages(content: string): readonly ChatMessage[] {
     }
   }
 
-  // If JSON-lines worked, return
-  if (messages.length > 0) return messages;
-
-  // Fallback: treat entire content as a single lifecycle event
-  return [{ kind: "lifecycle", event: content.slice(0, 2000), timestamp: Date.now() }];
+  return messages;
 }
