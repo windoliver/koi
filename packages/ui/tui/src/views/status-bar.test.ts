@@ -1,50 +1,67 @@
 import { describe, expect, test } from "bun:test";
-import { createStatusBar, type StatusBarData } from "./status-bar.js";
+import { composeStatusBarText, formatAgentState, formatConnectionStatus } from "./status-bar.js";
 
-describe("createStatusBar", () => {
-  test("creates component and update function", () => {
-    const bar = createStatusBar();
-    expect(bar.component).toBeDefined();
-    expect(typeof bar.update).toBe("function");
+describe("formatConnectionStatus", () => {
+  test("connected returns green indicator", () => {
+    const result = formatConnectionStatus("connected");
+    expect(result.indicator).toBe("● connected");
+    expect(result.color).toBe("#00FF00");
   });
 
-  test("renders without error", () => {
-    const bar = createStatusBar();
-    const data: StatusBarData = {
+  test("reconnecting returns yellow indicator", () => {
+    const result = formatConnectionStatus("reconnecting");
+    expect(result.indicator).toContain("reconnecting");
+    expect(result.color).toBe("#FFFF00");
+  });
+
+  test("disconnected returns red indicator", () => {
+    const result = formatConnectionStatus("disconnected");
+    expect(result.indicator).toContain("disconnected");
+    expect(result.color).toBe("#FF0000");
+  });
+});
+
+describe("formatAgentState", () => {
+  test("returns state name directly", () => {
+    expect(formatAgentState("running")).toBe("running");
+    expect(formatAgentState("terminated")).toBe("terminated");
+    expect(formatAgentState("idle")).toBe("idle");
+  });
+});
+
+describe("composeStatusBarText", () => {
+  test("includes all sections", () => {
+    const text = composeStatusBarText({
       connectionStatus: "connected",
-      agentName: "test-agent",
-      view: "agents",
+      agentName: "my-agent",
+      view: "console",
       agentCount: 3,
-    };
-    bar.update(data);
-    // Text component should render to string lines
-    const lines = bar.component.render(80);
-    expect(lines.length).toBeGreaterThan(0);
+    });
+    expect(text).toContain("KOI");
+    expect(text).toContain("connected");
+    expect(text).toContain("3 agents");
+    expect(text).toContain("my-agent");
+    expect(text).toContain("Enter send");
   });
 
-  test("renders with no agent", () => {
-    const bar = createStatusBar();
-    bar.update({
+  test("shows 'no agent' when agentName is undefined", () => {
+    const text = composeStatusBarText({
       connectionStatus: "disconnected",
       agentName: undefined,
-      view: "console",
+      view: "agents",
       agentCount: 0,
     });
-    const lines = bar.component.render(80);
-    expect(lines.length).toBeGreaterThan(0);
+    expect(text).toContain("no agent");
+    expect(text).toContain("0 agents");
   });
 
-  test("renders each connection status", () => {
-    const bar = createStatusBar();
-    for (const status of ["connected", "reconnecting", "disconnected"] as const) {
-      bar.update({
-        connectionStatus: status,
-        agentName: undefined,
-        view: "agents",
-        agentCount: 0,
-      });
-      const lines = bar.component.render(120);
-      expect(lines.length).toBeGreaterThan(0);
-    }
+  test("shows palette view hints", () => {
+    const text = composeStatusBarText({
+      connectionStatus: "connected",
+      agentName: "a1",
+      view: "palette",
+      agentCount: 1,
+    });
+    expect(text).toContain("Esc close");
   });
 });

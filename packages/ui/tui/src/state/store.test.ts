@@ -21,6 +21,23 @@ function makeAgent(
   };
 }
 
+function makeToolCall(
+  name: string,
+  args: string,
+  toolCallId: string,
+  result: string | undefined = undefined,
+  timestamp = 1,
+): import("@koi/dashboard-client").ChatMessage {
+  return {
+    kind: "tool_call",
+    name,
+    args,
+    result,
+    toolCallId,
+    timestamp,
+  };
+}
+
 const BASE_STATE = createInitialState("http://localhost:3100");
 
 describe("createInitialState", () => {
@@ -284,6 +301,145 @@ describe("reduce", () => {
     });
   });
 
+  describe("update_tool_result", () => {
+    test("updates matching tool_call message result", () => {
+      const state: TuiState = {
+        ...BASE_STATE,
+        activeSession: {
+          agentId: "a1",
+          sessionId: "s1",
+          messages: [
+            { kind: "user", text: "hello", timestamp: 1 },
+            makeToolCall("read", "{}", "tc-1", undefined, 2),
+          ],
+          pendingText: "",
+          isStreaming: true,
+        },
+      };
+      const next = reduce(state, {
+        kind: "update_tool_result",
+        toolCallId: "tc-1",
+        result: "file contents here",
+      });
+      const msg = next.activeSession?.messages[1];
+      expect(msg?.kind).toBe("tool_call");
+      if (msg?.kind === "tool_call") {
+        expect(msg.result).toBe("file contents here");
+        expect(msg.toolCallId).toBe("tc-1");
+      }
+    });
+
+    test("no-ops when toolCallId not found", () => {
+      const state: TuiState = {
+        ...BASE_STATE,
+        activeSession: {
+          agentId: "a1",
+          sessionId: "s1",
+          messages: [makeToolCall("read", "{}", "tc-1")],
+          pendingText: "",
+          isStreaming: false,
+        },
+      };
+      const next = reduce(state, {
+        kind: "update_tool_result",
+        toolCallId: "tc-nonexistent",
+        result: "data",
+      });
+      expect(next).toBe(state);
+    });
+
+    test("updates last matching tool_call when duplicates exist", () => {
+      const state: TuiState = {
+        ...BASE_STATE,
+        activeSession: {
+          agentId: "a1",
+          sessionId: "s1",
+          messages: [
+            makeToolCall("read", "a", "tc-dup", "old-a", 1),
+            { kind: "user", text: "next", timestamp: 2 },
+            makeToolCall("read", "b", "tc-dup", undefined, 3),
+          ],
+          pendingText: "",
+          isStreaming: false,
+        },
+      };
+      const next = reduce(state, {
+        kind: "update_tool_result",
+        toolCallId: "tc-dup",
+        result: "new-result",
+      });
+      // First message with same id should be untouched
+      const first = next.activeSession?.messages[0];
+      if (first?.kind === "tool_call") {
+        expect(first.result).toBe("old-a");
+      }
+      // Last message with same id should be updated
+      const last = next.activeSession?.messages[2];
+      if (last?.kind === "tool_call") {
+        expect(last.result).toBe("new-result");
+      }
+    });
+
+    test("overwrites existing result", () => {
+      const state: TuiState = {
+        ...BASE_STATE,
+        activeSession: {
+          agentId: "a1",
+          sessionId: "s1",
+          messages: [makeToolCall("read", "{}", "tc-1", "first")],
+          pendingText: "",
+          isStreaming: false,
+        },
+      };
+      const next = reduce(state, {
+        kind: "update_tool_result",
+        toolCallId: "tc-1",
+        result: "overwritten",
+      });
+      const msg = next.activeSession?.messages[0];
+      if (msg?.kind === "tool_call") {
+        expect(msg.result).toBe("overwritten");
+      }
+    });
+
+    test("no-ops when no active session", () => {
+      const next = reduce(BASE_STATE, {
+        kind: "update_tool_result",
+        toolCallId: "tc-1",
+        result: "data",
+      });
+      expect(next).toBe(BASE_STATE);
+    });
+
+    test("preserves immutability — original state unchanged", () => {
+      const original: TuiState = {
+        ...BASE_STATE,
+        activeSession: {
+          agentId: "a1",
+          sessionId: "s1",
+          messages: [makeToolCall("read", "{}", "tc-1")],
+          pendingText: "",
+          isStreaming: false,
+        },
+      };
+      const next = reduce(original, {
+        kind: "update_tool_result",
+        toolCallId: "tc-1",
+        result: "updated",
+      });
+      // Original unchanged
+      const origMsg = original.activeSession?.messages[0];
+      if (origMsg?.kind === "tool_call") {
+        expect(origMsg.result).toBeUndefined();
+      }
+      // New state updated
+      const newMsg = next.activeSession?.messages[0];
+      if (newMsg?.kind === "tool_call") {
+        expect(newMsg.result).toBe("updated");
+      }
+    });
+  });
+
   describe("apply_event_batch", () => {
     test("updates lastEventSeq", () => {
       const next = reduce(BASE_STATE, {
@@ -291,6 +447,40 @@ describe("reduce", () => {
         batch: { events: [], seq: 42, timestamp: Date.now() },
       });
       expect(next.lastEventSeq).toBe(42);
+    });
+
+    test("detects SSE gap and sets error", () => {
+      const state: TuiState = { ...BASE_STATE, lastEventSeq: 5 };
+      const next = reduce(state, {
+        kind: "apply_event_batch",
+        batch: { events: [], seq: 8, timestamp: Date.now() },
+      });
+      expect(next.lastEventSeq).toBe(8);
+      expect(next.error).not.toBeNull();
+      expect(next.error?.kind).toBe("api_error");
+      if (next.error?.kind === "api_error") {
+        expect(next.error.code).toBe("SSE_GAP");
+        expect(next.error.message).toContain("expected seq 6");
+        expect(next.error.message).toContain("got 8");
+      }
+    });
+
+    test("no gap on sequential batches", () => {
+      const state: TuiState = { ...BASE_STATE, lastEventSeq: 5 };
+      const next = reduce(state, {
+        kind: "apply_event_batch",
+        batch: { events: [], seq: 6, timestamp: Date.now() },
+      });
+      expect(next.lastEventSeq).toBe(6);
+      expect(next.error).toBeNull();
+    });
+
+    test("no gap on first batch (lastEventSeq = 0)", () => {
+      const next = reduce(BASE_STATE, {
+        kind: "apply_event_batch",
+        batch: { events: [], seq: 42, timestamp: Date.now() },
+      });
+      expect(next.error).toBeNull();
     });
   });
 });
