@@ -29,6 +29,7 @@
     "react-router-dom": "7.6.2",
     "reactflow": "11.11.4",
     "@tanstack/react-virtual": "3.13.21",
+    "react-markdown": "10.1.0",
     "zustand": "5.0.5"
   },
   "devDependencies": {

@@ -8,7 +8,7 @@
  * (shared with @koi/dashboard-ui).
  */
 
-import type { AguiEvent } from "@koi/dashboard-types";
+import type { AguiEvent, ChatRunInput } from "@koi/dashboard-types";
 import { parseAguiEvent, SSEParser } from "@koi/dashboard-types";
 import type { TuiError } from "../state/types.js";
 
