@@ -109,11 +109,13 @@ export function createSupervisionReconciler(deps: {
    *
    * Matching strategy (two passes):
    * 1. Metadata-based: children spawned by a previous reconciler instance may
-   *    have `metadata.childSpecName` set. This is the robust path.
+   *    have `metadata.childSpecName` set. This is the robust path and MUST be
+   *    used when `spawnChild` implementations support it.
    * 2. Position-based fallback: children without metadata are assigned to
-   *    unmatched specs in iteration order. This is safe because all strategy
-   *    functions spawn children sequentially in declaration order, so the
-   *    process tree's insertion order mirrors the spec list.
+   *    unmatched specs in iteration order. WARNING: this fallback is unreliable
+   *    after parallel restarts (one_for_all uses Promise.allSettled, so process
+   *    tree insertion order may not match spec declaration order). SpawnChild
+   *    implementations SHOULD set `metadata.childSpecName` to avoid mismatches.
    *
    * After matching, all matched child IDs are added to `supervisedChildIds`
    * so CascadingTermination knows to defer for them.

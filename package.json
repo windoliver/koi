@@ -29,7 +29,7 @@
     "check:test-utils-migration": "bun scripts/check-test-utils-migration.ts",
     "generate:layer-docs": "bun scripts/generate-layer-docs.ts",
     "changeset": "bunx changeset",
-    "changeset:version": "bunx changeset version && bun update",
+    "changeset:version": "bunx changeset version && bun install",
     "changeset:publish": "bunx changeset publish",
     "postinstall": "lefthook install"
   },
