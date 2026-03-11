@@ -14,11 +14,12 @@ function makeReq(): Request {
 }
 
 describe("createChatRouter", () => {
-  test("routes to primary handler when no dispatched handler found", async () => {
+  test("routes to primary handler when agentId is primary", async () => {
     const primary = mock(async (_req: Request, _id: string) => new Response("primary"));
     const router = createChatRouter({
       primaryHandler: primary,
       getDispatchedHandler: () => undefined,
+      isPrimaryAgent: (id) => id === "primary-agent",
     });
 
     const res = await router(makeReq(), "primary-agent");
@@ -32,6 +33,7 @@ describe("createChatRouter", () => {
     const router = createChatRouter({
       primaryHandler: primary,
       getDispatchedHandler: (id) => (id === "agent-1" ? dispatched : undefined),
+      isPrimaryAgent: (id) => id === "primary-agent",
     });
 
     const res = await router(makeReq(), "agent-1");
@@ -40,17 +42,38 @@ describe("createChatRouter", () => {
     expect(await res.text()).toBe("dispatched");
   });
 
-  test("falls through to primary for non-matching dispatched id", async () => {
+  test("returns 404 for unknown agent that is not primary", async () => {
+    const primary = mock(async (_req: Request, _id: string) => new Response("primary"));
+    const router = createChatRouter({
+      primaryHandler: primary,
+      getDispatchedHandler: () => undefined,
+      isPrimaryAgent: (id) => id === "primary-agent",
+    });
+
+    const res = await router(makeReq(), "unknown-agent");
+    expect(primary).not.toHaveBeenCalled();
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as {
+      readonly ok: boolean;
+      readonly error: { readonly code: string };
+    };
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("NOT_FOUND");
+  });
+
+  test("dispatched handler takes priority over primary check", async () => {
     const primary = mock(async (_req: Request, _id: string) => new Response("primary"));
     const dispatched = mock(async (_req: Request) => new Response("dispatched"));
     const router = createChatRouter({
       primaryHandler: primary,
-      getDispatchedHandler: (id) => (id === "agent-1" ? dispatched : undefined),
+      getDispatchedHandler: (id) => (id === "primary-agent" ? dispatched : undefined),
+      isPrimaryAgent: (id) => id === "primary-agent",
     });
 
-    const res = await router(makeReq(), "agent-2");
-    expect(primary).toHaveBeenCalledTimes(1);
-    expect(dispatched).not.toHaveBeenCalled();
-    expect(await res.text()).toBe("primary");
+    // Even though this ID is the primary, dispatched handler takes priority
+    const res = await router(makeReq(), "primary-agent");
+    expect(dispatched).toHaveBeenCalledTimes(1);
+    expect(primary).not.toHaveBeenCalled();
+    expect(await res.text()).toBe("dispatched");
   });
 });

@@ -177,7 +177,7 @@ export function createDashboardHandler(
     {
       method: "POST",
       pattern: "/agents/:id/chat",
-      handler: (req, params) => {
+      handler: async (req, params) => {
         if (agentChatHandler === undefined) {
           return errorResponse(
             "NOT_IMPLEMENTED",
@@ -189,10 +189,13 @@ export function createDashboardHandler(
         if (id === undefined) {
           return errorResponse("VALIDATION", "Missing agent ID", 400);
         }
-        // Verify agent exists before delegating to chat handler
-        const agent = dataSource.getAgent(toAgentId(id));
+        // Verify agent exists and is not terminated before delegating to chat handler
+        const agent = await dataSource.getAgent(toAgentId(id));
         if (agent === undefined) {
           return errorResponse("NOT_FOUND", `Agent ${id} not found`, 404);
+        }
+        if (agent.state === "terminated") {
+          return errorResponse("CONFLICT", `Agent ${id} is terminated`, 409);
         }
         return agentChatHandler(req, id);
       },

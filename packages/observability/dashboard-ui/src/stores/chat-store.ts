@@ -150,7 +150,8 @@ export const useChatStore = create<ChatState>((set) => ({
       error: null,
       isStreaming: false,
       lastUserMessage: null,
-      agentTerminated: false,
+      // Note: agentTerminated is NOT reset here — the caller (ConsoleView)
+      // should set it based on the agent's actual state after setSession().
     }),
 
   setError: (error) => set({ error }),

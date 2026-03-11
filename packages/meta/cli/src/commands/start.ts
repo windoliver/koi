@@ -275,6 +275,19 @@ export async function runStart(flags: StartFlags): Promise<void> {
       const dispatcher = createAgentDispatcher({
         defaultManifestPath: manifestPath,
         verbose: flags.verbose,
+        additionalMiddleware: [
+          ...nexus.middlewares,
+          ...(forgeBootstrap?.middlewares ?? []),
+          ...(autonomous?.middleware ?? []),
+        ],
+        additionalProviders: [
+          ...nexus.providers,
+          ...(forgeBootstrap !== undefined
+            ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
+            : []),
+          ...(autonomous?.providers ?? []),
+        ],
+        additionalExtensions: extensions,
       });
       adminDispatcher = dispatcher;
 
@@ -303,6 +316,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
           ? createChatRouter({
               primaryHandler: chatBridge.handler,
               getDispatchedHandler: adminDispatcher.getChatHandler,
+              isPrimaryAgent: (id) => id === adminBridge?.agentId,
             })
           : chatBridge?.handler;
 

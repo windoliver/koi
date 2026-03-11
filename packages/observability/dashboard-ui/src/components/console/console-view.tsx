@@ -75,11 +75,15 @@ export const ConsoleView = memo(function ConsoleView({
   // server persist to the same file (fixes split-brain issue).
   useEffect(() => {
     const id = `chat-${Date.now().toString(36)}`;
-    useChatStore.getState().setSession({
+    const store = useChatStore.getState();
+    store.setSession({
       agentId,
       sessionId: id,
       threadId: id,
     });
+    // Sync terminated state from the agent store — prevents re-enabling
+    // the composer for an already-terminated agent.
+    store.setAgentTerminated(agent?.state === "terminated");
 
     return () => {
       // Persist before unmounting
@@ -87,7 +91,7 @@ export const ConsoleView = memo(function ConsoleView({
       cancel();
       useChatStore.getState().setSession(null);
     };
-  }, [agentId, persistCurrentSession, cancel]);
+  }, [agentId, agent?.state, persistCurrentSession, cancel]);
 
   const handleSend = useCallback(
     (text: string) => {

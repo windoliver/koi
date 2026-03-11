@@ -68,11 +68,16 @@ export function AgentCard({
       <div className="mt-3 border-t border-[var(--color-border)] pt-3">
         <button
           type="button"
+          disabled={agent.state === "terminated"}
           onClick={() => { navigate(`/agents/${encodeURIComponent(agent.agentId)}/console`); }}
-          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-muted)] transition-colors hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]"
+          className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors ${
+            agent.state === "terminated"
+              ? "cursor-not-allowed border-[var(--color-border)] text-[var(--color-muted)]/40"
+              : "border-[var(--color-border)] text-[var(--color-muted)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]"
+          }`}
         >
           <MessageSquare className="h-3 w-3" />
-          Open Console
+          {agent.state === "terminated" ? "Terminated" : "Open Console"}
         </button>
       </div>
     </div>

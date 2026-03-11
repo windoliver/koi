@@ -280,6 +280,36 @@ describe("AG-UI chat endpoint", () => {
     chatHandler.dispose();
   });
 
+  test("POST /admin/api/agents/:id/chat returns 409 for terminated agent", async () => {
+    const { dataSource } = createMockDataSource();
+    // Wrap dataSource to return a terminated agent for getAgent
+    const wrappedDataSource: DashboardDataSource = {
+      ...dataSource,
+      getAgent: (id: AgentId) => {
+        const agent = dataSource.getAgent(id);
+        if (agent === undefined) return undefined;
+        return { ...agent, state: "terminated" as const };
+      },
+    };
+    const chatHandler = createDashboardHandler(
+      {
+        dataSource: wrappedDataSource,
+        agentChatHandler: (_req, _id) => new Response("ok"),
+      },
+      { cors: false },
+    );
+
+    const req = new Request(`http://localhost/admin/api/agents/agent-1/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [] }),
+    });
+    const response = await chatHandler.handler(req);
+    expect(response).not.toBeNull();
+    expect(response?.status).toBe(409);
+    chatHandler.dispose();
+  });
+
   test("POST /admin/api/agents/:id/chat delegates to handler for known agent", async () => {
     const { dataSource } = createMockDataSource();
     const chatHandler = createDashboardHandler(

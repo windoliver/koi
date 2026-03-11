@@ -418,6 +418,8 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   const dispatcher = createAgentDispatcher({
     defaultManifestPath: manifestPath,
     verbose: flags.verbose,
+    additionalMiddleware: [...(autonomous?.middleware ?? [])],
+    additionalProviders: [...(autonomous?.providers ?? [])],
   });
 
   const bridge = createAdminPanelBridge({
@@ -480,6 +482,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       ? createChatRouter({
           primaryHandler: chatBridge.handler,
           getDispatchedHandler: dispatcher.getChatHandler,
+          isPrimaryAgent: (id) => id === bridge.agentId,
         })
       : undefined;
 
