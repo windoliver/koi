@@ -2,9 +2,7 @@
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src",
-    "jsx": "preserve",
-    "jsxImportSource": "solid-js"
+    "rootDir": "src"
   },
   "include": ["src/**/*"],
   "references": [
@@ -12,10 +10,7 @@
       "path": "../../kernel/core"
     },
     {
-      "path": "../../observability/dashboard-types"
-    },
-    {
-      "path": "../../observability/dashboard-client"
+      "path": "../dashboard-types"
     }
   ]
 }

@@ -5,7 +5,7 @@
  * and parses the event protocol for the TUI console view.
  */
 
-import type { TuiError } from "../state/types.js";
+import type { DashboardClientError } from "../types.js";
 import { type SSEEvent, SSEParser } from "./sse-stream.js";
 
 // ─── AG-UI Event Types ───────────────────────────────────────────────
@@ -117,7 +117,7 @@ export interface ChatHistoryMessage {
 export interface AguiStreamCallbacks {
   readonly onEvent: (event: AguiEvent) => void;
   readonly onClose?: () => void;
-  readonly onError?: (error: TuiError) => void;
+  readonly onError?: (error: DashboardClientError) => void;
 }
 
 // ─── Client Implementation ───────────────────────────────────────────
@@ -257,8 +257,8 @@ function parseAguiEvent(sse: SSEEvent): AguiEvent | null {
   }
 }
 
-/** Map a stream error to TuiError. */
-function mapStreamError(error: unknown, url: string, timeoutMs: number): TuiError {
+/** Map a stream error to DashboardClientError. */
+function mapStreamError(error: unknown, url: string, timeoutMs: number): DashboardClientError {
   if (error instanceof DOMException && error.name === "AbortError") {
     return { kind: "timeout", operation: "chat_stream", ms: timeoutMs };
   }

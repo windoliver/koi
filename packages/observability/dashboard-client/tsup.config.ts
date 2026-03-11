@@ -11,10 +11,4 @@ export default defineConfig({
   clean: true,
   treeshake: true,
   target: "node22",
-  // SolidJS JSX transformation
-  jsx: "preserve",
-  esbuildOptions(options) {
-    options.jsx = "automatic";
-    options.jsxImportSource = "solid-js";
-  },
 });

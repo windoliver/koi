@@ -3,9 +3,12 @@
  *
  * Handles tool call accumulation (TOOL_CALL_START → ARGS → END → RESULT)
  * using a Map keyed by toolCallId to preserve attribution across events.
+ *
+ * TOOL_CALL_END creates a tool_call message (with toolCallId for tracking).
+ * TOOL_CALL_RESULT updates that message in-place via update_tool_result action.
  */
 
-import type { AguiEvent } from "../client/agui-client.js";
+import type { AguiEvent } from "@koi/dashboard-client";
 import type { TuiStore } from "../state/store.js";
 
 /** Create an AG-UI event handler wired to a store. */
@@ -48,6 +51,7 @@ export function createAguiEventHandler(store: TuiStore): {
       case "TOOL_CALL_END": {
         const tc = pending.get(event.toolCallId);
         if (tc !== undefined) {
+          // Create tool_call message with toolCallId for later update
           store.dispatch({
             kind: "add_message",
             message: {
@@ -55,6 +59,7 @@ export function createAguiEventHandler(store: TuiStore): {
               name: tc.name,
               args: tc.args,
               result: undefined,
+              toolCallId: event.toolCallId,
               timestamp: Date.now(),
             },
           });
@@ -63,18 +68,12 @@ export function createAguiEventHandler(store: TuiStore): {
       }
 
       case "TOOL_CALL_RESULT": {
-        const tc = pending.get(event.toolCallId);
-        const toolName = tc?.name ?? "unknown";
+        // Update the existing tool_call message in-place
         pending.delete(event.toolCallId);
         store.dispatch({
-          kind: "add_message",
-          message: {
-            kind: "tool_call",
-            name: toolName,
-            args: tc?.args ?? "",
-            result: event.result,
-            timestamp: Date.now(),
-          },
+          kind: "update_tool_result",
+          toolCallId: event.toolCallId,
+          result: event.result,
         });
         break;
       }

@@ -1,7 +1,7 @@
 /**
  * Typed HTTP client for the Koi admin API.
  *
- * All methods return Result<T, TuiError> — never throw.
+ * All methods return Result<T, DashboardClientError> — never throw.
  * Uses ADMIN_ROUTES from @koi/dashboard-types for URL construction.
  */
 
@@ -16,12 +16,12 @@ import type {
   ProcessTreeSnapshot,
 } from "@koi/dashboard-types";
 import { ADMIN_ROUTES, interpolatePath } from "@koi/dashboard-types";
-import type { TuiError } from "../state/types.js";
+import type { DashboardClientError } from "../types.js";
 
 /** Typed result for client operations. */
 export type ClientResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: TuiError };
+  | { readonly ok: false; readonly error: DashboardClientError };
 
 /** Configuration for the admin client. */
 export interface AdminClientConfig {
@@ -231,7 +231,7 @@ function isApiResult(json: unknown): json is ApiResult<unknown> {
   return false;
 }
 
-/** Map a fetch error to a TuiError. */
+/** Map a fetch error to a DashboardClientError. */
 function mapFetchError<T>(error: unknown, fetchUrl: string, timeoutMs: number): ClientResult<T> {
   if (error instanceof DOMException && error.name === "AbortError") {
     return {
@@ -241,7 +241,6 @@ function mapFetchError<T>(error: unknown, fetchUrl: string, timeoutMs: number): 
   }
 
   if (error instanceof TypeError) {
-    // TypeError: "fetch failed" is the standard error for network issues
     return {
       ok: false,
       error: { kind: "connection_refused", url: fetchUrl },

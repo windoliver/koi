@@ -1,6 +1,6 @@
 {
-  "name": "@koi/tui",
-  "description": "Admin-panel-connected terminal console for operators",
+  "name": "@koi/dashboard-client",
+  "description": "Typed HTTP and SSE clients for the Koi admin API",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,11 +12,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/dashboard-client": "workspace:*",
-    "@koi/dashboard-types": "workspace:*",
-    "@opentui/core": "0.1.87",
-    "@opentui/solid": "0.1.87",
-    "solid-js": "1.9.5"
+    "@koi/dashboard-types": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

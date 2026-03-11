@@ -1,78 +1,27 @@
 /**
  * TUI state types — pure data definitions for the terminal console.
  *
- * All types are readonly and immutable per Koi conventions.
+ * Re-exports ChatMessage and DashboardClientError from @koi/dashboard-client
+ * to keep backward compatibility. TUI-specific state types defined here.
  */
 
 import type { DashboardAgentSummary, DashboardEventBatch } from "@koi/dashboard-types";
 
-// ─── Error Types ─────────────────────────────────────────────────────
+// Re-export shared types from dashboard-client
+/** TUI-specific error alias for backward compat. */
+export type {
+  ChatMessage,
+  DashboardClientError,
+  DashboardClientError as TuiError,
+} from "@koi/dashboard-client";
 
-/** All expected failure modes for the TUI client. */
-export type TuiError =
-  | {
-      readonly kind: "connection_refused";
-      readonly url: string;
-    }
-  | {
-      readonly kind: "auth_failed";
-      readonly message: string;
-    }
-  | {
-      readonly kind: "stream_dropped";
-      readonly sessionId: string;
-    }
-  | {
-      readonly kind: "agent_terminated";
-      readonly agentId: string;
-    }
-  | {
-      readonly kind: "timeout";
-      readonly operation: string;
-      readonly ms: number;
-    }
-  | {
-      readonly kind: "api_error";
-      readonly code: string;
-      readonly message: string;
-    }
-  | {
-      readonly kind: "unexpected";
-      readonly cause: unknown;
-    };
-
-// ─── Chat Types ──────────────────────────────────────────────────────
-
-/** A single message in the agent console conversation. */
-export type ChatMessage =
-  | {
-      readonly kind: "user";
-      readonly text: string;
-      readonly timestamp: number;
-    }
-  | {
-      readonly kind: "assistant";
-      readonly text: string;
-      readonly timestamp: number;
-    }
-  | {
-      readonly kind: "tool_call";
-      readonly name: string;
-      readonly args: string;
-      readonly result: string | undefined;
-      readonly timestamp: number;
-    }
-  | {
-      readonly kind: "lifecycle";
-      readonly event: string;
-      readonly timestamp: number;
-    };
+// ─── Session State ───────────────────────────────────────────────────
 
 /** Active chat session state. */
 export interface SessionState {
   readonly agentId: string;
   readonly sessionId: string;
-  readonly messages: readonly ChatMessage[];
+  readonly messages: readonly import("@koi/dashboard-client").ChatMessage[];
   /** Buffered streaming tokens not yet flushed to messages. */
   readonly pendingText: string;
   readonly isStreaming: boolean;
@@ -95,7 +44,7 @@ export interface TuiState {
   readonly selectedAgentIndex: number;
   readonly activeSession: SessionState | null;
   readonly connectionStatus: ConnectionStatus;
-  readonly error: TuiError | null;
+  readonly error: import("@koi/dashboard-client").DashboardClientError | null;
   readonly adminUrl: string;
   /** Last received SSE sequence number for gap detection. */
   readonly lastEventSeq: number;
@@ -130,14 +79,22 @@ export type TuiAction =
   | { readonly kind: "flush_tokens" }
   | {
       readonly kind: "add_message";
-      readonly message: ChatMessage;
+      readonly message: import("@koi/dashboard-client").ChatMessage;
+    }
+  | {
+      readonly kind: "update_tool_result";
+      readonly toolCallId: string;
+      readonly result: string;
     }
   | {
       readonly kind: "set_connection_status";
       readonly status: ConnectionStatus;
     }
   | { readonly kind: "set_streaming"; readonly isStreaming: boolean }
-  | { readonly kind: "set_error"; readonly error: TuiError | null }
+  | {
+      readonly kind: "set_error";
+      readonly error: import("@koi/dashboard-client").DashboardClientError | null;
+    }
   | {
       readonly kind: "apply_event_batch";
       readonly batch: DashboardEventBatch;

@@ -1,0 +1,116 @@
+import { describe, expect, test } from "bun:test";
+import { createStore } from "../state/store.js";
+import { createInitialState } from "../state/types.js";
+import { createKeyboardHandler, type KeyboardCallbacks } from "./tui-keyboard.js";
+
+function makeCallbacks(): KeyboardCallbacks & {
+  readonly calls: readonly string[];
+} {
+  const mutableCalls: string[] = [];
+  return {
+    get calls() {
+      return mutableCalls;
+    },
+    togglePalette: () => {
+      mutableCalls.push("togglePalette");
+    },
+    refreshAgents: () => {
+      mutableCalls.push("refreshAgents");
+    },
+    openInBrowser: () => {
+      mutableCalls.push("openInBrowser");
+    },
+    stop: () => {
+      mutableCalls.push("stop");
+    },
+    cancelAndGoBack: () => {
+      mutableCalls.push("cancelAndGoBack");
+    },
+  };
+}
+
+describe("createKeyboardHandler", () => {
+  test("Ctrl+P toggles palette", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("\x10");
+    expect(consumed).toBe(true);
+    expect(cbs.calls).toEqual(["togglePalette"]);
+  });
+
+  test("Ctrl+R refreshes agents", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("\x12");
+    expect(consumed).toBe(true);
+    expect(cbs.calls).toEqual(["refreshAgents"]);
+  });
+
+  test("Ctrl+O opens browser", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("\x0F");
+    expect(consumed).toBe(true);
+    expect(cbs.calls).toEqual(["openInBrowser"]);
+  });
+
+  test("q quits when in agents view", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    // Default view is "agents"
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("q");
+    expect(consumed).toBe(true);
+    expect(cbs.calls).toEqual(["stop"]);
+  });
+
+  test("q does not quit when in console view", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "console" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("q");
+    expect(consumed).toBe(false);
+    expect(cbs.calls).toEqual([]);
+  });
+
+  test("Escape goes back from console view", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "console" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("\x1b");
+    expect(consumed).toBe(true);
+    expect(cbs.calls).toEqual(["cancelAndGoBack"]);
+  });
+
+  test("Escape does nothing in agents view", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("\x1b");
+    expect(consumed).toBe(false);
+    expect(cbs.calls).toEqual([]);
+  });
+
+  test("unrecognized keys return false", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("a")).toBe(false);
+    expect(handler("z")).toBe(false);
+    expect(handler("\x01")).toBe(false);
+    expect(cbs.calls).toEqual([]);
+  });
+});
