@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentManifest } from "@koi/core";
 import type { ResolutionContext } from "@koi/resolve";
-import { descriptor } from "./descriptor.js";
+import { createAceMiddleware } from "./ace.js";
+import { descriptor, getAceStores } from "./descriptor.js";
+import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "./stores.js";
 
 const STUB_CONTEXT: ResolutionContext = {
   manifestDir: "/tmp",
@@ -92,5 +94,45 @@ describe("descriptor", () => {
   test("factory middleware has describeCapabilities", async () => {
     const middleware = await descriptor.factory({}, STUB_CONTEXT);
     expect(typeof middleware.describeCapabilities).toBe("function");
+  });
+
+  // ── companionSkills ──
+
+  test("does not register companionSkills on descriptor (avoids global leak)", () => {
+    // The self-forge skill references forge_skill/forge_tool/search_forge which
+    // only exist when forge is enabled.  Registering it on the descriptor would
+    // leak it to ALL forge-enabled agents via registerCompanionSkills(), even
+    // non-ACE ones.  Instead, the skill is attached via createAceToolsProvider
+    // only when both ACE and forge are present.
+    expect(descriptor.companionSkills).toBeUndefined();
+  });
+
+  // ── getAceStores ──
+
+  test("getAceStores returns stores for descriptor-created middleware", async () => {
+    const middleware = await descriptor.factory({}, STUB_CONTEXT);
+    const stores = getAceStores(middleware);
+    expect(stores).toBeDefined();
+    expect(stores?.playbookStore).toBeDefined();
+  });
+
+  test("getAceStores returns undefined for non-descriptor middleware", () => {
+    const stores = getAceStores({
+      name: "not-ace",
+      priority: 0,
+      describeCapabilities: () => undefined,
+    });
+    expect(stores).toBeUndefined();
+  });
+
+  test("getAceStores works with direct createAceMiddleware() (not just descriptor)", () => {
+    const playbookStore = createInMemoryPlaybookStore();
+    const middleware = createAceMiddleware({
+      trajectoryStore: createInMemoryTrajectoryStore(),
+      playbookStore,
+    });
+    const stores = getAceStores(middleware);
+    expect(stores).toBeDefined();
+    expect(stores?.playbookStore).toBe(playbookStore);
   });
 });

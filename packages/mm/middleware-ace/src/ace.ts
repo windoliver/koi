@@ -24,6 +24,7 @@ import type {
   TurnContext,
 } from "@koi/core/middleware";
 import { estimateTokens } from "@koi/token-estimator";
+import { trackAceStores } from "./ace-stores.js";
 import type { AceConfig } from "./config.js";
 import { selectPlaybooks, selectStructuredPlaybooks } from "./injector.js";
 import { createLlmPipeline, createStatPipeline, isLlmPipelineEnabled } from "./pipeline.js";
@@ -80,7 +81,7 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
   let cachedStatPlaybooks: readonly Playbook[] | undefined;
   let cachedStructuredPlaybooks: readonly StructuredPlaybook[] | undefined;
 
-  return {
+  const middleware: KoiMiddleware = {
     name: "ace",
     priority: 350,
 
@@ -236,6 +237,17 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       }
     },
   };
+
+  // Track stores so L3 code (and any caller) can retrieve them via getAceStores().
+  // This covers both direct createAceMiddleware() and descriptor factory paths.
+  trackAceStores(middleware, {
+    playbookStore: config.playbookStore,
+    ...(config.structuredPlaybookStore !== undefined
+      ? { structuredPlaybookStore: config.structuredPlaybookStore }
+      : {}),
+  });
+
+  return middleware;
 }
 
 function buildEnrichedRequest(

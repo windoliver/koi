@@ -3,6 +3,9 @@
  *
  * Enables manifest auto-resolution: validates ACE config,
  * then creates the ACE middleware with in-memory stores by default.
+ *
+ * Store tracking happens inside createAceMiddleware() (via ace-stores.ts),
+ * so both descriptor-created and direct-API middleware instances are tracked.
  */
 
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
@@ -11,6 +14,14 @@ import type { BrickDescriptor } from "@koi/resolve";
 import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createAceMiddleware } from "./ace.js";
 import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "./stores.js";
+
+// Re-export from the shared module for public API continuity
+export type { AceStores } from "./ace-stores.js";
+export { getAceStores } from "./ace-stores.js";
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
 
 function validateAceDescriptorOptions(input: unknown): Result<Record<string, unknown>, KoiError> {
   const base = validateRequiredDescriptorOptions(input, "ACE");
@@ -36,6 +47,10 @@ function validateAceDescriptorOptions(input: unknown): Result<Record<string, unk
   return { ok: true, value: opts };
 }
 
+// ---------------------------------------------------------------------------
+// Descriptor
+// ---------------------------------------------------------------------------
+
 /**
  * Descriptor for ACE middleware.
  * Uses in-memory trajectory and playbook stores by default.
@@ -45,6 +60,10 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   kind: "middleware",
   name: "@koi/middleware-ace",
   aliases: ["ace"],
+  // No companionSkills here — the self-forge skill is attached via
+  // createAceToolsProvider (only when forge tools are available).
+  // Registering it on the descriptor would leak it globally to ALL
+  // forge-enabled agents via registerCompanionSkills(), even non-ACE ones.
   optionsValidator: validateAceDescriptorOptions,
   factory(options, _context): KoiMiddleware {
     const trajectoryStore = createInMemoryTrajectoryStore();
@@ -57,10 +76,10 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
       playbookStore,
     };
 
-    if (maxInjectionTokens !== undefined) {
-      return createAceMiddleware({ ...config, maxInjectionTokens });
-    }
-
-    return createAceMiddleware(config);
+    // createAceMiddleware() internally calls trackAceStores(),
+    // so the stores are automatically accessible via getAceStores().
+    return maxInjectionTokens !== undefined
+      ? createAceMiddleware({ ...config, maxInjectionTokens })
+      : createAceMiddleware(config);
   },
 };

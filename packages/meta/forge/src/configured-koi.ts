@@ -18,6 +18,7 @@ import type {
   ForgeStore,
   KoiError,
   KoiMiddleware,
+  MiddlewareConfig,
   Result,
   SandboxExecutor,
   SigningBackend,
@@ -30,7 +31,8 @@ import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import type { ForgeConfig } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
 import type { LoadedManifest } from "@koi/manifest";
-import type { ConfiguredKoiOptions } from "@koi/starter";
+import { createAceToolsProvider, getAceStores } from "@koi/middleware-ace";
+import type { ConfiguredKoiOptions, RuntimeOpts } from "@koi/starter";
 import { createConfiguredKoi, createMiddlewareRegistry } from "@koi/starter";
 import { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 import type { FullForgeSystem } from "./create-full-forge-system.js";
@@ -104,6 +106,70 @@ const defaultReadTraces = async (): Promise<Result<readonly TurnTrace[], KoiErro
 const EMPTY_MIDDLEWARE_REGISTRY = createMiddlewareRegistry(new Map());
 
 // ---------------------------------------------------------------------------
+// Manifest-driven ACE pre-resolution
+// ---------------------------------------------------------------------------
+
+/** Names under which ACE may appear in manifest.middleware[]. */
+const ACE_MIDDLEWARE_NAMES = new Set(["ace", "@koi/middleware-ace"]);
+
+/**
+ * Pre-resolution result: the ACE middleware instance plus a manifest copy with
+ * ACE stripped from `middleware[]` so `resolveManifestMiddleware` won't try to
+ * instantiate it a second time (and won't emit a spurious "not found" warning).
+ */
+interface AcePreResolution {
+  readonly aceMiddleware: KoiMiddleware;
+  readonly strippedManifest: ConfiguredKoiOptions["manifest"];
+}
+
+/**
+ * When the caller relies on manifest-driven middleware resolution (no pre-resolved
+ * `options.middleware` with ACE), attempt to resolve ACE from the manifest +
+ * registry so that `resolveAceToolsProvider` can wire the tools/skill provider.
+ *
+ * Avoids double-instantiation by returning a manifest copy with ACE removed from
+ * `middleware[]`, so `resolveManifestMiddleware` only sees the remaining entries.
+ * Passes the same `RuntimeOpts` (agentDepth) that starter would compute, so the
+ * factory contract is honoured.
+ */
+async function preResolveAceFromManifest(
+  options: ForgeConfiguredKoiOptions,
+): Promise<AcePreResolution | undefined> {
+  // ACE already in pre-resolved middleware — nothing to do
+  if (options.middleware?.some((mw) => mw.name === "ace")) return undefined;
+
+  // No custom registry — can't resolve from manifest
+  if (options.middlewareRegistry === undefined) return undefined;
+
+  // Check manifest for ACE declaration
+  if (!("middleware" in options.manifest)) return undefined;
+  const configs = (options.manifest as { middleware?: readonly MiddlewareConfig[] }).middleware;
+  if (configs === undefined || configs.length === 0) return undefined;
+
+  const aceConfig = configs.find((m) => ACE_MIDDLEWARE_NAMES.has(m.name));
+  if (aceConfig === undefined) return undefined;
+
+  const factory = options.middlewareRegistry.get(aceConfig.name);
+  if (factory === undefined) return undefined;
+
+  // Compute RuntimeOpts the same way createConfiguredKoi does (configured-koi.ts:61).
+  const agentDepth = options.parentPid !== undefined ? options.parentPid.depth + 1 : 0;
+  const runtimeOpts: RuntimeOpts = { agentDepth };
+
+  const aceMiddleware = await factory(aceConfig, runtimeOpts);
+
+  // Strip ACE from manifest.middleware[] so resolveManifestMiddleware won't
+  // re-instantiate it or log a spurious "not found" warning.
+  const remainingMiddleware = configs.filter((m) => !ACE_MIDDLEWARE_NAMES.has(m.name));
+  const strippedManifest = {
+    ...options.manifest,
+    middleware: remainingMiddleware,
+  } as ConfiguredKoiOptions["manifest"];
+
+  return { aceMiddleware, strippedManifest };
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -130,6 +196,21 @@ export async function createForgeConfiguredKoi(
     options.middleware !== undefined &&
     options.middleware.length > 0 &&
     options.middlewareRegistry === undefined;
+
+  // Pre-resolve ACE from manifest + registry when not in options.middleware.
+  // This covers the manifest-driven path where ACE is declared in the manifest
+  // and a custom registry is provided, but options.middleware is empty/absent.
+  const acePreResolution = await preResolveAceFromManifest(options);
+  const effectiveMiddleware =
+    acePreResolution !== undefined
+      ? [...(options.middleware ?? []), acePreResolution.aceMiddleware]
+      : options.middleware;
+
+  // When ACE was pre-resolved from the manifest, pass a stripped manifest to
+  // createConfiguredKoi so resolveManifestMiddleware won't re-instantiate ACE
+  // or log a spurious "middleware not found" warning.
+  const effectiveManifest =
+    acePreResolution !== undefined ? acePreResolution.strippedManifest : options.manifest;
 
   // Build forge config early so the activation gate respects programmatic overrides.
   // Merge order: defaults ← manifest fields ← options.forgeConfig (overrides win).
@@ -166,8 +247,16 @@ export async function createForgeConfiguredKoi(
     options.forgeStore === undefined ||
     options.forgeExecutor === undefined
   ) {
+    // Still wire ACE tools provider when ACE middleware is present.
+    // Forge tools are NOT available on this path → skip companion skill.
+    const aceProvider = resolveAceToolsProvider(effectiveMiddleware, false);
+    const providers =
+      aceProvider !== undefined ? [...(options.providers ?? []), aceProvider] : options.providers;
     const runtime = await createConfiguredKoi({
       ...options,
+      manifest: effectiveManifest,
+      ...(effectiveMiddleware !== options.middleware ? { middleware: effectiveMiddleware } : {}),
+      ...(providers !== options.providers ? { providers } : {}),
       ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
     });
     return { runtime, forgeSystem: undefined, dispose: () => {} };
@@ -206,19 +295,27 @@ export async function createForgeConfiguredKoi(
       : {}),
   });
 
+  // Wire ACE tools provider if ACE middleware is present in the resolved middleware.
+  // Uses getAceStores() to retrieve the same PlaybookStore instance the middleware uses,
+  // ensuring list_playbooks reads from the same store ACE writes to.
+  // Forge tools ARE available on this path → include companion skill.
+  const aceToolsProvider = resolveAceToolsProvider(effectiveMiddleware, true);
+
   // Merge forge middleware and providers with user-supplied ones
   const mergedMiddleware: readonly KoiMiddleware[] = [
     ...forgeSystem.middlewares,
-    ...(options.middleware ?? []),
+    ...(effectiveMiddleware ?? []),
   ];
   const mergedProviders: readonly ComponentProvider[] = [
     forgeSystem.provider,
     forgeToolsProvider,
+    ...(aceToolsProvider !== undefined ? [aceToolsProvider] : []),
     ...(options.providers ?? []),
   ];
 
   const runtime = await createConfiguredKoi({
     ...options,
+    manifest: effectiveManifest,
     middleware: mergedMiddleware,
     providers: mergedProviders,
     forge: forgeSystem.runtime,
@@ -235,4 +332,40 @@ export async function createForgeConfiguredKoi(
       providerInstance.dispose();
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// ACE tools wiring
+// ---------------------------------------------------------------------------
+
+/**
+ * Scan resolved middleware for an ACE instance and create the tools provider
+ * with the same PlaybookStore. Returns undefined if ACE is not present.
+ *
+ * Detects ACE from:
+ * 1. Explicitly passed `options.middleware` (CLI path via resolveAgent)
+ * 2. Pre-resolved from manifest + registry (via preResolveAceFromManifest)
+ *
+ * @param includeCompanionSkill — set to false when forge tools are unavailable
+ *   (the self-forge skill references forge_skill/forge_tool which would mislead the agent)
+ */
+function resolveAceToolsProvider(
+  middleware: readonly KoiMiddleware[] | undefined,
+  includeCompanionSkill: boolean,
+): ComponentProvider | undefined {
+  if (middleware === undefined) return undefined;
+
+  const aceMiddleware = middleware.find((mw) => mw.name === "ace");
+  if (aceMiddleware === undefined) return undefined;
+
+  const stores = getAceStores(aceMiddleware);
+  if (stores === undefined) return undefined;
+
+  return createAceToolsProvider({
+    playbookStore: stores.playbookStore,
+    ...(stores.structuredPlaybookStore !== undefined
+      ? { structuredPlaybookStore: stores.structuredPlaybookStore }
+      : {}),
+    includeCompanionSkill,
+  });
 }
