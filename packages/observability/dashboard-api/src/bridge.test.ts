@@ -31,6 +31,12 @@ function first<T>(arr: readonly T[]): T {
   return item;
 }
 
+/** Helper to unwrap a possibly-undefined value, throwing if absent. */
+function unwrap<T>(value: T | undefined, label = "value"): T {
+  if (value === undefined) throw new Error(`Expected ${label} to be defined`);
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -327,7 +333,7 @@ describe("createAdminPanelBridge", () => {
     });
     const { runtimeViews, dataSource } = createAdminPanelBridge(opts);
     expect(runtimeViews).toBeDefined();
-    const views = runtimeViews!;
+    const views = unwrap(runtimeViews, "runtimeViews");
 
     const tree = await views.getProcessTree();
     expect(tree.totalAgents).toBe(1);
@@ -354,7 +360,7 @@ describe("createAdminPanelBridge", () => {
       channels: ["cli", "slack"],
     });
     const result = createAdminPanelBridge(opts);
-    const views = result.runtimeViews!;
+    const views = unwrap(result.runtimeViews, "runtimeViews");
     const { dataSource } = result;
 
     const agents = await dataSource.listAgents();
@@ -377,7 +383,7 @@ describe("createAdminPanelBridge", () => {
 
   test("getAgentProcfs returns undefined for unknown ID", async () => {
     const { runtimeViews } = createAdminPanelBridge(createTestOptions());
-    const views = runtimeViews!;
+    const views = unwrap(runtimeViews, "runtimeViews");
 
     const procfs = await views.getAgentProcfs(agentId("unknown-id"));
     expect(procfs).toBeUndefined();
@@ -385,7 +391,7 @@ describe("createAdminPanelBridge", () => {
 
   test("getMiddlewareChain returns empty entries", async () => {
     const result = createAdminPanelBridge(createTestOptions());
-    const views = result.runtimeViews!;
+    const views = unwrap(result.runtimeViews, "runtimeViews");
     const { dataSource } = result;
 
     const agents = await dataSource.listAgents();
@@ -400,7 +406,7 @@ describe("createAdminPanelBridge", () => {
       channels: ["cli", "telegram"],
     });
     const result = createAdminPanelBridge(opts);
-    const views = result.runtimeViews!;
+    const views = unwrap(result.runtimeViews, "runtimeViews");
     const { dataSource } = result;
 
     const topology = await views.getGatewayTopology();
@@ -426,7 +432,7 @@ describe("createAdminPanelBridge", () => {
 
   test("getGatewayTopology returns empty when no channels", async () => {
     const { runtimeViews } = createAdminPanelBridge(createTestOptions({ channels: [] }));
-    const views = runtimeViews!;
+    const views = unwrap(runtimeViews, "runtimeViews");
 
     const topology = await views.getGatewayTopology();
     expect(topology.connections).toEqual([]);
@@ -456,7 +462,7 @@ describe("createAdminPanelBridge", () => {
 
   test("updateMetrics updates procfs metrics", async () => {
     const result = createAdminPanelBridge(createTestOptions());
-    const views = result.runtimeViews!;
+    const views = unwrap(result.runtimeViews, "runtimeViews");
     result.updateMetrics({ turns: 7, totalTokens: 2000 });
 
     const agents = await result.dataSource.listAgents();
@@ -597,5 +603,113 @@ describe("createAdminPanelBridge", () => {
     const response = await cmds.dispatchAgent?.({ name: "dispatched" });
     expect(response?.ok).toBe(true);
     expect(mockDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Dispatched agent registration
+  // ---------------------------------------------------------------------------
+
+  test("registerDispatchedAgent is a function", () => {
+    const result = createAdminPanelBridge(createTestOptions());
+    expect(typeof result.registerDispatchedAgent).toBe("function");
+  });
+
+  test("registerDispatchedAgent makes agent appear in listAgents", async () => {
+    const result = createAdminPanelBridge(createTestOptions());
+
+    // Before registration: only primary agent
+    const before = await result.dataSource.listAgents();
+    expect(before).toHaveLength(1);
+
+    // Register a dispatched agent
+    result.registerDispatchedAgent({
+      agentId: agentId("dispatched:agent:1"),
+      name: "dispatched-1",
+      agentType: "worker",
+      startedAt: Date.now(),
+    });
+
+    // After registration: primary + dispatched
+    const after = await result.dataSource.listAgents();
+    expect(after).toHaveLength(2);
+    const dispatched = after.find((a) => a.name === "dispatched-1");
+    expect(dispatched).toBeDefined();
+    expect(dispatched?.agentType).toBe("worker");
+    expect(dispatched?.state).toBe("running");
+  });
+
+  test("registerDispatchedAgent makes agent appear in getAgent", async () => {
+    const result = createAdminPanelBridge(createTestOptions());
+    const dId = agentId("dispatched:agent:2");
+
+    result.registerDispatchedAgent({
+      agentId: dId,
+      name: "dispatched-2",
+      agentType: "copilot",
+      model: "anthropic:test",
+      startedAt: Date.now(),
+    });
+
+    const detail = await result.dataSource.getAgent(dId);
+    expect(detail).toBeDefined();
+    expect(detail?.name).toBe("dispatched-2");
+    expect(detail?.agentType).toBe("copilot");
+  });
+
+  test("dispatched agents are included in system metrics", async () => {
+    const result = createAdminPanelBridge(createTestOptions());
+
+    result.registerDispatchedAgent({
+      agentId: agentId("dispatched:metrics:1"),
+      name: "metrics-test",
+      agentType: "worker",
+      startedAt: Date.now(),
+    });
+
+    const metrics = await result.dataSource.getSystemMetrics();
+    expect(metrics.activeAgents).toBe(2);
+    expect(metrics.totalAgents).toBe(2);
+  });
+
+  test("terminateAgent works for dispatched agents", async () => {
+    const result = createAdminPanelBridge(createTestOptions());
+    const dId = agentId("dispatched:term:1");
+
+    result.registerDispatchedAgent({
+      agentId: dId,
+      name: "terminate-me",
+      agentType: "worker",
+      startedAt: Date.now(),
+    });
+
+    const termResult = await result.dataSource.terminateAgent(dId);
+    expect(termResult.ok).toBe(true);
+
+    const detail = await result.dataSource.getAgent(dId);
+    expect(detail?.state).toBe("terminated");
+  });
+
+  test("wrappedDispatchAgent auto-registers and emits dispatched event", async () => {
+    const dId = agentId("auto:reg:1");
+    const mockDispatch = mock(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: { agentId: dId, name: "auto-registered" },
+      }),
+    );
+    const result = createAdminPanelBridge(createTestOptions({ dispatchAgent: mockDispatch }));
+
+    const events: DashboardEvent[] = [];
+    result.dataSource.subscribe((e) => events.push(e));
+
+    await result.commands?.dispatchAgent?.({ name: "auto-registered" });
+
+    // Should auto-register in data source
+    const agents = await result.dataSource.listAgents();
+    expect(agents.some((a) => a.name === "auto-registered")).toBe(true);
+
+    // Should emit dispatched event
+    const dispatched = events.filter((e) => e.kind === "agent" && e.subKind === "dispatched");
+    expect(dispatched).toHaveLength(1);
   });
 });

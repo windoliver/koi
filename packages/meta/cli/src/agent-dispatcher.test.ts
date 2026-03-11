@@ -115,6 +115,30 @@ mock.module("@koi/forge", () => ({
   createForgeConfiguredKoi: mockCreateForgeConfiguredKoi,
 }));
 
+// Mock AG-UI channel deps (used for per-agent chat handlers)
+const mockStore = {
+  register: mock(() => {}),
+  get: mock(() => undefined),
+  deregister: mock(() => {}),
+  markTextStreamed: mock(() => {}),
+  hasTextStreamed: mock(() => false),
+  size: 0,
+};
+
+mock.module("@koi/channel-agui", () => ({
+  createRunContextStore: () => mockStore,
+  createAguiStreamMiddleware: (_config: unknown) => ({
+    name: "mock-agui-stream",
+  }),
+  handleAguiRequest: mock(
+    async (_req: Request, _store: unknown, _mode: string, _dispatch: unknown) =>
+      new Response("data: mock\n\n", {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+  ),
+}));
+
 // Import AFTER mocks are installed
 const { createAgentDispatcher } = await import("./agent-dispatcher.js");
 
@@ -234,5 +258,57 @@ describe("createAgentDispatcher", () => {
       expect(result.error.code).toBe("INTERNAL");
       expect(result.error.message).toBe("Unexpected boom");
     }
+  });
+
+  test("dispatched agent has a chatHandler", async () => {
+    const dispatcher = createDispatcher();
+    await dispatcher.dispatchAgent({ name: "chattable" });
+
+    const entry = dispatcher.dispatched.get(TEST_AGENT_ID);
+    expect(entry?.chatHandler).toBeFunction();
+  });
+
+  test("getChatHandler returns handler for dispatched agent", async () => {
+    const dispatcher = createDispatcher();
+    await dispatcher.dispatchAgent({ name: "find-me" });
+
+    const handler = dispatcher.getChatHandler(TEST_AGENT_ID);
+    expect(handler).toBeFunction();
+  });
+
+  test("getChatHandler returns undefined for unknown agent", () => {
+    const dispatcher = createDispatcher();
+    expect(dispatcher.getChatHandler("nonexistent")).toBeUndefined();
+  });
+
+  test("chatHandler returns SSE response", async () => {
+    const dispatcher = createDispatcher();
+    await dispatcher.dispatchAgent({ name: "chat-test" });
+
+    const handler = dispatcher.getChatHandler(TEST_AGENT_ID);
+    expect(handler).toBeDefined();
+
+    const req = new Request("http://localhost/agents/test/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId: "t1", messages: [] }),
+    });
+    if (handler === undefined) throw new Error("expected handler");
+    const res = await handler(req);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+  });
+
+  test("AG-UI middleware is included in runtime middleware", async () => {
+    const dispatcher = createDispatcher();
+    await dispatcher.dispatchAgent({ name: "with-middleware" });
+
+    // The createForgeConfiguredKoi mock should have been called with
+    // middleware that includes the AG-UI stream middleware
+    const lastCall = mockCreateForgeConfiguredKoi.mock.lastCall;
+    if (lastCall === undefined) throw new Error("expected lastCall");
+    const opts = lastCall[0] as { readonly middleware: readonly { readonly name?: string }[] };
+    const hasAguiMiddleware = opts.middleware.some((m) => m.name === "mock-agui-stream");
+    expect(hasAguiMiddleware).toBe(true);
   });
 });

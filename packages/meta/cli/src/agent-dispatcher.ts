@@ -4,9 +4,12 @@
  * Implements CommandDispatcher["dispatchAgent"] by loading a manifest,
  * resolving the agent, creating an engine adapter, and starting the
  * runtime. Tracks dispatched agents for lifecycle management.
+ *
+ * Each dispatched agent gets its own AG-UI stream middleware and
+ * RunContextStore, enabling independent chat via POST /agents/:id/chat.
  */
 
-import type { AgentId, KoiError, Result } from "@koi/core";
+import type { AgentId, InboundMessage, KoiError, KoiMiddleware, Result } from "@koi/core";
 import type {
   CommandDispatcher,
   DispatchAgentRequest,
@@ -17,12 +20,14 @@ import type {
 // Types
 // ---------------------------------------------------------------------------
 
-/** A dispatched agent with its runtime handle. */
+/** A dispatched agent with its runtime handle and chat endpoint. */
 export interface DispatchedAgent {
   readonly agentId: AgentId;
   readonly name: string;
   readonly startedAt: number;
   readonly dispose: () => Promise<void>;
+  /** Handle an AG-UI chat request for this specific agent. */
+  readonly chatHandler: (req: Request) => Promise<Response>;
 }
 
 export interface AgentDispatcherOptions {
@@ -37,6 +42,8 @@ export interface AgentDispatcherResult {
   readonly dispatchAgent: NonNullable<CommandDispatcher["dispatchAgent"]>;
   /** Read-only view of currently dispatched agents. */
   readonly dispatched: ReadonlyMap<string, DispatchedAgent>;
+  /** Get the chat handler for a dispatched agent (undefined if not found). */
+  readonly getChatHandler: (agentId: string) => ((req: Request) => Promise<Response>) | undefined;
   /** Dispose all dispatched agent runtimes. */
   readonly dispose: () => Promise<void>;
 }
@@ -48,8 +55,8 @@ export interface AgentDispatcherResult {
 /**
  * Creates an agent dispatcher that can be wired into the admin panel bridge.
  *
- * Heavy dependencies (resolveAgent, forge, engine-pi, manifest) are loaded
- * lazily on first dispatch to avoid slowing down bridge construction.
+ * Heavy dependencies (resolveAgent, forge, engine-pi, manifest, channel-agui)
+ * are loaded lazily on first dispatch to avoid slowing down bridge construction.
  */
 export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDispatcherResult {
   const dispatched = new Map<string, DispatchedAgent>();
@@ -90,17 +97,34 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
         KoiError
       >
     >;
+    // AG-UI streaming deps
+    readonly createRunContextStore: () => {
+      readonly register: (runId: string, writer: unknown, signal: AbortSignal) => void;
+      readonly get: (runId: string) => unknown;
+      readonly deregister: (runId: string) => void;
+      readonly markTextStreamed: (runId: string) => void;
+      readonly hasTextStreamed: (runId: string) => boolean;
+      readonly size: number;
+    };
+    readonly createAguiStreamMiddleware: (config: { readonly store: unknown }) => KoiMiddleware;
+    readonly handleAguiRequest: (
+      req: Request,
+      store: unknown,
+      mode: "stateful" | "stateless",
+      dispatch: (message: InboundMessage) => Promise<void>,
+    ) => Promise<Response>;
   }
 
   // let justified: cached promise for lazy dependency loading
   let depsPromise: Promise<LazyDeps> | undefined;
 
   async function loadDeps(): Promise<LazyDeps> {
-    const [resolveAgentMod, forgeMod, piMod, manifestMod] = await Promise.all([
+    const [resolveAgentMod, forgeMod, piMod, manifestMod, aguiMod] = await Promise.all([
       import("./resolve-agent.js"),
       import("@koi/forge"),
       import("@koi/engine-pi"),
       import("@koi/manifest"),
+      import("@koi/channel-agui"),
     ]);
     return {
       resolveAgent: resolveAgentMod.resolveAgent as LazyDeps["resolveAgent"],
@@ -108,6 +132,10 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
         forgeMod.createForgeConfiguredKoi as LazyDeps["createForgeConfiguredKoi"],
       createPiAdapter: piMod.createPiAdapter as LazyDeps["createPiAdapter"],
       loadManifest: manifestMod.loadManifest as LazyDeps["loadManifest"],
+      createRunContextStore: aguiMod.createRunContextStore as LazyDeps["createRunContextStore"],
+      createAguiStreamMiddleware:
+        aguiMod.createAguiStreamMiddleware as LazyDeps["createAguiStreamMiddleware"],
+      handleAguiRequest: aguiMod.handleAguiRequest as LazyDeps["handleAguiRequest"],
     };
   }
 
@@ -116,6 +144,14 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
       depsPromise = loadDeps();
     }
     return depsPromise;
+  }
+
+  /** Extract text from InboundMessage content blocks. */
+  function extractText(msg: InboundMessage): string {
+    return msg.content
+      .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
+      .map((b) => b.text)
+      .join("\n");
   }
 
   const dispatchAgent: NonNullable<CommandDispatcher["dispatchAgent"]> = async (
@@ -157,34 +193,62 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
       // 3. Create engine adapter
       const adapter = resolved.value.engine ?? deps.createPiAdapter({ model: manifest.model.name });
 
-      // 4. Create runtime
+      // 4. Create per-agent AG-UI store + middleware for chat streaming
+      const store = deps.createRunContextStore();
+      const aguiMiddleware = deps.createAguiStreamMiddleware({ store });
+
+      // 5. Create runtime with AG-UI middleware included
       const { runtime } = await deps.createForgeConfiguredKoi({
         manifest,
         adapter,
-        middleware: [...resolved.value.middleware],
+        middleware: [...resolved.value.middleware, aguiMiddleware],
         providers: [],
         extensions: [],
       });
 
       const id = runtime.agent.pid.id;
 
+      // Concurrency guard for single-flight runtime.run()
+      // let justified: guards against concurrent chat + initial message
+      let busy = false;
+
+      // Chat dispatch function for handleAguiRequest
+      const chatDispatch = async (msg: InboundMessage): Promise<void> => {
+        if (busy) throw new Error("Agent is busy processing another request");
+        busy = true;
+        try {
+          const text = extractText(msg);
+          if (text.trim() === "") return;
+          for await (const _event of runtime.run({ kind: "text", text })) {
+            // Events consumed — AG-UI middleware streams them to SSE writer
+          }
+        } finally {
+          busy = false;
+        }
+      };
+
+      // Chat handler for this dispatched agent
+      const chatHandler = async (req: Request): Promise<Response> =>
+        deps.handleAguiRequest(req, store, "stateful", chatDispatch);
+
       dispatched.set(id, {
         agentId: id,
         name: request.name,
         startedAt: Date.now(),
         dispose: () => runtime.dispose(),
+        chatHandler,
       });
 
       if (options.verbose) {
         process.stderr.write(`Dispatched agent "${request.name}" (${id})\n`);
       }
 
-      // 5. If an initial message was provided, run it asynchronously
+      // 6. If an initial message was provided, run it asynchronously
       if (request.message !== undefined && request.message.trim() !== "") {
         const msg = request.message;
+        busy = true;
         void (async (): Promise<void> => {
           try {
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
             for await (const _event of runtime.run({ kind: "text", text: msg })) {
               // Consume events — dispatched agent runs autonomously
             }
@@ -193,6 +257,8 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
               const errMsg = e instanceof Error ? e.message : String(e);
               process.stderr.write(`warn: dispatched agent "${request.name}" error: ${errMsg}\n`);
             }
+          } finally {
+            busy = false;
           }
         })();
       }
@@ -213,11 +279,15 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
     }
   };
 
+  const getChatHandler = (agentId: string): ((req: Request) => Promise<Response>) | undefined => {
+    return dispatched.get(agentId)?.chatHandler;
+  };
+
   const dispose = async (): Promise<void> => {
     const entries = [...dispatched.values()];
     dispatched.clear();
     await Promise.allSettled(entries.map((a) => a.dispose()));
   };
 
-  return { dispatchAgent, dispatched, dispose };
+  return { dispatchAgent, dispatched, getChatHandler, dispose };
 }

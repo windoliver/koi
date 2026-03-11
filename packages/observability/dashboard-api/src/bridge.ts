@@ -75,6 +75,15 @@ export interface BridgeOptions {
   readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
 }
 
+/** Registration entry for a dispatched agent. */
+export interface DispatchedAgentEntry {
+  readonly agentId: AgentId;
+  readonly name: string;
+  readonly agentType: "copilot" | "worker";
+  readonly model?: string;
+  readonly startedAt: number;
+}
+
 export interface AdminPanelBridgeResult extends DashboardHandlerOptions {
   /** Synthetic agent ID used by the bridge (e.g. `cli:<name>:<ts>`). */
   readonly agentId: AgentId;
@@ -85,6 +94,8 @@ export interface AdminPanelBridgeResult extends DashboardHandlerOptions {
     readonly turns: number;
     readonly totalTokens: number;
   }) => void;
+  /** Register a dispatched agent so it appears in listAgents/getAgent. */
+  readonly registerDispatchedAgent: (entry: DispatchedAgentEntry) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +114,12 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   let currentTurns = 0;
   // let justified: updated by CLI via updateMetrics(), read by get
   let currentTokenCount = 0;
+
+  // Registry for dispatched agents (created via admin panel dispatch dialog)
+  const dispatchedAgents = new Map<
+    string,
+    { readonly entry: DispatchedAgentEntry; state: ProcessState }
+  >();
 
   const emitEvent = (event: DashboardEvent): void => {
     for (const listener of listeners) {
@@ -129,17 +146,64 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     metadata: {},
   });
 
+  /** Build a summary for a dispatched agent. */
+  function buildDispatchedSummary(d: {
+    readonly entry: DispatchedAgentEntry;
+    readonly state: ProcessState;
+  }): DashboardAgentSummary {
+    return {
+      agentId: d.entry.agentId,
+      name: d.entry.name,
+      agentType: d.entry.agentType,
+      state: d.state,
+      ...(d.entry.model !== undefined ? { model: d.entry.model } : {}),
+      channels: [],
+      turns: 0,
+      startedAt: d.entry.startedAt,
+      lastActivityAt: Date.now(),
+    };
+  }
+
   const dataSource: DashboardDataSource = {
     listAgents(): readonly DashboardAgentSummary[] {
-      return [buildSummary()];
+      const dispatched = [...dispatchedAgents.values()].map(buildDispatchedSummary);
+      return [buildSummary(), ...dispatched];
     },
 
     getAgent(id: AgentId): DashboardAgentDetail | undefined {
-      if (id !== primaryAgentId) return undefined;
-      return buildDetail();
+      if (id === primaryAgentId) return buildDetail();
+      const d = dispatchedAgents.get(id);
+      if (d === undefined) return undefined;
+      return { ...buildDispatchedSummary(d), skills: [], tokenCount: 0, metadata: {} };
     },
 
     terminateAgent(id: AgentId): Result<void, KoiError> {
+      // Handle dispatched agents
+      const dispatched = dispatchedAgents.get(id);
+      if (dispatched !== undefined) {
+        if (dispatched.state === "terminated") {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Agent ${id} is already terminated`,
+              retryable: false,
+            },
+          };
+        }
+        const prev = dispatched.state;
+        dispatched.state = "terminated";
+        emitEvent({
+          kind: "agent",
+          subKind: "status_changed",
+          agentId: id,
+          from: prev,
+          to: "terminated",
+          timestamp: Date.now(),
+        });
+        return { ok: true, value: undefined };
+      }
+
       if (id !== primaryAgentId) {
         return {
           ok: false,
@@ -205,8 +269,8 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
         uptimeMs: Date.now() - startedAt,
         heapUsedMb: Math.round((heapUsed / 1024 / 1024) * 100) / 100,
         heapTotalMb: Math.round((heapTotal / 1024 / 1024) * 100) / 100,
-        activeAgents: 1,
-        totalAgents: 1,
+        activeAgents: 1 + dispatchedAgents.size,
+        totalAgents: 1 + dispatchedAgents.size,
         activeChannels: options.channels.length,
       };
     },
@@ -232,7 +296,7 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
             children: [],
           },
         ],
-        totalAgents: 1,
+        totalAgents: 1 + dispatchedAgents.size,
         timestamp: Date.now(),
       };
     },
@@ -307,9 +371,36 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     };
   }
 
+  // Wrap dispatchAgent to auto-register in data source and emit SSE event
+  const rawDispatch = options.dispatchAgent;
+  const wrappedDispatchAgent: NonNullable<CommandDispatcher["dispatchAgent"]> | undefined =
+    rawDispatch !== undefined
+      ? async (request) => {
+          const result = await rawDispatch(request);
+          if (result.ok) {
+            const entry: DispatchedAgentEntry = {
+              agentId: result.value.agentId,
+              name: result.value.name,
+              agentType: "copilot",
+              startedAt: Date.now(),
+            };
+            dispatchedAgents.set(result.value.agentId, { entry, state: "running" });
+            emitEvent({
+              kind: "agent",
+              subKind: "dispatched",
+              agentId: result.value.agentId,
+              name: result.value.name,
+              agentType: "copilot",
+              timestamp: Date.now(),
+            });
+          }
+          return result;
+        }
+      : undefined;
+
   const commands: CommandDispatcher = {
-    // Agent dispatch — pass-through from caller (e.g. AgentHost.dispatch)
-    ...(options.dispatchAgent !== undefined ? { dispatchAgent: options.dispatchAgent } : {}),
+    // Agent dispatch — wrapped to auto-register + emit SSE event
+    ...(wrappedDispatchAgent !== undefined ? { dispatchAgent: wrappedDispatchAgent } : {}),
 
     suspendAgent(id: AgentId): Result<void, KoiError> {
       if (id !== primaryAgentId) {
@@ -478,5 +569,8 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     ...(options.fileSystem !== undefined ? { fileSystem: options.fileSystem } : {}),
     emitEvent,
     updateMetrics,
+    registerDispatchedAgent: (entry: DispatchedAgentEntry): void => {
+      dispatchedAgents.set(entry.agentId, { entry, state: "running" });
+    },
   };
 }

@@ -35,6 +35,7 @@ import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapsh
 import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { ServeFlags } from "../args.js";
+import { createChatRouter } from "../chat-router.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -427,12 +428,21 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   let healthInfo: { readonly url: string; readonly port: number };
 
   if (flags.admin && adminBridge !== undefined) {
+    // Build routing chat handler: primary agent → chatBridge, dispatched agents → dispatcher
+    const routingChatHandler =
+      chatBridge !== undefined && adminDispatcher !== undefined
+        ? createChatRouter({
+            primaryHandler: chatBridge.handler,
+            getDispatchedHandler: adminDispatcher.getChatHandler,
+          })
+        : chatBridge?.handler;
+
     // Compose admin panel + health into a single HTTP server
     const assetsDir = resolveDashboardAssetsDir();
     const dashboardResult = createDashboardHandler(
       {
         ...adminBridge,
-        ...(chatBridge !== undefined ? { agentChatHandler: chatBridge.handler } : {}),
+        ...(routingChatHandler !== undefined ? { agentChatHandler: routingChatHandler } : {}),
       },
       {
         cors: true,

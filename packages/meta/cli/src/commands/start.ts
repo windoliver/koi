@@ -26,6 +26,7 @@ import { EXIT_CONFIG } from "@koi/shutdown";
 import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { StartFlags } from "../args.js";
+import { createChatRouter } from "../chat-router.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -293,11 +294,20 @@ export async function runStart(flags: StartFlags): Promise<void> {
           : {}),
       });
 
+      // Build routing chat handler: primary → chatBridge, dispatched → dispatcher
+      const routingChatHandler =
+        chatBridge !== undefined && adminDispatcher !== undefined
+          ? createChatRouter({
+              primaryHandler: chatBridge.handler,
+              getDispatchedHandler: adminDispatcher.getChatHandler,
+            })
+          : chatBridge?.handler;
+
       const assetsDir = resolveDashboardAssetsDir();
       const dashboardResult: DashboardHandlerResult = createDashboardHandler(
         {
           ...adminBridge,
-          ...(chatBridge !== undefined ? { agentChatHandler: chatBridge.handler } : {}),
+          ...(routingChatHandler !== undefined ? { agentChatHandler: routingChatHandler } : {}),
         },
         {
           cors: true,
