@@ -32,6 +32,7 @@ import type { SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
+import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { ServeFlags } from "../args.js";
 import {
   createLocalFileSystem,
@@ -150,6 +151,13 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     forgeBootstrap = undefined;
   }
 
+  // 4c. Create AG-UI chat bridge for admin chat endpoint (loaded lazily)
+  let chatBridge: AgentChatBridge | undefined;
+  if (flags.admin) {
+    const { createAgentChatBridge } = await import("../agui-chat-bridge.js");
+    chatBridge = createAgentChatBridge();
+  }
+
   // 5. RESOLVE: Resolve manifest into runtime instances (middleware + model)
   // Pass forgeStore so companion skills get registered during resolution
   const modelName = manifest.model.name;
@@ -232,6 +240,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       ...nexus.middlewares,
       ...(forgeBootstrap?.middlewares ?? []),
       ...(autonomous?.middleware ?? []),
+      ...(chatBridge !== undefined ? [chatBridge.middleware] : []),
     ],
     providers: [
       ...nexus.providers,
@@ -295,6 +304,35 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // let justified: serial queue prevents concurrent runtime.run() calls
   let pending: Promise<void> = Promise.resolve();
 
+  // Wire AG-UI chat dispatch through the same serial queue
+  if (chatBridge !== undefined) {
+    const bridge = chatBridge;
+    bridge.wireDispatch(
+      async (msg) =>
+        new Promise<void>((resolve, reject) => {
+          pending = pending.then(async () => {
+            try {
+              const text = extractTextFromBlocks(msg.content);
+              if (text.trim() === "") {
+                resolve();
+                return;
+              }
+              const input: EngineInput = { kind: "text", text };
+              for await (const event of runtime.run(input)) {
+                if (event.kind === "done" && adminBridge !== undefined) {
+                  const m = event.output.metrics;
+                  adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+                }
+              }
+              resolve();
+            } catch (e: unknown) {
+              reject(e instanceof Error ? e : new Error(String(e)));
+            }
+          });
+        }),
+    );
+  }
+
   const unsubscribers = channels.map((ch) =>
     ch.onMessage(async (inbound) => {
       const text = extractTextFromBlocks(inbound.content);
@@ -351,10 +389,16 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   if (flags.admin && adminBridge !== undefined) {
     // Compose admin panel + health into a single HTTP server
     const assetsDir = resolveDashboardAssetsDir();
-    const dashboardResult = createDashboardHandler(adminBridge, {
-      cors: true,
-      ...(assetsDir !== undefined ? { assetsDir } : {}),
-    });
+    const dashboardResult = createDashboardHandler(
+      {
+        ...adminBridge,
+        ...(chatBridge !== undefined ? { agentChatHandler: chatBridge.handler } : {}),
+      },
+      {
+        cors: true,
+        ...(assetsDir !== undefined ? { assetsDir } : {}),
+      },
+    );
 
     const healthHandler = createHealthHandler(() => true);
     const adminPort = flags.adminPort ?? healthPort;

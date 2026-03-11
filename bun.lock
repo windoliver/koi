@@ -1062,6 +1062,7 @@
         "@clack/prompts": "0.10.0",
         "@koi/autonomous": "workspace:*",
         "@koi/bootstrap": "workspace:*",
+        "@koi/channel-agui": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/context": "workspace:*",
         "@koi/context-arena": "workspace:*",
@@ -2750,6 +2751,7 @@
         "@koi/core": "workspace:*",
         "@koi/dashboard-types": "workspace:*",
         "@mariozechner/pi-tui": "^0.57.1",
+        "chalk": "^5.4.1",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",

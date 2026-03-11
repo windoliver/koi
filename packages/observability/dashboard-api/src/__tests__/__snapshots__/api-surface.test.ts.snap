@@ -291,6 +291,8 @@ declare function createDefaultEditablePaths(): EditablePathMatcher;
  * allowing the consumer to chain with other handlers.
  */
 
+/** Handler for AG-UI chat requests (POST /agents/:id/chat → SSE stream). */
+type AgentChatHandler = (req: Request, agentId: string) => Response | Promise<Response>;
 interface DashboardHandlerOptions {
     readonly dataSource: DashboardDataSource;
     readonly fileSystem?: FileSystemBackend;
@@ -298,6 +300,8 @@ interface DashboardHandlerOptions {
     readonly commands?: CommandDispatcher;
     /** Controls which file paths are writable via PUT /fs/file. Defaults to workspace paths only. */
     readonly editablePaths?: EditablePathMatcher;
+    /** AG-UI chat handler for POST /agents/:id/chat. When absent, returns 501. */
+    readonly agentChatHandler?: AgentChatHandler;
 }
 interface DashboardHandlerResult {
     readonly handler: (req: Request) => Promise<Response | null>;
@@ -396,6 +400,6 @@ interface StaticServeResult {
 }
 declare function createStaticServe(assetsDir: string): StaticServeResult;
 
-export { type AdminPanelBridgeResult, type BridgeOptions, type DashboardHandlerOptions, type DashboardHandlerResult, type EditablePathMatcher, type HarnessAdminAdapter, type HarnessAdminClientLike, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SchedulerAdminAdapter, type SchedulerAdminClientLike, type SseProducer, type StaticServeResult, type TaskBoardAdminAdapter, type TaskBoardAdminClientLike, type TemporalAdminAdapter, type TemporalAdminAdapterOptions, type TemporalAdminClientLike, type TemporalWorkflowExecutionLike, createAdminPanelBridge, createDashboardHandler, createDefaultEditablePaths, createHarnessAdminAdapter, createRouter, createSchedulerAdminAdapter, createSseProducer, createStaticServe, createTaskBoardAdminAdapter, createTemporalAdminAdapter, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse, mapResultToResponse, validateRequiredParam };
+export { type AdminPanelBridgeResult, type AgentChatHandler, type BridgeOptions, type DashboardHandlerOptions, type DashboardHandlerResult, type EditablePathMatcher, type HarnessAdminAdapter, type HarnessAdminClientLike, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SchedulerAdminAdapter, type SchedulerAdminClientLike, type SseProducer, type StaticServeResult, type TaskBoardAdminAdapter, type TaskBoardAdminClientLike, type TemporalAdminAdapter, type TemporalAdminAdapterOptions, type TemporalAdminClientLike, type TemporalWorkflowExecutionLike, createAdminPanelBridge, createDashboardHandler, createDefaultEditablePaths, createHarnessAdminAdapter, createRouter, createSchedulerAdminAdapter, createSseProducer, createStaticServe, createTaskBoardAdminAdapter, createTemporalAdminAdapter, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse, mapResultToResponse, validateRequiredParam };
 "
 `;

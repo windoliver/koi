@@ -611,10 +611,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   function openInBrowser(): void {
     const session = store.getState().activeSession;
     const browserBase = adminUrl.replace(/\/api\/?$/, "");
-    const browserUrl =
-      session !== null
-        ? `${browserBase}/browser?view=${encodeURIComponent(`/agents/${session.agentId}/session/${session.sessionId}`)}`
-        : browserBase;
+    // Dashboard ?view= only accepts saved view IDs (agents, sessions, etc.)
+    const browserUrl = session !== null ? `${browserBase}/browser?view=sessions` : browserBase;
     addLifecycleMessage(`Opening: ${browserUrl}`);
     const openCmd =
       process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";

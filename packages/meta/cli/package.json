@@ -36,6 +36,7 @@
     "@koi/forge": "workspace:*",
     "@koi/engine-external": "workspace:*",
     "@koi/engine-loop": "workspace:*",
+    "@koi/channel-agui": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/manifest": "workspace:*",
     "@koi/middleware-ace": "workspace:*",
