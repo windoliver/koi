@@ -20,6 +20,7 @@ import { createRouter, errorResponse } from "./router.js";
 import { handleGetAgent, handleListAgents, handleTerminateAgent } from "./routes/agents.js";
 import { handleChannels } from "./routes/channels.js";
 import {
+  handleDispatchAgent,
   handleListMailbox,
   handleResumeAgent,
   handleRetryDeadLetter,
@@ -321,6 +322,11 @@ export function createDashboardHandler(
   // Command routes (when CommandDispatcher is provided)
   if (commands !== undefined) {
     routes.push(
+      {
+        method: "POST",
+        pattern: "/cmd/agents/dispatch",
+        handler: (req, params) => handleDispatchAgent(req, params, commands),
+      },
       {
         method: "POST",
         pattern: "/cmd/agents/:id/suspend",

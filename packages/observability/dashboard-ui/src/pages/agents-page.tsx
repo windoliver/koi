@@ -1,8 +1,12 @@
 /**
- * Agents page — responsive grid of agent status cards.
+ * Agents page — responsive grid of agent status cards + dispatch action.
  */
 
+import { Plus } from "lucide-react";
+import { useCallback, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AgentCard } from "../components/agents/agent-card.js";
+import { DispatchDialog } from "../components/console/dispatch-dialog.js";
 import { ErrorBoundary } from "../components/shared/error-boundary.js";
 import { EmptyState } from "../components/shared/empty-state.js";
 import { AgentCardSkeleton } from "../components/shared/loading-skeleton.js";
@@ -34,7 +38,7 @@ function AgentsGrid(): React.ReactElement {
     return (
       <EmptyState
         title="No agents running"
-        description="Start an agent to see it appear here"
+        description="Start an agent or dispatch one to see it appear here"
       />
     );
   }
@@ -49,14 +53,38 @@ function AgentsGrid(): React.ReactElement {
 }
 
 export function AgentsPage(): React.ReactElement {
+  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const navigate = useNavigate();
+
+  const handleDispatched = useCallback(
+    (agentId: string) => {
+      setDispatchOpen(false);
+      navigate(`/agents/${encodeURIComponent(agentId)}/console`);
+    },
+    [navigate],
+  );
+
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
         <h2 className="text-lg font-semibold">Agents</h2>
+        <button
+          type="button"
+          onClick={() => { setDispatchOpen(true); }}
+          className="flex items-center gap-1.5 rounded-md bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-white hover:bg-[var(--color-primary)]/90"
+        >
+          <Plus className="h-4 w-4" />
+          New Agent
+        </button>
       </div>
       <ErrorBoundary>
         <AgentsGrid />
       </ErrorBoundary>
+      <DispatchDialog
+        open={dispatchOpen}
+        onClose={() => { setDispatchOpen(false); }}
+        onDispatched={handleDispatched}
+      />
     </div>
   );
 }

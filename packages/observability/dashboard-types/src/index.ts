@@ -21,8 +21,21 @@ export type {
   SavedViewDefinition,
 } from "./admin-panel.js";
 export { SAVED_VIEWS } from "./admin-panel.js";
+// AG-UI protocol
+export type {
+  AguiEvent,
+  AguiEventType,
+  ChatHistoryMessage,
+  ChatRunInput,
+} from "./agui.js";
+export { parseAguiEvent } from "./agui.js";
 // Commands
-export type { AgentMessage, CommandDispatcher } from "./commands.js";
+export type {
+  AgentMessage,
+  CommandDispatcher,
+  DispatchAgentRequest,
+  DispatchAgentResponse,
+} from "./commands.js";
 // Config
 export type { DashboardConfig } from "./config.js";
 export { DEFAULT_DASHBOARD_CONFIG } from "./config.js";
@@ -94,3 +107,6 @@ export type {
   WorkflowDetail,
   WorkflowSummary,
 } from "./runtime-views.js";
+// SSE parser
+export type { SSEEvent, SSEStreamOptions } from "./sse-parser.js";
+export { consumeSSEStream, SSEParser } from "./sse-parser.js";

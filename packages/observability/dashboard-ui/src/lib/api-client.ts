@@ -307,3 +307,38 @@ export function pauseHarness(): Promise<null> {
 export function resumeHarness(): Promise<null> {
   return fetchApi<null>("/cmd/harness/resume", { method: "POST" });
 }
+
+// ---------------------------------------------------------------------------
+// Agent dispatch (Phase 4 — Issue #933)
+// ---------------------------------------------------------------------------
+
+import type { DispatchAgentRequest, DispatchAgentResponse } from "@koi/dashboard-types";
+import { ADMIN_ROUTES, interpolatePath } from "@koi/dashboard-types";
+
+export function dispatchAgent(request: DispatchAgentRequest): Promise<DispatchAgentResponse> {
+  return fetchApi<DispatchAgentResponse>(ADMIN_ROUTES.dispatchAgent.path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export function chatWithAgent(
+  agentId: string,
+  body: {
+    readonly threadId: string;
+    readonly runId: string;
+    readonly messages: readonly {
+      readonly id: string;
+      readonly role: string;
+      readonly content: string;
+    }[];
+  },
+): Promise<Response> {
+  const path = interpolatePath(ADMIN_ROUTES.agentChat.path, { id: agentId });
+  return fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...body, tools: [], context: [] }),
+  });
+}
