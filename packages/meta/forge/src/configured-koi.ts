@@ -30,6 +30,7 @@ import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import type { ForgeConfig } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
 import type { LoadedManifest } from "@koi/manifest";
+import { createAceToolsProvider, getAceStores } from "@koi/middleware-ace";
 import type { ConfiguredKoiOptions } from "@koi/starter";
 import { createConfiguredKoi, createMiddlewareRegistry } from "@koi/starter";
 import { createForgeToolsProvider } from "./create-forge-tools-provider.js";
@@ -166,8 +167,13 @@ export async function createForgeConfiguredKoi(
     options.forgeStore === undefined ||
     options.forgeExecutor === undefined
   ) {
+    // Still wire ACE tools provider when ACE middleware is present
+    const aceProvider = resolveAceToolsProvider(options.middleware);
+    const providers =
+      aceProvider !== undefined ? [...(options.providers ?? []), aceProvider] : options.providers;
     const runtime = await createConfiguredKoi({
       ...options,
+      ...(providers !== options.providers ? { providers } : {}),
       ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
     });
     return { runtime, forgeSystem: undefined, dispose: () => {} };
@@ -206,6 +212,11 @@ export async function createForgeConfiguredKoi(
       : {}),
   });
 
+  // Wire ACE tools provider if ACE middleware is present in the resolved middleware.
+  // Uses getAceStores() to retrieve the same PlaybookStore instance the middleware uses,
+  // ensuring list_playbooks reads from the same store ACE writes to.
+  const aceToolsProvider = resolveAceToolsProvider(options.middleware);
+
   // Merge forge middleware and providers with user-supplied ones
   const mergedMiddleware: readonly KoiMiddleware[] = [
     ...forgeSystem.middlewares,
@@ -214,6 +225,7 @@ export async function createForgeConfiguredKoi(
   const mergedProviders: readonly ComponentProvider[] = [
     forgeSystem.provider,
     forgeToolsProvider,
+    ...(aceToolsProvider !== undefined ? [aceToolsProvider] : []),
     ...(options.providers ?? []),
   ];
 
@@ -235,4 +247,31 @@ export async function createForgeConfiguredKoi(
       providerInstance.dispose();
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// ACE tools wiring
+// ---------------------------------------------------------------------------
+
+/**
+ * Scan resolved middleware for an ACE instance and create the tools provider
+ * with the same PlaybookStore. Returns undefined if ACE is not present.
+ */
+function resolveAceToolsProvider(
+  middleware: readonly KoiMiddleware[] | undefined,
+): ComponentProvider | undefined {
+  if (middleware === undefined) return undefined;
+
+  const aceMiddleware = middleware.find((mw) => mw.name === "ace");
+  if (aceMiddleware === undefined) return undefined;
+
+  const stores = getAceStores(aceMiddleware);
+  if (stores === undefined) return undefined;
+
+  return createAceToolsProvider({
+    playbookStore: stores.playbookStore,
+    ...(stores.structuredPlaybookStore !== undefined
+      ? { structuredPlaybookStore: stores.structuredPlaybookStore }
+      : {}),
+  });
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentManifest } from "@koi/core";
 import type { ResolutionContext } from "@koi/resolve";
-import { descriptor } from "./descriptor.js";
+import { descriptor, getAceStores } from "./descriptor.js";
 
 const STUB_CONTEXT: ResolutionContext = {
   manifestDir: "/tmp",
@@ -92,5 +92,27 @@ describe("descriptor", () => {
   test("factory middleware has describeCapabilities", async () => {
     const middleware = await descriptor.factory({}, STUB_CONTEXT);
     expect(typeof middleware.describeCapabilities).toBe("function");
+  });
+
+  // ── companionSkills ──
+
+  test("has self-forge companion skill", () => {
+    expect(descriptor.companionSkills).toHaveLength(1);
+    expect(descriptor.companionSkills?.[0]?.name).toBe("ace-self-forge");
+    expect(descriptor.companionSkills?.[0]?.content).toContain("list_playbooks");
+  });
+
+  // ── getAceStores ──
+
+  test("getAceStores returns stores for descriptor-created middleware", () => {
+    const middleware = descriptor.factory({}, STUB_CONTEXT);
+    const stores = getAceStores(middleware);
+    expect(stores).toBeDefined();
+    expect(stores?.playbookStore).toBeDefined();
+  });
+
+  test("getAceStores returns undefined for non-descriptor middleware", () => {
+    const stores = getAceStores({ name: "not-ace", priority: 0 });
+    expect(stores).toBeUndefined();
   });
 });
