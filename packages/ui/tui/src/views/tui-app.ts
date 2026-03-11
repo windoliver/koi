@@ -612,9 +612,13 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const session = store.getState().activeSession;
     const browserBase = adminUrl.replace(/\/api\/?$/, "");
     // Deep-link to the specific agent + session via ?view= + ?path= params
-    const browserUrl =
+    const agentSessionPath =
       session !== null
-        ? `${browserBase}/browser?view=agents&path=${encodeURIComponent(`/agents/${session.agentId}/session`)}`
+        ? `/agents/${session.agentId}/session/records/${session.sessionId}.json`
+        : null;
+    const browserUrl =
+      agentSessionPath !== null
+        ? `${browserBase}/browser?view=agents&path=${encodeURIComponent(agentSessionPath)}`
         : browserBase;
     addLifecycleMessage(`Opening: ${browserUrl}`);
     const openCmd =

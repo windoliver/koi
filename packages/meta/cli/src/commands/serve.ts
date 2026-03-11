@@ -82,6 +82,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // 1. RESOLVE: Find manifest path
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
 
+  // Compute workspace root early — used for chat persistence in all message handlers
+  const { dirname: pDirname0, resolve: pResolve0 } = await import("node:path");
+  const serveWorkspaceRoot = pResolve0(pDirname0(manifestPath));
+
   // 2. VALIDATE: Load and validate manifest
   const loadResult = await loadManifest(manifestPath);
   if (!loadResult.ok) {
@@ -308,8 +312,6 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // Wire AG-UI chat dispatch through the same serial queue
   if (chatBridge !== undefined) {
     const bridge = chatBridge;
-    const { dirname: pDirname, resolve: pResolve } = await import("node:path");
-    const chatWorkspaceRoot = pResolve(pDirname(manifestPath));
 
     bridge.wireDispatch(
       async (msg) =>
@@ -333,7 +335,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
               }
               // Persist to shared chat log (best-effort)
               await persistChatExchange(
-                chatWorkspaceRoot,
+                serveWorkspaceRoot,
                 manifest.name,
                 threadId,
                 text,
@@ -383,6 +385,15 @@ export async function runServe(flags: ServeFlags): Promise<void> {
             }));
             await ch.send({ content: blocks });
           }
+
+          // Persist to shared chat log (best-effort)
+          await persistChatExchange(
+            serveWorkspaceRoot,
+            manifest.name,
+            key,
+            text,
+            deltas.join(""),
+          ).catch(() => {});
         } catch (error: unknown) {
           const msg = error instanceof Error ? error.message : String(error);
           process.stderr.write(`Channel "${ch.name}" session "${key}" error: ${msg}\n`);

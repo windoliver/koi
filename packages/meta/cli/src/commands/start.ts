@@ -93,6 +93,10 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // 1. RESOLVE: Find manifest path
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
 
+  // Compute workspace root early — used for chat persistence in all message handlers
+  const { dirname: pDirname0, resolve: pResolve0 } = await import("node:path");
+  const startWorkspaceRoot = pResolve0(pDirname0(manifestPath));
+
   // 2. VALIDATE: Load and validate manifest
   const loadResult = await loadManifest(manifestPath);
   if (!loadResult.ok) {
@@ -347,8 +351,6 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // Wire AG-UI chat dispatch (reuses the same processing guard)
   if (chatBridge !== undefined) {
     const bridge = chatBridge;
-    const { dirname: pDirname, resolve: pResolve } = await import("node:path");
-    const chatWorkspaceRoot = pResolve(pDirname(manifestPath));
 
     bridge.wireDispatch(async (msg) => {
       if (processing) {
@@ -370,7 +372,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
         }
         // Persist to shared chat log (best-effort)
         await persistChatExchange(
-          chatWorkspaceRoot,
+          startWorkspaceRoot,
           manifest.name,
           threadId,
           text,
@@ -399,14 +401,24 @@ export async function runStart(flags: StartFlags): Promise<void> {
       const input: EngineInput = { kind: "text", text };
 
       try {
+        const deltas: string[] = [];
         for await (const event of runtime.run(input)) {
           if (controller.signal.aborted) break;
           renderEvent(event, flags.verbose);
+          if (event.kind === "text_delta") deltas.push(event.delta);
           if (event.kind === "done" && adminBridge !== undefined) {
             const m = event.output.metrics;
             adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
           }
         }
+        // Persist to shared chat log (best-effort)
+        await persistChatExchange(
+          startWorkspaceRoot,
+          manifest.name,
+          currentStartSessionId,
+          text,
+          deltas.join(""),
+        ).catch(() => {});
       } catch (error: unknown) {
         if (!controller.signal.aborted) {
           const message = error instanceof Error ? error.message : String(error);
