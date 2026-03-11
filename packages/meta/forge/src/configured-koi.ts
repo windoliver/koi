@@ -32,7 +32,7 @@ import type { ForgeConfig } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
 import type { LoadedManifest } from "@koi/manifest";
 import { createAceToolsProvider, getAceStores } from "@koi/middleware-ace";
-import type { ConfiguredKoiOptions, MiddlewareRegistry } from "@koi/starter";
+import type { ConfiguredKoiOptions, RuntimeOpts } from "@koi/starter";
 import { createConfiguredKoi, createMiddlewareRegistry } from "@koi/starter";
 import { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 import type { FullForgeSystem } from "./create-full-forge-system.js";
@@ -113,23 +113,13 @@ const EMPTY_MIDDLEWARE_REGISTRY = createMiddlewareRegistry(new Map());
 const ACE_MIDDLEWARE_NAMES = new Set(["ace", "@koi/middleware-ace"]);
 
 /**
- * Wrap a MiddlewareRegistry so that one or more names are excluded from lookup.
- * Used to prevent double-resolution when ACE has already been pre-resolved.
+ * Pre-resolution result: the ACE middleware instance plus a manifest copy with
+ * ACE stripped from `middleware[]` so `resolveManifestMiddleware` won't try to
+ * instantiate it a second time (and won't emit a spurious "not found" warning).
  */
-function createFilteringRegistry(
-  base: MiddlewareRegistry,
-  skipNames: ReadonlySet<string>,
-): MiddlewareRegistry {
-  return {
-    get: (name: string) => (skipNames.has(name) ? undefined : base.get(name)),
-    names: () => {
-      const filtered = new Set<string>();
-      for (const n of base.names()) {
-        if (!skipNames.has(n)) filtered.add(n);
-      }
-      return filtered;
-    },
-  };
+interface AcePreResolution {
+  readonly aceMiddleware: KoiMiddleware;
+  readonly strippedManifest: ConfiguredKoiOptions["manifest"];
 }
 
 /**
@@ -137,40 +127,46 @@ function createFilteringRegistry(
  * `options.middleware` with ACE), attempt to resolve ACE from the manifest +
  * registry so that `resolveAceToolsProvider` can wire the tools/skill provider.
  *
- * Returns the pre-resolved ACE instance and a filtered registry that skips ACE
- * during `createConfiguredKoi`'s internal `resolveManifestMiddleware`, preventing
- * double-instantiation.
+ * Avoids double-instantiation by returning a manifest copy with ACE removed from
+ * `middleware[]`, so `resolveManifestMiddleware` only sees the remaining entries.
+ * Passes the same `RuntimeOpts` (agentDepth) that starter would compute, so the
+ * factory contract is honoured.
  */
-async function preResolveAceFromManifest(options: ForgeConfiguredKoiOptions): Promise<{
-  readonly aceMiddleware: KoiMiddleware | undefined;
-  readonly filteredRegistry: MiddlewareRegistry | undefined;
-}> {
-  const NONE = { aceMiddleware: undefined, filteredRegistry: undefined } as const;
-
+async function preResolveAceFromManifest(
+  options: ForgeConfiguredKoiOptions,
+): Promise<AcePreResolution | undefined> {
   // ACE already in pre-resolved middleware — nothing to do
-  if (options.middleware?.some((mw) => mw.name === "ace")) return NONE;
+  if (options.middleware?.some((mw) => mw.name === "ace")) return undefined;
 
   // No custom registry — can't resolve from manifest
-  if (options.middlewareRegistry === undefined) return NONE;
+  if (options.middlewareRegistry === undefined) return undefined;
 
   // Check manifest for ACE declaration
-  if (!("middleware" in options.manifest)) return NONE;
+  if (!("middleware" in options.manifest)) return undefined;
   const configs = (options.manifest as { middleware?: readonly MiddlewareConfig[] }).middleware;
-  if (configs === undefined || configs.length === 0) return NONE;
+  if (configs === undefined || configs.length === 0) return undefined;
 
   const aceConfig = configs.find((m) => ACE_MIDDLEWARE_NAMES.has(m.name));
-  if (aceConfig === undefined) return NONE;
+  if (aceConfig === undefined) return undefined;
 
   const factory = options.middlewareRegistry.get(aceConfig.name);
-  if (factory === undefined) return NONE;
+  if (factory === undefined) return undefined;
 
-  const aceMiddleware = await factory(aceConfig);
-  const filteredRegistry = createFilteringRegistry(
-    options.middlewareRegistry,
-    new Set([aceConfig.name]),
-  );
+  // Compute RuntimeOpts the same way createConfiguredKoi does (configured-koi.ts:61).
+  const agentDepth = options.parentPid !== undefined ? options.parentPid.depth + 1 : 0;
+  const runtimeOpts: RuntimeOpts = { agentDepth };
 
-  return { aceMiddleware, filteredRegistry };
+  const aceMiddleware = await factory(aceConfig, runtimeOpts);
+
+  // Strip ACE from manifest.middleware[] so resolveManifestMiddleware won't
+  // re-instantiate it or log a spurious "not found" warning.
+  const remainingMiddleware = configs.filter((m) => !ACE_MIDDLEWARE_NAMES.has(m.name));
+  const strippedManifest = {
+    ...options.manifest,
+    middleware: remainingMiddleware,
+  } as ConfiguredKoiOptions["manifest"];
+
+  return { aceMiddleware, strippedManifest };
 }
 
 // ---------------------------------------------------------------------------
@@ -204,22 +200,17 @@ export async function createForgeConfiguredKoi(
   // Pre-resolve ACE from manifest + registry when not in options.middleware.
   // This covers the manifest-driven path where ACE is declared in the manifest
   // and a custom registry is provided, but options.middleware is empty/absent.
-  const { aceMiddleware: preResolvedAce, filteredRegistry } =
-    await preResolveAceFromManifest(options);
+  const acePreResolution = await preResolveAceFromManifest(options);
   const effectiveMiddleware =
-    preResolvedAce !== undefined
-      ? [...(options.middleware ?? []), preResolvedAce]
+    acePreResolution !== undefined
+      ? [...(options.middleware ?? []), acePreResolution.aceMiddleware]
       : options.middleware;
 
-  // Registry override for createConfiguredKoi:
-  // - skipManifestResolve → empty registry (all middleware pre-resolved by caller)
-  // - filteredRegistry → ACE already pre-resolved, skip it during manifest resolution
-  // - otherwise → let createConfiguredKoi use default/caller-provided registry
-  const registryOverrides = skipManifestResolve
-    ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY as MiddlewareRegistry }
-    : filteredRegistry !== undefined
-      ? { middlewareRegistry: filteredRegistry }
-      : {};
+  // When ACE was pre-resolved from the manifest, pass a stripped manifest to
+  // createConfiguredKoi so resolveManifestMiddleware won't re-instantiate ACE
+  // or log a spurious "middleware not found" warning.
+  const effectiveManifest =
+    acePreResolution !== undefined ? acePreResolution.strippedManifest : options.manifest;
 
   // Build forge config early so the activation gate respects programmatic overrides.
   // Merge order: defaults ← manifest fields ← options.forgeConfig (overrides win).
@@ -263,9 +254,10 @@ export async function createForgeConfiguredKoi(
       aceProvider !== undefined ? [...(options.providers ?? []), aceProvider] : options.providers;
     const runtime = await createConfiguredKoi({
       ...options,
+      manifest: effectiveManifest,
       ...(effectiveMiddleware !== options.middleware ? { middleware: effectiveMiddleware } : {}),
       ...(providers !== options.providers ? { providers } : {}),
-      ...registryOverrides,
+      ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
     });
     return { runtime, forgeSystem: undefined, dispose: () => {} };
   }
@@ -323,10 +315,11 @@ export async function createForgeConfiguredKoi(
 
   const runtime = await createConfiguredKoi({
     ...options,
+    manifest: effectiveManifest,
     middleware: mergedMiddleware,
     providers: mergedProviders,
     forge: forgeSystem.runtime,
-    ...registryOverrides,
+    ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
   });
 
   const providerInstance = forgeSystem.provider as ForgeComponentProviderInstance;
