@@ -101,7 +101,7 @@ const STUB_RESOLUTION_CONTEXT: ResolutionContext = {
 };
 
 /** Create ACE middleware via the descriptor factory (same path as manifest resolution). */
-function createAceViaDescriptor(): KoiMiddleware {
+async function createAceViaDescriptor(): Promise<KoiMiddleware> {
   return aceDescriptor.factory({}, STUB_RESOLUTION_CONTEXT);
 }
 
@@ -137,7 +137,7 @@ describeE2E("e2e: ACE tools provider through createForgeConfiguredKoi", () => {
   test(
     "ACE middleware → list_playbooks + ace-self-forge attached to agent (forge enabled)",
     async () => {
-      const aceMiddleware = createAceViaDescriptor();
+      const aceMiddleware = await createAceViaDescriptor();
 
       const adapter = createPiAdapter({
         model: E2E_MODEL,
@@ -175,7 +175,7 @@ describeE2E("e2e: ACE tools provider through createForgeConfiguredKoi", () => {
   test(
     "ACE middleware → list_playbooks + ace-self-forge attached (forge disabled, fast path)",
     async () => {
-      const aceMiddleware = createAceViaDescriptor();
+      const aceMiddleware = await createAceViaDescriptor();
 
       const adapter = createPiAdapter({
         model: E2E_MODEL,
@@ -213,7 +213,7 @@ describeE2E("e2e: ACE tools provider through createForgeConfiguredKoi", () => {
   test(
     "LLM calls list_playbooks tool and receives structured playbook data",
     async () => {
-      const aceMiddleware = createAceViaDescriptor();
+      const aceMiddleware = await createAceViaDescriptor();
       const toolCallIds: string[] = [];
 
       const toolSpy: KoiMiddleware = {
@@ -265,7 +265,7 @@ describeE2E("e2e: ACE tools provider through createForgeConfiguredKoi", () => {
   test(
     "getAceStores returns same PlaybookStore used by descriptor-created middleware",
     async () => {
-      const aceMiddleware = createAceViaDescriptor();
+      const aceMiddleware = await createAceViaDescriptor();
 
       // Verify stores accessible via WeakMap accessor
       const stores = getAceStores(aceMiddleware);

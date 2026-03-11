@@ -41,6 +41,7 @@ function makeAgent(): Agent {
     state: "running" as ProcessState,
     component: () => undefined,
     has: () => false,
+    hasAll: () => false,
     query: () => new Map(),
     components: () => new Map(),
   };
@@ -61,7 +62,6 @@ const noopModelHandler: ModelHandler = async (request: ModelRequest): Promise<Mo
 });
 
 const noopToolHandler: ToolHandler = async (_request: ToolRequest): Promise<ToolResponse> => ({
-  toolId: "test-tool",
   output: "ok",
 });
 
@@ -97,7 +97,7 @@ describe("ACE self-forge loop", () => {
         if (ace.wrapToolCall !== undefined) {
           await ace.wrapToolCall(
             makeTurnContext(turn),
-            { toolId: "search_web", args: { query: "test" } } as ToolRequest,
+            { toolId: "search_web", input: { query: "test" } } as ToolRequest,
             noopToolHandler,
           );
         }

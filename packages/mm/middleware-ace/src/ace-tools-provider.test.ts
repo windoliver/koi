@@ -22,6 +22,7 @@ function makeAgent(overrides?: Partial<ProcessId>): Agent {
     state: "running" as ProcessState,
     component: () => undefined,
     has: () => false,
+    hasAll: () => false,
     query: () => new Map(),
     components: () => new Map(),
   };

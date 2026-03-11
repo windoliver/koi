@@ -104,15 +104,19 @@ describe("descriptor", () => {
 
   // ── getAceStores ──
 
-  test("getAceStores returns stores for descriptor-created middleware", () => {
-    const middleware = descriptor.factory({}, STUB_CONTEXT);
+  test("getAceStores returns stores for descriptor-created middleware", async () => {
+    const middleware = await descriptor.factory({}, STUB_CONTEXT);
     const stores = getAceStores(middleware);
     expect(stores).toBeDefined();
     expect(stores?.playbookStore).toBeDefined();
   });
 
   test("getAceStores returns undefined for non-descriptor middleware", () => {
-    const stores = getAceStores({ name: "not-ace", priority: 0 });
+    const stores = getAceStores({
+      name: "not-ace",
+      priority: 0,
+      describeCapabilities: () => undefined,
+    });
     expect(stores).toBeUndefined();
   });
 });

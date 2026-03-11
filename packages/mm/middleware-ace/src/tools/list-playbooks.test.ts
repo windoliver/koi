@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { PlaybookStore, StructuredPlaybookStore } from "../stores.js";
 import { createInMemoryPlaybookStore, createInMemoryStructuredPlaybookStore } from "../stores.js";
 import type { Playbook, StructuredPlaybook } from "../types.js";
 import { createListPlaybooksTool } from "./list-playbooks.js";
@@ -305,13 +306,34 @@ describe("createListPlaybooksTool (structured)", () => {
 // ---------------------------------------------------------------------------
 
 describe("createListPlaybooksTool (error handling)", () => {
-  test("returns error when stat store throws", async () => {
-    const failingStore = createInMemoryPlaybookStore();
-    failingStore.list = () => {
-      throw new Error("connection lost");
+  /** Create a PlaybookStore whose list() always throws. */
+  function failingPlaybookStore(error: unknown): PlaybookStore {
+    return {
+      get: async () => undefined,
+      list: () => {
+        throw error;
+      },
+      save: async () => {},
+      remove: async () => false,
     };
+  }
 
-    const tool = createListPlaybooksTool({ playbookStore: failingStore });
+  /** Create a StructuredPlaybookStore whose list() always throws. */
+  function failingStructuredStore(error: unknown): StructuredPlaybookStore {
+    return {
+      get: async () => undefined,
+      list: () => {
+        throw error;
+      },
+      save: async () => {},
+      remove: async () => false,
+    };
+  }
+
+  test("returns error when stat store throws", async () => {
+    const tool = createListPlaybooksTool({
+      playbookStore: failingPlaybookStore(new Error("connection lost")),
+    });
     const result = (await tool.execute({})) as { error: string; code: string };
 
     expect(result.error).toBe("connection lost");
@@ -319,14 +341,9 @@ describe("createListPlaybooksTool (error handling)", () => {
   });
 
   test("returns error when structured store throws", async () => {
-    const failingStructuredStore = createInMemoryStructuredPlaybookStore();
-    failingStructuredStore.list = () => {
-      throw new Error("structured store unavailable");
-    };
-
     const tool = createListPlaybooksTool({
       playbookStore: createInMemoryPlaybookStore(),
-      structuredPlaybookStore: failingStructuredStore,
+      structuredPlaybookStore: failingStructuredStore(new Error("structured store unavailable")),
     });
     const result = (await tool.execute({})) as { error: string; code: string };
 
@@ -335,12 +352,9 @@ describe("createListPlaybooksTool (error handling)", () => {
   });
 
   test("returns stringified error for non-Error throws", async () => {
-    const failingStore = createInMemoryPlaybookStore();
-    failingStore.list = () => {
-      throw "raw string error";
-    };
-
-    const tool = createListPlaybooksTool({ playbookStore: failingStore });
+    const tool = createListPlaybooksTool({
+      playbookStore: failingPlaybookStore("raw string error"),
+    });
     const result = (await tool.execute({})) as { error: string; code: string };
 
     expect(result.error).toBe("raw string error");
