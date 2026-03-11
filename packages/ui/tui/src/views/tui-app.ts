@@ -106,9 +106,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   const [sessions, setSessions] = createSignal<readonly SessionPickerEntry[]>([]);
   const [sessionsLoading, setSessionsLoading] = createSignal(false);
 
-  // ─── Overlay state ──────────────────────────────────────────────────
-  let paletteVisible = false;
-
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   // ─── Agent console wiring ──────────────────────────────────────────
@@ -268,7 +265,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   // ─── Palette ───────────────────────────────────────────────────────
 
   function togglePalette(): void {
-    if (paletteVisible) {
+    if (store.getState().view === "palette") {
       hidePalette();
     } else {
       showPalette();
@@ -276,14 +273,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   }
 
   function showPalette(): void {
-    if (paletteVisible) return;
-    paletteVisible = true;
+    if (store.getState().view === "palette") return;
     store.dispatch({ kind: "set_view", view: "palette" });
   }
 
   function hidePalette(): void {
-    if (!paletteVisible) return;
-    paletteVisible = false;
+    if (store.getState().view !== "palette") return;
     const session = store.getState().activeSession;
     const targetView: TuiView = session !== null ? "console" : "agents";
     store.dispatch({ kind: "set_view", view: targetView });
@@ -612,8 +607,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   /** Handle palette command selection. */
   function handlePaletteSelect(commandId: string): void {
-    handleCommand(commandId);
     hidePalette();
+    handleCommand(commandId);
   }
 
   /** Handle agent selection from the list. */
