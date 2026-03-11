@@ -30,7 +30,7 @@ export interface SessionState {
 // ─── View Types ──────────────────────────────────────────────────────
 
 /** Which TUI view is currently active. */
-export type TuiView = "agents" | "console" | "palette";
+export type TuiView = "agents" | "console" | "palette" | "sessions";
 
 /** Admin API connection state. */
 export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";

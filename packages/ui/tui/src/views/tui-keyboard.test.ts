@@ -26,6 +26,9 @@ function makeCallbacks(): KeyboardCallbacks & {
     cancelAndGoBack: () => {
       mutableCalls.push("cancelAndGoBack");
     },
+    closeSessions: () => {
+      mutableCalls.push("closeSessions");
+    },
   };
 }
 
@@ -101,6 +104,28 @@ describe("createKeyboardHandler", () => {
     const consumed = handler("\x1b");
     expect(consumed).toBe(false);
     expect(cbs.calls).toEqual([]);
+  });
+
+  test("Escape closes palette", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "palette" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("\x1b");
+    expect(consumed).toBe(true);
+    expect(cbs.calls).toEqual(["togglePalette"]);
+  });
+
+  test("Escape closes sessions view", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "sessions" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("\x1b");
+    expect(consumed).toBe(true);
+    expect(cbs.calls).toEqual(["closeSessions"]);
   });
 
   test("unrecognized keys return false", () => {

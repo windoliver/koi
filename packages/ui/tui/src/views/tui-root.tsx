@@ -1,19 +1,21 @@
 /**
  * TUI root component — top-level SolidJS component composing all views.
  *
- * Renders status bar, switches between agent list and console views,
- * overlays command palette, and handles global keyboard shortcuts.
+ * Renders status bar, switches between agent list, console, and session views,
+ * overlays command palette, and delegates keyboard shortcuts to the app handler.
  */
 
 import type { CliRenderer, KeyEvent, SyntaxStyle } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { useKeyboard, useRenderer } from "@opentui/solid";
-import { Match, Switch, onMount } from "solid-js";
+import { type Accessor, Match, Switch, onMount } from "solid-js";
 import type { TuiStore } from "../state/store.js";
 import { COLORS } from "../theme.js";
 import { AgentListView } from "./agent-list-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { ConsoleView } from "./console-view.js";
+import type { SessionPickerEntry } from "./session-picker-view.js";
+import { SessionPickerView } from "./session-picker-view.js";
 import { StatusBarView } from "./status-bar-view.js";
 import { createStoreSignal } from "./store-bridge.js";
 
@@ -24,8 +26,15 @@ export interface TuiRootProps {
   readonly onPaletteSelect: (commandId: string) => void;
   readonly onAgentSelect: (agentId: string) => void;
   readonly onPaletteCancel: () => void;
+  /** Global keyboard shortcut handler — returns true if consumed. */
+  readonly onKeyInput: (sequence: string) => boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
-  readonly onRendererReady?: (renderer: CliRenderer) => void;
+  readonly onRendererReady?: ((renderer: CliRenderer) => void) | undefined;
+  /** Session picker data. */
+  readonly sessions?: Accessor<readonly SessionPickerEntry[]> | undefined;
+  readonly sessionsLoading?: Accessor<boolean> | undefined;
+  readonly onSessionSelect?: ((sessionId: string) => void) | undefined;
+  readonly onSessionCancel?: (() => void) | undefined;
 }
 
 /**
@@ -59,40 +68,11 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     }
   });
 
-  // Global keyboard shortcuts
+  // Delegate all keyboard shortcuts to the app-level handler
   useKeyboard((key: KeyEvent) => {
     const seq = mapKeyEventToSequence(key);
     if (seq !== null) {
-      // Dispatch to the existing keyboard handler via store
-      const view = state().view;
-
-      // Ctrl+P — toggle palette
-      if (seq === "\x10") {
-        if (view === "palette") {
-          props.onPaletteCancel();
-        } else {
-          props.store.dispatch({ kind: "set_view", view: "palette" });
-        }
-        return;
-      }
-
-      // Escape — close palette or go back
-      if (seq === "\x1b") {
-        if (view === "palette") {
-          props.onPaletteCancel();
-          return;
-        }
-        if (view === "console") {
-          props.onPaletteCancel();
-          return;
-        }
-      }
-
-      // q — quit from agents view
-      if (seq === "q" && view === "agents") {
-        // Let the app handle quit
-        props.store.dispatch({ kind: "set_view", view: "agents" });
-      }
+      props.onKeyInput(seq);
     }
   });
 
@@ -108,7 +88,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       <StatusBarView state={state} />
 
       <box flexGrow={1}>
-        {/* Main content area — show agents or console */}
+        {/* Main content area — show agents, console, or sessions */}
         <Switch>
           <Match when={view() === "agents" || (isPalette() && backgroundView() === "agents")}>
             <AgentListView
@@ -125,6 +105,16 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
               onSubmit={props.onConsoleInput}
               focused={view() === "console"}
               syntaxStyle={props.syntaxStyle}
+            />
+          </Match>
+
+          <Match when={view() === "sessions"}>
+            <SessionPickerView
+              sessions={props.sessions ?? (() => [])}
+              onSelect={props.onSessionSelect ?? (() => {})}
+              onCancel={props.onSessionCancel ?? (() => {})}
+              focused={true}
+              loading={props.sessionsLoading ?? (() => false)}
             />
           </Match>
         </Switch>

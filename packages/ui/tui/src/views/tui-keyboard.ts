@@ -3,7 +3,7 @@
  *
  * Extracted from tui-app to keep the orchestrator lean.
  * Registers shortcuts: Ctrl+P (palette), Ctrl+R (refresh),
- * Ctrl+O (browser), q (quit), Esc (back).
+ * Ctrl+O (browser), q (quit), Esc (back/close).
  */
 
 import type { TuiStore } from "../state/store.js";
@@ -15,12 +15,14 @@ export interface KeyboardCallbacks {
   readonly openInBrowser: () => void;
   readonly stop: () => void;
   readonly cancelAndGoBack: () => void;
+  readonly closeSessions: () => void;
 }
 
 /**
  * Create a keyboard input handler.
  *
- * Returns a function compatible with OpenTUI's addInputHandler.
+ * Returns a function that processes raw byte sequences from OpenTUI's
+ * useKeyboard hook (mapped via mapKeyEventToSequence in tui-root).
  * Returns true if the key was consumed, false to delegate to components.
  */
 export function createKeyboardHandler(
@@ -28,6 +30,8 @@ export function createKeyboardHandler(
   callbacks: KeyboardCallbacks,
 ): (sequence: string) => boolean {
   return (sequence: string): boolean => {
+    const view = store.getState().view;
+
     // Ctrl+P — toggle command palette
     if (sequence === "\x10") {
       callbacks.togglePalette();
@@ -46,15 +50,25 @@ export function createKeyboardHandler(
       return true;
     }
 
-    // q — quit (only in agent list view, not when typing)
-    if (store.getState().view === "agents" && sequence === "q") {
-      callbacks.stop();
-      return true;
+    // Escape — context-dependent back/close
+    if (sequence === "\x1b") {
+      if (view === "palette") {
+        callbacks.togglePalette();
+        return true;
+      }
+      if (view === "console") {
+        callbacks.cancelAndGoBack();
+        return true;
+      }
+      if (view === "sessions") {
+        callbacks.closeSessions();
+        return true;
+      }
     }
 
-    // Escape — back to agent list from console
-    if (sequence === "\x1b" && store.getState().view === "console") {
-      callbacks.cancelAndGoBack();
+    // q — quit (only in agent list view, not when typing)
+    if (view === "agents" && sequence === "q") {
+      callbacks.stop();
       return true;
     }
 
