@@ -12,6 +12,8 @@ import {
   matchesKey,
   type OverlayHandle,
   ProcessTerminal,
+  type SelectItem,
+  SelectList,
   Spacer,
   TUI,
 } from "@mariozechner/pi-tui";
@@ -20,11 +22,12 @@ import { type AguiStreamHandle, startChatStream } from "../client/agui-client.js
 import { createReconnectingStream, type ReconnectHandle } from "../client/reconnect.js";
 import { createStore, type TuiStore } from "../state/store.js";
 import { type ChatMessage, createInitialState, type TuiView } from "../state/types.js";
+import { KOI_SELECT_THEME } from "../theme.js";
 import { createAgentListView } from "./agent-list-view.js";
 import { createAguiEventHandler } from "./agui-event-handler.js";
 import { createCommandPalette } from "./command-palette.js";
 import { createConsoleView } from "./console-view.js";
-import { createSessionPicker, TUI_SESSION_PREFIX } from "./session-picker.js";
+import { createSessionPicker, parseTuiChatLog, TUI_SESSION_PREFIX } from "./session-picker.js";
 import { createStatusBar, type StatusBarData } from "./status-bar.js";
 
 /** Configuration for the TUI application. */
@@ -90,6 +93,11 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   const consoleView = createConsoleView(tui, {
     onSendMessage: (text) => {
+      // Intercept slash commands typed in the console
+      if (text.startsWith("/")) {
+        handleSlashCommand(text);
+        return;
+      }
       sendChatMessage(text);
     },
     onEscape: () => {
@@ -124,50 +132,34 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   // ─── Agent console wiring ──────────────────────────────────────────
-
   function openAgentConsole(agentId: string): void {
     cancelActiveStream();
     const sessionId = `session-${Date.now().toString(36)}`;
     store.dispatch({
       kind: "set_session",
-      session: {
-        agentId,
-        sessionId,
-        messages: [],
-        pendingText: "",
-        isStreaming: false,
-      },
+      session: { agentId, sessionId, messages: [], pendingText: "", isStreaming: false },
     });
     store.dispatch({ kind: "set_view", view: "console" });
-
-    // Show agent info from the known agent list
     const agent = store.getState().agents.find((a) => a.agentId === agentId);
     const label = agent !== undefined ? `${agent.name} (${agent.state})` : agentId;
     addLifecycleMessage(`Attached to agent ${label}`);
-
-    // Fetch recent logs to populate the console with live history
     fetchRecentAgentActivity(agentId).catch(() => {});
   }
 
-  /** Fetch recent agent logs/events and display them as lifecycle messages. */
+  /** Fetch recent agent events and display them as lifecycle messages. */
   async function fetchRecentAgentActivity(agentId: string): Promise<void> {
     const result = await client.fsList(`/agents/${agentId}/events`);
     if (!result.ok || result.value.length === 0) return;
-
-    // Read most recent log file
     const recent = result.value[result.value.length - 1];
     if (recent === undefined) return;
-
     const content = await client.fsRead(recent.path);
     if (!content.ok) return;
-
     const text = typeof content.value === "string" ? content.value : "";
-    const lines = text.split("\n").filter((l) => l.trim() !== "");
-    // Show last 10 lines of recent activity
-    const tail = lines.slice(-10);
-    if (tail.length > 0) {
-      addLifecycleMessage(`Recent activity:\n${tail.join("\n")}`);
-    }
+    const tail = text
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .slice(-10);
+    if (tail.length > 0) addLifecycleMessage(`Recent activity:\n${tail.join("\n")}`);
   }
 
   function sendChatMessage(text: string): void {
@@ -367,6 +359,27 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     store.dispatch({ kind: "set_view", view: targetView });
   }
 
+  // ─── Slash commands from console input ─────────────────────────────
+  /** Parse and execute a slash command typed in the console input. */
+  function handleSlashCommand(text: string): void {
+    const parts = text.trim().split(/\s+/);
+    const cmd = parts[0]?.slice(1); // strip leading "/"
+    const arg = parts[1];
+
+    if (cmd === "attach" && arg !== undefined) {
+      // /attach <agentId> — attach to specific agent
+      openAgentConsole(arg);
+      return;
+    }
+
+    // Delegate to palette command handler for known commands
+    if (cmd !== undefined) {
+      handleCommand(cmd);
+      return;
+    }
+    addLifecycleMessage(`Unknown command: ${text}`);
+  }
+
   // ─── Command dispatch ───────────────────────────────────────────────
   function handleCommand(commandId: string): void {
     switch (commandId) {
@@ -381,17 +394,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         store.dispatch({ kind: "set_view", view: "agents" });
         break;
 
-      case "attach": {
-        // Attach to first running agent (user can select from agent list)
-        const state = store.getState();
-        const running = state.agents.find((a) => a.state === "running");
-        if (running !== undefined) {
-          openAgentConsole(running.agentId);
-        } else {
-          addLifecycleMessage("No running agents to attach to");
-        }
+      case "attach":
+        showAttachPicker();
         break;
-      }
 
       case "dispatch":
         dispatchNewAgent().catch(() => {});
@@ -522,6 +527,43 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
   }
 
+  /** Show an agent picker overlay for /attach. */
+  function showAttachPicker(): void {
+    const agents = store.getState().agents;
+    if (agents.length === 0) {
+      addLifecycleMessage("No agents available to attach to");
+      return;
+    }
+
+    const items: SelectItem[] = agents.map((a) => ({
+      value: a.agentId,
+      label: `${a.name} (${a.state})`,
+      description: a.agentId,
+    }));
+
+    const picker = new SelectList(items, Math.min(agents.length, 10), KOI_SELECT_THEME);
+    picker.onSelect = (item: SelectItem) => {
+      if (overlayHandle !== null) {
+        overlayHandle.hide();
+        overlayHandle = null;
+      }
+      openAgentConsole(item.value);
+    };
+    picker.onCancel = () => {
+      if (overlayHandle !== null) {
+        overlayHandle.hide();
+        overlayHandle = null;
+      }
+    };
+
+    overlayHandle = tui.showOverlay(picker, {
+      width: "60%",
+      maxHeight: "50%",
+      anchor: "top-center",
+      offsetY: 3,
+    });
+  }
+
   const sessionPicker = createSessionPicker({
     client,
     store,
@@ -568,21 +610,14 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   function openInBrowser(): void {
     const session = store.getState().activeSession;
-    // Build browser URL using the dashboard's deep-link pattern:
-    //   {adminBase}/browser?view=/agents/{agentId}
-    // adminUrl is like http://localhost:3100/admin/api → strip /api
     const browserBase = adminUrl.replace(/\/api\/?$/, "");
     const browserUrl =
       session !== null
-        ? `${browserBase}/browser?view=${encodeURIComponent(`/agents/${session.agentId}`)}`
+        ? `${browserBase}/browser?view=${encodeURIComponent(`/agents/${session.agentId}/session/${session.sessionId}`)}`
         : browserBase;
-
     addLifecycleMessage(`Opening: ${browserUrl}`);
-
-    // Use platform-appropriate open command
     const openCmd =
       process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-
     import("node:child_process")
       .then(({ execFile }) => {
         execFile(openCmd, [browserUrl]);
@@ -593,6 +628,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   }
 
   // ─── Data fetching ──────────────────────────────────────────────────
+
+  /** Load a saved TUI session's chat log. Returns empty array on failure. */
+  async function loadSavedSession(
+    agentId: string,
+    sessionId: string,
+  ): Promise<readonly ChatMessage[]> {
+    const logPath = `/agents/${agentId}${TUI_SESSION_PREFIX}/${sessionId}.jsonl`;
+    const result = await client.fsRead(logPath);
+    if (!result.ok) return [];
+    return parseTuiChatLog(typeof result.value === "string" ? result.value : "");
+  }
+
   async function refreshAgents(): Promise<void> {
     const result = await client.listAgents();
     if (result.ok) {
@@ -700,19 +747,21 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     // Auto-attach to agent if --agent was specified
     if (initialAgentId !== undefined) {
       if (initialSessionId !== undefined) {
-        // Resume specific session
+        // Resume specific session — load saved chat history
+        const messages = await loadSavedSession(initialAgentId, initialSessionId);
         store.dispatch({
           kind: "set_session",
           session: {
             agentId: initialAgentId,
             sessionId: initialSessionId,
-            messages: [],
+            messages,
             pendingText: "",
             isStreaming: false,
           },
         });
         store.dispatch({ kind: "set_view", view: "console" });
-        addLifecycleMessage(`Attached to agent ${initialAgentId}, session ${initialSessionId}`);
+        const msgCount = messages.length > 0 ? ` (${String(messages.length)} messages)` : "";
+        addLifecycleMessage(`Resumed session ${initialSessionId}${msgCount}`);
         fetchRecentAgentActivity(initialAgentId).catch(() => {});
       } else {
         openAgentConsole(initialAgentId);

@@ -202,13 +202,8 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
     fsRead: (path) =>
       request<string>("GET", `${ADMIN_ROUTES.fsRead.path}?path=${encodeURIComponent(path)}`),
 
-    fsWrite: (path, content) =>
-      request<null>(
-        "PUT",
-        `${ADMIN_ROUTES.fsWrite.path}?path=${encodeURIComponent(path)}`,
-        undefined,
-        { content },
-      ),
+    fsWrite: (fsPath, content) =>
+      request<null>("PUT", ADMIN_ROUTES.fsWrite.path, undefined, { path: fsPath, content }),
 
     eventsUrl: () => url(ADMIN_ROUTES.events.path),
 

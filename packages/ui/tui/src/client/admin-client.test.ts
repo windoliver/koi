@@ -354,14 +354,17 @@ describe("createAdminClient", () => {
   });
 
   describe("fsWrite", () => {
-    test("sends PUT with path query param and content body", async () => {
+    test("sends PUT with path and content in JSON body", async () => {
       mockFetch(() => jsonResponse(null));
 
       const result = await client.fsWrite("/agents/a1/session/s1.jsonl", "line1\nline2");
       expect(result.ok).toBe(true);
       expect(lastRequest?.method).toBe("PUT");
-      expect(lastRequest?.url).toContain("/fs/file?path=");
-      expect(lastRequest?.body).toEqual({ content: "line1\nline2" });
+      expect(lastRequest?.url).toBe("http://localhost:3100/admin/api/fs/file");
+      expect(lastRequest?.body).toEqual({
+        path: "/agents/a1/session/s1.jsonl",
+        content: "line1\nline2",
+      });
     });
   });
 

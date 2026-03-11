@@ -72,6 +72,9 @@ import { createStaticServe } from "./static-serve.js";
 // Types
 // ---------------------------------------------------------------------------
 
+/** Handler for AG-UI chat requests (POST /agents/:id/chat → SSE stream). */
+export type AgentChatHandler = (req: Request, agentId: string) => Response | Promise<Response>;
+
 export interface DashboardHandlerOptions {
   readonly dataSource: DashboardDataSource;
   readonly fileSystem?: FileSystemBackend;
@@ -79,6 +82,8 @@ export interface DashboardHandlerOptions {
   readonly commands?: CommandDispatcher;
   /** Controls which file paths are writable via PUT /fs/file. Defaults to workspace paths only. */
   readonly editablePaths?: EditablePathMatcher;
+  /** AG-UI chat handler for POST /agents/:id/chat. When absent, returns 501. */
+  readonly agentChatHandler?: AgentChatHandler;
 }
 
 export interface DashboardHandlerResult {
@@ -98,7 +103,7 @@ export function createDashboardHandler(
   const options: DashboardHandlerOptions =
     "listAgents" in dataSourceOrOptions ? { dataSource: dataSourceOrOptions } : dataSourceOrOptions;
 
-  const { dataSource, fileSystem, runtimeViews, commands } = options;
+  const { dataSource, fileSystem, runtimeViews, commands, agentChatHandler } = options;
   const editablePaths =
     options.editablePaths ?? (fileSystem !== undefined ? createDefaultEditablePaths() : undefined);
 
@@ -165,6 +170,25 @@ export function createDashboardHandler(
       method: "POST",
       pattern: "/agents/:id/terminate",
       handler: (req, params) => handleTerminateAgent(req, params, dataSource),
+    },
+    // AG-UI chat endpoint (returns SSE stream or 501 when no handler configured)
+    {
+      method: "POST",
+      pattern: "/agents/:id/chat",
+      handler: (req, params) => {
+        if (agentChatHandler === undefined) {
+          return errorResponse(
+            "NOT_IMPLEMENTED",
+            "AG-UI chat not configured — provide agentChatHandler to enable",
+            501,
+          );
+        }
+        const agentId = params.id;
+        if (agentId === undefined) {
+          return errorResponse("VALIDATION", "Missing agent ID", 400);
+        }
+        return agentChatHandler(req, agentId);
+      },
     },
     {
       method: "GET",
