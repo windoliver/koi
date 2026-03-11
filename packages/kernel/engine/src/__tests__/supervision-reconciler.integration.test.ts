@@ -23,6 +23,7 @@ import {
   createInMemoryRegistry,
   createProcessTree,
   createSupervisionReconciler,
+  isPromise,
 } from "@koi/engine-reconcile";
 
 // ---------------------------------------------------------------------------
@@ -287,6 +288,181 @@ describe("SupervisionReconciler", () => {
 
       // All 3 children should be restarted (spawned)
       expect(spawnedIds).toHaveLength(3);
+    });
+
+    test("parallel spawn succeeds → all children registered as supervised", async () => {
+      const config: SupervisionConfig = {
+        strategy: { kind: "one_for_all" },
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        children: [makeChildSpec("a"), makeChildSpec("b"), makeChildSpec("c")],
+      };
+
+      const { spawnChild, spawnedIds } = createMockSpawnChild(registry);
+      const reconciler = createSupervisionReconciler({
+        registry,
+        processTree: tree,
+        spawnChild,
+        clock,
+      });
+
+      registry.register(makeEntry("sup", undefined, "running", 0));
+      registry.register(makeEntry("child-a", "sup", "running", 0));
+      registry.register(makeEntry("child-b", "sup", "running", 0));
+      registry.register(makeEntry("child-c", "sup", "running", 0));
+
+      const manifest = supervisedManifest(config);
+      await reconciler.reconcile(agentId("sup"), makeContext(manifest));
+
+      // Terminate child A → triggers one_for_all restart of all children
+      registry.transition(agentId("child-a"), "terminated", 0, { kind: "error" });
+      const result = await reconciler.reconcile(agentId("sup"), makeContext(manifest));
+
+      expect(result.kind).toBe("converged");
+      expect(spawnedIds).toHaveLength(3);
+
+      // All newly spawned children must be tracked as supervised
+      for (const id of spawnedIds) {
+        expect(reconciler.isSupervised(id)).toBe(true);
+      }
+
+      // Old children no longer supervised
+      expect(reconciler.isSupervised(agentId("child-a"))).toBe(false);
+      expect(reconciler.isSupervised(agentId("child-b"))).toBe(false);
+      expect(reconciler.isSupervised(agentId("child-c"))).toBe(false);
+    });
+
+    test("partial spawn failure → successful children rolled back and error thrown", async () => {
+      const config: SupervisionConfig = {
+        strategy: { kind: "one_for_all" },
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        children: [makeChildSpec("a"), makeChildSpec("b"), makeChildSpec("c")],
+      };
+
+      // Custom spawnChild that fails on child "b"
+      let counter = 0; // let: incremented on each spawn
+      const spawnedIds: AgentId[] = [];
+      const spawnChild: SpawnChildFn = async (parentId, childSpec, _manifest) => {
+        if (childSpec.name === "b") {
+          throw new Error('Spawn failed for "b"');
+        }
+        counter += 1;
+        const newId = agentId(`spawned-${counter}`);
+        registry.register(makeEntry(newId, parentId, "created", 0));
+        spawnedIds.push(newId);
+        return newId;
+      };
+
+      const reconciler = createSupervisionReconciler({
+        registry,
+        processTree: tree,
+        spawnChild,
+        clock,
+      });
+
+      registry.register(makeEntry("sup", undefined, "running", 0));
+      registry.register(makeEntry("child-a", "sup", "running", 0));
+      registry.register(makeEntry("child-b", "sup", "running", 0));
+      registry.register(makeEntry("child-c", "sup", "running", 0));
+
+      const manifest = supervisedManifest(config);
+      await reconciler.reconcile(agentId("sup"), makeContext(manifest));
+
+      // Terminate child A → triggers one_for_all restart
+      registry.transition(agentId("child-a"), "terminated", 0, { kind: "error" });
+
+      await expect(reconciler.reconcile(agentId("sup"), makeContext(manifest))).rejects.toThrow(
+        'Spawn failed for "b"',
+      );
+
+      // Successfully spawned children should have been terminated (rollback)
+      for (const id of spawnedIds) {
+        const entry = registry.lookup(id);
+        if (entry !== undefined && !isPromise(entry)) {
+          expect(entry.status.phase).toBe("terminated");
+        }
+      }
+    });
+
+    test("all spawns fail → first error thrown", async () => {
+      const config: SupervisionConfig = {
+        strategy: { kind: "one_for_all" },
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        children: [makeChildSpec("a"), makeChildSpec("b")],
+      };
+
+      // Custom spawnChild that always fails
+      const spawnChild: SpawnChildFn = async (_parentId, childSpec, _manifest) => {
+        throw new Error(`Spawn failed for "${childSpec.name}"`);
+      };
+
+      const reconciler = createSupervisionReconciler({
+        registry,
+        processTree: tree,
+        spawnChild,
+        clock,
+      });
+
+      registry.register(makeEntry("sup", undefined, "running", 0));
+      registry.register(makeEntry("child-a", "sup", "running", 0));
+      registry.register(makeEntry("child-b", "sup", "running", 0));
+
+      const manifest = supervisedManifest(config);
+      await reconciler.reconcile(agentId("sup"), makeContext(manifest));
+
+      // Terminate child A → triggers one_for_all restart
+      registry.transition(agentId("child-a"), "terminated", 0, { kind: "error" });
+
+      // Should throw, but not leave orphaned children
+      await expect(reconciler.reconcile(agentId("sup"), makeContext(manifest))).rejects.toThrow(
+        "Spawn failed",
+      );
+    });
+
+    test("spawn error is propagated with original message", async () => {
+      const config: SupervisionConfig = {
+        strategy: { kind: "one_for_all" },
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        children: [makeChildSpec("a"), makeChildSpec("b")],
+      };
+
+      const specificError = new Error("Resource limit exceeded");
+      const spawnChild: SpawnChildFn = async (_parentId, childSpec, _manifest) => {
+        if (childSpec.name === "b") {
+          throw specificError;
+        }
+        const newId = agentId("spawned-ok");
+        registry.register(makeEntry(newId, _parentId, "created", 0));
+        return newId;
+      };
+
+      const reconciler = createSupervisionReconciler({
+        registry,
+        processTree: tree,
+        spawnChild,
+        clock,
+      });
+
+      registry.register(makeEntry("sup", undefined, "running", 0));
+      registry.register(makeEntry("child-a", "sup", "running", 0));
+      registry.register(makeEntry("child-b", "sup", "running", 0));
+
+      const manifest = supervisedManifest(config);
+      await reconciler.reconcile(agentId("sup"), makeContext(manifest));
+
+      registry.transition(agentId("child-a"), "terminated", 0, { kind: "error" });
+
+      // The exact error object should be re-thrown (not wrapped)
+      try {
+        await reconciler.reconcile(agentId("sup"), makeContext(manifest));
+        // Should not reach here
+        expect(true).toBe(false);
+      } catch (err: unknown) {
+        expect(err).toBe(specificError);
+      }
     });
 
     test("concurrent A+B termination → single restart cycle", async () => {

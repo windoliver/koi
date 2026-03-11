@@ -1,0 +1,72 @@
+import { describe, expect, test } from "bun:test";
+import type { ModelHandler, ModelRequest, ModelResponse, SessionContext, TurnContext } from "@koi/core/middleware";
+import { create{{PASCAL_NAME}}Middleware } from "./{{KEBAB_NAME}}.js";
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+function mockSessionContext(sessionId: string): SessionContext {
+  return { sessionId } as SessionContext;
+}
+
+function mockTurnContext(sessionId: string): TurnContext {
+  return {
+    session: { sessionId },
+    messages: [],
+  } as unknown as TurnContext;
+}
+
+function mockModelRequest(): ModelRequest {
+  return {
+    messages: [],
+    model: "test-model",
+  } as unknown as ModelRequest;
+}
+
+const passthroughHandler: ModelHandler = async (req: ModelRequest): Promise<ModelResponse> => ({
+  content: "ok",
+  metadata: {},
+});
+
+// ---------------------------------------------------------------------------
+// create{{PASCAL_NAME}}Middleware
+// ---------------------------------------------------------------------------
+
+describe("create{{PASCAL_NAME}}Middleware", () => {
+  test("passes through model calls when enabled", async () => {
+    const mw = create{{PASCAL_NAME}}Middleware();
+    await mw.onSessionStart?.(mockSessionContext("s1"));
+
+    const response = await mw.wrapModelCall?.(
+      mockTurnContext("s1"),
+      mockModelRequest(),
+      passthroughHandler,
+    );
+    expect(response?.content).toBe("ok");
+  });
+
+  test("cleans up session state on onSessionEnd", async () => {
+    const mw = create{{PASCAL_NAME}}Middleware();
+    await mw.onSessionStart?.(mockSessionContext("s1"));
+    await mw.onSessionEnd?.(mockSessionContext("s1"));
+
+    // After cleanup, wrapModelCall should pass through (no state)
+    const response = await mw.wrapModelCall?.(
+      mockTurnContext("s1"),
+      mockModelRequest(),
+      passthroughHandler,
+    );
+    expect(response?.content).toBe("ok");
+  });
+
+  test("respects enabled=false config", async () => {
+    const mw = create{{PASCAL_NAME}}Middleware({ enabled: false });
+    const response = await mw.wrapModelCall?.(
+      mockTurnContext("s1"),
+      mockModelRequest(),
+      passthroughHandler,
+    );
+    expect(response?.content).toBe("ok");
+  });
+});

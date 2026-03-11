@@ -1,0 +1,12 @@
+/**
+ * Types for {{MIDDLEWARE_NAME}} middleware.
+ */
+
+export interface {{PASCAL_NAME}}Config {
+  /** Enable/disable the middleware at runtime. */
+  readonly enabled?: boolean;
+}
+
+export interface {{PASCAL_NAME}}SessionState {
+  readonly turnCount: number;
+}

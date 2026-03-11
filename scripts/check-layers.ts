@@ -315,20 +315,117 @@ async function scanL0ClassViolations(srcDir: string): Promise<readonly Violation
   return fileViolationGroups.flat();
 }
 
-// --- Package directory listing (2-level deep) ---
+// --- Session-state lint: middleware must use onSessionEnd with raw Maps ---
+
+const SESSION_MAP_RE = /new Map<string,/;
+const SESSION_END_RE = /onSessionEnd/;
 
 /**
- * Lists package directories at 2 levels deep: packages/<subsystem>/<name>/.
- * Returns objects with `name` (the package directory name) and `path` (absolute path).
+ * Returns true if file source contains a raw session Map (`new Map<string,`)
+ * but does NOT contain an `onSessionEnd` lifecycle hook.
+ *
+ * This catches middleware that stores per-session state but never cleans it up,
+ * which causes memory leaks in long-running agents.
  */
-async function listPackageDirs(): Promise<
-  readonly { readonly name: string; readonly path: string }[]
-> {
-  const subsystems = await readdir(PACKAGES_DIR, { withFileTypes: true });
+export function hasSessionMapWithoutCleanup(source: string): boolean {
+  return SESSION_MAP_RE.test(source) && !SESSION_END_RE.test(source);
+}
+
+/**
+ * Scans L2 middleware packages for session-state Maps without onSessionEnd cleanup.
+ * Only scans packages whose directory name starts with "middleware-".
+ */
+export async function scanMiddlewareForSessionLeaks(
+  packagesDir: string,
+): Promise<readonly Violation[]> {
+  const dirs = await listPackageDirsFrom(packagesDir);
+  const violations: Violation[] = [];
+
+  await Promise.all(
+    dirs
+      .filter((dir) => dir.name.startsWith("middleware-"))
+      .map(async (dir) => {
+        const pkgPath = `${dir.path}/package.json`;
+        const file = Bun.file(pkgPath);
+        if (!(await file.exists())) return;
+        const pkg = (await file.json()) as { name: string };
+
+        // Skip L0u, L1, L3, L4 — only check L2 middleware
+        if (
+          L0_PACKAGES.has(pkg.name) ||
+          L0U_PACKAGES.has(pkg.name) ||
+          L1_PACKAGES.has(pkg.name) ||
+          L3_PACKAGES.has(pkg.name) ||
+          L4_PACKAGES.has(pkg.name)
+        )
+          return;
+
+        const srcDir = `${dir.path}/src`;
+        const glob = new Bun.Glob("**/*.ts");
+        for await (const filePath of glob.scan({ cwd: srcDir, absolute: true })) {
+          if (isTestFile(filePath)) continue;
+          const source = await Bun.file(filePath).text();
+          if (hasSessionMapWithoutCleanup(source)) {
+            const relPath = filePath.startsWith(srcDir)
+              ? `src${filePath.slice(srcDir.length)}`
+              : filePath;
+            violations.push({
+              pkg: pkg.name,
+              message: `Middleware uses raw Map<string,> for session state without onSessionEnd cleanup at ${relPath}. Use createSessionState() from @koi/session-state or add onSessionEnd.`,
+            });
+          }
+        }
+      }),
+  );
+
+  return violations;
+}
+
+// --- @koi/test-utils deprecation tracking ---
+
+/**
+ * Scans L2 packages for imports of `@koi/test-utils` (the transitional barrel).
+ * Returns warnings (not errors) to guide migration to the split packages.
+ */
+export async function scanTestUtilsDeprecation(packagesDir: string): Promise<readonly Violation[]> {
+  const dirs = await listPackageDirsFrom(packagesDir);
+  const violations: Violation[] = [];
+
+  await Promise.all(
+    dirs.map(async (dir) => {
+      const pkgPath = `${dir.path}/package.json`;
+      const file = Bun.file(pkgPath);
+      if (!(await file.exists())) return;
+      const pkg = (await file.json()) as {
+        name: string;
+        devDependencies?: Record<string, string>;
+      };
+      // Skip the test-utils packages themselves
+      if (pkg.name.startsWith("@koi/test-utils")) return;
+
+      const devDeps = pkg.devDependencies ?? {};
+      if ("@koi/test-utils" in devDeps) {
+        violations.push({
+          pkg: pkg.name,
+          message: `[WARN] Uses deprecated @koi/test-utils barrel. Migrate to @koi/test-utils-contracts, @koi/test-utils-mocks, or @koi/test-utils-store-contracts.`,
+        });
+      }
+    }),
+  );
+
+  return violations;
+}
+
+// --- Package directory listing (shared helper) ---
+
+async function listPackageDirsFrom(
+  packagesDir: string,
+): Promise<readonly { readonly name: string; readonly path: string }[]> {
+  const subsystems = await readdir(packagesDir, { withFileTypes: true });
   const results: { readonly name: string; readonly path: string }[] = [];
   for (const sub of subsystems) {
     if (!sub.isDirectory()) continue;
-    const subPath = `${PACKAGES_DIR}${sub.name}`;
+    const subPath = `${packagesDir}${sub.name}`;
     const children = await readdir(subPath, { withFileTypes: true });
     for (const child of children) {
       if (!child.isDirectory()) continue;
@@ -341,7 +438,7 @@ async function listPackageDirs(): Promise<
 // --- Main ---
 
 async function main(): Promise<void> {
-  const dirs = await listPackageDirs();
+  const dirs = await listPackageDirsFrom(PACKAGES_DIR);
 
   // ── 1. package.json dependency checks ──────────────────────────────────────
 
@@ -502,6 +599,14 @@ async function main(): Promise<void> {
 
   const l0RuntimeViolations = coreExists ? await scanL0ForRuntimeCode(coreSrcDir) : [];
 
+  // ── 6. Middleware session-state lint (warnings, not errors — ratchet pattern) ──
+
+  const sessionLeakWarnings = await scanMiddlewareForSessionLeaks(PACKAGES_DIR);
+
+  // ── 7. @koi/test-utils deprecation warnings ──────────────────────────────
+
+  const testUtilsWarnings = await scanTestUtilsDeprecation(PACKAGES_DIR);
+
   // ── Report ─────────────────────────────────────────────────────────────────
 
   const violations = [
@@ -512,6 +617,28 @@ async function main(): Promise<void> {
     ...l2Violations,
     ...l0RuntimeViolations,
   ];
+
+  // Print session-state warnings (non-blocking — existing code is grandfathered)
+  if (sessionLeakWarnings.length > 0) {
+    console.warn(
+      `\n⚠️  Session-state lint — ${sessionLeakWarnings.length} middleware file(s) use raw Map without onSessionEnd:\n`,
+    );
+    for (const w of sessionLeakWarnings) {
+      console.warn(`  ${w.pkg}: ${w.message}`);
+    }
+    console.warn("");
+  }
+
+  // Print deprecation warnings (non-blocking)
+  if (testUtilsWarnings.length > 0) {
+    console.warn(
+      `⚠️  @koi/test-utils deprecation — ${testUtilsWarnings.length} package(s) still use the barrel:\n`,
+    );
+    for (const w of testUtilsWarnings) {
+      console.warn(`  ${w.pkg}: ${w.message}`);
+    }
+    console.warn("");
+  }
 
   if (violations.length === 0) {
     console.log("✅ Layer check passed — all packages respect layer boundaries.");
