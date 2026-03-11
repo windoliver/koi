@@ -19,6 +19,9 @@ export const TUI_SESSION_PREFIX = "/session/tui";
 /** Engine session records path prefix (canonical SessionRecord storage). */
 const ENGINE_SESSION_PREFIX = "/session/records";
 
+/** Shared chat log prefix (written by AG-UI dispatch in serve/start/admin). */
+const CHAT_SESSION_PREFIX = "/session/chat";
+
 /** Parsed metadata from a SessionRecord JSON file. */
 export interface SessionInfo {
   readonly sessionId: string;
@@ -57,20 +60,23 @@ export function createSessionPicker(deps: SessionPickerDeps): SessionPickerHandl
 
     const agentId = session.agentId;
 
-    // List engine session records and TUI chat logs in parallel
-    const [recordsResult, tuiResult] = await Promise.all([
+    // List engine session records, TUI chat logs, and shared chat logs in parallel
+    const [recordsResult, tuiResult, chatResult] = await Promise.all([
       client.fsList(`/agents/${agentId}${ENGINE_SESSION_PREFIX}`),
       client.fsList(`/agents/${agentId}${TUI_SESSION_PREFIX}`),
+      client.fsList(`/agents/${agentId}${CHAT_SESSION_PREFIX}`),
     ]);
 
     const items: SelectItem[] = [];
 
-    // Build set of session IDs that have TUI chat logs (restorable history)
-    const tuiSessionIds = new Set<string>();
-    if (tuiResult.ok) {
-      for (const entry of tuiResult.value) {
-        if (entry.name.endsWith(".jsonl")) {
-          tuiSessionIds.add(entry.name.replace(/\.jsonl$/, ""));
+    // Build set of session IDs that have any chat logs (TUI or shared)
+    const chatSessionIds = new Set<string>();
+    for (const result of [tuiResult, chatResult]) {
+      if (result.ok) {
+        for (const entry of result.value) {
+          if (entry.name.endsWith(".jsonl")) {
+            chatSessionIds.add(entry.name.replace(/\.jsonl$/, ""));
+          }
         }
       }
     }
@@ -80,7 +86,7 @@ export function createSessionPicker(deps: SessionPickerDeps): SessionPickerHandl
       const infos = await loadSessionInfos(agentId, recordsResult.value);
       for (const info of infos) {
         const date = new Date(info.connectedAt).toLocaleString();
-        const hasChatLog = tuiSessionIds.has(info.sessionId);
+        const hasChatLog = chatSessionIds.has(info.sessionId);
         items.push({
           value: info.sessionId,
           label: `${info.sessionId.slice(0, 12)}…`,
@@ -91,17 +97,18 @@ export function createSessionPicker(deps: SessionPickerDeps): SessionPickerHandl
       }
     }
 
-    // Add TUI chat log entries (these have local message history)
-    if (tuiResult.ok) {
-      for (const entry of tuiResult.value) {
+    // Add chat log entries from both TUI and shared sources
+    for (const result of [tuiResult, chatResult]) {
+      if (!result.ok) continue;
+      for (const entry of result.value) {
         if (!entry.name.endsWith(".jsonl")) continue;
         const sid = entry.name.replace(/\.jsonl$/, "");
-        // Skip if already listed from engine records
+        // Skip if already listed from engine records or a prior source
         if (items.some((i) => i.value === sid)) continue;
         items.push({
           value: sid,
           label: sid,
-          description: "TUI chat log",
+          description: "chat log",
         });
       }
     }
@@ -167,14 +174,27 @@ export function createSessionPicker(deps: SessionPickerDeps): SessionPickerHandl
     return infos;
   }
 
-  /** Load a session by sessionId — tries TUI chat log first, falls back to event log. */
+  /** Load a session by sessionId — tries TUI log, shared chat log, then event fallback. */
   async function loadSession(agentId: string, sessionId: string): Promise<void> {
-    // Try to load TUI chat log for message history
+    // Try TUI chat log first, then shared chat log
     const tuiLogPath = `/agents/${agentId}${TUI_SESSION_PREFIX}/${sessionId}.jsonl`;
-    const logResult = await client.fsRead(tuiLogPath);
-    const messages = logResult.ok
-      ? parseTuiChatLog(typeof logResult.value === "string" ? logResult.value : "")
-      : [];
+    const chatLogPath = `/agents/${agentId}${CHAT_SESSION_PREFIX}/${sessionId}.jsonl`;
+    const [tuiResult, chatResult] = await Promise.all([
+      client.fsRead(tuiLogPath),
+      client.fsRead(chatLogPath),
+    ]);
+
+    // Prefer TUI log (richer format), fall back to shared chat log
+    const logContent = tuiResult.ok
+      ? typeof tuiResult.value === "string"
+        ? tuiResult.value
+        : ""
+      : chatResult.ok
+        ? typeof chatResult.value === "string"
+          ? chatResult.value
+          : ""
+        : "";
+    const messages = parseTuiChatLog(logContent);
 
     store.dispatch({
       kind: "set_session",

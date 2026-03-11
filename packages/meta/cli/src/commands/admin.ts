@@ -23,6 +23,7 @@ import type { AdminFlags } from "../args.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
+  persistChatExchange,
   resolveDashboardAssetsDir,
 } from "../helpers.js";
 import { resolveAutonomousOrWarn } from "../resolve-autonomous.js";
@@ -437,13 +438,24 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       try {
         const text = extractTextFromBlocks(msg.content);
         if (text.trim() === "") return;
+        const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
         const input: EngineInput = { kind: "text", text };
+        const deltas: string[] = [];
         for await (const event of run.run(input)) {
+          if (event.kind === "text_delta") deltas.push(event.delta);
           if (event.kind === "done") {
             const m = event.output.metrics;
             bridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
           }
         }
+        // Persist to shared chat log (best-effort)
+        await persistChatExchange(
+          workspaceRoot,
+          manifest.name,
+          threadId,
+          text,
+          deltas.join(""),
+        ).catch(() => {});
       } finally {
         chatProcessing = false;
       }

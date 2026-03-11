@@ -28,6 +28,7 @@ import type { StartFlags } from "../args.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
+  persistChatExchange,
   resolveDashboardAssetsDir,
 } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
@@ -346,6 +347,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // Wire AG-UI chat dispatch (reuses the same processing guard)
   if (chatBridge !== undefined) {
     const bridge = chatBridge;
+    const { dirname: pDirname, resolve: pResolve } = await import("node:path");
+    const chatWorkspaceRoot = pResolve(pDirname(manifestPath));
+
     bridge.wireDispatch(async (msg) => {
       if (processing) {
         throw new Error("Agent is busy processing another request");
@@ -354,13 +358,24 @@ export async function runStart(flags: StartFlags): Promise<void> {
       try {
         const text = extractTextFromBlocks(msg.content);
         if (text.trim() === "") return;
+        const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
         const input: EngineInput = { kind: "text", text };
+        const deltas: string[] = [];
         for await (const event of runtime.run(input)) {
+          if (event.kind === "text_delta") deltas.push(event.delta);
           if (event.kind === "done" && adminBridge !== undefined) {
             const m = event.output.metrics;
             adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
           }
         }
+        // Persist to shared chat log (best-effort)
+        await persistChatExchange(
+          chatWorkspaceRoot,
+          manifest.name,
+          threadId,
+          text,
+          deltas.join(""),
+        ).catch(() => {});
       } finally {
         processing = false;
       }

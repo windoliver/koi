@@ -611,10 +611,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   function openInBrowser(): void {
     const session = store.getState().activeSession;
     const browserBase = adminUrl.replace(/\/api\/?$/, "");
-    // Deep-link to the specific agent via ?view= (saved view) + ?path= (tree nav)
+    // Deep-link to the specific agent + session via ?view= + ?path= params
     const browserUrl =
       session !== null
-        ? `${browserBase}/browser?view=agents&path=${encodeURIComponent(`/agents/${session.agentId}`)}`
+        ? `${browserBase}/browser?view=agents&path=${encodeURIComponent(`/agents/${session.agentId}/session`)}`
         : browserBase;
     addLifecycleMessage(`Opening: ${browserUrl}`);
     const openCmd =
@@ -630,15 +630,23 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   // ─── Data fetching ──────────────────────────────────────────────────
 
-  /** Load a saved TUI session's chat log. Returns empty array on failure. */
+  /** Load a saved session's chat log (TUI log or shared chat log). */
   async function loadSavedSession(
     agentId: string,
     sessionId: string,
   ): Promise<readonly ChatMessage[]> {
-    const logPath = `/agents/${agentId}${TUI_SESSION_PREFIX}/${sessionId}.jsonl`;
-    const result = await client.fsRead(logPath);
-    if (!result.ok) return [];
-    return parseTuiChatLog(typeof result.value === "string" ? result.value : "");
+    // Try TUI log first, then shared chat log
+    const tuiPath = `/agents/${agentId}${TUI_SESSION_PREFIX}/${sessionId}.jsonl`;
+    const tuiResult = await client.fsRead(tuiPath);
+    if (tuiResult.ok) {
+      return parseTuiChatLog(typeof tuiResult.value === "string" ? tuiResult.value : "");
+    }
+    const chatPath = `/agents/${agentId}/session/chat/${sessionId}.jsonl`;
+    const chatResult = await client.fsRead(chatPath);
+    if (chatResult.ok) {
+      return parseTuiChatLog(typeof chatResult.value === "string" ? chatResult.value : "");
+    }
+    return [];
   }
 
   async function refreshAgents(): Promise<void> {
