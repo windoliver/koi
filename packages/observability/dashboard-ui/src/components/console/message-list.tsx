@@ -10,9 +10,11 @@ import { memo, useCallback, useEffect, useRef } from "react";
 import {
   type ChatMessage,
   MAX_RENDERED_MESSAGES,
+  useActiveToolCalls,
   useChatStore,
   useRenderedMessages,
 } from "../../stores/chat-store.js";
+import { ActiveToolCallIndicator } from "./active-tool-call.js";
 import { MessageBubble } from "./message-bubble.js";
 import { StreamingIndicator } from "./streaming-indicator.js";
 
@@ -21,6 +23,7 @@ export const MessageList = memo(function MessageList(): React.ReactElement {
   const totalCount = useChatStore((s) => s.messages.length);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const pendingText = useChatStore((s) => s.pendingText);
+  const activeToolCalls = useActiveToolCalls();
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
 
@@ -37,7 +40,7 @@ export const MessageList = memo(function MessageList(): React.ReactElement {
     if (shouldAutoScroll.current && scrollRef.current !== null) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, pendingText]);
+  }, [messages, pendingText, activeToolCalls]);
 
   const hasEarlier = totalCount > MAX_RENDERED_MESSAGES;
 
@@ -64,6 +67,8 @@ export const MessageList = memo(function MessageList(): React.ReactElement {
           <MessageBubble key={messageKey(msg, i)} message={msg} />
         ))}
       </div>
+
+      <ActiveToolCallIndicator toolCalls={activeToolCalls} />
 
       {isStreaming && pendingText !== "" && (
         <StreamingIndicator text={pendingText} />
