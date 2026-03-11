@@ -125,10 +125,12 @@ export function useSessionHistory(agentId: string): UseSessionHistoryResult {
         const messages = parseChatLog(result.content);
 
         const store = useChatStore.getState();
+        // Use the file stem as both sessionId and threadId so the server
+        // can match the conversation thread when the session is resumed.
         store.setSession({
           agentId,
           sessionId: entry.sessionId,
-          threadId: `thread-${entry.sessionId}`,
+          threadId: entry.sessionId,
         });
         store.loadMessages(messages);
       } catch {
@@ -142,7 +144,8 @@ export function useSessionHistory(agentId: string): UseSessionHistoryResult {
     const state = useChatStore.getState();
     if (state.session === null || state.messages.length === 0) return;
 
-    const path = `/agents/${agentId}${CHAT_SESSION_PREFIX}/${state.session.sessionId}.jsonl`;
+    // Use threadId as filename so browser and server write to the same file.
+    const path = `/agents/${agentId}${CHAT_SESSION_PREFIX}/${state.session.threadId}.jsonl`;
     const content = state.messages.map((m) => JSON.stringify(m)).join("\n");
 
     try {

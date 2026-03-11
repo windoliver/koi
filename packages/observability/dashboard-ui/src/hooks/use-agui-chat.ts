@@ -105,6 +105,7 @@ export function useAguiChat(options: UseAguiChatOptions): UseAguiChatResult {
 
         case "RUN_ERROR":
           store.setStreaming(false);
+          store.clearActiveToolCalls();
           store.setError(event.message);
           break;
 

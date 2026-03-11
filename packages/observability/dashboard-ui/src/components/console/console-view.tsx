@@ -70,12 +70,15 @@ export const ConsoleView = memo(function ConsoleView({
   // Guard against concurrent session operations
   const switchingRef = useRef(false);
 
-  // Initialize session when agentId changes
+  // Initialize session when agentId changes.
+  // Use a single ID for both sessionId and threadId so the browser and
+  // server persist to the same file (fixes split-brain issue).
   useEffect(() => {
+    const id = `chat-${Date.now().toString(36)}`;
     useChatStore.getState().setSession({
       agentId,
-      sessionId: `sess-${Date.now().toString(36)}`,
-      threadId: `thread-${Date.now().toString(36)}`,
+      sessionId: id,
+      threadId: id,
     });
 
     return () => {
@@ -109,10 +112,11 @@ export const ConsoleView = memo(function ConsoleView({
     // Abort any in-flight stream before switching
     cancel();
     void persistCurrentSession().then(() => {
+      const newId = `chat-${Date.now().toString(36)}`;
       useChatStore.getState().setSession({
         agentId,
-        sessionId: `sess-${Date.now().toString(36)}`,
-        threadId: `thread-${Date.now().toString(36)}`,
+        sessionId: newId,
+        threadId: newId,
       });
       refresh();
       switchingRef.current = false;

@@ -204,6 +204,34 @@ describe("useAguiChat", () => {
     expect(state.error).toBe("Model rate limited");
   });
 
+  test("RUN_ERROR clears active tool calls", async () => {
+    globalThis.fetch = async () =>
+      new Response(
+        makeSSEStream([
+          sseEvent("RUN_STARTED"),
+          sseEvent("TOOL_CALL_START", { toolCallId: "tc1", toolCallName: "search" }),
+          sseEvent("TOOL_CALL_ARGS", { toolCallId: "tc1", delta: '{"q":"test"}' }),
+          sseEvent("RUN_ERROR", { message: "Model crashed" }),
+        ]),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+
+    const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
+
+    await act(async () => {
+      result.current.sendMessage("fail after tool");
+      await new Promise((r) => {
+        setTimeout(r, 50);
+      });
+    });
+
+    const state = useChatStore.getState();
+    expect(state.isStreaming).toBe(false);
+    expect(state.error).toBe("Model crashed");
+    // Active tool calls should be cleared — no orphaned spinners
+    expect(Object.keys(state.activeToolCalls)).toHaveLength(0);
+  });
+
   test("HTTP error sets error message", async () => {
     globalThis.fetch = async () =>
       new Response("Internal Server Error", {
