@@ -162,7 +162,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   let chatBridge: AgentChatBridge | undefined;
   if (flags.admin) {
     const { createAgentChatBridge } = await import("../agui-chat-bridge.js");
-    chatBridge = createAgentChatBridge({ mode: "stateful" });
+    chatBridge = createAgentChatBridge();
   }
 
   // 5. RESOLVE: Resolve manifest into runtime instances (middleware + model)
@@ -359,10 +359,12 @@ export async function runServe(flags: ServeFlags): Promise<void> {
               }
               const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
 
-              // Update bindings for conversation middleware (context-arena) —
-              // same pattern as channel traffic at line ~396.
+              // Set bindings for context extension and forge scoping, but clear
+              // threadKey so conversation middleware skips history injection —
+              // stateless mode already provides full conversation context from
+              // the browser's persisted session history.
               currentMessages = [msg];
-              currentThreadKey = threadId;
+              currentThreadKey = undefined;
               currentServeSessionId = threadId;
 
               const input: EngineInput = { kind: "text", text };
