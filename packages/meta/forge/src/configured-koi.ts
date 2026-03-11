@@ -167,8 +167,9 @@ export async function createForgeConfiguredKoi(
     options.forgeStore === undefined ||
     options.forgeExecutor === undefined
   ) {
-    // Still wire ACE tools provider when ACE middleware is present
-    const aceProvider = resolveAceToolsProvider(options.middleware);
+    // Still wire ACE tools provider when ACE middleware is present.
+    // Forge tools are NOT available on this path → skip companion skill.
+    const aceProvider = resolveAceToolsProvider(options.middleware, false);
     const providers =
       aceProvider !== undefined ? [...(options.providers ?? []), aceProvider] : options.providers;
     const runtime = await createConfiguredKoi({
@@ -215,7 +216,8 @@ export async function createForgeConfiguredKoi(
   // Wire ACE tools provider if ACE middleware is present in the resolved middleware.
   // Uses getAceStores() to retrieve the same PlaybookStore instance the middleware uses,
   // ensuring list_playbooks reads from the same store ACE writes to.
-  const aceToolsProvider = resolveAceToolsProvider(options.middleware);
+  // Forge tools ARE available on this path → include companion skill.
+  const aceToolsProvider = resolveAceToolsProvider(options.middleware, true);
 
   // Merge forge middleware and providers with user-supplied ones
   const mergedMiddleware: readonly KoiMiddleware[] = [
@@ -256,9 +258,19 @@ export async function createForgeConfiguredKoi(
 /**
  * Scan resolved middleware for an ACE instance and create the tools provider
  * with the same PlaybookStore. Returns undefined if ACE is not present.
+ *
+ * **Limitation**: Only detects ACE when passed explicitly in `options.middleware`.
+ * Manifest-driven middleware (resolved inside starter's `resolveManifestMiddleware`)
+ * is not visible here. The CLI always pre-resolves via `resolveAgent()`, so this
+ * covers the production path. Direct `createForgeConfiguredKoi()` callers relying
+ * on starter's internal resolution should pass ACE in `options.middleware`.
+ *
+ * @param includeCompanionSkill — set to false when forge tools are unavailable
+ *   (the self-forge skill references forge_skill/forge_tool which would mislead the agent)
  */
 function resolveAceToolsProvider(
   middleware: readonly KoiMiddleware[] | undefined,
+  includeCompanionSkill: boolean,
 ): ComponentProvider | undefined {
   if (middleware === undefined) return undefined;
 
@@ -273,5 +285,6 @@ function resolveAceToolsProvider(
     ...(stores.structuredPlaybookStore !== undefined
       ? { structuredPlaybookStore: stores.structuredPlaybookStore }
       : {}),
+    includeCompanionSkill,
   });
 }

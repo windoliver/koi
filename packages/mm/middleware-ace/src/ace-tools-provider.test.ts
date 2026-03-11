@@ -124,4 +124,16 @@ describe("createAceToolsProvider", () => {
     expect(skill.content).toContain("forge_skill");
     expect(skill.tags).toContain("ace");
   });
+
+  test("skips companion skill when includeCompanionSkill is false", async () => {
+    const provider = createAceToolsProvider({
+      playbookStore: createInMemoryPlaybookStore(),
+      includeCompanionSkill: false,
+    });
+
+    const components = (await provider.attach(makeAgent())) as Map<string, unknown>;
+    expect(components.has("tool:list_playbooks")).toBe(true);
+    expect(components.has("skill:ace-self-forge")).toBe(false);
+    expect(components.size).toBe(1);
+  });
 });

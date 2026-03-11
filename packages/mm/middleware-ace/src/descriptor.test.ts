@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentManifest } from "@koi/core";
 import type { ResolutionContext } from "@koi/resolve";
+import { createAceMiddleware } from "./ace.js";
 import { descriptor, getAceStores } from "./descriptor.js";
+import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "./stores.js";
 
 const STUB_CONTEXT: ResolutionContext = {
   manifestDir: "/tmp",
@@ -118,5 +120,16 @@ describe("descriptor", () => {
       describeCapabilities: () => undefined,
     });
     expect(stores).toBeUndefined();
+  });
+
+  test("getAceStores works with direct createAceMiddleware() (not just descriptor)", () => {
+    const playbookStore = createInMemoryPlaybookStore();
+    const middleware = createAceMiddleware({
+      trajectoryStore: createInMemoryTrajectoryStore(),
+      playbookStore,
+    });
+    const stores = getAceStores(middleware);
+    expect(stores).toBeDefined();
+    expect(stores?.playbookStore).toBe(playbookStore);
   });
 });

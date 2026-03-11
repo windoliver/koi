@@ -19,6 +19,13 @@ import { createListPlaybooksTool } from "./tools/list-playbooks.js";
 export interface AceToolsProviderConfig {
   readonly playbookStore: PlaybookStore;
   readonly structuredPlaybookStore?: StructuredPlaybookStore | undefined;
+  /**
+   * Whether to attach the self-forge companion skill alongside the tool.
+   * Set to `false` when forge tools (forge_skill, forge_tool, etc.) are not
+   * available — the skill content references those tools and would mislead
+   * the agent if they don't exist. Default: `true`.
+   */
+  readonly includeCompanionSkill?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,8 +70,12 @@ export function createAceToolsProvider(config: AceToolsProviderConfig): Componen
         }),
       );
 
-      // Self-forge companion skill
-      components.set(skillToken("ace-self-forge") as string, SELF_FORGE_SKILL_COMPONENT);
+      // Self-forge companion skill — only when forge tools are available.
+      // The skill content references forge_skill, forge_tool, search_forge;
+      // attaching it without those tools would give the agent bad instructions.
+      if (config.includeCompanionSkill !== false) {
+        components.set(skillToken("ace-self-forge") as string, SELF_FORGE_SKILL_COMPONENT);
+      }
 
       return components;
     },

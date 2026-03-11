@@ -173,7 +173,7 @@ describeE2E("e2e: ACE tools provider through createForgeConfiguredKoi", () => {
   // ── 2. ACE tools attached when forge disabled (fast path) ───────────────
 
   test(
-    "ACE middleware → list_playbooks + ace-self-forge attached (forge disabled, fast path)",
+    "ACE middleware → list_playbooks attached, skill skipped (forge disabled, fast path)",
     async () => {
       const aceMiddleware = await createAceViaDescriptor();
 
@@ -195,10 +195,13 @@ describeE2E("e2e: ACE tools provider through createForgeConfiguredKoi", () => {
       // Run one turn
       await collectEvents(result.runtime.run({ kind: "text", text: "Hello" }));
 
-      // ACE tools should still be attached
+      // list_playbooks tool should still be attached (useful without forge)
       const agent = result.runtime.agent;
       expect(agent.component(toolToken("list_playbooks"))).toBeDefined();
-      expect(agent.component(skillToken("ace-self-forge"))).toBeDefined();
+
+      // Self-forge skill should NOT be attached — it references forge tools
+      // (forge_skill, forge_tool, search_forge) that don't exist on this path
+      expect(agent.component(skillToken("ace-self-forge"))).toBeUndefined();
 
       // Forge tools should NOT be present
       expect(agent.component(toolToken("search_forge"))).toBeUndefined();

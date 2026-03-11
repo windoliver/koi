@@ -4,8 +4,8 @@
  * Enables manifest auto-resolution: validates ACE config,
  * then creates the ACE middleware with in-memory stores by default.
  *
- * Stores are tracked via a WeakMap so the L3 wiring can retrieve them
- * and create the ACE tools provider with the same store instances.
+ * Store tracking happens inside createAceMiddleware() (via ace-stores.ts),
+ * so both descriptor-created and direct-API middleware instances are tracked.
  */
 
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
@@ -14,29 +14,11 @@ import type { BrickDescriptor } from "@koi/resolve";
 import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createAceMiddleware } from "./ace.js";
 import { SELF_FORGE_SKILL } from "./self-forge-skill.js";
-import type { PlaybookStore, StructuredPlaybookStore } from "./stores.js";
 import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "./stores.js";
 
-// ---------------------------------------------------------------------------
-// Store accessor — lets L3 code retrieve stores from a descriptor-created
-// middleware without exposing internals on the middleware interface.
-// WeakMap ensures no memory leaks (middleware GC → entry removed).
-// ---------------------------------------------------------------------------
-
-export interface AceStores {
-  readonly playbookStore: PlaybookStore;
-  readonly structuredPlaybookStore?: StructuredPlaybookStore | undefined;
-}
-
-const middlewareStores = new WeakMap<KoiMiddleware, AceStores>();
-
-/**
- * Retrieve the stores associated with an ACE middleware created by the descriptor.
- * Returns undefined if the middleware wasn't created by this descriptor.
- */
-export function getAceStores(middleware: KoiMiddleware): AceStores | undefined {
-  return middlewareStores.get(middleware);
-}
+// Re-export from the shared module for public API continuity
+export type { AceStores } from "./ace-stores.js";
+export { getAceStores } from "./ace-stores.js";
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -92,14 +74,10 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
       playbookStore,
     };
 
-    const middleware =
-      maxInjectionTokens !== undefined
-        ? createAceMiddleware({ ...config, maxInjectionTokens })
-        : createAceMiddleware(config);
-
-    // Track stores so L3 code can create the ACE tools provider with the same instances
-    middlewareStores.set(middleware, { playbookStore });
-
-    return middleware;
+    // createAceMiddleware() internally calls trackAceStores(),
+    // so the stores are automatically accessible via getAceStores().
+    return maxInjectionTokens !== undefined
+      ? createAceMiddleware({ ...config, maxInjectionTokens })
+      : createAceMiddleware(config);
   },
 };
