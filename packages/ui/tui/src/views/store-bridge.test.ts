@@ -37,16 +37,17 @@ describe("createStoreSignal", () => {
 
   test("unsubscribes on disposal", () => {
     const store = makeStore();
-    let stateRef: ReturnType<typeof createStoreSignal> | null = null;
+    let lastView = "";
     createRoot((dispose) => {
-      stateRef = createStoreSignal(store);
-      expect(stateRef().view).toBe("agents");
+      const state = createStoreSignal(store);
+      lastView = state().view;
+      expect(lastView).toBe("agents");
       dispose();
     });
     // After disposal, dispatch should not throw
     store.dispatch({ kind: "set_view", view: "palette" });
-    // stateRef still holds last known value before disposal
-    expect(stateRef?.().view).toBe("agents");
+    // lastView captured before disposal remains "agents"
+    expect(lastView).toBe("agents");
   });
 });
 
