@@ -358,6 +358,13 @@ export async function runServe(flags: ServeFlags): Promise<void> {
                 return;
               }
               const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
+
+              // Update bindings for conversation middleware (context-arena) —
+              // same pattern as channel traffic at line ~396.
+              currentMessages = [msg];
+              currentThreadKey = threadId;
+              currentServeSessionId = threadId;
+
               const input: EngineInput = { kind: "text", text };
               const deltas: string[] = [];
               for await (const event of runtime.run(input)) {

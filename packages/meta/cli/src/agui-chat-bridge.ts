@@ -42,7 +42,7 @@ export function createAgentChatBridge(): AgentChatBridge {
         { status: 503, headers: { "Content-Type": "application/json" } },
       );
     }
-    return handleAguiRequest(req, store, "stateful", dispatchFn);
+    return handleAguiRequest(req, store, "stateless", dispatchFn);
   };
 
   return {
