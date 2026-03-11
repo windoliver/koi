@@ -8,6 +8,7 @@
 import { useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { BrowserShell } from "../components/browser/browser-shell.js";
+import { useTreeStore } from "../stores/tree-store.js";
 import { useViewStore } from "../stores/view-store.js";
 
 export function BrowserPage(): React.ReactElement {
@@ -17,6 +18,8 @@ export function BrowserPage(): React.ReactElement {
 
   // Ref to track changes originating from URL (prevents sync loops)
   const syncingFromUrl = useRef(false);
+  // Ref to track whether ?path= has been processed (one-shot on mount)
+  const processedPath = useRef(false);
 
   // URL → store: runs on mount, back/forward, and manual URL edits
   useEffect(() => {
@@ -26,6 +29,18 @@ export function BrowserPage(): React.ReactElement {
       setActiveView(viewParam);
     }
   }, [searchParams, activeViewId, setActiveView]);
+
+  // URL → tree: navigate to ?path= on initial load
+  useEffect(() => {
+    if (processedPath.current) return;
+    const pathParam = searchParams.get("path");
+    if (pathParam !== null) {
+      processedPath.current = true;
+      const lastSegment = pathParam.split("/").pop() ?? "";
+      const isDir = !lastSegment.includes(".");
+      useTreeStore.getState().selectPath(pathParam, isDir);
+    }
+  }, [searchParams]);
 
   // Store → URL: only for user-initiated store changes (tab clicks)
   useEffect(() => {

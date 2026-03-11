@@ -573,6 +573,136 @@ interface ApiError {
     readonly message: string;
 }
 
-export { type AdminPanelConfig, type AdminPanelDataSources, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type ApiError, type ApiResult, type ChannelDashboardEvent, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RuntimeViewDataSource, SAVED_VIEWS, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent };
+/**
+ * Shared route constants for the admin API.
+ *
+ * Both @koi/dashboard-api (server) and @koi/tui (client) import these
+ * to eliminate URL drift across the HTTP boundary.
+ *
+ * Paths are relative to the API prefix (default: "/admin/api").
+ */
+/** HTTP method type. */
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+/** A typed route definition. */
+interface RouteDefinition {
+    readonly method: HttpMethod;
+    readonly path: string;
+}
+/**
+ * All admin API routes.
+ *
+ * Path params are encoded as \`:param\` (e.g., \`/agents/:id\`).
+ * The client is responsible for interpolating actual values.
+ */
+declare const ADMIN_ROUTES: {
+    readonly health: {
+        readonly method: "GET";
+        readonly path: "/health";
+    };
+    readonly listAgents: {
+        readonly method: "GET";
+        readonly path: "/agents";
+    };
+    readonly getAgent: {
+        readonly method: "GET";
+        readonly path: "/agents/:id";
+    };
+    readonly terminateAgent: {
+        readonly method: "POST";
+        readonly path: "/agents/:id/terminate";
+    };
+    readonly listChannels: {
+        readonly method: "GET";
+        readonly path: "/channels";
+    };
+    readonly listSkills: {
+        readonly method: "GET";
+        readonly path: "/skills";
+    };
+    readonly getMetrics: {
+        readonly method: "GET";
+        readonly path: "/metrics";
+    };
+    readonly dispatchAgent: {
+        readonly method: "POST";
+        readonly path: "/cmd/agents/dispatch";
+    };
+    readonly suspendAgent: {
+        readonly method: "POST";
+        readonly path: "/cmd/agents/:id/suspend";
+    };
+    readonly resumeAgent: {
+        readonly method: "POST";
+        readonly path: "/cmd/agents/:id/resume";
+    };
+    readonly terminateAgentCmd: {
+        readonly method: "POST";
+        readonly path: "/cmd/agents/:id/terminate";
+    };
+    readonly retryDeadLetter: {
+        readonly method: "POST";
+        readonly path: "/cmd/events/dlq/:id/retry";
+    };
+    readonly listMailbox: {
+        readonly method: "POST";
+        readonly path: "/cmd/mailbox/:agentId/list";
+    };
+    readonly processTree: {
+        readonly method: "GET";
+        readonly path: "/view/agents/tree";
+    };
+    readonly agentProcfs: {
+        readonly method: "GET";
+        readonly path: "/view/agents/:id/procfs";
+    };
+    readonly middlewareChain: {
+        readonly method: "GET";
+        readonly path: "/view/middleware/:id";
+    };
+    readonly gatewayTopology: {
+        readonly method: "GET";
+        readonly path: "/view/gateway/topology";
+    };
+    readonly agentChat: {
+        readonly method: "POST";
+        readonly path: "/agents/:id/chat";
+    };
+    readonly events: {
+        readonly method: "GET";
+        readonly path: "/events";
+    };
+    readonly fsList: {
+        readonly method: "GET";
+        readonly path: "/fs/list";
+    };
+    readonly fsRead: {
+        readonly method: "GET";
+        readonly path: "/fs/read";
+    };
+    readonly fsWrite: {
+        readonly method: "PUT";
+        readonly path: "/fs/file";
+    };
+    readonly fsSearch: {
+        readonly method: "GET";
+        readonly path: "/fs/search";
+    };
+    readonly fsDelete: {
+        readonly method: "DELETE";
+        readonly path: "/fs/file";
+    };
+};
+/** Type of the ADMIN_ROUTES object. */
+type AdminRoutes = typeof ADMIN_ROUTES;
+/**
+ * Interpolate path params into a route path.
+ *
+ * @example
+ * interpolatePath("/agents/:id", { id: "agent-123" })
+ * // => "/agents/agent-123"
+ */
+declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
+
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type ApiError, type ApiResult, type ChannelDashboardEvent, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent };
 "
 `;

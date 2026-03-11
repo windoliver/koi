@@ -12,13 +12,20 @@
  * - `koi serve --admin [manifest]`      — embedded with the running agent
  */
 
+import type { EngineEvent, EngineInput } from "@koi/core";
 import type { DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
+import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { AdminFlags } from "../args.js";
-import { createLocalFileSystem, resolveDashboardAssetsDir } from "../helpers.js";
+import {
+  createLocalFileSystem,
+  extractTextFromBlocks,
+  persistChatExchange,
+  resolveDashboardAssetsDir,
+} from "../helpers.js";
 import { resolveAutonomousOrWarn } from "../resolve-autonomous.js";
 import { resolveOrchestrationFromAgent } from "../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../resolve-temporal.js";
@@ -343,6 +350,16 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   let embeddedOrch: ReturnType<typeof resolveOrchestrationFromAgent> | undefined;
   // let justified: set in try when runtime created, called at cleanup
   let runtimeDispose: (() => Promise<void>) | undefined;
+  // let justified: captured from embedded runtime for chat dispatch
+  let runtimeRef: { readonly run: (input: EngineInput) => AsyncIterable<EngineEvent> } | undefined;
+
+  // Create chat bridge for agent chat endpoint in standalone mode
+  // let justified: conditionally set, read for dashboard handler
+  let chatBridge: AgentChatBridge | undefined;
+  {
+    const { createAgentChatBridge } = await import("../agui-chat-bridge.js");
+    chatBridge = createAgentChatBridge();
+  }
 
   try {
     const [{ resolveAgent }, { createForgeConfiguredKoi }, { createPiAdapter }] = await Promise.all(
@@ -355,7 +372,11 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       const { runtime } = await createForgeConfiguredKoi({
         manifest,
         adapter,
-        middleware: [...resolved.value.middleware, ...(autonomous?.middleware ?? [])],
+        middleware: [
+          ...resolved.value.middleware,
+          ...(autonomous?.middleware ?? []),
+          ...(chatBridge !== undefined ? [chatBridge.middleware] : []),
+        ],
         providers: [...(autonomous?.providers ?? [])],
         extensions: [],
       });
@@ -367,6 +388,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
         verbose: flags.verbose,
       });
       runtimeDispose = () => runtime.dispose();
+      runtimeRef = runtime;
 
       if (flags.verbose) {
         process.stderr.write("Embedded agent runtime: active\n");
@@ -405,11 +427,49 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       : {}),
   });
 
+  // Wire chat dispatch if embedded runtime is available
+  if (chatBridge !== undefined && runtimeRef !== undefined) {
+    const run = runtimeRef;
+    // let justified: concurrency guard for single-threaded agent
+    let chatProcessing = false;
+    chatBridge.wireDispatch(async (msg) => {
+      if (chatProcessing) throw new Error("Agent is busy processing another request");
+      chatProcessing = true;
+      try {
+        const text = extractTextFromBlocks(msg.content);
+        if (text.trim() === "") return;
+        const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
+        const input: EngineInput = { kind: "text", text };
+        const deltas: string[] = [];
+        for await (const event of run.run(input)) {
+          if (event.kind === "text_delta") deltas.push(event.delta);
+          if (event.kind === "done") {
+            const m = event.output.metrics;
+            bridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+          }
+        }
+        // Persist to shared chat log (best-effort)
+        await persistChatExchange(
+          workspaceRoot,
+          bridge.agentId,
+          threadId,
+          text,
+          deltas.join(""),
+        ).catch(() => {});
+      } finally {
+        chatProcessing = false;
+      }
+    });
+  }
+
   const assetsDir = resolveDashboardAssetsDir();
-  const dashboardResult = createDashboardHandler(bridge, {
-    cors: true,
-    ...(assetsDir !== undefined ? { assetsDir } : {}),
-  });
+  const dashboardResult = createDashboardHandler(
+    { ...bridge, ...(chatBridge !== undefined ? { agentChatHandler: chatBridge.handler } : {}) },
+    {
+      cors: true,
+      ...(assetsDir !== undefined ? { assetsDir } : {}),
+    },
+  );
 
   // 3. Start HTTP server
   const server = Bun.serve({

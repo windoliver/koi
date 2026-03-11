@@ -26,6 +26,8 @@ export interface TreeStoreState {
   readonly expandAll: (paths: readonly string[]) => void;
   readonly collapseAll: () => void;
   readonly select: (path: string | null, isDirectory?: boolean) => void;
+  /** Expand parent directories and select a path (used for deep-linking). */
+  readonly selectPath: (path: string, isDirectory?: boolean) => void;
   readonly invalidateTree: () => void;
   readonly setChildren: (path: string, entries: readonly FsEntry[]) => void;
   readonly clearChildrenCache: () => void;
@@ -73,6 +75,23 @@ export const useTreeStore = create<TreeStoreState>((set) => ({
 
   select: (path, isDirectory) =>
     set({ selectedPath: path, selectedIsDirectory: isDirectory === true }),
+
+  selectPath: (path, isDirectory) =>
+    set((state) => {
+      const segments = path.split("/").filter((p) => p.length > 0);
+      const parentPaths = segments
+        .slice(0, -1)
+        .map((_, idx) => `/${segments.slice(0, idx + 1).join("/")}`);
+      const next = new Set(state.expanded);
+      for (const p of parentPaths) {
+        next.add(p);
+      }
+      return {
+        expanded: next,
+        selectedPath: path,
+        selectedIsDirectory: isDirectory === true,
+      };
+    }),
 
   invalidateTree: () =>
     set({

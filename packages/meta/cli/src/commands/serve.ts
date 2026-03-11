@@ -32,10 +32,12 @@ import type { SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
+import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { ServeFlags } from "../args.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
+  persistChatExchange,
   resolveDashboardAssetsDir,
 } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
@@ -79,6 +81,10 @@ function deriveSessionKey(channelName: string, inbound: InboundMessage): string 
 export async function runServe(flags: ServeFlags): Promise<void> {
   // 1. RESOLVE: Find manifest path
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
+
+  // Compute workspace root early — used for chat persistence in all message handlers
+  const { dirname: pDirname0, resolve: pResolve0 } = await import("node:path");
+  const serveWorkspaceRoot = pResolve0(pDirname0(manifestPath));
 
   // 2. VALIDATE: Load and validate manifest
   const loadResult = await loadManifest(manifestPath);
@@ -148,6 +154,13 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     });
   } else {
     forgeBootstrap = undefined;
+  }
+
+  // 4c. Create AG-UI chat bridge for admin chat endpoint (loaded lazily)
+  let chatBridge: AgentChatBridge | undefined;
+  if (flags.admin) {
+    const { createAgentChatBridge } = await import("../agui-chat-bridge.js");
+    chatBridge = createAgentChatBridge();
   }
 
   // 5. RESOLVE: Resolve manifest into runtime instances (middleware + model)
@@ -232,6 +245,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       ...nexus.middlewares,
       ...(forgeBootstrap?.middlewares ?? []),
       ...(autonomous?.middleware ?? []),
+      ...(chatBridge !== undefined ? [chatBridge.middleware] : []),
     ],
     providers: [
       ...nexus.providers,
@@ -290,10 +304,55 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     });
   }
 
+  // Agent directory name for chat persistence — matches the bridge's synthetic agentId
+  // so the TUI/session-picker can read back shared chat logs at the same path.
+  const persistAgentId = adminBridge?.agentId ?? manifest.name;
+
   // Global serial queue — runtime enforces single-flight (throws on concurrent
   // run() calls), so all messages serialize through one queue.
   // let justified: serial queue prevents concurrent runtime.run() calls
   let pending: Promise<void> = Promise.resolve();
+
+  // Wire AG-UI chat dispatch through the same serial queue
+  if (chatBridge !== undefined) {
+    const bridge = chatBridge;
+
+    bridge.wireDispatch(
+      async (msg) =>
+        new Promise<void>((resolve, reject) => {
+          pending = pending.then(async () => {
+            try {
+              const text = extractTextFromBlocks(msg.content);
+              if (text.trim() === "") {
+                resolve();
+                return;
+              }
+              const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
+              const input: EngineInput = { kind: "text", text };
+              const deltas: string[] = [];
+              for await (const event of runtime.run(input)) {
+                if (event.kind === "text_delta") deltas.push(event.delta);
+                if (event.kind === "done" && adminBridge !== undefined) {
+                  const m = event.output.metrics;
+                  adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+                }
+              }
+              // Persist to shared chat log (best-effort)
+              await persistChatExchange(
+                serveWorkspaceRoot,
+                persistAgentId,
+                threadId,
+                text,
+                deltas.join(""),
+              ).catch(() => {});
+              resolve();
+            } catch (e: unknown) {
+              reject(e instanceof Error ? e : new Error(String(e)));
+            }
+          });
+        }),
+    );
+  }
 
   const unsubscribers = channels.map((ch) =>
     ch.onMessage(async (inbound) => {
@@ -330,6 +389,15 @@ export async function runServe(flags: ServeFlags): Promise<void> {
             }));
             await ch.send({ content: blocks });
           }
+
+          // Persist to shared chat log (best-effort)
+          await persistChatExchange(
+            serveWorkspaceRoot,
+            persistAgentId,
+            key,
+            text,
+            deltas.join(""),
+          ).catch(() => {});
         } catch (error: unknown) {
           const msg = error instanceof Error ? error.message : String(error);
           process.stderr.write(`Channel "${ch.name}" session "${key}" error: ${msg}\n`);
@@ -351,10 +419,16 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   if (flags.admin && adminBridge !== undefined) {
     // Compose admin panel + health into a single HTTP server
     const assetsDir = resolveDashboardAssetsDir();
-    const dashboardResult = createDashboardHandler(adminBridge, {
-      cors: true,
-      ...(assetsDir !== undefined ? { assetsDir } : {}),
-    });
+    const dashboardResult = createDashboardHandler(
+      {
+        ...adminBridge,
+        ...(chatBridge !== undefined ? { agentChatHandler: chatBridge.handler } : {}),
+      },
+      {
+        cors: true,
+        ...(assetsDir !== undefined ? { assetsDir } : {}),
+      },
+    );
 
     const healthHandler = createHealthHandler(() => true);
     const adminPort = flags.adminPort ?? healthPort;

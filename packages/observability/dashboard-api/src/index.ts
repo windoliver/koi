@@ -37,7 +37,11 @@ export type {
 export { createTemporalAdminAdapter } from "./adapters/temporal-admin-adapter.js";
 export type { AdminPanelBridgeResult, BridgeOptions } from "./bridge.js";
 export { createAdminPanelBridge } from "./bridge.js";
-export type { DashboardHandlerOptions, DashboardHandlerResult } from "./handler.js";
+export type {
+  AgentChatHandler,
+  DashboardHandlerOptions,
+  DashboardHandlerResult,
+} from "./handler.js";
 export { createDashboardHandler } from "./handler.js";
 export type { Route, RouteHandler, RouteMatch, RouteParams, Router } from "./router.js";
 export {

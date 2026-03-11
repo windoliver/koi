@@ -15,6 +15,7 @@ import {
   isStartFlags,
   isStatusFlags,
   isStopFlags,
+  isTuiFlags,
   parseArgs,
 } from "./args.js";
 import { runInit } from "./commands/init.js";
@@ -96,6 +97,14 @@ const COMMANDS: readonly CommandEntry[] = [
       return runDoctor(f as Parameters<typeof runDoctor>[0]);
     },
     description: "koi doctor [manifest]  Diagnose service health",
+  },
+  {
+    match: isTuiFlags,
+    run: async (f) => {
+      const { runTui } = await import("./commands/tui.js");
+      return runTui(f as Parameters<typeof runTui>[0]);
+    },
+    description: "koi tui                Interactive terminal console",
   },
 ];
 
