@@ -57,8 +57,8 @@ export async function persistChatExchange(
   await mkdir(chatDir, { recursive: true });
   const logPath = join(chatDir, `${threadId}.jsonl`);
   const entries = `${[
-    JSON.stringify({ kind: "user", text: userText, ts: Date.now() }),
-    JSON.stringify({ kind: "assistant", text: assistantText, ts: Date.now() }),
+    JSON.stringify({ kind: "user", text: userText, timestamp: Date.now() }),
+    JSON.stringify({ kind: "assistant", text: assistantText, timestamp: Date.now() }),
   ].join("\n")}\n`;
   await appendFile(logPath, entries);
 }

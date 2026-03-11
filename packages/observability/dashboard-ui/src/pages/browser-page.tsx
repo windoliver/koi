@@ -36,7 +36,9 @@ export function BrowserPage(): React.ReactElement {
     const pathParam = searchParams.get("path");
     if (pathParam !== null) {
       processedPath.current = true;
-      useTreeStore.getState().selectPath(pathParam, true);
+      const lastSegment = pathParam.split("/").pop() ?? "";
+      const isDir = !lastSegment.includes(".");
+      useTreeStore.getState().selectPath(pathParam, isDir);
     }
   }, [searchParams]);
 
