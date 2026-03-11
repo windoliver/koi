@@ -9,8 +9,9 @@
  */
 
 import type { AguiEvent, ChatRunInput } from "@koi/dashboard-types";
-import { parseAguiEvent, SSEParser } from "@koi/dashboard-types";
-import type { TuiError } from "../state/types.js";
+import { parseAguiEvent } from "@koi/dashboard-types";
+import type { DashboardClientError } from "../types.js";
+import { SSEParser } from "./sse-stream.js";
 
 // Re-export shared types for existing consumers
 export type {
@@ -38,7 +39,7 @@ export interface AguiClientConfig {
 export interface AguiStreamCallbacks {
   readonly onEvent: (event: AguiEvent) => void;
   readonly onClose?: () => void;
-  readonly onError?: (error: TuiError) => void;
+  readonly onError?: (error: DashboardClientError) => void;
 }
 
 // ─── Client Implementation ───────────────────────────────────────────
@@ -161,8 +162,8 @@ export function startChatStream(
 
 // ─── Error Mapping ──────────────────────────────────────────────────
 
-/** Map a stream error to TuiError. */
-function mapStreamError(error: unknown, url: string, timeoutMs: number): TuiError {
+/** Map a stream error to DashboardClientError. */
+function mapStreamError(error: unknown, url: string, timeoutMs: number): DashboardClientError {
   if (error instanceof DOMException && error.name === "AbortError") {
     return { kind: "timeout", operation: "chat_stream", ms: timeoutMs };
   }

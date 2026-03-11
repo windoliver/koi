@@ -1,12 +1,9 @@
 /**
- * Command palette — Ctrl+P overlay for slash commands.
+ * Command palette — command registry for slash commands.
  *
- * Shows a filtered list of available commands. Renders as a centered
- * overlay using pi-tui's overlay system.
+ * Defines the available commands and their metadata.
+ * The TUI app renders these using OpenTUI's dialog/select system.
  */
-
-import { type SelectItem, SelectList } from "@mariozechner/pi-tui";
-import { KOI_SELECT_THEME } from "../theme.js";
 
 /** A command available in the palette. */
 export interface PaletteCommand {
@@ -23,13 +20,10 @@ export interface PaletteCallbacks {
   readonly onCancel: () => void;
 }
 
-/** Maximum visible items in the palette. */
-const PALETTE_MAX_VISIBLE = 12;
-
 /** Default commands available in the command palette. */
 export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "agents", label: "/agents", description: "Switch to agent list view" },
-  { id: "attach", label: "/attach", description: "Attach to an agent by name" },
+  { id: "attach", label: "/attach", description: "Attach to an agent (lists available)" },
   { id: "dispatch", label: "/dispatch", description: "Dispatch a new agent" },
   { id: "refresh", label: "/refresh", description: "Refresh agent list", shortcut: "Ctrl+R" },
   { id: "suspend", label: "/suspend", description: "Suspend current agent" },
@@ -48,36 +42,14 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "quit", label: "/quit", description: "Exit TUI", shortcut: "q" },
 ] as const;
 
-/** Create a command palette overlay component. */
-export function createCommandPalette(
-  callbacks: PaletteCallbacks,
-  commands: readonly PaletteCommand[] = DEFAULT_COMMANDS,
-): {
-  readonly component: SelectList;
-  readonly reset: () => void;
-} {
-  const items: readonly SelectItem[] = commands.map((cmd) => ({
+/** Convert palette commands to select items for OpenTUI Select/DialogSelect. */
+export function commandsToSelectItems(
+  commands: readonly PaletteCommand[],
+): readonly { readonly value: string; readonly label: string; readonly description: string }[] {
+  return commands.map((cmd) => ({
     value: cmd.id,
     label: cmd.label,
     description:
       cmd.shortcut !== undefined ? `${cmd.description}  (${cmd.shortcut})` : cmd.description,
   }));
-
-  const list = new SelectList([...items], PALETTE_MAX_VISIBLE, KOI_SELECT_THEME);
-
-  list.onSelect = (item: SelectItem) => {
-    callbacks.onSelect(item.value);
-  };
-
-  list.onCancel = () => {
-    callbacks.onCancel();
-  };
-
-  function reset(): void {
-    list.setFilter("");
-    list.setSelectedIndex(0);
-    list.invalidate();
-  }
-
-  return { component: list, reset };
 }

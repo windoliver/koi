@@ -5,6 +5,7 @@
  * No magic, no subscriptions, no external dependencies.
  */
 
+import type { ChatMessage } from "@koi/dashboard-client";
 import type { DashboardAgentSummary } from "@koi/dashboard-types";
 import { isAgentEvent } from "@koi/dashboard-types";
 import { MAX_SESSION_MESSAGES, type TuiAction, type TuiState } from "./types.js";
@@ -62,7 +63,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "flush_tokens": {
       if (state.activeSession === null) return state;
       if (state.activeSession.pendingText === "") return state;
-      const flushedMessage = {
+      const flushedMessage: ChatMessage = {
         kind: "assistant" as const,
         text: state.activeSession.pendingText,
         timestamp: Date.now(),
@@ -94,6 +95,40 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       };
     }
 
+    case "update_tool_result": {
+      if (state.activeSession === null) return state;
+      const { toolCallId, result } = action;
+      // Find the last tool_call message matching this toolCallId and update it
+      const msgs = state.activeSession.messages;
+      let targetIndex = -1;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i];
+        if (msg !== undefined && msg.kind === "tool_call" && msg.toolCallId === toolCallId) {
+          targetIndex = i;
+          break;
+        }
+      }
+      if (targetIndex === -1) return state;
+      const target = msgs[targetIndex];
+      if (target === undefined || target.kind !== "tool_call") return state;
+      const updatedMessage: ChatMessage = {
+        ...target,
+        result,
+      };
+      const updatedMessages = [
+        ...msgs.slice(0, targetIndex),
+        updatedMessage,
+        ...msgs.slice(targetIndex + 1),
+      ];
+      return {
+        ...state,
+        activeSession: {
+          ...state.activeSession,
+          messages: updatedMessages,
+        },
+      };
+    }
+
     case "set_connection_status":
       return { ...state, connectionStatus: action.status };
 
@@ -111,14 +146,23 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_error":
       return { ...state, error: action.error };
 
+    case "set_session_picker":
+      return {
+        ...state,
+        sessionPickerEntries: action.entries,
+        sessionPickerLoading: action.loading,
+      };
+
     case "apply_event_batch": {
       const { batch } = action;
       let updatedAgents: readonly DashboardAgentSummary[] | null = null;
 
+      // Gap detection: warn if sequence numbers are not contiguous
+      const expectedSeq = state.lastEventSeq + 1;
+      const hasGap = state.lastEventSeq > 0 && batch.seq !== expectedSeq;
+
       for (const event of batch.events) {
         if (isAgentEvent(event)) {
-          // Mark agents list as needing refresh
-          // For now, we just flag it — the view layer will re-fetch
           updatedAgents = state.agents;
         }
       }
@@ -126,8 +170,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return {
         ...state,
         lastEventSeq: batch.seq,
-        // If we got agent events, keep existing agents (view will re-fetch)
         ...(updatedAgents !== null ? { agents: updatedAgents } : {}),
+        // Surface gap as an error for UI to handle
+        ...(hasGap
+          ? {
+              error: {
+                kind: "api_error" as const,
+                code: "SSE_GAP",
+                message: `SSE gap detected: expected seq ${String(expectedSeq)}, got ${String(batch.seq)}`,
+              },
+            }
+          : {}),
       };
     }
   }
