@@ -25,7 +25,24 @@ export interface AgentChatBridge {
   readonly wireDispatch: (fn: (msg: InboundMessage) => Promise<void>) => void;
 }
 
-export function createAgentChatBridge(): AgentChatBridge {
+export interface AgentChatBridgeOptions {
+  /**
+   * AG-UI normalization mode.
+   *
+   * - `"stateful"` — only the last user message is forwarded; the runtime
+   *   stack (e.g. conversation middleware / context-arena) already maintains
+   *   per-thread history.
+   * - `"stateless"` — all prior messages sent by the browser are flattened
+   *   into the inbound text so the engine receives full conversation context
+   *   even without dedicated conversation middleware.
+   *
+   * Default: `"stateless"` (safe for runtimes without conversation middleware).
+   */
+  readonly mode?: "stateful" | "stateless";
+}
+
+export function createAgentChatBridge(options?: AgentChatBridgeOptions): AgentChatBridge {
+  const mode = options?.mode ?? "stateless";
   const store = createRunContextStore();
   const middleware = createAguiStreamMiddleware({ store });
 
@@ -42,7 +59,7 @@ export function createAgentChatBridge(): AgentChatBridge {
         { status: 503, headers: { "Content-Type": "application/json" } },
       );
     }
-    return handleAguiRequest(req, store, "stateful", dispatchFn);
+    return handleAguiRequest(req, store, mode, dispatchFn);
   };
 
   return {

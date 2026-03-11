@@ -162,7 +162,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   let chatBridge: AgentChatBridge | undefined;
   if (flags.admin) {
     const { createAgentChatBridge } = await import("../agui-chat-bridge.js");
-    chatBridge = createAgentChatBridge();
+    chatBridge = createAgentChatBridge({ mode: "stateful" });
   }
 
   // 5. RESOLVE: Resolve manifest into runtime instances (middleware + model)
