@@ -254,7 +254,7 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
 
       // Chat handler for this dispatched agent
       const chatHandler = async (req: Request): Promise<Response> =>
-        deps.handleAguiRequest(req, store, "stateless", chatDispatch);
+        deps.handleAguiRequest(req, store, "stateful", chatDispatch);
 
       dispatched.set(id, {
         agentId: id,
