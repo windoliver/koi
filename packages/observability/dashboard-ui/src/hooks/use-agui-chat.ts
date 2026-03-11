@@ -20,6 +20,8 @@ export interface UseAguiChatOptions {
   readonly authToken?: string;
   /** Request timeout in milliseconds (default: 120000). */
   readonly timeoutMs?: number;
+  /** Called after a stream completes successfully (for session persistence). */
+  readonly onStreamEnd?: () => void;
 }
 
 export interface UseAguiChatResult {
@@ -27,6 +29,8 @@ export interface UseAguiChatResult {
   readonly sendMessage: (text: string, history?: readonly ChatHistoryMessage[]) => void;
   /** Cancel the active stream. */
   readonly cancel: () => void;
+  /** Retry the last failed message. */
+  readonly retry: () => void;
 }
 
 /**
@@ -36,7 +40,7 @@ export interface UseAguiChatResult {
  * Token buffering is handled via ref + requestAnimationFrame.
  */
 export function useAguiChat(options: UseAguiChatOptions): UseAguiChatResult {
-  const { agentId, authToken, timeoutMs = 120_000 } = options;
+  const { agentId, authToken, timeoutMs = 120_000, onStreamEnd } = options;
 
   // Ref-based token buffer (no re-renders on token accumulation)
   const tokenBufferRef = useRef("");
@@ -258,6 +262,7 @@ export function useAguiChat(options: UseAguiChatOptions): UseAguiChatResult {
           if (currentState.isStreaming) {
             currentState.setStreaming(false);
           }
+          onStreamEnd?.();
         } catch (error: unknown) {
           if (controller.signal.aborted) {
             useChatStore.getState().setStreaming(false);
@@ -280,7 +285,7 @@ export function useAguiChat(options: UseAguiChatOptions): UseAguiChatResult {
         }
       })();
     },
-    [agentId, authToken, timeoutMs, handleEvent],
+    [agentId, authToken, timeoutMs, handleEvent, onStreamEnd],
   );
 
   const cancel = useCallback(() => {
@@ -296,5 +301,13 @@ export function useAguiChat(options: UseAguiChatOptions): UseAguiChatResult {
     useChatStore.getState().setStreaming(false);
   }, []);
 
-  return { sendMessage, cancel };
+  const retry = useCallback(() => {
+    const lastMsg = useChatStore.getState().lastUserMessage;
+    if (lastMsg !== null) {
+      useChatStore.getState().setError(null);
+      sendMessage(lastMsg);
+    }
+  }, [sendMessage]);
+
+  return { sendMessage, cancel, retry };
 }

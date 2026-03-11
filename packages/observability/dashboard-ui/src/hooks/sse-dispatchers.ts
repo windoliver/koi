@@ -59,6 +59,7 @@ function dispatchAgentEvent(event: DashboardEvent): void {
           timestamp: event.timestamp,
         });
         chatStore.setStreaming(false);
+        chatStore.setAgentTerminated(true);
       }
       break;
     case "metrics_updated":

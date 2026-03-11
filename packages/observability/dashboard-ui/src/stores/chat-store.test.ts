@@ -19,6 +19,8 @@ afterEach(() => {
     pendingText: "",
     activeToolCalls: {},
     error: null,
+    lastUserMessage: null,
+    agentTerminated: false,
   });
 });
 

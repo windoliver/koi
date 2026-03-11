@@ -63,6 +63,10 @@ interface ChatState {
     Record<string, { readonly name: string; readonly args: string }>
   >;
   readonly error: string | null;
+  /** Last user message text — enables retry after stream failure. */
+  readonly lastUserMessage: string | null;
+  /** Whether the agent has been terminated (disables composer). */
+  readonly agentTerminated: boolean;
 
   // Actions
   readonly addMessage: (message: ChatMessage) => void;
@@ -75,6 +79,9 @@ interface ChatState {
   readonly appendToolCallArgs: (toolCallId: string, delta: string) => void;
   readonly finishToolCall: (toolCallId: string, result: string | undefined) => void;
   readonly clearMessages: () => void;
+  /** Load messages from a persisted session (e.g. JSONL restore). */
+  readonly loadMessages: (messages: readonly ChatMessage[]) => void;
+  readonly setAgentTerminated: (terminated: boolean) => void;
 }
 
 /** Enforce sliding window on messages array. */
@@ -90,10 +97,13 @@ export const useChatStore = create<ChatState>((set) => ({
   pendingText: "",
   activeToolCalls: {},
   error: null,
+  lastUserMessage: null,
+  agentTerminated: false,
 
   addMessage: (message) =>
     set((state) => ({
       messages: trimMessages([...state.messages, message]),
+      lastUserMessage: message.kind === "user" ? message.text : state.lastUserMessage,
     })),
 
   appendTokens: (text) =>
@@ -137,6 +147,8 @@ export const useChatStore = create<ChatState>((set) => ({
       activeToolCalls: {},
       error: null,
       isStreaming: false,
+      lastUserMessage: null,
+      agentTerminated: false,
     }),
 
   setError: (error) => set({ error }),
@@ -180,6 +192,11 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
 
   clearMessages: () => set({ messages: [], pendingText: "", activeToolCalls: {} }),
+
+  loadMessages: (messages) =>
+    set({ messages: trimMessages(messages), pendingText: "", activeToolCalls: {} }),
+
+  setAgentTerminated: (terminated) => set({ agentTerminated: terminated }),
 }));
 
 // ─── Selectors ──────────────────────────────────────────────────────
@@ -214,4 +231,14 @@ export function useActiveToolCalls(): Readonly<
   Record<string, { readonly name: string; readonly args: string }>
 > {
   return useChatStore(useShallow((state) => state.activeToolCalls));
+}
+
+/** Select whether the agent has been terminated. */
+export function useChatAgentTerminated(): boolean {
+  return useChatStore((state) => state.agentTerminated);
+}
+
+/** Select last user message for retry capability. */
+export function useLastUserMessage(): string | null {
+  return useChatStore((state) => state.lastUserMessage);
 }

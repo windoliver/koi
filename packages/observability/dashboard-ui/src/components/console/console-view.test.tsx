@@ -1,28 +1,29 @@
 /**
- * ConsoleView tests — session init, error banner, back navigation.
+ * ConsoleView tests — session init, error banner with retry, back navigation.
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { act, fireEvent } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import { useChatStore } from "../../stores/chat-store.js";
 import { render, screen } from "../../__tests__/setup.js";
 import { ConsoleView } from "./console-view.js";
 
 /**
  * Mock the useAguiChat hook — we test the hook separately.
- * The ConsoleView just wires the hook's sendMessage/cancel to the UI.
  */
 const mockSendMessage = mock(() => {});
 const mockCancel = mock(() => {});
+const mockRetry = mock(() => {});
 
 mock.module("../../hooks/use-agui-chat.js", () => ({
   useAguiChat: () => ({
     sendMessage: mockSendMessage,
     cancel: mockCancel,
+    retry: mockRetry,
   }),
 }));
 
-/** Mock useAgentById — returns a simple agent object. */
+/** Mock useAgentById. */
 mock.module("../../stores/agents-store.js", () => ({
   useAgentById: (id: string) =>
     id === "agent-1"
@@ -40,6 +41,27 @@ mock.module("../../stores/agents-store.js", () => ({
       : undefined,
 }));
 
+/** Mock useSessionHistory — return empty sessions with stable references. */
+const mockLoadSession = mock(async () => {});
+const mockRefresh = mock(() => {});
+const mockPersistCurrentSession = mock(async () => {});
+const sessionHistoryResult = {
+  sessions: [],
+  isLoading: false,
+  loadSession: mockLoadSession,
+  refresh: mockRefresh,
+  persistCurrentSession: mockPersistCurrentSession,
+};
+mock.module("../../hooks/use-session-history.js", () => ({
+  useSessionHistory: () => sessionHistoryResult,
+}));
+
+/** Mock connection store. */
+mock.module("../../stores/connection-store.js", () => ({
+  useConnectionStore: (selector: (s: { readonly status: string }) => unknown) =>
+    selector({ status: "connected" }),
+}));
+
 afterEach(() => {
   useChatStore.setState({
     messages: [],
@@ -48,14 +70,21 @@ afterEach(() => {
     pendingText: "",
     activeToolCalls: {},
     error: null,
+    lastUserMessage: null,
+    agentTerminated: false,
   });
   mockSendMessage.mockClear();
   mockCancel.mockClear();
+  mockRetry.mockClear();
 });
 
-function renderConsole(agentId = "agent-1"): ReturnType<typeof render> {
+function renderConsole(agentId = "agent-1"): ReturnType<typeof render> & { readonly rerenderConsole: () => void } {
   const onBack = mock(() => {});
-  return render(<ConsoleView agentId={agentId} onBack={onBack} />);
+  const result = render(<ConsoleView agentId={agentId} onBack={onBack} />);
+  return {
+    ...result,
+    rerenderConsole: () => result.rerender(<ConsoleView agentId={agentId} onBack={onBack} />),
+  };
 }
 
 describe("ConsoleView", () => {
@@ -82,20 +111,36 @@ describe("ConsoleView", () => {
   });
 
   test("shows error banner when error is set", () => {
-    renderConsole();
-    // Set error after mount (setSession on mount clears error)
-    act(() => { useChatStore.getState().setError("Connection lost"); });
+    const { rerenderConsole } = renderConsole();
+    useChatStore.setState({ error: "Connection lost" });
+    rerenderConsole();
     expect(screen.getByText("Connection lost")).toBeDefined();
   });
 
   test("error banner has dismiss button", () => {
-    renderConsole();
-    act(() => { useChatStore.getState().setError("Something failed"); });
+    const { rerenderConsole } = renderConsole();
+    useChatStore.setState({ error: "Something failed" });
+    rerenderConsole();
     const dismiss = screen.getByText("Dismiss");
     expect(dismiss).toBeDefined();
 
     fireEvent.click(dismiss);
     expect(useChatStore.getState().error).toBeNull();
+  });
+
+  test("shows retry button when error and lastUserMessage exist", () => {
+    const { rerenderConsole } = renderConsole();
+    useChatStore.setState({ error: "Stream failed", lastUserMessage: "hello" });
+    rerenderConsole();
+    expect(screen.getByText("Retry")).toBeDefined();
+  });
+
+  test("does not show retry button when no lastUserMessage", () => {
+    const { rerenderConsole } = renderConsole();
+    useChatStore.setState({ error: "Stream failed" });
+    rerenderConsole();
+    const retry = screen.queryAllByText("Retry");
+    expect(retry.length).toBe(0);
   });
 
   test("does not show error banner when no error", () => {
@@ -107,5 +152,17 @@ describe("ConsoleView", () => {
   test("renders Back button", () => {
     renderConsole();
     expect(screen.getByText("Back")).toBeDefined();
+  });
+
+  test("shows terminated banner when agent is terminated", () => {
+    const { rerenderConsole } = renderConsole();
+    useChatStore.setState({ agentTerminated: true });
+    rerenderConsole();
+    expect(screen.getByText(/Agent has been terminated/)).toBeDefined();
+  });
+
+  test("shows session picker with 'No previous sessions'", () => {
+    renderConsole();
+    expect(screen.getByText("No previous sessions")).toBeDefined();
   });
 });
