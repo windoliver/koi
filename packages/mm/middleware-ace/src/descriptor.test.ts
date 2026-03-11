@@ -98,10 +98,13 @@ describe("descriptor", () => {
 
   // ── companionSkills ──
 
-  test("has self-forge companion skill", () => {
-    expect(descriptor.companionSkills).toHaveLength(1);
-    expect(descriptor.companionSkills?.[0]?.name).toBe("ace-self-forge");
-    expect(descriptor.companionSkills?.[0]?.content).toContain("list_playbooks");
+  test("does not register companionSkills on descriptor (avoids global leak)", () => {
+    // The self-forge skill references forge_skill/forge_tool/search_forge which
+    // only exist when forge is enabled.  Registering it on the descriptor would
+    // leak it to ALL forge-enabled agents via registerCompanionSkills(), even
+    // non-ACE ones.  Instead, the skill is attached via createAceToolsProvider
+    // only when both ACE and forge are present.
+    expect(descriptor.companionSkills).toBeUndefined();
   });
 
   // ── getAceStores ──

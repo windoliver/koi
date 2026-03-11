@@ -13,7 +13,6 @@ import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
 import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createAceMiddleware } from "./ace.js";
-import { SELF_FORGE_SKILL } from "./self-forge-skill.js";
 import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "./stores.js";
 
 // Re-export from the shared module for public API continuity
@@ -61,7 +60,10 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   kind: "middleware",
   name: "@koi/middleware-ace",
   aliases: ["ace"],
-  companionSkills: [SELF_FORGE_SKILL],
+  // No companionSkills here — the self-forge skill is attached via
+  // createAceToolsProvider (only when forge tools are available).
+  // Registering it on the descriptor would leak it globally to ALL
+  // forge-enabled agents via registerCompanionSkills(), even non-ACE ones.
   optionsValidator: validateAceDescriptorOptions,
   factory(options, _context): KoiMiddleware {
     const trajectoryStore = createInMemoryTrajectoryStore();

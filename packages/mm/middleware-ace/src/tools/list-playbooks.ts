@@ -70,19 +70,24 @@ export function createListPlaybooksTool(config: ListPlaybooksToolConfig): Tool {
       const limit = validateLimit(args.limit);
 
       try {
-        // Prefer structured playbooks when available
+        // Try structured playbooks first when available.
+        // The structured pipeline is fire-and-forget, so it may lag behind the
+        // synchronous stat pipeline.  When the structured store is empty (no
+        // consolidation yet), fall through to stat-based playbooks.
         if (config.structuredPlaybookStore !== undefined) {
           const structured = await config.structuredPlaybookStore.list(
             tags !== undefined ? { tags } : undefined,
           );
-          // StructuredPlaybookStore doesn't filter by minConfidence natively —
-          // structured playbooks use bullet-level confidence, not top-level.
-          // Sort by sessionCount descending (proxy for confidence in structured mode).
-          const sorted = [...structured].sort((a, b) => b.sessionCount - a.sessionCount);
-          return formatStructuredResult(sorted.slice(0, limit));
+          if (structured.length > 0) {
+            // Sort by most-recently-updated first — recency is the best proxy
+            // for relevance in structured mode (sessionCount is per-playbook,
+            // not a cross-session confidence metric like stat playbooks use).
+            const sorted = [...structured].sort((a, b) => b.updatedAt - a.updatedAt);
+            return formatStructuredResult(sorted.slice(0, limit));
+          }
         }
 
-        // Fall back to stat-based playbooks
+        // Stat-based playbooks (primary path, or fallback when structured is empty)
         const playbooks = await config.playbookStore.list({
           ...(tags !== undefined ? { tags } : {}),
           ...(minConfidence !== undefined ? { minConfidence } : {}),

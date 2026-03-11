@@ -18,6 +18,7 @@ import type {
   ForgeStore,
   KoiError,
   KoiMiddleware,
+  MiddlewareConfig,
   Result,
   SandboxExecutor,
   SigningBackend,
@@ -31,7 +32,7 @@ import type { ForgeConfig } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
 import type { LoadedManifest } from "@koi/manifest";
 import { createAceToolsProvider, getAceStores } from "@koi/middleware-ace";
-import type { ConfiguredKoiOptions } from "@koi/starter";
+import type { ConfiguredKoiOptions, MiddlewareRegistry } from "@koi/starter";
 import { createConfiguredKoi, createMiddlewareRegistry } from "@koi/starter";
 import { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 import type { FullForgeSystem } from "./create-full-forge-system.js";
@@ -105,6 +106,74 @@ const defaultReadTraces = async (): Promise<Result<readonly TurnTrace[], KoiErro
 const EMPTY_MIDDLEWARE_REGISTRY = createMiddlewareRegistry(new Map());
 
 // ---------------------------------------------------------------------------
+// Manifest-driven ACE pre-resolution
+// ---------------------------------------------------------------------------
+
+/** Names under which ACE may appear in manifest.middleware[]. */
+const ACE_MIDDLEWARE_NAMES = new Set(["ace", "@koi/middleware-ace"]);
+
+/**
+ * Wrap a MiddlewareRegistry so that one or more names are excluded from lookup.
+ * Used to prevent double-resolution when ACE has already been pre-resolved.
+ */
+function createFilteringRegistry(
+  base: MiddlewareRegistry,
+  skipNames: ReadonlySet<string>,
+): MiddlewareRegistry {
+  return {
+    get: (name: string) => (skipNames.has(name) ? undefined : base.get(name)),
+    names: () => {
+      const filtered = new Set<string>();
+      for (const n of base.names()) {
+        if (!skipNames.has(n)) filtered.add(n);
+      }
+      return filtered;
+    },
+  };
+}
+
+/**
+ * When the caller relies on manifest-driven middleware resolution (no pre-resolved
+ * `options.middleware` with ACE), attempt to resolve ACE from the manifest +
+ * registry so that `resolveAceToolsProvider` can wire the tools/skill provider.
+ *
+ * Returns the pre-resolved ACE instance and a filtered registry that skips ACE
+ * during `createConfiguredKoi`'s internal `resolveManifestMiddleware`, preventing
+ * double-instantiation.
+ */
+async function preResolveAceFromManifest(options: ForgeConfiguredKoiOptions): Promise<{
+  readonly aceMiddleware: KoiMiddleware | undefined;
+  readonly filteredRegistry: MiddlewareRegistry | undefined;
+}> {
+  const NONE = { aceMiddleware: undefined, filteredRegistry: undefined } as const;
+
+  // ACE already in pre-resolved middleware — nothing to do
+  if (options.middleware?.some((mw) => mw.name === "ace")) return NONE;
+
+  // No custom registry — can't resolve from manifest
+  if (options.middlewareRegistry === undefined) return NONE;
+
+  // Check manifest for ACE declaration
+  if (!("middleware" in options.manifest)) return NONE;
+  const configs = (options.manifest as { middleware?: readonly MiddlewareConfig[] }).middleware;
+  if (configs === undefined || configs.length === 0) return NONE;
+
+  const aceConfig = configs.find((m) => ACE_MIDDLEWARE_NAMES.has(m.name));
+  if (aceConfig === undefined) return NONE;
+
+  const factory = options.middlewareRegistry.get(aceConfig.name);
+  if (factory === undefined) return NONE;
+
+  const aceMiddleware = await factory(aceConfig);
+  const filteredRegistry = createFilteringRegistry(
+    options.middlewareRegistry,
+    new Set([aceConfig.name]),
+  );
+
+  return { aceMiddleware, filteredRegistry };
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -131,6 +200,26 @@ export async function createForgeConfiguredKoi(
     options.middleware !== undefined &&
     options.middleware.length > 0 &&
     options.middlewareRegistry === undefined;
+
+  // Pre-resolve ACE from manifest + registry when not in options.middleware.
+  // This covers the manifest-driven path where ACE is declared in the manifest
+  // and a custom registry is provided, but options.middleware is empty/absent.
+  const { aceMiddleware: preResolvedAce, filteredRegistry } =
+    await preResolveAceFromManifest(options);
+  const effectiveMiddleware =
+    preResolvedAce !== undefined
+      ? [...(options.middleware ?? []), preResolvedAce]
+      : options.middleware;
+
+  // Registry override for createConfiguredKoi:
+  // - skipManifestResolve → empty registry (all middleware pre-resolved by caller)
+  // - filteredRegistry → ACE already pre-resolved, skip it during manifest resolution
+  // - otherwise → let createConfiguredKoi use default/caller-provided registry
+  const registryOverrides = skipManifestResolve
+    ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY as MiddlewareRegistry }
+    : filteredRegistry !== undefined
+      ? { middlewareRegistry: filteredRegistry }
+      : {};
 
   // Build forge config early so the activation gate respects programmatic overrides.
   // Merge order: defaults ← manifest fields ← options.forgeConfig (overrides win).
@@ -169,13 +258,14 @@ export async function createForgeConfiguredKoi(
   ) {
     // Still wire ACE tools provider when ACE middleware is present.
     // Forge tools are NOT available on this path → skip companion skill.
-    const aceProvider = resolveAceToolsProvider(options.middleware, false);
+    const aceProvider = resolveAceToolsProvider(effectiveMiddleware, false);
     const providers =
       aceProvider !== undefined ? [...(options.providers ?? []), aceProvider] : options.providers;
     const runtime = await createConfiguredKoi({
       ...options,
+      ...(effectiveMiddleware !== options.middleware ? { middleware: effectiveMiddleware } : {}),
       ...(providers !== options.providers ? { providers } : {}),
-      ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
+      ...registryOverrides,
     });
     return { runtime, forgeSystem: undefined, dispose: () => {} };
   }
@@ -217,12 +307,12 @@ export async function createForgeConfiguredKoi(
   // Uses getAceStores() to retrieve the same PlaybookStore instance the middleware uses,
   // ensuring list_playbooks reads from the same store ACE writes to.
   // Forge tools ARE available on this path → include companion skill.
-  const aceToolsProvider = resolveAceToolsProvider(options.middleware, true);
+  const aceToolsProvider = resolveAceToolsProvider(effectiveMiddleware, true);
 
   // Merge forge middleware and providers with user-supplied ones
   const mergedMiddleware: readonly KoiMiddleware[] = [
     ...forgeSystem.middlewares,
-    ...(options.middleware ?? []),
+    ...(effectiveMiddleware ?? []),
   ];
   const mergedProviders: readonly ComponentProvider[] = [
     forgeSystem.provider,
@@ -236,7 +326,7 @@ export async function createForgeConfiguredKoi(
     middleware: mergedMiddleware,
     providers: mergedProviders,
     forge: forgeSystem.runtime,
-    ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
+    ...registryOverrides,
   });
 
   const providerInstance = forgeSystem.provider as ForgeComponentProviderInstance;
@@ -259,11 +349,9 @@ export async function createForgeConfiguredKoi(
  * Scan resolved middleware for an ACE instance and create the tools provider
  * with the same PlaybookStore. Returns undefined if ACE is not present.
  *
- * **Limitation**: Only detects ACE when passed explicitly in `options.middleware`.
- * Manifest-driven middleware (resolved inside starter's `resolveManifestMiddleware`)
- * is not visible here. The CLI always pre-resolves via `resolveAgent()`, so this
- * covers the production path. Direct `createForgeConfiguredKoi()` callers relying
- * on starter's internal resolution should pass ACE in `options.middleware`.
+ * Detects ACE from:
+ * 1. Explicitly passed `options.middleware` (CLI path via resolveAgent)
+ * 2. Pre-resolved from manifest + registry (via preResolveAceFromManifest)
  *
  * @param includeCompanionSkill — set to false when forge tools are unavailable
  *   (the self-forge skill references forge_skill/forge_tool which would mislead the agent)

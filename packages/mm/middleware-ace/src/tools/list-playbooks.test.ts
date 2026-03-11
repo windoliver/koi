@@ -263,10 +263,10 @@ describe("createListPlaybooksTool (structured)", () => {
     expect(section?.bullets[0]?.harmful).toBe(0);
   });
 
-  test("sorts structured playbooks by sessionCount descending", async () => {
+  test("sorts structured playbooks by updatedAt descending (most recent first)", async () => {
     const structuredStore = createInMemoryStructuredPlaybookStore();
-    await structuredStore.save(makeStructuredPlaybook({ id: "low", sessionCount: 1 }));
-    await structuredStore.save(makeStructuredPlaybook({ id: "high", sessionCount: 10 }));
+    await structuredStore.save(makeStructuredPlaybook({ id: "old", updatedAt: 1000 }));
+    await structuredStore.save(makeStructuredPlaybook({ id: "new", updatedAt: 5000 }));
 
     const tool = createListPlaybooksTool({
       playbookStore: createInMemoryPlaybookStore(),
@@ -274,11 +274,34 @@ describe("createListPlaybooksTool (structured)", () => {
     });
 
     const result = (await tool.execute({})) as {
-      playbooks: readonly { id: string; sessionCount: number }[];
+      playbooks: readonly { id: string }[];
     };
 
-    expect(result.playbooks[0]?.id).toBe("high");
-    expect(result.playbooks[1]?.id).toBe("low");
+    expect(result.playbooks[0]?.id).toBe("new");
+    expect(result.playbooks[1]?.id).toBe("old");
+  });
+
+  test("falls back to stat playbooks when structured store is empty", async () => {
+    const statStore = createInMemoryPlaybookStore();
+    await statStore.save(makePlaybook({ id: "stat-1", confidence: 0.9 }));
+
+    // Structured store exists but is empty (LLM pipeline hasn't consolidated yet)
+    const structuredStore = createInMemoryStructuredPlaybookStore();
+
+    const tool = createListPlaybooksTool({
+      playbookStore: statStore,
+      structuredPlaybookStore: structuredStore,
+    });
+
+    const result = (await tool.execute({})) as {
+      kind: string;
+      count: number;
+      playbooks: readonly { id: string }[];
+    };
+
+    expect(result.kind).toBe("stat");
+    expect(result.count).toBe(1);
+    expect(result.playbooks[0]?.id).toBe("stat-1");
   });
 
   test("filters structured playbooks by tags", async () => {
