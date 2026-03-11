@@ -83,6 +83,8 @@ export type { ConsoleViewProps } from "./views/console-view.js";
 export { ConsoleView } from "./views/console-view.js";
 export type { MessageRowProps } from "./views/message-row.js";
 export { MessageRow } from "./views/message-row.js";
+export type { SessionPickerEntry, SessionPickerViewProps } from "./views/session-picker-view.js";
+export { SessionPickerView } from "./views/session-picker-view.js";
 // Views — status bar
 export type { StatusBarData } from "./views/status-bar.js";
 export {

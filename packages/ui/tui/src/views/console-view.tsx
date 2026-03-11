@@ -18,7 +18,7 @@ export interface ConsoleViewProps {
   readonly pendingText: Accessor<string>;
   readonly onSubmit: (text: string) => void;
   readonly focused: boolean;
-  readonly syntaxStyle?: SyntaxStyle;
+  readonly syntaxStyle?: SyntaxStyle | undefined;
 }
 
 /** Console view with scrollable message list and text input. */

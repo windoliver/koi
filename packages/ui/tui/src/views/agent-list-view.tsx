@@ -58,6 +58,7 @@ export function AgentListView(props: AgentListViewProps): JSX.Element {
           focused={props.focused}
           showDescription={true}
           wrapSelection={true}
+          flexGrow={1}
           selectedBackgroundColor={COLORS.blue}
           selectedTextColor={COLORS.white}
           descriptionColor={COLORS.dim}

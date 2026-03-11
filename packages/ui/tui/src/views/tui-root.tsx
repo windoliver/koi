@@ -5,7 +5,7 @@
  * overlays command palette, and handles global keyboard shortcuts.
  */
 
-import type { CliRenderer, KeyEvent } from "@opentui/core";
+import type { CliRenderer, KeyEvent, SyntaxStyle } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { useKeyboard, useRenderer } from "@opentui/solid";
 import { Match, Switch, onMount } from "solid-js";
@@ -24,6 +24,7 @@ export interface TuiRootProps {
   readonly onPaletteSelect: (commandId: string) => void;
   readonly onAgentSelect: (agentId: string) => void;
   readonly onPaletteCancel: () => void;
+  readonly syntaxStyle?: SyntaxStyle | undefined;
   readonly onRendererReady?: (renderer: CliRenderer) => void;
 }
 
@@ -123,6 +124,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
               pendingText={() => pendingText()}
               onSubmit={props.onConsoleInput}
               focused={view() === "console"}
+              syntaxStyle={props.syntaxStyle}
             />
           </Match>
         </Switch>

@@ -19,7 +19,7 @@ import {
 } from "@koi/dashboard-client";
 import type { AgentDashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
 import { isAgentEvent } from "@koi/dashboard-types";
-import type { CliRenderer } from "@opentui/core";
+import { type CliRenderer, SyntaxStyle } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createStore, type TuiStore } from "../state/store.js";
 import { createInitialState, type TuiView } from "../state/types.js";
@@ -86,6 +86,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   let activeChatStream: AguiStreamHandle | null = null;
   let sseStream: ReconnectHandle | null = null;
   let tuiRenderer: CliRenderer | null = null;
+  let syntaxStyle: SyntaxStyle | null = null;
 
   const aguiHandler = createAguiEventHandler(store);
 
@@ -588,11 +589,13 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
           onPaletteSelect: handlePaletteSelect,
           onAgentSelect: handleAgentSelect,
           onPaletteCancel: hidePalette,
+          syntaxStyle: syntaxStyle ?? undefined,
           onRendererReady: (r) => {
             tuiRenderer = r;
+            syntaxStyle = SyntaxStyle.create();
           },
         }),
-      { exitOnCtrlC: false, useAlternateScreen: true },
+      { exitOnCtrlC: false, useAlternateScreen: true, useMouse: true },
     );
   }
 
@@ -606,6 +609,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     cancelActiveStream();
     await persistCurrentSession(store, client).catch(() => {});
     stopEventStream();
+    if (syntaxStyle !== null) {
+      syntaxStyle.destroy();
+      syntaxStyle = null;
+    }
     if (tuiRenderer !== null) {
       tuiRenderer.destroy();
       tuiRenderer = null;
