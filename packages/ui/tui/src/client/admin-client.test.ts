@@ -353,10 +353,29 @@ describe("createAdminClient", () => {
     });
   });
 
+  describe("fsWrite", () => {
+    test("sends PUT with path query param and content body", async () => {
+      mockFetch(() => jsonResponse(null));
+
+      const result = await client.fsWrite("/agents/a1/session/s1.jsonl", "line1\nline2");
+      expect(result.ok).toBe(true);
+      expect(lastRequest?.method).toBe("PUT");
+      expect(lastRequest?.url).toContain("/fs/file?path=");
+      expect(lastRequest?.body).toEqual({ content: "line1\nline2" });
+    });
+  });
+
   describe("eventsUrl", () => {
     test("builds correct events URL", () => {
       const url = client.eventsUrl();
       expect(url).toBe("http://localhost:3100/admin/api/events");
+    });
+  });
+
+  describe("agentChatUrl", () => {
+    test("builds correct per-agent chat URL", () => {
+      const url = client.agentChatUrl("agent-123");
+      expect(url).toBe("http://localhost:3100/admin/api/agents/agent-123/chat");
     });
   });
 });

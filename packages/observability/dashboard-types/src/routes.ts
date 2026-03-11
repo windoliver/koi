@@ -54,6 +54,9 @@ export const ADMIN_ROUTES = {
   middlewareChain: { method: "GET", path: "/view/middleware/:id" },
   gatewayTopology: { method: "GET", path: "/view/gateway/topology" },
 
+  // ─── AG-UI Chat ─────────────────────────────────────────────────
+  agentChat: { method: "POST", path: "/agents/:id/chat" },
+
   // ─── SSE Events ──────────────────────────────────────────────────
   events: { method: "GET", path: "/events" },
 

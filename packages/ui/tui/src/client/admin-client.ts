@@ -71,8 +71,11 @@ export interface AdminClient {
   readonly checkHealth: () => Promise<ClientResult<{ readonly status: string }>>;
   readonly fsList: (path: string) => Promise<ClientResult<readonly FsEntry[]>>;
   readonly fsRead: (path: string) => Promise<ClientResult<string>>;
+  readonly fsWrite: (path: string, content: string) => Promise<ClientResult<null>>;
   /** Build the SSE events URL for reconnecting stream. */
   readonly eventsUrl: () => string;
+  /** Build the AG-UI chat URL for a specific agent. */
+  readonly agentChatUrl: (agentId: string) => string;
 }
 
 /**
@@ -199,7 +202,17 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
     fsRead: (path) =>
       request<string>("GET", `${ADMIN_ROUTES.fsRead.path}?path=${encodeURIComponent(path)}`),
 
+    fsWrite: (path, content) =>
+      request<null>(
+        "PUT",
+        `${ADMIN_ROUTES.fsWrite.path}?path=${encodeURIComponent(path)}`,
+        undefined,
+        { content },
+      ),
+
     eventsUrl: () => url(ADMIN_ROUTES.events.path),
+
+    agentChatUrl: (agentId) => url(ADMIN_ROUTES.agentChat.path, { id: agentId }),
   };
 }
 

@@ -663,6 +663,10 @@ declare const ADMIN_ROUTES: {
         readonly method: "GET";
         readonly path: "/view/gateway/topology";
     };
+    readonly agentChat: {
+        readonly method: "POST";
+        readonly path: "/agents/:id/chat";
+    };
     readonly events: {
         readonly method: "GET";
         readonly path: "/events";

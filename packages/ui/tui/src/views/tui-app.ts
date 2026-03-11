@@ -84,8 +84,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     onEscape: () => {
       cancelActiveStream();
-      store.dispatch({ kind: "set_session", session: null });
-      store.dispatch({ kind: "set_view", view: "agents" });
+      persistCurrentSession()
+        .catch(() => {})
+        .finally(() => {
+          store.dispatch({ kind: "set_session", session: null });
+          store.dispatch({ kind: "set_view", view: "agents" });
+        });
     },
   });
 
@@ -162,15 +166,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         content: m.text,
       }));
 
-    // Derive AG-UI endpoint from admin URL
-    // Admin URL is like http://localhost:3100/admin/api
-    // AG-UI endpoint is like http://localhost:3100/agent
-    const baseUrl = adminUrl.replace(/\/admin\/api\/?$/, "");
+    // AG-UI chat goes through the admin API per-agent endpoint:
+    //   POST {adminUrl}/agents/{agentId}/chat → SSE stream
+    const chatUrl = client.agentChatUrl(session.agentId);
+    // Extract base URL and path from the full chat URL
+    const chatUrlObj = new URL(chatUrl);
+    const aguiBase = chatUrlObj.origin;
+    const aguiPath = chatUrlObj.pathname;
 
     const aguiConfig =
       authToken !== undefined
-        ? { baseUrl, path: "/agent", authToken }
-        : { baseUrl, path: "/agent" };
+        ? { baseUrl: aguiBase, path: aguiPath, authToken }
+        : { baseUrl: aguiBase, path: aguiPath };
 
     // Start AG-UI stream
     activeChatStream = startChatStream(
@@ -190,6 +197,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
           store.dispatch({ kind: "flush_tokens" });
           store.dispatch({ kind: "set_streaming", isStreaming: false });
           activeChatStream = null;
+          // Persist session after exchange completes
+          persistCurrentSession().catch(() => {});
         },
         onError: (error) => {
           store.dispatch({ kind: "flush_tokens" });
@@ -452,6 +461,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
       case "agents":
         cancelActiveStream();
+        persistCurrentSession().catch(() => {});
         store.dispatch({ kind: "set_session", session: null });
         store.dispatch({ kind: "set_view", view: "agents" });
         break;
@@ -585,6 +595,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     addLifecycleMessage,
   });
 
+  /** Persist the current session's messages to the admin filesystem. */
+  async function persistCurrentSession(): Promise<void> {
+    const session = store.getState().activeSession;
+    if (session === null || session.messages.length === 0) return;
+
+    const sessionPath = `/agents/${session.agentId}/session/${session.sessionId}.jsonl`;
+    const content = session.messages.map((m) => JSON.stringify(m)).join("\n");
+
+    // Best-effort write — don't block on failure
+    await client.fsWrite(sessionPath, content).catch(() => {});
+  }
+
   async function showAgentLogs(): Promise<void> {
     const session = store.getState().activeSession;
     if (session === null) {
@@ -619,10 +641,14 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   function openInBrowser(): void {
     const session = store.getState().activeSession;
-    // Build browser URL: admin URL without /api suffix, add agent path
+    // Build browser URL using the dashboard's deep-link pattern:
+    //   {adminBase}/browser?view=/agents/{agentId}
+    // adminUrl is like http://localhost:3100/admin/api → strip /api
     const browserBase = adminUrl.replace(/\/api\/?$/, "");
-    const agentPath = session !== null ? `/agents/${session.agentId}` : "";
-    const browserUrl = `${browserBase}${agentPath}`;
+    const browserUrl =
+      session !== null
+        ? `${browserBase}/browser?view=${encodeURIComponent(`/agents/${session.agentId}`)}`
+        : browserBase;
 
     addLifecycleMessage(`Opening: ${browserUrl}`);
 
@@ -760,6 +786,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       refreshTimer = undefined;
     }
     cancelActiveStream();
+    await persistCurrentSession().catch(() => {});
     stopEventStream();
     tui.stop();
     await terminal.drainInput(100, 50);
