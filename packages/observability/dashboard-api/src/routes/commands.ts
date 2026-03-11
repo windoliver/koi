@@ -14,13 +14,28 @@ import type { CommandDispatcher, DispatchAgentRequest } from "@koi/dashboard-typ
 import type { RouteParams } from "../router.js";
 import { errorResponse, jsonResponse } from "../router.js";
 
+/** Map a KoiError code to an HTTP status. */
+function errorCodeToStatus(code: string): number {
+  switch (code) {
+    case "NOT_FOUND":
+      return 404;
+    case "CONFLICT":
+      return 409;
+    default:
+      return 500;
+  }
+}
+
 function handleCommandResult(result: {
   readonly ok: boolean;
   readonly error?: { readonly code: string; readonly message: string };
 }): Response {
   if (!result.ok && result.error !== undefined) {
-    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
-    return errorResponse(result.error.code, result.error.message, status);
+    return errorResponse(
+      result.error.code,
+      result.error.message,
+      errorCodeToStatus(result.error.code),
+    );
   }
   return jsonResponse(null);
 }
@@ -119,8 +134,11 @@ export async function handleRetryDeadLetter(
   }
   const result = await commands.retryDeadLetter(id);
   if (!result.ok) {
-    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
-    return errorResponse(result.error.code, result.error.message, status);
+    return errorResponse(
+      result.error.code,
+      result.error.message,
+      errorCodeToStatus(result.error.code),
+    );
   }
   return jsonResponse({ retried: result.value });
 }
@@ -139,8 +157,11 @@ export async function handleListMailbox(
   }
   const result = await commands.listMailbox(agentId(aid));
   if (!result.ok) {
-    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
-    return errorResponse(result.error.code, result.error.message, status);
+    return errorResponse(
+      result.error.code,
+      result.error.message,
+      errorCodeToStatus(result.error.code),
+    );
   }
   return jsonResponse(result.value);
 }

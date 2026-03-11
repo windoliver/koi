@@ -41,6 +41,10 @@ export interface AgentDispatcherOptions {
   readonly additionalProviders?: readonly unknown[];
   /** Additional extensions to include in every dispatched agent's runtime. */
   readonly additionalExtensions?: readonly unknown[];
+  /** ForgeStore from host bootstrap — passed to resolveAgent for companion skill registration. */
+  readonly forgeStore?: unknown;
+  /** Forge runtime from host bootstrap — passed to createForgeConfiguredKoi as `forge`. */
+  readonly forgeRuntime?: unknown;
 }
 
 export interface AgentDispatcherResult {
@@ -77,6 +81,7 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
     readonly resolveAgent: (opts: {
       readonly manifestPath: string;
       readonly manifest: unknown;
+      readonly forgeStore?: unknown;
     }) => Promise<
       Result<{ readonly middleware: readonly unknown[]; readonly engine?: unknown }, KoiError>
     >;
@@ -86,6 +91,7 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
       readonly middleware: readonly unknown[];
       readonly providers: readonly unknown[];
       readonly extensions: readonly unknown[];
+      readonly forge?: unknown;
     }) => Promise<{
       readonly runtime: {
         readonly agent: { readonly pid: { readonly id: AgentId } };
@@ -188,7 +194,11 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
       const { manifest } = loadResult.value;
 
       // 2. Resolve agent (middleware, model, engine)
-      const resolved = await deps.resolveAgent({ manifestPath, manifest });
+      const resolved = await deps.resolveAgent({
+        manifestPath,
+        manifest,
+        ...(options.forgeStore !== undefined ? { forgeStore: options.forgeStore } : {}),
+      });
       if (!resolved.ok) {
         return {
           ok: false,
@@ -218,6 +228,7 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
         ],
         providers: options.additionalProviders ?? [],
         extensions: options.additionalExtensions ?? [],
+        ...(options.forgeRuntime !== undefined ? { forge: options.forgeRuntime } : {}),
       });
 
       const id = runtime.agent.pid.id;

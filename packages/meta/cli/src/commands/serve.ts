@@ -308,6 +308,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
         ...(autonomous?.providers ?? []),
       ],
       additionalExtensions: extensions,
+      ...(forgeBootstrap !== undefined
+        ? { forgeStore: forgeBootstrap.store, forgeRuntime: forgeBootstrap.runtime }
+        : {}),
     });
     adminDispatcher = dispatcher;
 
