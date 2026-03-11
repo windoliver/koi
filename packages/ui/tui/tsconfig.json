@@ -4,7 +4,9 @@
     "outDir": "dist",
     "rootDir": "src",
     "jsx": "preserve",
-    "jsxImportSource": "solid-js"
+    "jsxImportSource": "@opentui/solid",
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
   },
   "include": ["src/**/*"],
   "references": [

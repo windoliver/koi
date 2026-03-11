@@ -8,6 +8,7 @@ export default defineConfig({
       composite: false,
     },
   },
+  external: ["@opentui/core", "@opentui/solid", "solid-js"],
   clean: true,
   treeshake: true,
   target: "node22",
@@ -15,6 +16,6 @@ export default defineConfig({
   jsx: "preserve",
   esbuildOptions(options) {
     options.jsx = "automatic";
-    options.jsxImportSource = "solid-js";
+    options.jsxImportSource = "@opentui/solid";
   },
 });

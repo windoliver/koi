@@ -71,11 +71,18 @@ export {
   COLORS,
   connectionStatusConfig,
 } from "./theme.js";
-
+// Views — OpenTUI components
+export type { AgentListViewProps } from "./views/agent-list-view.js";
+export { AgentListView } from "./views/agent-list-view.js";
 // Views — command definitions
 export type { PaletteCallbacks, PaletteCommand } from "./views/command-palette.js";
 export { commandsToSelectItems, DEFAULT_COMMANDS } from "./views/command-palette.js";
-
+export type { CommandPaletteViewProps } from "./views/command-palette-view.js";
+export { CommandPaletteView } from "./views/command-palette-view.js";
+export type { ConsoleViewProps } from "./views/console-view.js";
+export { ConsoleView } from "./views/console-view.js";
+export type { MessageRowProps } from "./views/message-row.js";
+export { MessageRow } from "./views/message-row.js";
 // Views — status bar
 export type { StatusBarData } from "./views/status-bar.js";
 export {
@@ -83,12 +90,18 @@ export {
   formatAgentState,
   formatConnectionStatus,
 } from "./views/status-bar.js";
+export type { StatusBarViewProps } from "./views/status-bar-view.js";
+export { StatusBarView } from "./views/status-bar-view.js";
+export { createDerivedSignal, createStoreSignal } from "./views/store-bridge.js";
 // App
 export type { TuiAppConfig, TuiAppHandle } from "./views/tui-app.js";
 export { createTuiApp } from "./views/tui-app.js";
 // Views — keyboard
 export type { KeyboardCallbacks } from "./views/tui-keyboard.js";
 export { createKeyboardHandler } from "./views/tui-keyboard.js";
+// Views — TUI root
+export type { TuiRootProps } from "./views/tui-root.js";
+export { TuiRoot } from "./views/tui-root.js";
 // Views — session management
 export {
   fetchRecentAgentActivity,

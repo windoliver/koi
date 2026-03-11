@@ -19,10 +19,13 @@ import {
 } from "@koi/dashboard-client";
 import type { AgentDashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
 import { isAgentEvent } from "@koi/dashboard-types";
+import type { CliRenderer } from "@opentui/core";
+import { render } from "@opentui/solid";
 import { createStore, type TuiStore } from "../state/store.js";
 import { createInitialState, type TuiView } from "../state/types.js";
 import { createAguiEventHandler } from "./agui-event-handler.js";
 import { createKeyboardHandler } from "./tui-keyboard.js";
+import { TuiRoot } from "./tui-root.js";
 import { fetchRecentAgentActivity, persistCurrentSession, restoreSession } from "./tui-session.js";
 
 /** Configuration for the TUI application. */
@@ -58,15 +61,9 @@ export interface TuiAppHandle {
 /**
  * Create and wire the complete TUI application.
  *
- * This is a headless orchestrator — it coordinates state, clients,
- * and streams. The rendering layer (OpenTUI + SolidJS) is initialized
- * in start() and torn down in stop().
- *
- * NOTE: This initial migration provides the full app logic with
- * console-based output. Full OpenTUI rendering (Box, Text, ScrollBox,
- * Select, Textarea, Markdown) will be wired in a follow-up when
- * @opentui/solid is available in the monorepo. For now, the app
- * uses stdout-based rendering as a bridge.
+ * Coordinates state, clients, streams, and the OpenTUI rendering layer.
+ * Calls render() from @opentui/solid in start() to enter raw mode,
+ * and renderer.destroy() in stop() to restore the terminal.
  */
 export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   const {
@@ -88,6 +85,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   // ─── Active stream handles ──────────────────────────────────────────
   let activeChatStream: AguiStreamHandle | null = null;
   let sseStream: ReconnectHandle | null = null;
+  let tuiRenderer: CliRenderer | null = null;
 
   const aguiHandler = createAguiEventHandler(store);
 
@@ -545,11 +543,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     openAgentConsole(agentId);
   }
 
-  // ─── Store subscription → render ───────────────────────────────────
-  // NOTE: OpenTUI rendering will be wired here when @opentui/solid
-  // is integrated. For now, the store subscription drives console output
-  // for testing and validation.
-
   // ─── Lifecycle ──────────────────────────────────────────────────────
   async function start(): Promise<void> {
     // Initial connection attempt
@@ -585,6 +578,22 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     refreshTimer = setInterval(() => {
       refreshAgents().catch(() => {});
     }, refreshIntervalMs);
+
+    // Start OpenTUI rendering — enters raw mode, takes over terminal
+    await render(
+      () =>
+        TuiRoot({
+          store,
+          onConsoleInput: handleConsoleInput,
+          onPaletteSelect: handlePaletteSelect,
+          onAgentSelect: handleAgentSelect,
+          onPaletteCancel: hidePalette,
+          onRendererReady: (r) => {
+            tuiRenderer = r;
+          },
+        }),
+      { exitOnCtrlC: false, useAlternateScreen: true },
+    );
   }
 
   async function stop(): Promise<void> {
@@ -597,6 +606,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     cancelActiveStream();
     await persistCurrentSession(store, client).catch(() => {});
     stopEventStream();
+    if (tuiRenderer !== null) {
+      tuiRenderer.destroy();
+      tuiRenderer = null;
+    }
   }
 
   return {
