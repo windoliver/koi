@@ -65,15 +65,28 @@ export function createSessionPicker(deps: SessionPickerDeps): SessionPickerHandl
 
     const items: SelectItem[] = [];
 
+    // Build set of session IDs that have TUI chat logs (restorable history)
+    const tuiSessionIds = new Set<string>();
+    if (tuiResult.ok) {
+      for (const entry of tuiResult.value) {
+        if (entry.name.endsWith(".jsonl")) {
+          tuiSessionIds.add(entry.name.replace(/\.jsonl$/, ""));
+        }
+      }
+    }
+
     // Parse engine SessionRecord files for session metadata
     if (recordsResult.ok) {
       const infos = await loadSessionInfos(agentId, recordsResult.value);
       for (const info of infos) {
         const date = new Date(info.connectedAt).toLocaleString();
+        const hasChatLog = tuiSessionIds.has(info.sessionId);
         items.push({
           value: info.sessionId,
           label: `${info.sessionId.slice(0, 12)}…`,
-          description: `${info.agentName} — ${date}`,
+          description: hasChatLog
+            ? `${info.agentName} — ${date}`
+            : `${info.agentName} — ${date} (no chat history)`,
         });
       }
     }
