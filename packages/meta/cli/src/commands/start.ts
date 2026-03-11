@@ -23,6 +23,7 @@ import { createSandboxCommand, restrictiveProfile } from "@koi/sandbox";
 import type { SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { EXIT_CONFIG } from "@koi/shutdown";
+import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { StartFlags } from "../args.js";
 import {
   createLocalFileSystem,
@@ -170,6 +171,13 @@ export async function runStart(flags: StartFlags): Promise<void> {
     forgeBootstrap = undefined;
   }
 
+  // 4b. Create AG-UI chat bridge for admin chat endpoint (loaded lazily)
+  let chatBridge: AgentChatBridge | undefined;
+  if (flags.admin) {
+    const { createAgentChatBridge } = await import("../agui-chat-bridge.js");
+    chatBridge = createAgentChatBridge();
+  }
+
   // 5. RESOLVE: Resolve manifest into runtime instances (middleware + model)
   // Pass forgeStore so companion skills get registered during resolution
   const modelName = manifest.model.name;
@@ -209,6 +217,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
       ...nexus.middlewares,
       ...(forgeBootstrap?.middlewares ?? []),
       ...(autonomous?.middleware ?? []),
+      ...(chatBridge !== undefined ? [chatBridge.middleware] : []),
     ],
     providers: [
       ...nexus.providers,
@@ -270,10 +279,16 @@ export async function runStart(flags: StartFlags): Promise<void> {
       });
 
       const assetsDir = resolveDashboardAssetsDir();
-      const dashboardResult: DashboardHandlerResult = createDashboardHandler(adminBridge, {
-        cors: true,
-        ...(assetsDir !== undefined ? { assetsDir } : {}),
-      });
+      const dashboardResult: DashboardHandlerResult = createDashboardHandler(
+        {
+          ...adminBridge,
+          ...(chatBridge !== undefined ? { agentChatHandler: chatBridge.handler } : {}),
+        },
+        {
+          cors: true,
+          ...(assetsDir !== undefined ? { assetsDir } : {}),
+        },
+      );
 
       const server = Bun.serve({
         port: DEFAULT_ADMIN_PORT,
@@ -327,6 +342,31 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // Concurrent run protection: single flag guards against overlapping engine runs.
   // With multiple channels this is a best-effort guard, not a strict mutex.
   let processing = false; // let: mutated as concurrency flag across message handlers
+
+  // Wire AG-UI chat dispatch (reuses the same processing guard)
+  if (chatBridge !== undefined) {
+    const bridge = chatBridge;
+    bridge.wireDispatch(async (msg) => {
+      if (processing) {
+        throw new Error("Agent is busy processing another request");
+      }
+      processing = true;
+      try {
+        const text = extractTextFromBlocks(msg.content);
+        if (text.trim() === "") return;
+        const input: EngineInput = { kind: "text", text };
+        for await (const event of runtime.run(input)) {
+          if (event.kind === "done" && adminBridge !== undefined) {
+            const m = event.output.metrics;
+            adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+          }
+        }
+      } finally {
+        processing = false;
+      }
+    });
+  }
+
   const unsubscribers = channels.map((ch) =>
     ch.onMessage(async (inbound) => {
       const text = extractTextFromBlocks(inbound.content);

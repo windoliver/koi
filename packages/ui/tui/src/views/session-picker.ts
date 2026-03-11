@@ -154,7 +154,7 @@ export function createSessionPicker(deps: SessionPickerDeps): SessionPickerHandl
     return infos;
   }
 
-  /** Load a session by sessionId — tries TUI chat log first, then creates fresh. */
+  /** Load a session by sessionId — tries TUI chat log first, falls back to event log. */
   async function loadSession(agentId: string, sessionId: string): Promise<void> {
     // Try to load TUI chat log for message history
     const tuiLogPath = `/agents/${agentId}${TUI_SESSION_PREFIX}/${sessionId}.jsonl`;
@@ -174,7 +174,30 @@ export function createSessionPicker(deps: SessionPickerDeps): SessionPickerHandl
       },
     });
     store.dispatch({ kind: "set_view", view: "console" });
-    addLifecycleMessage(`Loaded session: ${sessionId} (${String(messages.length)} messages)`);
+
+    if (messages.length > 0) {
+      addLifecycleMessage(`Loaded session: ${sessionId} (${String(messages.length)} messages)`);
+    } else {
+      // No TUI chat log — fetch recent agent events as context
+      addLifecycleMessage(`Resumed session ${sessionId} (no prior chat history)`);
+      await loadRecentActivity(agentId);
+    }
+  }
+
+  /** Fetch recent agent events and display as lifecycle context. */
+  async function loadRecentActivity(agentId: string): Promise<void> {
+    const result = await client.fsList(`/agents/${agentId}/events`);
+    if (!result.ok || result.value.length === 0) return;
+    const recent = result.value[result.value.length - 1];
+    if (recent === undefined) return;
+    const content = await client.fsRead(recent.path);
+    if (!content.ok) return;
+    const text = typeof content.value === "string" ? content.value : "";
+    const tail = text
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .slice(-10);
+    if (tail.length > 0) addLifecycleMessage(`Recent activity:\n${tail.join("\n")}`);
   }
 
   return { show, hide };
