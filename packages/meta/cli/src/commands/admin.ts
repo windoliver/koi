@@ -18,6 +18,7 @@ import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-a
 import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
+import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { AdminFlags } from "../args.js";
 import {
@@ -412,6 +413,12 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       verbose: flags.verbose,
     });
 
+  // Create agent dispatcher for the admin panel (allows dispatching new agents)
+  const dispatcher = createAgentDispatcher({
+    defaultManifestPath: manifestPath,
+    verbose: flags.verbose,
+  });
+
   const bridge = createAdminPanelBridge({
     agentName: manifest.name,
     agentType: manifest.lifecycle ?? "copilot",
@@ -419,6 +426,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     channels: channelNames,
     skills: skillNames,
     fileSystem,
+    dispatchAgent: dispatcher.dispatchAgent,
     ...(orch.hasAny
       ? {
           orchestration: orch.orchestration,
@@ -526,6 +534,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   process.removeListener("SIGTERM", shutdown);
   server.stop(true);
   dashboardResult.dispose();
+  await dispatcher.dispose();
   if (runtimeDispose !== undefined) {
     await runtimeDispose();
   }

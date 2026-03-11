@@ -32,6 +32,7 @@ import type { SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
+import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { ServeFlags } from "../args.js";
 import {
@@ -269,6 +270,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // 7a. Create admin panel bridge (before message loop so metrics can be tracked)
   // let justified: conditionally set when --admin, read in message loop for metrics
   let adminBridge: AdminPanelBridgeResult | undefined;
+  // let justified: conditionally set when --admin, disposed at cleanup
+  let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
   // let justified: conditionally set when --temporal-url, disposed at cleanup
   let temporalAdmin: Awaited<ReturnType<typeof resolveTemporalOrWarn>>;
 
@@ -288,6 +291,12 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       verbose: flags.verbose,
     });
 
+    const dispatcher = createAgentDispatcher({
+      defaultManifestPath: manifestPath,
+      verbose: flags.verbose,
+    });
+    adminDispatcher = dispatcher;
+
     adminBridge = createAdminPanelBridge({
       agentName: manifest.name,
       agentType: manifest.lifecycle ?? "copilot",
@@ -295,6 +304,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       channels: channelNames,
       skills: skillNames,
       fileSystem: createLocalFileSystem(workspaceRoot),
+      dispatchAgent: dispatcher.dispatchAgent,
       ...(orch.hasAny
         ? {
             orchestration: orch.orchestration,
@@ -572,6 +582,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     await ch.disconnect();
   }
   stopServer();
+  if (adminDispatcher !== undefined) {
+    await adminDispatcher.dispose();
+  }
   if (temporalAdmin !== undefined) {
     await temporalAdmin.dispose();
   }
