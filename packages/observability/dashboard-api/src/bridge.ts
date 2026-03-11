@@ -71,6 +71,8 @@ export interface BridgeOptions {
         | "resumeHarness"
       >
     | undefined;
+  /** Optional agent dispatch implementation (e.g. from AgentHost). */
+  readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
 }
 
 export interface AdminPanelBridgeResult extends DashboardHandlerOptions {
@@ -306,6 +308,9 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   }
 
   const commands: CommandDispatcher = {
+    // Agent dispatch — pass-through from caller (e.g. AgentHost.dispatch)
+    ...(options.dispatchAgent !== undefined ? { dispatchAgent: options.dispatchAgent } : {}),
+
     suspendAgent(id: AgentId): Result<void, KoiError> {
       if (id !== primaryAgentId) {
         return {

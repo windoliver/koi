@@ -264,8 +264,11 @@ export function useAguiChat(options: UseAguiChatOptions): UseAguiChatResult {
           }
           onStreamEnd?.();
         } catch (error: unknown) {
+          const currentStore = useChatStore.getState();
+          currentStore.setStreaming(false);
+          currentStore.clearActiveToolCalls();
           if (controller.signal.aborted) {
-            useChatStore.getState().setStreaming(false);
+            // Cancelled — streaming stopped, tool calls cleaned up
           } else {
             const msg =
               error instanceof TypeError
@@ -273,8 +276,6 @@ export function useAguiChat(options: UseAguiChatOptions): UseAguiChatResult {
                 : error instanceof Error
                   ? error.message
                   : "Unexpected error";
-            const currentStore = useChatStore.getState();
-            currentStore.setStreaming(false);
             currentStore.setError(msg);
           }
         } finally {
@@ -298,7 +299,9 @@ export function useAguiChat(options: UseAguiChatOptions): UseAguiChatResult {
       store.flushTokens();
       tokenBufferRef.current = "";
     }
-    useChatStore.getState().setStreaming(false);
+    const store = useChatStore.getState();
+    store.setStreaming(false);
+    store.clearActiveToolCalls();
   }, []);
 
   const retry = useCallback(() => {

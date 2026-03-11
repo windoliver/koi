@@ -282,3 +282,23 @@ describe("clearMessages", () => {
     expect(cleared.activeToolCalls).toEqual({});
   });
 });
+
+describe("clearActiveToolCalls", () => {
+  test("clears active tool calls without affecting messages", () => {
+    const state = useChatStore.getState();
+    state.addMessage(userMsg("hello"));
+    state.startToolCall("tc1", "search");
+    state.startToolCall("tc2", "lookup");
+
+    state.clearActiveToolCalls();
+
+    const after = useChatStore.getState();
+    expect(after.activeToolCalls).toEqual({});
+    expect(after.messages).toHaveLength(1);
+  });
+
+  test("is no-op when no active tool calls", () => {
+    useChatStore.getState().clearActiveToolCalls();
+    expect(useChatStore.getState().activeToolCalls).toEqual({});
+  });
+});

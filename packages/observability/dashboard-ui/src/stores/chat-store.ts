@@ -79,6 +79,8 @@ interface ChatState {
   readonly appendToolCallArgs: (toolCallId: string, delta: string) => void;
   readonly finishToolCall: (toolCallId: string, result: string | undefined) => void;
   readonly clearMessages: () => void;
+  /** Clear orphaned tool calls (e.g. on cancel or stream error). */
+  readonly clearActiveToolCalls: () => void;
   /** Load messages from a persisted session (e.g. JSONL restore). */
   readonly loadMessages: (messages: readonly ChatMessage[]) => void;
   readonly setAgentTerminated: (terminated: boolean) => void;
@@ -192,6 +194,8 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
 
   clearMessages: () => set({ messages: [], pendingText: "", activeToolCalls: {} }),
+
+  clearActiveToolCalls: () => set({ activeToolCalls: {} }),
 
   loadMessages: (messages) =>
     set({ messages: trimMessages(messages), pendingText: "", activeToolCalls: {} }),

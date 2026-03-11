@@ -6,11 +6,13 @@
  * persistence, retry, and reconnection handling.
  */
 
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import type { ChatHistoryMessage } from "@koi/dashboard-types";
 import { useAguiChat } from "../../hooks/use-agui-chat.js";
 import { useSessionHistory } from "../../hooks/use-session-history.js";
 import { useAgentById } from "../../stores/agents-store.js";
 import {
+  type ChatMessage,
   useChatAgentTerminated,
   useChatError,
   useChatIsStreaming,
@@ -22,6 +24,21 @@ import { Composer } from "./composer.js";
 import { ConsoleHeader } from "./console-header.js";
 import { MessageList } from "./message-list.js";
 import { SessionPicker } from "./session-picker.js";
+
+/** Convert stored ChatMessages to AG-UI history format for context continuity. */
+function buildChatHistory(messages: readonly ChatMessage[]): readonly ChatHistoryMessage[] {
+  const history: ChatHistoryMessage[] = [];
+  for (const msg of messages) {
+    if (msg.kind === "user" || msg.kind === "assistant") {
+      history.push({
+        id: `hist-${String(history.length)}`,
+        role: msg.kind,
+        content: msg.text,
+      });
+    }
+  }
+  return history;
+}
 
 export interface ConsoleViewProps {
   /** The agent ID to chat with. */
@@ -50,6 +67,9 @@ export const ConsoleView = memo(function ConsoleView({
     onStreamEnd: persistCurrentSession,
   });
 
+  // Guard against concurrent session operations
+  const switchingRef = useRef(false);
+
   // Initialize session when agentId changes
   useEffect(() => {
     useChatStore.getState().setSession({
@@ -61,13 +81,16 @@ export const ConsoleView = memo(function ConsoleView({
     return () => {
       // Persist before unmounting
       void persistCurrentSession();
+      cancel();
       useChatStore.getState().setSession(null);
     };
-  }, [agentId, persistCurrentSession]);
+  }, [agentId, persistCurrentSession, cancel]);
 
   const handleSend = useCallback(
     (text: string) => {
-      sendMessage(text);
+      // Pass existing messages as history so the agent has prior context
+      const history = buildChatHistory(useChatStore.getState().messages);
+      sendMessage(text, history);
     },
     [sendMessage],
   );
@@ -81,7 +104,10 @@ export const ConsoleView = memo(function ConsoleView({
   }, []);
 
   const handleNewSession = useCallback(() => {
-    // Persist current session before starting new one
+    if (switchingRef.current) return;
+    switchingRef.current = true;
+    // Abort any in-flight stream before switching
+    cancel();
     void persistCurrentSession().then(() => {
       useChatStore.getState().setSession({
         agentId,
@@ -89,17 +115,23 @@ export const ConsoleView = memo(function ConsoleView({
         threadId: `thread-${Date.now().toString(36)}`,
       });
       refresh();
+      switchingRef.current = false;
     });
-  }, [agentId, persistCurrentSession, refresh]);
+  }, [agentId, persistCurrentSession, refresh, cancel]);
 
   const handleSelectSession = useCallback(
     (entry: { readonly sessionId: string; readonly path: string; readonly modifiedAt: number; readonly size: number }) => {
-      // Persist current session first, then load selected
+      if (switchingRef.current) return;
+      switchingRef.current = true;
+      // Abort any in-flight stream before switching
+      cancel();
       void persistCurrentSession().then(() => {
-        void loadSession(entry);
+        void loadSession(entry).then(() => {
+          switchingRef.current = false;
+        });
       });
     },
-    [persistCurrentSession, loadSession],
+    [persistCurrentSession, loadSession, cancel],
   );
 
   const currentSessionId = useChatStore((s) => s.session?.sessionId ?? null);

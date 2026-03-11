@@ -571,4 +571,31 @@ describe("createAdminPanelBridge", () => {
     expect(first(events).kind).toBe("agent");
     expect(first(events).subKind).toBe("metrics_updated");
   });
+
+  test("commands.dispatchAgent is undefined when not provided", () => {
+    const result = createAdminPanelBridge(createTestOptions());
+    const cmds = result.commands;
+    expect(cmds).toBeDefined();
+    if (cmds === undefined) return;
+    expect(cmds.dispatchAgent).toBeUndefined();
+  });
+
+  test("commands.dispatchAgent is wired when provided", async () => {
+    const mockDispatch = mock(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: { agentId: agentId("test:dispatched:1"), name: "dispatched" },
+      }),
+    );
+    const result = createAdminPanelBridge(createTestOptions({ dispatchAgent: mockDispatch }));
+    const cmds = result.commands;
+    expect(cmds).toBeDefined();
+    if (cmds === undefined) return;
+
+    expect(cmds.dispatchAgent).toBeDefined();
+
+    const response = await cmds.dispatchAgent?.({ name: "dispatched" });
+    expect(response?.ok).toBe(true);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+  });
 });
