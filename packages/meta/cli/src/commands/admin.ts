@@ -451,7 +451,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
         // Persist to shared chat log (best-effort)
         await persistChatExchange(
           workspaceRoot,
-          manifest.name,
+          bridge.agentId,
           threadId,
           text,
           deltas.join(""),

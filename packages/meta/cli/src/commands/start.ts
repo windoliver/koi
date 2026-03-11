@@ -316,6 +316,10 @@ export async function runStart(flags: StartFlags): Promise<void> {
     }
   }
 
+  // Agent directory name for chat persistence — matches the bridge's synthetic agentId
+  // so the TUI/session-picker can read back shared chat logs at the same path.
+  const persistAgentId = adminBridge?.agentId ?? manifest.name;
+
   // 7. Set up AbortController for graceful shutdown
   const controller = new AbortController();
   let shuttingDown = false;
@@ -373,7 +377,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
         // Persist to shared chat log (best-effort)
         await persistChatExchange(
           startWorkspaceRoot,
-          manifest.name,
+          persistAgentId,
           threadId,
           text,
           deltas.join(""),
@@ -414,7 +418,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
         // Persist to shared chat log (best-effort)
         await persistChatExchange(
           startWorkspaceRoot,
-          manifest.name,
+          persistAgentId,
           currentStartSessionId,
           text,
           deltas.join(""),

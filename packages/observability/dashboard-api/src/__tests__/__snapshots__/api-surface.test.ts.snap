@@ -2,7 +2,7 @@
 
 exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
 "import { RuntimeViewDataSource, CommandDispatcher, DashboardDataSource, DashboardConfig, DashboardEvent } from '@koi/dashboard-types';
-import { FileSystemBackend } from '@koi/core';
+import { FileSystemBackend, AgentId } from '@koi/core';
 
 /**
  * Harness admin adapter for the Koi dashboard.
@@ -347,6 +347,8 @@ interface BridgeOptions {
     readonly orchestrationCommands?: Pick<CommandDispatcher, "signalWorkflow" | "terminateWorkflow" | "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter" | "pauseHarness" | "resumeHarness"> | undefined;
 }
 interface AdminPanelBridgeResult extends DashboardHandlerOptions {
+    /** Synthetic agent ID used by the bridge (e.g. \`cli:<name>:<ts>\`). */
+    readonly agentId: AgentId;
     /** Emit a dashboard event to all subscribers. */
     readonly emitEvent: (event: DashboardEvent) => void;
     /** Update agent metrics (turns, tokens). Emits a metrics_updated event. */

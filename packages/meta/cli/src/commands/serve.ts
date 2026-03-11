@@ -304,6 +304,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     });
   }
 
+  // Agent directory name for chat persistence — matches the bridge's synthetic agentId
+  // so the TUI/session-picker can read back shared chat logs at the same path.
+  const persistAgentId = adminBridge?.agentId ?? manifest.name;
+
   // Global serial queue — runtime enforces single-flight (throws on concurrent
   // run() calls), so all messages serialize through one queue.
   // let justified: serial queue prevents concurrent runtime.run() calls
@@ -336,7 +340,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
               // Persist to shared chat log (best-effort)
               await persistChatExchange(
                 serveWorkspaceRoot,
-                manifest.name,
+                persistAgentId,
                 threadId,
                 text,
                 deltas.join(""),
@@ -389,7 +393,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
           // Persist to shared chat log (best-effort)
           await persistChatExchange(
             serveWorkspaceRoot,
-            manifest.name,
+            persistAgentId,
             key,
             text,
             deltas.join(""),

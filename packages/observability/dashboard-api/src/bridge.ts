@@ -74,6 +74,8 @@ export interface BridgeOptions {
 }
 
 export interface AdminPanelBridgeResult extends DashboardHandlerOptions {
+  /** Synthetic agent ID used by the bridge (e.g. `cli:<name>:<ts>`). */
+  readonly agentId: AgentId;
   /** Emit a dashboard event to all subscribers. */
   readonly emitEvent: (event: DashboardEvent) => void;
   /** Update agent metrics (turns, tokens). Emits a metrics_updated event. */
@@ -464,6 +466,7 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   };
 
   return {
+    agentId: primaryAgentId,
     dataSource,
     runtimeViews,
     commands,

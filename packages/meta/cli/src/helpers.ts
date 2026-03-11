@@ -48,12 +48,12 @@ export const CHAT_SESSION_PREFIX = "/session/chat";
  */
 export async function persistChatExchange(
   workspaceRoot: string,
-  agentName: string,
+  agentId: string,
   threadId: string,
   userText: string,
   assistantText: string,
 ): Promise<void> {
-  const chatDir = join(workspaceRoot, "agents", agentName, "session", "chat");
+  const chatDir = join(workspaceRoot, "agents", agentId, "session", "chat");
   await mkdir(chatDir, { recursive: true });
   const logPath = join(chatDir, `${threadId}.jsonl`);
   const entries = `${[
