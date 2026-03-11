@@ -40,6 +40,7 @@ export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
 /** A saved session entry for the session picker. */
 export interface SessionPickerEntry {
   readonly sessionId: string;
+  readonly agentId: string;
   readonly agentName: string;
   readonly connectedAt: number;
   readonly messageCount: number;

@@ -64,7 +64,7 @@ export interface TuiAppHandle {
  * Create and wire the complete TUI application.
  *
  * Coordinates state, clients, streams, and the OpenTUI rendering layer.
- * Calls render() from @opentui/solid in start() to enter raw mode,
+ * Calls createRoot/render from @opentui/react in start() to enter raw mode,
  * and renderer.destroy() in stop() to restore the terminal.
  */
 export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
@@ -88,7 +88,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   let activeChatStream: AguiStreamHandle | null = null;
   let sseStream: ReconnectHandle | null = null;
   let tuiRenderer: CliRenderer | null = null;
-  let syntaxStyle: SyntaxStyle | null = null;
+  // Created eagerly — always non-null, destroyed in stop().
+  const syntaxStyle = SyntaxStyle.create();
 
   const aguiHandler = createAguiEventHandler(store);
 
@@ -288,7 +289,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const arg = parts[1];
 
     if (cmd === "attach" && arg !== undefined) {
-      openAgentConsole(arg);
+      const match = store.getState().agents.find((a) => a.name.toLowerCase() === arg.toLowerCase());
+      if (match !== undefined) {
+        openAgentConsole(match.agentId);
+      } else {
+        addLifecycleMessage(`Agent not found: ${arg}`);
+      }
       return;
     }
 
@@ -315,11 +321,11 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         break;
 
       case "attach": {
-        // Show agent names in lifecycle message for easy selection
-        const agentNames = store.getState().agents.map((a) => a.name);
-        if (agentNames.length > 0) {
+        const agents = store.getState().agents;
+        if (agents.length > 0) {
+          const lines = agents.map((a) => `  ${a.name} (${a.agentId})`);
           addLifecycleMessage(
-            `Available agents: ${agentNames.join(", ")}\nUse /attach <name> to connect`,
+            `Available agents:\n${lines.join("\n")}\nUse /attach <name> to connect`,
           );
         } else {
           addLifecycleMessage("No agents available. Use /dispatch to create one.");
@@ -524,6 +530,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
         entries.push({
           sessionId: parsed.sessionId,
+          agentId: agent.agentId,
           agentName: parsed.agentName,
           connectedAt: parsed.connectedAt,
           messageCount: 0,
@@ -537,15 +544,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   }
 
   function handleSessionSelect(sessionId: string): void {
-    // Find which agent owns this session
     const entry = store.getState().sessionPickerEntries.find((s) => s.sessionId === sessionId);
     if (entry === undefined) return;
 
-    // Find the agent by name
-    const agent = store.getState().agents.find((a) => a.name === entry.agentName);
-    const agentId = agent !== undefined ? agent.agentId : entry.agentName;
-
-    restoreSession(store, client, agentId, sessionId)
+    restoreSession(store, client, entry.agentId, sessionId)
       .then((count) => {
         const label = `${String(count)} messages`;
         addLifecycleMessage(`Restored session ${sessionId} (${label})`);
@@ -653,7 +655,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       useAlternateScreen: true,
       useMouse: true,
     });
-    syntaxStyle = SyntaxStyle.create();
 
     reactRoot = createRoot(tuiRenderer);
     reactRoot.render(
@@ -685,10 +686,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       reactRoot.unmount();
       reactRoot = null;
     }
-    if (syntaxStyle !== null) {
-      syntaxStyle.destroy();
-      syntaxStyle = null;
-    }
+    syntaxStyle.destroy();
     if (tuiRenderer !== null) {
       tuiRenderer.destroy();
       tuiRenderer = null;

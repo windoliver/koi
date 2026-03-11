@@ -10,6 +10,7 @@ import { SessionPickerView } from "./session-picker-view.js";
 function makeSession(overrides: Partial<SessionPickerEntry> = {}): SessionPickerEntry {
   return {
     sessionId: "s1",
+    agentId: "agent-001",
     agentName: "test-agent",
     connectedAt: Date.now() - 120_000,
     messageCount: 15,

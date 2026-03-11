@@ -23,7 +23,7 @@ export interface PaletteCallbacks {
 /** Default commands available in the command palette. */
 export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "agents", label: "/agents", description: "Switch to agent list view" },
-  { id: "attach", label: "/attach", description: "Attach to an agent by name" },
+  { id: "attach", label: "/attach", description: "Attach to an agent (lists available)" },
   { id: "dispatch", label: "/dispatch", description: "Dispatch a new agent" },
   { id: "refresh", label: "/refresh", description: "Refresh agent list", shortcut: "Ctrl+R" },
   { id: "suspend", label: "/suspend", description: "Suspend current agent" },
