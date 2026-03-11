@@ -286,6 +286,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
         skills: skillNames,
         fileSystem: createLocalFileSystem(workspaceRoot),
         dispatchAgent: dispatcher.dispatchAgent,
+        onTerminateAgent: async (id) => {
+          await dispatcher.terminateAgent(id);
+        },
         ...(orch.hasAny
           ? {
               orchestration: orch.orchestration,

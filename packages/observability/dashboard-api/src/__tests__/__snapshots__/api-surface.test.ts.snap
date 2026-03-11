@@ -345,6 +345,18 @@ interface BridgeOptions {
     } | undefined;
     /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
     readonly orchestrationCommands?: Pick<CommandDispatcher, "signalWorkflow" | "terminateWorkflow" | "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter" | "pauseHarness" | "resumeHarness"> | undefined;
+    /** Optional agent dispatch implementation (e.g. from AgentHost). */
+    readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
+    /** Called when a dispatched agent is terminated — disposes the runtime. */
+    readonly onTerminateAgent?: ((id: AgentId) => Promise<void> | void) | undefined;
+}
+/** Registration entry for a dispatched agent. */
+interface DispatchedAgentEntry {
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly agentType: "copilot" | "worker";
+    readonly model?: string;
+    readonly startedAt: number;
 }
 interface AdminPanelBridgeResult extends DashboardHandlerOptions {
     /** Synthetic agent ID used by the bridge (e.g. \`cli:<name>:<ts>\`). */
@@ -356,6 +368,8 @@ interface AdminPanelBridgeResult extends DashboardHandlerOptions {
         readonly turns: number;
         readonly totalTokens: number;
     }) => void;
+    /** Register a dispatched agent so it appears in listAgents/getAgent. */
+    readonly registerDispatchedAgent: (entry: DispatchedAgentEntry) => void;
 }
 declare function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridgeResult;
 

@@ -306,6 +306,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       skills: skillNames,
       fileSystem: createLocalFileSystem(workspaceRoot),
       dispatchAgent: dispatcher.dispatchAgent,
+      onTerminateAgent: async (id) => {
+        await dispatcher.terminateAgent(id);
+      },
       ...(orch.hasAny
         ? {
             orchestration: orch.orchestration,

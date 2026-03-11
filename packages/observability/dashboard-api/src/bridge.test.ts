@@ -689,6 +689,47 @@ describe("createAdminPanelBridge", () => {
     expect(detail?.state).toBe("terminated");
   });
 
+  test("terminateAgent calls onTerminateAgent callback for dispatched agents", async () => {
+    const terminated: string[] = [];
+    const result = createAdminPanelBridge(
+      createTestOptions({
+        onTerminateAgent: async (id) => {
+          terminated.push(id);
+        },
+      }),
+    );
+    const dId = agentId("dispatched:callback:1");
+
+    result.registerDispatchedAgent({
+      agentId: dId,
+      name: "callback-test",
+      agentType: "worker",
+      startedAt: Date.now(),
+    });
+
+    const termResult = await result.dataSource.terminateAgent(dId);
+    expect(termResult.ok).toBe(true);
+    expect(terminated).toHaveLength(1);
+    expect(first(terminated)).toBe(dId);
+  });
+
+  test("terminateAgent does not call onTerminateAgent for primary agent", async () => {
+    const terminated: string[] = [];
+    const result = createAdminPanelBridge(
+      createTestOptions({
+        onTerminateAgent: async (id) => {
+          terminated.push(id);
+        },
+      }),
+    );
+
+    const agents = await result.dataSource.listAgents();
+    await result.dataSource.terminateAgent(first(agents).agentId);
+
+    // Callback should NOT be called for the primary agent
+    expect(terminated).toHaveLength(0);
+  });
+
   test("wrappedDispatchAgent auto-registers and emits dispatched event", async () => {
     const dId = agentId("auto:reg:1");
     const mockDispatch = mock(() =>

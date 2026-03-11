@@ -35,6 +35,12 @@ export interface AgentDispatcherOptions {
   readonly defaultManifestPath: string;
   /** Emit verbose diagnostics to stderr. */
   readonly verbose?: boolean;
+  /** Additional middleware to include in every dispatched agent's runtime. */
+  readonly additionalMiddleware?: readonly KoiMiddleware[];
+  /** Additional providers to include in every dispatched agent's runtime. */
+  readonly additionalProviders?: readonly unknown[];
+  /** Additional extensions to include in every dispatched agent's runtime. */
+  readonly additionalExtensions?: readonly unknown[];
 }
 
 export interface AgentDispatcherResult {
@@ -44,6 +50,8 @@ export interface AgentDispatcherResult {
   readonly dispatched: ReadonlyMap<string, DispatchedAgent>;
   /** Get the chat handler for a dispatched agent (undefined if not found). */
   readonly getChatHandler: (agentId: string) => ((req: Request) => Promise<Response>) | undefined;
+  /** Terminate and dispose a specific dispatched agent by ID. Returns true if found and disposed. */
+  readonly terminateAgent: (id: string) => Promise<boolean>;
   /** Dispose all dispatched agent runtimes. */
   readonly dispose: () => Promise<void>;
 }
@@ -87,6 +95,8 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
         }) => AsyncIterable<unknown>;
         readonly dispose: () => Promise<void>;
       };
+      /** Tear down forge system internals. Call after runtime.dispose(). */
+      readonly dispose: () => void;
     }>;
     readonly createPiAdapter: (opts: { readonly model: string }) => unknown;
     readonly loadManifest: (
@@ -198,12 +208,16 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
       const aguiMiddleware = deps.createAguiStreamMiddleware({ store });
 
       // 5. Create runtime with AG-UI middleware included
-      const { runtime } = await deps.createForgeConfiguredKoi({
+      const { runtime, dispose: forgeDispose } = await deps.createForgeConfiguredKoi({
         manifest,
         adapter,
-        middleware: [...resolved.value.middleware, aguiMiddleware],
-        providers: [],
-        extensions: [],
+        middleware: [
+          ...(options.additionalMiddleware ?? []),
+          ...resolved.value.middleware,
+          aguiMiddleware,
+        ],
+        providers: options.additionalProviders ?? [],
+        extensions: options.additionalExtensions ?? [],
       });
 
       const id = runtime.agent.pid.id;
@@ -235,7 +249,10 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
         agentId: id,
         name: request.name,
         startedAt: Date.now(),
-        dispose: () => runtime.dispose(),
+        dispose: async () => {
+          await runtime.dispose();
+          forgeDispose();
+        },
         chatHandler,
       });
 
@@ -283,11 +300,19 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
     return dispatched.get(agentId)?.chatHandler;
   };
 
+  const terminateAgent = async (id: string): Promise<boolean> => {
+    const agent = dispatched.get(id);
+    if (agent === undefined) return false;
+    dispatched.delete(id);
+    await agent.dispose();
+    return true;
+  };
+
   const dispose = async (): Promise<void> => {
     const entries = [...dispatched.values()];
     dispatched.clear();
     await Promise.allSettled(entries.map((a) => a.dispose()));
   };
 
-  return { dispatchAgent, dispatched, getChatHandler, dispose };
+  return { dispatchAgent, dispatched, getChatHandler, terminateAgent, dispose };
 }

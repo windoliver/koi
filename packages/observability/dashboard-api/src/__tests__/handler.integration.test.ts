@@ -248,6 +248,63 @@ describe("REST endpoints", () => {
   });
 });
 
+describe("AG-UI chat endpoint", () => {
+  test("POST /admin/api/agents/:id/chat returns 501 when no handler", async () => {
+    const response = await fetch(`${baseUrl}/admin/api/agents/agent-1/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(response.status).toBe(501);
+  });
+
+  test("POST /admin/api/agents/:id/chat returns 404 for unknown agent", async () => {
+    // Create a handler with a chat handler wired
+    const { dataSource } = createMockDataSource();
+    const chatHandler = createDashboardHandler(
+      {
+        dataSource,
+        agentChatHandler: (_req, _id) => new Response("ok"),
+      },
+      { cors: false },
+    );
+
+    const req = new Request(`http://localhost/admin/api/agents/unknown-agent/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [] }),
+    });
+    const response = await chatHandler.handler(req);
+    expect(response).not.toBeNull();
+    expect(response?.status).toBe(404);
+    chatHandler.dispose();
+  });
+
+  test("POST /admin/api/agents/:id/chat delegates to handler for known agent", async () => {
+    const { dataSource } = createMockDataSource();
+    const chatHandler = createDashboardHandler(
+      {
+        dataSource,
+        agentChatHandler: (_req, id) =>
+          new Response(`chat:${id}`, { headers: { "content-type": "text/plain" } }),
+      },
+      { cors: false },
+    );
+
+    const req = new Request(`http://localhost/admin/api/agents/agent-1/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [] }),
+    });
+    const response = await chatHandler.handler(req);
+    expect(response).not.toBeNull();
+    expect(response?.status).toBe(200);
+    const body = await response?.text();
+    expect(body).toBe("chat:agent-1");
+    chatHandler.dispose();
+  });
+});
+
 describe("SSE endpoint", () => {
   test("GET /admin/api/events returns SSE stream with events", async () => {
     const ac = new AbortController();

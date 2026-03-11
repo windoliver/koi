@@ -7,6 +7,7 @@
  */
 
 import type { FileSystemBackend } from "@koi/core";
+import { agentId as toAgentId } from "@koi/core";
 import type {
   CommandDispatcher,
   DashboardConfig,
@@ -184,11 +185,16 @@ export function createDashboardHandler(
             501,
           );
         }
-        const agentId = params.id;
-        if (agentId === undefined) {
+        const id = params.id;
+        if (id === undefined) {
           return errorResponse("VALIDATION", "Missing agent ID", 400);
         }
-        return agentChatHandler(req, agentId);
+        // Verify agent exists before delegating to chat handler
+        const agent = dataSource.getAgent(toAgentId(id));
+        if (agent === undefined) {
+          return errorResponse("NOT_FOUND", `Agent ${id} not found`, 404);
+        }
+        return agentChatHandler(req, id);
       },
     },
     {

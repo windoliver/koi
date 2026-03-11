@@ -73,6 +73,8 @@ export interface BridgeOptions {
     | undefined;
   /** Optional agent dispatch implementation (e.g. from AgentHost). */
   readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
+  /** Called when a dispatched agent is terminated — disposes the runtime. */
+  readonly onTerminateAgent?: ((id: AgentId) => Promise<void> | void) | undefined;
 }
 
 /** Registration entry for a dispatched agent. */
@@ -177,7 +179,7 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       return { ...buildDispatchedSummary(d), skills: [], tokenCount: 0, metadata: {} };
     },
 
-    terminateAgent(id: AgentId): Result<void, KoiError> {
+    terminateAgent(id: AgentId): Result<void, KoiError> | Promise<Result<void, KoiError>> {
       // Handle dispatched agents
       const dispatched = dispatchedAgents.get(id);
       if (dispatched !== undefined) {
@@ -201,6 +203,13 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
           to: "terminated",
           timestamp: Date.now(),
         });
+        // Actually dispose the runtime if callback provided
+        if (options.onTerminateAgent !== undefined) {
+          const result = options.onTerminateAgent(id);
+          if (result instanceof Promise) {
+            return result.then(() => ({ ok: true as const, value: undefined }));
+          }
+        }
         return { ok: true, value: undefined };
       }
 
