@@ -67,6 +67,9 @@ export {
 } from "./events.js";
 // REST types
 export type { ApiError, ApiResult } from "./rest-types.js";
+// Routes
+export type { AdminRoutes, HttpMethod, RouteDefinition } from "./routes.js";
+export { ADMIN_ROUTES, interpolatePath } from "./routes.js";
 // Runtime views
 export type {
   AgentProcfs,

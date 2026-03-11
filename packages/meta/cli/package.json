@@ -65,6 +65,7 @@
     "@koi/snapshot-chain-store": "workspace:*",
     "@koi/autonomous": "workspace:*",
     "@koi/long-running": "workspace:*",
-    "@koi/harness-scheduler": "workspace:*"
+    "@koi/harness-scheduler": "workspace:*",
+    "@koi/tui": "workspace:*"
   }
 }

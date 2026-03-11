@@ -1,0 +1,28 @@
+{
+  "name": "@koi/tui",
+  "description": "Admin-panel-connected terminal console for operators",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/dashboard-types": "workspace:*",
+    "@mariozechner/pi-tui": "^0.57.1",
+    "chalk": "^5.4.1"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

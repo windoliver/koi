@@ -83,6 +83,16 @@ export interface LogsFlags extends BaseFlags {
   readonly lines: number;
 }
 
+export interface TuiFlags extends BaseFlags {
+  readonly command: "tui";
+  /** Admin API URL (e.g., "http://localhost:3100/admin/api"). */
+  readonly url: string | undefined;
+  /** Auth token for the admin API. */
+  readonly authToken: string | undefined;
+  /** Refresh interval in seconds (default: 5). */
+  readonly refresh: number;
+}
+
 export interface DoctorFlags extends BaseFlags {
   readonly command: "doctor";
   readonly manifest: string | undefined;
@@ -98,6 +108,7 @@ export type CliFlags =
   | StatusFlags
   | StopFlags
   | LogsFlags
+  | TuiFlags
   | DoctorFlags
   | BaseFlags;
 
@@ -338,6 +349,29 @@ export function parseAdminFlags(rest: readonly string[]): AdminFlags {
   };
 }
 
+export function parseTuiFlags(rest: readonly string[]): TuiFlags {
+  const { values } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      url: { type: "string" },
+      token: { type: "string" },
+      refresh: { type: "string" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const refreshStr = values.refresh as string | undefined;
+
+  return {
+    command: "tui" as const,
+    directory: undefined,
+    url: values.url as string | undefined,
+    authToken: values.token as string | undefined,
+    refresh: refreshStr !== undefined ? Number.parseInt(refreshStr, 10) : 5,
+  };
+}
+
 export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
   const { values, positionals } = nodeParseArgs({
     args: rest as string[],
@@ -395,6 +429,10 @@ export function isLogsFlags(flags: CliFlags): flags is LogsFlags {
   return flags.command === "logs";
 }
 
+export function isTuiFlags(flags: CliFlags): flags is TuiFlags {
+  return flags.command === "tui";
+}
+
 export function isDoctorFlags(flags: CliFlags): flags is DoctorFlags {
   return flags.command === "doctor";
 }
@@ -413,6 +451,7 @@ const COMMAND_PARSERS: Readonly<Record<string, (rest: readonly string[]) => CliF
   status: parseStatusFlags,
   stop: parseStopFlags,
   logs: parseLogsFlags,
+  tui: parseTuiFlags,
   doctor: parseDoctorFlags,
 };
 
