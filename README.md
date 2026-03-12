@@ -276,9 +276,11 @@ bun run build:cli
 The repo does not place a plain `koi` binary on your shell `PATH`. Use the built CLI through Bun:
 
 ```bash
-bun run koi -- start --dry-run path/to/koi.yaml
-bun run koi -- start --admin path/to/koi.yaml
-bun run koi -- tui
+bun run koi -- init my-agent
+cd my-agent
+bun run dry-run
+bun run start:admin
+bun run tui
 ```
 
 First-timer notes:

@@ -15,6 +15,7 @@ const STATE: WizardState = {
   engine: undefined,
   channels: ["cli"],
   directory: "test-agent",
+  koiCommand: "koi",
 };
 
 describe("generateManifestYaml", () => {
@@ -99,21 +100,32 @@ describe("generatePackageJson", () => {
 
   test("includes supported scripts", () => {
     const result = JSON.parse(generatePackageJson(STATE));
-    expect(result.scripts["dry-run"]).toBe("koi start --dry-run");
-    expect(result.scripts.start).toBe("koi start");
-    expect(result.scripts["start:admin"]).toBe("koi start --admin");
-    expect(result.scripts.serve).toBe("koi serve");
-    expect(result.scripts["serve:admin"]).toBe("koi serve --admin");
-    expect(result.scripts.admin).toBe("koi admin");
-    expect(result.scripts.tui).toBe("koi tui");
-    expect(result.scripts["tui:serve"]).toBe("koi tui --url http://localhost:9100/admin/api");
-    expect(result.scripts.doctor).toBe("koi doctor");
+    expect(result.scripts.koi).toBe("koi");
+    expect(result.scripts["dry-run"]).toBe("bun run koi -- start --dry-run");
+    expect(result.scripts.start).toBe("bun run koi -- start");
+    expect(result.scripts["start:admin"]).toBe("bun run koi -- start --admin");
+    expect(result.scripts.serve).toBe("bun run koi -- serve");
+    expect(result.scripts["serve:admin"]).toBe("bun run koi -- serve --admin");
+    expect(result.scripts.admin).toBe("bun run koi -- admin");
+    expect(result.scripts.tui).toBe("bun run koi -- tui");
+    expect(result.scripts["tui:serve"]).toBe(
+      "bun run koi -- tui --url http://localhost:9100/admin/api",
+    );
+    expect(result.scripts.doctor).toBe("bun run koi -- doctor");
   });
 
   test("uses the single-package koi dependency", () => {
     const result = JSON.parse(generatePackageJson(STATE));
     expect(result.dependencies.koi).toBe("latest");
     expect(result.dependencies["@koi/core"]).toBeUndefined();
+  });
+
+  test("omits the published dependency when using the local monorepo CLI", () => {
+    const result = JSON.parse(
+      generatePackageJson({ ...STATE, koiCommand: "../packages/meta/cli/dist/bin.js" }),
+    );
+    expect(result.scripts.koi).toBe("../packages/meta/cli/dist/bin.js");
+    expect(result.dependencies).toBeUndefined();
   });
 
   test("output is valid JSON", () => {
@@ -160,6 +172,16 @@ describe("generateReadme", () => {
   test("includes local Nexus prerequisite guidance", () => {
     const readme = generateReadme(STATE);
     expect(readme).toContain("uv run nexus");
+  });
+
+  test("documents the local monorepo CLI when scaffolded inside the repo", () => {
+    const readme = generateReadme({
+      ...STATE,
+      koiCommand: "../packages/meta/cli/dist/bin.js",
+    });
+    expect(readme).toContain("wired to the local Koi monorepo CLI");
+    expect(readme).toContain("bun run build:cli");
+    expect(readme).not.toContain("bun install");
   });
 
   test("includes Nexus switching guidance", () => {

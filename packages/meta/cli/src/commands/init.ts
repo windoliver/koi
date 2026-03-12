@@ -5,6 +5,7 @@
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import type { InitFlags } from "../args.js";
+import { resolveScaffoldKoiCommand } from "../local-cli.js";
 import { writeScaffold } from "../scaffold.js";
 import { generateCopilot } from "../templates/copilot.js";
 import { generateMinimal } from "../templates/minimal.js";
@@ -54,6 +55,11 @@ export async function runInit(flags: InitFlags): Promise<void> {
     }
     state = result;
   }
+
+  state = {
+    ...state,
+    koiCommand: resolveScaffoldKoiCommand(targetDir),
+  };
 
   // Generate files from template
   const generator = TEMPLATE_GENERATORS[state.template];

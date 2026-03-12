@@ -10,6 +10,7 @@ const STATE: WizardState = {
   engine: undefined,
   channels: ["cli", "telegram", "slack"],
   directory: "my-copilot",
+  koiCommand: "koi",
 };
 
 describe("generateCopilot", () => {

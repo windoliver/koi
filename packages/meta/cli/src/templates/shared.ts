@@ -76,25 +76,26 @@ export function generateManifestYaml(state: WizardState): string {
  * Generates a package.json for the scaffolded project.
  */
 export function generatePackageJson(state: WizardState): string {
+  const scripts = {
+    koi: state.koiCommand,
+    "dry-run": "bun run koi -- start --dry-run",
+    start: "bun run koi -- start",
+    "start:admin": "bun run koi -- start --admin",
+    serve: "bun run koi -- serve",
+    "serve:admin": "bun run koi -- serve --admin",
+    admin: "bun run koi -- admin",
+    tui: "bun run koi -- tui",
+    "tui:serve": "bun run koi -- tui --url http://localhost:9100/admin/api",
+    doctor: "bun run koi -- doctor",
+  };
+
   const pkg = {
     name: state.name,
     version: "0.1.0",
     private: true,
     type: "module",
-    scripts: {
-      "dry-run": "koi start --dry-run",
-      start: "koi start",
-      "start:admin": "koi start --admin",
-      serve: "koi serve",
-      "serve:admin": "koi serve --admin",
-      admin: "koi admin",
-      tui: "koi tui",
-      "tui:serve": "koi tui --url http://localhost:9100/admin/api",
-      doctor: "koi doctor",
-    },
-    dependencies: {
-      koi: "latest",
-    },
+    scripts,
+    ...(state.koiCommand === "koi" ? { dependencies: { koi: "latest" } } : {}),
   };
 
   return `${JSON.stringify(pkg, null, 2)}\n`;
@@ -208,30 +209,44 @@ export function generateTsconfig(): string {
  */
 export function generateReadme(state: WizardState): string {
   const lines: string[] = [];
+  const usesLocalCli = state.koiCommand !== "koi";
   lines.push(`# ${state.name}`);
   lines.push("");
   lines.push(state.description);
   lines.push("");
   lines.push("## Setup");
   lines.push("");
-  lines.push("This scaffold targets the single-package `koi` distribution.");
-  lines.push("");
-  lines.push("```bash");
-  lines.push("bun install");
-  lines.push("```");
-  lines.push("");
+  if (usesLocalCli) {
+    lines.push("This scaffold is wired to the local Koi monorepo CLI.");
+    lines.push("");
+    lines.push(
+      `The generated \`koi\` script points to \`${state.koiCommand}\`, so you can run it from this repo checkout without installing a separate package.`,
+    );
+    lines.push("");
+    lines.push("If you rebuild the CLI, run `bun run build:cli` at the repo root.");
+    lines.push("");
+  } else {
+    lines.push("This scaffold targets the single-package `koi` distribution.");
+    lines.push("");
+    lines.push("```bash");
+    lines.push("bun install");
+    lines.push("```");
+    lines.push("");
+  }
   lines.push("Then fill in `.env` with the API key for your selected model.");
   lines.push("");
-  lines.push(
-    "If you are running inside the Koi monorepo before `koi` is published, keep using the repo root CLI instead:",
-  );
-  lines.push("");
-  lines.push("```bash");
-  lines.push("bun run koi -- start --dry-run path/to/koi.yaml");
-  lines.push("bun run koi -- start --admin path/to/koi.yaml");
-  lines.push("bun run koi -- tui");
-  lines.push("```");
-  lines.push("");
+  if (!usesLocalCli) {
+    lines.push(
+      "If you are running inside the Koi monorepo before `koi` is published, keep using the repo root CLI instead:",
+    );
+    lines.push("");
+    lines.push("```bash");
+    lines.push("bun run koi -- start --dry-run path/to/koi.yaml");
+    lines.push("bun run koi -- start --admin path/to/koi.yaml");
+    lines.push("bun run koi -- tui");
+    lines.push("```");
+    lines.push("");
+  }
   lines.push("Local Nexus embed mode also expects `uv run nexus` to be available on your `PATH`.");
   lines.push("");
   lines.push("## First Run");
