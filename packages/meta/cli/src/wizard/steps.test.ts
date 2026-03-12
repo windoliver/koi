@@ -253,6 +253,17 @@ describe("selectChannels", () => {
     const state: WizardState = { ...DEFAULT_STATE, template: "copilot" };
     const result = await selectChannels(state, NO_FLAGS);
     expect(result?.channels).toEqual(["telegram", "slack"]);
+    expect(mockMultiselect).toHaveBeenCalledWith({
+      message: "Select channels",
+      options: [
+        { value: "cli", label: "cli" },
+        { value: "telegram", label: "telegram" },
+        { value: "slack", label: "slack" },
+        { value: "discord", label: "discord" },
+      ],
+      initialValues: ["cli"],
+      required: true,
+    });
   });
 
   test("skips prompt for minimal template", async () => {

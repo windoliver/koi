@@ -158,6 +158,7 @@ export async function selectChannels(state: WizardState, flags: InitFlags): Prom
   const value = await p.multiselect({
     message: "Select channels",
     options: CHANNELS.map((c) => ({ value: c, label: c })),
+    initialValues: [...state.channels],
     required: true,
   });
 
