@@ -153,12 +153,12 @@ async function fetchLiveChannels(adminUrl: string): Promise<readonly LiveChannel
     const res = await fetch(`${adminUrl}/channels`, { signal: AbortSignal.timeout(2000) });
     if (res.status !== 200) return undefined;
     const data = (await res.json()) as readonly {
-      readonly type?: string;
-      readonly status?: string;
+      readonly channelType?: string;
+      readonly connected?: boolean;
     }[];
     return data.map((ch) => ({
-      name: typeof ch.type === "string" ? ch.type : "unknown",
-      status: typeof ch.status === "string" ? ch.status : "unknown",
+      name: typeof ch.channelType === "string" ? ch.channelType : "unknown",
+      status: ch.connected === true ? "connected" : "disconnected",
     }));
   } catch {
     return undefined;

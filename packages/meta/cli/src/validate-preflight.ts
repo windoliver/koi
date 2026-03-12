@@ -59,14 +59,14 @@ interface ManifestSubset {
  * Validates that the environment has the prerequisites for the given manifest.
  *
  * Checks:
- * - Model provider API key is set
- * - Channel-specific tokens are set
- * - Nexus URL is reachable (warning only)
+ * - Model provider API key is set (error)
+ * - Channel-specific tokens are set (warning)
+ * - Nexus URL is reachable when explicitly configured (warning)
  */
-export function validateManifestPrerequisites(
+export async function validateManifestPrerequisites(
   manifest: ManifestSubset,
   env: Readonly<Record<string, string | undefined>> = process.env,
-): PreflightResult {
+): Promise<PreflightResult> {
   const issues: PreflightIssue[] = [];
 
   // 1. Check model provider API key
@@ -105,10 +105,37 @@ export function validateManifestPrerequisites(
     }
   }
 
+  // 3. Check Nexus reachability (only when explicitly configured)
+  const nexusUrl = manifest.nexus?.url;
+  if (nexusUrl !== undefined && nexusUrl.trim() !== "") {
+    const reachable = await probeNexus(nexusUrl);
+    if (!reachable) {
+      issues.push({
+        severity: "warning",
+        code: "NEXUS_UNREACHABLE",
+        message: `Nexus at ${nexusUrl} is not reachable — agent will start without remote Nexus`,
+      });
+    }
+  }
+
   return {
     ok: issues.every((i) => i.severity !== "error"),
     issues,
   };
+}
+
+/**
+ * Probes a Nexus URL for reachability with a short timeout.
+ */
+async function probeNexus(baseUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/health`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
 }
 
 /**

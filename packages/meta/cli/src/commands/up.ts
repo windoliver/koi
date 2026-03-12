@@ -15,6 +15,7 @@
  * 11. BANNER:   Print URLs, channel state, agent readiness
  */
 
+import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
@@ -24,6 +25,8 @@ import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-a
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
+import type { PresetId, PresetServices } from "@koi/runtime-presets";
+import { resolveRuntimePreset } from "@koi/runtime-presets";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
@@ -175,7 +178,19 @@ export async function runUp(flags: UpFlags): Promise<void> {
     process.exit(EXIT_CONFIG);
   }
 
-  // 4. Bootstrap forge system
+  // 4. PRESET: Resolve runtime preset to control service startup
+  const presetId = await timer.time("preset", async () => inferPresetId(manifestPath));
+  const { resolved: preset } = resolveRuntimePreset(presetId);
+  const services: PresetServices = preset.services;
+
+  if (flags.verbose) {
+    process.stderr.write(
+      `Preset: ${presetId} (tui=${String(services.tui)}` +
+        `, temporal=${services.temporal}, gateway=${String(services.gateway)})\n`,
+    );
+  }
+
+  // 5. Bootstrap forge system
   // let justified: tracks session ID for forge counter scoping
   let currentSessionId = `up:${manifest.name}:0`;
   let sessionCounter = 0;
@@ -206,12 +221,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   const adapter = resolved.value.engine ?? createPiAdapter({ model: modelName });
 
-  // Resolve Nexus, autonomous, temporal in parallel
+  // Resolve Nexus, autonomous, temporal in parallel (preset controls Temporal)
   const [nexus, autonomous, temporalAdmin] = await timer.time("subsystems", () =>
     Promise.all([
       resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose),
       resolveAutonomousOrWarn(manifest, flags.verbose),
-      resolveTemporalOrWarn(flags.temporalUrl, flags.verbose),
+      services.temporal !== "disabled"
+        ? resolveTemporalOrWarn(flags.temporalUrl, flags.verbose)
+        : Promise.resolve(undefined),
     ]),
   );
 
@@ -378,14 +395,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 11. Print startup banner
   timer.print();
-  printBanner(manifest.name, engineName, modelName, channels, nexus.baseUrl, adminReady);
+  printBanner(manifest.name, presetId, engineName, modelName, channels, nexus.baseUrl, adminReady);
 
-  // 12. Attach TUI (requires admin API)
+  // 12. Attach TUI (requires admin API + preset enables it)
   let tuiApp:
     | { readonly start: () => Promise<void>; readonly stop: () => Promise<void> }
     | undefined;
   let tuiAttached = false;
-  if (adminReady) {
+  if (adminReady && services.tui) {
     try {
       const { createTuiApp } = await import("@koi/tui");
       tuiApp = createTuiApp({
@@ -527,6 +544,30 @@ export async function runUp(flags: UpFlags): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Preset inference
+// ---------------------------------------------------------------------------
+
+/**
+ * Infers the runtime preset from manifest YAML.
+ * Reads `preset:` field if present, falls back to heuristics.
+ */
+async function inferPresetId(manifestPath: string): Promise<PresetId> {
+  try {
+    const raw = await readFile(manifestPath, "utf-8");
+    const presetMatch = /^preset:\s*(\S+)/m.exec(raw);
+    if (presetMatch?.[1] !== undefined) {
+      const id = presetMatch[1];
+      if (id === "local" || id === "demo" || id === "mesh") return id;
+    }
+    // Infer demo from demo.pack presence
+    if (/^demo:\s*\n\s+pack:/m.test(raw)) return "demo";
+    return "local";
+  } catch {
+    return "local";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Demo pack seeding
 // ---------------------------------------------------------------------------
 
@@ -538,7 +579,6 @@ async function seedDemoPackIfNeeded(
   verbose: boolean,
 ): Promise<void> {
   try {
-    const { readFile } = await import("node:fs/promises");
     const { join } = await import("node:path");
 
     const raw = await readFile(manifestPath, "utf-8");
@@ -598,6 +638,7 @@ async function seedDemoPackIfNeeded(
 
 function printBanner(
   agentName: string,
+  presetId: PresetId,
   engineName: string,
   modelName: string,
   channels: readonly ChannelAdapter[],
@@ -605,7 +646,7 @@ function printBanner(
   adminReady: boolean,
 ): void {
   process.stderr.write("\n");
-  process.stderr.write(`Starting Koi...\n`);
+  process.stderr.write(`Starting Koi ${presetId} preset...\n`);
 
   if (nexusBaseUrl !== undefined) {
     process.stderr.write(`  \u2713 Nexus ready at ${nexusBaseUrl}\n`);

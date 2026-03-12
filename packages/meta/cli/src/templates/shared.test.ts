@@ -38,6 +38,11 @@ describe("generateManifestYaml", () => {
     expect(yaml).toContain('model: "anthropic:claude-sonnet-4-5-20250929"');
   });
 
+  test("includes preset field", () => {
+    const yaml = generateManifestYaml(STATE);
+    expect(yaml).toContain("preset: local");
+  });
+
   test("omits engine when using the default pi runtime", () => {
     const yaml = generateManifestYaml(STATE);
     expect(yaml).not.toContain("engine:");
@@ -163,13 +168,12 @@ describe("generateReadme", () => {
     expect(readme).toContain("A test agent");
   });
 
-  test("includes first-run section", () => {
+  test("includes first-run section with koi up", () => {
     const readme = generateReadme(STATE);
     expect(readme).toContain("First Run");
     expect(readme).toContain("bun install");
-    expect(readme).toContain("bun run dry-run");
-    expect(readme).toContain("bun run start:admin");
-    expect(readme).toContain("bun run tui");
+    expect(readme).toContain("bun run up");
+    expect(readme).toContain("Admin panel");
   });
 
   test("includes local Nexus prerequisite guidance", () => {

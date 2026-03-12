@@ -2,25 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { printPreflightIssues, validateManifestPrerequisites } from "./validate-preflight.js";
 
 describe("validateManifestPrerequisites", () => {
-  test("returns ok when all prerequisites are met", () => {
+  test("returns ok when all prerequisites are met", async () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-cli" }],
     };
     const env = { ANTHROPIC_API_KEY: "sk-test-key" };
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
 
-  test("reports error for missing model API key", () => {
+  test("reports error for missing model API key", async () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
     };
     const env = {};
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(false);
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]?.severity).toBe("error");
@@ -28,100 +28,125 @@ describe("validateManifestPrerequisites", () => {
     expect(result.issues[0]?.message).toContain("ANTHROPIC_API_KEY");
   });
 
-  test("reports error for empty model API key", () => {
+  test("reports error for empty model API key", async () => {
     const manifest = {
       model: { name: "openai:gpt-4o" },
     };
     const env = { OPENAI_API_KEY: "  " };
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(false);
     expect(result.issues[0]?.code).toBe("MISSING_MODEL_API_KEY");
   });
 
-  test("reports warning for missing channel tokens", () => {
+  test("reports warning for missing channel tokens", async () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-telegram" }],
     };
     const env = { ANTHROPIC_API_KEY: "sk-test" };
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true); // warnings don't fail
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]?.severity).toBe("warning");
     expect(result.issues[0]?.code).toBe("MISSING_CHANNEL_TOKEN");
   });
 
-  test("reports multiple warnings for slack channel", () => {
+  test("reports multiple warnings for slack channel", async () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-slack" }],
     };
     const env = { ANTHROPIC_API_KEY: "sk-test" };
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(2); // SLACK_BOT_TOKEN + SLACK_APP_TOKEN
   });
 
-  test("no issues for CLI-only channel", () => {
+  test("no issues for CLI-only channel", async () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-cli" }],
     };
     const env = { ANTHROPIC_API_KEY: "sk-test" };
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
 
-  test("handles manifest without channels", () => {
+  test("handles manifest without channels", async () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
     };
     const env = { ANTHROPIC_API_KEY: "sk-test" };
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
 
-  test("handles model without provider prefix", () => {
+  test("handles model without provider prefix", async () => {
     const manifest = {
       model: { name: "custom-model" },
     };
     const env = {};
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
 
-  test("reports both errors and warnings together", () => {
+  test("reports both errors and warnings together", async () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-telegram" }],
     };
     const env = {};
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(false);
     expect(result.issues).toHaveLength(2);
     expect(result.issues[0]?.severity).toBe("error");
     expect(result.issues[1]?.severity).toBe("warning");
   });
 
-  test("accepts openrouter provider", () => {
+  test("accepts openrouter provider", async () => {
     const manifest = {
       model: { name: "openrouter:anthropic/claude-sonnet-4.6" },
     };
     const env = { OPENROUTER_API_KEY: "or-test" };
 
-    const result = validateManifestPrerequisites(manifest, env);
+    const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(0);
+  });
+
+  test("warns when nexus URL is unreachable", async () => {
+    const manifest = {
+      model: { name: "custom-model" },
+      nexus: { url: "http://127.0.0.1:59999" },
+    };
+    const env = {};
+
+    const result = await validateManifestPrerequisites(manifest, env);
+    expect(result.ok).toBe(true); // warning only, not an error
+    const nexusIssue = result.issues.find((i) => i.code === "NEXUS_UNREACHABLE");
+    expect(nexusIssue).toBeDefined();
+    expect(nexusIssue?.severity).toBe("warning");
+  });
+
+  test("skips nexus check when no nexus URL configured", async () => {
+    const manifest = {
+      model: { name: "custom-model" },
+    };
+    const env = {};
+
+    const result = await validateManifestPrerequisites(manifest, env);
+    const nexusIssue = result.issues.find((i) => i.code === "NEXUS_UNREACHABLE");
+    expect(nexusIssue).toBeUndefined();
   });
 });
 

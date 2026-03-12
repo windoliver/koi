@@ -42,6 +42,7 @@ export function generateManifestYaml(state: WizardState): string {
   if (state.engine !== undefined && state.engine !== "pi") {
     lines.push(`engine: ${state.engine}`);
   }
+  lines.push(`preset: ${state.preset}`);
   lines.push("");
   lines.push("# Leave nexus.url unset for local embed mode.");
   lines.push("# Add it only when you want remote/shared Nexus.");
@@ -195,6 +196,7 @@ export function generateDemoManifestYaml(state: WizardState): string {
   if (state.engine !== undefined && state.engine !== "pi") {
     lines.push(`engine: ${state.engine}`);
   }
+  lines.push(`preset: ${state.preset}`);
   lines.push("");
   lines.push("# Demo preset: auth-enabled local Nexus (API key auto-generated in .env).");
   lines.push("# nexus:");
@@ -376,28 +378,29 @@ export function generateReadme(state: WizardState): string {
   lines.push("");
   lines.push("## First Run");
   lines.push("");
-  lines.push("```bash");
-  lines.push("bun run dry-run");
-  lines.push("bun run start:admin");
-  lines.push("# in another terminal");
-  lines.push("bun run tui");
-  lines.push("```");
-  lines.push("");
-  lines.push("`bun run start:admin` starts the admin panel on `http://localhost:3100/admin`.");
-  lines.push("`bun run tui` connects to `http://localhost:3100/admin/api` by default.");
-  lines.push("");
-  lines.push("## Service Mode");
+  lines.push("The quickest way to start is `koi up`, which launches the runtime,");
+  lines.push("admin API, and TUI in a single command:");
   lines.push("");
   lines.push("```bash");
-  lines.push("bun run serve:admin");
-  lines.push("bun run tui:serve");
-  lines.push("bun run admin");
+  lines.push("bun run up");
   lines.push("```");
   lines.push("");
-  lines.push(
-    "Use `bun run serve:admin` when you want the admin API on the service port (`9100` by default).",
-  );
-  lines.push("Use `bun run admin` for a standalone manifest-backed admin panel on `9200`.");
+  lines.push("This starts:");
+  lines.push("- Agent runtime on your configured model");
+  lines.push("- Admin panel at `http://localhost:3100/admin`");
+  lines.push("- TUI operator console (for demo/mesh presets)");
+  lines.push("- Health endpoint at `http://localhost:9100/health`");
+  lines.push("");
+  lines.push("For a dry run (validate config without starting): `bun run dry-run`");
+  lines.push("");
+  lines.push("## Advanced Usage");
+  lines.push("");
+  lines.push("```bash");
+  lines.push("bun run start:admin   # Start runtime + admin (no TUI)");
+  lines.push("bun run serve:admin   # Service mode with admin on port 9100");
+  lines.push("bun run tui           # Attach TUI to a running admin API");
+  lines.push("bun run admin         # Standalone admin panel on port 9200");
+  lines.push("```");
   lines.push("");
   lines.push("## Nexus Mode");
   lines.push("");

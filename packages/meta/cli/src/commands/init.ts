@@ -8,6 +8,7 @@
 
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
+import { ADDON_IDS, resolveAddons } from "@koi/runtime-presets";
 import type { InitFlags } from "../args.js";
 import { resolveScaffoldKoiCommand } from "../local-cli.js";
 import { writeScaffold } from "../scaffold.js";
@@ -37,6 +38,15 @@ export async function runInit(flags: InitFlags): Promise<void> {
 
   const directory = flags.directory ?? ".";
   const targetDir = resolve(directory);
+
+  // Validate --with add-on IDs
+  if (flags.withAddons.length > 0) {
+    const { unknown } = resolveAddons(flags.withAddons);
+    if (unknown.length > 0) {
+      p.cancel(`Unknown add-on(s): ${unknown.join(", ")}. Available: ${ADDON_IDS.join(", ")}`);
+      process.exit(1);
+    }
+  }
 
   // Build initial state from defaults + directory + flags
   const initialState: WizardState = {
