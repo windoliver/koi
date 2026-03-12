@@ -30,10 +30,14 @@ export interface NexusResolution {
 /**
  * Resolves and creates the Nexus stack. Falls back to embed mode (auto-start
  * local Nexus) when no URL is configured.
+ *
+ * When `embedProfile` is provided, it controls the Nexus deploy profile
+ * (e.g. "lite", "full") for embed mode. Ignored when a URL is provided.
  */
 export async function resolveNexusStack(
   nexusUrl: string | undefined,
   manifestNexusUrl: string | undefined,
+  embedProfile?: string | undefined,
 ): Promise<NexusResolution> {
   // Priority: CLI flag > env var > manifest nexus.url > embed mode (no URL)
   const baseUrl = nexusUrl ?? process.env.NEXUS_URL ?? manifestNexusUrl;
@@ -46,6 +50,7 @@ export async function resolveNexusStack(
   const bundle = await createNexusStack({
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
+    ...(embedProfile !== undefined ? { embedProfile } : {}),
   });
 
   return {
@@ -86,9 +91,10 @@ export async function resolveNexusOrWarn(
   nexusUrl: string | undefined,
   manifestNexusUrl: string | undefined,
   verbose: boolean,
+  embedProfile?: string | undefined,
 ): Promise<NexusResolvedState> {
   try {
-    const nexus = await resolveNexusStack(nexusUrl, manifestNexusUrl);
+    const nexus = await resolveNexusStack(nexusUrl, manifestNexusUrl, embedProfile);
     if (verbose) {
       process.stderr.write(`Nexus: ${nexus.baseUrl}\n`);
     }

@@ -148,6 +148,33 @@ describe("validateManifestPrerequisites", () => {
     const nexusIssue = result.issues.find((i) => i.code === "NEXUS_UNREACHABLE");
     expect(nexusIssue).toBeUndefined();
   });
+
+  test("checks nexus binary availability in embed mode", async () => {
+    const manifest = {
+      model: { name: "custom-model" },
+      // No nexus.url → embed mode
+    };
+    // Set NEXUS_COMMAND to a binary that definitely doesn't exist
+    const env = { NEXUS_COMMAND: "nonexistent-nexus-binary-xyz123" };
+
+    const result = await validateManifestPrerequisites(manifest, env);
+    const binaryIssue = result.issues.find((i) => i.code === "NEXUS_BINARY_MISSING");
+    expect(binaryIssue).toBeDefined();
+    expect(binaryIssue?.severity).toBe("warning");
+    expect(binaryIssue?.message).toContain("nonexistent-nexus-binary-xyz123");
+  });
+
+  test("skips nexus binary check when remote URL configured", async () => {
+    const manifest = {
+      model: { name: "custom-model" },
+      nexus: { url: "http://remote-nexus:2026" },
+    };
+    const env = {};
+
+    const result = await validateManifestPrerequisites(manifest, env);
+    const binaryIssue = result.issues.find((i) => i.code === "NEXUS_BINARY_MISSING");
+    expect(binaryIssue).toBeUndefined();
+  });
 });
 
 describe("printPreflightIssues", () => {

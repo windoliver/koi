@@ -62,6 +62,7 @@ interface ManifestSubset {
  * - Model provider API key is set (error)
  * - Channel-specific tokens are set (warning)
  * - Nexus URL is reachable when explicitly configured (warning)
+ * - Local Nexus binary available when embed mode is used (warning)
  */
 export async function validateManifestPrerequisites(
   manifest: ManifestSubset,
@@ -118,6 +119,19 @@ export async function validateManifestPrerequisites(
     }
   }
 
+  // 4. Check local Nexus binary (embed mode — no explicit URL)
+  if (nexusUrl === undefined || nexusUrl.trim() === "") {
+    const nexusCmd = env.NEXUS_COMMAND?.split(" ")[0] ?? "uv";
+    const nexusAvailable = await isBinaryAvailable(nexusCmd);
+    if (!nexusAvailable) {
+      issues.push({
+        severity: "warning",
+        code: "NEXUS_BINARY_MISSING",
+        message: `"${nexusCmd}" not found on PATH — Nexus embed mode requires it (install uv or set NEXUS_COMMAND)`,
+      });
+    }
+  }
+
   return {
     ok: issues.every((i) => i.severity !== "error"),
     issues,
@@ -133,6 +147,22 @@ async function probeNexus(baseUrl: string): Promise<boolean> {
       signal: AbortSignal.timeout(2000),
     });
     return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks if a binary is available on the system PATH.
+ */
+async function isBinaryAvailable(name: string): Promise<boolean> {
+  try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+    const cmd = process.platform === "win32" ? "where" : "which";
+    await execFileAsync(cmd, [name], { timeout: 2000 });
+    return true;
   } catch {
     return false;
   }

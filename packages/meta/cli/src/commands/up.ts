@@ -25,7 +25,7 @@ import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-a
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
-import type { PresetId, PresetServices } from "@koi/runtime-presets";
+import type { NexusMode, PresetId, PresetServices } from "@koi/runtime-presets";
 import { resolveRuntimePreset } from "@koi/runtime-presets";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import { createAgentDispatcher } from "../agent-dispatcher.js";
@@ -221,10 +221,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   const adapter = resolved.value.engine ?? createPiAdapter({ model: modelName });
 
+  // Map preset nexusMode to embed profile for local Nexus
+  const embedProfile = mapNexusModeToProfile(preset.nexusMode);
+
   // Resolve Nexus, autonomous, temporal in parallel (preset controls Temporal)
   const [nexus, autonomous, temporalAdmin] = await timer.time("subsystems", () =>
     Promise.all([
-      resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose),
+      resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose, embedProfile),
       resolveAutonomousOrWarn(manifest, flags.verbose),
       services.temporal !== "disabled"
         ? resolveTemporalOrWarn(flags.temporalUrl, flags.verbose)
@@ -372,6 +375,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
     flags.verbose,
   );
 
+  // 9c. Auto-provision helper agents from demo pack agentRoles
+  const provisionedAgents = await provisionDemoAgents(manifestPath, adminDispatcher, flags.verbose);
+
   // 10. Start health server (mirrors serve.ts health endpoint)
   const DEFAULT_HEALTH_PORT = 9100;
   const healthPort = manifest.deploy?.port ?? DEFAULT_HEALTH_PORT;
@@ -395,7 +401,18 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 11. Print startup banner
   timer.print();
-  printBanner(manifest.name, presetId, engineName, modelName, channels, nexus.baseUrl, adminReady);
+  printBanner({
+    agentName: manifest.name,
+    presetId,
+    nexusMode: preset.nexusMode,
+    engineName,
+    modelName,
+    channels,
+    nexusBaseUrl: nexus.baseUrl,
+    adminReady,
+    temporalAdmin,
+    provisionedAgents,
+  });
 
   // 12. Attach TUI (requires admin API + preset enables it)
   let tuiApp:
@@ -544,6 +561,22 @@ export async function runUp(flags: UpFlags): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Nexus mode mapping
+// ---------------------------------------------------------------------------
+
+/** Maps preset nexusMode to the embed profile for `nexus serve --profile <x>`. */
+function mapNexusModeToProfile(mode: NexusMode): string | undefined {
+  switch (mode) {
+    case "embed-lite":
+      return "lite";
+    case "embed-auth":
+      return "full";
+    case "remote":
+      return undefined; // Remote mode doesn't use embed
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Preset inference
 // ---------------------------------------------------------------------------
 
@@ -633,34 +666,114 @@ async function seedDemoPackIfNeeded(
 }
 
 // ---------------------------------------------------------------------------
+// Demo agent provisioning
+// ---------------------------------------------------------------------------
+
+interface ProvisionedAgent {
+  readonly name: string;
+  readonly role: string;
+}
+
+/**
+ * Provisions helper agents declared in the demo pack's agentRoles.
+ * Skips the "primary" role (already running as the main runtime).
+ */
+async function provisionDemoAgents(
+  manifestPath: string,
+  dispatcher: ReturnType<typeof createAgentDispatcher> | undefined,
+  verbose: boolean,
+): Promise<readonly ProvisionedAgent[]> {
+  if (dispatcher === undefined) return [];
+
+  try {
+    const raw = await readFile(manifestPath, "utf-8");
+    const demoMatch = /^demo:\s*\n\s+pack:\s*(\S+)/m.exec(raw);
+    if (demoMatch === null) return [];
+
+    const packId = demoMatch[1];
+    if (packId === undefined) return [];
+
+    const { getPack } = await import("@koi/demo-packs");
+    const pack = getPack(packId);
+    if (pack === undefined) return [];
+
+    const provisioned: ProvisionedAgent[] = [];
+
+    for (const role of pack.agentRoles) {
+      // Skip the primary agent — it's already running as the main runtime
+      if (role.name === "primary") continue;
+
+      const result = await dispatcher.dispatchAgent({
+        name: `${role.name} (${role.type})`,
+        manifest: manifestPath,
+        message: role.description,
+      });
+
+      if (result.ok) {
+        provisioned.push({ name: role.name, role: role.type });
+        if (verbose) {
+          process.stderr.write(
+            `Provisioned ${role.type} "${role.name}": ${result.value.agentId}\n`,
+          );
+        }
+      } else if (verbose) {
+        process.stderr.write(
+          `warn: failed to provision ${role.type} "${role.name}": ${result.error.message}\n`,
+        );
+      }
+    }
+
+    return provisioned;
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Startup banner
 // ---------------------------------------------------------------------------
 
-function printBanner(
-  agentName: string,
-  presetId: PresetId,
-  engineName: string,
-  modelName: string,
-  channels: readonly ChannelAdapter[],
-  nexusBaseUrl: string | undefined,
-  adminReady: boolean,
-): void {
-  process.stderr.write("\n");
-  process.stderr.write(`Starting Koi ${presetId} preset...\n`);
+interface BannerInfo {
+  readonly agentName: string;
+  readonly presetId: PresetId;
+  readonly nexusMode: NexusMode;
+  readonly engineName: string;
+  readonly modelName: string;
+  readonly channels: readonly ChannelAdapter[];
+  readonly nexusBaseUrl: string | undefined;
+  readonly adminReady: boolean;
+  readonly temporalAdmin: { readonly dispose: () => Promise<void> } | undefined;
+  readonly provisionedAgents: readonly ProvisionedAgent[];
+}
 
-  if (nexusBaseUrl !== undefined) {
-    process.stderr.write(`  \u2713 Nexus ready at ${nexusBaseUrl}\n`);
+function printBanner(info: BannerInfo): void {
+  process.stderr.write("\n");
+  process.stderr.write(`Starting Koi ${info.presetId} preset...\n`);
+
+  if (info.nexusBaseUrl !== undefined) {
+    const modeLabel = info.nexusMode === "embed-auth" ? "full" : info.nexusMode;
+    process.stderr.write(`  \u2713 Nexus ready at ${info.nexusBaseUrl} (${modeLabel})\n`);
   }
 
-  process.stderr.write(`  \u2713 Agent "${agentName}" ready (${engineName}, ${modelName})\n`);
+  process.stderr.write(
+    `  \u2713 Primary agent "${info.agentName}" ready (${info.engineName}, ${info.modelName})\n`,
+  );
 
-  for (const ch of channels) {
+  for (const agent of info.provisionedAgents) {
+    process.stderr.write(`  \u2713 ${agent.role} "${agent.name}" ready\n`);
+  }
+
+  if (info.temporalAdmin !== undefined) {
+    process.stderr.write("  \u2713 Temporal orchestration connected\n");
+  }
+
+  for (const ch of info.channels) {
     process.stderr.write(`  \u2713 Channel "${ch.name}" connected\n`);
   }
 
-  if (adminReady) {
-    process.stderr.write(`  \u2713 Admin API ready at http://localhost:3100/admin/api\n`);
-    process.stderr.write(`  \u2713 Browser admin at http://localhost:3100/admin\n`);
+  if (info.adminReady) {
+    process.stderr.write("  \u2713 Admin API ready at http://localhost:3100/admin/api\n");
+    process.stderr.write("  \u2713 Browser admin at http://localhost:3100/admin\n");
   }
 
   process.stderr.write("\n");

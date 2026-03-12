@@ -94,7 +94,31 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
   }
 
   process.stdout.write(`Admin:    ${adminOk ? "ready" : "not running"}\n`);
-  process.stdout.write(`Nexus:    ${nexusOk ? "ready" : "not running"} (${nexusUrl})\n`);
+
+  // Nexus mode detection: read preset from manifest to show mode
+  const nexusMode = await inferNexusMode(manifestPath);
+  const nexusModeLabel = nexusMode !== undefined ? ` [${nexusMode}]` : "";
+  process.stdout.write(
+    `Nexus:    ${nexusOk ? "ready" : "not running"} (${nexusUrl})${nexusModeLabel}\n`,
+  );
+
+  // Temporal status: probe common Temporal health endpoint
+  const temporalUrl = process.env.TEMPORAL_URL ?? "http://127.0.0.1:7233";
+  const temporalOk = await probeEndpoint(`${temporalUrl}/api/v1/namespaces`);
+  if (temporalOk) {
+    process.stdout.write(`Temporal: ready (${temporalUrl})\n`);
+  }
+
+  // Dispatched agents: probe admin API for active agent list
+  if (adminOk) {
+    const agents = await fetchDispatchedAgents(adminUrl);
+    if (agents !== undefined && agents.length > 0) {
+      process.stdout.write("Agents:\n");
+      for (const agent of agents) {
+        process.stdout.write(`  - ${agent.name} (${agent.status})\n`);
+      }
+    }
+  }
 
   // Channels: probe live state from admin API, fall back to manifest
   const channels = manifest.channels ?? [];
@@ -194,4 +218,44 @@ function formatMemory(bytes: number): string {
   if (mb < 1024) return `${mb.toFixed(1)} MB`;
   const gb = mb / 1024;
   return `${gb.toFixed(2)} GB`;
+}
+
+/** Reads the preset field from the manifest to determine Nexus mode label. */
+async function inferNexusMode(manifestPath: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(manifestPath, "utf-8");
+    const presetMatch = /^preset:\s*(\S+)/m.exec(raw);
+    const presetId = presetMatch?.[1];
+    if (presetId === "demo" || presetId === "mesh") return "embed-auth";
+    if (presetId === "local") return "embed-lite";
+    // Infer from demo.pack presence
+    if (/^demo:\s*\n\s+pack:/m.test(raw)) return "embed-auth";
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface DispatchedAgentInfo {
+  readonly name: string;
+  readonly status: string;
+}
+
+async function fetchDispatchedAgents(
+  adminUrl: string,
+): Promise<readonly DispatchedAgentInfo[] | undefined> {
+  try {
+    const res = await fetch(`${adminUrl}/agents`, { signal: AbortSignal.timeout(2000) });
+    if (res.status !== 200) return undefined;
+    const data = (await res.json()) as readonly {
+      readonly name?: string;
+      readonly status?: string;
+    }[];
+    return data.map((a) => ({
+      name: typeof a.name === "string" ? a.name : "unknown",
+      status: typeof a.status === "string" ? a.status : "active",
+    }));
+  } catch {
+    return undefined;
+  }
 }
