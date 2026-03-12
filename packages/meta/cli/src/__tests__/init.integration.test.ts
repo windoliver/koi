@@ -65,6 +65,8 @@ describe("koi init --yes (minimal template)", () => {
     const yaml = await Bun.file(join(target, "koi.yaml")).text();
     expect(yaml).toContain("name: test-minimal");
     expect(yaml).toContain("version: 0.1.0");
+    expect(yaml).toContain("@koi/channel-cli");
+    expect(yaml).toContain("bootstrap: true");
   });
 
   test("creates package.json with correct name and type", async () => {
@@ -79,6 +81,13 @@ describe("koi init --yes (minimal template)", () => {
     expect(pkg.name).toBe("test-pkg");
     expect(pkg.type).toBe("module");
     expect(pkg.private).toBe(true);
+    expect(pkg.scripts["dry-run"]).toBe("koi start --dry-run");
+    expect(pkg.scripts.start).toBe("koi start");
+    expect(pkg.scripts["start:admin"]).toBe("koi start --admin");
+    expect(pkg.scripts["serve:admin"]).toBe("koi serve --admin");
+    expect(pkg.scripts.admin).toBe("koi admin");
+    expect(pkg.scripts.tui).toBe("koi tui");
+    expect(pkg.dependencies.koi).toBe("latest");
   });
 
   test("creates tsconfig.json with strict mode", async () => {
@@ -104,9 +113,12 @@ describe("koi init --yes (minimal template)", () => {
 
     const readme = await Bun.file(join(target, "README.md")).text();
     expect(readme).toContain("# test-readme");
+    expect(readme).toContain("bun run start:admin");
+    expect(readme).toContain("uv run nexus");
+    expect(readme).toContain("bun run koi -- start --admin path/to/koi.yaml");
   });
 
-  test("generates 4 files for minimal template", async () => {
+  test("generates bootstrap and env files for minimal template", async () => {
     const parent = makeTempDir();
     tempDirs.push(parent);
     const target = join(parent, "test-count");
@@ -118,11 +130,14 @@ describe("koi init --yes (minimal template)", () => {
     expect(existsSync(join(target, "package.json"))).toBe(true);
     expect(existsSync(join(target, "tsconfig.json"))).toBe(true);
     expect(existsSync(join(target, "README.md"))).toBe(true);
+    expect(existsSync(join(target, ".env"))).toBe(true);
+    expect(existsSync(join(target, ".gitignore"))).toBe(true);
+    expect(existsSync(join(target, ".koi", "INSTRUCTIONS.md"))).toBe(true);
   });
 });
 
 describe("koi init --yes (copilot template)", () => {
-  test("creates example tool file", async () => {
+  test("creates tool guidance and built-in tools", async () => {
     const parent = makeTempDir();
     tempDirs.push(parent);
     const target = join(parent, "test-copilot");
@@ -138,10 +153,13 @@ describe("koi init --yes (copilot template)", () => {
     ]);
     await runInit(flags);
 
-    expect(existsSync(join(target, "src", "tools", "hello.ts"))).toBe(true);
-    const tool = await Bun.file(join(target, "src", "tools", "hello.ts")).text();
-    expect(tool).toContain("export");
-    expect(tool).toContain("test-copilot");
+    expect(existsSync(join(target, ".koi", "TOOLS.md"))).toBe(true);
+    const toolGuide = await Bun.file(join(target, ".koi", "TOOLS.md")).text();
+    expect(toolGuide).toContain("ask_user");
+
+    const yaml = await Bun.file(join(target, "koi.yaml")).text();
+    expect(yaml).toContain("@koi/tool-ask-user");
+    expect(yaml).toContain("@koi/tools-web");
   });
 });
 

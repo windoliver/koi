@@ -167,6 +167,29 @@ describe("runStart — dry-run mode", () => {
     // Should NOT connect the channel in dry-run mode
     expect(mockConnect).not.toHaveBeenCalled();
   });
+
+  test("accepts a directory and resolves koi.yaml within it", async () => {
+    const dir = makeTempDir();
+    tempDirs.push(dir);
+    createManifestFile(dir);
+
+    const stderrChunks: string[] = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string) => {
+      stderrChunks.push(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      await runStart(makeFlags({ directory: dir, manifest: undefined, dryRun: true }));
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    const output = stderrChunks.join("");
+    expect(output).toContain("Manifest: test-agent v0.1.0");
+    expect(output).toContain("Dry run complete.");
+  });
 });
 
 describe("runStart — manifest errors", () => {
@@ -286,6 +309,47 @@ describe("runStart — default manifest path", () => {
     expect(exitCode).toBe(78);
     const output = stderrChunks.join("");
     expect(output).toContain("Failed to load manifest");
+  });
+
+  test("suggests nearby manifests when default koi.yaml is missing", async () => {
+    const dir = makeTempDir();
+    tempDirs.push(dir);
+
+    const recipeDir = join(dir, "recipes", "codex-mcp");
+    mkdirSync(recipeDir, { recursive: true });
+    createManifestFile(recipeDir);
+
+    const originalCwd = process.cwd();
+    process.chdir(dir);
+
+    const originalExit = process.exit;
+    let exitCode: number | undefined;
+    process.exit = ((code: number) => {
+      exitCode = code;
+      throw new Error(`process.exit(${code})`);
+    }) as never;
+
+    const stderrChunks: string[] = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string) => {
+      stderrChunks.push(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      await runStart(makeFlags());
+    } catch {
+      // Expected
+    } finally {
+      process.chdir(originalCwd);
+      process.exit = originalExit;
+      process.stderr.write = originalWrite;
+    }
+
+    expect(exitCode).toBe(78);
+    const output = stderrChunks.join("");
+    expect(output).toContain("defaults to `./koi.yaml`");
+    expect(output).toContain("koi start recipes/codex-mcp/koi.yaml");
   });
 });
 

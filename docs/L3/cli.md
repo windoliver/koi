@@ -1,6 +1,6 @@
 # @koi/cli — Interactive CLI for Agent Execution
 
-Command-line interface for running Koi agents locally. Provides two execution modes (`start` for interactive REPL, `serve` for headless deployment), automatic Nexus backend wiring, conversation persistence, and graceful shutdown.
+Command-line interface for running Koi agents locally. Provides interactive (`start`), headless (`serve`), standalone admin (`admin`), and operator console (`tui`) flows, plus automatic Nexus backend wiring, conversation persistence, and graceful shutdown.
 
 ---
 
@@ -69,6 +69,24 @@ koi start --nexus-url http://...    # Connect to remote Nexus
 | `--verbose` / `-v` | boolean | false | Print startup info and per-turn metrics |
 | `--dry-run` | boolean | false | Validate manifest and exit |
 | `--nexus-url` | string | — | Nexus server URL (embed mode if omitted) |
+
+### `koi admin`
+
+Standalone admin panel server or proxy for a running `koi serve --admin` instance.
+
+```bash
+koi admin                          # Manifest-backed admin server on :9200
+koi admin --connect localhost:9100 # Proxy a running koi serve --admin instance
+```
+
+### `koi tui`
+
+Interactive terminal console for operators. Defaults to `http://localhost:3100/admin/api`, which matches `koi start --admin`.
+
+```bash
+koi tui
+koi tui --url http://localhost:9100/admin/api
+```
 
 ### `koi serve`
 

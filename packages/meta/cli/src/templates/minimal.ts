@@ -5,6 +5,9 @@
 import type { WizardState } from "../wizard/state.js";
 import {
   type FileMap,
+  generateBootstrapInstructions,
+  generateEnvFile,
+  generateGitignore,
   generateManifestYaml,
   generatePackageJson,
   generateReadme,
@@ -13,6 +16,9 @@ import {
 
 export function generateMinimal(state: WizardState): FileMap {
   return {
+    ".env": generateEnvFile(state),
+    ".gitignore": generateGitignore(),
+    ".koi/INSTRUCTIONS.md": generateBootstrapInstructions(state),
     "koi.yaml": generateManifestYaml(state),
     "package.json": generatePackageJson(state),
     "tsconfig.json": generateTsconfig(),

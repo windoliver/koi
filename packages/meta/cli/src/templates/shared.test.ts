@@ -12,7 +12,7 @@ const STATE: WizardState = {
   name: "test-agent",
   description: "A test agent",
   model: "anthropic:claude-sonnet-4-5-20250929",
-  engine: "loop",
+  engine: undefined,
   channels: ["cli"],
   directory: "test-agent",
 };
@@ -34,26 +34,49 @@ describe("generateManifestYaml", () => {
     expect(yaml).toContain('model: "anthropic:claude-sonnet-4-5-20250929"');
   });
 
-  test("includes engine", () => {
+  test("omits engine when using the default pi runtime", () => {
     const yaml = generateManifestYaml(STATE);
-    expect(yaml).toContain("engine: loop");
+    expect(yaml).not.toContain("engine:");
+  });
+
+  test("includes engine when explicitly overridden", () => {
+    const yaml = generateManifestYaml({ ...STATE, engine: "@koi/engine-external" });
+    expect(yaml).toContain("engine: @koi/engine-external");
+  });
+
+  test("includes channels section with cli by default", () => {
+    const yaml = generateManifestYaml(STATE);
+    expect(yaml).toContain("channels:");
+    expect(yaml).toContain("@koi/channel-cli");
   });
 
   test("includes channels for copilot", () => {
     const copilotState: WizardState = {
       ...STATE,
       template: "copilot",
-      channels: ["telegram", "slack"],
+      channels: ["cli", "telegram", "slack"],
     };
     const yaml = generateManifestYaml(copilotState);
-    expect(yaml).toContain("channels:");
     expect(yaml).toContain("telegram");
     expect(yaml).toContain("slack");
   });
 
-  test("omits channels section for minimal with only cli", () => {
+  test("copilot template includes working built-in tools", () => {
+    const yaml = generateManifestYaml({ ...STATE, template: "copilot" });
+    expect(yaml).toContain("@koi/tool-ask-user");
+    expect(yaml).toContain("@koi/tools-web");
+  });
+
+  test("includes local Nexus guidance comments", () => {
     const yaml = generateManifestYaml(STATE);
-    expect(yaml).not.toContain("channels:");
+    expect(yaml).toContain("Leave nexus.url unset for local embed mode.");
+    expect(yaml).toContain("# nexus:");
+  });
+
+  test("includes bootstrap context by default", () => {
+    const yaml = generateManifestYaml(STATE);
+    expect(yaml).toContain("context:");
+    expect(yaml).toContain("bootstrap: true");
   });
 
   test("quotes model string containing colons", () => {
@@ -74,9 +97,23 @@ describe("generatePackageJson", () => {
     expect(result.type).toBe("module");
   });
 
-  test("includes scripts", () => {
+  test("includes supported scripts", () => {
     const result = JSON.parse(generatePackageJson(STATE));
-    expect(result.scripts.dev).toBeDefined();
+    expect(result.scripts["dry-run"]).toBe("koi start --dry-run");
+    expect(result.scripts.start).toBe("koi start");
+    expect(result.scripts["start:admin"]).toBe("koi start --admin");
+    expect(result.scripts.serve).toBe("koi serve");
+    expect(result.scripts["serve:admin"]).toBe("koi serve --admin");
+    expect(result.scripts.admin).toBe("koi admin");
+    expect(result.scripts.tui).toBe("koi tui");
+    expect(result.scripts["tui:serve"]).toBe("koi tui --url http://localhost:9100/admin/api");
+    expect(result.scripts.doctor).toBe("koi doctor");
+  });
+
+  test("uses the single-package koi dependency", () => {
+    const result = JSON.parse(generatePackageJson(STATE));
+    expect(result.dependencies.koi).toBe("latest");
+    expect(result.dependencies["@koi/core"]).toBeUndefined();
   });
 
   test("output is valid JSON", () => {
@@ -111,8 +148,23 @@ describe("generateReadme", () => {
     expect(readme).toContain("A test agent");
   });
 
-  test("includes getting started section", () => {
+  test("includes first-run section", () => {
     const readme = generateReadme(STATE);
-    expect(readme).toContain("Getting Started");
+    expect(readme).toContain("First Run");
+    expect(readme).toContain("bun install");
+    expect(readme).toContain("bun run dry-run");
+    expect(readme).toContain("bun run start:admin");
+    expect(readme).toContain("bun run tui");
+  });
+
+  test("includes local Nexus prerequisite guidance", () => {
+    const readme = generateReadme(STATE);
+    expect(readme).toContain("uv run nexus");
+  });
+
+  test("includes Nexus switching guidance", () => {
+    const readme = generateReadme(STATE);
+    expect(readme).toContain("Leave `nexus.url` unset for local embed mode.");
+    expect(readme).toContain("https://nexus.example.com");
   });
 });
