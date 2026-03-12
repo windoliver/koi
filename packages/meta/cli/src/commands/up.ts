@@ -177,7 +177,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const services: PresetServices = preset.services;
 
   // 4. PREFLIGHT: Validate prerequisites (preset-aware)
-  const temporalAutoStart = services.temporal !== "disabled" && flags.temporalUrl === undefined;
+  const temporalAutoStart = services.temporal === "auto" && flags.temporalUrl === undefined;
   const preflight = await timer.time("preflight", async () =>
     validateManifestPrerequisites(manifest, process.env, {
       temporalRequired: temporalAutoStart,
