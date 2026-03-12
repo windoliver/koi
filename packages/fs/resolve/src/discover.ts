@@ -5,6 +5,7 @@
  * Usage: Call discoverDescriptors() instead of hardcoding ALL_DESCRIPTORS.
  */
 
+import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
@@ -21,6 +22,10 @@ const SKIP_LIST = new Set([
   "middleware-event-trace",
   "middleware-fs-rollback",
 ]);
+
+function isDiscoverablePackage(name: string): boolean {
+  return DISCOVERABLE_PREFIXES.some((prefix) => name.startsWith(prefix)) && !SKIP_LIST.has(name);
+}
 
 /**
  * Checks if a module export looks like a valid BrickDescriptor.
@@ -46,17 +51,40 @@ export async function discoverDescriptors(
   packagesDir: string,
 ): Promise<Result<readonly BrickDescriptor<unknown>[], KoiError>> {
   try {
-    const entries = await readdir(packagesDir);
-    const discoverable = entries
-      .filter((e) => DISCOVERABLE_PREFIXES.some((p) => e.startsWith(p)))
-      .filter((e) => !SKIP_LIST.has(e))
-      .sort();
+    const entries = await readdir(packagesDir, { encoding: "utf8", withFileTypes: true });
+    const discoverableDirs: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      if (isDiscoverablePackage(entry.name)) {
+        discoverableDirs.push(join(packagesDir, entry.name));
+        continue;
+      }
+
+      const categoryDir = join(packagesDir, entry.name);
+      let nestedEntries: Dirent[];
+      try {
+        nestedEntries = await readdir(categoryDir, { encoding: "utf8", withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const nestedEntry of nestedEntries) {
+        if (!nestedEntry.isDirectory() || !isDiscoverablePackage(nestedEntry.name)) {
+          continue;
+        }
+        discoverableDirs.push(join(categoryDir, nestedEntry.name));
+      }
+    }
+
+    discoverableDirs.sort();
 
     const descriptors: BrickDescriptor<unknown>[] = [];
 
     const results = await Promise.allSettled(
-      discoverable.map(async (dirName) => {
-        const distIndex = join(packagesDir, dirName, "dist", "index.js");
+      discoverableDirs.map(async (packageDir) => {
+        const distIndex = join(packageDir, "dist", "index.js");
         try {
           const mod = await import(distIndex);
           if (isDescriptor(mod.descriptor)) {
