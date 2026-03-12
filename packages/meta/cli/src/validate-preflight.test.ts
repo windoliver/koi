@@ -1,13 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { printPreflightIssues, validateManifestPrerequisites } from "./validate-preflight.js";
 
+// Set NEXUS_COMMAND to "true" (always available) to avoid NEXUS_BINARY_MISSING
+// warnings polluting issue counts. Tests for the nexus binary check use
+// explicit NEXUS_COMMAND values below.
+const BASE_ENV = { NEXUS_COMMAND: "true" } as const;
+
 describe("validateManifestPrerequisites", () => {
   test("returns ok when all prerequisites are met", async () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-cli" }],
     };
-    const env = { ANTHROPIC_API_KEY: "sk-test-key" };
+    const env = { ...BASE_ENV, ANTHROPIC_API_KEY: "sk-test-key" };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
@@ -18,7 +23,7 @@ describe("validateManifestPrerequisites", () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
     };
-    const env = {};
+    const env = { ...BASE_ENV };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(false);
@@ -32,7 +37,7 @@ describe("validateManifestPrerequisites", () => {
     const manifest = {
       model: { name: "openai:gpt-4o" },
     };
-    const env = { OPENAI_API_KEY: "  " };
+    const env = { ...BASE_ENV, OPENAI_API_KEY: "  " };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(false);
@@ -44,7 +49,7 @@ describe("validateManifestPrerequisites", () => {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-telegram" }],
     };
-    const env = { ANTHROPIC_API_KEY: "sk-test" };
+    const env = { ...BASE_ENV, ANTHROPIC_API_KEY: "sk-test" };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true); // warnings don't fail
@@ -58,7 +63,7 @@ describe("validateManifestPrerequisites", () => {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-slack" }],
     };
-    const env = { ANTHROPIC_API_KEY: "sk-test" };
+    const env = { ...BASE_ENV, ANTHROPIC_API_KEY: "sk-test" };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
@@ -70,7 +75,7 @@ describe("validateManifestPrerequisites", () => {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-cli" }],
     };
-    const env = { ANTHROPIC_API_KEY: "sk-test" };
+    const env = { ...BASE_ENV, ANTHROPIC_API_KEY: "sk-test" };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
@@ -81,7 +86,7 @@ describe("validateManifestPrerequisites", () => {
     const manifest = {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
     };
-    const env = { ANTHROPIC_API_KEY: "sk-test" };
+    const env = { ...BASE_ENV, ANTHROPIC_API_KEY: "sk-test" };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
@@ -92,7 +97,7 @@ describe("validateManifestPrerequisites", () => {
     const manifest = {
       model: { name: "custom-model" },
     };
-    const env = {};
+    const env = { ...BASE_ENV };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
@@ -104,7 +109,7 @@ describe("validateManifestPrerequisites", () => {
       model: { name: "anthropic:claude-sonnet-4-5-20250929" },
       channels: [{ name: "@koi/channel-telegram" }],
     };
-    const env = {};
+    const env = { ...BASE_ENV };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(false);
@@ -117,7 +122,7 @@ describe("validateManifestPrerequisites", () => {
     const manifest = {
       model: { name: "openrouter:anthropic/claude-sonnet-4.6" },
     };
-    const env = { OPENROUTER_API_KEY: "or-test" };
+    const env = { ...BASE_ENV, OPENROUTER_API_KEY: "or-test" };
 
     const result = await validateManifestPrerequisites(manifest, env);
     expect(result.ok).toBe(true);
@@ -142,7 +147,7 @@ describe("validateManifestPrerequisites", () => {
     const manifest = {
       model: { name: "custom-model" },
     };
-    const env = {};
+    const env = { ...BASE_ENV };
 
     const result = await validateManifestPrerequisites(manifest, env);
     const nexusIssue = result.issues.find((i) => i.code === "NEXUS_UNREACHABLE");
@@ -180,7 +185,7 @@ describe("validateManifestPrerequisites", () => {
     const manifest = {
       model: { name: "custom-model" },
     };
-    const env = {};
+    const env = { ...BASE_ENV };
 
     const result = await validateManifestPrerequisites(manifest, env, {
       temporalRequired: true,
@@ -199,7 +204,7 @@ describe("validateManifestPrerequisites", () => {
     const manifest = {
       model: { name: "custom-model" },
     };
-    const env = {};
+    const env = { ...BASE_ENV };
 
     const result = await validateManifestPrerequisites(manifest, env, {
       temporalRequired: false,
@@ -212,7 +217,7 @@ describe("validateManifestPrerequisites", () => {
     const manifest = {
       model: { name: "custom-model" },
     };
-    const env = {};
+    const env = { ...BASE_ENV };
 
     const result = await validateManifestPrerequisites(manifest, env);
     const temporalIssue = result.issues.find((i) => i.code === "TEMPORAL_BINARY_MISSING");
