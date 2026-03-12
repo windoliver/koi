@@ -7,6 +7,7 @@
 import type { CliFlags } from "./args.js";
 import {
   isAdminFlags,
+  isDemoFlags,
   isDeployFlags,
   isDoctorFlags,
   isInitFlags,
@@ -16,6 +17,7 @@ import {
   isStatusFlags,
   isStopFlags,
   isTuiFlags,
+  isUpFlags,
   parseArgs,
 } from "./args.js";
 import { runInit } from "./commands/init.js";
@@ -38,6 +40,14 @@ const COMMANDS: readonly CommandEntry[] = [
     description: "koi init [directory]   Create a new agent",
   },
   {
+    match: isUpFlags,
+    run: async (f) => {
+      const { runUp } = await import("./commands/up.js");
+      return runUp(f as Parameters<typeof runUp>[0]);
+    },
+    description: "koi up [manifest]      Start everything (runtime + admin + TUI)",
+  },
+  {
     match: isStartFlags,
     run: (f) => runStart(f as Parameters<typeof runStart>[0]),
     description: "koi start [manifest]   Start an agent interactively",
@@ -57,6 +67,14 @@ const COMMANDS: readonly CommandEntry[] = [
       return runAdmin(f as Parameters<typeof runAdmin>[0]);
     },
     description: "koi admin [manifest]   Standalone admin panel server",
+  },
+  {
+    match: isDemoFlags,
+    run: async (f) => {
+      const { runDemo } = await import("./commands/demo.js");
+      return runDemo(f as Parameters<typeof runDemo>[0]);
+    },
+    description: "koi demo <init|list|reset> [pack]  Manage demo data",
   },
   {
     match: isDeployFlags,

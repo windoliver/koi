@@ -1,7 +1,16 @@
 /**
- * `koi status` command — check service status.
+ * `koi status` command — unified health reporting for all subsystems.
+ *
+ * Detects what `koi up` launched and reports:
+ * - Agent runtime status
+ * - Nexus health
+ * - Admin API health
+ * - Channel connections
+ * - PID file for detached mode
  */
 
+import { readFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import {
   createLaunchdManager,
   createSystemdManager,
@@ -23,6 +32,24 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
   }
 
   const { manifest } = loadResult.value;
+  const workspaceRoot = resolve(dirname(manifestPath));
+
+  // Basic agent info
+  process.stdout.write(`Agent:    ${manifest.name}\n`);
+  process.stdout.write(`Model:    ${manifest.model.name}\n`);
+
+  // Check for koi up PID file
+  const pidPath = join(workspaceRoot, ".koi", "koi.pid");
+  const pid = await readPidFile(pidPath);
+  if (pid !== undefined) {
+    const alive = isProcessAlive(pid);
+    process.stdout.write(`PID:      ${String(pid)} (${alive ? "running" : "stale"})\n`);
+    if (!alive) {
+      process.stdout.write(`hint: stale PID file at ${pidPath} — remove it or run \`koi up\`\n`);
+    }
+  }
+
+  // OS service status
   const platform = detectPlatform();
   const serviceName = resolveServiceName(manifest.name);
   const system = manifest.deploy?.system ?? false;
@@ -33,10 +60,6 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
 
   const info = await manager.status(serviceName);
 
-  const healthPort = manifest.deploy?.port ?? 9100;
-  const healthUrl = `http://localhost:${healthPort}/health`;
-
-  process.stdout.write(`Agent:    ${manifest.name}\n`);
   process.stdout.write(`Service:  ${serviceName}\n`);
   process.stdout.write(`Platform: ${platform}\n`);
   process.stdout.write(`Status:   ${info.status}\n`);
@@ -51,22 +74,68 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
     process.stdout.write(`Memory:   ${formatMemory(info.memoryBytes)}\n`);
   }
 
+  // Health endpoints
+  const healthPort = manifest.deploy?.port ?? 9100;
+  const healthUrl = `http://localhost:${healthPort}/health`;
+  const adminUrl = "http://localhost:3100/admin/api";
+
   process.stdout.write(`Health:   ${healthUrl}\n`);
 
-  // Try to check health endpoint if running
-  if (info.status === "running") {
-    try {
-      const res = await fetch(healthUrl, { signal: AbortSignal.timeout(2000) });
-      process.stdout.write(`Health:   ${res.status === 200 ? "healthy" : "unhealthy"}\n`);
-    } catch {
-      process.stdout.write(`Health:   unreachable\n`);
+  // Probe health endpoints concurrently
+  const [healthOk, adminOk, nexusOk] = await Promise.all([
+    probeEndpoint(healthUrl),
+    probeEndpoint(adminUrl),
+    probeEndpoint("http://127.0.0.1:2026/health"),
+  ]);
+
+  if (info.status === "running" || pid !== undefined) {
+    process.stdout.write(`Health:   ${healthOk ? "healthy" : "unreachable"}\n`);
+  }
+
+  process.stdout.write(`Admin:    ${adminOk ? "ready" : "not running"}\n`);
+  process.stdout.write(`Nexus:    ${nexusOk ? "ready" : "not running"}\n`);
+
+  // Channels from manifest
+  const channels = manifest.channels ?? [];
+  if (channels.length > 0) {
+    process.stdout.write("Channels:\n");
+    for (const ch of channels) {
+      process.stdout.write(`  - ${ch.name}\n`);
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Formatters
+// Helpers
 // ---------------------------------------------------------------------------
+
+async function readPidFile(path: string): Promise<number | undefined> {
+  try {
+    const content = await readFile(path, "utf-8");
+    const pid = Number.parseInt(content.trim(), 10);
+    return Number.isNaN(pid) ? undefined : pid;
+  } catch {
+    return undefined;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function probeEndpoint(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
 
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);

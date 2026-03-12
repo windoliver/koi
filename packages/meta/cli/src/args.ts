@@ -23,6 +23,9 @@ export interface InitFlags extends BaseFlags {
   readonly template: string | undefined;
   readonly model: string | undefined;
   readonly engine: string | undefined;
+  readonly preset: string | undefined;
+  readonly withAddons: readonly string[];
+  readonly demo: string | undefined;
 }
 
 export interface StartFlags extends BaseFlags {
@@ -103,6 +106,25 @@ export interface DoctorFlags extends BaseFlags {
   readonly repair: boolean;
 }
 
+export interface UpFlags extends BaseFlags {
+  readonly command: "up";
+  readonly manifest: string | undefined;
+  readonly verbose: boolean;
+  readonly detach: boolean;
+  readonly web: boolean;
+  readonly timing: boolean;
+  readonly nexusUrl: string | undefined;
+  readonly temporalUrl: string | undefined;
+}
+
+export interface DemoFlags extends BaseFlags {
+  readonly command: "demo";
+  readonly subcommand: "init" | "list" | "reset" | undefined;
+  readonly pack: string | undefined;
+  readonly manifest: string | undefined;
+  readonly verbose: boolean;
+}
+
 export type CliFlags =
   | InitFlags
   | StartFlags
@@ -114,6 +136,8 @@ export type CliFlags =
   | LogsFlags
   | TuiFlags
   | DoctorFlags
+  | UpFlags
+  | DemoFlags
   | BaseFlags;
 
 // ---------------------------------------------------------------------------
@@ -150,6 +174,9 @@ export function parseInitFlags(rest: readonly string[]): InitFlags {
       template: { type: "string" },
       model: { type: "string" },
       engine: { type: "string" },
+      preset: { type: "string" },
+      with: { type: "string", multiple: true },
+      demo: { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -163,6 +190,9 @@ export function parseInitFlags(rest: readonly string[]): InitFlags {
     template: values.template as string | undefined,
     model: values.model as string | undefined,
     engine: values.engine as string | undefined,
+    preset: values.preset as string | undefined,
+    withAddons: (values.with as string[] | undefined) ?? [],
+    demo: values.demo as string | undefined,
   };
 }
 
@@ -384,6 +414,69 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
   };
 }
 
+export function parseUpFlags(rest: readonly string[]): UpFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+      verbose: { type: "boolean", short: "v", default: false },
+      detach: { type: "boolean", default: false },
+      web: { type: "boolean", default: false },
+      timing: { type: "boolean", default: false },
+      "nexus-url": { type: "string" },
+      "temporal-url": { type: "string" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const positionalManifest = positionals[0] as string | undefined;
+
+  return {
+    command: "up" as const,
+    directory: positionalManifest,
+    manifest: (values.manifest as string | undefined) ?? positionalManifest,
+    verbose: (values.verbose as boolean | undefined) ?? false,
+    detach: (values.detach as boolean | undefined) ?? false,
+    web: (values.web as boolean | undefined) ?? false,
+    timing: (values.timing as boolean | undefined) ?? false,
+    nexusUrl: values["nexus-url"] as string | undefined,
+    temporalUrl: values["temporal-url"] as string | undefined,
+  };
+}
+
+export function parseDemoFlags(rest: readonly string[]): DemoFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+      verbose: { type: "boolean", short: "v", default: false },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  // First positional is the subcommand (init, list, reset)
+  const sub = positionals[0] as string | undefined;
+  const validSubs = ["init", "list", "reset"] as const;
+  const subcommand =
+    sub !== undefined && (validSubs as readonly string[]).includes(sub)
+      ? (sub as "init" | "list" | "reset")
+      : undefined;
+
+  // Second positional is the pack ID
+  const pack = positionals[1] as string | undefined;
+
+  return {
+    command: "demo" as const,
+    directory: undefined,
+    subcommand,
+    pack,
+    manifest: values.manifest as string | undefined,
+    verbose: (values.verbose as boolean | undefined) ?? false,
+  };
+}
+
 export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
   const { values, positionals } = nodeParseArgs({
     args: rest as string[],
@@ -449,6 +542,14 @@ export function isDoctorFlags(flags: CliFlags): flags is DoctorFlags {
   return flags.command === "doctor";
 }
 
+export function isUpFlags(flags: CliFlags): flags is UpFlags {
+  return flags.command === "up";
+}
+
+export function isDemoFlags(flags: CliFlags): flags is DemoFlags {
+  return flags.command === "demo";
+}
+
 // ---------------------------------------------------------------------------
 // Command registry
 // ---------------------------------------------------------------------------
@@ -465,6 +566,8 @@ const COMMAND_PARSERS: Readonly<Record<string, (rest: readonly string[]) => CliF
   logs: parseLogsFlags,
   tui: parseTuiFlags,
   doctor: parseDoctorFlags,
+  up: parseUpFlags,
+  demo: parseDemoFlags,
 };
 
 // ---------------------------------------------------------------------------

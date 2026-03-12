@@ -1,5 +1,9 @@
 /**
  * `koi init` command — orchestrates wizard pipeline + scaffold.
+ *
+ * Supports preset-aware initialization:
+ * - `koi init myagent --preset demo --with telegram`
+ * - `koi init myagent --yes` (defaults)
  */
 
 import { resolve } from "node:path";
@@ -8,6 +12,7 @@ import type { InitFlags } from "../args.js";
 import { resolveScaffoldKoiCommand } from "../local-cli.js";
 import { writeScaffold } from "../scaffold.js";
 import { generateCopilot } from "../templates/copilot.js";
+import { generateDemo } from "../templates/demo.js";
 import { generateMinimal } from "../templates/minimal.js";
 import type { FileMap } from "../templates/shared.js";
 import { DEFAULT_STATE, type TemplateName, type WizardState } from "../wizard/state.js";
@@ -17,12 +22,14 @@ import {
   selectChannels,
   selectEngine,
   selectModel,
+  selectPreset,
   selectTemplate,
 } from "../wizard/steps.js";
 
-const TEMPLATE_GENERATORS: Readonly<Record<TemplateName, (s: WizardState) => FileMap>> = {
+const TEMPLATE_GENERATORS: Readonly<Record<string, (s: WizardState) => FileMap>> = {
   minimal: generateMinimal,
   copilot: generateCopilot,
+  demo: generateDemo,
 };
 
 export async function runInit(flags: InitFlags): Promise<void> {
@@ -31,14 +38,17 @@ export async function runInit(flags: InitFlags): Promise<void> {
   const directory = flags.directory ?? ".";
   const targetDir = resolve(directory);
 
-  // Build initial state from defaults + directory
+  // Build initial state from defaults + directory + flags
   const initialState: WizardState = {
     ...DEFAULT_STATE,
     directory,
+    addons: [...flags.withAddons],
+    ...(flags.demo !== undefined ? { demoPack: flags.demo } : {}),
   };
 
   // Run wizard pipeline — each step returns updated state or null (cancelled)
   const steps = [
+    selectPreset,
     selectTemplate,
     enterName,
     enterDescription,
@@ -56,13 +66,21 @@ export async function runInit(flags: InitFlags): Promise<void> {
     state = result;
   }
 
+  // Apply preset-specific template overrides
+  state = applyPresetDefaults(state);
+
   state = {
     ...state,
     koiCommand: resolveScaffoldKoiCommand(targetDir),
   };
 
-  // Generate files from template
-  const generator = TEMPLATE_GENERATORS[state.template];
+  // Select generator: demo preset uses demo template, otherwise use wizard template
+  const generatorKey = state.preset === "demo" || state.preset === "mesh" ? "demo" : state.template;
+  const generator = TEMPLATE_GENERATORS[generatorKey];
+  if (generator === undefined) {
+    p.cancel(`Unknown template: "${generatorKey}"`);
+    process.exit(1);
+  }
   const files = generator(state);
 
   // Write scaffold atomically
@@ -73,5 +91,35 @@ export async function runInit(flags: InitFlags): Promise<void> {
     process.exit(1);
   }
 
+  // Print next steps
+  const cdHint = directory !== "." ? `cd ${directory} && ` : "";
   p.outro(`Agent "${state.name}" created in ${targetDir}`);
+
+  if (state.preset === "demo" || state.preset === "mesh") {
+    process.stderr.write(`\nNext steps:\n  ${cdHint}koi up\n\n`);
+  } else {
+    process.stderr.write(`\nNext steps:\n  ${cdHint}bun run start:admin\n\n`);
+  }
+}
+
+/**
+ * Applies preset-specific defaults to wizard state.
+ * Demo and mesh presets auto-set the template to copilot and enable demo packs.
+ */
+function applyPresetDefaults(state: WizardState): WizardState {
+  switch (state.preset) {
+    case "demo":
+      return {
+        ...state,
+        template: "copilot" as TemplateName,
+        demoPack: state.demoPack ?? "connected",
+      };
+    case "mesh":
+      return {
+        ...state,
+        template: "copilot" as TemplateName,
+      };
+    default:
+      return state;
+  }
 }

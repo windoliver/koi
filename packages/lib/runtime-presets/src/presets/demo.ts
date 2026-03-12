@@ -1,0 +1,26 @@
+/**
+ * Demo preset — auth-enabled Nexus, auto-seeded demo data, TUI attached.
+ * Designed for first-run operator experience.
+ */
+
+import type { RuntimePreset } from "../types.js";
+
+export const DEMO_PRESET: RuntimePreset = {
+  id: "demo",
+  description: "Demo agent with auth-enabled Nexus, TUI, and seeded data",
+  nexusMode: "embed-auth",
+  services: {
+    adminApi: true,
+    tui: true,
+    nexus: true,
+    temporal: "auto",
+    gateway: false,
+    node: "disabled",
+  },
+  defaultChannels: ["@koi/channel-cli"],
+  defaultAddons: [],
+  demoPack: "connected",
+  manifestOverrides: {
+    autonomous: { enabled: true },
+  },
+} as const;

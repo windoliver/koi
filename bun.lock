@@ -825,6 +825,14 @@
       "name": "@koi/crypto-utils",
       "version": "0.0.0",
     },
+    "packages/lib/demo-packs": {
+      "name": "@koi/demo-packs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/lib/edit-match": {
       "name": "@koi/edit-match",
       "version": "0.0.0",
@@ -907,6 +915,14 @@
     "packages/lib/preset-resolver": {
       "name": "@koi/preset-resolver",
       "version": "0.0.0",
+    },
+    "packages/lib/runtime-presets": {
+      "name": "@koi/runtime-presets",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/preset-resolver": "workspace:*",
+      },
     },
     "packages/lib/session-state": {
       "name": "@koi/session-state",
@@ -1071,6 +1087,7 @@
         "@koi/dashboard-api": "workspace:*",
         "@koi/dashboard-types": "workspace:*",
         "@koi/dashboard-ui": "workspace:*",
+        "@koi/demo-packs": "workspace:*",
         "@koi/deploy": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-external": "workspace:*",
@@ -1097,8 +1114,10 @@
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/nexus": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
         "@koi/nexus-embed": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/runtime-presets": "workspace:*",
         "@koi/sandbox": "workspace:*",
         "@koi/sandbox-ipc": "workspace:*",
         "@koi/shutdown": "workspace:*",
@@ -3611,6 +3630,8 @@
 
     "@koi/delegation": ["@koi/delegation@workspace:packages/security/delegation"],
 
+    "@koi/demo-packs": ["@koi/demo-packs@workspace:packages/lib/demo-packs"],
+
     "@koi/deploy": ["@koi/deploy@workspace:packages/deploy/deploy"],
 
     "@koi/doctor": ["@koi/doctor@workspace:packages/security/doctor"],
@@ -3838,6 +3859,8 @@
     "@koi/retry-stack": ["@koi/retry-stack@workspace:packages/meta/retry-stack"],
 
     "@koi/rlm-stack": ["@koi/rlm-stack@workspace:packages/meta/rlm-stack"],
+
+    "@koi/runtime-presets": ["@koi/runtime-presets@workspace:packages/lib/runtime-presets"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/virt/sandbox"],
 

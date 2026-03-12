@@ -18,28 +18,26 @@ import type {
   EngineInput,
   InboundMessage,
   KoiMiddleware,
-  SandboxExecutor,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
 import type { AdminPanelBridgeResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import { createHealthHandler, createHealthServer } from "@koi/deploy";
 import { createPiAdapter } from "@koi/engine-pi";
-import { createForgeBootstrap, createForgeConfiguredKoi } from "@koi/forge";
+import { createForgeConfiguredKoi } from "@koi/forge";
 import { loadManifest } from "@koi/manifest";
-import { createSandboxCommand, restrictiveProfile } from "@koi/sandbox";
-import type { SandboxBridge } from "@koi/sandbox-ipc";
-import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
 import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { ServeFlags } from "../args.js";
+import { bootstrapForgeOrWarn } from "../bootstrap-forge.js";
 import { createChatRouter } from "../chat-router.js";
+import { composeRuntimeMiddleware } from "../compose-middleware.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
-  persistChatExchange,
+  persistChatExchangeSafely,
   resolveDashboardAssetsDir,
 } from "../helpers.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
@@ -48,18 +46,6 @@ import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 import { resolveNexusOrWarn } from "../resolve-nexus.js";
 import { resolveOrchestrationFromAgent } from "../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../resolve-temporal.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Safely checks if forge is enabled in the manifest's extension fields. */
-function isForgeEnabled(manifest: { readonly forge?: unknown }): boolean {
-  const forge = manifest.forge;
-  if (forge === null || forge === undefined || typeof forge !== "object") return false;
-  const obj = forge as Record<string, unknown>;
-  return obj.enabled === true;
-}
 
 // ---------------------------------------------------------------------------
 // Session key derivation
@@ -107,56 +93,16 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const healthPort = flags.port ?? deployConfig?.port ?? 9100;
 
   // 4. Bootstrap forge system (before resolution, so forgeStore is available)
-  // Only create sandbox bridge when forge is enabled to avoid temp file leaks
-  // let justified: mutable binding — set inside try/catch, read for cleanup
-  let sandboxBridge: SandboxBridge | undefined;
   // let justified: tracks current session key for forge counter scoping
   let currentServeSessionId = `serve:${manifest.name}:default`;
 
-  const forgeEnabled = isForgeEnabled(manifest);
-  // let justified: conditionally set when forge is enabled
-  let forgeBootstrap: ReturnType<typeof createForgeBootstrap>;
-
-  if (forgeEnabled) {
-    // let justified: conditionally assigned in try/catch
-    let forgeExecutor: SandboxExecutor;
-
-    try {
-      const bridge = await createSandboxBridge({
-        config: {
-          profile: restrictiveProfile(),
-          buildCommand: createSandboxCommand,
-        },
-      });
-      sandboxBridge = bridge;
-      forgeExecutor = bridgeToExecutor(bridge);
-    } catch {
-      process.stderr.write("warn: sandbox unavailable, forged tool execution disabled\n");
-      forgeExecutor = {
-        execute: async () => ({
-          ok: false as const,
-          error: {
-            code: "PERMISSION" as const,
-            message:
-              "Sandbox executor not configured — forged tool execution is not available in this CLI session",
-            durationMs: 0,
-          },
-        }),
-      };
-    }
-
-    forgeBootstrap = createForgeBootstrap({
-      executor: forgeExecutor,
-      forgeConfig: { enabled: true },
-      resolveSessionId: () => currentServeSessionId,
-      onError: (err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
-      },
-    });
-  } else {
-    forgeBootstrap = undefined;
-  }
+  const forgeResult = await bootstrapForgeOrWarn(
+    manifest,
+    () => currentServeSessionId,
+    flags.verbose,
+  );
+  const forgeBootstrap = forgeResult?.bootstrap;
+  const sandboxBridge = forgeResult?.sandboxBridge;
 
   // 4c. Create AG-UI chat bridge for admin chat endpoint (loaded lazily)
   let chatBridge: AgentChatBridge | undefined;
@@ -184,11 +130,11 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // 6. ASSEMBLE: Use resolved engine or fall back to pi adapter
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
 
-  // 6b. Resolve Nexus stack (embed or remote)
-  const nexus = await resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose);
-
-  // 6c. Resolve autonomous mode (harness + scheduler) when manifest opts in
-  const autonomous = await resolveAutonomousOrWarn(manifest, flags.verbose);
+  // 6b. Resolve Nexus and autonomous in parallel (Decision 14)
+  const [nexus, autonomous] = await Promise.all([
+    resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose),
+    resolveAutonomousOrWarn(manifest, flags.verbose),
+  ]);
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
@@ -238,25 +184,21 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`warn: conversation persistence disabled: ${message}\n`);
   }
 
+  const composed = composeRuntimeMiddleware({
+    resolved: resolved.value.middleware,
+    nexus,
+    forge: forgeBootstrap,
+    autonomous,
+    chatBridge,
+    extra: arenaMiddleware,
+    extraProviders: arenaProviders,
+  });
+
   const { runtime } = await createForgeConfiguredKoi({
     manifest,
     adapter,
-    middleware: [
-      ...resolved.value.middleware,
-      ...arenaMiddleware,
-      ...nexus.middlewares,
-      ...(forgeBootstrap?.middlewares ?? []),
-      ...(autonomous?.middleware ?? []),
-      ...(chatBridge !== undefined ? [chatBridge.middleware] : []),
-    ],
-    providers: [
-      ...nexus.providers,
-      ...arenaProviders,
-      ...(forgeBootstrap !== undefined
-        ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
-        : []),
-      ...(autonomous?.providers ?? []),
-    ],
+    middleware: composed.middleware,
+    providers: composed.providers,
     extensions,
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
   });
@@ -376,14 +318,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
                   adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
                 }
               }
-              // Persist to shared chat log (best-effort)
-              await persistChatExchange(
+              // Persist to shared chat log (best-effort, warns on failure)
+              await persistChatExchangeSafely(
                 serveWorkspaceRoot,
                 persistAgentId,
                 threadId,
                 text,
                 deltas.join(""),
-              ).catch(() => {});
+              );
               resolve();
             } catch (e: unknown) {
               reject(e instanceof Error ? e : new Error(String(e)));
@@ -429,14 +371,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
             await ch.send({ content: blocks });
           }
 
-          // Persist to shared chat log (best-effort)
-          await persistChatExchange(
+          // Persist to shared chat log (best-effort, warns on failure)
+          await persistChatExchangeSafely(
             serveWorkspaceRoot,
             persistAgentId,
             key,
             text,
             deltas.join(""),
-          ).catch(() => {});
+          );
         } catch (error: unknown) {
           const msg = error instanceof Error ? error.message : String(error);
           process.stderr.write(`Channel "${ch.name}" session "${key}" error: ${msg}\n`);

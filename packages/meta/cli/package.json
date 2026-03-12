@@ -67,6 +67,9 @@
     "@koi/autonomous": "workspace:*",
     "@koi/long-running": "workspace:*",
     "@koi/harness-scheduler": "workspace:*",
-    "@koi/tui": "workspace:*"
+    "@koi/tui": "workspace:*",
+    "@koi/runtime-presets": "workspace:*",
+    "@koi/demo-packs": "workspace:*",
+    "@koi/nexus-client": "workspace:*"
   }
 }
