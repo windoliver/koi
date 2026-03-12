@@ -250,6 +250,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   let stopAdmin: (() => void) | undefined;
   let adminBridge: AdminPanelBridgeResult | undefined;
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
+  let adminReady = false;
 
   try {
     const channelNames = channels.map((ch) => ch.name);
@@ -336,9 +337,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
       server.stop(true);
       dashboardResult.dispose();
     };
+    adminReady = true;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`warn: admin panel failed to start: ${message}\n`);
+    adminBridge = undefined;
   }
 
   const persistAgentId = adminBridge?.agentId ?? manifest.name;
@@ -375,22 +378,30 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 11. Print startup banner
   timer.print();
-  printBanner(manifest.name, engineName, modelName, channels, nexus.baseUrl, adminBridge);
+  printBanner(manifest.name, engineName, modelName, channels, nexus.baseUrl, adminReady);
 
-  // 12. Attach TUI when not detached
+  // 12. Attach TUI (requires admin API)
   let tuiApp:
     | { readonly start: () => Promise<void>; readonly stop: () => Promise<void> }
     | undefined;
-  if (!flags.detach) {
+  let tuiAttached = false;
+  if (adminReady) {
     try {
       const { createTuiApp } = await import("@koi/tui");
       tuiApp = createTuiApp({
         adminUrl: `http://localhost:${String(DEFAULT_ADMIN_PORT)}/admin/api`,
       });
       await tuiApp.start();
+      tuiAttached = true;
     } catch {
       tuiApp = undefined;
     }
+  }
+
+  if (tuiAttached) {
+    process.stderr.write("Operator console attached.\n\n");
+  } else {
+    process.stderr.write("Type a message or Ctrl+C to stop.\n\n");
   }
 
   // 13. Set up shutdown + REPL
@@ -552,7 +563,11 @@ async function seedDemoPackIfNeeded(
 
     const { runSeed } = await import("@koi/demo-packs");
     const { createNexusClient } = await import("@koi/nexus-client");
-    const nexusClient = createNexusClient({ baseUrl: nexusBaseUrl });
+    const apiKey = process.env.NEXUS_API_KEY;
+    const nexusClient = createNexusClient({
+      baseUrl: nexusBaseUrl,
+      ...(apiKey !== undefined ? { apiKey } : {}),
+    });
 
     const result = await runSeed(packId, {
       nexusClient,
@@ -587,7 +602,7 @@ function printBanner(
   modelName: string,
   channels: readonly ChannelAdapter[],
   nexusBaseUrl: string | undefined,
-  adminBridge: AdminPanelBridgeResult | undefined,
+  adminReady: boolean,
 ): void {
   process.stderr.write("\n");
   process.stderr.write(`Starting Koi...\n`);
@@ -602,11 +617,10 @@ function printBanner(
     process.stderr.write(`  \u2713 Channel "${ch.name}" connected\n`);
   }
 
-  if (adminBridge !== undefined) {
+  if (adminReady) {
     process.stderr.write(`  \u2713 Admin API ready at http://localhost:3100/admin/api\n`);
     process.stderr.write(`  \u2713 Browser admin at http://localhost:3100/admin\n`);
   }
 
-  process.stderr.write("\nOperator console attached.\n");
-  process.stderr.write("Type a message or Ctrl+C to stop.\n\n");
+  process.stderr.write("\n");
 }

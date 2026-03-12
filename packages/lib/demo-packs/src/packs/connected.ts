@@ -155,10 +155,9 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
   counts.corpus = corpusCount;
   summary.push(`Corpus: ${String(corpusCount)} documents ready`);
 
-  const totalSeeded = memoryCount + corpusCount;
-  const allOk = totalSeeded > 0 || (MEMORY_ENTRIES.length === 0 && CORPUS_DOCS.length === 0);
+  const allSeeded = memoryCount === MEMORY_ENTRIES.length && corpusCount === CORPUS_DOCS.length;
 
-  return { ok: allOk, counts, summary };
+  return { ok: allSeeded, counts, summary };
 }
 
 export const CONNECTED_PACK: DemoPack = {

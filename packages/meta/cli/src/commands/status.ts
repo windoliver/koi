@@ -96,12 +96,26 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
   process.stdout.write(`Admin:    ${adminOk ? "ready" : "not running"}\n`);
   process.stdout.write(`Nexus:    ${nexusOk ? "ready" : "not running"} (${nexusUrl})\n`);
 
-  // Channels from manifest (configured, not necessarily connected)
+  // Channels: probe live state from admin API, fall back to manifest
   const channels = manifest.channels ?? [];
   if (channels.length > 0) {
     process.stdout.write("Channels:\n");
-    for (const ch of channels) {
-      process.stdout.write(`  - ${ch.name} (configured)\n`);
+
+    if (adminOk) {
+      const liveChannels = await fetchLiveChannels(adminUrl);
+      if (liveChannels !== undefined) {
+        for (const ch of liveChannels) {
+          process.stdout.write(`  - ${ch.name} (${ch.status})\n`);
+        }
+      } else {
+        for (const ch of channels) {
+          process.stdout.write(`  - ${ch.name} (configured)\n`);
+        }
+      }
+    } else {
+      for (const ch of channels) {
+        process.stdout.write(`  - ${ch.name} (configured)\n`);
+      }
     }
   }
 }
@@ -126,6 +140,28 @@ function isProcessAlive(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+interface LiveChannel {
+  readonly name: string;
+  readonly status: string;
+}
+
+async function fetchLiveChannels(adminUrl: string): Promise<readonly LiveChannel[] | undefined> {
+  try {
+    const res = await fetch(`${adminUrl}/channels`, { signal: AbortSignal.timeout(2000) });
+    if (res.status !== 200) return undefined;
+    const data = (await res.json()) as readonly {
+      readonly type?: string;
+      readonly status?: string;
+    }[];
+    return data.map((ch) => ({
+      name: typeof ch.type === "string" ? ch.type : "unknown",
+      status: typeof ch.status === "string" ? ch.status : "unknown",
+    }));
+  } catch {
+    return undefined;
   }
 }
 

@@ -33,13 +33,25 @@ export async function runDemo(flags: DemoFlags): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared: resolve Nexus URL from manifest → env → default
+// ---------------------------------------------------------------------------
+
+interface ManifestWithNexus {
+  readonly name: string;
+  readonly nexus?: { readonly url?: string | undefined } | undefined;
+}
+
+function resolveNexusUrl(manifest: ManifestWithNexus): string {
+  return manifest.nexus?.url ?? process.env.NEXUS_URL ?? "http://127.0.0.1:2026";
+}
+
+// ---------------------------------------------------------------------------
 // koi demo init
 // ---------------------------------------------------------------------------
 
 async function runDemoInit(flags: DemoFlags): Promise<void> {
   const packId = flags.pack ?? "connected";
 
-  // Lazy-import demo-packs to keep the main CLI bundle lean
   const { getPack, runSeed } = await import("@koi/demo-packs");
 
   const pack = getPack(packId);
@@ -49,7 +61,6 @@ async function runDemoInit(flags: DemoFlags): Promise<void> {
     process.exit(1);
   }
 
-  // Load manifest to get agent name and workspace root
   const manifestPath = flags.manifest ?? "koi.yaml";
   const loadResult = await loadManifest(manifestPath);
   if (!loadResult.ok) {
@@ -60,12 +71,12 @@ async function runDemoInit(flags: DemoFlags): Promise<void> {
   const { manifest } = loadResult.value;
   const workspaceRoot = resolve(dirname(manifestPath));
 
-  // Create Nexus client for seeding
   const { createNexusClient } = await import("@koi/nexus-client");
-  const nexusUrl = process.env.NEXUS_URL ?? "http://127.0.0.1:2026";
+  const nexusUrl = resolveNexusUrl(manifest);
+  const apiKey = process.env.NEXUS_API_KEY;
   const nexusClient = createNexusClient({
     baseUrl: nexusUrl,
-    ...(process.env.NEXUS_API_KEY !== undefined ? { apiKey: process.env.NEXUS_API_KEY } : {}),
+    ...(apiKey !== undefined ? { apiKey } : {}),
   });
 
   process.stderr.write(`Seeding demo: ${pack.name}...\n`);
@@ -77,7 +88,6 @@ async function runDemoInit(flags: DemoFlags): Promise<void> {
     verbose: flags.verbose,
   });
 
-  // Print results
   for (const line of result.summary) {
     process.stderr.write(`  \u2713 ${line}\n`);
   }
@@ -136,7 +146,6 @@ async function runDemoReset(flags: DemoFlags): Promise<void> {
     process.exit(1);
   }
 
-  // Load manifest for agent name
   const manifestPath = flags.manifest ?? "koi.yaml";
   const loadResult = await loadManifest(manifestPath);
   if (!loadResult.ok) {
@@ -145,27 +154,38 @@ async function runDemoReset(flags: DemoFlags): Promise<void> {
   }
 
   const { manifest } = loadResult.value;
+  const workspaceRoot = resolve(dirname(manifestPath));
 
-  // Delete seeded data from Nexus
-  const { createNexusClient } = await import("@koi/nexus-client");
-  const { deleteJson } = await import("@koi/nexus-client");
-  const nexusUrl = process.env.NEXUS_URL ?? "http://127.0.0.1:2026";
+  const { createNexusClient, deleteJson } = await import("@koi/nexus-client");
+  const nexusUrl = resolveNexusUrl(manifest);
+  const apiKey = process.env.NEXUS_API_KEY;
   const nexusClient = createNexusClient({
     baseUrl: nexusUrl,
-    ...(process.env.NEXUS_API_KEY !== undefined ? { apiKey: process.env.NEXUS_API_KEY } : {}),
+    ...(apiKey !== undefined ? { apiKey } : {}),
   });
 
   process.stderr.write(`Resetting demo pack "${packId}" for agent "${manifest.name}"...\n`);
 
-  try {
-    // Delete the agent's memory and corpus namespaces
-    await deleteJson(nexusClient, `/agents/${manifest.name}/memory`);
-    await deleteJson(nexusClient, `/agents/${manifest.name}/corpus`);
-    process.stderr.write("  \u2713 Seeded data cleared\n\n");
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`  Failed to clear data: ${message}\n`);
+  const memResult = await deleteJson(nexusClient, `/agents/${manifest.name}/memory`);
+  const corpusResult = await deleteJson(nexusClient, `/agents/${manifest.name}/corpus`);
+
+  if (!memResult.ok || !corpusResult.ok) {
+    const errors: string[] = [];
+    if (!memResult.ok) errors.push(`memory: ${memResult.error.message}`);
+    if (!corpusResult.ok) errors.push(`corpus: ${corpusResult.error.message}`);
+    process.stderr.write(`  Failed to clear data: ${errors.join("; ")}\n`);
     process.stderr.write("  (Nexus may not be running — start it with `koi up` first)\n\n");
     process.exit(1);
   }
+
+  // Remove .demo-seeded marker so auto-seeding can re-run
+  try {
+    const { join } = await import("node:path");
+    const { unlink } = await import("node:fs/promises");
+    await unlink(join(workspaceRoot, ".koi", ".demo-seeded"));
+  } catch {
+    // Marker may not exist — that's fine
+  }
+
+  process.stderr.write("  \u2713 Seeded data cleared\n\n");
 }
