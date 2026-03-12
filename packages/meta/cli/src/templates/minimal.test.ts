@@ -7,7 +7,7 @@ const STATE: WizardState = {
   name: "my-agent",
   description: "A minimal agent",
   model: "anthropic:claude-sonnet-4-5-20250929",
-  engine: "loop",
+  engine: undefined,
   channels: ["cli"],
   directory: "my-agent",
 };
@@ -28,6 +28,17 @@ describe("generateMinimal", () => {
     expect(files["package.json"]).toBeDefined();
   });
 
+  test("generates bootstrap instructions", () => {
+    const files = generateMinimal(STATE);
+    expect(files[".koi/INSTRUCTIONS.md"]).toBeDefined();
+  });
+
+  test("generates env scaffolding", () => {
+    const files = generateMinimal(STATE);
+    expect(files[".env"]).toContain("ANTHROPIC_API_KEY=");
+    expect(files[".gitignore"]).toContain(".env");
+  });
+
   test("generates tsconfig.json", () => {
     const files = generateMinimal(STATE);
     expect(files["tsconfig.json"]).toBeDefined();
@@ -38,9 +49,9 @@ describe("generateMinimal", () => {
     expect(files["README.md"]).toBeDefined();
   });
 
-  test("generates exactly 4 files", () => {
+  test("generates exactly 7 files", () => {
     const files = generateMinimal(STATE);
-    expect(Object.keys(files)).toHaveLength(4);
+    expect(Object.keys(files)).toHaveLength(7);
   });
 
   test("koi.yaml contains agent name", () => {

@@ -8,10 +8,9 @@ export type TemplateName = (typeof TEMPLATES)[number];
 
 export const MODELS = ["anthropic:claude-sonnet-4-5-20250929", "openai:gpt-4o"] as const;
 
-export const ENGINES = ["loop", "deepagents", "langgraph"] as const;
-export type EngineName = (typeof ENGINES)[number];
+export type EngineName = string;
 
-export const CHANNELS = ["cli", "telegram", "slack", "discord", "web"] as const;
+export const CHANNELS = ["cli", "telegram", "slack", "discord"] as const;
 export type ChannelName = (typeof CHANNELS)[number];
 
 export interface WizardState {
@@ -19,7 +18,7 @@ export interface WizardState {
   readonly name: string;
   readonly description: string;
   readonly model: string;
-  readonly engine: EngineName;
+  readonly engine: EngineName | undefined;
   readonly channels: readonly ChannelName[];
   readonly directory: string;
 }
@@ -29,7 +28,7 @@ export const DEFAULT_STATE: WizardState = {
   name: "",
   description: "A Koi agent",
   model: MODELS[0],
-  engine: "loop",
+  engine: undefined,
   channels: ["cli"],
   directory: ".",
 } as const;

@@ -191,29 +191,29 @@ describe("selectModel", () => {
 });
 
 describe("selectEngine", () => {
-  test("prompts user when no flag provided", async () => {
-    mockSelect.mockResolvedValueOnce("deepagents");
+  test("skips prompting when no engine override is provided", async () => {
     const result = await selectEngine(DEFAULT_STATE, NO_FLAGS);
-    expect(result?.engine).toBe("deepagents");
-  });
-
-  test("uses flag value when --engine provided", async () => {
-    const flags: InitFlags = { ...NO_FLAGS, engine: "langgraph" };
-    const result = await selectEngine(DEFAULT_STATE, flags);
-    expect(result?.engine).toBe("langgraph");
+    expect(result?.engine).toBeUndefined();
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
-  test("rejects unknown --engine flag value", async () => {
-    const flags: InitFlags = { ...NO_FLAGS, engine: "unknown-engine" };
+  test("uses flag value when --engine provided", async () => {
+    const flags: InitFlags = { ...NO_FLAGS, engine: "@koi/engine-external" };
+    const result = await selectEngine(DEFAULT_STATE, flags);
+    expect(result?.engine).toBe("@koi/engine-external");
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  test("rejects empty --engine flag value", async () => {
+    const flags: InitFlags = { ...NO_FLAGS, engine: "   " };
     const result = await selectEngine(DEFAULT_STATE, flags);
     expect(result).toBeNull();
     expect(mockCancel).toHaveBeenCalledTimes(1);
   });
 
-  test("uses default in --yes mode", async () => {
+  test("keeps default in --yes mode", async () => {
     const result = await selectEngine(DEFAULT_STATE, YES_FLAGS);
-    expect(result?.engine).toBe("loop");
+    expect(result?.engine).toBeUndefined();
   });
 });
 

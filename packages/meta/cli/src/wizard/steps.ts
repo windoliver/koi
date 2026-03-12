@@ -11,7 +11,6 @@ import type { InitFlags } from "../args.js";
 import {
   CHANNELS,
   type ChannelName,
-  ENGINES,
   type EngineName,
   MODELS,
   TEMPLATES,
@@ -135,28 +134,15 @@ export async function selectModel(state: WizardState, flags: InitFlags): Promise
 }
 
 export async function selectEngine(state: WizardState, flags: InitFlags): Promise<StepResult> {
-  if (flags.engine) {
-    if (!(ENGINES as readonly string[]).includes(flags.engine)) {
-      p.cancel(`Unknown engine: "${flags.engine}". Available: ${ENGINES.join(", ")}`);
+  if (flags.engine !== undefined) {
+    const value = flags.engine.trim();
+    if (value.length === 0) {
+      p.cancel("Engine cannot be empty.");
       return null;
     }
-    return { ...state, engine: flags.engine as EngineName };
+    return { ...state, engine: value as EngineName };
   }
-  if (flags.yes) {
-    return state;
-  }
-
-  const value = await p.select({
-    message: "Select an engine",
-    options: ENGINES.map((e) => ({ value: e, label: e })),
-  });
-
-  if (p.isCancel(value)) {
-    p.cancel("Setup cancelled.");
-    return null;
-  }
-
-  return { ...state, engine: value as EngineName };
+  return state;
 }
 
 export async function selectChannels(state: WizardState, flags: InitFlags): Promise<StepResult> {

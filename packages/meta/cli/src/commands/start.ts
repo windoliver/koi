@@ -11,6 +11,9 @@
  * 7. SHUTDOWN: AbortController + SIGINT/SIGTERM handlers
  */
 
+import type { Dirent } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineEvent, EngineInput, SandboxExecutor } from "@koi/core";
@@ -44,12 +47,103 @@ import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
+const DEFAULT_MANIFEST_PATH = "koi.yaml";
+const MANIFEST_SUGGESTION_LIMIT = 3;
+const MANIFEST_SEARCH_DEPTH = 4;
+const SKIPPED_MANIFEST_SEARCH_DIRS = new Set(["build", "coverage", "dist", "node_modules"]);
+
 /** Safely checks if forge is enabled in the manifest's extension fields. */
 function isForgeEnabled(manifest: { readonly forge?: unknown }): boolean {
   const forge = manifest.forge;
   if (forge === null || forge === undefined || typeof forge !== "object") return false;
   const obj = forge as Record<string, unknown>;
   return obj.enabled === true;
+}
+
+function toDisplayPath(path: string): string {
+  return sep === "\\" ? path.replaceAll("\\", "/") : path;
+}
+
+async function resolveManifestPath(input: string | undefined): Promise<string> {
+  const candidate = input ?? DEFAULT_MANIFEST_PATH;
+  const nestedManifestPath = join(candidate, DEFAULT_MANIFEST_PATH);
+
+  try {
+    const info = await stat(candidate);
+    if (info.isDirectory()) return nestedManifestPath;
+  } catch {
+    if (await Bun.file(nestedManifestPath).exists()) return nestedManifestPath;
+  }
+
+  return candidate;
+}
+
+async function findNearbyManifests(rootDir: string): Promise<readonly string[]> {
+  const suggestions: string[] = [];
+  const queue: Array<{ readonly dir: string; readonly depth: number }> = [
+    { dir: rootDir, depth: 0 },
+  ];
+
+  while (queue.length > 0 && suggestions.length < MANIFEST_SUGGESTION_LIMIT) {
+    const current = queue.shift();
+    if (current === undefined) break;
+
+    let entries: Dirent[];
+    try {
+      entries = await readdir(current.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || SKIPPED_MANIFEST_SEARCH_DIRS.has(entry.name)) {
+        continue;
+      }
+
+      const fullPath = join(current.dir, entry.name);
+      if (entry.isDirectory()) {
+        if (current.depth < MANIFEST_SEARCH_DEPTH) {
+          queue.push({ dir: fullPath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+
+      if (!entry.isFile() || entry.name !== DEFAULT_MANIFEST_PATH) continue;
+
+      suggestions.push(toDisplayPath(relative(rootDir, fullPath) || DEFAULT_MANIFEST_PATH));
+      if (suggestions.length >= MANIFEST_SUGGESTION_LIMIT) break;
+    }
+  }
+
+  return suggestions;
+}
+
+async function formatManifestLoadFailure(
+  manifestPath: string,
+  errorMessage: string,
+): Promise<string> {
+  let message = `Failed to load manifest: ${errorMessage}\n`;
+
+  if (manifestPath !== DEFAULT_MANIFEST_PATH) {
+    return message;
+  }
+
+  message +=
+    "hint: `koi start` defaults to `./koi.yaml`; pass a manifest path or `cd` into an agent directory\n";
+
+  const suggestions = await findNearbyManifests(process.cwd());
+  if (suggestions.length === 0) {
+    return message;
+  }
+
+  message += "hint: nearby manifests:\n";
+  for (const suggestion of suggestions) {
+    message += `  koi start ${suggestion}\n`;
+  }
+
+  return message;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,16 +187,15 @@ function renderEvent(event: EngineEvent, verbose: boolean): void {
 
 export async function runStart(flags: StartFlags): Promise<void> {
   // 1. RESOLVE: Find manifest path
-  const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
+  const manifestPath = await resolveManifestPath(flags.manifest ?? flags.directory);
 
   // Compute workspace root early — used for chat persistence in all message handlers
-  const { dirname: pDirname0, resolve: pResolve0 } = await import("node:path");
-  const startWorkspaceRoot = pResolve0(pDirname0(manifestPath));
+  const startWorkspaceRoot = resolve(dirname(manifestPath));
 
   // 2. VALIDATE: Load and validate manifest
   const loadResult = await loadManifest(manifestPath);
   if (!loadResult.ok) {
-    process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
+    process.stderr.write(await formatManifestLoadFailure(manifestPath, loadResult.error.message));
     process.exit(EXIT_CONFIG);
   }
 

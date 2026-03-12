@@ -123,11 +123,13 @@ Plus ECS composition: Agent = entity, Tool = component, Middleware = system.
 koi init [directory]     Create a new agent
 koi start [manifest]     Start agent interactively (REPL)
 koi serve [manifest]     Run agent headless (for services)
+koi admin [manifest]     Run the standalone admin panel
 koi deploy [manifest]    Install as OS service (launchd/systemd)
 koi status [manifest]    Check service status
 koi stop [manifest]      Stop the service
 koi logs [manifest]      View service logs
 koi doctor [manifest]    Diagnose service health
+koi tui                  Interactive terminal console
 ```
 
 ### `koi init`
@@ -167,7 +169,7 @@ koi deploy --uninstall         # remove the service
 
 ## Admin Panel
 
-> **Status**: The dashboard packages (`@koi/dashboard-ui`, `@koi/dashboard-api`, `@koi/dashboard-types`) exist. CLI integration (`koi serve --admin`, `koi admin`) is tracked in [#924](https://github.com/windoliver/koi/issues/924).
+The dashboard packages (`@koi/dashboard-ui`, `@koi/dashboard-api`, `@koi/dashboard-types`) are wired into the CLI today via `koi start --admin`, `koi serve --admin`, `koi admin`, and `koi tui`.
 
 A browser-based UI for managing running agents, built on React 19 + Vite.
 
@@ -266,6 +268,28 @@ The same MCP servers work in Claude Desktop, Cursor, VS Code, and Koi.
 git clone https://github.com/windoliver/koi.git
 cd koi
 bun install
+bun run build:cli
+```
+
+### Running the CLI from this repo
+
+The repo does not place a plain `koi` binary on your shell `PATH`. Use the built CLI through Bun:
+
+```bash
+bun run koi -- start --dry-run path/to/koi.yaml
+bun run koi -- start --admin path/to/koi.yaml
+bun run koi -- tui
+```
+
+First-timer notes:
+
+- if `bun install` fails in `lefthook install` because `core.hooksPath` is already set locally, run `lefthook install --force`
+- local Nexus embed mode is the default when no URL is set, but it currently expects `uv run nexus` to be available
+- to switch from local Nexus to remote/shared Nexus, keep the same manifest and provide only `--nexus-url`, `NEXUS_URL`, or `nexus.url`
+
+### Building the full workspace
+
+```bash
 bun run build
 ```
 

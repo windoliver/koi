@@ -7,8 +7,8 @@ const STATE: WizardState = {
   name: "my-copilot",
   description: "A copilot agent",
   model: "anthropic:claude-sonnet-4-5-20250929",
-  engine: "deepagents",
-  channels: ["telegram", "slack"],
+  engine: undefined,
+  channels: ["cli", "telegram", "slack"],
   directory: "my-copilot",
 };
 
@@ -33,14 +33,15 @@ describe("generateCopilot", () => {
     expect(files["README.md"]).toBeDefined();
   });
 
-  test("generates example tool", () => {
+  test("generates bootstrap instructions", () => {
     const files = generateCopilot(STATE);
-    expect(files["src/tools/hello.ts"]).toBeDefined();
+    expect(files[".koi/INSTRUCTIONS.md"]).toBeDefined();
   });
 
-  test("example tool exports a function", () => {
+  test("generates tool guidance", () => {
     const files = generateCopilot(STATE);
-    expect(files["src/tools/hello.ts"]).toContain("export");
+    expect(files[".koi/TOOLS.md"]).toContain("ask_user");
+    expect(files[".koi/TOOLS.md"]).toContain("web_search");
   });
 
   test("koi.yaml includes channels", () => {
@@ -51,36 +52,23 @@ describe("generateCopilot", () => {
     expect(yaml).toContain("slack");
   });
 
+  test("koi.yaml includes built-in tools", () => {
+    const files = generateCopilot(STATE);
+    const yaml = files["koi.yaml"] as string;
+    expect(yaml).toContain("@koi/tool-ask-user");
+    expect(yaml).toContain("@koi/tools-web");
+  });
+
   test("generates more files than minimal", () => {
     const files = generateCopilot(STATE);
-    expect(Object.keys(files).length).toBeGreaterThan(4);
+    expect(Object.keys(files)).toHaveLength(8);
   });
 
-  test("escapes backticks in agent name for generated code", () => {
-    const state: WizardState = { ...STATE, name: "agent`test" };
-    const files = generateCopilot(state);
-    const tool = files["src/tools/hello.ts"] as string;
-    // The generated code should not have an unescaped backtick
-    expect(tool).toContain("agent\\`test");
-    // Verify it's valid by checking no syntax-breaking backticks
-    expect(tool).not.toContain("agent`test");
-  });
-
-  test("escapes template interpolation in agent name for generated code", () => {
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: testing escape of literal ${} in names
-    const state: WizardState = { ...STATE, name: "agent${evil}" };
-    const files = generateCopilot(state);
-    const tool = files["src/tools/hello.ts"] as string;
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: testing escaped output
-    expect(tool).toContain("agent\\${evil}");
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: testing unescaped NOT present
-    expect(tool).not.toContain("agent${evil}");
-  });
-
-  test("escapes backslashes in agent name for generated code", () => {
-    const state: WizardState = { ...STATE, name: "agent\\path" };
-    const files = generateCopilot(state);
-    const tool = files["src/tools/hello.ts"] as string;
-    expect(tool).toContain("agent\\\\path");
+  test("generates env scaffolding for selected channels", () => {
+    const files = generateCopilot(STATE);
+    expect(files[".env"]).toContain("ANTHROPIC_API_KEY=");
+    expect(files[".env"]).toContain("TELEGRAM_BOT_TOKEN=");
+    expect(files[".env"]).toContain("SLACK_BOT_TOKEN=");
+    expect(files[".env"]).toContain("SLACK_APP_TOKEN=");
   });
 });
