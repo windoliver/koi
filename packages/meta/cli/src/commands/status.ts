@@ -235,8 +235,8 @@ async function fetchTemporalHealth(
           };
         }
       }
-      // 501 = Temporal not configured, other = unavailable
-      return undefined;
+      // 501 = not configured, other = admin doesn't know about Temporal;
+      // fall through to direct probe (Temporal may still be running standalone)
     } catch {
       // Admin reachable but Temporal endpoint failed — fall through
     }
