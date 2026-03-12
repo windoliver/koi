@@ -102,11 +102,13 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
     `Nexus:    ${nexusOk ? "ready" : "not running"} (${nexusUrl})${nexusModeLabel}\n`,
   );
 
-  // Temporal status: probe common Temporal health endpoint
-  const temporalUrl = process.env.TEMPORAL_URL ?? "http://127.0.0.1:7233";
-  const temporalOk = await probeEndpoint(`${temporalUrl}/api/v1/namespaces`);
-  if (temporalOk) {
-    process.stdout.write(`Temporal: ready (${temporalUrl})\n`);
+  // Temporal status: prefer admin API's SDK-based health check, fall back to direct probe
+  const temporalHealth = await fetchTemporalHealth(adminUrl, adminOk);
+  if (temporalHealth !== undefined) {
+    const addrLabel = temporalHealth.serverAddress ?? "localhost:7233";
+    const latencyLabel =
+      temporalHealth.latencyMs !== undefined ? ` (${String(temporalHealth.latencyMs)}ms)` : "";
+    process.stdout.write(`Temporal: ready (${addrLabel})${latencyLabel}\n`);
   }
 
   // Dispatched agents: probe admin API for active agent list
@@ -115,7 +117,7 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
     if (agents !== undefined && agents.length > 0) {
       process.stdout.write("Agents:\n");
       for (const agent of agents) {
-        process.stdout.write(`  - ${agent.name} (${agent.status})\n`);
+        process.stdout.write(`  - ${agent.name} (${agent.state})\n`);
       }
     }
   }
@@ -198,6 +200,63 @@ async function probeEndpoint(url: string): Promise<boolean> {
   }
 }
 
+interface TemporalHealthInfo {
+  readonly healthy: boolean;
+  readonly serverAddress?: string | undefined;
+  readonly latencyMs?: number | undefined;
+}
+
+/**
+ * Fetches Temporal health via the admin API's SDK-based health check.
+ * Falls back to a direct HTTP probe if the admin API is unavailable.
+ * Returns undefined when Temporal is not running.
+ */
+async function fetchTemporalHealth(
+  adminUrl: string,
+  adminAvailable: boolean,
+): Promise<TemporalHealthInfo | undefined> {
+  // Prefer admin API — it uses client.connection.healthCheck() internally
+  if (adminAvailable) {
+    try {
+      const res = await fetch(`${adminUrl}/view/temporal/health`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.status === 200) {
+        const data = (await res.json()) as {
+          readonly healthy?: boolean;
+          readonly serverAddress?: string;
+          readonly latencyMs?: number;
+        };
+        if (data.healthy === true) {
+          return {
+            healthy: true,
+            serverAddress: data.serverAddress,
+            latencyMs: data.latencyMs,
+          };
+        }
+      }
+      // 501 = Temporal not configured, other = unavailable
+      return undefined;
+    } catch {
+      // Admin reachable but Temporal endpoint failed — fall through
+    }
+  }
+
+  // Fallback: direct HTTP probe on Temporal dev server's HTTP API port
+  const temporalHttpPort = 8233;
+  try {
+    const res = await fetch(`http://127.0.0.1:${String(temporalHttpPort)}/api/v1/namespaces`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.ok) {
+      return { healthy: true, serverAddress: "localhost:7233" };
+    }
+  } catch {
+    // Not running
+  }
+  return undefined;
+}
+
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
@@ -238,7 +297,7 @@ async function inferNexusMode(manifestPath: string): Promise<string | undefined>
 
 interface DispatchedAgentInfo {
   readonly name: string;
-  readonly status: string;
+  readonly state: string;
 }
 
 async function fetchDispatchedAgents(
@@ -247,13 +306,14 @@ async function fetchDispatchedAgents(
   try {
     const res = await fetch(`${adminUrl}/agents`, { signal: AbortSignal.timeout(2000) });
     if (res.status !== 200) return undefined;
+    // DashboardAgentSummary has `state: ProcessState`, not `status`
     const data = (await res.json()) as readonly {
       readonly name?: string;
-      readonly status?: string;
+      readonly state?: string;
     }[];
     return data.map((a) => ({
       name: typeof a.name === "string" ? a.name : "unknown",
-      status: typeof a.status === "string" ? a.status : "active",
+      state: typeof a.state === "string" ? a.state : "running",
     }));
   } catch {
     return undefined;

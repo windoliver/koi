@@ -1123,6 +1123,7 @@
         "@koi/shutdown": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/soul": "workspace:*",
+        "@koi/temporal": "workspace:*",
         "@koi/tui": "workspace:*",
       },
     },

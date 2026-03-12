@@ -70,6 +70,7 @@
     "@koi/tui": "workspace:*",
     "@koi/runtime-presets": "workspace:*",
     "@koi/demo-packs": "workspace:*",
-    "@koi/nexus-client": "workspace:*"
+    "@koi/nexus-client": "workspace:*",
+    "@koi/temporal": "workspace:*"
   }
 }

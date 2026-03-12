@@ -4,15 +4,16 @@
  * Startup sequence:
  * 1. RESOLVE:   Find manifest (./koi.yaml default)
  * 2. VALIDATE:  Load + validate manifest
- * 3. PREFLIGHT: Check API keys, channel tokens
- * 4. PRESET:    Resolve runtime preset from manifest metadata
+ * 3. PRESET:    Resolve runtime preset from manifest metadata
+ * 4. PREFLIGHT: Check API keys, channel tokens, binary availability
  * 5. SPAWN:     Start Nexus embed (deferred health check)
- * 6. RESOLVE:   Parallel resolve all subsystems
- * 7. ASSEMBLE:  Create engine + middleware + providers
- * 8. START:     Create runtime, connect channels
- * 9. ADMIN:     Start admin API server
- * 10. TUI:      Attach TUI (if preset enables it)
- * 11. BANNER:   Print URLs, channel state, agent readiness
+ * 6. TEMPORAL:  Auto-start Temporal if preset requires it
+ * 7. RESOLVE:   Parallel resolve all subsystems
+ * 8. ASSEMBLE:  Create engine + middleware + providers
+ * 9. START:     Create runtime, connect channels
+ * 10. ADMIN:    Start admin API server
+ * 11. TUI:      Attach TUI (if preset enables it)
+ * 12. BANNER:   Print URLs, channel state, agent readiness
  */
 
 import { readFile } from "node:fs/promises";
@@ -28,6 +29,7 @@ import { getEngineName, loadManifest } from "@koi/manifest";
 import type { NexusMode, PresetId, PresetServices } from "@koi/runtime-presets";
 import { resolveRuntimePreset } from "@koi/runtime-presets";
 import { EXIT_CONFIG } from "@koi/shutdown";
+import type { TemporalEmbedHandle } from "@koi/temporal";
 import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { UpFlags } from "../args.js";
@@ -169,19 +171,22 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const engineName = getEngineName(manifest);
   const modelName = manifest.model.name;
 
-  // 3. PREFLIGHT: Validate prerequisites
+  // 3. PRESET: Resolve runtime preset (needed for preflight + service startup)
+  const presetId = await timer.time("preset", async () => inferPresetId(manifestPath));
+  const { resolved: preset } = resolveRuntimePreset(presetId);
+  const services: PresetServices = preset.services;
+
+  // 4. PREFLIGHT: Validate prerequisites (preset-aware)
+  const temporalAutoStart = services.temporal !== "disabled" && flags.temporalUrl === undefined;
   const preflight = await timer.time("preflight", async () =>
-    validateManifestPrerequisites(manifest),
+    validateManifestPrerequisites(manifest, process.env, {
+      temporalRequired: temporalAutoStart,
+    }),
   );
   if (!printPreflightIssues(preflight)) {
     process.stderr.write("Preflight checks failed. Fix errors above and retry.\n");
     process.exit(EXIT_CONFIG);
   }
-
-  // 4. PRESET: Resolve runtime preset to control service startup
-  const presetId = await timer.time("preset", async () => inferPresetId(manifestPath));
-  const { resolved: preset } = resolveRuntimePreset(presetId);
-  const services: PresetServices = preset.services;
 
   if (flags.verbose) {
     process.stderr.write(
@@ -224,13 +229,26 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // Map preset nexusMode to embed profile for local Nexus
   const embedProfile = mapNexusModeToProfile(preset.nexusMode);
 
+  // Auto-start Temporal when preset requires it and no explicit URL given
+  let temporalEmbedHandle: TemporalEmbedHandle | undefined;
+  let temporalUrl = flags.temporalUrl;
+
+  if (temporalAutoStart) {
+    temporalEmbedHandle = await timer.time("temporal-embed", async () =>
+      startTemporalEmbed(flags.verbose),
+    );
+    if (temporalEmbedHandle !== undefined) {
+      temporalUrl = temporalEmbedHandle.url;
+    }
+  }
+
   // Resolve Nexus, autonomous, temporal in parallel (preset controls Temporal)
   const [nexus, autonomous, temporalAdmin] = await timer.time("subsystems", () =>
     Promise.all([
       resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose, embedProfile),
       resolveAutonomousOrWarn(manifest, flags.verbose),
-      services.temporal !== "disabled"
-        ? resolveTemporalOrWarn(flags.temporalUrl, flags.verbose)
+      temporalUrl !== undefined
+        ? resolveTemporalOrWarn(temporalUrl, flags.verbose)
         : Promise.resolve(undefined),
     ]),
   );
@@ -411,6 +429,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     nexusBaseUrl: nexus.baseUrl,
     adminReady,
     temporalAdmin,
+    temporalUrl,
     provisionedAgents,
   });
 
@@ -551,6 +570,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (stopAdmin !== undefined) stopAdmin();
   if (adminDispatcher !== undefined) await adminDispatcher.dispose();
   if (temporalAdmin !== undefined) await temporalAdmin.dispose();
+  if (temporalEmbedHandle !== undefined) await temporalEmbedHandle.dispose();
   await runtime.dispose();
   if (autonomous !== undefined) await autonomous.dispose();
   forgeBootstrap?.dispose();
@@ -558,6 +578,29 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (nexus.dispose !== undefined) await nexus.dispose();
 
   process.stderr.write("Goodbye.\n");
+}
+
+// ---------------------------------------------------------------------------
+// Temporal auto-start
+// ---------------------------------------------------------------------------
+
+/**
+ * Auto-starts a local Temporal dev server via `@koi/temporal` embed mode.
+ * Returns the embed handle (with gRPC URL + dispose) or undefined on failure.
+ */
+async function startTemporalEmbed(verbose: boolean): Promise<TemporalEmbedHandle | undefined> {
+  try {
+    const { ensureTemporalRunning } = await import("@koi/temporal");
+    const handle = await ensureTemporalRunning();
+    if (verbose) {
+      process.stderr.write(`Temporal: auto-started at ${handle.url} (UI: ${handle.uiUrl})\n`);
+    }
+    return handle;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: Temporal auto-start failed: ${message}\n`);
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -707,6 +750,7 @@ async function provisionDemoAgents(
         name: `${role.name} (${role.type})`,
         manifest: manifestPath,
         message: role.description,
+        agentType: role.type,
       });
 
       if (result.ok) {
@@ -743,6 +787,7 @@ interface BannerInfo {
   readonly nexusBaseUrl: string | undefined;
   readonly adminReady: boolean;
   readonly temporalAdmin: { readonly dispose: () => Promise<void> } | undefined;
+  readonly temporalUrl: string | undefined;
   readonly provisionedAgents: readonly ProvisionedAgent[];
 }
 
@@ -763,7 +808,9 @@ function printBanner(info: BannerInfo): void {
     process.stderr.write(`  \u2713 ${agent.role} "${agent.name}" ready\n`);
   }
 
-  if (info.temporalAdmin !== undefined) {
+  if (info.temporalAdmin !== undefined && info.temporalUrl !== undefined) {
+    process.stderr.write(`  \u2713 Temporal ready at ${info.temporalUrl}\n`);
+  } else if (info.temporalAdmin !== undefined) {
     process.stderr.write("  \u2713 Temporal orchestration connected\n");
   }
 

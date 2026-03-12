@@ -387,10 +387,11 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       ? async (request) => {
           const result = await rawDispatch(request);
           if (result.ok) {
+            const resolvedType = request.agentType ?? "copilot";
             const entry: DispatchedAgentEntry = {
               agentId: result.value.agentId,
               name: result.value.name,
-              agentType: "copilot",
+              agentType: resolvedType,
               startedAt: Date.now(),
             };
             dispatchedAgents.set(result.value.agentId, { entry, state: "running" });
@@ -399,7 +400,7 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
               subKind: "dispatched",
               agentId: result.value.agentId,
               name: result.value.name,
-              agentType: "copilot",
+              agentType: resolvedType,
               timestamp: Date.now(),
             });
           }

@@ -51,6 +51,12 @@ interface ManifestSubset {
   readonly nexus?: { readonly url?: string | undefined } | undefined;
 }
 
+/** Options for additional preflight checks beyond the manifest. */
+export interface PreflightOptions {
+  /** When true, checks that the `temporal` binary is on PATH. */
+  readonly temporalRequired?: boolean | undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
@@ -63,10 +69,12 @@ interface ManifestSubset {
  * - Channel-specific tokens are set (warning)
  * - Nexus URL is reachable when explicitly configured (warning)
  * - Local Nexus binary available when embed mode is used (warning)
+ * - Temporal CLI binary available when preset requires auto-start (warning)
  */
 export async function validateManifestPrerequisites(
   manifest: ManifestSubset,
   env: Readonly<Record<string, string | undefined>> = process.env,
+  options?: PreflightOptions | undefined,
 ): Promise<PreflightResult> {
   const issues: PreflightIssue[] = [];
 
@@ -128,6 +136,19 @@ export async function validateManifestPrerequisites(
         severity: "warning",
         code: "NEXUS_BINARY_MISSING",
         message: `"${nexusCmd}" not found on PATH — Nexus embed mode requires it (install uv or set NEXUS_COMMAND)`,
+      });
+    }
+  }
+
+  // 5. Check Temporal CLI binary (only when preset requires auto-start)
+  if (options?.temporalRequired === true) {
+    const temporalAvailable = await isBinaryAvailable("temporal");
+    if (!temporalAvailable) {
+      issues.push({
+        severity: "warning",
+        code: "TEMPORAL_BINARY_MISSING",
+        message:
+          '"temporal" not found on PATH — install with: brew install temporal (or set --temporal-url)',
       });
     }
   }

@@ -31,6 +31,8 @@ export interface DispatchAgentRequest {
   readonly manifest?: string;
   /** Optional initial message to send to the agent after dispatch. */
   readonly message?: string;
+  /** Agent type for lifecycle management. Default: "copilot". */
+  readonly agentType?: "copilot" | "worker" | undefined;
 }
 
 /** Response body for a successful dispatch. */

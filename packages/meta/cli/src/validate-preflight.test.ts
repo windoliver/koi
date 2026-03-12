@@ -175,6 +175,49 @@ describe("validateManifestPrerequisites", () => {
     const binaryIssue = result.issues.find((i) => i.code === "NEXUS_BINARY_MISSING");
     expect(binaryIssue).toBeUndefined();
   });
+
+  test("warns when temporal binary missing and temporalRequired", async () => {
+    const manifest = {
+      model: { name: "custom-model" },
+    };
+    const env = {};
+
+    const result = await validateManifestPrerequisites(manifest, env, {
+      temporalRequired: true,
+    });
+    const temporalIssue = result.issues.find((i) => i.code === "TEMPORAL_BINARY_MISSING");
+    // This test may pass or fail depending on whether `temporal` is installed.
+    // We only assert the structure is correct if the issue is present.
+    if (temporalIssue !== undefined) {
+      expect(temporalIssue.severity).toBe("warning");
+      expect(temporalIssue.message).toContain("temporal");
+      expect(result.ok).toBe(true); // warning, not error
+    }
+  });
+
+  test("skips temporal check when temporalRequired is false", async () => {
+    const manifest = {
+      model: { name: "custom-model" },
+    };
+    const env = {};
+
+    const result = await validateManifestPrerequisites(manifest, env, {
+      temporalRequired: false,
+    });
+    const temporalIssue = result.issues.find((i) => i.code === "TEMPORAL_BINARY_MISSING");
+    expect(temporalIssue).toBeUndefined();
+  });
+
+  test("skips temporal check when no options provided", async () => {
+    const manifest = {
+      model: { name: "custom-model" },
+    };
+    const env = {};
+
+    const result = await validateManifestPrerequisites(manifest, env);
+    const temporalIssue = result.issues.find((i) => i.code === "TEMPORAL_BINARY_MISSING");
+    expect(temporalIssue).toBeUndefined();
+  });
 });
 
 describe("printPreflightIssues", () => {

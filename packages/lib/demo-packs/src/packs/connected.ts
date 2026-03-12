@@ -173,6 +173,22 @@ export const CONNECTED_PACK: DemoPack = {
       reuse: true,
       description: "Primary demo agent with seeded memory and search",
     },
+    {
+      name: "research-helper",
+      type: "copilot",
+      lifecycle: "copilot",
+      reuse: true,
+      description:
+        "Research assistant — searches the knowledge base and summarizes findings on behalf of the primary agent",
+    },
+    {
+      name: "note-worker",
+      type: "worker",
+      lifecycle: "worker",
+      reuse: false,
+      description:
+        "Background worker that indexes new documents and updates memory entries when the primary agent learns something new",
+    },
   ],
   seed: seedConnected,
   prompts: [
