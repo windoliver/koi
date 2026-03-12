@@ -287,6 +287,8 @@ First-timer notes:
 - local Nexus embed mode is the default when no URL is set, but it currently expects `uv run nexus` to be available
 - to switch from local Nexus to remote/shared Nexus, keep the same manifest and provide only `--nexus-url`, `NEXUS_URL`, or `nexus.url`
 
+For the progressive first-run path, see [`docs/user-guide.md`](docs/user-guide.md).
+
 ### Building the full workspace
 
 ```bash

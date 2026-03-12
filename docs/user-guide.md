@@ -1,34 +1,99 @@
 # Koi Progressive User Guide
 
-This is the single doc to use when you want to test Koi without getting crushed by the full package surface. It follows `demo-strategy.md`, starts with Demo 1, and only asks you to add one new moving part at a time.
+This is the single doc to use when you want to test Koi without getting crushed by the full package surface. It follows [`demo-strategy.md`](../demo-strategy.md), starts with Demo 1, and only asks you to add one new moving part at a time.
 
 The rule for this guide is simple:
 
 1. start local
-2. keep Nexus in embed mode by default
+2. keep Nexus in local embed mode by default
 3. keep the CLI channel on
 4. use `koi start --admin` first so you get CLI, admin panel, and TUI together
 5. only move to the next demo when the current checklist passes
+6. when you switch to remote Nexus, change only the URL
 
 Use [`package-coverage-map.md`](./package-coverage-map.md) only when you need package-by-package detail.
 
-## Default Working Mode
+## Before You Start
 
 For the first demos, assume all of this unless you have a strong reason not to:
 
-- do not set `nexus.url`
-- do not pass `--nexus-url`
-- do use `koi start --admin`
-- do keep `@koi/channel-cli` enabled
-- do open the TUI against the admin API
+- Bun 1.3.x is installed
+- you have one model provider key ready, such as Anthropic or OpenAI
+- `uv` is installed and on `PATH`
+- the `nexus` command is available through `uv run nexus`
+- you are willing to stay on one machine until Demo 1 and Demo 2 feel boring
 
-Why:
+Why `uv` matters:
 
-- Koi already supports Nexus embed mode
-- when no Nexus URL is configured, the CLI resolves Nexus in embed mode and auto-starts local Nexus
-- `koi start --admin` gives you the easiest single-machine loop: REPL, admin panel, and TUI
+- local Nexus embed mode currently resolves its binary as `uv run nexus`
+- that means local auto-start is zero-config at the Koi level, but it still depends on `uv` being present
 
-If Nexus does not start by default in this mode, treat that as a bug, not as something you should work around for the early demos.
+If `uv run nexus` is missing, fix that first. Do not jump to remote Nexus just to get around local setup.
+
+## How To Run `koi`
+
+The examples below use `koi ...` for readability.
+
+If you already have a `koi` binary installed, use the commands exactly as written.
+
+If you are running from this monorepo, do this first:
+
+```bash
+git clone https://github.com/windoliver/koi.git
+cd koi
+bun install
+bun run build:cli
+```
+
+Then run the CLI from the repo as:
+
+```bash
+bun run koi -- start --dry-run
+bun run koi -- start --admin
+bun run koi -- tui
+```
+
+Notes for the monorepo path:
+
+- `bun install` may fail in `lefthook install` if this repo already has a local `core.hooksPath`; if that happens, run `lefthook install --force` and continue
+- the repo does not put a plain `koi` binary on your shell `PATH`; inside this repo, use `bun run koi -- ...`
+- if you want the full workspace built, `bun run build` still works, but `bun run build:cli` is the shortest first-timer path
+
+## Nexus Mode: Local First, Remote By URL Only
+
+This is the most important setup rule in the whole guide:
+
+- local mode: do not set `nexus.url`, do not pass `--nexus-url`, do not set `NEXUS_URL`
+- remote mode: keep the same agent and the same rest of the manifest, and provide only a remote URL
+
+The CLI already resolves Nexus in this priority order:
+
+1. `--nexus-url`
+2. `NEXUS_URL`
+3. `nexus.url` in `koi.yaml`
+4. no URL -> local embed mode
+
+That means the intended switch really is this simple:
+
+```bash
+# Local embed mode
+koi start --admin
+
+# One-off remote switch for this launch only
+koi start --admin --nexus-url https://nexus.example.com
+
+# Or use an env var
+NEXUS_URL=https://nexus.example.com koi start --admin
+```
+
+And if you want the switch to live in config instead of the shell:
+
+```yaml
+nexus:
+  url: https://nexus.example.com
+```
+
+If changing from local to remote Nexus requires extra manifest rewrites, treat that as a bug.
 
 ## Ports You Will Use
 
@@ -42,6 +107,7 @@ For the first two demos, stay on `koi start --admin` so you do not have to think
 ## Commands You Will Reuse
 
 ```bash
+koi init my-agent
 koi start --dry-run
 koi start --admin
 koi tui
@@ -49,21 +115,24 @@ koi serve --admin --port 9100
 koi doctor
 ```
 
-## Base Manifest For Demo 1
+## Base `koi.yaml` For Demo 1
 
 Start from something this small:
 
 ```yaml
 name: demo-1-first-contact
 version: 0.1.0
+description: First local Koi demo
 model: "anthropic:claude-haiku-4-5-20251001"
+engine: loop
+
+# Leave nexus.url unset for local embed mode.
+# Add it only when you intentionally switch to remote/shared Nexus.
+# nexus:
+#   url: https://nexus.example.com
 
 channels:
   - name: "@koi/channel-cli"
-
-tools:
-  koi:
-    - name: "@koi/tool-ask-user"
 
 context:
   bootstrap: true
@@ -71,9 +140,10 @@ context:
 
 Important:
 
-- there is no `nexus:` section here on purpose
+- there is no active `nexus:` section here on purpose
 - leaving `nexus.url` unset is what keeps you in local embed mode
-- add remote Nexus later, not now
+- `@koi/channel-cli` stays on so you always have one simple way to drive the agent
+- `context.bootstrap: true` gives you the normal local bootstrap path without extra work
 
 ## Demo 1 - First Contact (P1)
 
@@ -103,7 +173,7 @@ koi init my-agent
 cd my-agent
 ```
 
-2. Replace the generated manifest with the base manifest above.
+2. Open the generated `koi.yaml` and make sure it matches the base manifest above.
 
 3. Dry-run it first.
 
@@ -147,14 +217,16 @@ If Demo 1 fails, do not move on. Fix this first:
 - manifest errors -> rerun `koi start --dry-run`
 - admin missing -> confirm you used `--admin`
 - TUI missing agent -> confirm it is pointed at `3100`
-- Nexus confusion -> remove any explicit `nexus.url` or `--nexus-url` and retry
+- Nexus confusion -> remove any explicit `nexus.url`, `NEXUS_URL`, or `--nexus-url` and retry
+- Nexus did not auto-start -> confirm `uv` is installed and that `uv run nexus` works
 
-## Demo 2 - Connected Agent + Nexus (P2)
+## Demo 2 - Sessions, Logs, And Real Nexus Behavior (P2)
 
 Goal:
 
 - prove the default local Nexus path is real, not theoretical
 - prove sessions and agent files survive beyond one prompt
+- prove the local-to-remote switch is only a URL change
 - only then add real external connectors
 
 Packages you are exercising:
@@ -170,7 +242,7 @@ Steps:
 
 1. Keep using `koi start --admin`.
 
-2. Do not add `nexus.url`.
+2. Do not add `nexus.url` yet.
 
 3. Add one or two more turns in CLI or TUI.
 
@@ -180,7 +252,15 @@ Steps:
 
 6. Use `/logs` in the TUI and confirm recent activity is there.
 
-7. Restart `koi start --admin`, then reconnect with `koi tui` and confirm the admin-side agent/session files are still understandable.
+7. Restart `koi start --admin`, then reconnect with `koi tui` and confirm the admin-side agent and session data still make sense.
+
+8. Only after local is stable, test the remote Nexus switch by changing exactly one thing:
+
+- pass `--nexus-url https://nexus.example.com`, or
+- set `NEXUS_URL=https://nexus.example.com`, or
+- add `nexus.url` to `koi.yaml`
+
+9. Run the same `koi start --admin` and `koi tui` flow again. The rest of the manifest should stay the same.
 
 Only after that should you add real connector demos such as Gmail, Calendar, Drive, Notion, or Todoist.
 
@@ -190,11 +270,12 @@ Stop checklist for Demo 2:
 - `/logs` returns recent lifecycle data
 - restarting the local agent does not make the setup feel stateless
 - you can explain to yourself that local Nexus is running because you left `nexus.url` unset
+- remote Nexus uses the same agent flow once you provide only the URL
 
 What is still missing at this point:
 
 - third-party credentials
-- remote/shared Nexus
+- remote/shared Nexus auth via `NEXUS_API_KEY`
 - production deployment
 
 That is fine. Do not add them yet.
@@ -345,17 +426,18 @@ Those four give you the shortest path to understanding what the system is doing.
 
 These are the places where you will still need custom setup or a follow-up doc:
 
-- third-party credentials for Gmail, Slack, Discord, Telegram, Voice, Home Assistant, HubSpot, finance APIs, and similar demos
-- remote/shared Nexus instead of local embed mode
+- credential-by-credential setup for Anthropic, OpenAI, Gmail, Slack, Discord, Telegram, Voice, Home Assistant, HubSpot, finance APIs, and similar demos
+- a clean remote/shared Nexus setup section that covers `NEXUS_API_KEY`, shared tenancy, and production-style auth
+- a short troubleshooting page for local prerequisites such as `uv run nexus` and monorepo `lefthook` friction
 - Temporal and multi-node/federation deployment details
 - per-demo production manifests for every single MCP-backed example in `demo-strategy.md`
 
 If you want, the next pass should be:
 
-1. add a `koi.yaml` example for Demo 1
-2. add a `koi.yaml` example for Demo 2
-3. add one governed manifest for Demo 6
-4. add one browser manifest for Demo 10
-5. add one swarm manifest for Demo 12
+1. add a `koi.yaml` example for Demo 2
+2. add one governed manifest for Demo 6
+3. add one browser manifest for Demo 10
+4. add one swarm manifest for Demo 12
+5. add one remote Nexus example with `NEXUS_API_KEY`
 
 That will keep the guide progressive instead of turning it back into a wall of options.
