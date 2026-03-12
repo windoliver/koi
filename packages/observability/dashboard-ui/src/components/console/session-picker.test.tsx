@@ -5,7 +5,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { fireEvent } from "@testing-library/react";
 import type { SessionEntry } from "../../hooks/use-session-history.js";
-import { render, screen } from "../../__tests__/setup.js";
+import { render } from "../../__tests__/setup.js";
 import { SessionPicker } from "./session-picker.js";
 
 function makeEntry(id: string, modifiedAt = 0): SessionEntry {
@@ -19,7 +19,7 @@ function makeEntry(id: string, modifiedAt = 0): SessionEntry {
 
 describe("SessionPicker", () => {
   test("shows 'No previous sessions' when empty", () => {
-    render(
+    const { getByText } = render(
       <SessionPicker
         sessions={[]}
         isLoading={false}
@@ -28,11 +28,11 @@ describe("SessionPicker", () => {
         onNewSession={mock(() => {})}
       />,
     );
-    expect(screen.getByText("No previous sessions")).toBeDefined();
+    expect(getByText("No previous sessions")).toBeDefined();
   });
 
   test("shows loading state", () => {
-    render(
+    const { getByText } = render(
       <SessionPicker
         sessions={[]}
         isLoading={true}
@@ -41,12 +41,12 @@ describe("SessionPicker", () => {
         onNewSession={mock(() => {})}
       />,
     );
-    expect(screen.getByText("Loading...")).toBeDefined();
+    expect(getByText("Loading...")).toBeDefined();
   });
 
   test("renders session entries", () => {
     const sessions = [makeEntry("sess-1"), makeEntry("sess-2")];
-    render(
+    const { getByText } = render(
       <SessionPicker
         sessions={sessions}
         isLoading={false}
@@ -55,14 +55,14 @@ describe("SessionPicker", () => {
         onNewSession={mock(() => {})}
       />,
     );
-    expect(screen.getByText("sess-1")).toBeDefined();
-    expect(screen.getByText("sess-2")).toBeDefined();
+    expect(getByText("sess-1")).toBeDefined();
+    expect(getByText("sess-2")).toBeDefined();
   });
 
   test("calls onSelect when clicking a session", () => {
     const onSelect = mock(() => {});
     const sessions = [makeEntry("sess-1")];
-    render(
+    const { getByText } = render(
       <SessionPicker
         sessions={sessions}
         isLoading={false}
@@ -71,14 +71,14 @@ describe("SessionPicker", () => {
         onNewSession={mock(() => {})}
       />,
     );
-    fireEvent.click(screen.getByText("sess-1"));
+    fireEvent.click(getByText("sess-1"));
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
   test("does not call onSelect for already-active session", () => {
     const onSelect = mock(() => {});
     const sessions = [makeEntry("sess-1")];
-    render(
+    const { getByText } = render(
       <SessionPicker
         sessions={sessions}
         isLoading={false}
@@ -87,13 +87,13 @@ describe("SessionPicker", () => {
         onNewSession={mock(() => {})}
       />,
     );
-    fireEvent.click(screen.getByText("sess-1"));
+    fireEvent.click(getByText("sess-1"));
     expect(onSelect).not.toHaveBeenCalled();
   });
 
   test("calls onNewSession when clicking New", () => {
     const onNewSession = mock(() => {});
-    render(
+    const { getByText } = render(
       <SessionPicker
         sessions={[]}
         isLoading={false}
@@ -102,12 +102,12 @@ describe("SessionPicker", () => {
         onNewSession={onNewSession}
       />,
     );
-    fireEvent.click(screen.getByText("New"));
+    fireEvent.click(getByText("New"));
     expect(onNewSession).toHaveBeenCalledTimes(1);
   });
 
   test("renders Sessions header", () => {
-    render(
+    const { getByText } = render(
       <SessionPicker
         sessions={[]}
         isLoading={false}
@@ -116,12 +116,12 @@ describe("SessionPicker", () => {
         onNewSession={mock(() => {})}
       />,
     );
-    expect(screen.getByText("Sessions")).toBeDefined();
+    expect(getByText("Sessions")).toBeDefined();
   });
 
   test("shows 'Unknown' for zero timestamp", () => {
     const sessions = [makeEntry("sess-1", 0)];
-    render(
+    const { getByText } = render(
       <SessionPicker
         sessions={sessions}
         isLoading={false}
@@ -130,6 +130,6 @@ describe("SessionPicker", () => {
         onNewSession={mock(() => {})}
       />,
     );
-    expect(screen.getByText("Unknown")).toBeDefined();
+    expect(getByText("Unknown")).toBeDefined();
   });
 });

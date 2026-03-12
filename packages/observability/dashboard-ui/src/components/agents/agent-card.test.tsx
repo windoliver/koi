@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { MemoryRouter } from "react-router-dom";
-import { render, screen } from "../../__tests__/setup.js";
+import { render } from "../../__tests__/setup.js";
 import { makeAgentSummary, resetFixtureCounters } from "../../__tests__/fixtures.js";
 import { AgentCard } from "./agent-card.js";
 
@@ -20,20 +20,20 @@ describe("AgentCard", () => {
 
   test("renders agent name", () => {
     const agent = makeAgentSummary({ name: "my-agent" });
-    renderCard(agent);
-    expect(screen.getByText("my-agent")).toBeDefined();
+    const { getByText } = renderCard(agent);
+    expect(getByText("my-agent")).toBeDefined();
   });
 
   test("renders agent type", () => {
     const agent = makeAgentSummary({ agentType: "worker" });
-    renderCard(agent);
-    expect(screen.getByText("worker")).toBeDefined();
+    const { getByText } = renderCard(agent);
+    expect(getByText("worker")).toBeDefined();
   });
 
   test("renders model when present", () => {
     const agent = makeAgentSummary({ model: "claude-opus-4-6" });
-    renderCard(agent);
-    expect(screen.getByText("claude-opus-4-6")).toBeDefined();
+    const { getByText } = renderCard(agent);
+    expect(getByText("claude-opus-4-6")).toBeDefined();
   });
 
   test("does not render model row when absent", () => {
@@ -46,31 +46,31 @@ describe("AgentCard", () => {
 
   test("renders channel list", () => {
     const agent = makeAgentSummary({ channels: ["cli", "telegram"] });
-    renderCard(agent);
-    expect(screen.getByText("cli, telegram")).toBeDefined();
+    const { getByText } = renderCard(agent);
+    expect(getByText("cli, telegram")).toBeDefined();
   });
 
   test("renders 'none' when no channels", () => {
     const agent = makeAgentSummary({ channels: [] });
-    renderCard(agent);
-    expect(screen.getByText("none")).toBeDefined();
+    const { getByText } = renderCard(agent);
+    expect(getByText("none")).toBeDefined();
   });
 
   test("renders turn count", () => {
     const agent = makeAgentSummary({ turns: 42 });
-    renderCard(agent);
-    expect(screen.getByText("42")).toBeDefined();
+    const { getByText } = renderCard(agent);
+    expect(getByText("42")).toBeDefined();
   });
 
   test("renders state badge", () => {
     const agent = makeAgentSummary({ state: "suspended" });
-    renderCard(agent);
-    expect(screen.getByText("suspended")).toBeDefined();
+    const { getByText } = renderCard(agent);
+    expect(getByText("suspended")).toBeDefined();
   });
 
   test("renders Open Console button", () => {
     const agent = makeAgentSummary();
-    renderCard(agent);
-    expect(screen.getByText("Open Console")).toBeDefined();
+    const { getByText } = renderCard(agent);
+    expect(getByText("Open Console")).toBeDefined();
   });
 });

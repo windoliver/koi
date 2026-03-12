@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cleanup, render, screen } from "../../__tests__/setup.js";
+import { cleanup, render } from "../../__tests__/setup.js";
 import { ProcessStateBadge } from "./process-state-badge.js";
 
 describe("ProcessStateBadge", () => {
@@ -16,13 +16,13 @@ describe("ProcessStateBadge", () => {
 
     for (const state of states) {
       cleanup();
-      render(<ProcessStateBadge state={state} />);
-      expect(screen.getByText(state)).toBeDefined();
+      const { getByText } = render(<ProcessStateBadge state={state} />);
+      expect(getByText(state)).toBeDefined();
     }
   });
 
   test("renders unknown state with default styling", () => {
-    render(<ProcessStateBadge state="rebooting" />);
-    expect(screen.getByText("rebooting")).toBeDefined();
+    const { getByText } = render(<ProcessStateBadge state="rebooting" />);
+    expect(getByText("rebooting")).toBeDefined();
   });
 });

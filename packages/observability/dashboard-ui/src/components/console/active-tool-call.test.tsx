@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { render } from "../../__tests__/setup.js";
 import { ActiveToolCallIndicator } from "./active-tool-call.js";
 
 describe("ActiveToolCallIndicator", () => {
@@ -13,28 +13,28 @@ describe("ActiveToolCallIndicator", () => {
   });
 
   test("renders active tool call with name and running status", () => {
-    render(
+    const { getByText } = render(
       <ActiveToolCallIndicator
         toolCalls={{ tc1: { name: "search", args: "" } }}
       />,
     );
-    expect(screen.getByText("search")).toBeDefined();
-    expect(screen.getByText("running...")).toBeDefined();
+    expect(getByText("search")).toBeDefined();
+    expect(getByText("running...")).toBeDefined();
   });
 
   test("renders accumulated args when present", () => {
-    render(
+    const { getByText } = render(
       <ActiveToolCallIndicator
         toolCalls={{ tc1: { name: "lookup", args: '{"q":"test"}' } }}
       />,
     );
-    expect(screen.getByText("lookup")).toBeDefined();
+    expect(getByText("lookup")).toBeDefined();
     // Pretty-printed JSON
-    expect(screen.getByText(/"q": "test"/)).toBeDefined();
+    expect(getByText(/"q": "test"/)).toBeDefined();
   });
 
   test("renders multiple active tool calls", () => {
-    render(
+    const { getByText } = render(
       <ActiveToolCallIndicator
         toolCalls={{
           tc1: { name: "search", args: "" },
@@ -42,8 +42,8 @@ describe("ActiveToolCallIndicator", () => {
         }}
       />,
     );
-    expect(screen.getByText("search")).toBeDefined();
-    expect(screen.getByText("read_file")).toBeDefined();
+    expect(getByText("search")).toBeDefined();
+    expect(getByText("read_file")).toBeDefined();
   });
 
   test("truncates very long partial args", () => {

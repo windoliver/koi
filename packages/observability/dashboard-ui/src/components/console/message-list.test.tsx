@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ChatMessage } from "../../stores/chat-store.js";
 import { MAX_RENDERED_MESSAGES, useChatStore } from "../../stores/chat-store.js";
-import { render, screen } from "../../__tests__/setup.js";
+import { render } from "../../__tests__/setup.js";
 import { MessageList } from "./message-list.js";
 
 /** Reset chat store between tests. */
@@ -30,14 +30,14 @@ function assistantMsg(text: string): ChatMessage {
 
 describe("MessageList", () => {
   test("shows empty state when no messages and not streaming", () => {
-    render(<MessageList />);
-    expect(screen.getByText("Send a message to start the conversation")).toBeDefined();
+    const { getByText } = render(<MessageList />);
+    expect(getByText("Send a message to start the conversation")).toBeDefined();
   });
 
   test("does not show empty state when messages exist", () => {
     useChatStore.getState().addMessage(userMsg("hello"));
-    render(<MessageList />);
-    const emptyStates = screen.queryAllByText("Send a message to start the conversation");
+    const { queryAllByText } = render(<MessageList />);
+    const emptyStates = queryAllByText("Send a message to start the conversation");
     expect(emptyStates.length).toBe(0);
   });
 
@@ -46,9 +46,9 @@ describe("MessageList", () => {
     state.addMessage(userMsg("What is 2+2?"));
     state.addMessage(assistantMsg("4"));
 
-    render(<MessageList />);
-    expect(screen.getByText("What is 2+2?")).toBeDefined();
-    expect(screen.getByText("4")).toBeDefined();
+    const { getByText } = render(<MessageList />);
+    expect(getByText("What is 2+2?")).toBeDefined();
+    expect(getByText("4")).toBeDefined();
   });
 
   test("shows 'Thinking...' when streaming with no pending text and messages exist", () => {
@@ -56,14 +56,14 @@ describe("MessageList", () => {
     state.addMessage(userMsg("hello"));
     state.setStreaming(true);
 
-    render(<MessageList />);
-    expect(screen.getByText("Thinking...")).toBeDefined();
+    const { getByText } = render(<MessageList />);
+    expect(getByText("Thinking...")).toBeDefined();
   });
 
   test("does not show 'Thinking...' when not streaming", () => {
     useChatStore.getState().addMessage(userMsg("hello"));
-    render(<MessageList />);
-    const thinking = screen.queryAllByText("Thinking...");
+    const { queryAllByText } = render(<MessageList />);
+    const thinking = queryAllByText("Thinking...");
     expect(thinking.length).toBe(0);
   });
 
@@ -73,8 +73,8 @@ describe("MessageList", () => {
     state.setStreaming(true);
     state.appendTokens("Some partial text");
 
-    render(<MessageList />);
-    const thinking = screen.queryAllByText("Thinking...");
+    const { queryAllByText } = render(<MessageList />);
+    const thinking = queryAllByText("Thinking...");
     expect(thinking.length).toBe(0);
   });
 
@@ -84,8 +84,8 @@ describe("MessageList", () => {
     state.setStreaming(true);
     state.appendTokens("Partial response");
 
-    render(<MessageList />);
-    expect(screen.getByText("Partial response")).toBeDefined();
+    const { getByText } = render(<MessageList />);
+    expect(getByText("Partial response")).toBeDefined();
   });
 
   test("shows 'earlier messages' indicator when total exceeds MAX_RENDERED_MESSAGES", () => {
@@ -95,8 +95,8 @@ describe("MessageList", () => {
       state.addMessage(userMsg(`msg-${String(i)}`));
     }
 
-    render(<MessageList />);
-    expect(screen.getByText("20 earlier messages not shown")).toBeDefined();
+    const { getByText } = render(<MessageList />);
+    expect(getByText("20 earlier messages not shown")).toBeDefined();
   });
 
   test("does not show 'earlier messages' when under threshold", () => {
@@ -105,8 +105,8 @@ describe("MessageList", () => {
       state.addMessage(userMsg(`msg-${String(i)}`));
     }
 
-    render(<MessageList />);
-    const earlier = screen.queryAllByText(/earlier messages not shown/);
+    const { queryAllByText } = render(<MessageList />);
+    const earlier = queryAllByText(/earlier messages not shown/);
     expect(earlier.length).toBe(0);
   });
 });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { cleanup, render, screen } from "../../__tests__/setup.js";
+import { cleanup, render } from "../../__tests__/setup.js";
 import { AgentStatusBadge } from "./agent-status-badge.js";
 
 describe("AgentStatusBadge", () => {
@@ -8,8 +8,8 @@ describe("AgentStatusBadge", () => {
   });
 
   test("renders state text", () => {
-    render(<AgentStatusBadge state="running" />);
-    expect(screen.getByText("running")).toBeDefined();
+    const { getByText } = render(<AgentStatusBadge state="running" />);
+    expect(getByText("running")).toBeDefined();
   });
 
   test("renders for each known state", () => {
@@ -23,7 +23,7 @@ describe("AgentStatusBadge", () => {
   });
 
   test("renders unknown state with default style", () => {
-    render(<AgentStatusBadge state={"unknown" as "running"} />);
-    expect(screen.getByText("unknown")).toBeDefined();
+    const { getByText } = render(<AgentStatusBadge state={"unknown" as "running"} />);
+    expect(getByText("unknown")).toBeDefined();
   });
 });

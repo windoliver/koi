@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { fireEvent } from "@testing-library/react";
 import { useChatStore } from "../../stores/chat-store.js";
-import { render, screen } from "../../__tests__/setup.js";
+import { render } from "../../__tests__/setup.js";
 import { ConsoleView } from "./console-view.js";
 
 /**
@@ -83,7 +83,9 @@ function renderConsole(agentId = "agent-1"): ReturnType<typeof render> & { reado
   const result = render(<ConsoleView agentId={agentId} onBack={onBack} />);
   return {
     ...result,
-    rerenderConsole: () => result.rerender(<ConsoleView agentId={agentId} onBack={onBack} />),
+    rerenderConsole: () => {
+      result.rerender(<ConsoleView agentId={agentId} onBack={onBack} />);
+    },
   };
 }
 
@@ -96,32 +98,33 @@ describe("ConsoleView", () => {
   });
 
   test("renders agent name via header", () => {
-    renderConsole("agent-1");
-    expect(screen.getByText("test-agent")).toBeDefined();
+    const { getAllByText } = renderConsole("agent-1");
+    const matches = getAllByText("test-agent");
+    expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 
   test("renders composer", () => {
-    renderConsole();
-    expect(screen.getByPlaceholderText("Send a message...")).toBeDefined();
+    const { getByPlaceholderText } = renderConsole();
+    expect(getByPlaceholderText("Send a message...")).toBeDefined();
   });
 
   test("shows empty conversation state initially", () => {
-    renderConsole();
-    expect(screen.getByText("Send a message to start the conversation")).toBeDefined();
+    const { getByText } = renderConsole();
+    expect(getByText("Send a message to start the conversation")).toBeDefined();
   });
 
   test("shows error banner when error is set", () => {
-    const { rerenderConsole } = renderConsole();
+    const { rerenderConsole, getByText } = renderConsole();
     useChatStore.setState({ error: "Connection lost" });
     rerenderConsole();
-    expect(screen.getByText("Connection lost")).toBeDefined();
+    expect(getByText("Connection lost")).toBeDefined();
   });
 
   test("error banner has dismiss button", () => {
-    const { rerenderConsole } = renderConsole();
+    const { rerenderConsole, getByText } = renderConsole();
     useChatStore.setState({ error: "Something failed" });
     rerenderConsole();
-    const dismiss = screen.getByText("Dismiss");
+    const dismiss = getByText("Dismiss");
     expect(dismiss).toBeDefined();
 
     fireEvent.click(dismiss);
@@ -129,40 +132,40 @@ describe("ConsoleView", () => {
   });
 
   test("shows retry button when error and lastUserMessage exist", () => {
-    const { rerenderConsole } = renderConsole();
+    const { rerenderConsole, getByText } = renderConsole();
     useChatStore.setState({ error: "Stream failed", lastUserMessage: "hello" });
     rerenderConsole();
-    expect(screen.getByText("Retry")).toBeDefined();
+    expect(getByText("Retry")).toBeDefined();
   });
 
   test("does not show retry button when no lastUserMessage", () => {
-    const { rerenderConsole } = renderConsole();
+    const { rerenderConsole, queryAllByText } = renderConsole();
     useChatStore.setState({ error: "Stream failed" });
     rerenderConsole();
-    const retry = screen.queryAllByText("Retry");
+    const retry = queryAllByText("Retry");
     expect(retry.length).toBe(0);
   });
 
   test("does not show error banner when no error", () => {
-    renderConsole();
-    const dismiss = screen.queryAllByText("Dismiss");
+    const { queryAllByText } = renderConsole();
+    const dismiss = queryAllByText("Dismiss");
     expect(dismiss.length).toBe(0);
   });
 
   test("renders Back button", () => {
-    renderConsole();
-    expect(screen.getByText("Back")).toBeDefined();
+    const { getByText } = renderConsole();
+    expect(getByText("Back")).toBeDefined();
   });
 
   test("shows terminated banner when agent is terminated", () => {
-    const { rerenderConsole } = renderConsole();
+    const { rerenderConsole, getByText } = renderConsole();
     useChatStore.setState({ agentTerminated: true });
     rerenderConsole();
-    expect(screen.getByText(/Agent has been terminated/)).toBeDefined();
+    expect(getByText(/Agent has been terminated/)).toBeDefined();
   });
 
   test("shows session picker with 'No previous sessions'", () => {
-    renderConsole();
-    expect(screen.getByText("No previous sessions")).toBeDefined();
+    const { getByText } = renderConsole();
+    expect(getByText("No previous sessions")).toBeDefined();
   });
 });

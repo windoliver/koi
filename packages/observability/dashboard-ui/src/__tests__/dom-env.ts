@@ -23,4 +23,8 @@ Object.assign(globalThis, {
   CustomEvent: window.CustomEvent,
   KeyboardEvent: window.KeyboardEvent,
   getComputedStyle: window.getComputedStyle.bind(window),
+  requestAnimationFrame: (cb: FrameRequestCallback) => setTimeout(cb, 0) as unknown as number,
+  cancelAnimationFrame: (id: number) => {
+    clearTimeout(id);
+  },
 });

@@ -2,7 +2,7 @@
  * useAguiChat hook tests — sendMessage, cancel, event→store mapping, error handling.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { act, renderHook } from "@testing-library/react";
 import { useChatStore } from "../stores/chat-store.js";
 import { useAguiChat } from "./use-agui-chat.js";
@@ -33,24 +33,35 @@ function sseEvent(type: string, data: Record<string, unknown> = {}): string {
   return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 }
 
-/** Store original fetch for cleanup. */
-const originalFetch = globalThis.fetch;
-const originalRAF = globalThis.requestAnimationFrame;
-const originalCAF = globalThis.cancelAnimationFrame;
+/** Active spies — restored in afterEach. */
+let fetchSpy: ReturnType<typeof spyOn> | undefined;
+let rafSpy: ReturnType<typeof spyOn> | undefined;
+let cafSpy: ReturnType<typeof spyOn> | undefined;
+
+/** Replace globalThis.fetch with a spy returning the given mock response. */
+function mockFetch(impl: () => Promise<Response>): void {
+  fetchSpy?.mockRestore();
+  fetchSpy = spyOn(globalThis, "fetch").mockImplementation(impl);
+}
 
 beforeEach(() => {
   // Mock requestAnimationFrame to execute immediately (synchronous flush)
-  globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
-    cb(0);
-    return 0;
-  };
-  globalThis.cancelAnimationFrame = () => {};
+  rafSpy = spyOn(globalThis, "requestAnimationFrame").mockImplementation(
+    (cb: FrameRequestCallback): number => {
+      cb(0);
+      return 0;
+    },
+  );
+  cafSpy = spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => {});
 });
 
 afterEach(() => {
-  globalThis.fetch = originalFetch;
-  globalThis.requestAnimationFrame = originalRAF;
-  globalThis.cancelAnimationFrame = originalCAF;
+  fetchSpy?.mockRestore();
+  fetchSpy = undefined;
+  rafSpy?.mockRestore();
+  rafSpy = undefined;
+  cafSpy?.mockRestore();
+  cafSpy = undefined;
   useChatStore.setState({
     messages: [],
     session: null,
@@ -63,11 +74,13 @@ afterEach(() => {
 
 describe("useAguiChat", () => {
   test("sendMessage adds user message and starts streaming", async () => {
-    globalThis.fetch = async () =>
-      new Response(makeSSEStream([sseEvent("RUN_STARTED"), sseEvent("RUN_FINISHED")]), {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
+    mockFetch(
+      async () =>
+        new Response(makeSSEStream([sseEvent("RUN_STARTED"), sseEvent("RUN_FINISHED")]), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -88,18 +101,20 @@ describe("useAguiChat", () => {
   });
 
   test("text message events produce assistant message", async () => {
-    globalThis.fetch = async () =>
-      new Response(
-        makeSSEStream([
-          sseEvent("RUN_STARTED"),
-          sseEvent("TEXT_MESSAGE_START", { messageId: "m1", role: "assistant" }),
-          sseEvent("TEXT_MESSAGE_CONTENT", { messageId: "m1", delta: "Hello " }),
-          sseEvent("TEXT_MESSAGE_CONTENT", { messageId: "m1", delta: "world" }),
-          sseEvent("TEXT_MESSAGE_END", { messageId: "m1" }),
-          sseEvent("RUN_FINISHED"),
-        ]),
-        { status: 200, headers: { "content-type": "text/event-stream" } },
-      );
+    mockFetch(
+      async () =>
+        new Response(
+          makeSSEStream([
+            sseEvent("RUN_STARTED"),
+            sseEvent("TEXT_MESSAGE_START", { messageId: "m1", role: "assistant" }),
+            sseEvent("TEXT_MESSAGE_CONTENT", { messageId: "m1", delta: "Hello " }),
+            sseEvent("TEXT_MESSAGE_CONTENT", { messageId: "m1", delta: "world" }),
+            sseEvent("TEXT_MESSAGE_END", { messageId: "m1" }),
+            sseEvent("RUN_FINISHED"),
+          ]),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -120,18 +135,20 @@ describe("useAguiChat", () => {
   });
 
   test("tool call events produce tool_call message", async () => {
-    globalThis.fetch = async () =>
-      new Response(
-        makeSSEStream([
-          sseEvent("RUN_STARTED"),
-          sseEvent("TOOL_CALL_START", { toolCallId: "tc1", toolCallName: "search" }),
-          sseEvent("TOOL_CALL_ARGS", { toolCallId: "tc1", delta: '{"q":"test"}' }),
-          sseEvent("TOOL_CALL_END", { toolCallId: "tc1" }),
-          sseEvent("TOOL_CALL_RESULT", { toolCallId: "tc1", result: '["found"]' }),
-          sseEvent("RUN_FINISHED"),
-        ]),
-        { status: 200, headers: { "content-type": "text/event-stream" } },
-      );
+    mockFetch(
+      async () =>
+        new Response(
+          makeSSEStream([
+            sseEvent("RUN_STARTED"),
+            sseEvent("TOOL_CALL_START", { toolCallId: "tc1", toolCallName: "search" }),
+            sseEvent("TOOL_CALL_ARGS", { toolCallId: "tc1", delta: '{"q":"test"}' }),
+            sseEvent("TOOL_CALL_END", { toolCallId: "tc1" }),
+            sseEvent("TOOL_CALL_RESULT", { toolCallId: "tc1", result: '["found"]' }),
+            sseEvent("RUN_FINISHED"),
+          ]),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -153,15 +170,17 @@ describe("useAguiChat", () => {
   });
 
   test("STEP_STARTED produces lifecycle message", async () => {
-    globalThis.fetch = async () =>
-      new Response(
-        makeSSEStream([
-          sseEvent("RUN_STARTED"),
-          sseEvent("STEP_STARTED", { stepName: "planning" }),
-          sseEvent("RUN_FINISHED"),
-        ]),
-        { status: 200, headers: { "content-type": "text/event-stream" } },
-      );
+    mockFetch(
+      async () =>
+        new Response(
+          makeSSEStream([
+            sseEvent("RUN_STARTED"),
+            sseEvent("STEP_STARTED", { stepName: "planning" }),
+            sseEvent("RUN_FINISHED"),
+          ]),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -181,14 +200,16 @@ describe("useAguiChat", () => {
   });
 
   test("RUN_ERROR sets error on store", async () => {
-    globalThis.fetch = async () =>
-      new Response(
-        makeSSEStream([
-          sseEvent("RUN_STARTED"),
-          sseEvent("RUN_ERROR", { message: "Model rate limited" }),
-        ]),
-        { status: 200, headers: { "content-type": "text/event-stream" } },
-      );
+    mockFetch(
+      async () =>
+        new Response(
+          makeSSEStream([
+            sseEvent("RUN_STARTED"),
+            sseEvent("RUN_ERROR", { message: "Model rate limited" }),
+          ]),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -205,16 +226,18 @@ describe("useAguiChat", () => {
   });
 
   test("RUN_ERROR clears active tool calls", async () => {
-    globalThis.fetch = async () =>
-      new Response(
-        makeSSEStream([
-          sseEvent("RUN_STARTED"),
-          sseEvent("TOOL_CALL_START", { toolCallId: "tc1", toolCallName: "search" }),
-          sseEvent("TOOL_CALL_ARGS", { toolCallId: "tc1", delta: '{"q":"test"}' }),
-          sseEvent("RUN_ERROR", { message: "Model crashed" }),
-        ]),
-        { status: 200, headers: { "content-type": "text/event-stream" } },
-      );
+    mockFetch(
+      async () =>
+        new Response(
+          makeSSEStream([
+            sseEvent("RUN_STARTED"),
+            sseEvent("TOOL_CALL_START", { toolCallId: "tc1", toolCallName: "search" }),
+            sseEvent("TOOL_CALL_ARGS", { toolCallId: "tc1", delta: '{"q":"test"}' }),
+            sseEvent("RUN_ERROR", { message: "Model crashed" }),
+          ]),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -233,11 +256,13 @@ describe("useAguiChat", () => {
   });
 
   test("HTTP error sets error message", async () => {
-    globalThis.fetch = async () =>
-      new Response("Internal Server Error", {
-        status: 500,
-        headers: { "content-type": "text/plain" },
-      });
+    mockFetch(
+      async () =>
+        new Response("Internal Server Error", {
+          status: 500,
+          headers: { "content-type": "text/plain" },
+        }),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -254,9 +279,9 @@ describe("useAguiChat", () => {
   });
 
   test("network error sets 'Connection refused'", async () => {
-    globalThis.fetch = async () => {
+    mockFetch(async () => {
       throw new TypeError("Failed to fetch");
-    };
+    });
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -274,7 +299,7 @@ describe("useAguiChat", () => {
 
   test("cancel aborts the stream and clears streaming state", async () => {
     let streamStarted = false;
-    globalThis.fetch = async () => {
+    mockFetch(async () => {
       streamStarted = true;
       // Return a stream that never ends
       return new Response(
@@ -287,7 +312,7 @@ describe("useAguiChat", () => {
         }),
         { status: 200, headers: { "content-type": "text/event-stream" } },
       );
-    };
+    });
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -309,16 +334,18 @@ describe("useAguiChat", () => {
   });
 
   test("cancel flushes remaining token buffer", async () => {
-    globalThis.fetch = async () =>
-      new Response(
-        makeSSEStream([
-          sseEvent("RUN_STARTED"),
-          sseEvent("TEXT_MESSAGE_START", { messageId: "m1", role: "assistant" }),
-          sseEvent("TEXT_MESSAGE_CONTENT", { messageId: "m1", delta: "partial" }),
-          // No TEXT_MESSAGE_END — user cancels mid-stream
-        ]),
-        { status: 200, headers: { "content-type": "text/event-stream" } },
-      );
+    mockFetch(
+      async () =>
+        new Response(
+          makeSSEStream([
+            sseEvent("RUN_STARTED"),
+            sseEvent("TEXT_MESSAGE_START", { messageId: "m1", role: "assistant" }),
+            sseEvent("TEXT_MESSAGE_CONTENT", { messageId: "m1", delta: "partial" }),
+            // No TEXT_MESSAGE_END — user cancels mid-stream
+          ]),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -340,17 +367,19 @@ describe("useAguiChat", () => {
   });
 
   test("reasoning events are silently ignored", async () => {
-    globalThis.fetch = async () =>
-      new Response(
-        makeSSEStream([
-          sseEvent("RUN_STARTED"),
-          sseEvent("REASONING_MESSAGE_START", {}),
-          sseEvent("REASONING_MESSAGE_CONTENT", { delta: "thinking..." }),
-          sseEvent("REASONING_MESSAGE_END", {}),
-          sseEvent("RUN_FINISHED"),
-        ]),
-        { status: 200, headers: { "content-type": "text/event-stream" } },
-      );
+    mockFetch(
+      async () =>
+        new Response(
+          makeSSEStream([
+            sseEvent("RUN_STARTED"),
+            sseEvent("REASONING_MESSAGE_START", {}),
+            sseEvent("REASONING_MESSAGE_CONTENT", { delta: "thinking..." }),
+            sseEvent("REASONING_MESSAGE_END", {}),
+            sseEvent("RUN_FINISHED"),
+          ]),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 
@@ -368,17 +397,19 @@ describe("useAguiChat", () => {
   });
 
   test("STATE_SNAPSHOT and CUSTOM events are silently ignored", async () => {
-    globalThis.fetch = async () =>
-      new Response(
-        makeSSEStream([
-          sseEvent("RUN_STARTED"),
-          sseEvent("STATE_SNAPSHOT", { snapshot: { key: "value" } }),
-          sseEvent("STATE_DELTA", { delta: [{ op: "add", path: "/key", value: "v" }] }),
-          sseEvent("CUSTOM", { name: "debug", value: {} }),
-          sseEvent("RUN_FINISHED"),
-        ]),
-        { status: 200, headers: { "content-type": "text/event-stream" } },
-      );
+    mockFetch(
+      async () =>
+        new Response(
+          makeSSEStream([
+            sseEvent("RUN_STARTED"),
+            sseEvent("STATE_SNAPSHOT", { snapshot: { key: "value" } }),
+            sseEvent("STATE_DELTA", { delta: [{ op: "add", path: "/key", value: "v" }] }),
+            sseEvent("CUSTOM", { name: "debug", value: {} }),
+            sseEvent("RUN_FINISHED"),
+          ]),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    );
 
     const { result } = renderHook(() => useAguiChat({ agentId: "a1" }));
 

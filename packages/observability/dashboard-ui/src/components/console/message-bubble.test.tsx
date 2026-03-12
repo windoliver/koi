@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent } from "@testing-library/react";
 import type { ChatMessage } from "../../stores/chat-store.js";
-import { render, screen } from "../../__tests__/setup.js";
+import { render } from "../../__tests__/setup.js";
 import { MessageBubble } from "./message-bubble.js";
 
 function renderBubble(message: ChatMessage): ReturnType<typeof render> {
@@ -15,20 +15,20 @@ function renderBubble(message: ChatMessage): ReturnType<typeof render> {
 describe("MessageBubble", () => {
   describe("user messages", () => {
     test("renders user text", () => {
-      renderBubble({ kind: "user", text: "Hello agent", timestamp: Date.now() });
-      expect(screen.getByText("Hello agent")).toBeDefined();
+      const { getByText } = renderBubble({ kind: "user", text: "Hello agent", timestamp: Date.now() });
+      expect(getByText("Hello agent")).toBeDefined();
     });
 
     test("renders 'You' label", () => {
-      renderBubble({ kind: "user", text: "hi", timestamp: Date.now() });
-      expect(screen.getByText("You")).toBeDefined();
+      const { getByText } = renderBubble({ kind: "user", text: "hi", timestamp: Date.now() });
+      expect(getByText("You")).toBeDefined();
     });
 
     test("renders timestamp", () => {
       const ts = new Date(2026, 0, 15, 14, 30, 45).getTime();
-      renderBubble({ kind: "user", text: "hello", timestamp: ts });
+      const { getByText } = renderBubble({ kind: "user", text: "hello", timestamp: ts });
       // Time format varies by locale, but should contain the time parts
-      const timeEl = screen.getByText(/\d{2}:\d{2}:\d{2}/);
+      const timeEl = getByText(/\d{2}:\d{2}:\d{2}/);
       expect(timeEl).toBeDefined();
     });
 
@@ -42,16 +42,16 @@ describe("MessageBubble", () => {
 
   describe("assistant messages", () => {
     test("renders assistant text as markdown", () => {
-      renderBubble({ kind: "assistant", text: "Hello **bold**", timestamp: Date.now() });
-      expect(screen.getByText("Assistant")).toBeDefined();
+      const { getByText } = renderBubble({ kind: "assistant", text: "Hello **bold**", timestamp: Date.now() });
+      expect(getByText("Assistant")).toBeDefined();
       // The bold text should be within a <strong> tag
-      const strong = screen.getByText("bold");
+      const strong = getByText("bold");
       expect(strong).toBeDefined();
     });
 
     test("renders 'Assistant' label", () => {
-      renderBubble({ kind: "assistant", text: "response", timestamp: Date.now() });
-      expect(screen.getByText("Assistant")).toBeDefined();
+      const { getByText } = renderBubble({ kind: "assistant", text: "response", timestamp: Date.now() });
+      expect(getByText("Assistant")).toBeDefined();
     });
   });
 
@@ -65,8 +65,8 @@ describe("MessageBubble", () => {
     };
 
     test("renders tool name", () => {
-      renderBubble(toolMsg);
-      expect(screen.getByText("file_search")).toBeDefined();
+      const { getByText } = renderBubble(toolMsg);
+      expect(getByText("file_search")).toBeDefined();
     });
 
     test("args and result are hidden by default (collapsed)", () => {
@@ -76,13 +76,13 @@ describe("MessageBubble", () => {
     });
 
     test("shows args and result when expanded", () => {
-      const { container } = renderBubble(toolMsg);
-      const button = screen.getByText("file_search");
+      const { container, getByText } = renderBubble(toolMsg);
+      const button = getByText("file_search");
       fireEvent.click(button);
 
       // After expanding, should show Arguments and Result sections
-      expect(screen.getByText("Arguments")).toBeDefined();
-      expect(screen.getByText("Result")).toBeDefined();
+      expect(getByText("Arguments")).toBeDefined();
+      expect(getByText("Result")).toBeDefined();
 
       // Should show pretty-printed JSON in <pre> blocks
       const pres = container.querySelectorAll("pre");
@@ -90,8 +90,8 @@ describe("MessageBubble", () => {
     });
 
     test("collapses when clicked again", () => {
-      const { container } = renderBubble(toolMsg);
-      const button = screen.getByText("file_search");
+      const { container, getByText } = renderBubble(toolMsg);
+      const button = getByText("file_search");
 
       fireEvent.click(button); // expand
       fireEvent.click(button); // collapse
@@ -101,31 +101,31 @@ describe("MessageBubble", () => {
     });
 
     test("does not show Result section when result is undefined", () => {
-      renderBubble({
+      const { getByText, queryAllByText } = renderBubble({
         kind: "tool_call",
         name: "search",
         args: "{}",
         result: undefined,
         timestamp: Date.now(),
       });
-      const button = screen.getByText("search");
+      const button = getByText("search");
       fireEvent.click(button);
 
-      expect(screen.getByText("Arguments")).toBeDefined();
+      expect(getByText("Arguments")).toBeDefined();
       // Result label should not be present
-      const resultLabels = screen.queryAllByText("Result");
+      const resultLabels = queryAllByText("Result");
       expect(resultLabels.length).toBe(0);
     });
 
     test("renders raw args when not valid JSON", () => {
-      const { container } = renderBubble({
+      const { container, getByText } = renderBubble({
         kind: "tool_call",
         name: "exec",
         args: "not-json",
         result: undefined,
         timestamp: Date.now(),
       });
-      fireEvent.click(screen.getByText("exec"));
+      fireEvent.click(getByText("exec"));
       const pre = container.querySelector("pre");
       expect(pre?.textContent).toBe("not-json");
     });
@@ -133,8 +133,8 @@ describe("MessageBubble", () => {
 
   describe("lifecycle messages", () => {
     test("renders event text", () => {
-      renderBubble({ kind: "lifecycle", event: "agent_started", timestamp: Date.now() });
-      expect(screen.getByText("agent_started")).toBeDefined();
+      const { getByText } = renderBubble({ kind: "lifecycle", event: "agent_started", timestamp: Date.now() });
+      expect(getByText("agent_started")).toBeDefined();
     });
 
     test("renders centered with italic style", () => {
