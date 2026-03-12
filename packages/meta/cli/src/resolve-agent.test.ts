@@ -57,6 +57,65 @@ afterEach(() => {
 });
 
 describe("resolveAgent — discovery integration", () => {
+  test("resolves channel descriptors discovered from nested monorepo packages", async () => {
+    const dir = makeTempDir();
+    tempDirs.push(dir);
+
+    const manifestPath = join(dir, "koi.yaml");
+    writeFileSync(
+      manifestPath,
+      [
+        "name: test-agent",
+        "version: 0.1.0",
+        'model: "anthropic:test"',
+        "channels:",
+        '  - name: "@koi/channel-cli"',
+      ].join("\n"),
+    );
+
+    const packagesDir = join(dir, "packages");
+    tempDirs.push(packagesDir);
+    const distDir = join(packagesDir, "net", "channel-cli", "dist");
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(
+      join(distDir, "index.js"),
+      `export const descriptor = {
+  kind: "channel",
+  name: "@koi/channel-cli",
+  aliases: ["cli"],
+  optionsValidator: (input) => ({ ok: true, value: input ?? {} }),
+  factory: () => ({ name: "cli", connect: async () => {}, disconnect: async () => {}, send: async () => {}, onMessage: () => () => {} }),
+};
+`,
+    );
+
+    const previousKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "test-key";
+
+    try {
+      const result = await resolveAgent({
+        manifestPath,
+        manifest: {
+          name: "test-agent",
+          version: "0.1.0",
+          model: { name: "anthropic:test" },
+          channels: [{ name: "@koi/channel-cli" }],
+        },
+        packagesDir,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.channels).toHaveLength(1);
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = previousKey;
+      }
+    }
+  });
+
   test("discovery failure degrades gracefully", async () => {
     const dir = makeTempDir();
     tempDirs.push(dir);

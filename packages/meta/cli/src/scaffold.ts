@@ -18,14 +18,6 @@ export async function writeScaffold(targetDir: string, files: FileMap): Promise<
     return { ok: false, error: "No files to write" };
   }
 
-  // Check for koi.yaml conflict in existing directory
-  if (existsSync(join(targetDir, "koi.yaml"))) {
-    return {
-      ok: false,
-      error: `A koi.yaml already exists in ${targetDir}. Remove it first or choose a different directory.`,
-    };
-  }
-
   // Write to temp directory on same filesystem for atomic rename
   const tempDir = join(
     dirname(targetDir),
@@ -51,6 +43,7 @@ export async function writeScaffold(targetDir: string, files: FileMap): Promise<
         const dest = join(targetDir, relativePath);
         const destDir = dirname(dest);
         mkdirSync(destDir, { recursive: true });
+        rmSync(dest, { recursive: true, force: true });
         renameSync(src, dest);
       }
       rmSync(tempDir, { recursive: true, force: true });

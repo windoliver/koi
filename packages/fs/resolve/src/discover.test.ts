@@ -41,6 +41,15 @@ export const descriptor = {
   }
 }
 
+function createNestedMockPackage(
+  packagesDir: string,
+  category: string,
+  name: string,
+  descriptor?: { readonly kind: string; readonly name: string },
+): void {
+  createMockPackage(join(packagesDir, category), name, descriptor);
+}
+
 afterEach(() => {
   for (const dir of tempDirs) {
     try {
@@ -83,6 +92,28 @@ describe("discoverDescriptors", () => {
       expect(result.value.length).toBe(2);
       const names = result.value.map((d) => d.name).sort();
       expect(names).toEqual(["discord", "slack"]);
+    }
+  });
+
+  test("discovers descriptors from nested monorepo category directories", async () => {
+    const dir = makeTempDir();
+    tempDirs.push(dir);
+
+    createNestedMockPackage(dir, "net", "channel-cli", {
+      kind: "channel",
+      name: "@koi/channel-cli",
+    });
+    createNestedMockPackage(dir, "middleware", "middleware-custom", {
+      kind: "middleware",
+      name: "custom",
+    });
+
+    const result = await discoverDescriptors(dir);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const names = result.value.map((descriptor) => descriptor.name).sort();
+      expect(names).toEqual(["@koi/channel-cli", "custom"]);
     }
   });
 

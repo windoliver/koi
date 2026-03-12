@@ -31,6 +31,7 @@ const {
   selectModel,
   selectEngine,
   selectChannels,
+  isValidModel,
   isValidName,
 } = await import("./steps.js");
 
@@ -177,7 +178,14 @@ describe("selectModel", () => {
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
-  test("rejects unknown --model flag value", async () => {
+  test("accepts supported provider:model values outside the curated preset list", async () => {
+    const flags: InitFlags = { ...NO_FLAGS, model: "openrouter:google/gemini-2.0-flash-001" };
+    const result = await selectModel(DEFAULT_STATE, flags);
+    expect(result?.model).toBe("openrouter:google/gemini-2.0-flash-001");
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  test("rejects unsupported --model provider", async () => {
     const flags: InitFlags = { ...NO_FLAGS, model: "fake:model-9000" };
     const result = await selectModel(DEFAULT_STATE, flags);
     expect(result).toBeNull();
@@ -187,6 +195,26 @@ describe("selectModel", () => {
   test("uses default in --yes mode", async () => {
     const result = await selectModel(DEFAULT_STATE, YES_FLAGS);
     expect(result?.model).toBe(MODELS[0]);
+  });
+});
+
+describe("isValidModel", () => {
+  test("accepts curated OpenRouter preset", () => {
+    expect(isValidModel("openrouter:anthropic/claude-sonnet-4.6")).toBe(true);
+  });
+
+  test("accepts arbitrary model names for supported providers", () => {
+    expect(isValidModel("openrouter:google/gemini-2.0-flash-001")).toBe(true);
+  });
+
+  test("rejects unsupported providers", () => {
+    expect(isValidModel("fake:model")).toBe(false);
+  });
+
+  test("rejects malformed model names", () => {
+    expect(isValidModel("openrouter")).toBe(false);
+    expect(isValidModel("openrouter:")).toBe(false);
+    expect(isValidModel(":anthropic/claude-sonnet-4.6")).toBe(false);
   });
 });
 

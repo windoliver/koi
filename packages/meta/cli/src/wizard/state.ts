@@ -6,7 +6,11 @@
 export const TEMPLATES = ["minimal", "copilot"] as const;
 export type TemplateName = (typeof TEMPLATES)[number];
 
-export const MODELS = ["anthropic:claude-sonnet-4-5-20250929", "openai:gpt-4o"] as const;
+export const MODELS = [
+  "anthropic:claude-sonnet-4-5-20250929",
+  "openai:gpt-4o",
+  "openrouter:anthropic/claude-sonnet-4.6",
+] as const;
 
 export type EngineName = string;
 

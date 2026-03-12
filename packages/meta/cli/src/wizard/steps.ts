@@ -7,6 +7,7 @@
 
 import { basename } from "node:path";
 import * as p from "@clack/prompts";
+import { PROVIDER_ENV_KEYS } from "@koi/model-router";
 import type { InitFlags } from "../args.js";
 import {
   CHANNELS,
@@ -22,9 +23,20 @@ type StepResult = WizardState | null;
 
 /** Validates an agent name: lowercase, alphanumeric, hyphens, dots, underscores. */
 const VALID_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
+const SUPPORTED_MODEL_PROVIDERS = Object.keys(PROVIDER_ENV_KEYS);
 
 export function isValidName(name: string): boolean {
   return name.length > 0 && name.length <= 214 && VALID_NAME_RE.test(name);
+}
+
+export function isValidModel(name: string): boolean {
+  const colonIndex = name.indexOf(":");
+  if (colonIndex <= 0 || colonIndex === name.length - 1) {
+    return false;
+  }
+
+  const provider = name.slice(0, colonIndex);
+  return Object.hasOwn(PROVIDER_ENV_KEYS, provider);
 }
 
 export async function selectTemplate(state: WizardState, flags: InitFlags): Promise<StepResult> {
@@ -110,11 +122,14 @@ export async function enterDescription(state: WizardState, flags: InitFlags): Pr
 
 export async function selectModel(state: WizardState, flags: InitFlags): Promise<StepResult> {
   if (flags.model) {
-    if (!(MODELS as readonly string[]).includes(flags.model)) {
-      p.cancel(`Unknown model: "${flags.model}". Available: ${MODELS.join(", ")}`);
+    const value = flags.model.trim();
+    if (!isValidModel(value)) {
+      p.cancel(
+        `Invalid model: "${flags.model}". Use "provider:model". Supported providers: ${SUPPORTED_MODEL_PROVIDERS.join(", ")}`,
+      );
       return null;
     }
-    return { ...state, model: flags.model };
+    return { ...state, model: value };
   }
   if (flags.yes) {
     return state;
