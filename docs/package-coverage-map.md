@@ -1,6 +1,6 @@
 # Package Coverage Map
 
-This appendix is generated from the current workspace `package.json` files and local package test files. Use it with `docs/user-guide.md` and `docs/test-plan.md`.
+This appendix is generated from the current workspace `package.json` files and local package test files. Use it with `docs/user-guide.md` when the main guide gets too high-level and you need package-by-package coverage.
 
 Current snapshot:
 

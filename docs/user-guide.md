@@ -1,372 +1,361 @@
-# Koi User Guide
+# Koi Progressive User Guide
 
-This guide turns the monorepo into an operator manual. It is organized by use case, not by layer, and is intended to sit above the lower-level package docs in `docs/L2`, `docs/L3`, and `docs/L4`.
+This is the single doc to use when you want to test Koi without getting crushed by the full package surface. It follows `demo-strategy.md`, starts with Demo 1, and only asks you to add one new moving part at a time.
 
-Coverage baseline for the current tree:
+The rule for this guide is simple:
 
-- 226 workspace packages across 17 families
-- 226 packages with local test files
-- 130 packages with dedicated package docs
-- demo/use-case source: `demo-strategy.md`
+1. start local
+2. keep Nexus in embed mode by default
+3. keep the CLI channel on
+4. use `koi start --admin` first so you get CLI, admin panel, and TUI together
+5. only move to the next demo when the current checklist passes
 
-Use [`package-coverage-map.md`](./package-coverage-map.md) as the package-by-package appendix.
+Use [`package-coverage-map.md`](./package-coverage-map.md) only when you need package-by-package detail.
 
-## Read This First
+## Default Working Mode
 
-The main entry points are:
+For the first demos, assume all of this unless you have a strong reason not to:
 
-- `koi` or `@koi/cli` for day-to-day operation
-- `@koi/manifest` for the YAML contract
-- `@koi/starter` for manifest-driven runtime assembly
-- `@koi/engine` plus an engine adapter such as `@koi/engine-pi`
-- `@koi/tui` for terminal operations against the admin API
+- do not set `nexus.url`
+- do not pass `--nexus-url`
+- do use `koi start --admin`
+- do keep `@koi/channel-cli` enabled
+- do open the TUI against the admin API
 
-The unpublished repo and the eventual packaged product expose the same subcommands. In the guide below, commands use the shipped CLI surface (`koi ...`). When working inside this repo before publication, invoke the same subcommands through the CLI source entrypoint instead.
+Why:
 
-## Use-Case Map
+- Koi already supports Nexus embed mode
+- when no Nexus URL is configured, the CLI resolves Nexus in embed mode and auto-starts local Nexus
+- `koi start --admin` gives you the easiest single-machine loop: REPL, admin panel, and TUI
 
-| Workflow | Primary surface | Core packages |
-| --- | --- | --- |
-| First run and local chat | `koi init`, `koi start` | `koi`, `@koi/cli`, `@koi/manifest`, `@koi/starter`, `@koi/channel-cli`, `@koi/engine`, `@koi/engine-pi` |
-| Headless services and admin | `koi serve`, `koi admin` | `@koi/cli`, `@koi/deploy`, `@koi/dashboard-api`, `@koi/dashboard-ui`, `@koi/dashboard-types`, `@koi/nexus-embed` |
-| Terminal operations | `koi tui` | `@koi/tui`, `@koi/channel-agui`, `@koi/agent-procfs`, `@koi/tracing`, `@koi/middleware-event-trace` |
-| Tools, skills, and MCP | manifest `tools` + `skills` | `@koi/filesystem`, `@koi/tools-web`, `@koi/tools-github`, `@koi/tool-browser`, `@koi/tool-exec`, `@koi/skills`, `@koi/catalog`, `@koi/resolve`, `@koi/mcp`, `@koi/mcp-server` |
-| Memory and long conversations | manifest `context` + memory middleware | `@koi/context`, `@koi/context-arena`, `@koi/middleware-hot-memory`, `@koi/middleware-conversation`, `@koi/transcript`, `@koi/session-store`, `@koi/session-repair` |
-| Channels and external surfaces | manifest `channels` | `@koi/channel-*`, `@koi/gateway*`, `@koi/webhook-*`, `@koi/acp`, `@koi/acp-protocol`, `@koi/channel-canvas-fallback`, `@koi/channel-chat-sdk` |
-| Governance and safe execution | manifest `middleware` + `forge` | `@koi/governance`, `@koi/middleware-*`, `@koi/exec-approvals`, `@koi/scope`, `@koi/delegation`, `@koi/sandbox*` |
-| Multi-agent and swarm patterns | task spawn, workspace, federation | `@koi/task-spawn`, `@koi/handoff`, `@koi/ipc-*`, `@koi/workspace*`, `@koi/federation`, `@koi/agent-spawner`, `@koi/node-stack` |
-| Browser, code, and engine selection | engine + sandbox choice | `@koi/engine-pi`, `@koi/engine-external`, `@koi/engine-acp`, `@koi/engine-loop`, `@koi/engine-claude`, `@koi/engine-rlm`, `@koi/model-router`, `@koi/browser-playwright`, `@koi/code-executor` |
-| Self-extension and release gates | forge + eval + bundle | `@koi/forge`, `@koi/forge-*`, `@koi/crystallize`, `@koi/eval`, `@koi/self-test`, `@koi/doctor`, `@koi/bundle` |
+If Nexus does not start by default in this mode, treat that as a bug, not as something you should work around for the early demos.
 
-## 1. First Contact
+## Ports You Will Use
 
-Use this path for the "YAML is the agent" experience from `demo-strategy.md` P1.
+- `koi start --admin` -> admin API on `http://localhost:3100/admin/api`
+- `koi tui` -> defaults to `http://localhost:3100/admin/api`
+- `koi serve --admin` -> admin panel shares the service port by default, usually `9100`
+- `koi admin` -> standalone admin panel on `9200` by default
 
-Typical flow:
+For the first two demos, stay on `koi start --admin` so you do not have to think about multiple ports.
+
+## Commands You Will Reuse
+
+```bash
+koi start --dry-run
+koi start --admin
+koi tui
+koi serve --admin --port 9100
+koi doctor
+```
+
+## Base Manifest For Demo 1
+
+Start from something this small:
+
+```yaml
+name: demo-1-first-contact
+version: 0.1.0
+model: "anthropic:claude-haiku-4-5-20251001"
+
+channels:
+  - name: "@koi/channel-cli"
+
+tools:
+  koi:
+    - name: "@koi/tool-ask-user"
+
+context:
+  bootstrap: true
+```
+
+Important:
+
+- there is no `nexus:` section here on purpose
+- leaving `nexus.url` unset is what keeps you in local embed mode
+- add remote Nexus later, not now
+
+## Demo 1 - First Contact (P1)
+
+Goal:
+
+- prove the agent starts
+- prove CLI chat works
+- prove admin panel works
+- prove TUI can attach and chat
+- prove local Nexus embed mode is not getting in your way
+
+Packages you are exercising:
+
+- `koi`, `@koi/cli`
+- `@koi/manifest`, `@koi/starter`
+- `@koi/channel-cli`
+- `@koi/engine`, `@koi/engine-pi`
+- `@koi/tui`
+- `@koi/nexus-embed`
+
+Steps:
+
+1. Create the demo app.
 
 ```bash
 koi init my-agent
 cd my-agent
-koi start
 ```
 
-Core packages:
+2. Replace the generated manifest with the base manifest above.
 
-- `koi` for the single-package distribution
-- `@koi/cli` for `init`, `start`, `serve`, `deploy`, `logs`, `doctor`, `tui`
-- `@koi/manifest` for YAML loading, env interpolation, and validation
-- `@koi/starter` for manifest-driven assembly
-- `@koi/channel-cli` for the REPL channel
-- `@koi/engine` and `@koi/engine-pi` for the runtime loop
-- `@koi/bootstrap` and `@koi/soul` for bootstrap context and personality shaping
-
-Author the manifest first. The main operator knobs are:
-
-- `model` for the engine/model choice
-- `channels` for how users talk to the agent
-- `tools` for Koi-native and MCP tools
-- `middleware` for safety, memory, retry, and quality behavior
-- `context` for bootstrap text, memory lookups, and external sources
-- `schedule`, `forge`, `deploy`, and `nexus` for production operation
-
-Use `koi start --dry-run` before the first real run when changing manifest shape, model wiring, or environment variables.
-
-## 2. Headless Services, Admin Panel, and TUI
-
-This is the core operator workflow for demos P19 and E17.
-
-There are three admin patterns:
-
-1. `koi start --admin`
-   This is the fastest local loop. It starts the interactive CLI plus the admin API on port `3100` by default.
-2. `koi serve --admin`
-   This runs the agent headlessly and serves health plus admin endpoints. By default the admin panel shares the service health port, which is `9100` unless overridden.
-3. `koi admin`
-   This starts the admin surface without starting a new agent. It can either run standalone or proxy to `koi serve --admin`. Its default port is `9200`.
-
-The TUI talks to the admin API, not directly to the runtime:
+3. Dry-run it first.
 
 ```bash
-koi serve --admin --port 9100
-koi tui --url http://localhost:9100/admin/api
+koi start --dry-run
 ```
 
-Important port pairing:
+4. Start the agent with admin enabled.
 
-- `koi start --admin` pairs naturally with `koi tui` defaulting to `http://localhost:3100/admin/api`
-- `koi serve --admin` should normally be paired with an explicit `--url`
-- `koi admin --port 9200` should be paired with `koi tui --url http://localhost:9200/admin/api`
+```bash
+koi start --admin
+```
 
-What the TUI currently supports:
+5. In another terminal, start the TUI.
 
-- live agent list with refresh
-- attach to a running agent
-- AG-UI chat streaming
-- session persistence under `/agents/{id}/session/tui/`
-- recent lifecycle log tailing
-- suspend, resume, and terminate commands
-- session picker and command palette
-- browser deep-links back into the admin panel
+```bash
+koi tui
+```
 
-Useful TUI commands and shortcuts:
+6. In the CLI window, send one trivial prompt such as `say hello and tell me what tools you have`.
 
-- `Ctrl+P` opens the command palette
-- `Esc` leaves the active console session
-- `q` quits
-- `/attach <agentId>` jumps directly to an agent
-- `/sessions`, `/logs`, `/health`, `/cancel`, `/agents` are wired through the console input
+7. In the TUI:
 
-Packages worth knowing in this workflow:
+- attach to the running agent
+- verify you can see the session
+- send one short prompt
+- hit `Esc`
+- use `/sessions` to confirm the session exists
 
-- `@koi/tui`
-- `@koi/dashboard-api`, `@koi/dashboard-ui`, `@koi/dashboard-types`
-- `@koi/channel-agui`
-- `@koi/agent-procfs`, `@koi/debug`, `@koi/tracing`, `@koi/middleware-event-trace`
+Stop checklist for Demo 1:
 
-## 3. Tools, Skills, Files, and MCP
+- `koi start --dry-run` passes
+- CLI chat returns an answer
+- admin panel loads on `http://localhost:3100/admin`
+- TUI opens without extra flags
+- TUI can attach to the running agent
+- `/sessions` shows the saved session after you leave the console
 
-This is the path for demos P2, P7, P8, P10, P15, and P18.
+If Demo 1 fails, do not move on. Fix this first:
 
-Think of the `fs` family as the working surface that lets agents inspect, edit, search, browse, and ask.
+- manifest errors -> rerun `koi start --dry-run`
+- admin missing -> confirm you used `--admin`
+- TUI missing agent -> confirm it is pointed at `3100`
+- Nexus confusion -> remove any explicit `nexus.url` or `--nexus-url` and retry
 
-Use Koi-native tools when you need built-in behavior:
+## Demo 2 - Connected Agent + Nexus (P2)
 
-- `@koi/filesystem`, `@koi/code-mode`, `@koi/lsp`
-- `@koi/tool-browser`, `@koi/tool-exec`
-- `@koi/tools-web`, `@koi/tools-github`
-- `@koi/tool-ask-user`, `@koi/tool-ask-guide`
+Goal:
 
-Use the skill stack when you want packaged instructions or reusable workflows:
+- prove the default local Nexus path is real, not theoretical
+- prove sessions and agent files survive beyond one prompt
+- only then add real external connectors
 
-- `@koi/skills`
-- `@koi/skill-scanner`
-- `@koi/catalog`
-- `@koi/resolve`
-- `@koi/registry-*` and `@koi/store-*`
+Packages you are exercising:
 
-Use MCP and ACP when Koi needs to interoperate with outside tool or IDE ecosystems:
-
-- `@koi/mcp` as a client
-- `@koi/mcp-server` when Koi acts as a server
-- `@koi/acp` and `@koi/acp-protocol` for IDE agent flows
-
-The important operator detail is that `@koi/catalog` and `@koi/resolve` are the glue between manifest descriptors and live tool/skill instances. They deserve explicit attention when a manifest looks valid but the runtime is missing tools.
-
-## 4. Memory, Context, and Conversation Continuity
-
-This is the path for demos P14, P15, and the long-lived assistant scenarios behind P20.
-
-There are four distinct context layers:
-
-1. bootstrap context from `@koi/bootstrap`, `@koi/context`, and `@koi/soul`
-2. hot session memory from `@koi/middleware-hot-memory`
-3. conversation continuity from `@koi/middleware-conversation`, `@koi/transcript`, and `@koi/session-store`
-4. long-session hygiene from `@koi/middleware-compactor`, `@koi/middleware-context-editing`, `@koi/tool-squash`, and `@koi/token-estimator`
-
-Packages to keep together in this workflow:
-
-- `@koi/context`, `@koi/context-arena`
-- `@koi/memory-fs`
-- `@koi/middleware-hot-memory`
-- `@koi/middleware-ace`, `@koi/middleware-collective-memory`, `@koi/middleware-user-model`
-- `@koi/middleware-conversation`
-- `@koi/session-store`, `@koi/session-repair`
+- everything from Demo 1
+- `@koi/context`
+- `@koi/context-arena`
 - `@koi/transcript`
-- `@koi/snapshot-chain-store`, `@koi/snapshot-store-sqlite`
+- `@koi/session-store`
+- `@koi/nexus`, `@koi/nexus-embed`
 
-If the agent feels forgetful, repetitive, or starts dropping crucial details after long runs, debug this layer before assuming the model is the problem.
+Steps:
 
-## 5. Channels, Gateways, and External Surfaces
+1. Keep using `koi start --admin`.
 
-This covers demos P4, P9, E1, E17, and all service-oriented deployments.
+2. Do not add `nexus.url`.
 
-Use channels when the agent must receive or send messages on a user-facing surface:
+3. Add one or two more turns in CLI or TUI.
 
-- terminal: `@koi/channel-cli`
-- chat apps: `@koi/channel-slack`, `@koi/channel-discord`, `@koi/channel-telegram`, `@koi/channel-teams`, `@koi/channel-matrix`, `@koi/channel-signal`, `@koi/channel-whatsapp`
-- rich and embedded UIs: `@koi/channel-agui`, `@koi/channel-chat-sdk`, `@koi/channel-canvas-fallback`
-- voice/mobile/email: `@koi/channel-voice`, `@koi/channel-mobile`, `@koi/channel-email`
+4. Leave the TUI console with `Esc`.
 
-Use gateway and webhook packages when the agent must sit behind HTTP or bridge to rich UI surfaces:
+5. Reopen the same session from `/sessions`.
 
-- `@koi/gateway`, `@koi/gateway-types`
-- `@koi/gateway-webhook`, `@koi/webhook-provider`, `@koi/webhook-delivery`
-- `@koi/canvas`, `@koi/gateway-canvas`, `@koi/channel-canvas-fallback`
-- `@koi/gateway-nexus`
+6. Use `/logs` in the TUI and confirm recent activity is there.
 
-Use `@koi/channel-canvas-fallback`, `@koi/channel-agui`, `@koi/canvas`, and `@koi/gateway-canvas` together when the same agent must render richer output on capable clients while remaining usable on text-only channels.
+7. Restart `koi start --admin`, then reconnect with `koi tui` and confirm the admin-side agent/session files are still understandable.
 
-## 6. Governance, Safety, and Safe Execution
+Only after that should you add real connector demos such as Gmail, Calendar, Drive, Notion, or Todoist.
 
-This is the main path for demos P3, P6, P7b, E5, E6, E7, E9, and E11.
+Stop checklist for Demo 2:
 
-Koi's security model is mostly middleware plus supporting backends.
+- session resume works from the TUI
+- `/logs` returns recent lifecycle data
+- restarting the local agent does not make the setup feel stateless
+- you can explain to yourself that local Nexus is running because you left `nexus.url` unset
 
-Human approval and policy:
+What is still missing at this point:
 
-- `@koi/middleware-permissions`
-- `@koi/exec-approvals`
-- `@koi/permissions-nexus`
-- `@koi/middleware-governance-backend`
-- `@koi/scope`
+- third-party credentials
+- remote/shared Nexus
+- production deployment
 
-Audit, payments, and compliance:
+That is fine. Do not add them yet.
 
-- `@koi/middleware-audit`
-- `@koi/audit-sink-local`
-- `@koi/audit-sink-nexus`
-- `@koi/middleware-pay`
-- `@koi/pay-local`, `@koi/pay-nexus`
+## Demo 3 - Verified Forge (P3)
 
-Data protection and content safety:
+Only do this after Demos 1 and 2 feel boring.
 
-- `@koi/middleware-pii`
-- `@koi/middleware-sanitize`
-- `@koi/redaction`
-- `@koi/middleware-guardrails`
+Goal:
 
-Execution containment and recovery:
+- enable forge in a controlled local setup
+- keep CLI, admin, and TUI visible while testing it
 
-- `@koi/middleware-sandbox`
-- `@koi/middleware-fs-rollback`
-- `@koi/middleware-tool-audit`
-- `@koi/middleware-call-dedup`
-- `@koi/middleware-call-limits`
-- `@koi/middleware-tool-selector`
-- `@koi/middleware-tool-recovery`
+Add this next:
 
-Enterprise oversight and delegation:
+```yaml
+forge:
+  enabled: true
+```
 
-- `@koi/delegation`
-- `@koi/capability-verifier`
-- `@koi/middleware-delegation-escalation`
-- `@koi/middleware-intent-capsule`
-- `@koi/governance-memory`
-- `@koi/security-analyzer`
-- `@koi/collusion-detector`
-- `@koi/reputation`
+How to test it:
 
-Use `koi doctor` before rollout when you want a fast preflight over manifest health, governance assumptions, and deployment readiness.
+1. stay on `koi start --admin`
+2. ask the agent to identify a missing capability or repeated workflow
+3. watch the admin logs and TUI logs for forge-related lifecycle events
+4. run `koi doctor` before you treat the setup as stable
 
-## 7. Multi-Agent, Workspaces, and Distributed Operation
+Do not combine this with extra channels or remote infrastructure yet.
 
-This covers demos P12, P13b, E3, E4, E10, E12, and E13.
+## Demo 4 - Omni-Channel (P4)
 
-The swarm pattern is built from a few specific clusters:
+Goal:
 
-- delegation and artifact passing: `@koi/task-spawn`, `@koi/handoff`
-- messaging and shared state: `@koi/ipc-local`, `@koi/ipc-nexus`, `@koi/scratchpad-local`, `@koi/scratchpad-nexus`
-- isolated workspaces: `@koi/workspace`, `@koi/workspace-nexus`
-- distributed routing and discovery: `@koi/federation`, `@koi/name-service`, `@koi/name-service-nexus`
-- orchestration packages: `@koi/agent-spawner`, `@koi/autonomous`, `@koi/node-stack`, `@koi/goal-stack`, `@koi/workspace-stack`
+- add exactly one non-CLI channel
+- prove it works while CLI, admin, and TUI remain healthy
 
-When you want the "manager mode" or "agent company" story, document these together. The important operational promise is not just message passing. It is isolated work, shared artifacts, resumable coordination, and safe delegation.
+Recommended order:
 
-## 8. Engines, Browser Automation, Sandboxes, and Routing
+1. keep CLI on
+2. add one real channel you can authenticate today
+3. send the same simple task through CLI and that channel
+4. confirm the agent still looks normal in the admin panel and TUI
 
-This covers demos P10, P16, P18, E14, and resilience-focused production runs.
+Do not jump straight to "all channels built". One extra channel is enough for the first pass.
 
-Use `@koi/engine-pi` by default for normal multi-turn Koi agents.
+## Demo 5 - Time Travel / Sessions (P5)
 
-Pick a different engine when the problem changes:
+Treat this as a session-quality demo first, not as a broad systems demo.
 
-- `@koi/engine-external` for CLI agents and coding-agent delegation over PTY or long-lived subprocesses
-- `@koi/engine-acp` for ACP-speaking agents
-- `@koi/engine-claude` for Claude Agent SDK integration
-- `@koi/engine-loop` for simple deterministic tool loops
-- `@koi/engine-rlm` when inputs are larger than the model context window
-- `@koi/model-router` when you want routing, fallback, cascade, or circuit breaking across models/providers
+What to test:
 
-Browser and code execution stack:
+- can you create a session in the TUI
+- leave it
+- reopen it
+- inspect logs
+- tell whether the transcript feels trustworthy
 
-- `@koi/browser-playwright`
-- `@koi/code-executor`
-- `@koi/sandbox`, `@koi/sandbox-docker`, `@koi/sandbox-wasm`
-- `@koi/sandbox-e2b`, `@koi/sandbox-vercel`, `@koi/sandbox-daytona`, `@koi/sandbox-cloudflare`
-- `@koi/sandbox-executor`, `@koi/sandbox-ipc`, `@koi/sandbox-cloud-base`
+If session resume is flaky, fix that before doing higher-level demos like browser automation, swarm, or voice.
 
-This section is worth treating as an explicit backend matrix in demos and operator playbooks: local secure default, remote burst capacity, browser automation, and forge verification each have different tradeoffs.
+## Demo 6 - Token Economics / Governance (P6)
 
-## 9. Self-Extension, Evaluation, and Release Gates
+Add safety one layer at a time.
 
-This covers demos P3, P16, P17, E15, E16, E19, and E20.
+Suggested order:
 
-Forge packages are the safe self-extension subsystem:
+1. `@koi/middleware-pay`
+2. `@koi/middleware-permissions`
+3. `@koi/middleware-audit`
 
-- `@koi/forge`
-- `@koi/forge-demand`
-- `@koi/crystallize`
-- `@koi/forge-verifier`
-- `@koi/forge-integrity`
-- `@koi/forge-policy`
-- `@koi/forge-optimizer`
-- `@koi/forge-exaptation`
-- `@koi/forge-tools`, `@koi/forge-types`
+Suggested manifest snippet:
 
-Operationally, the loop is:
+```yaml
+middleware:
+  - "@koi/middleware-pay": { budget: { daily: 0.50 } }
+  - "@koi/middleware-permissions": { default: ask }
+  - "@koi/middleware-audit": {}
+```
 
-1. detect demand for a missing or weak capability
-2. build or crystallize an artifact
-3. verify it in sandboxed and adversarial conditions
-4. assign or downgrade trust
-5. publish, re-use, or reject
+What to verify:
 
-Release and quality packages to pair with forge:
+- the agent can still answer normal prompts
+- approval requests are understandable
+- denied or limited actions are visible in logs
+- you can explain what happened after the fact from the admin panel and TUI
 
-- `@koi/eval`
-- `@koi/self-test`
-- `@koi/quality-gate`
-- `@koi/verified-loop`
-- `@koi/bundle`
-- `@koi/doctor`
+## Personal Track After Demo 6
 
-If you are demonstrating "safe self-extending agents," do not stop at artifact generation. Show verification, trust-tier assignment, and operator-visible auditability.
+From here on, the right way to use `demo-strategy.md` is phase-by-phase, not all-at-once.
 
-## 10. Local, Durable, and Distributed Production
+| Demo | Build on | Add only this next | Stop when this is true |
+| --- | --- | --- | --- |
+| P7 Stock Monitor | Demo 2 + Demo 6 | one finance MCP server | one quote/check flow works end to end |
+| P7b Governed Trading | P7 | permissions + audit + approvals around trading calls | risky actions are visibly gated |
+| P8 Social Digest | Demo 2 | one content MCP source such as Reddit or YouTube | scheduled or manual digest works once |
+| P9 Voice Agent | Demo 4 | voice only | you can complete one voice request without breaking CLI/admin |
+| P10 Browser Autopilot | Demo 6 | Playwright/browser only | one safe browser task works with logs visible |
+| P11 Smart Home | Demo 6 | Home Assistant MCP only | one read action and one safe write action work |
+| P12 Content Creator Pipeline | Demo 5 | one multi-agent content chain | handoff between workers is inspectable |
+| P13 Personal CRM | Demo 2 | one CRM backend | one contact lookup/write works |
+| P13b AI SDR | P10 + P12 + Demo 6 | governed browser prospecting | outbound flow is visible and controlled |
+| P14 Health Tracker | Demo 2 | schedule + memory + one alert channel | one scheduled check-in completes |
+| P15 Second Brain | Demo 2 | search + memory only | you can retrieve a saved fact later |
+| P16 Learning Loops | P15 | ACE / self-improvement only | the system can record and reuse one learning |
+| P17 Evolving Ecosystem | P16 + P3 | crystallization / optimization only | one improvement cycle is explainable |
+| P18 Code Copilot | P10 + P12 | filesystem/LSP/manager mode | one coding task runs without losing workspace control |
+| P19 Deploy and Operate | Demo 2 | `koi serve --admin` and deploy lifecycle | service starts, stops, logs, and survives restart |
+| P20 Personal AI Symphony | everything above | combine only the features you already trust | the final system still feels debuggable |
 
-This is the path for demos P19, P20, E3, E12, E13, E17, E18, and E20.
+## Enterprise Track, But Still Progressive
 
-Local and embedded operation:
+Do not start enterprise demos before the first six personal demos feel stable. Once they do, use this order.
 
-- `@koi/nexus-embed`
-- `@koi/deploy`
-- `@koi/bundle`
+| Demo | Start from | Add next | Stop when this is true |
+| --- | --- | --- | --- |
+| E1 Everything is a File | Demo 2 | file browser / Nexus-backed paths | paths feel consistent and inspectable |
+| E2 Search and Memory | E1 + P15 | search layers only | you can explain where answers came from |
+| E3 Agent Mesh | P12 | one extra node or delegated agent | routing is observable |
+| E4 Agent Swarm | E3 | task spawn + workspace isolation | workers do not trample each other |
+| E5 Governance Stack | Demo 6 | stricter governance presets | denials and approvals are predictable |
+| E6 Permissions and Multi-Tenancy | E5 | Nexus-backed permission model | one tenant boundary is clearly enforced |
+| E7 Identity and Auth | E5 | delegation chain / identity layer | tokens and actor identity are auditable |
+| E8 Payments and Credits | E5 | ledger layer | credits move correctly in one simple scenario |
+| E9 Compliance and Audit | E5 | immutable audit path | one workflow is reconstructable from logs |
+| E10 Agent Company | E3 + E4 + E5 | org structure only | budget and responsibility are understandable |
+| E11 Collusion Detection | E5 | anomaly/fraud signals only | suspicious coordination produces a signal |
+| E12 Multi-Tenant SaaS | E6 | shared platform shape | one cross-tenant safety check passes |
+| E13 Workflow Automation | E4 | scheduler/workflow trigger only | one workflow triggers and completes |
+| E14 Sandboxed Execution | Demo 6 + P10 | one sandbox backend at a time | timeout and failure behavior are clear |
+| E15 Agent Evaluation | P3 or P18 | one eval suite | you can compare before vs after |
+| E16 Skill Store and Governance | P3 | skill publishing or approval | one skill lifecycle is inspectable |
+| E17 Developer Platform and Dashboard | Demo 1 | admin/browser polish only | operator view is trustworthy |
+| E18 Data Pipeline and Connectors | E1 + E2 | one connector at a time | sync or import is reproducible |
+| E19 Federation and Edge | E3 + E13 | federation only | remote execution routing is visible |
+| E20 Enterprise AI Symphony | all proven enterprise demos | compose only trusted pieces | the system stays debuggable under load |
 
-Durable and scheduled operation:
+## What To Keep Constant While Testing
 
-- `@koi/scheduler`
-- `@koi/scheduler-provider`
-- `@koi/scheduler-nexus`
-- `@koi/long-running`
-- `@koi/harness-scheduler`
-- `@koi/temporal`
+Until you are very confident, do not remove these:
 
-Distributed or multi-node operation:
+- CLI channel
+- admin panel
+- TUI
+- embed-mode Nexus
 
-- `@koi/node`
-- `@koi/node-stack`
-- `@koi/federation`
-- `@koi/gateway-nexus`
+Those four give you the shortest path to understanding what the system is doing.
 
-Use this separation in docs and demos:
+## What Is Still Missing From This Guide
 
-- local dev: `koi start`, `koi serve`, `nexus-embed`
-- operator console: dashboard plus `koi tui`
-- durable services: scheduler, checkpointing, Temporal
-- multi-node: node stack, federation, Nexus-backed coordination
+These are the places where you will still need custom setup or a follow-up doc:
 
-## 11. Where To Go Deeper
+- third-party credentials for Gmail, Slack, Discord, Telegram, Voice, Home Assistant, HubSpot, finance APIs, and similar demos
+- remote/shared Nexus instead of local embed mode
+- Temporal and multi-node/federation deployment details
+- per-demo production manifests for every single MCP-backed example in `demo-strategy.md`
 
-- package docs: `docs/L2`, `docs/L3`, `docs/L4`
-- architecture docs: `docs/architecture`
-- runtime details: `docs/engine`
-- workspace and service-provider patterns: `docs/workspace.md`, `docs/service-provider.md`
-- package inventory: [`package-coverage-map.md`](./package-coverage-map.md)
+If you want, the next pass should be:
 
-If you only need one starting sequence, use this:
+1. add a `koi.yaml` example for Demo 1
+2. add a `koi.yaml` example for Demo 2
+3. add one governed manifest for Demo 6
+4. add one browser manifest for Demo 10
+5. add one swarm manifest for Demo 12
 
-1. `koi init`
-2. `koi start --admin`
-3. `koi tui`
-4. add channels, tools, middleware, and memory in the manifest
-5. move to `koi serve --admin` once the workflow is stable
+That will keep the guide progressive instead of turning it back into a wall of options.
