@@ -53,15 +53,25 @@ export async function runStop(flags: StopFlags): Promise<void> {
 
 async function stopNexusEmbed(): Promise<void> {
   try {
-    const { stopEmbedNexus } = await import("@koi/nexus-embed");
-    const result = await stopEmbedNexus();
+    // Prefer nexus down (Docker Compose lifecycle), fall back to legacy PID stop
+    const { nexusDown } = await import("@koi/nexus-embed");
+    const result = await nexusDown();
     if (result.ok) {
-      process.stderr.write(`Nexus embed daemon stopped (PID ${String(result.value.pid)}).\n`);
+      process.stderr.write("Nexus stack stopped.\n");
     } else {
-      process.stderr.write(`Nexus embed: ${result.error.message}\n`);
+      // Fall back to legacy stop if nexus CLI unavailable
+      const { stopEmbedNexus } = await import("@koi/nexus-embed");
+      const legacyResult = await stopEmbedNexus();
+      if (legacyResult.ok) {
+        process.stderr.write(
+          `Nexus embed daemon stopped (PID ${String(legacyResult.value.pid)}).\n`,
+        );
+      } else {
+        process.stderr.write(`Nexus: ${legacyResult.error.message}\n`);
+      }
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`Failed to stop Nexus embed: ${message}\n`);
+    process.stderr.write(`Failed to stop Nexus: ${message}\n`);
   }
 }

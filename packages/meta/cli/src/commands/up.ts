@@ -226,8 +226,19 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   const adapter = resolved.value.engine ?? createPiAdapter({ model: modelName });
 
-  // Map preset nexusMode to embed profile for local Nexus
-  const embedProfile = mapNexusModeToProfile(preset.nexusMode);
+  // Auto-start Nexus via `nexus up` when no explicit URL given and preset uses embed mode
+  let nexusBaseUrl = flags.nexusUrl ?? manifest.nexus?.url ?? process.env.NEXUS_URL;
+  let nexusStartedByUs = false;
+
+  if (nexusBaseUrl === undefined && preset.nexusMode !== "remote") {
+    const nexusResult = await timer.time("nexus-up", () =>
+      startNexusStack(workspaceRoot, presetId, flags.verbose),
+    );
+    if (nexusResult !== undefined) {
+      nexusBaseUrl = nexusResult.baseUrl;
+      nexusStartedByUs = true;
+    }
+  }
 
   // Auto-start Temporal when preset requires it and no explicit URL given
   let temporalEmbedHandle: TemporalEmbedHandle | undefined;
@@ -245,7 +256,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // Resolve Nexus, autonomous, temporal in parallel (preset controls Temporal)
   const [nexus, autonomous, temporalAdmin] = await timer.time("subsystems", () =>
     Promise.all([
-      resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose, embedProfile),
+      resolveNexusOrWarn(nexusBaseUrl, manifest.nexus?.url, flags.verbose),
       resolveAutonomousOrWarn(manifest, flags.verbose),
       temporalUrl !== undefined
         ? resolveTemporalOrWarn(temporalUrl, flags.verbose)
@@ -577,6 +588,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (sandboxBridge !== undefined) await sandboxBridge.dispose();
   if (nexus.dispose !== undefined) await nexus.dispose();
 
+  // Stop Nexus stack if we started it
+  if (nexusStartedByUs) {
+    await stopNexusStack(workspaceRoot, flags.verbose);
+  }
+
   process.stderr.write("Goodbye.\n");
 }
 
@@ -604,18 +620,51 @@ async function startTemporalEmbed(verbose: boolean): Promise<TemporalEmbedHandle
 }
 
 // ---------------------------------------------------------------------------
-// Nexus mode mapping
+// Nexus lifecycle (nexus up / nexus down)
 // ---------------------------------------------------------------------------
 
-/** Maps preset nexusMode to the embed profile for `nexus serve --profile <x>`. */
-function mapNexusModeToProfile(mode: NexusMode): string | undefined {
-  switch (mode) {
-    case "embed-lite":
-      return "lite";
-    case "embed-auth":
-      return "full";
-    case "remote":
-      return undefined; // Remote mode doesn't use embed
+interface NexusStartResult {
+  readonly baseUrl: string;
+}
+
+/**
+ * Starts the Nexus stack via `nexus up` (Docker Compose lifecycle).
+ * Auto-runs `nexus init` if `nexus.yaml` is missing in the workspace.
+ */
+async function startNexusStack(
+  workspaceRoot: string,
+  koiPreset: string,
+  verbose: boolean,
+): Promise<NexusStartResult | undefined> {
+  try {
+    const { nexusUp } = await import("@koi/nexus-embed");
+    const result = await nexusUp({ cwd: workspaceRoot, koiPreset, verbose });
+    if (!result.ok) {
+      process.stderr.write(`warn: nexus up failed: ${result.error.message}\n`);
+      return undefined;
+    }
+    if (verbose && result.value.autoInitialized) {
+      process.stderr.write("Nexus: auto-initialized nexus.yaml\n");
+    }
+    return { baseUrl: result.value.baseUrl };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: Nexus startup failed: ${message}\n`);
+    return undefined;
+  }
+}
+
+/** Stops the Nexus stack via `nexus down`. Best-effort, logs warnings. */
+async function stopNexusStack(workspaceRoot: string, verbose: boolean): Promise<void> {
+  try {
+    const { nexusDown } = await import("@koi/nexus-embed");
+    const result = await nexusDown({ cwd: workspaceRoot, verbose });
+    if (!result.ok) {
+      process.stderr.write(`warn: nexus down failed: ${result.error.message}\n`);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: Nexus shutdown failed: ${message}\n`);
   }
 }
 
