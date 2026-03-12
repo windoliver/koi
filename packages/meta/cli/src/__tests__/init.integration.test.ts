@@ -185,6 +185,28 @@ describe("koi init — flag overrides", () => {
     expect(yaml).toContain("openai:gpt-4o");
   });
 
+  test("--model accepts supported OpenRouter models outside the preset list", async () => {
+    const parent = makeTempDir();
+    tempDirs.push(parent);
+    const target = join(parent, "test-openrouter-model");
+
+    const flags = parseInitArgs([
+      "init",
+      target,
+      "--yes",
+      "--name",
+      "test-openrouter-model",
+      "--model",
+      "openrouter:google/gemini-2.0-flash-001",
+    ]);
+    await runInit(flags);
+
+    const yaml = await Bun.file(join(target, "koi.yaml")).text();
+    const envFile = await Bun.file(join(target, ".env")).text();
+    expect(yaml).toContain('model: "openrouter:google/gemini-2.0-flash-001"');
+    expect(envFile).toContain("OPENROUTER_API_KEY=");
+  });
+
   test("--engine overrides default engine", async () => {
     const parent = makeTempDir();
     tempDirs.push(parent);
@@ -207,30 +229,23 @@ describe("koi init — flag overrides", () => {
 });
 
 describe("koi init — edge cases", () => {
-  test("rejects when koi.yaml already exists", async () => {
+  test("overwrites scaffold-managed files when rerun in the same directory", async () => {
     const parent = makeTempDir();
     tempDirs.push(parent);
     const target = join(parent, "existing");
     mkdirSync(target, { recursive: true });
     writeFileSync(join(target, "koi.yaml"), "name: old\n");
-
-    // runInit calls process.exit(1) on error — we need to mock it
-    const originalExit = process.exit;
-    let exitCode: number | undefined;
-    process.exit = ((code: number) => {
-      exitCode = code;
-      throw new Error(`process.exit(${code})`);
-    }) as never;
+    writeFileSync(join(target, "README.md"), "# Old\n");
+    writeFileSync(join(target, "keep.txt"), "keep me\n");
 
     const flags = parseInitArgs(["init", target, "--yes", "--name", "conflict"]);
-    try {
-      await runInit(flags);
-    } catch {
-      // Expected — mocked process.exit throws to halt execution
-    }
+    await runInit(flags);
 
-    process.exit = originalExit;
-    expect(exitCode).toBe(1);
+    const yaml = await Bun.file(join(target, "koi.yaml")).text();
+    const readme = await Bun.file(join(target, "README.md")).text();
+    expect(yaml).toContain("name: conflict");
+    expect(readme).toContain("# conflict");
+    expect(await Bun.file(join(target, "keep.txt")).text()).toBe("keep me\n");
   });
 
   test("allows scaffolding into existing empty directory", async () => {
