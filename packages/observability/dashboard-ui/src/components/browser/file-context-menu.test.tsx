@@ -7,7 +7,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { cleanup, render, screen } from "../../__tests__/setup.js";
+import { cleanup, render } from "../../__tests__/setup.js";
 import { useTreeStore } from "../../stores/tree-store.js";
 import { FileContextMenu } from "./file-context-menu.js";
 
@@ -22,27 +22,27 @@ describe("FileContextMenu", () => {
   });
 
   test("renders children for a file entry", () => {
-    render(
+    const { getByText } = render(
       <FileContextMenu path="/test/file.ts" isDirectory={false}>
         <button type="button">File Node</button>
       </FileContextMenu>,
     );
 
-    expect(screen.getByText("File Node")).toBeDefined();
+    expect(getByText("File Node")).toBeDefined();
   });
 
   test("renders children for a directory entry", () => {
-    render(
+    const { getByText } = render(
       <FileContextMenu path="/test/dir" isDirectory={true}>
         <button type="button">Dir Node</button>
       </FileContextMenu>,
     );
 
-    expect(screen.getByText("Dir Node")).toBeDefined();
+    expect(getByText("Dir Node")).toBeDefined();
   });
 
   test("renders without crashing when path contains special characters", () => {
-    render(
+    const { getByText } = render(
       <FileContextMenu
         path="/test/some file (copy).ts"
         isDirectory={false}
@@ -51,6 +51,6 @@ describe("FileContextMenu", () => {
       </FileContextMenu>,
     );
 
-    expect(screen.getByText("Special Path")).toBeDefined();
+    expect(getByText("Special Path")).toBeDefined();
   });
 });

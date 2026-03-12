@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { render, screen } from "../../__tests__/setup.js";
+import { render } from "../../__tests__/setup.js";
 import { TopologyDiagram } from "./topology-diagram.js";
 
 // React Flow requires ResizeObserver and SVG globals not present in happy-dom
@@ -30,8 +30,8 @@ if (typeof globalThis.DOMMatrixReadOnly === "undefined") {
 
 describe("TopologyDiagram", () => {
   test("renders empty state for no connections", () => {
-    render(<TopologyDiagram connections={[]} />);
-    expect(screen.getByText("No connections")).toBeDefined();
+    const { getByText } = render(<TopologyDiagram connections={[]} />);
+    expect(getByText("No connections")).toBeDefined();
   });
 
   test("renders without crashing with sample connections", () => {

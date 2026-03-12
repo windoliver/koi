@@ -7,6 +7,7 @@
  */
 
 import type { FileSystemBackend } from "@koi/core";
+import { agentId as toAgentId } from "@koi/core";
 import type {
   CommandDispatcher,
   DashboardConfig,
@@ -20,6 +21,7 @@ import { createRouter, errorResponse } from "./router.js";
 import { handleGetAgent, handleListAgents, handleTerminateAgent } from "./routes/agents.js";
 import { handleChannels } from "./routes/channels.js";
 import {
+  handleDispatchAgent,
   handleListMailbox,
   handleResumeAgent,
   handleRetryDeadLetter,
@@ -175,7 +177,7 @@ export function createDashboardHandler(
     {
       method: "POST",
       pattern: "/agents/:id/chat",
-      handler: (req, params) => {
+      handler: async (req, params) => {
         if (agentChatHandler === undefined) {
           return errorResponse(
             "NOT_IMPLEMENTED",
@@ -183,11 +185,19 @@ export function createDashboardHandler(
             501,
           );
         }
-        const agentId = params.id;
-        if (agentId === undefined) {
+        const id = params.id;
+        if (id === undefined) {
           return errorResponse("VALIDATION", "Missing agent ID", 400);
         }
-        return agentChatHandler(req, agentId);
+        // Verify agent exists and is not terminated before delegating to chat handler
+        const agent = await dataSource.getAgent(toAgentId(id));
+        if (agent === undefined) {
+          return errorResponse("NOT_FOUND", `Agent ${id} not found`, 404);
+        }
+        if (agent.state === "terminated") {
+          return errorResponse("CONFLICT", `Agent ${id} is terminated`, 409);
+        }
+        return agentChatHandler(req, id);
       },
     },
     {
@@ -321,6 +331,11 @@ export function createDashboardHandler(
   // Command routes (when CommandDispatcher is provided)
   if (commands !== undefined) {
     routes.push(
+      {
+        method: "POST",
+        pattern: "/cmd/agents/dispatch",
+        handler: (req, params) => handleDispatchAgent(req, params, commands),
+      },
       {
         method: "POST",
         pattern: "/cmd/agents/:id/suspend",

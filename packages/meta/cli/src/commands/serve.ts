@@ -32,8 +32,10 @@ import type { SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import { createInMemorySnapshotChainStore, createThreadStore } from "@koi/snapshot-chain-store";
+import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { ServeFlags } from "../args.js";
+import { createChatRouter } from "../chat-router.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -269,6 +271,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // 7a. Create admin panel bridge (before message loop so metrics can be tracked)
   // let justified: conditionally set when --admin, read in message loop for metrics
   let adminBridge: AdminPanelBridgeResult | undefined;
+  // let justified: conditionally set when --admin, disposed at cleanup
+  let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
   // let justified: conditionally set when --temporal-url, disposed at cleanup
   let temporalAdmin: Awaited<ReturnType<typeof resolveTemporalOrWarn>>;
 
@@ -288,6 +292,28 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       verbose: flags.verbose,
     });
 
+    const dispatcher = createAgentDispatcher({
+      defaultManifestPath: manifestPath,
+      verbose: flags.verbose,
+      additionalMiddleware: [
+        ...nexus.middlewares,
+        ...(forgeBootstrap?.middlewares ?? []),
+        ...(autonomous?.middleware ?? []),
+      ],
+      additionalProviders: [
+        ...nexus.providers,
+        ...(forgeBootstrap !== undefined
+          ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
+          : []),
+        ...(autonomous?.providers ?? []),
+      ],
+      additionalExtensions: extensions,
+      ...(forgeBootstrap !== undefined
+        ? { forgeStore: forgeBootstrap.store, forgeRuntime: forgeBootstrap.runtime }
+        : {}),
+    });
+    adminDispatcher = dispatcher;
+
     adminBridge = createAdminPanelBridge({
       agentName: manifest.name,
       agentType: manifest.lifecycle ?? "copilot",
@@ -295,6 +321,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       channels: channelNames,
       skills: skillNames,
       fileSystem: createLocalFileSystem(workspaceRoot),
+      dispatchAgent: dispatcher.dispatchAgent,
+      onTerminateAgent: async (id) => {
+        await dispatcher.terminateAgent(id);
+      },
       ...(orch.hasAny
         ? {
             orchestration: orch.orchestration,
@@ -328,6 +358,15 @@ export async function runServe(flags: ServeFlags): Promise<void> {
                 return;
               }
               const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
+
+              // Set bindings for context extension and forge scoping, but clear
+              // threadKey so conversation middleware skips history injection —
+              // stateless mode already provides full conversation context from
+              // the browser's persisted session history.
+              currentMessages = [msg];
+              currentThreadKey = undefined;
+              currentServeSessionId = threadId;
+
               const input: EngineInput = { kind: "text", text };
               const deltas: string[] = [];
               for await (const event of runtime.run(input)) {
@@ -417,12 +456,22 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   let healthInfo: { readonly url: string; readonly port: number };
 
   if (flags.admin && adminBridge !== undefined) {
+    // Build routing chat handler: primary agent → chatBridge, dispatched agents → dispatcher
+    const routingChatHandler =
+      chatBridge !== undefined && adminDispatcher !== undefined
+        ? createChatRouter({
+            primaryHandler: chatBridge.handler,
+            getDispatchedHandler: adminDispatcher.getChatHandler,
+            isPrimaryAgent: (id) => id === adminBridge?.agentId,
+          })
+        : chatBridge?.handler;
+
     // Compose admin panel + health into a single HTTP server
     const assetsDir = resolveDashboardAssetsDir();
     const dashboardResult = createDashboardHandler(
       {
         ...adminBridge,
-        ...(chatBridge !== undefined ? { agentChatHandler: chatBridge.handler } : {}),
+        ...(routingChatHandler !== undefined ? { agentChatHandler: routingChatHandler } : {}),
       },
       {
         cors: true,
@@ -572,6 +621,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     await ch.disconnect();
   }
   stopServer();
+  if (adminDispatcher !== undefined) {
+    await adminDispatcher.dispose();
+  }
   if (temporalAdmin !== undefined) {
     await temporalAdmin.dispose();
   }

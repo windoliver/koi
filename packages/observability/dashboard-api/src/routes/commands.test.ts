@@ -5,8 +5,9 @@
 import { describe, expect, test } from "bun:test";
 import type { KoiError, KoiErrorCode, Result } from "@koi/core";
 import { agentId } from "@koi/core";
-import type { CommandDispatcher } from "@koi/dashboard-types";
+import type { CommandDispatcher, DispatchAgentResponse } from "@koi/dashboard-types";
 import {
+  handleDispatchAgent,
   handleListMailbox,
   handleResumeAgent,
   handleRetryDeadLetter,
@@ -140,5 +141,169 @@ describe("handleListMailbox", () => {
       withoutMailbox as CommandDispatcher,
     );
     expect(res.status).toBe(501);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleDispatchAgent
+// ---------------------------------------------------------------------------
+
+function makeJsonReq(url: string, body: unknown): Request {
+  return new Request(`http://localhost${url}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("handleDispatchAgent", () => {
+  test("returns 200 with agentId on success", async () => {
+    const commands = createMockCommands({
+      dispatchAgent: (req) => ({
+        ok: true as const,
+        value: { agentId: agentId("new-1"), name: req.name },
+      }),
+    });
+    const res = await handleDispatchAgent(
+      makeJsonReq("/cmd/agents/dispatch", { name: "my-agent" }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { readonly data: DispatchAgentResponse };
+    expect(body.data.agentId).toBe(agentId("new-1"));
+    expect(body.data.name).toBe("my-agent");
+  });
+
+  test("returns 200 with manifest and message", async () => {
+    let capturedReq: unknown;
+    const commands = createMockCommands({
+      dispatchAgent: (req) => {
+        capturedReq = req;
+        return { ok: true as const, value: { agentId: agentId("new-2"), name: req.name } };
+      },
+    });
+    const res = await handleDispatchAgent(
+      makeJsonReq("/cmd/agents/dispatch", {
+        name: "agent-2",
+        manifest: "path/to/manifest.yaml",
+        message: "Hello agent",
+      }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(200);
+    const req = capturedReq as { name: string; manifest?: string; message?: string };
+    expect(req.manifest).toBe("path/to/manifest.yaml");
+    expect(req.message).toBe("Hello agent");
+  });
+
+  test("returns 501 when dispatchAgent is not implemented", async () => {
+    const commands = createMockCommands();
+    // dispatchAgent is not set in createMockCommands
+    const res = await handleDispatchAgent(
+      makeJsonReq("/cmd/agents/dispatch", { name: "test" }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(501);
+  });
+
+  test("returns 400 when name is missing", async () => {
+    const commands = createMockCommands({
+      dispatchAgent: () => ({
+        ok: true as const,
+        value: { agentId: agentId("x"), name: "x" },
+      }),
+    });
+    const res = await handleDispatchAgent(makeJsonReq("/cmd/agents/dispatch", {}), {}, commands);
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 400 when name is empty string", async () => {
+    const commands = createMockCommands({
+      dispatchAgent: () => ({
+        ok: true as const,
+        value: { agentId: agentId("x"), name: "x" },
+      }),
+    });
+    const res = await handleDispatchAgent(
+      makeJsonReq("/cmd/agents/dispatch", { name: "   " }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 400 for invalid JSON body", async () => {
+    const commands = createMockCommands({
+      dispatchAgent: () => ({
+        ok: true as const,
+        value: { agentId: agentId("x"), name: "x" },
+      }),
+    });
+    const req = new Request("http://localhost/cmd/agents/dispatch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "not-json",
+    });
+    const res = await handleDispatchAgent(req, {}, commands);
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 409 on CONFLICT error", async () => {
+    const commands = createMockCommands({
+      dispatchAgent: () => ({
+        ok: false as const,
+        error: {
+          code: "CONFLICT" as const,
+          message: "Agent already exists",
+          retryable: false,
+          context: {},
+        },
+      }),
+    });
+    const res = await handleDispatchAgent(
+      makeJsonReq("/cmd/agents/dispatch", { name: "dup" }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(409);
+  });
+
+  test("returns 404 on NOT_FOUND error", async () => {
+    const commands = createMockCommands({
+      dispatchAgent: () => ({
+        ok: false as const,
+        error: {
+          code: "NOT_FOUND" as const,
+          message: "Manifest not found",
+          retryable: false,
+          context: {},
+        },
+      }),
+    });
+    const res = await handleDispatchAgent(
+      makeJsonReq("/cmd/agents/dispatch", { name: "agent", manifest: "missing.yaml" }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("trims whitespace from name", async () => {
+    let capturedName: string | undefined;
+    const commands = createMockCommands({
+      dispatchAgent: (req) => {
+        capturedName = req.name;
+        return { ok: true as const, value: { agentId: agentId("x"), name: req.name } };
+      },
+    });
+    await handleDispatchAgent(
+      makeJsonReq("/cmd/agents/dispatch", { name: "  padded  " }),
+      {},
+      commands,
+    );
+    expect(capturedName).toBe("padded");
   });
 });

@@ -18,8 +18,10 @@ import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-a
 import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
+import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { AdminFlags } from "../args.js";
+import { createChatRouter } from "../chat-router.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -412,6 +414,14 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       verbose: flags.verbose,
     });
 
+  // Create agent dispatcher for the admin panel (allows dispatching new agents)
+  const dispatcher = createAgentDispatcher({
+    defaultManifestPath: manifestPath,
+    verbose: flags.verbose,
+    additionalMiddleware: [...(autonomous?.middleware ?? [])],
+    additionalProviders: [...(autonomous?.providers ?? [])],
+  });
+
   const bridge = createAdminPanelBridge({
     agentName: manifest.name,
     agentType: manifest.lifecycle ?? "copilot",
@@ -419,6 +429,10 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     channels: channelNames,
     skills: skillNames,
     fileSystem,
+    dispatchAgent: dispatcher.dispatchAgent,
+    onTerminateAgent: async (id) => {
+      await dispatcher.terminateAgent(id);
+    },
     ...(orch.hasAny
       ? {
           orchestration: orch.orchestration,
@@ -462,9 +476,22 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     });
   }
 
+  // Build routing chat handler: primary agent → chatBridge, dispatched agents → dispatcher
+  const routingChatHandler =
+    chatBridge !== undefined
+      ? createChatRouter({
+          primaryHandler: chatBridge.handler,
+          getDispatchedHandler: dispatcher.getChatHandler,
+          isPrimaryAgent: (id) => id === bridge.agentId,
+        })
+      : undefined;
+
   const assetsDir = resolveDashboardAssetsDir();
   const dashboardResult = createDashboardHandler(
-    { ...bridge, ...(chatBridge !== undefined ? { agentChatHandler: chatBridge.handler } : {}) },
+    {
+      ...bridge,
+      ...(routingChatHandler !== undefined ? { agentChatHandler: routingChatHandler } : {}),
+    },
     {
       cors: true,
       ...(assetsDir !== undefined ? { assetsDir } : {}),
@@ -526,6 +553,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   process.removeListener("SIGTERM", shutdown);
   server.stop(true);
   dashboardResult.dispose();
+  await dispatcher.dispose();
   if (runtimeDispose !== undefined) {
     await runtimeDispose();
   }

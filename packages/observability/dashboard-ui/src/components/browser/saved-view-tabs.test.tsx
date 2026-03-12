@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { SAVED_VIEWS } from "@koi/dashboard-types";
-import { cleanup, render, screen } from "../../__tests__/setup.js";
+import { cleanup, render } from "../../__tests__/setup.js";
 import { useViewStore } from "../../stores/view-store.js";
 import { SavedViewTabs } from "./saved-view-tabs.js";
 
@@ -14,15 +14,15 @@ describe("SavedViewTabs", () => {
   });
 
   test("renders all saved view tabs", () => {
-    render(<SavedViewTabs />);
+    const { getByText } = render(<SavedViewTabs />);
     for (const view of SAVED_VIEWS) {
-      expect(screen.getByText(view.label)).toBeDefined();
+      expect(getByText(view.label)).toBeDefined();
     }
   });
 
   test("clicking a tab changes the active view", () => {
-    render(<SavedViewTabs />);
-    const agentsTab = screen.getByText("Agents");
+    const { getByText } = render(<SavedViewTabs />);
+    const agentsTab = getByText("Agents");
     agentsTab.click();
     expect(useViewStore.getState().activeViewId).toBe("agents");
   });

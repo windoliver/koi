@@ -1,6 +1,7 @@
 /**
  * Command routes — imperative operations (not file-backed).
  *
+ * POST /cmd/agents/dispatch       — dispatch new agent
  * POST /cmd/agents/:id/suspend    — suspend agent
  * POST /cmd/agents/:id/resume     — resume agent
  * POST /cmd/agents/:id/terminate  — terminate agent
@@ -9,19 +10,75 @@
  */
 
 import { agentId } from "@koi/core";
-import type { CommandDispatcher } from "@koi/dashboard-types";
+import type { CommandDispatcher, DispatchAgentRequest } from "@koi/dashboard-types";
 import type { RouteParams } from "../router.js";
 import { errorResponse, jsonResponse } from "../router.js";
+
+/** Map a KoiError code to an HTTP status. */
+function errorCodeToStatus(code: string): number {
+  switch (code) {
+    case "NOT_FOUND":
+      return 404;
+    case "CONFLICT":
+      return 409;
+    default:
+      return 500;
+  }
+}
 
 function handleCommandResult(result: {
   readonly ok: boolean;
   readonly error?: { readonly code: string; readonly message: string };
 }): Response {
   if (!result.ok && result.error !== undefined) {
-    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
-    return errorResponse(result.error.code, result.error.message, status);
+    return errorResponse(
+      result.error.code,
+      result.error.message,
+      errorCodeToStatus(result.error.code),
+    );
   }
   return jsonResponse(null);
+}
+
+export async function handleDispatchAgent(
+  req: Request,
+  _params: RouteParams,
+  commands: CommandDispatcher,
+): Promise<Response> {
+  if (commands.dispatchAgent === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Agent dispatch not supported", 501);
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return errorResponse("VALIDATION", "Invalid JSON body", 400);
+  }
+
+  if (typeof body !== "object" || body === null) {
+    return errorResponse("VALIDATION", "Request body must be an object", 400);
+  }
+
+  const { name, manifest, message } = body as Record<string, unknown>;
+  if (typeof name !== "string" || name.trim() === "") {
+    return errorResponse("VALIDATION", "Missing or empty 'name' field", 400);
+  }
+
+  const request: DispatchAgentRequest = {
+    name: name.trim(),
+    ...(typeof manifest === "string" ? { manifest } : {}),
+    ...(typeof message === "string" ? { message } : {}),
+  };
+
+  const result = await commands.dispatchAgent(request);
+  if (!result.ok) {
+    const status =
+      result.error.code === "NOT_FOUND" ? 404 : result.error.code === "CONFLICT" ? 409 : 500;
+    return errorResponse(result.error.code, result.error.message, status);
+  }
+
+  return jsonResponse(result.value);
 }
 
 export async function handleSuspendAgent(
@@ -77,8 +134,11 @@ export async function handleRetryDeadLetter(
   }
   const result = await commands.retryDeadLetter(id);
   if (!result.ok) {
-    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
-    return errorResponse(result.error.code, result.error.message, status);
+    return errorResponse(
+      result.error.code,
+      result.error.message,
+      errorCodeToStatus(result.error.code),
+    );
   }
   return jsonResponse({ retried: result.value });
 }
@@ -97,8 +157,11 @@ export async function handleListMailbox(
   }
   const result = await commands.listMailbox(agentId(aid));
   if (!result.ok) {
-    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
-    return errorResponse(result.error.code, result.error.message, status);
+    return errorResponse(
+      result.error.code,
+      result.error.message,
+      errorCodeToStatus(result.error.code),
+    );
   }
   return jsonResponse(result.value);
 }

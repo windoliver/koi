@@ -17,19 +17,30 @@ import {
 } from "@koi/dashboard-types";
 import { fetchAgents } from "../lib/api-client.js";
 import { useAgentsStore } from "../stores/agents-store.js";
+import { useChatStore } from "../stores/chat-store.js";
 import { useOrchestrationStore } from "../stores/orchestration-store.js";
 import { useTreeStore } from "../stores/tree-store.js";
 
-/** Dispatch an agent domain event to the agents store. */
+/** Dispatch an agent domain event to the agents store (and chat store for lifecycle). */
 function dispatchAgentEvent(event: DashboardEvent): void {
   if (!isAgentEvent(event)) return;
   const store = useAgentsStore.getState();
+  const chatStore = useChatStore.getState();
+  const chatSession = chatStore.session;
   switch (event.subKind) {
     case "status_changed":
       store.updateAgent(event.agentId, {
         state: event.to,
         lastActivityAt: event.timestamp,
       });
+      // Surface status change in the active chat session
+      if (chatSession?.agentId === event.agentId) {
+        chatStore.addMessage({
+          kind: "lifecycle",
+          event: `Agent status: ${event.from} \u2192 ${event.to}`,
+          timestamp: event.timestamp,
+        });
+      }
       break;
     case "dispatched": {
       const dispatchedAt = Date.now();
@@ -40,6 +51,16 @@ function dispatchAgentEvent(event: DashboardEvent): void {
     }
     case "terminated":
       store.removeAgent(event.agentId);
+      // Notify active chat session that the agent was terminated
+      if (chatSession?.agentId === event.agentId) {
+        chatStore.addMessage({
+          kind: "lifecycle",
+          event: "Agent terminated",
+          timestamp: event.timestamp,
+        });
+        chatStore.setStreaming(false);
+        chatStore.setAgentTerminated(true);
+      }
       break;
     case "metrics_updated":
       store.updateAgent(event.agentId, {

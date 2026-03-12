@@ -3,85 +3,23 @@
  *
  * Connects to the AG-UI endpoint (POST /agent → SSE stream)
  * and parses the event protocol for the TUI console view.
+ *
+ * AG-UI types and SSE parser are imported from @koi/dashboard-types
+ * (shared with @koi/dashboard-ui).
  */
 
+import type { AguiEvent, ChatRunInput } from "@koi/dashboard-types";
+import { parseAguiEvent } from "@koi/dashboard-types";
 import type { DashboardClientError } from "../types.js";
-import { type SSEEvent, SSEParser } from "./sse-stream.js";
+import { SSEParser } from "./sse-stream.js";
 
-// ─── AG-UI Event Types ───────────────────────────────────────────────
-
-/** AG-UI SSE event types emitted by @koi/channel-agui. */
-export type AguiEventType =
-  | "RUN_STARTED"
-  | "RUN_FINISHED"
-  | "RUN_ERROR"
-  | "STATE_SNAPSHOT"
-  | "STATE_DELTA"
-  | "STEP_STARTED"
-  | "STEP_FINISHED"
-  | "TEXT_MESSAGE_START"
-  | "TEXT_MESSAGE_CONTENT"
-  | "TEXT_MESSAGE_END"
-  | "REASONING_MESSAGE_START"
-  | "REASONING_MESSAGE_CONTENT"
-  | "REASONING_MESSAGE_END"
-  | "TOOL_CALL_START"
-  | "TOOL_CALL_ARGS"
-  | "TOOL_CALL_END"
-  | "TOOL_CALL_RESULT"
-  | "CUSTOM";
-
-/** Parsed AG-UI event with typed fields. */
-export type AguiEvent =
-  | { readonly type: "RUN_STARTED"; readonly threadId: string; readonly runId: string }
-  | { readonly type: "RUN_FINISHED"; readonly threadId: string; readonly runId: string }
-  | { readonly type: "RUN_ERROR"; readonly message: string }
-  | { readonly type: "STATE_SNAPSHOT"; readonly snapshot: unknown }
-  | { readonly type: "STATE_DELTA"; readonly delta: unknown }
-  | { readonly type: "STEP_STARTED"; readonly stepName: string }
-  | { readonly type: "STEP_FINISHED"; readonly stepName: string }
-  | {
-      readonly type: "TEXT_MESSAGE_START";
-      readonly messageId: string;
-      readonly role: string;
-    }
-  | {
-      readonly type: "TEXT_MESSAGE_CONTENT";
-      readonly messageId: string;
-      readonly delta: string;
-    }
-  | { readonly type: "TEXT_MESSAGE_END"; readonly messageId: string }
-  | {
-      readonly type: "REASONING_MESSAGE_START";
-      readonly messageId: string;
-    }
-  | {
-      readonly type: "REASONING_MESSAGE_CONTENT";
-      readonly messageId: string;
-      readonly delta: string;
-    }
-  | { readonly type: "REASONING_MESSAGE_END"; readonly messageId: string }
-  | {
-      readonly type: "TOOL_CALL_START";
-      readonly toolCallId: string;
-      readonly toolCallName: string;
-    }
-  | {
-      readonly type: "TOOL_CALL_ARGS";
-      readonly toolCallId: string;
-      readonly delta: string;
-    }
-  | { readonly type: "TOOL_CALL_END"; readonly toolCallId: string }
-  | {
-      readonly type: "TOOL_CALL_RESULT";
-      readonly toolCallId: string;
-      readonly result: string;
-    }
-  | {
-      readonly type: "CUSTOM";
-      readonly name: string;
-      readonly value: unknown;
-    };
+// Re-export shared types for existing consumers
+export type {
+  AguiEvent,
+  AguiEventType,
+  ChatHistoryMessage,
+  ChatRunInput,
+} from "@koi/dashboard-types";
 
 // ─── Client Configuration ────────────────────────────────────────────
 
@@ -95,22 +33,6 @@ export interface AguiClientConfig {
   readonly authToken?: string;
   /** Request timeout in milliseconds (default: 120000 — 2 minutes for LLM calls). */
   readonly timeoutMs?: number;
-}
-
-/** Input for starting a chat run. */
-export interface ChatRunInput {
-  readonly threadId: string;
-  readonly runId: string;
-  readonly message: string;
-  /** Prior messages for context (optional — agent may have memory middleware). */
-  readonly history?: readonly ChatHistoryMessage[];
-}
-
-/** Minimal message shape for AG-UI history. */
-export interface ChatHistoryMessage {
-  readonly id: string;
-  readonly role: "user" | "assistant";
-  readonly content: string;
 }
 
 /** Callbacks for AG-UI stream events. */
@@ -238,24 +160,7 @@ export function startChatStream(
   };
 }
 
-// ─── Event Parsing ───────────────────────────────────────────────────
-
-/** Parse a raw SSE event into a typed AguiEvent. */
-function parseAguiEvent(sse: SSEEvent): AguiEvent | null {
-  try {
-    const data: unknown = JSON.parse(sse.data);
-    if (typeof data !== "object" || data === null) return null;
-
-    const obj = data as Record<string, unknown>;
-    const type = obj.type;
-    if (typeof type !== "string") return null;
-
-    return data as AguiEvent;
-  } catch {
-    // Malformed JSON — skip
-    return null;
-  }
-}
+// ─── Error Mapping ──────────────────────────────────────────────────
 
 /** Map a stream error to DashboardClientError. */
 function mapStreamError(error: unknown, url: string, timeoutMs: number): DashboardClientError {

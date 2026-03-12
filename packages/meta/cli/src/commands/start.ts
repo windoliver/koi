@@ -23,8 +23,10 @@ import { createSandboxCommand, restrictiveProfile } from "@koi/sandbox";
 import type { SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { EXIT_CONFIG } from "@koi/shutdown";
+import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { StartFlags } from "../args.js";
+import { createChatRouter } from "../chat-router.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -247,6 +249,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
   let stopAdmin: (() => void) | undefined;
   // let justified: conditionally set when --admin, read in REPL loop for metrics
   let adminBridge: AdminPanelBridgeResult | undefined;
+  // let justified: conditionally set when --admin, disposed at cleanup
+  let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
 
   // let justified: conditionally set when --temporal-url, disposed at cleanup
   let temporalAdmin: Awaited<ReturnType<typeof resolveTemporalOrWarn>>;
@@ -268,6 +272,28 @@ export async function runStart(flags: StartFlags): Promise<void> {
         verbose: flags.verbose,
       });
 
+      const dispatcher = createAgentDispatcher({
+        defaultManifestPath: manifestPath,
+        verbose: flags.verbose,
+        additionalMiddleware: [
+          ...nexus.middlewares,
+          ...(forgeBootstrap?.middlewares ?? []),
+          ...(autonomous?.middleware ?? []),
+        ],
+        additionalProviders: [
+          ...nexus.providers,
+          ...(forgeBootstrap !== undefined
+            ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
+            : []),
+          ...(autonomous?.providers ?? []),
+        ],
+        additionalExtensions: extensions,
+        ...(forgeBootstrap !== undefined
+          ? { forgeStore: forgeBootstrap.store, forgeRuntime: forgeBootstrap.runtime }
+          : {}),
+      });
+      adminDispatcher = dispatcher;
+
       adminBridge = createAdminPanelBridge({
         agentName: manifest.name,
         agentType: manifest.lifecycle ?? "copilot",
@@ -275,6 +301,10 @@ export async function runStart(flags: StartFlags): Promise<void> {
         channels: channelNames,
         skills: skillNames,
         fileSystem: createLocalFileSystem(workspaceRoot),
+        dispatchAgent: dispatcher.dispatchAgent,
+        onTerminateAgent: async (id) => {
+          await dispatcher.terminateAgent(id);
+        },
         ...(orch.hasAny
           ? {
               orchestration: orch.orchestration,
@@ -283,11 +313,21 @@ export async function runStart(flags: StartFlags): Promise<void> {
           : {}),
       });
 
+      // Build routing chat handler: primary → chatBridge, dispatched → dispatcher
+      const routingChatHandler =
+        chatBridge !== undefined && adminDispatcher !== undefined
+          ? createChatRouter({
+              primaryHandler: chatBridge.handler,
+              getDispatchedHandler: adminDispatcher.getChatHandler,
+              isPrimaryAgent: (id) => id === adminBridge?.agentId,
+            })
+          : chatBridge?.handler;
+
       const assetsDir = resolveDashboardAssetsDir();
       const dashboardResult: DashboardHandlerResult = createDashboardHandler(
         {
           ...adminBridge,
-          ...(chatBridge !== undefined ? { agentChatHandler: chatBridge.handler } : {}),
+          ...(routingChatHandler !== undefined ? { agentChatHandler: routingChatHandler } : {}),
         },
         {
           cors: true,
@@ -450,6 +490,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
   if (stopAdmin !== undefined) {
     stopAdmin();
+  }
+  if (adminDispatcher !== undefined) {
+    await adminDispatcher.dispose();
   }
   if (temporalAdmin !== undefined) {
     await temporalAdmin.dispose();

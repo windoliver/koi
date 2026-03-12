@@ -1,8 +1,13 @@
 /**
  * Agent status card — shows name, state, model, channels, uptime.
+ *
+ * Includes an "Open Console" action to navigate to the interactive
+ * agent chat view (Phase 4 — Issue #933).
  */
 
 import type { DashboardAgentSummary } from "@koi/dashboard-types";
+import { MessageSquare } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { formatDuration, formatRelativeTime } from "../../lib/format.js";
 import { AgentStatusBadge } from "./agent-status-badge.js";
 
@@ -11,6 +16,7 @@ export function AgentCard({
 }: {
   readonly agent: DashboardAgentSummary;
 }): React.ReactElement {
+  const navigate = useNavigate();
   const uptime = Date.now() - agent.startedAt;
 
   return (
@@ -56,6 +62,23 @@ export function AgentCard({
             {formatRelativeTime(agent.lastActivityAt)}
           </span>
         </div>
+      </div>
+
+      {/* Console action */}
+      <div className="mt-3 border-t border-[var(--color-border)] pt-3">
+        <button
+          type="button"
+          disabled={agent.state === "terminated"}
+          onClick={() => { navigate(`/agents/${encodeURIComponent(agent.agentId)}/console`); }}
+          className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors ${
+            agent.state === "terminated"
+              ? "cursor-not-allowed border-[var(--color-border)] text-[var(--color-muted)]/40"
+              : "border-[var(--color-border)] text-[var(--color-muted)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]"
+          }`}
+        >
+          <MessageSquare className="h-3 w-3" />
+          {agent.state === "terminated" ? "Terminated" : "Open Console"}
+        </button>
       </div>
     </div>
   );

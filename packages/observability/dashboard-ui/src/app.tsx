@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { PageShell } from "./components/layout/page-shell.js";
 import { AgentsPage } from "./pages/agents-page.js";
 import { BrowserPage } from "./pages/browser-page.js";
+import { ConsolePage } from "./pages/console-page.js";
 import { useSse } from "./hooks/use-sse.js";
 import { getDashboardConfig } from "./lib/dashboard-config.js";
 import { useThemeStore } from "./stores/theme-store.js";
@@ -41,6 +42,7 @@ export function App(): React.ReactElement {
             <Route element={<PageShell />}>
               <Route index element={<BrowserPage />} />
               <Route path="/agents" element={<AgentsPage />} />
+              <Route path="/agents/:agentId/console" element={<ConsolePage />} />
               <Route path="/browser" element={<BrowserPage />} />
             </Route>
           </Routes>

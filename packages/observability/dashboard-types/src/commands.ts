@@ -20,10 +20,37 @@ export interface AgentMessage {
 }
 
 // ---------------------------------------------------------------------------
+// Dispatch types
+// ---------------------------------------------------------------------------
+
+/** Request body for POST /cmd/agents/dispatch. */
+export interface DispatchAgentRequest {
+  /** Display name for the new agent (required). */
+  readonly name: string;
+  /** Optional manifest path or inline manifest to use. */
+  readonly manifest?: string;
+  /** Optional initial message to send to the agent after dispatch. */
+  readonly message?: string;
+}
+
+/** Response body for a successful dispatch. */
+export interface DispatchAgentResponse {
+  /** The ID assigned to the newly dispatched agent. */
+  readonly agentId: AgentId;
+  /** Display name echoed back. */
+  readonly name: string;
+}
+
+// ---------------------------------------------------------------------------
 // Command dispatcher interface
 // ---------------------------------------------------------------------------
 
 export interface CommandDispatcher {
+  // Agent dispatch
+  readonly dispatchAgent?: (
+    request: DispatchAgentRequest,
+  ) => Result<DispatchAgentResponse, KoiError> | Promise<Result<DispatchAgentResponse, KoiError>>;
+
   // Agent lifecycle
   readonly suspendAgent: (
     agentId: AgentId,

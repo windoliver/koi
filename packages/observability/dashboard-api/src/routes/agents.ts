@@ -47,7 +47,8 @@ export async function handleTerminateAgent(
   }
   const result = await dataSource.terminateAgent(agentId(id));
   if (!result.ok) {
-    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
+    const status =
+      result.error.code === "NOT_FOUND" ? 404 : result.error.code === "CONFLICT" ? 409 : 500;
     return errorResponse(result.error.code, result.error.message, status);
   }
   return jsonResponse(null);

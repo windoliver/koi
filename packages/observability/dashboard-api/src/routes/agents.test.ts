@@ -144,6 +144,31 @@ describe("handleTerminateAgent", () => {
     expect(response.status).toBe(404);
   });
 
+  test("returns 409 when agent already terminated", async () => {
+    const ds = createMockDataSource({
+      terminateAgent: () => ({
+        ok: false,
+        error: {
+          code: "CONFLICT",
+          message: "Agent already terminated",
+          retryable: false,
+        },
+      }),
+    });
+    const response = await handleTerminateAgent(
+      new Request("http://localhost/agents/agent-1/terminate", { method: "POST" }),
+      { id: "agent-1" },
+      ds,
+    );
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as {
+      readonly ok: boolean;
+      readonly error: { readonly code: string };
+    };
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("CONFLICT");
+  });
+
   test("returns 400 when id param missing", async () => {
     const ds = createMockDataSource();
     const response = await handleTerminateAgent(

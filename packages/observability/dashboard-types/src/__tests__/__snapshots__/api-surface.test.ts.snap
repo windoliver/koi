@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/dashboard-types API surface . has stable type surface 1`] = `
-"import { AgentId, Result, KoiError, ProcessState, FileSystemBackend } from '@koi/core';
+"import { Result, AgentId, KoiError, ProcessState, FileSystemBackend } from '@koi/core';
 
 /**
  * CommandDispatcher — imperative operations for the admin panel.
@@ -17,7 +17,24 @@ interface AgentMessage {
     readonly content: string;
     readonly timestamp: number;
 }
+/** Request body for POST /cmd/agents/dispatch. */
+interface DispatchAgentRequest {
+    /** Display name for the new agent (required). */
+    readonly name: string;
+    /** Optional manifest path or inline manifest to use. */
+    readonly manifest?: string;
+    /** Optional initial message to send to the agent after dispatch. */
+    readonly message?: string;
+}
+/** Response body for a successful dispatch. */
+interface DispatchAgentResponse {
+    /** The ID assigned to the newly dispatched agent. */
+    readonly agentId: AgentId;
+    /** Display name echoed back. */
+    readonly name: string;
+}
 interface CommandDispatcher {
+    readonly dispatchAgent?: (request: DispatchAgentRequest) => Result<DispatchAgentResponse, KoiError> | Promise<Result<DispatchAgentResponse, KoiError>>;
     readonly suspendAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     readonly resumeAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     readonly terminateAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
@@ -542,6 +559,167 @@ interface AdminPanelConfig extends DashboardConfig {
 }
 
 /**
+ * SSE (Server-Sent Events) parser — spec-compliant, chunk-boundary-safe.
+ *
+ * Shared between @koi/tui and @koi/dashboard-ui for AG-UI chat streaming.
+ * Spec: https://html.spec.whatwg.org/multipage/server-sent-events.html
+ */
+/** Parsed SSE event. */
+interface SSEEvent {
+    readonly event: string;
+    readonly data: string;
+    readonly id: string;
+    readonly retry: number | undefined;
+}
+/**
+ * Stateful SSE parser that handles chunk boundaries correctly.
+ *
+ * Feed it raw string chunks from a ReadableStream and it will
+ * yield complete SSE events. Handles:
+ * - Events split across chunks
+ * - Multiple events in one chunk
+ * - Multi-line data fields (joined with \\n)
+ * - Comment lines (: prefix) — silently discarded
+ * - Empty lines as event terminators
+ * - id and retry fields
+ */
+declare class SSEParser {
+    private buffer;
+    private eventType;
+    private dataLines;
+    private lastEventId;
+    private retryMs;
+    /** The last received event ID (for reconnection with Last-Event-ID header). */
+    get lastId(): string;
+    /**
+     * Feed a raw chunk of text from the stream.
+     * Returns zero or more complete SSE events.
+     */
+    feed(chunk: string): readonly SSEEvent[];
+    /** Reset parser state (for reconnection). Preserves lastEventId. */
+    reset(): void;
+    private processLine;
+}
+/** Options for consuming an SSE stream. */
+interface SSEStreamOptions {
+    /** Called for each parsed SSE event. */
+    readonly onEvent: (event: SSEEvent) => void;
+    /** Called when the stream closes normally. */
+    readonly onClose?: () => void;
+    /** Called when the stream errors. */
+    readonly onError?: (error: unknown) => void;
+    /** AbortSignal to cancel the stream. */
+    readonly signal?: AbortSignal;
+}
+/**
+ * Consume an SSE stream from a fetch Response.
+ *
+ * Reads the response body as text chunks, parses SSE events,
+ * and calls the provided callbacks.
+ *
+ * Returns the parser instance (for accessing lastId on reconnect).
+ */
+declare function consumeSSEStream(response: Response, options: SSEStreamOptions): Promise<SSEParser>;
+
+/**
+ * AG-UI (Agent-User Interaction) protocol types and validated parser.
+ *
+ * Shared between @koi/tui and @koi/dashboard-ui for streaming agent chat.
+ * Protocol: HTTP POST → SSE stream of typed JSON events.
+ */
+
+/** AG-UI SSE event types emitted by @koi/channel-agui. */
+type AguiEventType = "RUN_STARTED" | "RUN_FINISHED" | "RUN_ERROR" | "STATE_SNAPSHOT" | "STATE_DELTA" | "STEP_STARTED" | "STEP_FINISHED" | "TEXT_MESSAGE_START" | "TEXT_MESSAGE_CONTENT" | "TEXT_MESSAGE_END" | "REASONING_MESSAGE_START" | "REASONING_MESSAGE_CONTENT" | "REASONING_MESSAGE_END" | "TOOL_CALL_START" | "TOOL_CALL_ARGS" | "TOOL_CALL_END" | "TOOL_CALL_RESULT" | "CUSTOM";
+/** Parsed AG-UI event with typed fields. */
+type AguiEvent = {
+    readonly type: "RUN_STARTED";
+    readonly threadId: string;
+    readonly runId: string;
+} | {
+    readonly type: "RUN_FINISHED";
+    readonly threadId: string;
+    readonly runId: string;
+} | {
+    readonly type: "RUN_ERROR";
+    readonly message: string;
+} | {
+    readonly type: "STATE_SNAPSHOT";
+    readonly snapshot: unknown;
+} | {
+    readonly type: "STATE_DELTA";
+    readonly delta: unknown;
+} | {
+    readonly type: "STEP_STARTED";
+    readonly stepName: string;
+} | {
+    readonly type: "STEP_FINISHED";
+    readonly stepName: string;
+} | {
+    readonly type: "TEXT_MESSAGE_START";
+    readonly messageId: string;
+    readonly role: string;
+} | {
+    readonly type: "TEXT_MESSAGE_CONTENT";
+    readonly messageId: string;
+    readonly delta: string;
+} | {
+    readonly type: "TEXT_MESSAGE_END";
+    readonly messageId: string;
+} | {
+    readonly type: "REASONING_MESSAGE_START";
+    readonly messageId: string;
+} | {
+    readonly type: "REASONING_MESSAGE_CONTENT";
+    readonly messageId: string;
+    readonly delta: string;
+} | {
+    readonly type: "REASONING_MESSAGE_END";
+    readonly messageId: string;
+} | {
+    readonly type: "TOOL_CALL_START";
+    readonly toolCallId: string;
+    readonly toolCallName: string;
+} | {
+    readonly type: "TOOL_CALL_ARGS";
+    readonly toolCallId: string;
+    readonly delta: string;
+} | {
+    readonly type: "TOOL_CALL_END";
+    readonly toolCallId: string;
+} | {
+    readonly type: "TOOL_CALL_RESULT";
+    readonly toolCallId: string;
+    readonly result: string;
+} | {
+    readonly type: "CUSTOM";
+    readonly name: string;
+    readonly value: unknown;
+};
+/** Input for starting a chat run. */
+interface ChatRunInput {
+    readonly threadId: string;
+    readonly runId: string;
+    readonly message: string;
+    /** Prior messages for context (optional — agent may have memory middleware). */
+    readonly history?: readonly ChatHistoryMessage[];
+}
+/** Minimal message shape for AG-UI history. */
+interface ChatHistoryMessage {
+    readonly id: string;
+    readonly role: "user" | "assistant";
+    readonly content: string;
+}
+/**
+ * Parse a raw SSE event into a typed AguiEvent with field validation.
+ *
+ * Returns null for:
+ * - Malformed JSON
+ * - Missing \`type\` field
+ * - Missing required fields for the given event type
+ */
+declare function parseAguiEvent(sse: SSEEvent): AguiEvent | null;
+
+/**
  * Cursor-based pagination types for Phase 3 conversation history.
  * Defined now for API stability — unused until Phase 3.
  */
@@ -703,6 +881,6 @@ type AdminRoutes = typeof ADMIN_ROUTES;
  */
 declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
 
-export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type ApiError, type ApiResult, type ChannelDashboardEvent, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent };
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type DispatchAgentRequest, type DispatchAgentResponse, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
 "
 `;

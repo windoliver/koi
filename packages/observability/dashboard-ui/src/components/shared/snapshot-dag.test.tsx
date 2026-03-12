@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { render, screen } from "../../__tests__/setup.js";
+import { render } from "../../__tests__/setup.js";
 import { SnapshotDag } from "./snapshot-dag.js";
 
 // React Flow requires ResizeObserver and SVG globals not present in happy-dom
@@ -30,8 +30,8 @@ if (typeof globalThis.DOMMatrixReadOnly === "undefined") {
 
 describe("SnapshotDag", () => {
   test("renders empty state for no snapshots", () => {
-    render(<SnapshotDag nodes={[]} />);
-    expect(screen.getByText("No snapshots")).toBeDefined();
+    const { getByText } = render(<SnapshotDag nodes={[]} />);
+    expect(getByText("No snapshots")).toBeDefined();
   });
 
   test("renders without crashing with sample nodes", () => {
