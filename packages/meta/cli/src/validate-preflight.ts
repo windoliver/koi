@@ -47,8 +47,8 @@ const CHANNEL_ENV_REQUIREMENTS: Readonly<
 
 interface ManifestSubset {
   readonly model: { readonly name: string };
-  readonly channels?: readonly { readonly name: string }[];
-  readonly nexus?: { readonly url?: string };
+  readonly channels?: readonly { readonly name: string }[] | undefined;
+  readonly nexus?: { readonly url?: string | undefined } | undefined;
 }
 
 // ---------------------------------------------------------------------------

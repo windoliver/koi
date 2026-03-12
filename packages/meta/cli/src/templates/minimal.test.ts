@@ -11,6 +11,9 @@ const STATE: WizardState = {
   channels: ["cli"],
   directory: "my-agent",
   koiCommand: "koi",
+  preset: "local",
+  addons: [],
+  demoPack: undefined,
 };
 
 describe("generateMinimal", () => {

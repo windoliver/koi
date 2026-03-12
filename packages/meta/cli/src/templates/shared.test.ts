@@ -16,6 +16,9 @@ const STATE: WizardState = {
   channels: ["cli"],
   directory: "test-agent",
   koiCommand: "koi",
+  preset: "local",
+  addons: [],
+  demoPack: undefined,
 };
 
 describe("generateManifestYaml", () => {
