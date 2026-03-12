@@ -45,6 +45,8 @@ export interface AgentDispatcherOptions {
   readonly forgeStore?: unknown;
   /** Forge runtime from host bootstrap — passed to createForgeConfiguredKoi as `forge`. */
   readonly forgeRuntime?: unknown;
+  /** Injected deps for testing — bypasses dynamic import() to avoid mock.module contamination. */
+  readonly _testDeps?: DispatcherDeps;
 }
 
 export interface AgentDispatcherResult {
@@ -61,6 +63,65 @@ export interface AgentDispatcherResult {
 }
 
 // ---------------------------------------------------------------------------
+// Lazy dependency interface — extracted for testability (_testDeps injection).
+// ---------------------------------------------------------------------------
+
+/** Heavy deps loaded lazily on first dispatch (or injected via _testDeps). */
+export interface DispatcherDeps {
+  readonly resolveAgent: (opts: {
+    readonly manifestPath: string;
+    readonly manifest: unknown;
+    readonly forgeStore?: unknown;
+  }) => Promise<
+    Result<{ readonly middleware: readonly unknown[]; readonly engine?: unknown }, KoiError>
+  >;
+  readonly createForgeConfiguredKoi: (opts: {
+    readonly manifest: unknown;
+    readonly adapter: unknown;
+    readonly middleware: readonly unknown[];
+    readonly providers: readonly unknown[];
+    readonly extensions: readonly unknown[];
+    readonly forge?: unknown;
+  }) => Promise<{
+    readonly runtime: {
+      readonly agent: { readonly pid: { readonly id: AgentId } };
+      readonly run: (input: {
+        readonly kind: string;
+        readonly text: string;
+      }) => AsyncIterable<unknown>;
+      readonly dispose: () => Promise<void>;
+    };
+    /** Tear down forge system internals. Call after runtime.dispose(). */
+    readonly dispose: () => void;
+  }>;
+  readonly createPiAdapter: (opts: { readonly model: string }) => unknown;
+  readonly loadManifest: (
+    path: string,
+  ) => Promise<
+    Result<
+      { readonly manifest: { readonly name: string; readonly model: { readonly name: string } } },
+      KoiError
+    >
+  >;
+  // AG-UI streaming deps
+  readonly createRunContextStore: () => {
+    readonly register: (runId: string, writer: unknown, signal: AbortSignal) => void;
+    readonly get: (runId: string) => unknown;
+    readonly deregister: (runId: string) => void;
+    readonly markTextStreamed: (runId: string) => void;
+    readonly hasTextStreamed: (runId: string) => boolean;
+    readonly size: number;
+  };
+  readonly createAguiStreamMiddleware: (config: { readonly store: unknown }) => KoiMiddleware;
+  readonly handleAguiRequest: (
+    req: Request,
+    store: unknown,
+    mode: "stateful" | "stateless",
+    dispatch: (message: InboundMessage) => Promise<void>,
+  ) => Promise<Response>;
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -73,68 +134,10 @@ export interface AgentDispatcherResult {
 export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDispatcherResult {
   const dispatched = new Map<string, DispatchedAgent>();
 
-  // Lazy-loaded dependencies — resolved once on first dispatch.
-  // Uses dynamic import() to avoid pulling heavy deps at bridge construction time.
-  // Function signatures are inline to avoid depending on potentially-unresolved
-  // module type declarations (e.g. @koi/forge, @koi/manifest).
-  interface LazyDeps {
-    readonly resolveAgent: (opts: {
-      readonly manifestPath: string;
-      readonly manifest: unknown;
-      readonly forgeStore?: unknown;
-    }) => Promise<
-      Result<{ readonly middleware: readonly unknown[]; readonly engine?: unknown }, KoiError>
-    >;
-    readonly createForgeConfiguredKoi: (opts: {
-      readonly manifest: unknown;
-      readonly adapter: unknown;
-      readonly middleware: readonly unknown[];
-      readonly providers: readonly unknown[];
-      readonly extensions: readonly unknown[];
-      readonly forge?: unknown;
-    }) => Promise<{
-      readonly runtime: {
-        readonly agent: { readonly pid: { readonly id: AgentId } };
-        readonly run: (input: {
-          readonly kind: string;
-          readonly text: string;
-        }) => AsyncIterable<unknown>;
-        readonly dispose: () => Promise<void>;
-      };
-      /** Tear down forge system internals. Call after runtime.dispose(). */
-      readonly dispose: () => void;
-    }>;
-    readonly createPiAdapter: (opts: { readonly model: string }) => unknown;
-    readonly loadManifest: (
-      path: string,
-    ) => Promise<
-      Result<
-        { readonly manifest: { readonly name: string; readonly model: { readonly name: string } } },
-        KoiError
-      >
-    >;
-    // AG-UI streaming deps
-    readonly createRunContextStore: () => {
-      readonly register: (runId: string, writer: unknown, signal: AbortSignal) => void;
-      readonly get: (runId: string) => unknown;
-      readonly deregister: (runId: string) => void;
-      readonly markTextStreamed: (runId: string) => void;
-      readonly hasTextStreamed: (runId: string) => boolean;
-      readonly size: number;
-    };
-    readonly createAguiStreamMiddleware: (config: { readonly store: unknown }) => KoiMiddleware;
-    readonly handleAguiRequest: (
-      req: Request,
-      store: unknown,
-      mode: "stateful" | "stateless",
-      dispatch: (message: InboundMessage) => Promise<void>,
-    ) => Promise<Response>;
-  }
-
   // let justified: cached promise for lazy dependency loading
-  let depsPromise: Promise<LazyDeps> | undefined;
+  let depsPromise: Promise<DispatcherDeps> | undefined;
 
-  async function loadDeps(): Promise<LazyDeps> {
+  async function loadDeps(): Promise<DispatcherDeps> {
     const [resolveAgentMod, forgeMod, piMod, manifestMod, aguiMod] = await Promise.all([
       import("./resolve-agent.js"),
       import("@koi/forge"),
@@ -143,21 +146,23 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
       import("@koi/channel-agui"),
     ]);
     return {
-      resolveAgent: resolveAgentMod.resolveAgent as LazyDeps["resolveAgent"],
+      resolveAgent: resolveAgentMod.resolveAgent as DispatcherDeps["resolveAgent"],
       createForgeConfiguredKoi:
-        forgeMod.createForgeConfiguredKoi as LazyDeps["createForgeConfiguredKoi"],
-      createPiAdapter: piMod.createPiAdapter as LazyDeps["createPiAdapter"],
-      loadManifest: manifestMod.loadManifest as LazyDeps["loadManifest"],
-      createRunContextStore: aguiMod.createRunContextStore as LazyDeps["createRunContextStore"],
+        forgeMod.createForgeConfiguredKoi as DispatcherDeps["createForgeConfiguredKoi"],
+      createPiAdapter: piMod.createPiAdapter as DispatcherDeps["createPiAdapter"],
+      loadManifest: manifestMod.loadManifest as DispatcherDeps["loadManifest"],
+      createRunContextStore:
+        aguiMod.createRunContextStore as DispatcherDeps["createRunContextStore"],
       createAguiStreamMiddleware:
-        aguiMod.createAguiStreamMiddleware as LazyDeps["createAguiStreamMiddleware"],
-      handleAguiRequest: aguiMod.handleAguiRequest as LazyDeps["handleAguiRequest"],
+        aguiMod.createAguiStreamMiddleware as DispatcherDeps["createAguiStreamMiddleware"],
+      handleAguiRequest: aguiMod.handleAguiRequest as DispatcherDeps["handleAguiRequest"],
     };
   }
 
-  function getDeps(): Promise<LazyDeps> {
+  function getDeps(): Promise<DispatcherDeps> {
     if (depsPromise === undefined) {
-      depsPromise = loadDeps();
+      depsPromise =
+        options._testDeps !== undefined ? Promise.resolve(options._testDeps) : loadDeps();
     }
     return depsPromise;
   }

@@ -1,15 +1,17 @@
 /**
  * Tests for createAgentDispatcher.
  *
- * Uses mock modules to avoid loading real agent resolution / engine dependencies.
+ * Uses _testDeps injection to avoid mock.module contamination of concurrent
+ * test files (e.g. start.integration.test.ts uses real @koi/manifest).
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { agentId } from "@koi/core";
-import type { AgentDispatcherResult } from "./agent-dispatcher.js";
+import type { AgentDispatcherResult, DispatcherDeps } from "./agent-dispatcher.js";
+import { createAgentDispatcher } from "./agent-dispatcher.js";
 
 // ---------------------------------------------------------------------------
-// Mock dependencies
+// Mock dependencies (injected via _testDeps, NOT mock.module)
 // ---------------------------------------------------------------------------
 
 const TEST_AGENT_ID = agentId("test-dispatched-001");
@@ -27,7 +29,7 @@ type ManifestResult =
           readonly version: string;
           readonly model: { readonly name: string };
         };
-        readonly warnings: readonly never[];
+        readonly warnings: readonly string[];
       };
     }
   | {
@@ -99,23 +101,6 @@ const mockCreateForgeConfiguredKoi = mock(async (_opts: unknown) => ({
   dispose: () => {},
 }));
 
-mock.module("@koi/manifest", () => ({
-  loadManifest: mockLoadManifest,
-}));
-
-mock.module("./resolve-agent.js", () => ({
-  resolveAgent: mockResolveAgent,
-}));
-
-mock.module("@koi/engine-pi", () => ({
-  createPiAdapter: mockCreatePiAdapter,
-}));
-
-mock.module("@koi/forge", () => ({
-  createForgeConfiguredKoi: mockCreateForgeConfiguredKoi,
-}));
-
-// Mock AG-UI channel deps (used for per-agent chat handlers)
 const mockStore = {
   register: mock(() => {}),
   get: mock(() => undefined),
@@ -125,22 +110,25 @@ const mockStore = {
   size: 0,
 };
 
-mock.module("@koi/channel-agui", () => ({
-  createRunContextStore: () => mockStore,
-  createAguiStreamMiddleware: (_config: unknown) => ({
-    name: "mock-agui-stream",
-  }),
-  handleAguiRequest: mock(
-    async (_req: Request, _store: unknown, _mode: string, _dispatch: unknown) =>
-      new Response("data: mock\n\n", {
-        status: 200,
-        headers: { "Content-Type": "text/event-stream" },
-      }),
-  ),
-}));
+const mockHandleAguiRequest = mock(
+  async (_req: Request, _store: unknown, _mode: string, _dispatch: unknown) =>
+    new Response("data: mock\n\n", {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+);
 
-// Import AFTER mocks are installed
-const { createAgentDispatcher } = await import("./agent-dispatcher.js");
+/** Assembled test deps — injected directly, no mock.module needed. */
+const testDeps: DispatcherDeps = {
+  loadManifest: mockLoadManifest as unknown as DispatcherDeps["loadManifest"],
+  resolveAgent: mockResolveAgent as unknown as DispatcherDeps["resolveAgent"],
+  createPiAdapter: mockCreatePiAdapter,
+  createForgeConfiguredKoi:
+    mockCreateForgeConfiguredKoi as unknown as DispatcherDeps["createForgeConfiguredKoi"],
+  createRunContextStore: () => mockStore,
+  createAguiStreamMiddleware: (_config: unknown) => ({ name: "mock-agui-stream" }) as never,
+  handleAguiRequest: mockHandleAguiRequest as unknown as DispatcherDeps["handleAguiRequest"],
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -151,6 +139,7 @@ function createDispatcher(
 ): AgentDispatcherResult {
   return createAgentDispatcher({
     defaultManifestPath: "/tmp/koi.yaml",
+    _testDeps: testDeps,
     ...overrides,
   });
 }
