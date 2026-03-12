@@ -21,6 +21,7 @@ export interface WizardState {
   readonly engine: EngineName | undefined;
   readonly channels: readonly ChannelName[];
   readonly directory: string;
+  readonly koiCommand: string;
 }
 
 export const DEFAULT_STATE: WizardState = {
@@ -31,4 +32,5 @@ export const DEFAULT_STATE: WizardState = {
   engine: undefined,
   channels: ["cli"],
   directory: ".",
+  koiCommand: "koi",
 } as const;

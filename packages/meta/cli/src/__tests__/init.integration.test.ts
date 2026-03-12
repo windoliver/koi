@@ -81,12 +81,13 @@ describe("koi init --yes (minimal template)", () => {
     expect(pkg.name).toBe("test-pkg");
     expect(pkg.type).toBe("module");
     expect(pkg.private).toBe(true);
-    expect(pkg.scripts["dry-run"]).toBe("koi start --dry-run");
-    expect(pkg.scripts.start).toBe("koi start");
-    expect(pkg.scripts["start:admin"]).toBe("koi start --admin");
-    expect(pkg.scripts["serve:admin"]).toBe("koi serve --admin");
-    expect(pkg.scripts.admin).toBe("koi admin");
-    expect(pkg.scripts.tui).toBe("koi tui");
+    expect(pkg.scripts.koi).toBe("koi");
+    expect(pkg.scripts["dry-run"]).toBe("bun run koi -- start --dry-run");
+    expect(pkg.scripts.start).toBe("bun run koi -- start");
+    expect(pkg.scripts["start:admin"]).toBe("bun run koi -- start --admin");
+    expect(pkg.scripts["serve:admin"]).toBe("bun run koi -- serve --admin");
+    expect(pkg.scripts.admin).toBe("bun run koi -- admin");
+    expect(pkg.scripts.tui).toBe("bun run koi -- tui");
     expect(pkg.dependencies.koi).toBe("latest");
   });
 

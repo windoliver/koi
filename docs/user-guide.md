@@ -56,15 +56,15 @@ Then run the CLI from the repo as:
 ```bash
 bun run koi -- init my-agent
 cd my-agent
-bun run koi -- start --dry-run
-bun run koi -- start --admin
-bun run koi -- tui
+bun run dry-run
+bun run start:admin
+bun run tui
 ```
 
 Notes for the monorepo path:
 
 - `bun install` may fail in `lefthook install` if this repo already has a local `core.hooksPath`; if that happens, run `lefthook install --force` and continue
-- the repo does not put a plain `koi` binary on your shell `PATH`; inside this repo, use `bun run koi -- ...`
+- the repo does not put a plain `koi` binary on your shell `PATH`; at the repo root use `bun run koi -- ...`, and inside a generated agent directory use its `bun run ...` scripts
 - if you want the full workspace built, `bun run build` still works, but `bun run build:cli` is the shortest first-timer path
 
 ## Nexus Mode: Local First, Remote By URL Only

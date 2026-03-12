@@ -10,6 +10,7 @@ const STATE: WizardState = {
   engine: undefined,
   channels: ["cli"],
   directory: "my-agent",
+  koiCommand: "koi",
 };
 
 describe("generateMinimal", () => {
