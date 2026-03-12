@@ -69,18 +69,18 @@ describe("writeScaffold", () => {
     expect(written).toBe(content);
   });
 
-  test("returns error when target already exists with koi.yaml", async () => {
+  test("overwrites scaffold files when target already exists with koi.yaml", async () => {
     const parent = makeTempDir();
     tempDirs.push(parent);
     const target = join(parent, "existing");
     mkdirSync(target, { recursive: true });
     writeFileSync(join(target, "koi.yaml"), "name: old\n");
+    writeFileSync(join(target, "keep.txt"), "keep\n");
 
     const result = await writeScaffold(target, { "koi.yaml": "name: new\n" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("already exists");
-    }
+    expect(result.ok).toBe(true);
+    expect(await Bun.file(join(target, "koi.yaml")).text()).toBe("name: new\n");
+    expect(await Bun.file(join(target, "keep.txt")).text()).toBe("keep\n");
   });
 
   test("allows writing to existing empty directory", async () => {

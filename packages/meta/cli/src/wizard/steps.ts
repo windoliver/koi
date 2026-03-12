@@ -36,7 +36,7 @@ export function isValidModel(name: string): boolean {
   }
 
   const provider = name.slice(0, colonIndex);
-  return Object.prototype.hasOwnProperty.call(PROVIDER_ENV_KEYS, provider);
+  return Object.hasOwn(PROVIDER_ENV_KEYS, provider);
 }
 
 export async function selectTemplate(state: WizardState, flags: InitFlags): Promise<StepResult> {
