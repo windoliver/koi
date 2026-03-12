@@ -125,14 +125,15 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
   // 1. Seed memory entries via Nexus
   let memoryCount = 0;
   for (const entry of MEMORY_ENTRIES) {
-    try {
-      await writeJson(ctx.nexusClient, `/agents/${ctx.agentName}/memory/${entry.key}`, entry.value);
+    const result = await writeJson(
+      ctx.nexusClient,
+      `/agents/${ctx.agentName}/memory/${entry.key}`,
+      entry.value,
+    );
+    if (result.ok) {
       memoryCount++;
-    } catch (e: unknown) {
-      if (ctx.verbose) {
-        const msg = e instanceof Error ? e.message : String(e);
-        summary.push(`  warn: failed to seed memory ${entry.key}: ${msg}`);
-      }
+    } else if (ctx.verbose) {
+      summary.push(`  warn: failed to seed memory ${entry.key}: ${result.error.message}`);
     }
   }
   counts.memory = memoryCount;
@@ -141,23 +142,23 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
   // 2. Seed corpus documents via Nexus
   let corpusCount = 0;
   for (const doc of CORPUS_DOCS) {
-    try {
-      await writeJson(ctx.nexusClient, `/agents/${ctx.agentName}/corpus/${doc.key}`, {
-        content: doc.content,
-        indexedAt: Date.now(),
-      });
+    const result = await writeJson(ctx.nexusClient, `/agents/${ctx.agentName}/corpus/${doc.key}`, {
+      content: doc.content,
+      indexedAt: Date.now(),
+    });
+    if (result.ok) {
       corpusCount++;
-    } catch (e: unknown) {
-      if (ctx.verbose) {
-        const msg = e instanceof Error ? e.message : String(e);
-        summary.push(`  warn: failed to seed corpus ${doc.key}: ${msg}`);
-      }
+    } else if (ctx.verbose) {
+      summary.push(`  warn: failed to seed corpus ${doc.key}: ${result.error.message}`);
     }
   }
   counts.corpus = corpusCount;
   summary.push(`Corpus: ${String(corpusCount)} documents ready`);
 
-  return { ok: true, counts, summary };
+  const totalSeeded = memoryCount + corpusCount;
+  const allOk = totalSeeded > 0 || (MEMORY_ENTRIES.length === 0 && CORPUS_DOCS.length === 0);
+
+  return { ok: allOk, counts, summary };
 }
 
 export const CONNECTED_PACK: DemoPack = {

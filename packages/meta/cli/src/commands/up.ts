@@ -121,6 +121,30 @@ function renderEvent(event: EngineEvent, verbose: boolean): void {
 // ---------------------------------------------------------------------------
 
 export async function runUp(flags: UpFlags): Promise<void> {
+  // 0. DETACH: Fork child process and exit parent
+  if (flags.detach) {
+    const { spawn } = await import("node:child_process");
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
+    const workspaceRoot = resolve(dirname(manifestPath));
+
+    const args = process.argv.slice(1).filter((a) => a !== "--detach");
+    const child = spawn(process.argv[0] ?? "bun", args, {
+      detached: true,
+      stdio: "ignore",
+      env: process.env,
+    });
+    child.unref();
+
+    const pidDir = join(workspaceRoot, ".koi");
+    await mkdir(pidDir, { recursive: true });
+    await writeFile(join(pidDir, "koi.pid"), String(child.pid));
+    process.stderr.write(`Detached. PID ${String(child.pid)} written to .koi/koi.pid\n`);
+    process.exit(0);
+  }
+
   const timer = createTimer(flags.timing);
 
   // 1. RESOLVE: Find manifest path
@@ -319,11 +343,57 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   const persistAgentId = adminBridge?.agentId ?? manifest.name;
 
-  // 10. Print startup banner
+  // 9b. Auto-seed demo pack if configured in manifest
+  await seedDemoPackIfNeeded(
+    manifestPath,
+    workspaceRoot,
+    manifest.name,
+    nexus.baseUrl,
+    flags.verbose,
+  );
+
+  // 10. Start health server (mirrors serve.ts health endpoint)
+  const DEFAULT_HEALTH_PORT = 9100;
+  const healthPort = manifest.deploy?.port ?? DEFAULT_HEALTH_PORT;
+  let stopHealth: (() => void) | undefined;
+
+  try {
+    const { createHealthServer } = await import("@koi/deploy");
+    const healthServer = createHealthServer({
+      port: healthPort,
+      onReady: () => true,
+    });
+    const healthInfo = await healthServer.start();
+    stopHealth = () => healthServer.stop();
+    if (flags.verbose) {
+      process.stderr.write(`Health server: ${healthInfo.url}\n`);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: health server failed to start: ${message}\n`);
+  }
+
+  // 11. Print startup banner
   timer.print();
   printBanner(manifest.name, engineName, modelName, channels, nexus.baseUrl, adminBridge);
 
-  // 11. Set up shutdown + REPL
+  // 12. Attach TUI when not detached
+  let tuiApp:
+    | { readonly start: () => Promise<void>; readonly stop: () => Promise<void> }
+    | undefined;
+  if (!flags.detach) {
+    try {
+      const { createTuiApp } = await import("@koi/tui");
+      tuiApp = createTuiApp({
+        adminUrl: `http://localhost:${String(DEFAULT_ADMIN_PORT)}/admin/api`,
+      });
+      await tuiApp.start();
+    } catch {
+      tuiApp = undefined;
+    }
+  }
+
+  // 13. Set up shutdown + REPL
   const controller = new AbortController();
   let shuttingDown = false;
 
@@ -340,7 +410,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   process.on("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
-  // REPL loop with processing guard
+  // REPL loop with processing guard (fallback when TUI is unavailable)
   let processing = false;
 
   chatBridge.wireDispatch(async (msg) => {
@@ -417,18 +487,6 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }),
   );
 
-  // If --detach, write PID and exit
-  if (flags.detach) {
-    const { mkdir, writeFile } = await import("node:fs/promises");
-    const { join } = await import("node:path");
-    const pidDir = join(workspaceRoot, ".koi");
-    await mkdir(pidDir, { recursive: true });
-    await writeFile(join(pidDir, "koi.pid"), String(process.pid));
-    process.stderr.write(`Detached. PID ${String(process.pid)} written to .koi/koi.pid\n`);
-    // In detach mode, we keep running but don't block on stdin
-    return;
-  }
-
   // Wait for abort signal
   await new Promise<void>((r) => {
     controller.signal.addEventListener("abort", () => r(), { once: true });
@@ -437,12 +495,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // Cleanup
   process.removeListener("SIGINT", shutdown);
   process.removeListener("SIGTERM", shutdown);
+  if (tuiApp !== undefined) await tuiApp.stop();
   for (const unsub of unsubscribers) {
     unsub();
   }
   for (const ch of channels) {
     await ch.disconnect();
   }
+  if (stopHealth !== undefined) stopHealth();
   if (stopAdmin !== undefined) stopAdmin();
   if (adminDispatcher !== undefined) await adminDispatcher.dispose();
   if (temporalAdmin !== undefined) await temporalAdmin.dispose();
@@ -453,6 +513,68 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (nexus.dispose !== undefined) await nexus.dispose();
 
   process.stderr.write("Goodbye.\n");
+}
+
+// ---------------------------------------------------------------------------
+// Demo pack seeding
+// ---------------------------------------------------------------------------
+
+async function seedDemoPackIfNeeded(
+  manifestPath: string,
+  workspaceRoot: string,
+  agentName: string,
+  nexusBaseUrl: string | undefined,
+  verbose: boolean,
+): Promise<void> {
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    const raw = await readFile(manifestPath, "utf-8");
+    const demoMatch = /^demo:\s*\n\s+pack:\s*(\S+)/m.exec(raw);
+    if (demoMatch === null) return;
+
+    const packId = demoMatch[1];
+    if (packId === undefined) return;
+
+    const markerPath = join(workspaceRoot, ".koi", ".demo-seeded");
+    try {
+      await readFile(markerPath, "utf-8");
+      return;
+    } catch {
+      // Marker doesn't exist — proceed with seeding
+    }
+
+    if (nexusBaseUrl === undefined) {
+      process.stderr.write("warn: demo pack requires Nexus — skipping auto-seed\n");
+      return;
+    }
+
+    const { runSeed } = await import("@koi/demo-packs");
+    const { createNexusClient } = await import("@koi/nexus-client");
+    const nexusClient = createNexusClient({ baseUrl: nexusBaseUrl });
+
+    const result = await runSeed(packId, {
+      nexusClient,
+      agentName,
+      workspaceRoot,
+      verbose,
+    });
+
+    for (const line of result.summary) {
+      process.stderr.write(`  ${line}\n`);
+    }
+
+    if (result.ok) {
+      const { mkdir, writeFile } = await import("node:fs/promises");
+      const pidDir = join(workspaceRoot, ".koi");
+      await mkdir(pidDir, { recursive: true });
+      await writeFile(markerPath, packId);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: demo pack seeding failed: ${message}\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------

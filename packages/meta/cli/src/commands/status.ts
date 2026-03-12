@@ -76,31 +76,32 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
 
   // Health endpoints
   const healthPort = manifest.deploy?.port ?? 9100;
-  const healthUrl = `http://localhost:${healthPort}/health`;
+  const healthUrl = `http://localhost:${String(healthPort)}/health`;
   const adminUrl = "http://localhost:3100/admin/api";
 
-  process.stdout.write(`Health:   ${healthUrl}\n`);
+  const nexusUrl = manifest.nexus?.url ?? process.env.NEXUS_URL ?? "http://127.0.0.1:2026";
+  const nexusHealthUrl = `${nexusUrl}/health`;
 
   // Probe health endpoints concurrently
   const [healthOk, adminOk, nexusOk] = await Promise.all([
     probeEndpoint(healthUrl),
     probeEndpoint(adminUrl),
-    probeEndpoint("http://127.0.0.1:2026/health"),
+    probeEndpoint(nexusHealthUrl),
   ]);
 
   if (info.status === "running" || pid !== undefined) {
-    process.stdout.write(`Health:   ${healthOk ? "healthy" : "unreachable"}\n`);
+    process.stdout.write(`Health:   ${healthOk ? "healthy" : "unreachable"} (${healthUrl})\n`);
   }
 
   process.stdout.write(`Admin:    ${adminOk ? "ready" : "not running"}\n`);
-  process.stdout.write(`Nexus:    ${nexusOk ? "ready" : "not running"}\n`);
+  process.stdout.write(`Nexus:    ${nexusOk ? "ready" : "not running"} (${nexusUrl})\n`);
 
-  // Channels from manifest
+  // Channels from manifest (configured, not necessarily connected)
   const channels = manifest.channels ?? [];
   if (channels.length > 0) {
     process.stdout.write("Channels:\n");
     for (const ch of channels) {
-      process.stdout.write(`  - ${ch.name}\n`);
+      process.stdout.write(`  - ${ch.name} (configured)\n`);
     }
   }
 }

@@ -233,6 +233,12 @@ export function generateDemoManifestYaml(state: WizardState): string {
   lines.push('    - name: "@koi/tools-web"');
   lines.push("");
 
+  if (state.demoPack !== undefined) {
+    lines.push("demo:");
+    lines.push(`  pack: ${state.demoPack}`);
+    lines.push("");
+  }
+
   lines.push("context:");
   lines.push("  bootstrap: true");
   lines.push("");
