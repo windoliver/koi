@@ -36,6 +36,12 @@ The examples below use `koi ...` for readability.
 
 If you already have a `koi` binary installed, use the commands exactly as written.
 
+Important:
+
+- `koi start --dry-run` validates an existing manifest
+- it does not create `koi.yaml`
+- if this is your first time in a new folder, run `koi init my-agent` first
+
 If you are running from this monorepo, do this first:
 
 ```bash
@@ -48,6 +54,8 @@ bun run build:cli
 Then run the CLI from the repo as:
 
 ```bash
+bun run koi -- init my-agent
+cd my-agent
 bun run koi -- start --dry-run
 bun run koi -- start --admin
 bun run koi -- tui
@@ -115,6 +123,16 @@ koi serve --admin --port 9100
 koi doctor
 ```
 
+First-time sequence:
+
+```bash
+koi init my-agent
+cd my-agent
+koi start --dry-run
+koi start --admin
+koi tui
+```
+
 ## Base `koi.yaml` For Demo 1
 
 Start from something this small:
@@ -174,6 +192,8 @@ cd my-agent
 ```
 
 2. Open the generated `koi.yaml` and make sure it matches the base manifest above.
+
+`koi start --dry-run` will fail if `koi.yaml` does not exist yet. `koi init` is the step that creates it.
 
 3. Dry-run it first.
 
