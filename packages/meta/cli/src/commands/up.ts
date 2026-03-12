@@ -226,11 +226,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   const adapter = resolved.value.engine ?? createPiAdapter({ model: modelName });
 
-  // Auto-start Nexus via `nexus up` when no explicit URL given and preset uses embed mode
+  // Auto-start Nexus via `nexus up` (Docker Compose) for auth-enabled presets only.
+  // embed-lite (local) uses the legacy ensureNexusRunning() path inside resolveNexusOrWarn().
+  // embed-auth (demo/mesh) uses nexus up which manages Docker Compose services.
   let nexusBaseUrl = flags.nexusUrl ?? manifest.nexus?.url ?? process.env.NEXUS_URL;
   let nexusStartedByUs = false;
 
-  if (nexusBaseUrl === undefined && preset.nexusMode !== "remote") {
+  if (nexusBaseUrl === undefined && preset.nexusMode === "embed-auth") {
     const nexusResult = await timer.time("nexus-up", () =>
       startNexusStack(workspaceRoot, presetId, flags.verbose),
     );
@@ -253,10 +255,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
+  // For embed-lite (local), pass profile so legacy ensureNexusRunning() uses correct mode.
+  // For embed-auth, nexusBaseUrl is already set by nexusUp() above.
+  const embedProfile = nexusStartedByUs ? undefined : mapNexusModeToProfile(preset.nexusMode);
+
   // Resolve Nexus, autonomous, temporal in parallel (preset controls Temporal)
   const [nexus, autonomous, temporalAdmin] = await timer.time("subsystems", () =>
     Promise.all([
-      resolveNexusOrWarn(nexusBaseUrl, manifest.nexus?.url, flags.verbose),
+      resolveNexusOrWarn(nexusBaseUrl, manifest.nexus?.url, flags.verbose, embedProfile),
       resolveAutonomousOrWarn(manifest, flags.verbose),
       temporalUrl !== undefined
         ? resolveTemporalOrWarn(temporalUrl, flags.verbose)
@@ -616,6 +622,22 @@ async function startTemporalEmbed(verbose: boolean): Promise<TemporalEmbedHandle
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`warn: Temporal auto-start failed: ${message}\n`);
     return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Nexus mode mapping (legacy embed-lite path)
+// ---------------------------------------------------------------------------
+
+/** Maps preset nexusMode to the embed profile for `nexus serve --profile <x>`. */
+function mapNexusModeToProfile(mode: NexusMode): string | undefined {
+  switch (mode) {
+    case "embed-lite":
+      return "lite";
+    case "embed-auth":
+      return "full";
+    case "remote":
+      return undefined;
   }
 }
 
