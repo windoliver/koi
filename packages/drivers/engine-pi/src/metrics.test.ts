@@ -62,4 +62,77 @@ describe("createMetricsAccumulator", () => {
     expect(metrics.inputTokens).toBe(30);
     expect(metrics.outputTokens).toBe(15);
   });
+
+  test("addUsage accumulates cache tokens", () => {
+    const acc = createMetricsAccumulator();
+    acc.addUsage(100, 50, 20, 10);
+
+    const snap = acc.snapshot();
+    expect(snap.cacheReadTokens).toBe(20);
+    expect(snap.cacheCreationTokens).toBe(10);
+  });
+
+  test("addUsage treats missing cache params as zero", () => {
+    const acc = createMetricsAccumulator();
+    acc.addUsage(100, 50);
+    acc.addUsage(200, 75, 30, 15);
+
+    const snap = acc.snapshot();
+    expect(snap.cacheReadTokens).toBe(30);
+    expect(snap.cacheCreationTokens).toBe(15);
+  });
+
+  test("finalizeWithMetadata includes cacheReadTokens when non-zero", () => {
+    const acc = createMetricsAccumulator();
+    acc.addUsage(100, 50, 42, 0);
+
+    const { metadata } = acc.finalizeWithMetadata();
+    expect(metadata.cacheReadTokens).toBe(42);
+    expect(metadata.cacheCreationTokens).toBeUndefined();
+  });
+
+  test("finalizeWithMetadata omits cache fields when zero", () => {
+    const acc = createMetricsAccumulator();
+    acc.addUsage(100, 50);
+
+    const { metadata } = acc.finalizeWithMetadata();
+    expect(metadata.cacheReadTokens).toBeUndefined();
+    expect(metadata.cacheCreationTokens).toBeUndefined();
+  });
+
+  test("addCost accumulates cost across turns", () => {
+    const acc = createMetricsAccumulator();
+    acc.addCost({ input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0.005, total: 0.036 });
+    acc.addCost({ input: 0.02, output: 0.03, cacheRead: 0.002, cacheWrite: 0.01, total: 0.062 });
+
+    const { metrics, metadata } = acc.finalizeWithMetadata();
+    expect(metrics.costUsd).toBeCloseTo(0.098);
+    expect(metadata.totalCostUsd).toBeCloseTo(0.098);
+    const breakdown = metadata.costBreakdown as { input: number; output: number };
+    expect(breakdown.input).toBeCloseTo(0.03);
+    expect(breakdown.output).toBeCloseTo(0.05);
+  });
+
+  test("finalize includes costUsd when cost has been accumulated", () => {
+    const acc = createMetricsAccumulator();
+    acc.addCost({ input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 });
+
+    const metrics = acc.finalize();
+    expect(metrics.costUsd).toBeCloseTo(0.03);
+  });
+
+  test("finalize omits costUsd when no cost accumulated", () => {
+    const acc = createMetricsAccumulator();
+    acc.addUsage(100, 50);
+
+    const metrics = acc.finalize();
+    expect(metrics.costUsd).toBeUndefined();
+  });
+
+  test("snapshot includes cache tokens in initial state", () => {
+    const acc = createMetricsAccumulator();
+    const snap = acc.snapshot();
+    expect(snap.cacheReadTokens).toBe(0);
+    expect(snap.cacheCreationTokens).toBe(0);
+  });
 });

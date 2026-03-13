@@ -34,13 +34,28 @@ import { PI_PARAMS_NONCE_KEY, piParamsStore } from "./model-terminal.js";
 // Partial message builder — accumulates streaming chunks into content blocks
 // ---------------------------------------------------------------------------
 
+/** Accumulated usage from streaming chunks. */
+interface StreamUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly cost: {
+    readonly input: number;
+    readonly output: number;
+    readonly cacheRead: number;
+    readonly cacheWrite: number;
+    readonly total: number;
+  };
+}
+
 interface PartialBuilder {
   /** The current partial message (mutated in place). */
   readonly partial: AssistantMessage;
   /** Process a ModelChunk, updating partial.content accordingly. */
   readonly processChunk: (chunk: ModelChunk) => void;
   /** Build the final AssistantMessage with accumulated usage. */
-  readonly finalize: (inputTokens: number, outputTokens: number) => AssistantMessage;
+  readonly finalize: (usage: StreamUsage) => AssistantMessage;
 }
 
 function createPartialBuilder(initial: AssistantMessage): PartialBuilder {
@@ -122,7 +137,7 @@ function createPartialBuilder(initial: AssistantMessage): PartialBuilder {
           break;
       }
     },
-    finalize(inputTokens: number, outputTokens: number): AssistantMessage {
+    finalize(usage: StreamUsage): AssistantMessage {
       // Finalize any in-flight tool call (shouldn't happen with well-formed streams)
       if (currentToolCallEntry !== undefined) {
         try {
@@ -138,12 +153,12 @@ function createPartialBuilder(initial: AssistantMessage): PartialBuilder {
         ...partial,
         content: [...content],
         usage: {
-          input: inputTokens,
-          output: outputTokens,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: inputTokens + outputTokens,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          input: usage.inputTokens,
+          output: usage.outputTokens,
+          cacheRead: usage.cacheReadTokens,
+          cacheWrite: usage.cacheCreationTokens,
+          totalTokens: usage.inputTokens + usage.outputTokens,
+          cost: usage.cost,
         },
       };
     },
@@ -278,8 +293,15 @@ export function createBridgeStreamFn(
     void (async () => {
       try {
         // let justified: accumulate usage from stream
-        let inputTokens = 0;
-        let outputTokens = 0;
+        const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+        // let justified: mutable usage accumulator updated from stream chunks
+        let usage: StreamUsage = {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          cost: zeroCost,
+        };
 
         // Push initial "start" event — pi-agent-core's streamAssistantResponse
         // requires this to set partialMessage, without which all subsequent
@@ -291,18 +313,20 @@ export function createBridgeStreamFn(
           builder.processChunk(chunk);
 
           if (chunk.kind === "usage") {
-            inputTokens = chunk.inputTokens;
-            outputTokens = chunk.outputTokens;
+            usage = { ...usage, inputTokens: chunk.inputTokens, outputTokens: chunk.outputTokens };
           }
 
           // Handle error chunk — propagate as pi-ai error event, not done
           if (chunk.kind === "error") {
             if (chunk.usage) {
-              inputTokens = chunk.usage.inputTokens;
-              outputTokens = chunk.usage.outputTokens;
+              usage = {
+                ...usage,
+                inputTokens: chunk.usage.inputTokens,
+                outputTokens: chunk.usage.outputTokens,
+              };
             }
             const errMessage: AssistantMessage = {
-              ...builder.finalize(inputTokens, outputTokens),
+              ...builder.finalize(usage),
               stopReason: "error",
               errorMessage: chunk.message,
             };
@@ -313,7 +337,7 @@ export function createBridgeStreamFn(
 
           // Handle done chunk explicitly — build final message with proper content + usage
           if (chunk.kind === "done") {
-            const finalMessage = builder.finalize(inputTokens, outputTokens);
+            const finalMessage = builder.finalize(usage);
             stream.push({ type: "done", reason: "stop", message: finalMessage });
             stream.end(finalMessage);
             return;
@@ -344,7 +368,7 @@ export function createBridgeStreamFn(
         }
 
         // If we got here without a done chunk, end the stream
-        const finalMessage = builder.finalize(inputTokens, outputTokens);
+        const finalMessage = builder.finalize(usage);
         stream.push({ type: "done", reason: "stop", message: finalMessage });
         stream.end(finalMessage);
       } catch (error: unknown) {

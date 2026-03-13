@@ -23,6 +23,7 @@ import type {
   AssistantMessageEventStream,
   Message,
 } from "@mariozechner/pi-ai";
+import { findToolCallAtContentIndex } from "./content-utils.js";
 import { inboundToPiMessages } from "./message-map.js";
 
 /** Metadata key for the nonce stored in ModelRequest.metadata. */
@@ -76,24 +77,6 @@ export function getPiParams(request: ModelRequest): PiNativeParams | undefined {
  * Convert a pi AssistantMessageEvent to a Koi ModelChunk.
  * Returns undefined for events with no Koi equivalent.
  */
-/**
- * Look up the toolCall at a raw content block index.
- *
- * pi-ai's contentIndex is the Anthropic content block index (0-based), which includes
- * thinking blocks at lower indices. Counting only toolCall items would give the wrong
- * result when thinking blocks precede the tool_use block (e.g. thinking=0, tool_use=1).
- */
-function findToolCallAtContentIndex(
-  content: readonly { readonly type: string }[],
-  contentIndex: number,
-): { readonly type: "toolCall"; readonly id: string; readonly name: string } | undefined {
-  const item = content[contentIndex];
-  if (item !== undefined && item.type === "toolCall") {
-    return item as { readonly type: "toolCall"; readonly id: string; readonly name: string };
-  }
-  return undefined;
-}
-
 export function assistantEventToModelChunk(event: AssistantMessageEvent): ModelChunk | undefined {
   switch (event.type) {
     case "text_delta":

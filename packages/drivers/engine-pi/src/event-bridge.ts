@@ -9,6 +9,7 @@ import { toolCallId } from "@koi/core/ecs";
 import type { EngineEvent, EngineOutput, EngineStopReason } from "@koi/core/engine";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import type { StopReason } from "@mariozechner/pi-ai";
+import { findToolCallAtContentIndex } from "./content-utils.js";
 import type { MetricsAccumulator } from "./metrics.js";
 
 // ---------------------------------------------------------------------------
@@ -107,40 +108,6 @@ export function mapStopReason(piReason: StopReason): EngineStopReason {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Look up the toolCall at a raw content block index.
- *
- * pi-ai's contentIndex is the Anthropic content block index (0-based), which includes
- * thinking blocks at lower indices. Counting only toolCall items would give the wrong
- * result when thinking blocks precede the tool_use block (e.g. thinking=0, tool_use=1).
- */
-function findNthToolCall(
-  content: readonly { readonly type: string }[],
-  contentIndex: number,
-):
-  | {
-      readonly type: "toolCall";
-      readonly id: string;
-      readonly name: string;
-      readonly arguments?: Record<string, unknown>;
-    }
-  | undefined {
-  const item = content[contentIndex];
-  if (item !== undefined && item.type === "toolCall") {
-    return item as {
-      readonly type: "toolCall";
-      readonly id: string;
-      readonly name: string;
-      readonly arguments?: Record<string, unknown>;
-    };
-  }
-  return undefined;
-}
-
-// ---------------------------------------------------------------------------
 // pi AgentEvent → Koi EngineEvent
 // ---------------------------------------------------------------------------
 
@@ -163,6 +130,9 @@ export function createEventSubscriber(
   const emittedToolCalls = new Set<string>();
   // let justified: turn index increments across subscription lifetime
   let turnIndex = 0;
+  // let justified: per-turn guard to prevent double-counting usage when both
+  // message_update "done" and turn_end fire for the same turn
+  let usageRecordedThisTurn = false;
 
   return (event: AgentEvent): void => {
     switch (event.type) {
@@ -180,7 +150,7 @@ export function createEventSubscriber(
             });
             break;
           case "toolcall_start": {
-            const toolCall = findNthToolCall(
+            const toolCall = findToolCallAtContentIndex(
               assistantEvent.partial.content,
               assistantEvent.contentIndex,
             );
@@ -196,13 +166,29 @@ export function createEventSubscriber(
             break;
           }
           case "done": {
-            const msg = assistantEvent.message;
-            metrics.addUsage(msg.usage.input, msg.usage.output);
+            if (!usageRecordedThisTurn) {
+              const msg = assistantEvent.message;
+              metrics.addUsage(
+                msg.usage.input,
+                msg.usage.output,
+                msg.usage.cacheRead,
+                msg.usage.cacheWrite,
+              );
+              usageRecordedThisTurn = true;
+            }
             break;
           }
           case "error": {
-            const errMsg = assistantEvent.error;
-            metrics.addUsage(errMsg.usage.input, errMsg.usage.output);
+            if (!usageRecordedThisTurn) {
+              const errMsg = assistantEvent.error;
+              metrics.addUsage(
+                errMsg.usage.input,
+                errMsg.usage.output,
+                errMsg.usage.cacheRead,
+                errMsg.usage.cacheWrite,
+              );
+              usageRecordedThisTurn = true;
+            }
             break;
           }
           case "toolcall_delta":
@@ -210,7 +196,7 @@ export function createEventSubscriber(
               kind: "tool_call_delta",
               callId: toolCallId(
                 (() => {
-                  const tc = findNthToolCall(
+                  const tc = findToolCallAtContentIndex(
                     assistantEvent.partial.content,
                     assistantEvent.contentIndex,
                   );
@@ -258,22 +244,31 @@ export function createEventSubscriber(
         // Narrow AgentMessage → AssistantMessage before accessing usage (which only exists
         // on AssistantMessage, not UserMessage/ToolResultMessage/CustomAgentMessages).
         if ("role" in event.message && event.message.role === "assistant") {
-          metrics.addUsage(event.message.usage.input, event.message.usage.output);
+          if (!usageRecordedThisTurn) {
+            const { usage } = event.message;
+            metrics.addUsage(usage.input, usage.output, usage.cacheRead, usage.cacheWrite);
+          }
+          // Always accumulate cost (cost is not included in message_update events)
+          if (event.message.usage.cost) {
+            metrics.addCost(event.message.usage.cost);
+          }
         }
         metrics.addTurn();
         queue.push({ kind: "turn_end", turnIndex });
         turnIndex += 1;
-        // Clear dedup set per turn to prevent unbounded growth
+        // Clear dedup set and usage guard per turn to prevent unbounded growth
         emittedToolCalls.clear();
+        usageRecordedThisTurn = false;
         break;
       }
 
       case "agent_end": {
-        const finalMetrics = metrics.finalize();
+        const { metrics: finalMetrics, metadata } = metrics.finalizeWithMetadata();
         const output: EngineOutput = {
           content: [],
           stopReason: "completed",
           metrics: finalMetrics,
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         };
         queue.push({ kind: "done", output });
         queue.end();

@@ -2,39 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { toolCallId } from "@koi/core/ecs";
 import type { ModelRequest, ModelStreamHandler } from "@koi/core/middleware";
 import type { StreamFn } from "@mariozechner/pi-agent-core";
-import type {
-  AssistantMessage,
-  AssistantMessageEvent,
-  AssistantMessageEventStream,
-} from "@mariozechner/pi-ai";
+import type { AssistantMessageEvent, AssistantMessageEventStream } from "@mariozechner/pi-ai";
 import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import { PI_PARAMS_NONCE_KEY, piParamsStore } from "./model-terminal.js";
 import { createBridgeStreamFn, modelChunkToAssistantEvent } from "./stream-bridge.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makePartialMessage(overrides?: Partial<AssistantMessage>): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    api: "anthropic-messages",
-    provider: "anthropic",
-    model: "test-model",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop",
-    timestamp: Date.now(),
-    ...overrides,
-  };
-}
+import { makePartialMessage } from "./test-helpers.js";
 
 function makeModel() {
   return {
@@ -453,6 +425,38 @@ describe("createBridgeStreamFn", () => {
     expect(errorEvents).toHaveLength(1);
     if (errorEvents[0]?.type === "error") {
       expect(errorEvents[0].error.errorMessage).toBe("string error");
+    }
+  });
+
+  test("finalize threads cache/cost into AssistantMessage usage", async () => {
+    const mockModelStream: ModelStreamHandler = async function* (_request: ModelRequest) {
+      yield { kind: "text_delta" as const, delta: "hello" };
+      yield { kind: "usage" as const, inputTokens: 100, outputTokens: 50 };
+      yield {
+        kind: "done" as const,
+        response: {
+          content: "hello",
+          model: "test-model",
+          usage: { inputTokens: 100, outputTokens: 50 },
+        },
+      };
+    };
+
+    const realStreamSimple: StreamFn = () => createAssistantMessageEventStream();
+
+    const bridgeFn = createBridgeStreamFn(mockModelStream, realStreamSimple);
+    const stream = bridgeFn(makeModel(), makeContext());
+    const events = await collectStreamEvents(stream);
+
+    const doneEvent = events.find((e) => e.type === "done");
+    if (doneEvent?.type === "done") {
+      // Default usage: cache fields are zero since usage chunks don't carry cache data
+      expect(doneEvent.message.usage.input).toBe(100);
+      expect(doneEvent.message.usage.output).toBe(50);
+      expect(doneEvent.message.usage.cacheRead).toBe(0);
+      expect(doneEvent.message.usage.cacheWrite).toBe(0);
+    } else {
+      throw new Error("Expected done event");
     }
   });
 });
