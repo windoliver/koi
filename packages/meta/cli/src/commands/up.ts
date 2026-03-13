@@ -289,6 +289,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
         | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
         | undefined,
       env: process.env,
+      // TODO(#954): Interactive consent for `koi up`.
       consent: { approve: async () => true },
     });
     if (dsStack.discoveredSources.length > 0) {

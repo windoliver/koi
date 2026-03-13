@@ -194,12 +194,13 @@ export async function runServe(flags: ServeFlags): Promise<void> {
         | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
         | undefined,
       env: process.env,
-      // Headless serve: auto-approve all discovered sources (no interactive consent)
+      // Headless serve: auto-approve all discovered sources (no interactive consent).
+      // TODO(#954): Interactive consent for `koi start` via @clack/prompts TUI.
       consent: { approve: async () => true },
-      // Credentials resolved from env by default (stack's built-in fallback)
-      // MCP servers: not available at bootstrap — MCP tools are resolved inside
-      // resolveAgent() which runs before data-source discovery. A future integration
-      // could thread resolved MCP tool descriptors back here.
+      // Credentials resolved from env by default (stack's built-in fallback).
+      // TODO(#954): MCP discovery — resolveAgent() resolves MCP tools as Tool objects
+      // before data-source bootstrap. Threading McpServerDescriptor back requires
+      // refactoring the agent resolution pipeline to expose raw MCP server handles.
     });
     if (dsStack.discoveredSources.length > 0) {
       dataSourceProvider = dsStack.provider;
