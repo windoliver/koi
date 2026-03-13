@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nexusDown, nexusInit, nexusUp } from "./nexus-lifecycle.js";
@@ -103,6 +103,38 @@ describe("nexusUp", () => {
     const port = 3000;
     const baseUrl = `http://127.0.0.1:${String(port)}`;
     expect(baseUrl).toBe("http://127.0.0.1:3000");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// nexusUp with nexus.yml fallback
+// ---------------------------------------------------------------------------
+
+describe("nexusUp config search", () => {
+  test("detects nexus.yml as well as nexus.yaml", async () => {
+    // Write a nexus.yml (not .yaml) in tempDir — nexusUp should find it
+    // and skip auto-init. It will still fail because the binary is unavailable,
+    // but it should fail on `nexus up`, not on `nexus init`.
+    writeFileSync(
+      join(tempDir, "nexus.yml"),
+      "preset: demo\nports:\n  http: 2026\napi_key: nx_admin_test123\n",
+    );
+    const saved = process.env.NEXUS_COMMAND;
+    process.env.NEXUS_COMMAND = "/nonexistent/nexus-fake-binary";
+    try {
+      const result = await nexusUp({ cwd: tempDir });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        // Should fail on binary check, NOT auto-init (because nexus.yml exists)
+        expect(result.error.code).toBe("NOT_FOUND");
+      }
+    } finally {
+      if (saved !== undefined) {
+        process.env.NEXUS_COMMAND = saved;
+      } else {
+        delete process.env.NEXUS_COMMAND;
+      }
+    }
   });
 });
 

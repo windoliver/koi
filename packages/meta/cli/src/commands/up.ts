@@ -239,6 +239,10 @@ export async function runUp(flags: UpFlags): Promise<void> {
     if (nexusResult !== undefined) {
       nexusBaseUrl = nexusResult.baseUrl;
       nexusStartedByUs = true;
+      // Propagate API key so resolveNexusStack() authenticates against the stack
+      if (nexusResult.apiKey !== undefined && process.env.NEXUS_API_KEY === undefined) {
+        process.env.NEXUS_API_KEY = nexusResult.apiKey;
+      }
     }
   }
 
@@ -647,6 +651,7 @@ function mapNexusModeToProfile(mode: NexusMode): string | undefined {
 
 interface NexusStartResult {
   readonly baseUrl: string;
+  readonly apiKey: string | undefined;
 }
 
 /**
@@ -668,7 +673,7 @@ async function startNexusStack(
     if (verbose && result.value.autoInitialized) {
       process.stderr.write("Nexus: auto-initialized nexus.yaml\n");
     }
-    return { baseUrl: result.value.baseUrl };
+    return { baseUrl: result.value.baseUrl, apiKey: result.value.apiKey };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`warn: Nexus startup failed: ${message}\n`);
