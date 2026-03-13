@@ -43,6 +43,9 @@ const NO_FLAGS: InitFlags = {
   template: undefined,
   model: undefined,
   engine: undefined,
+  preset: undefined,
+  withAddons: [],
+  demo: undefined,
 };
 
 const YES_FLAGS: InitFlags = {

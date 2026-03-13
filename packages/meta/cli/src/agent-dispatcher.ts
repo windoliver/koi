@@ -95,11 +95,15 @@ export interface DispatcherDeps {
     readonly dispose: () => void;
   }>;
   readonly createPiAdapter: (opts: { readonly model: string }) => unknown;
-  readonly loadManifest: (
-    path: string,
-  ) => Promise<
+  readonly loadManifest: (path: string) => Promise<
     Result<
-      { readonly manifest: { readonly name: string; readonly model: { readonly name: string } } },
+      {
+        readonly manifest: {
+          readonly name: string;
+          readonly model: { readonly name: string };
+          readonly lifecycle?: "copilot" | "worker" | undefined;
+        };
+      },
       KoiError
     >
   >;
@@ -196,7 +200,13 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
         };
       }
 
-      const { manifest } = loadResult.value;
+      const baseManifest = loadResult.value.manifest;
+
+      // Override lifecycle when dispatcher specifies agentType (e.g. worker vs copilot)
+      const manifest =
+        request.agentType !== undefined && request.agentType !== baseManifest.lifecycle
+          ? { ...baseManifest, lifecycle: request.agentType }
+          : baseManifest;
 
       // 2. Resolve agent (middleware, model, engine)
       const resolved = await deps.resolveAgent({

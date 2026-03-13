@@ -62,3 +62,22 @@ export async function persistChatExchange(
   ].join("\n")}\n`;
   await appendFile(logPath, entries);
 }
+
+/**
+ * Best-effort chat persistence — logs a warning on failure instead of
+ * silently swallowing the error.
+ */
+export async function persistChatExchangeSafely(
+  workspaceRoot: string,
+  agentId: string,
+  threadId: string,
+  userText: string,
+  assistantText: string,
+): Promise<void> {
+  try {
+    await persistChatExchange(workspaceRoot, agentId, threadId, userText, assistantText);
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: Failed to persist chat: ${reason}\n`);
+  }
+}

@@ -17,6 +17,9 @@ export type EngineName = string;
 export const CHANNELS = ["cli", "telegram", "slack", "discord"] as const;
 export type ChannelName = (typeof CHANNELS)[number];
 
+export const PRESETS = ["local", "demo", "mesh"] as const;
+export type PresetName = (typeof PRESETS)[number];
+
 export interface WizardState {
   readonly template: TemplateName;
   readonly name: string;
@@ -26,6 +29,12 @@ export interface WizardState {
   readonly channels: readonly ChannelName[];
   readonly directory: string;
   readonly koiCommand: string;
+  /** Runtime preset (local, demo, mesh). */
+  readonly preset: PresetName;
+  /** Add-on IDs selected via --with flag. */
+  readonly addons: readonly string[];
+  /** Demo pack ID to auto-seed. */
+  readonly demoPack: string | undefined;
 }
 
 export const DEFAULT_STATE: WizardState = {
@@ -37,4 +46,7 @@ export const DEFAULT_STATE: WizardState = {
   channels: ["cli"],
   directory: ".",
   koiCommand: "koi",
+  preset: "local",
+  addons: [],
+  demoPack: undefined,
 } as const;

@@ -34,6 +34,7 @@ export async function createNexusStack(config: NexusStackConfig): Promise<NexusB
     const { ensureNexusRunning } = await import("@koi/nexus-embed");
     const embedResult = await ensureNexusRunning({
       ...(config.fetch !== undefined ? { fetch: config.fetch } : {}),
+      ...(config.embedProfile !== undefined ? { profile: config.embedProfile } : {}),
     });
     if (!embedResult.ok) {
       throw new Error(embedResult.error.message, { cause: embedResult.error });

@@ -179,6 +179,8 @@ export interface NexusStackConfig extends NexusConnectionConfig {
   readonly agentOverrides?: AgentBackendOverrides | undefined;
   /** Opt-in backends (disabled by default). */
   readonly optIn?: OptInOverrides | undefined;
+  /** Nexus embed profile (e.g. "lite", "full"). Only used when baseUrl is omitted (embed mode). */
+  readonly embedProfile?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,8 @@ import {
   type ChannelName,
   type EngineName,
   MODELS,
+  PRESETS,
+  type PresetName,
   TEMPLATES,
   type TemplateName,
   type WizardState,
@@ -37,6 +39,35 @@ export function isValidModel(name: string): boolean {
 
   const provider = name.slice(0, colonIndex);
   return Object.hasOwn(PROVIDER_ENV_KEYS, provider);
+}
+
+export async function selectPreset(state: WizardState, flags: InitFlags): Promise<StepResult> {
+  if (flags.preset) {
+    if (!(PRESETS as readonly string[]).includes(flags.preset)) {
+      p.cancel(`Unknown preset: "${flags.preset}". Available: ${PRESETS.join(", ")}`);
+      return null;
+    }
+    return { ...state, preset: flags.preset as PresetName };
+  }
+  if (flags.yes) {
+    return state;
+  }
+
+  const value = await p.select({
+    message: "Select a runtime preset",
+    options: [
+      { value: "local", label: "local", hint: "Single agent, local Nexus, no auth" },
+      { value: "demo", label: "demo", hint: "Auth-enabled Nexus, seeded data, TUI" },
+      { value: "mesh", label: "mesh", hint: "Multi-agent with gateway + Temporal" },
+    ],
+  });
+
+  if (p.isCancel(value)) {
+    p.cancel("Setup cancelled.");
+    return null;
+  }
+
+  return { ...state, preset: value as PresetName };
 }
 
 export async function selectTemplate(state: WizardState, flags: InitFlags): Promise<StepResult> {

@@ -42,6 +42,7 @@ export function generateManifestYaml(state: WizardState): string {
   if (state.engine !== undefined && state.engine !== "pi") {
     lines.push(`engine: ${state.engine}`);
   }
+  lines.push(`preset: ${state.preset}`);
   lines.push("");
   lines.push("# Leave nexus.url unset for local embed mode.");
   lines.push("# Add it only when you want remote/shared Nexus.");
@@ -78,6 +79,7 @@ export function generateManifestYaml(state: WizardState): string {
 export function generatePackageJson(state: WizardState): string {
   const scripts = {
     koi: state.koiCommand,
+    up: "bun run koi -- up",
     "dry-run": "bun run koi -- start --dry-run",
     start: "bun run koi -- start",
     "start:admin": "bun run koi -- start --admin",
@@ -182,6 +184,131 @@ export function generateToolGuide(): string {
 }
 
 /**
+ * Generates a koi.yaml manifest for the demo preset.
+ * Includes autonomous mode and auth-enabled Nexus.
+ */
+export function generateDemoManifestYaml(state: WizardState): string {
+  const lines: string[] = [];
+  lines.push(`name: ${state.name}`);
+  lines.push("version: 0.1.0");
+  lines.push(`description: ${state.description}`);
+  lines.push(`model: "${state.model}"`);
+  if (state.engine !== undefined && state.engine !== "pi") {
+    lines.push(`engine: ${state.engine}`);
+  }
+  lines.push(`preset: ${state.preset}`);
+  lines.push("");
+  lines.push("# Demo preset: auth-enabled local Nexus (API key auto-generated in .env).");
+  lines.push("# nexus:");
+  lines.push("#   url: https://nexus.example.com");
+  lines.push("");
+
+  lines.push("channels:");
+  lines.push(`  - name: "@koi/channel-cli"`);
+
+  const nonCliChannels = state.channels.filter((c) => c !== "cli");
+  for (const channel of nonCliChannels) {
+    lines.push(`  - name: "@koi/channel-${channel}"`);
+  }
+
+  // Add add-on channels
+  for (const addon of state.addons) {
+    const channelMap: Readonly<Record<string, string>> = {
+      telegram: "@koi/channel-telegram",
+      slack: "@koi/channel-slack",
+      discord: "@koi/channel-discord",
+    };
+    const channelName = channelMap[addon];
+    if (channelName !== undefined) {
+      lines.push(`  - name: "${channelName}"`);
+    }
+  }
+
+  lines.push("");
+  lines.push("autonomous:");
+  lines.push("  enabled: true");
+  lines.push("");
+
+  lines.push("tools:");
+  lines.push("  koi:");
+  lines.push('    - name: "@koi/tool-ask-user"');
+  lines.push('    - name: "@koi/tools-web"');
+  lines.push("");
+
+  if (state.demoPack !== undefined) {
+    lines.push("demo:");
+    lines.push(`  pack: ${state.demoPack}`);
+    lines.push("");
+  }
+
+  lines.push("context:");
+  lines.push("  bootstrap: true");
+  lines.push("");
+  return lines.join("\n");
+}
+
+/**
+ * Generates a .env file for the demo preset with auto-generated Nexus API key.
+ */
+export function generateDemoEnvFile(state: WizardState): string {
+  const lines: string[] = [];
+  lines.push("# Bun auto-loads .env for `bun run` commands.");
+  lines.push("");
+
+  const modelEnvKey = getModelEnvKey(state.model);
+  if (modelEnvKey !== undefined) {
+    lines.push(`# Required for ${state.model}`);
+    lines.push(`${modelEnvKey}=`);
+    lines.push("");
+  }
+
+  // Demo preset: auto-generated Nexus API key for local auth mode
+  const apiKey = generateLocalApiKey();
+  lines.push("# Demo Nexus API key (auto-generated for local auth mode)");
+  lines.push(`NEXUS_API_KEY=${apiKey}`);
+  lines.push("");
+
+  // Add-on channel tokens
+  for (const addon of state.addons) {
+    const addonEnvKeys: Readonly<Record<string, readonly string[]>> = {
+      telegram: ["TELEGRAM_BOT_TOKEN"],
+      slack: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+      discord: ["DISCORD_BOT_TOKEN", "DISCORD_APPLICATION_ID"],
+    };
+    const keys = addonEnvKeys[addon];
+    if (keys !== undefined) {
+      lines.push(`# ${addon[0]?.toUpperCase() ?? ""}${addon.slice(1)} channel`);
+      for (const key of keys) {
+        lines.push(`${key}=`);
+      }
+      lines.push("");
+    }
+  }
+
+  const selectedChannelEnvKeys = getSelectedChannelEnvKeys(state.channels);
+  for (const { channel, envKeys } of selectedChannelEnvKeys) {
+    lines.push(`# ${channel[0]?.toUpperCase() ?? ""}${channel.slice(1)} channel`);
+    for (const envKey of envKeys) {
+      lines.push(`${envKey}=`);
+    }
+    lines.push("");
+  }
+
+  lines.push("# Optional: enable web_search via Brave Search");
+  lines.push("# BRAVE_API_KEY=");
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+/** Generates a random hex string suitable for a local API key. */
+function generateLocalApiKey(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return `koi-demo-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
  * Generates a tsconfig.json for the scaffolded project.
  */
 export function generateTsconfig(): string {
@@ -251,28 +378,29 @@ export function generateReadme(state: WizardState): string {
   lines.push("");
   lines.push("## First Run");
   lines.push("");
-  lines.push("```bash");
-  lines.push("bun run dry-run");
-  lines.push("bun run start:admin");
-  lines.push("# in another terminal");
-  lines.push("bun run tui");
-  lines.push("```");
-  lines.push("");
-  lines.push("`bun run start:admin` starts the admin panel on `http://localhost:3100/admin`.");
-  lines.push("`bun run tui` connects to `http://localhost:3100/admin/api` by default.");
-  lines.push("");
-  lines.push("## Service Mode");
+  lines.push("The quickest way to start is `koi up`, which launches the runtime,");
+  lines.push("admin API, and TUI in a single command:");
   lines.push("");
   lines.push("```bash");
-  lines.push("bun run serve:admin");
-  lines.push("bun run tui:serve");
-  lines.push("bun run admin");
+  lines.push("bun run up");
   lines.push("```");
   lines.push("");
-  lines.push(
-    "Use `bun run serve:admin` when you want the admin API on the service port (`9100` by default).",
-  );
-  lines.push("Use `bun run admin` for a standalone manifest-backed admin panel on `9200`.");
+  lines.push("This starts:");
+  lines.push("- Agent runtime on your configured model");
+  lines.push("- Admin panel at `http://localhost:3100/admin`");
+  lines.push("- TUI operator console (for demo/mesh presets)");
+  lines.push("- Health endpoint at `http://localhost:9100/health`");
+  lines.push("");
+  lines.push("For a dry run (validate config without starting): `bun run dry-run`");
+  lines.push("");
+  lines.push("## Advanced Usage");
+  lines.push("");
+  lines.push("```bash");
+  lines.push("bun run start:admin   # Start runtime + admin (no TUI)");
+  lines.push("bun run serve:admin   # Service mode with admin on port 9100");
+  lines.push("bun run tui           # Attach TUI to a running admin API");
+  lines.push("bun run admin         # Standalone admin panel on port 9200");
+  lines.push("```");
   lines.push("");
   lines.push("## Nexus Mode");
   lines.push("");
