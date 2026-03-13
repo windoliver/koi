@@ -30,6 +30,8 @@ export interface MiddlewareCompositionInput {
   readonly extra?: readonly KoiMiddleware[];
   /** Additional providers to prepend (e.g., arena providers for serve). */
   readonly extraProviders?: readonly ComponentProvider[];
+  /** Data source stack provider (from createDataSourceStack). */
+  readonly dataSourceProvider?: ComponentProvider | undefined;
 }
 
 export interface ComposedMiddleware {
@@ -58,6 +60,7 @@ export function composeRuntimeMiddleware(input: MiddlewareCompositionInput): Com
   ];
 
   const providers: readonly ComponentProvider[] = [
+    ...(input.dataSourceProvider !== undefined ? [input.dataSourceProvider] : []),
     ...(input.extraProviders ?? []),
     ...input.nexus.providers,
     ...(input.forge !== undefined ? [input.forge.provider, input.forge.forgeToolsProvider] : []),

@@ -107,8 +107,13 @@ async function forgeSkillHandler(
     ...(parsed.value.configSchema !== undefined ? { configSchema: parsed.value.configSchema } : {}),
   });
 
-  return runForgePipeline(forgeInput, deps, (report: VerificationReport) => ({
-    ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
+  // datasource:* tag convention — skills with "datasource" tag get a prefixed tag for discovery
+  const inputForPipeline = forgeInput.tags?.some((t) => t === "datasource")
+    ? { ...forgeInput, tags: [`datasource:${forgeInput.name}`, ...forgeInput.tags] }
+    : forgeInput;
+
+  return runForgePipeline(inputForPipeline, deps, (report: VerificationReport) => ({
+    ...buildBaseFields(brickId("placeholder"), inputForPipeline, report, deps),
     kind: "skill" as const,
     content: generatedContent,
     ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),

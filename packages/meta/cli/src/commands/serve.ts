@@ -184,6 +184,28 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`warn: conversation persistence disabled: ${message}\n`);
   }
 
+  // 6c. Data source auto-discovery (non-fatal — skip on error)
+  let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
+  try {
+    const { createDataSourceStack } = await import("@koi/data-source-stack");
+    const dsStack = await createDataSourceStack({
+      manifestEntries: (manifest as unknown as Record<string, unknown>).dataSources as
+        | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
+        | undefined,
+      env: process.env,
+    });
+    if (dsStack.discoveredSources.length > 0) {
+      dataSourceProvider = dsStack.provider;
+      if (flags.verbose) {
+        process.stderr.write(
+          `Data sources: ${String(dsStack.discoveredSources.length)} discovered, ${String(dsStack.generatedSkillInputs.length)} skills generated\n`,
+        );
+      }
+    }
+  } catch {
+    // Data source discovery is non-fatal — agent works without it
+  }
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -192,6 +214,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     chatBridge,
     extra: arenaMiddleware,
     extraProviders: arenaProviders,
+    dataSourceProvider,
   });
 
   const { runtime } = await createForgeConfiguredKoi({
