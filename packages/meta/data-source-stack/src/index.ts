@@ -17,7 +17,9 @@
  */
 
 export { createDataSourceStack } from "./data-source-stack.js";
+export { executeSqlQuery } from "./sql-executor.js";
 export type {
+  DataSourceExecutor,
   DataSourceStackBundle,
   DataSourceStackConfig,
   ManifestDataSourceEntry,

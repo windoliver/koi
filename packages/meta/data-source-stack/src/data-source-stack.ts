@@ -3,10 +3,17 @@ import {
   createQueryDataSourceTool,
   forgeDataSourceSkills,
 } from "@koi/connector-forge";
-import type { ComponentProvider, DataSourceDescriptor, ForgeDemandSignal, Tool } from "@koi/core";
-import { brickId } from "@koi/core";
-import { createDataSourceDiscoveryProvider, discoverSources } from "@koi/data-source-discovery";
+import type {
+  ComponentProvider,
+  DataSourceDescriptor,
+  ForgeDemandSignal,
+  SkillComponent,
+  Tool,
+} from "@koi/core";
+import { DATA_SOURCES, skillToken } from "@koi/core";
+import { discoverSources } from "@koi/data-source-discovery";
 import type { ForgeSkillInput } from "@koi/forge-types";
+import { executeSqlQuery } from "./sql-executor.js";
 import type {
   DataSourceStackBundle,
   DataSourceStackConfig,
@@ -16,9 +23,9 @@ import type {
 /**
  * Creates a data source stack bundle that composes:
  * - Discovery: parallel probes (manifest, env, MCP) with dedup + consent
- * - ECS Provider: attaches DATA_SOURCES to agents
- * - Runtime Tools: query_datasource + probe_schema with credential resolution
- * - Skill Generation: optional ForgeSkillInput generation + hot-mount
+ * - ECS Provider: attaches DATA_SOURCES + generated skill components to agents
+ * - Runtime Tools: query_datasource + probe_schema with real SQL executor
+ * - Skill Generation: SkillComponent objects from discovered sources
  * - Demand Signals: data_source_detected triggers for forge pipeline
  */
 export async function createDataSourceStack(
@@ -26,6 +33,7 @@ export async function createDataSourceStack(
 ): Promise<DataSourceStackBundle> {
   const discoveryConfig = config.discoveryConfig;
   const shouldGenerateSkills = config.generateSkills !== false;
+  const executor = config.executor ?? executeSqlQuery;
 
   // Phase 1: Discover data sources
   const sources: readonly DataSourceDescriptor[] = await discoverSources({
@@ -36,51 +44,76 @@ export async function createDataSourceStack(
     config: discoveryConfig,
   });
 
-  // Phase 2: Create ECS component provider
-  const provider: ComponentProvider = createDataSourceDiscoveryProvider({
-    discover: () => Promise.resolve(sources),
-  });
+  // Phase 2: Create runtime tools with real executor
+  // Build an env-based credential resolver as fallback when no CredentialComponent
+  const envCredentials = config.credentials ?? {
+    get: async (ref: string): Promise<string | undefined> => {
+      return (config.env ?? process.env)[ref] ?? undefined;
+    },
+  };
 
-  // Phase 3: Create runtime tools (query_datasource + probe_schema)
   const tools: readonly Tool[] =
     sources.length > 0
       ? [
           createQueryDataSourceTool({
             sources,
-            ...(config.credentials !== undefined ? { credentials: config.credentials } : {}),
+            credentials: envCredentials,
+            execute: (source, query, credential) => executor(source, query, credential),
           }),
           createProbeSchemaToolTool({
             sources,
-            ...(config.credentials !== undefined ? { credentials: config.credentials } : {}),
+            credentials: envCredentials,
+            execute: (source, probeQuery, credential) =>
+              executor(source, { protocol: "sql", query: probeQuery, params: [] }, credential),
           }),
         ]
       : [];
 
-  // Phase 4: Generate forge skill inputs from discovered sources
+  // Phase 3: Generate skill inputs + SkillComponent objects
   let generatedSkillInputs: readonly ForgeSkillInput[] = [];
+  const skillComponents: SkillComponent[] = [];
   if (shouldGenerateSkills && sources.length > 0) {
     const result = forgeDataSourceSkills(sources);
     generatedSkillInputs = result.inputs;
-  }
 
-  // Phase 5: Mount generated skills into skill-stack (if mount function provided)
-  if (config.mountSkill !== undefined && generatedSkillInputs.length > 0) {
-    for (const input of generatedSkillInputs) {
-      await config.mountSkill({
+    // Build SkillComponents from generated inputs — mounted in-memory via provider
+    for (const input of result.inputs) {
+      skillComponents.push({
         name: input.name,
-        source: { kind: "forged", brickId: brickId(`datasource:${input.name}`) },
+        description: input.description,
+        content: input.body,
+        tags: [...(input.tags ?? [])],
+        ...(input.requires !== undefined ? { requires: input.requires } : {}),
       });
     }
   }
 
-  // Phase 6: Emit detection signals for demand-triggered forging
+  // Phase 4: Create composite ECS provider (DATA_SOURCES + skill components)
+  const provider: ComponentProvider = {
+    name: "@koi/data-source-stack",
+    async attach(): Promise<ReadonlyMap<string, unknown>> {
+      const components = new Map<string, unknown>();
+
+      // Attach DATA_SOURCES descriptor list
+      components.set(DATA_SOURCES as string, sources);
+
+      // Attach each generated skill as a named skill component
+      for (const sc of skillComponents) {
+        components.set(skillToken(sc.name) as string, sc);
+      }
+
+      return components;
+    },
+  };
+
+  // Phase 5: Emit detection signals for demand-triggered forging
   if (config.onSourceDetected !== undefined) {
     for (const source of sources) {
       config.onSourceDetected(source);
     }
   }
 
-  // Phase 7: Build demand signals for forge pipeline integration
+  // Phase 6: Build demand signals for forge pipeline integration
   const emittedAt = Date.now();
   const demandSignals: readonly ForgeDemandSignal[] = sources.map(
     (source): ForgeDemandSignal => ({
@@ -104,7 +137,7 @@ export async function createDataSourceStack(
 
   const meta: ResolvedDataSourceStackMeta = {
     sourceCount: sources.length,
-    generatedSkillCount: generatedSkillInputs.length,
+    generatedSkillCount: skillComponents.length,
     probesEnabled: {
       manifest: config.manifestEntries !== undefined,
       env: discoveryConfig?.enableEnvProbe !== false,
@@ -115,6 +148,7 @@ export async function createDataSourceStack(
   return {
     provider,
     tools,
+    skillComponents,
     generatedSkillInputs,
     discoveredSources: sources,
     demandSignals,

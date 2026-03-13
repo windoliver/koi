@@ -53,11 +53,12 @@ describe("createDataSourceStack", () => {
     });
 
     expect(bundle.provider).toBeDefined();
-    expect(bundle.provider.name).toBe("@koi/data-source-discovery");
+    expect(bundle.provider.name).toBe("@koi/data-source-stack");
 
-    // Verify provider.attach() returns discovered sources as ECS components
-    const attachResult = await bundle.provider.attach();
-    expect(attachResult.components.size).toBeGreaterThanOrEqual(1);
+    // Verify provider.attach() returns discovered sources + skill components
+    const attachResult = await bundle.provider.attach({} as never);
+    expect(attachResult).toBeInstanceOf(Map);
+    expect((attachResult as ReadonlyMap<string, unknown>).size).toBeGreaterThanOrEqual(1);
   });
 
   test("dispose function is callable", async () => {

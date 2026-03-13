@@ -1,11 +1,10 @@
+import type { QueryDataSourceResult } from "@koi/connector-forge";
 import type {
   ComponentProvider,
   CredentialComponent,
   DataSourceDescriptor,
   ForgeDemandSignal,
-  KoiError,
-  Result,
-  SkillConfig,
+  SkillComponent,
   Tool,
 } from "@koi/core";
 import type {
@@ -14,6 +13,13 @@ import type {
   McpServerDescriptor,
 } from "@koi/data-source-discovery";
 import type { ForgeSkillInput } from "@koi/forge-types";
+
+/** Executor callback — delegates actual data-source I/O (SQL, HTTP, etc.) to the runtime. */
+export type DataSourceExecutor = (
+  source: DataSourceDescriptor,
+  query: unknown,
+  credential: string | undefined,
+) => Promise<QueryDataSourceResult>;
 
 export interface DataSourceStackConfig {
   /** Manifest-declared data sources (from LoadedManifest.dataSources). */
@@ -32,8 +38,8 @@ export interface DataSourceStackConfig {
   readonly onSourceDetected?: (source: DataSourceDescriptor) => void;
   /** Credential component for runtime auth resolution by query_datasource/probe_schema tools. */
   readonly credentials?: CredentialComponent | undefined;
-  /** Skill mount function from skill-stack — hot-mounts generated skills into the runtime. */
-  readonly mountSkill?: (skill: SkillConfig) => Promise<Result<void, KoiError>>;
+  /** Executor for actual data-source I/O. When omitted, tools use a built-in SQL executor (Bun.sql). */
+  readonly executor?: DataSourceExecutor | undefined;
 }
 
 /** Simplified manifest data source entry (avoids L2 @koi/manifest import). */
@@ -53,8 +59,10 @@ export interface ManifestDataSourceEntry {
 
 export interface DataSourceStackBundle {
   readonly provider: ComponentProvider;
-  /** Runtime tools: query_datasource + probe_schema. Register via ComponentProvider or tool-stack. */
+  /** Runtime tools: query_datasource + probe_schema with real executors. */
   readonly tools: readonly Tool[];
+  /** Generated skill components — attached to agents via the provider. */
+  readonly skillComponents: readonly SkillComponent[];
   readonly generatedSkillInputs: readonly ForgeSkillInput[];
   readonly discoveredSources: readonly DataSourceDescriptor[];
   /** Demand signals for demand-triggered forge pipeline integration. */
