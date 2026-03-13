@@ -27,6 +27,15 @@ export type {
   QueryDataSourceResult,
 } from "./tools/query-datasource.js";
 export { validateQueryInput } from "./tools/query-datasource.js";
+// tools — runtime tool factories
+export type {
+  ProbeSchemaToolConfig,
+  QueryDataSourceToolConfig,
+} from "./tools/tool-factories.js";
+export {
+  createProbeSchemaToolTool,
+  createQueryDataSourceTool,
+} from "./tools/tool-factories.js";
 // types
 export type { ConnectorForgeConfig, SkillStrategy } from "./types.js";
 export { DEFAULT_CONNECTOR_FORGE_CONFIG } from "./types.js";

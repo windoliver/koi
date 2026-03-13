@@ -186,6 +186,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
 
   // 6c. Data source auto-discovery (non-fatal — skip on error)
   let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
+  let dataSourceTools: readonly import("@koi/core").Tool[] = [];
   try {
     const { createDataSourceStack } = await import("@koi/data-source-stack");
     const dsStack = await createDataSourceStack({
@@ -196,9 +197,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     });
     if (dsStack.discoveredSources.length > 0) {
       dataSourceProvider = dsStack.provider;
+      dataSourceTools = dsStack.tools;
       if (flags.verbose) {
         process.stderr.write(
-          `Data sources: ${String(dsStack.discoveredSources.length)} discovered, ${String(dsStack.generatedSkillInputs.length)} skills generated\n`,
+          `Data sources: ${String(dsStack.discoveredSources.length)} discovered, ${String(dsStack.generatedSkillInputs.length)} skills generated, ${String(dsStack.tools.length)} tools registered\n`,
         );
       }
     }
@@ -215,6 +217,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     extra: arenaMiddleware,
     extraProviders: arenaProviders,
     dataSourceProvider,
+    dataSourceTools,
   });
 
   const { runtime } = await createForgeConfiguredKoi({

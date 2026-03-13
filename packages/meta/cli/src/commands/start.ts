@@ -262,6 +262,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
 
   // Data source auto-discovery (non-fatal)
   let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
+  let dataSourceTools: readonly import("@koi/core").Tool[] = [];
   try {
     const { createDataSourceStack } = await import("@koi/data-source-stack");
     const dsStack = await createDataSourceStack({
@@ -272,6 +273,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
     });
     if (dsStack.discoveredSources.length > 0) {
       dataSourceProvider = dsStack.provider;
+      dataSourceTools = dsStack.tools;
     }
   } catch {
     // Data source discovery is non-fatal
@@ -284,6 +286,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
     autonomous,
     chatBridge,
     dataSourceProvider,
+    dataSourceTools,
   });
 
   const { runtime } = await createForgeConfiguredKoi({

@@ -1,4 +1,13 @@
-import type { ComponentProvider, DataSourceDescriptor, ForgeDemandSignal } from "@koi/core";
+import type {
+  ComponentProvider,
+  CredentialComponent,
+  DataSourceDescriptor,
+  ForgeDemandSignal,
+  KoiError,
+  Result,
+  SkillConfig,
+  Tool,
+} from "@koi/core";
 import type {
   ConsentCallbacks,
   DiscoveryConfig,
@@ -21,6 +30,10 @@ export interface DataSourceStackConfig {
   readonly generateSkills?: boolean | undefined;
   /** Called for each discovered data source — enables demand-triggered skill forging. */
   readonly onSourceDetected?: (source: DataSourceDescriptor) => void;
+  /** Credential component for runtime auth resolution by query_datasource/probe_schema tools. */
+  readonly credentials?: CredentialComponent | undefined;
+  /** Skill mount function from skill-stack — hot-mounts generated skills into the runtime. */
+  readonly mountSkill?: (skill: SkillConfig) => Promise<Result<void, KoiError>>;
 }
 
 /** Simplified manifest data source entry (avoids L2 @koi/manifest import). */
@@ -40,6 +53,8 @@ export interface ManifestDataSourceEntry {
 
 export interface DataSourceStackBundle {
   readonly provider: ComponentProvider;
+  /** Runtime tools: query_datasource + probe_schema. Register via ComponentProvider or tool-stack. */
+  readonly tools: readonly Tool[];
   readonly generatedSkillInputs: readonly ForgeSkillInput[];
   readonly discoveredSources: readonly DataSourceDescriptor[];
   /** Demand signals for demand-triggered forge pipeline integration. */
