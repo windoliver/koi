@@ -8,6 +8,7 @@
 
 import type {
   CapabilityFragment,
+  JsonObject,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -16,14 +17,29 @@ import type {
   ModelStreamHandler,
   TurnContext,
 } from "@koi/core";
-import { type CacheHints, PROMPT_CACHE_HINTS } from "@koi/execution-context";
+import type { CacheHints } from "@koi/execution-context";
 import { extractProvider } from "@koi/name-resolution";
 import { estimateTokens, reorderForCache } from "./reorder.js";
 import type { PromptCacheConfig, ResolvedPromptCacheConfig } from "./types.js";
 import { DEFAULT_PROMPT_CACHE_CONFIG } from "./types.js";
 
-// Re-export for convenience — callers can import from either package
-export { PROMPT_CACHE_HINTS } from "@koi/execution-context";
+/**
+ * Well-known metadata key for prompt cache hints.
+ * Stored in request.metadata so hints survive object spread cloning
+ * (unlike WeakMap which loses the entry when the key object changes).
+ */
+export const CACHE_HINTS_KEY = "__koi_cache_hints__" as const;
+
+/**
+ * Read cache hints from a ModelRequest's metadata.
+ * Used by engine adapters to apply provider-specific cache markers.
+ */
+export function readCacheHints(metadata: JsonObject | undefined): CacheHints | undefined {
+  if (metadata === undefined) return undefined;
+  const raw = metadata[CACHE_HINTS_KEY];
+  if (raw === undefined || typeof raw !== "object" || raw === null) return undefined;
+  return raw as unknown as CacheHints;
+}
 
 function resolveConfig(config?: PromptCacheConfig): ResolvedPromptCacheConfig {
   if (config === undefined) return DEFAULT_PROMPT_CACHE_CONFIG;
@@ -57,20 +73,22 @@ function processRequest(request: ModelRequest, resolved: ResolvedPromptCacheConf
     return request;
   }
 
-  // Attach cache hints via side-channel for the engine adapter
-  const reorderedRequest: ModelRequest = {
-    ...request,
-    messages: result.messages,
-  };
-
+  // Attach cache hints in metadata — survives object spread cloning
+  // (unlike WeakMap which loses the entry when the key object is cloned)
   const hints: CacheHints = {
     provider: provider.length > 0 ? provider : "unknown",
     lastStableIndex: result.lastStableIndex,
     staticPrefixTokens: staticTokens,
   };
-  PROMPT_CACHE_HINTS.set(reorderedRequest, hints);
 
-  return reorderedRequest;
+  return {
+    ...request,
+    messages: result.messages,
+    metadata: {
+      ...request.metadata,
+      [CACHE_HINTS_KEY]: hints as unknown as JsonObject,
+    },
+  };
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { InboundMessage, ModelRequest, ModelResponse, TurnContext } from "@koi/core";
-import { createPromptCacheMiddleware, PROMPT_CACHE_HINTS } from "./prompt-cache.js";
+import { createPromptCacheMiddleware, readCacheHints } from "./prompt-cache.js";
 
 function msg(senderId: string, text: string): InboundMessage {
   return {
@@ -60,7 +60,7 @@ describe("createPromptCacheMiddleware", () => {
       await middleware.wrapModelCall!(STUB_CTX, request, handler);
 
       expect(capturedRequest).toBeDefined();
-      const hints = PROMPT_CACHE_HINTS.get(capturedRequest as ModelRequest);
+      const hints = readCacheHints(capturedRequest?.metadata);
       expect(hints).toBeDefined();
       // biome-ignore lint/style/noNonNullAssertion: narrowed by prior toBeDefined() assertion
       expect(hints!.provider).toBe("anthropic");
@@ -138,7 +138,7 @@ describe("createPromptCacheMiddleware", () => {
       await middleware.wrapModelCall!(STUB_CTX, request, handler);
 
       // No provider prefix → still processes (provider check skipped for empty prefix)
-      const hints = PROMPT_CACHE_HINTS.get(capturedRequest as ModelRequest);
+      const hints = readCacheHints(capturedRequest?.metadata);
       expect(hints).toBeDefined();
       // biome-ignore lint/style/noNonNullAssertion: narrowed by prior toBeDefined() assertion
       expect(hints!.provider).toBe("unknown");
@@ -159,7 +159,7 @@ describe("createPromptCacheMiddleware", () => {
       // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
       await middleware.wrapModelCall!(STUB_CTX, request, handler);
 
-      const hints = PROMPT_CACHE_HINTS.get(capturedRequest as ModelRequest);
+      const hints = readCacheHints(capturedRequest?.metadata);
       expect(hints).toBeDefined();
     });
 
@@ -180,7 +180,7 @@ describe("createPromptCacheMiddleware", () => {
       await middleware.wrapModelCall!(STUB_CTX, request, handler);
 
       // No static messages → no hints
-      const hints = PROMPT_CACHE_HINTS.get(capturedRequest as ModelRequest);
+      const hints = readCacheHints(capturedRequest?.metadata);
       expect(hints).toBeUndefined();
     });
   });

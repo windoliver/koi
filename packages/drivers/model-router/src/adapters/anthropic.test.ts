@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import type { ModelRequest } from "@koi/core";
-import { PROMPT_CACHE_HINTS } from "@koi/execution-context";
+import type { JsonObject, ModelRequest } from "@koi/core";
+import type { CacheHints } from "@koi/execution-context";
 import { fromAnthropicResponse, mapAnthropicError, toAnthropicRequest } from "./anthropic.js";
+
+/** Helper: build a request with cache hints embedded in metadata (survives cloning). */
+function withCacheHints(request: ModelRequest, hints: CacheHints): ModelRequest {
+  return {
+    ...request,
+    metadata: { ...request.metadata, __koi_cache_hints__: hints as unknown as JsonObject },
+  };
+}
 
 describe("toAnthropicRequest", () => {
   test("transforms basic ModelRequest to Anthropic format", () => {
@@ -247,13 +255,13 @@ describe("toAnthropicRequest", () => {
       model: "anthropic:claude-sonnet-4-5-20250929",
     };
 
-    PROMPT_CACHE_HINTS.set(request, {
+    const withHints = withCacheHints(request, {
       provider: "anthropic",
       lastStableIndex: 0,
       staticPrefixTokens: 2000,
     });
 
-    const result = toAnthropicRequest(request);
+    const result = toAnthropicRequest(withHints);
     expect(Array.isArray(result.system)).toBe(true);
     if (Array.isArray(result.system)) {
       expect(result.system).toHaveLength(1);
@@ -280,13 +288,13 @@ describe("toAnthropicRequest", () => {
       model: "openai:gpt-4o",
     };
 
-    PROMPT_CACHE_HINTS.set(request, {
+    const withHints = withCacheHints(request, {
       provider: "openai",
       lastStableIndex: 0,
       staticPrefixTokens: 2000,
     });
 
-    const result = toAnthropicRequest(request);
+    const result = toAnthropicRequest(withHints);
     // Should be plain string, not structured array
     expect(typeof result.system).toBe("string");
     expect(result.system).toBe("You are helpful.");

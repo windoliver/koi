@@ -5,8 +5,8 @@
  * Uses raw fetch — no SDK dependency.
  */
 
-import type { ContentBlock, KoiError, ModelRequest, ModelResponse } from "@koi/core";
-import { PROMPT_CACHE_HINTS } from "@koi/execution-context";
+import type { ContentBlock, JsonObject, KoiError, ModelRequest, ModelResponse } from "@koi/core";
+import type { CacheHints } from "@koi/execution-context";
 import type { NormalizedRole } from "../normalize.js";
 import { normalizeMessages, normalizeToPlainText } from "../normalize.js";
 import type { ProviderAdapter, ProviderAdapterConfig, StreamChunk } from "../provider-adapter.js";
@@ -18,6 +18,17 @@ import {
   parseSSEStream,
   streamFetch,
 } from "./shared.js";
+
+/** Well-known metadata key written by @koi/middleware-prompt-cache. */
+const CACHE_HINTS_KEY = "__koi_cache_hints__";
+
+/** Read cache hints from request metadata (survives object spread cloning). */
+function readCacheHints(metadata: JsonObject | undefined): CacheHints | undefined {
+  if (metadata === undefined) return undefined;
+  const raw = metadata[CACHE_HINTS_KEY];
+  if (raw === undefined || typeof raw !== "object" || raw === null) return undefined;
+  return raw as unknown as CacheHints;
+}
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -167,8 +178,8 @@ export function toAnthropicRequest(request: ModelRequest): AnthropicRequest {
       content: contentBlocksToAnthropic(m.content),
     }));
 
-  // Check for prompt cache hints from middleware side-channel
-  const cacheHints = PROMPT_CACHE_HINTS.get(request);
+  // Check for prompt cache hints from middleware metadata
+  const cacheHints = readCacheHints(request.metadata);
 
   // Apply cache_control to the system parameter when hints are present
   let systemParam: string | readonly AnthropicSystemBlock[] | undefined;

@@ -43,7 +43,6 @@ function resolveConfig(
   };
   return {
     breaker: breakerConfig,
-    fallbackModel: config?.fallbackModel,
     maxProviderEntries: config?.maxProviderEntries ?? DEFAULT_MAX_PROVIDER_ENTRIES,
   };
 }
@@ -123,11 +122,6 @@ export function createCircuitBreakerMiddleware(
     };
   }
 
-  function applyFallback(request: ModelRequest): ModelRequest {
-    if (resolved.fallbackModel === undefined) return request;
-    return { ...request, model: resolved.fallbackModel };
-  }
-
   return {
     name: "circuit-breaker",
     priority: 175,
@@ -142,23 +136,9 @@ export function createCircuitBreakerMiddleware(
       const breaker = getBreaker(provider);
 
       if (!breaker.isAllowed()) {
-        // Circuit is open — try fallback or fail fast
-        if (resolved.fallbackModel !== undefined) {
-          const fallbackProvider = getProviderFromModel(resolved.fallbackModel);
-          const fallbackBreaker = getBreaker(fallbackProvider);
-
-          if (fallbackBreaker.isAllowed()) {
-            try {
-              const response = await next(applyFallback(request));
-              fallbackBreaker.recordSuccess();
-              return response;
-            } catch (error: unknown) {
-              fallbackBreaker.recordFailure(extractStatusCode(error));
-              throw error;
-            }
-          }
-        }
-
+        // Circuit open — fail fast. The model-router handles provider
+        // failover via its own target ordering; rewriting request.model
+        // here would be ignored since the router overwrites it anyway.
         throw createCircuitOpenError(provider);
       }
 
@@ -181,16 +161,6 @@ export function createCircuitBreakerMiddleware(
       const breaker = getBreaker(provider);
 
       if (!breaker.isAllowed()) {
-        if (resolved.fallbackModel !== undefined) {
-          const fallbackProvider = getProviderFromModel(resolved.fallbackModel);
-          const fallbackBreaker = getBreaker(fallbackProvider);
-
-          if (fallbackBreaker.isAllowed()) {
-            return wrapStreamWithTracking(next(applyFallback(request)), fallbackBreaker);
-          }
-        }
-
-        // Return an async iterable that immediately yields an error
         return errorStream(createCircuitOpenError(provider));
       }
 
@@ -215,11 +185,7 @@ export function createCircuitBreakerMiddleware(
 
       return {
         label: "circuit-breaker",
-        description: `Circuit open for: ${openProviders.join(", ")}. ${
-          resolved.fallbackModel !== undefined
-            ? `Fallback: ${resolved.fallbackModel}`
-            : "No fallback configured."
-        }`,
+        description: `Circuit open for: ${openProviders.join(", ")}. Model-router handles failover.`,
       };
     },
   } satisfies KoiMiddleware;

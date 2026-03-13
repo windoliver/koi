@@ -10,18 +10,16 @@
 
 import type { InboundMessage } from "@koi/core";
 
-/** System-origin sender IDs that indicate stable/static content. */
-const SYSTEM_SENDERS = new Set(["system", "assistant"]);
-
 /**
- * Classify a message as static (system/assistant — stable across turns)
- * or dynamic (user/tool — changes each turn).
+ * Classify a message as static (system-origin — stable across turns)
+ * or dynamic (user/assistant/tool — changes each turn).
  *
- * System prompts and prior assistant responses form the stable prefix.
- * User messages and tool results are appended dynamically.
+ * Only system messages (senderId starts with "system") are static.
+ * Assistant messages are part of the conversation history and must NOT
+ * be reordered — moving them would break model turn semantics.
  */
 function isStaticMessage(message: InboundMessage): boolean {
-  return SYSTEM_SENDERS.has(message.senderId);
+  return message.senderId.startsWith("system");
 }
 
 export interface ReorderResult {

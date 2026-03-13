@@ -19,7 +19,6 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/execution-context": "workspace:*",
     "@koi/token-estimator": "workspace:*",
     "@koi/errors": "workspace:*",
     "@koi/resolve": "workspace:*",

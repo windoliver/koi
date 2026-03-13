@@ -18,6 +18,13 @@ export interface AgentBudgetConfig {
   readonly maxTokensPerAgent?: number;
   /** Soft threshold percentage (0-1). At this level, a system warning is injected. Default: 0.8. */
   readonly softThresholdPercent?: number;
+  /**
+   * Agent depth in the process tree (0 = root copilot).
+   * Used for depth-based budget allocation: deeper agents get smaller budgets.
+   * Should be set from CreateKoiOptions.parentPid.depth + 1 (computed in @koi/starter).
+   * Default: 0 (full budget).
+   */
+  readonly agentDepth?: number;
 }
 
 export interface ResolvedAgentBudgetConfig {

@@ -79,7 +79,7 @@ describe("createCircuitBreakerMiddleware", () => {
       expect(okHandler).not.toHaveBeenCalled();
     });
 
-    test("uses fallback model when circuit is open", async () => {
+    test("fails fast when circuit is open (model-router handles failover)", async () => {
       const mw = createCircuitBreakerMiddleware({
         breaker: {
           failureThreshold: 1,
@@ -87,41 +87,6 @@ describe("createCircuitBreakerMiddleware", () => {
           failureWindowMs: 60_000,
           failureStatusCodes: [500],
         },
-        fallbackModel: "openai:gpt-4o",
-      });
-
-      // Fail the primary provider
-      const failHandler = mock(async () => {
-        const err = new Error("fail") as Error & { status: number };
-        err.status = 500;
-        throw err;
-      });
-      await expect(
-        // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
-        mw.wrapModelCall!(STUB_CTX, request("anthropic:claude"), failHandler),
-      ).rejects.toThrow();
-
-      // Next call should use fallback
-      let capturedModel: string | undefined;
-      const okHandler = mock(async (req: ModelRequest) => {
-        capturedModel = req.model;
-        return STUB_RESPONSE;
-      });
-      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
-      await mw.wrapModelCall!(STUB_CTX, request("anthropic:claude"), okHandler);
-
-      expect(capturedModel).toBe("openai:gpt-4o");
-    });
-
-    test("fails fast when both primary and fallback circuits are open", async () => {
-      const mw = createCircuitBreakerMiddleware({
-        breaker: {
-          failureThreshold: 1,
-          cooldownMs: 60_000,
-          failureWindowMs: 60_000,
-          failureStatusCodes: [500],
-        },
-        fallbackModel: "openai:gpt-4o",
       });
 
       const failHandler = mock(async () => {
@@ -130,19 +95,13 @@ describe("createCircuitBreakerMiddleware", () => {
         throw err;
       });
 
-      // Open primary circuit
+      // Open the circuit
       await expect(
         // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
         mw.wrapModelCall!(STUB_CTX, request("anthropic:claude"), failHandler),
       ).rejects.toThrow();
 
-      // Open fallback circuit
-      await expect(
-        // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
-        mw.wrapModelCall!(STUB_CTX, request("openai:gpt-4o"), failHandler),
-      ).rejects.toThrow();
-
-      // Both open — should fail fast
+      // Should fail fast — no fallback, router handles provider failover
       const okHandler = mock(async () => STUB_RESPONSE);
       await expect(
         // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard

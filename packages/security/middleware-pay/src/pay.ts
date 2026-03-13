@@ -200,10 +200,11 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
           response.usage.outputTokens,
         );
 
-        // Record per-agent token usage
+        // Record per-agent token usage with actual depth
         if (agentBudgetTracker !== undefined) {
           const totalTokens = response.usage.inputTokens + response.usage.outputTokens;
-          agentBudgetTracker.recordUsage(ctx.session.agentId, totalTokens, 0);
+          const depth = config.agentBudget?.agentDepth ?? 0;
+          agentBudgetTracker.recordUsage(ctx.session.agentId, totalTokens, depth);
         }
       }
 
@@ -218,7 +219,25 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
       const sessionId = ctx.session.sessionId;
       await checkBudget(sessionId);
 
-      for await (const chunk of next(request)) {
+      // Per-agent budget: check before call, inject warning if needed
+      let effectiveRequest = request;
+      if (agentBudgetTracker !== undefined) {
+        const agentId = ctx.session.agentId;
+        const status = agentBudgetTracker.checkBudget(agentId);
+        if (status === "exceeded") {
+          throw KoiRuntimeError.from(
+            "RATE_LIMIT",
+            `Per-agent token budget exhausted for ${agentId}`,
+            { context: { agentId } },
+          );
+        }
+        const warning = agentBudgetTracker.getBudgetWarning(agentId);
+        if (warning !== undefined) {
+          effectiveRequest = { ...request, messages: [...request.messages, warning] };
+        }
+      }
+
+      for await (const chunk of next(effectiveRequest)) {
         yield chunk;
 
         // Record cost from the done chunk, which carries the full ModelResponse + usage.
@@ -226,6 +245,13 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
           const { model } = chunk.response;
           const { inputTokens, outputTokens } = chunk.response.usage;
           await recordCost(sessionId, model, inputTokens, outputTokens);
+
+          // Record per-agent token usage
+          if (agentBudgetTracker !== undefined) {
+            const totalTokens = inputTokens + outputTokens;
+            const depth = config.agentBudget?.agentDepth ?? 0;
+            agentBudgetTracker.recordUsage(ctx.session.agentId, totalTokens, depth);
+          }
         }
       }
     },

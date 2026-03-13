@@ -29,7 +29,7 @@ describe("reorderForCache", () => {
     expect(result.lastStableIndex).toBe(0);
   });
 
-  test("places assistant messages in static prefix", () => {
+  test("treats assistant messages as dynamic (preserves turn order)", () => {
     const messages = [
       msg("user", "hi"),
       msg("assistant", "hello there"),
@@ -37,10 +37,12 @@ describe("reorderForCache", () => {
     ];
     const result = reorderForCache(messages);
 
-    expect(result.messages[0]?.senderId).toBe("assistant");
-    expect(result.messages[1]?.senderId).toBe("system");
-    expect(result.staticCount).toBe(2);
-    expect(result.lastStableIndex).toBe(1);
+    // system first (static), then user + assistant in original order (dynamic)
+    expect(result.messages[0]?.senderId).toBe("system");
+    expect(result.messages[1]?.senderId).toBe("user");
+    expect(result.messages[2]?.senderId).toBe("assistant");
+    expect(result.staticCount).toBe(1);
+    expect(result.lastStableIndex).toBe(0);
   });
 
   test("preserves relative order within groups", () => {
@@ -63,7 +65,7 @@ describe("reorderForCache", () => {
   });
 
   test("all static messages — lastStableIndex is last index", () => {
-    const messages = [msg("system", "a"), msg("assistant", "b")];
+    const messages = [msg("system", "a"), msg("system:capabilities", "b")];
     const result = reorderForCache(messages);
 
     expect(result.staticCount).toBe(2);
