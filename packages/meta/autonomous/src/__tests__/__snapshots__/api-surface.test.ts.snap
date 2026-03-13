@@ -102,6 +102,12 @@ interface AutonomousAgentParts {
     readonly healthRecorder?: SpawnHealthRecorder | undefined;
     /** Optional goal-stack middleware for intra-session goal tracking. */
     readonly goalStackMiddleware?: readonly KoiMiddleware[] | undefined;
+    /**
+     * When true, automatically wires task-board reminders and task-aware drift detection
+     * into the goal-stack using the harness's live task board as the snapshot source.
+     * Ignored when goalStackMiddleware is provided (caller has full control in that case).
+     */
+    readonly taskBoardReminders?: boolean | undefined;
 }
 interface AutonomousAgent {
     /** The underlying harness. */

@@ -28,7 +28,7 @@ import type {
 import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import { piMessagesToInbound } from "./message-map.js";
 import type { PiNativeParams } from "./model-terminal.js";
-import { PI_PARAMS_NONCE_KEY, piParamsStore } from "./model-terminal.js";
+import { createCacheResultChannel, PI_PARAMS_NONCE_KEY, piParamsStore } from "./model-terminal.js";
 
 // ---------------------------------------------------------------------------
 // Partial message builder — accumulates streaming chunks into content blocks
@@ -243,10 +243,14 @@ export function createBridgeStreamFn(
     // Convert messages for the ModelRequest and store as originalMessages for change detection
     const originalMessages = piMessagesToInbound(context.messages);
 
+    // Cache/cost side-channel — terminal writes from pi done/error, bridge reads after stream
+    const cacheResult = createCacheResultChannel();
+
     // Build pi-native params for the terminal side-channel
     const piNativeParams: PiNativeParams = {
       callBoundStream,
       originalMessages,
+      cacheResult,
       ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
       ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
       ...(options?.signal !== undefined ? { signal: options.signal } : {}),
@@ -325,6 +329,13 @@ export function createBridgeStreamFn(
                 outputTokens: chunk.usage.outputTokens,
               };
             }
+            // Read cache/cost written by terminal before yielding this chunk
+            usage = {
+              ...usage,
+              cacheReadTokens: cacheResult.cacheReadTokens,
+              cacheCreationTokens: cacheResult.cacheCreationTokens,
+              cost: { ...cacheResult.cost },
+            };
             const errMessage: AssistantMessage = {
               ...builder.finalize(usage),
               stopReason: "error",
@@ -337,6 +348,13 @@ export function createBridgeStreamFn(
 
           // Handle done chunk explicitly — build final message with proper content + usage
           if (chunk.kind === "done") {
+            // Read cache/cost written by terminal before yielding this chunk
+            usage = {
+              ...usage,
+              cacheReadTokens: cacheResult.cacheReadTokens,
+              cacheCreationTokens: cacheResult.cacheCreationTokens,
+              cost: { ...cacheResult.cost },
+            };
             const finalMessage = builder.finalize(usage);
             stream.push({ type: "done", reason: "stop", message: finalMessage });
             stream.end(finalMessage);

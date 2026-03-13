@@ -30,6 +30,25 @@ import { inboundToPiMessages } from "./message-map.js";
 export const PI_PARAMS_NONCE_KEY = "piParamsNonce";
 
 /**
+ * Create a mutable side-channel for cache/cost data from pi done/error events.
+ * Terminal writes here; bridge reads after the model stream ends.
+ *
+ * Intentionally mutable — this is a write-once communication channel, not a domain type.
+ * ModelChunk (L0) only carries inputTokens/outputTokens, so cache/cost must bypass it.
+ */
+export function createCacheResultChannel(): {
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+} {
+  return {
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
+/**
  * Pi-native parameters for the terminal.
  * Stored in a Map keyed by nonce string (survives middleware object spread).
  */
@@ -51,6 +70,8 @@ export interface PiNativeParams {
   readonly apiKey?: string;
   /** Thinking/reasoning level. */
   readonly reasoning?: string;
+  /** Mutable side-channel: terminal writes cache/cost here, bridge reads after stream. */
+  readonly cacheResult?: ReturnType<typeof createCacheResultChannel> | undefined;
 }
 
 /**
@@ -190,6 +211,21 @@ export function createModelStreamTerminal(): ModelStreamHandler {
     const modelId = request.model ?? "unknown";
 
     for await (const event of eventStream) {
+      // Write cache/cost from raw pi event to side-channel (bypasses ModelChunk L0 contract)
+      if (piParams.cacheResult !== undefined) {
+        if (event.type === "done") {
+          const { usage } = event.message;
+          piParams.cacheResult.cacheReadTokens = usage.cacheRead;
+          piParams.cacheResult.cacheCreationTokens = usage.cacheWrite;
+          piParams.cacheResult.cost = usage.cost;
+        } else if (event.type === "error") {
+          const { usage } = event.error;
+          piParams.cacheResult.cacheReadTokens = usage.cacheRead;
+          piParams.cacheResult.cacheCreationTokens = usage.cacheWrite;
+          piParams.cacheResult.cost = usage.cost;
+        }
+      }
+
       const chunk = assistantEventToModelChunk(event);
       if (chunk) {
         if (chunk.kind === "text_delta") {

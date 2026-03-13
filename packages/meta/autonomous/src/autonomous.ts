@@ -47,6 +47,7 @@ import type {
   ThreadMetrics,
 } from "@koi/core";
 import { agentId, INBOX, MAILBOX, threadId } from "@koi/core";
+import { createGoalStack, createTaskAwareDrifting, createTaskBoardSource } from "@koi/goal-stack";
 import {
   createAutonomousProvider,
   createCheckpointMiddleware,
@@ -141,6 +142,22 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
 
   if (parts.goalStackMiddleware !== undefined) {
     for (const mw of parts.goalStackMiddleware) {
+      middlewareList.push(mw);
+    }
+  } else if (parts.taskBoardReminders === true) {
+    // Auto-wire task-board reminders and drift detection into the goal stack.
+    // Uses the harness's live task board as the snapshot source so reminders
+    // always reflect the current state of pending/assigned tasks.
+    const getTaskBoard = (): import("@koi/core").TaskBoardSnapshot =>
+      parts.harness.status().taskBoard;
+    const taskBoardGoalStack = createGoalStack({
+      preset: "autonomous",
+      reminder: {
+        sources: [createTaskBoardSource(getTaskBoard)],
+        isDrifting: createTaskAwareDrifting(getTaskBoard),
+      },
+    });
+    for (const mw of taskBoardGoalStack.middlewares) {
       middlewareList.push(mw);
     }
   }

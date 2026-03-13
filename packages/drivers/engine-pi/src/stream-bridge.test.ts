@@ -450,11 +450,62 @@ describe("createBridgeStreamFn", () => {
 
     const doneEvent = events.find((e) => e.type === "done");
     if (doneEvent?.type === "done") {
-      // Default usage: cache fields are zero since usage chunks don't carry cache data
+      // Default usage: cache fields are zero since mock stream doesn't populate side-channel
       expect(doneEvent.message.usage.input).toBe(100);
       expect(doneEvent.message.usage.output).toBe(50);
       expect(doneEvent.message.usage.cacheRead).toBe(0);
       expect(doneEvent.message.usage.cacheWrite).toBe(0);
+    } else {
+      throw new Error("Expected done event");
+    }
+  });
+
+  test("cache/cost side-channel flows from terminal into AssistantMessage usage", async () => {
+    // Use real model-terminal so the side-channel is exercised end-to-end.
+    // The mock modelStream simulates what the real terminal does: reads piParams from
+    // the store, writes cache/cost to cacheResult, then yields chunks.
+    const mockModelStream: ModelStreamHandler = async function* (request: ModelRequest) {
+      // Simulate terminal: read piParams (and cacheResult) from nonce store
+      const nonce = request.metadata?.[PI_PARAMS_NONCE_KEY] as string | undefined;
+      const piParams = nonce !== undefined ? piParamsStore.get(nonce) : undefined;
+
+      // Write cache/cost to the side-channel as the real terminal would from pi done
+      if (piParams?.cacheResult !== undefined) {
+        piParams.cacheResult.cacheReadTokens = 200;
+        piParams.cacheResult.cacheCreationTokens = 50;
+        piParams.cacheResult.cost = {
+          input: 0.003,
+          output: 0.015,
+          cacheRead: 0.0003,
+          cacheWrite: 0.00375,
+          total: 0.02205,
+        };
+      }
+
+      yield { kind: "usage" as const, inputTokens: 100, outputTokens: 50 };
+      yield {
+        kind: "done" as const,
+        response: {
+          content: "cached response",
+          model: "test-model",
+          usage: { inputTokens: 100, outputTokens: 50 },
+        },
+      };
+    };
+
+    const realStreamSimple: StreamFn = () => createAssistantMessageEventStream();
+
+    const bridgeFn = createBridgeStreamFn(mockModelStream, realStreamSimple);
+    const stream = bridgeFn(makeModel(), makeContext());
+    const events = await collectStreamEvents(stream);
+
+    const doneEvent = events.find((e) => e.type === "done");
+    if (doneEvent?.type === "done") {
+      expect(doneEvent.message.usage.input).toBe(100);
+      expect(doneEvent.message.usage.output).toBe(50);
+      expect(doneEvent.message.usage.cacheRead).toBe(200);
+      expect(doneEvent.message.usage.cacheWrite).toBe(50);
+      expect(doneEvent.message.usage.cost.total).toBeCloseTo(0.02205);
     } else {
       throw new Error("Expected done event");
     }

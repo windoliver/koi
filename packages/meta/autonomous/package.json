@@ -20,6 +20,7 @@
   "dependencies": {
     "@koi/catalog": "workspace:*",
     "@koi/core": "workspace:*",
+    "@koi/goal-stack": "workspace:*",
     "@koi/long-running": "workspace:*",
     "@koi/starter": "workspace:*",
     "@koi/harness-scheduler": "workspace:*",
