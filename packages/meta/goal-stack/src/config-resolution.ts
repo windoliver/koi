@@ -24,11 +24,14 @@ export function resolveGoalStackConfig(config: GoalStackConfig): ResolvedGoalSta
 
   const needsObjectives = spec.includeAnchor || spec.includeReminder;
   const hasObjectives = config.objectives !== undefined && config.objectives.length > 0;
+  // Custom reminder sources substitute for objectives — task-board sources provide reminder content
+  const hasCustomSources =
+    config.reminder?.sources !== undefined && config.reminder.sources.length > 0;
 
-  if (needsObjectives && !hasObjectives) {
+  if (needsObjectives && !hasObjectives && !hasCustomSources) {
     throw new Error(
       `GoalStackConfig: preset "${preset}" requires non-empty objectives for anchor/reminder middleware. ` +
-        `Provide objectives or use the "minimal" preset (planning only).`,
+        `Provide objectives, custom reminder sources, or use the "minimal" preset (planning only).`,
     );
   }
 

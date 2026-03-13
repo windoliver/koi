@@ -15,31 +15,7 @@ import {
   PI_PARAMS_NONCE_KEY,
   piParamsStore,
 } from "./model-terminal.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makePartialMessage(overrides?: Partial<AssistantMessage>): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    api: "anthropic-messages",
-    provider: "anthropic",
-    model: "test-model",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop",
-    timestamp: Date.now(),
-    ...overrides,
-  };
-}
+import { makePartialMessage } from "./test-helpers.js";
 
 function createMockBoundStream(events: readonly AssistantMessageEvent[]) {
   return (): AssistantMessageEventStream => {

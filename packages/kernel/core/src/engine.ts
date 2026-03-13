@@ -4,7 +4,7 @@
 
 import type { JsonObject } from "./common.js";
 import type { CorrelationIds } from "./correlation.js";
-import type { AgentId, ToolCallId, ToolDescriptor } from "./ecs.js";
+import type { AgentId, ProcessState, ToolCallId, ToolDescriptor } from "./ecs.js";
 import type { ContentBlock, InboundMessage } from "./message.js";
 import type {
   ModelChunk,
@@ -128,6 +128,19 @@ export type EngineEvent =
       readonly kind: "spawn_requested";
       readonly request: SpawnRequest;
       readonly childAgentId: AgentId;
+    }
+  | {
+      readonly kind: "agent_spawned";
+      readonly agentId: AgentId;
+      readonly agentName: string;
+      readonly parentAgentId?: AgentId | undefined;
+    }
+  | {
+      readonly kind: "agent_status_changed";
+      readonly agentId: AgentId;
+      readonly agentName: string;
+      readonly status: ProcessState;
+      readonly previousStatus?: ProcessState | undefined;
     };
 
 // ---------------------------------------------------------------------------

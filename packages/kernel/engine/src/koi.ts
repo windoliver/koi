@@ -314,11 +314,63 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
     let adapterIterator: AsyncIterator<EngineEvent> | undefined;
 
+    // Track registry watcher unsubscribe for cleanup
+    let unsubRegistryWatch: (() => void) | undefined;
+
     try {
       // --- Session initialization ---
       agent.transition({ kind: "start" });
       await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
       sessionStarted = true;
+
+      // Wire registry watcher → engine events for child agent visibility.
+      // Only surface events for agents whose parentId matches this agent
+      // to avoid leaking sibling/unrelated activity from a shared registry.
+      if (options.registry !== undefined) {
+        const thisAgentId = pid.id;
+        // Track child IDs + names so we can filter and label transitioned events
+        // (transitioned events lack parentId and metadata)
+        const childAgentNames = new Map<string, string>();
+
+        unsubRegistryWatch = options.registry.watch((watchEvent) => {
+          switch (watchEvent.kind) {
+            case "registered":
+              // Only emit for direct children of this agent
+              if (watchEvent.entry.parentId === thisAgentId) {
+                const childName = String(
+                  watchEvent.entry.metadata.name ?? watchEvent.entry.agentId,
+                );
+                childAgentNames.set(String(watchEvent.entry.agentId), childName);
+                pendingEngineEvents.push({
+                  kind: "agent_spawned",
+                  agentId: watchEvent.entry.agentId,
+                  agentName: childName,
+                  parentAgentId: watchEvent.entry.parentId,
+                });
+              }
+              break;
+            case "transitioned": {
+              // Only emit for known children (transitioned events lack parentId)
+              const name = childAgentNames.get(String(watchEvent.agentId));
+              if (name !== undefined) {
+                pendingEngineEvents.push({
+                  kind: "agent_status_changed",
+                  agentId: watchEvent.agentId,
+                  agentName: name,
+                  status: watchEvent.to,
+                  previousStatus: watchEvent.from,
+                });
+              }
+              break;
+            }
+            case "deregistered":
+              childAgentNames.delete(String(watchEvent.agentId));
+              break;
+            default:
+              break;
+          }
+        });
+      }
 
       // Wire terminals → middleware → callHandlers if adapter is cooperating
       // let justified: effectiveInput may be replaced with callHandlers-augmented input
@@ -807,6 +859,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       throw error;
     } finally {
       running = false;
+      if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
 

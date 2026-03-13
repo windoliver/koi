@@ -16,7 +16,7 @@ import { readdir, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
-import type { ChannelAdapter, EngineEvent, EngineInput } from "@koi/core";
+import type { ChannelAdapter, EngineInput } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import { createPiAdapter } from "@koi/engine-pi";
@@ -35,6 +35,7 @@ import {
   persistChatExchangeSafely,
   resolveDashboardAssetsDir,
 } from "../helpers.js";
+import { renderEvent } from "../render-event.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { resolveAutonomousOrWarn } from "../resolve-autonomous.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
@@ -138,41 +139,6 @@ async function formatManifestLoadFailure(
 }
 
 // ---------------------------------------------------------------------------
-// Event rendering
-// ---------------------------------------------------------------------------
-
-function renderEvent(event: EngineEvent, verbose: boolean): void {
-  switch (event.kind) {
-    case "text_delta":
-      process.stdout.write(event.delta);
-      break;
-    case "tool_call_start":
-      if (verbose) {
-        process.stderr.write(`\n[tool] ${event.toolName}...\n`);
-      }
-      break;
-    case "tool_call_end":
-      if (verbose) {
-        process.stderr.write("[tool] done\n");
-      }
-      break;
-    case "done":
-      process.stdout.write("\n");
-      if (verbose) {
-        const m = event.output.metrics;
-        process.stderr.write(`[${m.turns} turn(s), ${m.totalTokens} tokens, ${m.durationMs}ms]\n`);
-      }
-      break;
-    case "turn_end":
-    case "custom":
-    case "discovery:miss":
-    case "spawn_requested":
-      // Internal events — no user-visible output
-      break;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Main command
 // ---------------------------------------------------------------------------
 
@@ -187,6 +153,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const loadResult = await loadManifest(manifestPath);
   if (!loadResult.ok) {
     process.stderr.write(await formatManifestLoadFailure(manifestPath, loadResult.error.message));
+    process.stderr.write("hint: run `koi doctor --repair` to auto-fix common issues\n");
     process.exit(EXIT_CONFIG);
   }
 
@@ -239,6 +206,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   });
   if (!resolved.ok) {
     process.stderr.write(formatResolutionError(resolved.error));
+    process.stderr.write("hint: run `koi doctor --repair` to auto-fix common issues\n");
     if (sandboxBridge !== undefined) {
       await sandboxBridge.dispose();
     }
@@ -511,7 +479,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
         const deltas: string[] = [];
         for await (const event of runtime.run(input)) {
           if (controller.signal.aborted) break;
-          renderEvent(event, flags.verbose);
+          renderEvent(event, { verbose: flags.verbose });
           if (event.kind === "text_delta") deltas.push(event.delta);
           if (event.kind === "done" && adminBridge !== undefined) {
             const m = event.output.metrics;

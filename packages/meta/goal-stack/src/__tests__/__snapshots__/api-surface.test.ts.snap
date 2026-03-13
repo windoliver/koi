@@ -3,7 +3,7 @@
 exports[`@koi/goal-stack API surface . has stable type surface 1`] = `
 "import { TodoItem, ReminderSource, PlanItem } from '@koi/middleware-goal';
 export { GoalAnchorConfig, GoalReminderConfig, PlanConfig, PlanItem, PlanStatus, ReminderSessionState, ReminderSource, TodoItem, TodoItemStatus, TodoState, descriptor as planningDescriptor } from '@koi/middleware-goal';
-import { KoiMiddleware, ComponentProvider } from '@koi/core';
+import { KoiMiddleware, ComponentProvider, TaskBoardSnapshot, TaskItemStatus } from '@koi/core';
 import { TurnContext } from '@koi/core/middleware';
 
 /**
@@ -114,6 +114,25 @@ declare function createGoalStack(config?: GoalStackConfig): GoalStackBundle;
  */
 declare const GOAL_STACK_PRESET_SPECS: Readonly<Record<GoalStackPreset, GoalStackPresetSpec>>;
 
-export { GOAL_STACK_PRESET_SPECS, type GoalStackBundle, type GoalStackConfig, type GoalStackPreset, type GoalStackPresetSpec, type ResolvedGoalStackMeta, createGoalStack, resolveGoalStackConfig };
+/**
+ * Task-aware drift detection — checks whether recent messages
+ * mention keywords from pending/assigned tasks on the board.
+ */
+
+declare function createTaskAwareDrifting(getSnapshot: () => TaskBoardSnapshot): (ctx: TurnContext) => boolean;
+
+/**
+ * ReminderSource adapter for TaskBoardSnapshot — bridges @koi/long-running
+ * task boards into the goal-reminder middleware.
+ */
+
+interface TaskBoardSourceConfig {
+    readonly statusFilter?: readonly TaskItemStatus[];
+    readonly includePriority?: boolean;
+    readonly includeStatus?: boolean;
+}
+declare function createTaskBoardSource(getSnapshot: () => TaskBoardSnapshot, config?: TaskBoardSourceConfig): ReminderSource;
+
+export { GOAL_STACK_PRESET_SPECS, type GoalStackBundle, type GoalStackConfig, type GoalStackPreset, type GoalStackPresetSpec, type ResolvedGoalStackMeta, type TaskBoardSourceConfig, createGoalStack, createTaskAwareDrifting, createTaskBoardSource, resolveGoalStackConfig };
 "
 `;
