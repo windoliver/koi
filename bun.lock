@@ -16,6 +16,26 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/data-source/connector-forge": {
+      "name": "@koi/connector-forge",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
+    "packages/data-source/discovery": {
+      "name": "@koi/data-source-discovery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
     "packages/deploy/bundle": {
       "name": "@koi/bundle",
       "version": "0.0.0",
@@ -234,6 +254,7 @@
         "@koi/hash": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/validation": "workspace:*",
+        "yaml": "2.8.2",
         "zod": "4.3.6",
       },
       "devDependencies": {
@@ -3609,6 +3630,8 @@
 
     "@koi/config": ["@koi/config@workspace:packages/kernel/config"],
 
+    "@koi/connector-forge": ["@koi/connector-forge@workspace:packages/data-source/connector-forge"],
+
     "@koi/context": ["@koi/context@workspace:packages/mm/context"],
 
     "@koi/context-arena": ["@koi/context-arena@workspace:packages/meta/context-arena"],
@@ -3626,6 +3649,8 @@
     "@koi/dashboard-types": ["@koi/dashboard-types@workspace:packages/observability/dashboard-types"],
 
     "@koi/dashboard-ui": ["@koi/dashboard-ui@workspace:packages/observability/dashboard-ui"],
+
+    "@koi/data-source-discovery": ["@koi/data-source-discovery@workspace:packages/data-source/discovery"],
 
     "@koi/debug": ["@koi/debug@workspace:packages/observability/debug"],
 
@@ -6398,6 +6423,8 @@
     "y18n": ["y18n@5.0.8", "", {}, "sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA=="],
 
     "yallist": ["yallist@5.0.0", "", {}, "sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw=="],
+
+    "yaml": ["yaml@2.8.2", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A=="],
 
     "yargs": ["yargs@17.7.2", "", { "dependencies": { "cliui": "^8.0.1", "escalade": "^3.1.1", "get-caller-file": "^2.0.5", "require-directory": "^2.1.1", "string-width": "^4.2.3", "y18n": "^5.0.5", "yargs-parser": "^21.1.1" } }, "sha512-7dSzzRQ++CKnNI/krKnYRV7JKKPUXMEh61soaHKg9mrWEhzFWhFnxPxGl+69cD1Ou63C13NUPCnmIcrvqCuM6w=="],
 

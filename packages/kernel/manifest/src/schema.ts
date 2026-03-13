@@ -6,6 +6,7 @@
  * 2. Transform layer (transform.ts) normalizes shorthand → L0 types
  */
 
+import { credentialRequirementSchema } from "@koi/validation";
 import { z } from "zod";
 
 // ── Raw manifest type (explicit for isolatedDeclarations) ──
@@ -137,6 +138,21 @@ export interface RawManifest {
     | { readonly kind: "on_demand" }
     | undefined;
   readonly nexus?: { readonly url?: string | undefined } | undefined;
+  readonly dataSources?:
+    | readonly {
+        readonly name: string;
+        readonly protocol: string;
+        readonly description?: string | undefined;
+        readonly auth?:
+          | {
+              readonly kind: string;
+              readonly ref: string;
+              readonly scopes?: readonly string[] | undefined;
+            }
+          | undefined;
+        readonly allowedHosts?: readonly string[] | undefined;
+      }[]
+    | undefined;
   readonly [key: string]: unknown;
 }
 
@@ -440,6 +456,23 @@ interface RawScope {
   readonly memory?: { readonly namespace: string } | undefined;
 }
 
+// ── Data source schema ──
+
+/** Auth credential for a data source entry — reuses shared credential schema. */
+const dataSourceAuthSchema = credentialRequirementSchema;
+
+/** A single data source entry in koi.yaml `dataSources`. */
+const dataSourceEntrySchema = z.object({
+  name: z.string().min(1),
+  protocol: z.string().min(1),
+  description: z.string().optional(),
+  auth: dataSourceAuthSchema.optional(),
+  allowedHosts: z.array(z.string()).optional(),
+});
+
+/** Optional array of data source entries. */
+const dataSourcesSchema = z.array(dataSourceEntrySchema).optional();
+
 // ── Raw manifest schema ──
 
 /**
@@ -472,6 +505,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     degeneracy: degeneracySchema.optional(),
     delivery: deliveryPolicySchema.optional(),
     nexus: nexusSchema.optional(),
+    dataSources: dataSourcesSchema,
   })
   .passthrough();
 

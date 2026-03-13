@@ -13,6 +13,7 @@ export { loadManifest, loadManifestFromString } from "./loader.js";
 
 // Types
 export type {
+  DataSourceManifestEntry,
   DeployConfig,
   LoadedManifest,
   LoadResult,

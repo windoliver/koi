@@ -13,6 +13,7 @@ import type {
   ForgeError,
   ForgeMiddlewareInput,
   ForgeResult,
+  VerificationReport,
 } from "@koi/forge-types";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
@@ -100,7 +101,7 @@ function createImplementationForgeHandler(
       ...mapParsedBaseFields(parsed.value),
     };
 
-    return runForgePipeline(forgeInput, deps, (report) => ({
+    return runForgePipeline(forgeInput, deps, (report: VerificationReport) => ({
       ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
       kind: kind as "middleware" | "channel",
       implementation: forgeInput.implementation,

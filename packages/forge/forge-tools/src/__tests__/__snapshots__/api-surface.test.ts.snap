@@ -1,8 +1,9 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
-"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, CompanionSkillDefinition, ComponentProvider, StoreChangeNotifier, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController, EngineAdapter, ExternalAgentDescriptor } from '@koi/core';
-import { ForgeError, DriftChecker, SandboxExecutor as SandboxExecutor$1, ForgeVerifier, ForgeConfig, ForgeContext, ManifestParser, ForgePipeline, ForgeToolInput, AgentArtifact } from '@koi/forge-types';
+"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, CompanionSkillDefinition, ComponentProvider, StoreChangeNotifier, KoiError, BrickRegistryWriter, Resolver, BrickRequires, EngineAdapter } from '@koi/core';
+import { ForgeError, DriftChecker, ForgeDeps, ForgeInput, ArtifactBuilder, ForgeResult, ForgeToolInput, DelegateOptions, AgentArtifact, SandboxExecutor as SandboxExecutor$1 } from '@koi/forge-types';
+export { ArtifactBuilder, DelegateOptions, ForgeDeps } from '@koi/forge-types';
 import { BrickDescriptor } from '@koi/resolve';
 export { createMemoryStoreChangeNotifier } from '@koi/validation';
 
@@ -265,11 +266,17 @@ declare function createForgeResolver(store: ForgeStore, context: ForgeResolverCo
  *   version: "0.0.1"
  *   tags:
  *     - tag1
+ * requires:
+ *   credentials:
+ *     db:
+ *       kind: connection_string
+ *       ref: DATABASE_URL
  * ---
  *
  * <body content>
  * \`\`\`
  */
+
 interface SkillMdInput {
     readonly name: string;
     readonly description: string;
@@ -277,6 +284,8 @@ interface SkillMdInput {
     readonly agentId: string;
     readonly version: string;
     readonly body: string;
+    readonly requires?: BrickRequires;
+    readonly configSchema?: Readonly<Record<string, unknown>>;
 }
 declare function generateSkillMd(input: SkillMdInput): string;
 
@@ -356,39 +365,6 @@ declare function createSkillReferenceProvider(store: ForgeStore): SkillReference
  * Shared factory for primordial forge tools — DRY across all 6 tools.
  */
 
-interface DelegateOptions {
-    /** Model to use for the coding agent (e.g., "opus"). */
-    readonly model?: string | undefined;
-    /** Timeout per attempt in milliseconds. Default: 120,000 (2 min). */
-    readonly timeoutMs?: number | undefined;
-    /** Number of retries after failure. Default: 0 (no retries). */
-    readonly retries?: number | undefined;
-}
-interface ForgeDeps {
-    readonly store: ForgeStore;
-    readonly executor: SandboxExecutor$1;
-    readonly verifiers: readonly ForgeVerifier[];
-    readonly config: ForgeConfig;
-    readonly context: ForgeContext;
-    /** Injected manifest parser — required only for forge_agent. Avoids L2 peer import of @koi/manifest. */
-    readonly manifestParser?: ManifestParser;
-    /** Optional notifier for cross-agent cache invalidation after store mutations. */
-    readonly notifier?: StoreChangeNotifier;
-    /** Optional signing backend for attestation. When provided, forged bricks get cryptographic signatures. */
-    readonly signer?: SigningBackend;
-    /** Optional governance controller for live-counter budget checks (bypasses static ForgeContext.forgesThisSession). */
-    readonly controller?: GovernanceController;
-    /** Called after a successful forge with the number of forges consumed. When provided, incrementing the session counter is automatic. */
-    readonly onForgeConsumed?: (consumed: number) => void | Promise<void>;
-    /** Optional engine resolver — resolves engine config from a manifest into an EngineAdapter. Used by forge_agent to auto-resolve engines during forge. */
-    readonly engineResolver?: (engineConfig: unknown) => Promise<Result<EngineAdapter | undefined, KoiError>>;
-    /** DI pipeline — tools use pipeline methods for cross-L2 calls (verify, governance, attestation). Wired by L3 bundle. */
-    readonly pipeline?: ForgePipeline;
-    /** Discovers an external coding agent by name. Injected by L3 consumer. */
-    readonly discoverAgent?: (name: string) => Promise<Result<ExternalAgentDescriptor, KoiError>>;
-    /** Spawns an external coding agent to produce implementation code. Injected by L3 consumer. */
-    readonly spawnCodingAgent?: (agent: ExternalAgentDescriptor, prompt: string, options: DelegateOptions) => Promise<Result<string, KoiError>>;
-}
 interface ForgeToolConfig {
     readonly name: string;
     readonly description: string;
@@ -407,6 +383,11 @@ interface ParsedBaseInput {
         readonly agents?: readonly string[] | undefined;
         readonly packages?: Readonly<Record<string, string>> | undefined;
         readonly network?: boolean | undefined;
+        readonly credentials?: Readonly<Record<string, {
+            readonly kind: string;
+            readonly ref: string;
+            readonly scopes?: readonly string[] | undefined;
+        }>> | undefined;
     } | undefined;
     readonly configSchema?: Readonly<Record<string, unknown>> | undefined;
     readonly classification?: "public" | "internal" | "secret" | undefined;
@@ -442,11 +423,17 @@ declare function mapParsedBaseFields(parsed: ParsedBaseInput): {
         readonly agents?: readonly string[];
         readonly packages?: Readonly<Record<string, string>>;
         readonly network?: boolean;
+        readonly credentials?: Readonly<Record<string, {
+            readonly kind: string;
+            readonly ref: string;
+            readonly scopes?: readonly string[];
+        }>>;
     };
     readonly configSchema?: Readonly<Record<string, unknown>>;
     readonly classification?: "public" | "internal" | "secret";
     readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
 };
+declare function runForgePipeline(forgeInput: ForgeInput, deps: ForgeDeps, buildArtifact: ArtifactBuilder): Promise<Result<ForgeResult, ForgeError>>;
 declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;
 
 /**
@@ -586,6 +573,6 @@ declare function createRunSkillScriptTool(deps: RunSkillScriptDeps): Tool;
 
 declare function createSearchForgeTool(deps: ForgeDeps): Tool;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type DelegateOptions, type DeltaInvalidator, FORGE_COMPANION_SKILL, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeDeps, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type RunSkillScriptDeps, type RunSkillScriptResult, type SkillInstructions, type SkillMdInput, type SkillMetadata, type SkillReferenceProvider, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeCompanionSkillProvider, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createRunSkillScriptTool, createSearchForgeTool, createSkillReferenceProvider, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust };
+export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, FORGE_COMPANION_SKILL, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type RunSkillScriptDeps, type RunSkillScriptResult, type SkillInstructions, type SkillMdInput, type SkillMetadata, type SkillReferenceProvider, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeCompanionSkillProvider, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createRunSkillScriptTool, createSearchForgeTool, createSkillReferenceProvider, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust, runForgePipeline };
 "
 `;

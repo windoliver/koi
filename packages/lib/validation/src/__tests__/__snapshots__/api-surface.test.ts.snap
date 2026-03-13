@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { BrickArtifactBase, BrickUpdate, BrickRequires, Result, KoiError, BrickArtifact, CollectiveMemory, CollectiveMemoryDefaults, CollectiveMemoryEntry, PipelineStep, BrickFitnessMetrics, ToolPolicy, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
+"import { BrickArtifactBase, BrickUpdate, BrickRequires, Result, KoiError, CredentialComponent, BrickArtifact, CollectiveMemory, CollectiveMemoryDefaults, CollectiveMemoryEntry, PipelineStep, BrickFitnessMetrics, ToolPolicy, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -20,13 +20,13 @@ import { z } from 'zod';
 declare function applyBrickUpdate<T extends BrickArtifactBase>(existing: T, updates: BrickUpdate): T;
 
 /**
- * Pure BrickRequires validation — bins, env, platform checks.
+ * Pure BrickRequires validation — bins, env, platform, credential checks.
  *
  * Operates only on L0 types. Extracted from @koi/forge-tools so L2 packages
  * (like @koi/skills) can validate requirements without importing from peer L2.
  */
 
-type RequiresViolationKind = "bin" | "env" | "platform";
+type RequiresViolationKind = "bin" | "env" | "platform" | "credential";
 interface RequiresViolation {
     readonly kind: RequiresViolationKind;
     readonly name: string;
@@ -38,6 +38,32 @@ interface RequiresViolation {
  * Returns the first violation found (fail-fast). No requires → always satisfied.
  */
 declare function validateBrickRequires(requires: BrickRequires | undefined): Result<void, KoiError>;
+/**
+ * Validates the \`credentials\` field of BrickRequires against a CredentialComponent.
+ *
+ * Collects all missing/invalid credentials (not fail-fast).
+ * If \`credentials\` is undefined or \`credentialComponent\` is undefined, trivially passes.
+ */
+declare function validateCredentialRequires(requires: BrickRequires | undefined, credentialComponent: CredentialComponent | undefined): Promise<Result<void, KoiError>>;
+
+/**
+ * Shared Zod schemas for credential requirements.
+ *
+ * Single source of truth — imported by @koi/validation brick-requires,
+ * @koi/skills frontmatter, @koi/forge-tools input parsing, and @koi/manifest.
+ */
+
+declare const credentialKindSchema: z.ZodType<string>;
+declare const credentialRequirementSchema: z.ZodType<{
+    readonly kind: string;
+    readonly ref: string;
+    readonly scopes?: readonly string[] | undefined;
+}>;
+declare const credentialRequiresSchema: z.ZodType<Readonly<Record<string, {
+    readonly kind: string;
+    readonly ref: string;
+    readonly scopes?: readonly string[] | undefined;
+}>>>;
 
 /**
  * Lightweight type guard for BrickArtifact loaded from storage.
@@ -394,6 +420,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, type PipelineValidation, type RequiresViolation, type RequiresViolationKind, SEVERITY_ORDER, type SchemaCompatibility, type Severity, type SortBricksOptions, applyBrickUpdate, checkSchemaCompatibility, compactEntries, computeBrickFitness, computeDrift, computeEffectiveTrailStrength, computeMemoryPriority, computeMutationPressure, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, deduplicateEntries, evaluateTrustDecay, findClosestMatch, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, pruneStaleEntries, recordLatency, selectEntriesWithinBudget, severityAtOrAbove, sortBricks, validateBrickArtifact, validateBrickRequires, validatePipeline, validateWith, zodToKoiError };
+export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, type PipelineValidation, type RequiresViolation, type RequiresViolationKind, SEVERITY_ORDER, type SchemaCompatibility, type Severity, type SortBricksOptions, applyBrickUpdate, checkSchemaCompatibility, compactEntries, computeBrickFitness, computeDrift, computeEffectiveTrailStrength, computeMemoryPriority, computeMutationPressure, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, credentialKindSchema, credentialRequirementSchema, credentialRequiresSchema, deduplicateEntries, evaluateTrustDecay, findClosestMatch, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, pruneStaleEntries, recordLatency, selectEntriesWithinBudget, severityAtOrAbove, sortBricks, validateBrickArtifact, validateBrickRequires, validateCredentialRequires, validatePipeline, validateWith, zodToKoiError };
 "
 `;

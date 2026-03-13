@@ -11,6 +11,7 @@ export {
   type RequiresViolation,
   type RequiresViolationKind,
   validateBrickRequires,
+  validateCredentialRequires,
 } from "./brick-requires.js";
 export { validateBrickArtifact } from "./brick-validation.js";
 export {
@@ -26,6 +27,11 @@ export {
   type SchemaCompatibility,
   validatePipeline,
 } from "./composition-validation.js";
+export {
+  credentialKindSchema,
+  credentialRequirementSchema,
+  credentialRequiresSchema,
+} from "./credential-schema.js";
 export { computeDrift } from "./drift-scoring.js";
 export {
   computeBrickFitness,

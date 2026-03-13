@@ -104,6 +104,8 @@ export type {
   CollectiveMemorySource,
   CompositeArtifact,
   CounterExample,
+  CredentialKind,
+  CredentialRequirement,
   ForgeQuery,
   ForgeStore,
   ImplementationArtifact,
@@ -244,6 +246,8 @@ export type { ServiceProviderConfig } from "./create-service-provider.js";
 export { createServiceProvider } from "./create-service-provider.js";
 export type { SingleToolProviderConfig } from "./create-single-tool-provider.js";
 export { createSingleToolProvider } from "./create-single-tool-provider.js";
+// data source — auto-discovered data source descriptors
+export type { DataSourceDescriptor, DataSourceProtocol } from "./data-source.js";
 // debug — runtime debugging with breakpoints, step/pause, inspection
 export type {
   Breakpoint,
@@ -359,6 +363,7 @@ export {
   COMPONENT_PRIORITY,
   CREDENTIALS,
   channelToken,
+  DATA_SOURCES,
   DEFAULT_SANDBOXED_POLICY,
   DEFAULT_UNSANDBOXED_POLICY,
   DELEGATION,

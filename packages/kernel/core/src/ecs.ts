@@ -613,6 +613,9 @@ export const ZONE_REGISTRY: SubsystemToken<ZoneRegistry> = token<ZoneRegistry>("
 export const INBOX: SubsystemToken<InboxComponent> = token<InboxComponent>("inbox");
 export const USER_MODEL: SubsystemToken<import("./user-model.js").UserModelComponent> =
   token<import("./user-model.js").UserModelComponent>("user-model");
+export const DATA_SOURCES: SubsystemToken<
+  readonly import("./data-source.js").DataSourceDescriptor[]
+> = token<readonly import("./data-source.js").DataSourceDescriptor[]>("data_sources");
 
 // ---------------------------------------------------------------------------
 // Agent environment (inheritable key-value env down the spawn tree)

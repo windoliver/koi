@@ -6,13 +6,23 @@
  */
 
 import type {
+  BrickArtifact,
   BrickId,
   BrickKind,
   BrickLifecycle,
   BrickRequires,
   ContentMarker,
   DataClassification,
+  EngineAdapter,
+  ExternalAgentDescriptor,
   ForgeScope,
+  ForgeStore,
+  GovernanceController,
+  KoiError,
+  Result,
+  SandboxExecutor,
+  SigningBackend,
+  StoreChangeNotifier,
   TestCase,
   ToolDescriptor,
   ToolOrigin,
@@ -118,6 +128,8 @@ export interface ForgeSkillInput extends ForgeInputBase {
   readonly kind: "skill";
   /** Markdown body of the skill (the raw content, not the generated SKILL.md). */
   readonly body: string;
+  /** Optional JSON Schema for skill configuration (e.g., data source connection params). */
+  readonly configSchema?: Readonly<Record<string, unknown>>;
 }
 
 export interface ForgeAgentInputWithManifest extends ForgeInputBase {
@@ -270,3 +282,71 @@ export interface DriftCheckResult {
 export interface DriftChecker {
   readonly checkDrift: (driftContext: BrickDriftContext) => Promise<DriftCheckResult | undefined>;
 }
+
+// ---------------------------------------------------------------------------
+// ForgeDeps — DI interface for forge tool dependencies (promoted from forge-tools)
+// ---------------------------------------------------------------------------
+
+/** Options for delegating implementation to an external coding agent. */
+export interface DelegateOptions {
+  /** Model to use for the coding agent (e.g., "opus"). */
+  readonly model?: string | undefined;
+  /** Timeout per attempt in milliseconds. Default: 120,000 (2 min). */
+  readonly timeoutMs?: number | undefined;
+  /** Number of retries after failure. Default: 0 (no retries). */
+  readonly retries?: number | undefined;
+}
+
+/** Shared dependency bag for all forge tools — injected by L3 bundle. */
+export interface ForgeDeps {
+  readonly store: ForgeStore;
+  readonly executor: SandboxExecutor;
+  readonly verifiers: readonly ForgeVerifier[];
+  readonly config: ForgeConfig;
+  readonly context: ForgeContext;
+  /** Injected manifest parser — required only for forge_agent. Avoids L2 peer import of @koi/manifest. */
+  readonly manifestParser?: ManifestParser;
+  /** Optional notifier for cross-agent cache invalidation after store mutations. */
+  readonly notifier?: StoreChangeNotifier;
+  /** Optional signing backend for attestation. When provided, forged bricks get cryptographic signatures. */
+  readonly signer?: SigningBackend;
+  /** Optional governance controller for live-counter budget checks (bypasses static ForgeContext.forgesThisSession). */
+  readonly controller?: GovernanceController;
+  /** Called after a successful forge with the number of forges consumed. When provided, incrementing the session counter is automatic. */
+  readonly onForgeConsumed?: (consumed: number) => void | Promise<void>;
+  /** Optional engine resolver — resolves engine config from a manifest into an EngineAdapter. Used by forge_agent to auto-resolve engines during forge. */
+  readonly engineResolver?: (
+    engineConfig: unknown,
+  ) => Promise<Result<EngineAdapter | undefined, KoiError>>;
+  /** DI pipeline — tools use pipeline methods for cross-L2 calls (verify, governance, attestation). Wired by L3 bundle. */
+  readonly pipeline?: ForgePipeline;
+  /** Discovers an external coding agent by name. Injected by L3 consumer. */
+  readonly discoverAgent?: (name: string) => Promise<Result<ExternalAgentDescriptor, KoiError>>;
+  /** Spawns an external coding agent to produce implementation code. Injected by L3 consumer. */
+  readonly spawnCodingAgent?: (
+    agent: ExternalAgentDescriptor,
+    prompt: string,
+    options: DelegateOptions,
+  ) => Promise<Result<string, KoiError>>;
+}
+
+import type { ForgeConfig } from "./config.js";
+import type { ForgeError } from "./errors.js";
+import type { ForgePipeline } from "./pipeline.js";
+
+// ---------------------------------------------------------------------------
+// ForgeRunner — DI type for cross-L2 forge pipeline invocation
+// ---------------------------------------------------------------------------
+
+/** Builder returns a BrickArtifact body without provenance. */
+export type ArtifactBuilder = (
+  report: VerificationReport,
+  deps: ForgeDeps,
+) => Omit<BrickArtifact, "provenance">;
+
+/** Injectable forge pipeline runner — allows L2 packages to invoke the forge pipeline without importing forge-tools. */
+export type ForgeRunner = (
+  input: ForgeInput,
+  deps: ForgeDeps,
+  buildArtifact: ArtifactBuilder,
+) => Promise<Result<ForgeResult, ForgeError>>;

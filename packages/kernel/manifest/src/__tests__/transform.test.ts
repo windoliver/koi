@@ -434,4 +434,56 @@ describe("transformToLoadedManifest", () => {
     const result = transformToLoadedManifest(raw);
     expect("skills" in result).toBe(false);
   });
+
+  // ---------------------------------------------------------------------------
+  // dataSources extension
+  // ---------------------------------------------------------------------------
+
+  test("passes through dataSources extension with auth", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      dataSources: [
+        {
+          name: "main-db",
+          protocol: "postgres",
+          description: "Primary database",
+          auth: { kind: "connection_string", ref: "DATABASE_URL" },
+          allowedHosts: ["db.example.com"],
+        },
+      ],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.dataSources).toHaveLength(1);
+    expect(result.dataSources?.[0]?.name).toBe("main-db");
+    expect(result.dataSources?.[0]?.protocol).toBe("postgres");
+    expect(result.dataSources?.[0]?.auth?.kind).toBe("connection_string");
+    expect(result.dataSources?.[0]?.auth?.ref).toBe("DATABASE_URL");
+    expect(result.dataSources?.[0]?.allowedHosts).toEqual(["db.example.com"]);
+  });
+
+  test("passes through dataSources without auth", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      dataSources: [{ name: "local-db", protocol: "sqlite" }],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.dataSources).toHaveLength(1);
+    expect(result.dataSources?.[0]?.name).toBe("local-db");
+    expect(result.dataSources?.[0]?.protocol).toBe("sqlite");
+    expect(result.dataSources?.[0]?.auth).toBeUndefined();
+  });
+
+  test("omits dataSources when not present in raw", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+    };
+    const result = transformToLoadedManifest(raw);
+    expect("dataSources" in result).toBe(false);
+  });
 });

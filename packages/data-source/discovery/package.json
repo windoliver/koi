@@ -1,0 +1,25 @@
+{
+  "name": "@koi/data-source-discovery",
+  "description": "Auto-discover data sources from manifest, environment, and MCP servers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "@koi/forge-types": "workspace:*",
+    "@koi/validation": "workspace:*"
+  }
+}
