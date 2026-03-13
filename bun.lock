@@ -1171,6 +1171,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/data-source-stack": {
+      "name": "@koi/data-source-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/connector-forge": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/data-source-discovery": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+      },
+    },
     "packages/meta/forge": {
       "name": "@koi/forge",
       "version": "0.0.0",
@@ -1286,9 +1296,12 @@
         "@koi/cli": "workspace:*",
         "@koi/code-mode": "workspace:*",
         "@koi/config": "workspace:*",
+        "@koi/connector-forge": "workspace:*",
         "@koi/context-arena": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/dashboard-api": "workspace:*",
+        "@koi/data-source-discovery": "workspace:*",
+        "@koi/data-source-stack": "workspace:*",
         "@koi/doctor": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
@@ -3651,6 +3664,8 @@
     "@koi/dashboard-ui": ["@koi/dashboard-ui@workspace:packages/observability/dashboard-ui"],
 
     "@koi/data-source-discovery": ["@koi/data-source-discovery@workspace:packages/data-source/discovery"],
+
+    "@koi/data-source-stack": ["@koi/data-source-stack@workspace:packages/meta/data-source-stack"],
 
     "@koi/debug": ["@koi/debug@workspace:packages/observability/debug"],
 

@@ -63,6 +63,11 @@ export function selectBrickKind(trigger: ForgeTrigger): BrickKindSelection {
     case "novel_workflow":
       return { suppressed: false, kind: "skill" };
 
+    // Data source signals → skill (data access patterns, not code)
+    case "data_source_detected":
+    case "data_source_gap":
+      return { suppressed: false, kind: "skill" };
+
     default: {
       // Exhaustive check — TypeScript will error if a new trigger kind is added
       const _exhaustive: never = trigger;

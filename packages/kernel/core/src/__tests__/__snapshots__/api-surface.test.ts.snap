@@ -854,6 +854,14 @@ type ForgeTrigger = {
     readonly brickId: BrickId;
     readonly p95Ms: number;
 } | {
+    readonly kind: "data_source_detected";
+    readonly sourceName: string;
+    readonly protocol: string;
+} | {
+    readonly kind: "data_source_gap";
+    readonly sourceName: string;
+    readonly missingCapability: string;
+} | {
     readonly kind: "complex_task_completed";
     readonly toolCallCount: number;
     readonly taskDescription: string;

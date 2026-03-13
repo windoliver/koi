@@ -77,6 +77,11 @@ function getBaseWeight(kind: ForgeTrigger["kind"], weights: ConfidenceWeights): 
       return 0.5;
     case "user_correction":
       return 0.7;
+    // Data source signals — high confidence (discovery is deterministic)
+    case "data_source_detected":
+      return 0.9;
+    case "data_source_gap":
+      return 0.6;
   }
   // Exhaustiveness guard — compiler errors if a trigger kind is missing above
   const _exhaustive: never = kind;

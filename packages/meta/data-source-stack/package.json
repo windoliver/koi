@@ -1,0 +1,25 @@
+{
+  "name": "@koi/data-source-stack",
+  "description": "Compose data source discovery, skill generation, and credential gating into a single bundle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/connector-forge": "workspace:*",
+    "@koi/core": "workspace:*",
+    "@koi/data-source-discovery": "workspace:*",
+    "@koi/forge-types": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

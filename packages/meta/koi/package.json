@@ -103,6 +103,10 @@
     "./observability": {
       "types": "./dist/observability.d.ts",
       "import": "./dist/observability.js"
+    },
+    "./data-source": {
+      "types": "./dist/data-source.d.ts",
+      "import": "./dist/data-source.js"
     }
   },
   "files": [
@@ -123,9 +127,12 @@
     "@koi/cli": "workspace:*",
     "@koi/code-mode": "workspace:*",
     "@koi/config": "workspace:*",
+    "@koi/connector-forge": "workspace:*",
     "@koi/context-arena": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/dashboard-api": "workspace:*",
+    "@koi/data-source-discovery": "workspace:*",
+    "@koi/data-source-stack": "workspace:*",
     "@koi/doctor": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/engine-pi": "workspace:*",
