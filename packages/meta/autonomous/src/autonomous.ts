@@ -144,7 +144,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     for (const mw of parts.goalStackMiddleware) {
       middlewareList.push(mw);
     }
-  } else if (parts.taskBoardReminders === true) {
+  } else if (parts.taskBoardGoalStack === true) {
     // Auto-wire task-board reminders and drift detection into the goal stack.
     // Uses the harness's live task board as the snapshot source so reminders
     // always reflect the current state of pending/assigned tasks.

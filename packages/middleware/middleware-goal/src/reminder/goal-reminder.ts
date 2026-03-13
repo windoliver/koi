@@ -105,6 +105,7 @@ export function createGoalReminderMiddleware(config: GoalReminderConfig): KoiMid
       if (!state?.shouldInject) return next(request);
 
       const reminderText = await resolveAllSources(config.sources, ctx);
+      if (reminderText === "") return next(request);
       const enriched = enrichRequest(request, buildReminderMessage(header, reminderText));
       return next(enriched);
     },
@@ -121,6 +122,10 @@ export function createGoalReminderMiddleware(config: GoalReminderConfig): KoiMid
       }
 
       const reminderText = await resolveAllSources(config.sources, ctx);
+      if (reminderText === "") {
+        yield* next(request);
+        return;
+      }
       const enriched = enrichRequest(request, buildReminderMessage(header, reminderText));
       yield* next(enriched);
     },

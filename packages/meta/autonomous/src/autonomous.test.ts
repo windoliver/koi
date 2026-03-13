@@ -283,10 +283,10 @@ describe("createAutonomousAgent", () => {
     expect(mw[0]?.name).toBe("lr-mw");
   });
 
-  test("taskBoardReminders:true auto-wires goal-stack middleware from harness task board", () => {
+  test("taskBoardGoalStack:true auto-wires goal-stack middleware from harness task board", () => {
     const harness = createMockHarness({ middlewareName: "lr-mw" });
     const scheduler = createMockScheduler();
-    const agent = createAutonomousAgent({ harness, scheduler, taskBoardReminders: true });
+    const agent = createAutonomousAgent({ harness, scheduler, taskBoardGoalStack: true });
 
     const mw = agent.middleware();
     // goal-stack "autonomous" preset includes reminder + anchor + planning (3 middleware)
@@ -297,7 +297,7 @@ describe("createAutonomousAgent", () => {
     expect(names.some((n) => n.includes("reminder") || n.includes("goal"))).toBe(true);
   });
 
-  test("goalStackMiddleware takes precedence over taskBoardReminders", () => {
+  test("goalStackMiddleware takes precedence over taskBoardGoalStack", () => {
     const harness = createMockHarness({ middlewareName: "lr-mw" });
     const scheduler = createMockScheduler();
     const explicitMw = createMockMiddleware("explicit-goal-mw");
@@ -305,7 +305,7 @@ describe("createAutonomousAgent", () => {
       harness,
       scheduler,
       goalStackMiddleware: [explicitMw],
-      taskBoardReminders: true,
+      taskBoardGoalStack: true,
     });
 
     const mw = agent.middleware();
