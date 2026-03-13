@@ -21,6 +21,7 @@ function createFakeConnection(id: string): TransportConnection {
     id,
     send: mock(() => 1),
     close: mock(() => {}),
+    remoteAddress: "127.0.0.1",
   };
 }
 
