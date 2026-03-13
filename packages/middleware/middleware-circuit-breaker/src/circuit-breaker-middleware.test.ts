@@ -11,12 +11,11 @@ const STUB_RESPONSE: ModelResponse = {
 };
 
 function request(model?: string): ModelRequest {
-  return {
-    model,
-    messages: [
-      { senderId: "user", content: [{ kind: "text", text: "hi" }], timestamp: Date.now() },
-    ],
-  };
+  const messages = [
+    { senderId: "user", content: [{ kind: "text", text: "hi" }], timestamp: Date.now() },
+  ] as const;
+  if (model !== undefined) return { model, messages };
+  return { messages };
 }
 
 describe("createCircuitBreakerMiddleware", () => {
