@@ -289,6 +289,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
         | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
         | undefined,
       env: process.env,
+      consent: { approve: async () => true },
     });
     if (dsStack.discoveredSources.length > 0) {
       dataSourceProvider = dsStack.provider;

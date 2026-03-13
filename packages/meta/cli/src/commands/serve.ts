@@ -194,13 +194,19 @@ export async function runServe(flags: ServeFlags): Promise<void> {
         | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
         | undefined,
       env: process.env,
+      // Headless serve: auto-approve all discovered sources (no interactive consent)
+      consent: { approve: async () => true },
+      // Credentials resolved from env by default (stack's built-in fallback)
+      // MCP servers: not available at bootstrap — MCP tools are resolved inside
+      // resolveAgent() which runs before data-source discovery. A future integration
+      // could thread resolved MCP tool descriptors back here.
     });
     if (dsStack.discoveredSources.length > 0) {
       dataSourceProvider = dsStack.provider;
       dataSourceTools = dsStack.tools;
       if (flags.verbose) {
         process.stderr.write(
-          `Data sources: ${String(dsStack.discoveredSources.length)} discovered, ${String(dsStack.generatedSkillInputs.length)} skills generated, ${String(dsStack.tools.length)} tools registered\n`,
+          `Data sources: ${String(dsStack.discoveredSources.length)} discovered, ${String(dsStack.config.generatedSkillCount)} skills mounted, ${String(dsStack.tools.length)} tools registered\n`,
         );
       }
     }

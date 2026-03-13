@@ -20,8 +20,13 @@ export function createMcpStrategy(): SkillStrategy {
         "",
         "## Usage",
         "",
-        `Use \`query_datasource\` with \`protocol: "mcp"\`, \`toolName: "${toolName}"\` to invoke the underlying MCP tool.`,
-        "The tool name and arguments are passed through to the MCP server.",
+        `Call the MCP tool \`${toolName}\` directly — it is already registered as a runtime tool.`,
+        "Do NOT use `query_datasource` for MCP sources; invoke the tool by name instead.",
+        "",
+        "## Tool Reference",
+        "",
+        `- Tool name: \`${toolName}\``,
+        `- Source: ${descriptor.name}`,
       ].join("\n");
 
       return {
