@@ -821,6 +821,10 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/lib/cli-render": {
+      "name": "@koi/cli-render",
+      "version": "0.0.0",
+    },
     "packages/lib/crypto-utils": {
       "name": "@koi/crypto-utils",
       "version": "0.0.0",
@@ -1033,6 +1037,7 @@
       "dependencies": {
         "@koi/catalog": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/goal-stack": "workspace:*",
         "@koi/harness-scheduler": "workspace:*",
         "@koi/long-running": "workspace:*",
         "@koi/manifest": "workspace:*",
@@ -1081,6 +1086,7 @@
         "@koi/bootstrap": "workspace:*",
         "@koi/channel-agui": "workspace:*",
         "@koi/channel-cli": "workspace:*",
+        "@koi/cli-render": "workspace:*",
         "@koi/context": "workspace:*",
         "@koi/context-arena": "workspace:*",
         "@koi/core": "workspace:*",
@@ -3602,6 +3608,8 @@
     "@koi/channels": ["@koi/channels@workspace:packages/meta/channels"],
 
     "@koi/cli": ["@koi/cli@workspace:packages/meta/cli"],
+
+    "@koi/cli-render": ["@koi/cli-render@workspace:packages/lib/cli-render"],
 
     "@koi/code-executor": ["@koi/code-executor@workspace:packages/virt/code-executor"],
 

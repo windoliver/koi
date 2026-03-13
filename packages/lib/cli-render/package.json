@@ -1,0 +1,19 @@
+{
+  "name": "@koi/cli-render",
+  "description": "Terminal rendering utilities — colors, spinners, TTY detection, structured output",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

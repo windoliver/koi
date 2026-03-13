@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { EngineEvent } from "@koi/core";
+import type { AgentId, EngineEvent } from "@koi/core";
 import { toolCallId } from "@koi/core";
 import type { SessionUpdatePayload } from "./acp-schema.js";
 import { mapEngineEventToAcp, mapSessionUpdate } from "./event-map.js";
@@ -319,6 +319,55 @@ describe("mapEngineEventToAcp — custom events", () => {
       data: { x: 1 },
     };
     expect(mapEngineEventToAcp(event)).toBeUndefined();
+  });
+});
+
+describe("mapEngineEventToAcp — nested agent events", () => {
+  test("maps agent_spawned to agent_thought_chunk", () => {
+    const event: EngineEvent = {
+      kind: "agent_spawned",
+      agentId: "child-1" as AgentId,
+      agentName: "researcher",
+      parentAgentId: "main" as AgentId,
+    };
+    const result = mapEngineEventToAcp(event);
+    expect(result).toBeDefined();
+    expect(result?.sessionUpdate).toBe("agent_thought_chunk");
+    if (result?.sessionUpdate === "agent_thought_chunk") {
+      expect(result.content.text).toContain("researcher");
+      expect(result.content.text).toContain("parent: main");
+    }
+  });
+
+  test("maps agent_spawned without parent", () => {
+    const event: EngineEvent = {
+      kind: "agent_spawned",
+      agentId: "child-1" as AgentId,
+      agentName: "researcher",
+    };
+    const result = mapEngineEventToAcp(event);
+    expect(result?.sessionUpdate).toBe("agent_thought_chunk");
+    if (result?.sessionUpdate === "agent_thought_chunk") {
+      expect(result.content.text).not.toContain("parent:");
+    }
+  });
+
+  test("maps agent_status_changed to agent_thought_chunk", () => {
+    const event: EngineEvent = {
+      kind: "agent_status_changed",
+      agentId: "child-1" as AgentId,
+      agentName: "researcher",
+      status: "running",
+      previousStatus: "created",
+    };
+    const result = mapEngineEventToAcp(event);
+    expect(result).toBeDefined();
+    expect(result?.sessionUpdate).toBe("agent_thought_chunk");
+    if (result?.sessionUpdate === "agent_thought_chunk") {
+      expect(result.content.text).toContain("researcher");
+      expect(result.content.text).toContain("created");
+      expect(result.content.text).toContain("running");
+    }
   });
 });
 
