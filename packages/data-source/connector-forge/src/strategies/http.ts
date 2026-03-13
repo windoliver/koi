@@ -19,6 +19,7 @@ export function createHttpStrategy(): SkillStrategy {
         `# ${descriptor.name} — HTTP API Data Source`,
         "",
         descriptor.description ?? "HTTP API endpoint.",
+        ...(descriptor.endpoint !== undefined ? [`\nEndpoint: ${descriptor.endpoint}`] : []),
         "",
         "## Usage",
         "",
@@ -56,16 +57,41 @@ export function createGraphqlStrategy(): SkillStrategy {
   return {
     protocol: "graphql",
     generateInput(descriptor: DataSourceDescriptor): ForgeSkillInput {
-      const httpStrategy = createHttpStrategy();
-      const base = httpStrategy.generateInput({
-        ...descriptor,
-        protocol: "http",
-      });
+      const credentialRef = descriptor.auth?.ref;
+
+      const body = [
+        `# ${descriptor.name} — GraphQL Data Source`,
+        "",
+        descriptor.description ?? "GraphQL API endpoint.",
+        ...(descriptor.endpoint !== undefined ? [`\nEndpoint: ${descriptor.endpoint}`] : []),
+        "",
+        "## Usage",
+        "",
+        'Use `query_datasource` with `protocol: "graphql"` to execute queries and mutations.',
+        ...(descriptor.allowedHosts !== undefined
+          ? ["", `Allowed hosts: ${descriptor.allowedHosts.join(", ")}`]
+          : []),
+      ].join("\n");
+
       return {
-        ...base,
+        kind: "skill",
         name: `datasource-${descriptor.name}`,
         description: `Data access patterns for ${descriptor.name} (GraphQL)`,
         tags: ["datasource", "graphql", descriptor.name],
+        body,
+        ...(credentialRef !== undefined
+          ? {
+              requires: {
+                network: true,
+                credentials: {
+                  [descriptor.name]: {
+                    kind: descriptor.auth?.kind ?? "bearer_token",
+                    ref: credentialRef,
+                  },
+                },
+              },
+            }
+          : { requires: { network: true } }),
       };
     },
   };

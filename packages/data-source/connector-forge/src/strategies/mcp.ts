@@ -11,6 +11,8 @@ export function createMcpStrategy(): SkillStrategy {
   return {
     protocol: "mcp",
     generateInput(descriptor: DataSourceDescriptor): ForgeSkillInput {
+      const toolName = descriptor.mcpToolName ?? descriptor.name;
+
       const body = [
         `# ${descriptor.name} — MCP Data Source`,
         "",
@@ -18,7 +20,7 @@ export function createMcpStrategy(): SkillStrategy {
         "",
         "## Usage",
         "",
-        'Use `query_datasource` with `protocol: "mcp"` to invoke the underlying MCP tool.',
+        `Use \`query_datasource\` with \`protocol: "mcp"\`, \`toolName: "${toolName}"\` to invoke the underlying MCP tool.`,
         "The tool name and arguments are passed through to the MCP server.",
       ].join("\n");
 

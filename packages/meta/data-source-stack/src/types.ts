@@ -1,4 +1,4 @@
-import type { ComponentProvider, DataSourceDescriptor } from "@koi/core";
+import type { ComponentProvider, DataSourceDescriptor, ForgeDemandSignal } from "@koi/core";
 import type {
   ConsentCallbacks,
   DiscoveryConfig,
@@ -19,6 +19,8 @@ export interface DataSourceStackConfig {
   readonly discoveryConfig?: DiscoveryConfig | undefined;
   /** Whether to auto-generate forge skills from discovered data sources. Default: true. */
   readonly generateSkills?: boolean | undefined;
+  /** Called for each discovered data source — enables demand-triggered skill forging. */
+  readonly onSourceDetected?: (source: DataSourceDescriptor) => void;
 }
 
 /** Simplified manifest data source entry (avoids L2 @koi/manifest import). */
@@ -40,6 +42,8 @@ export interface DataSourceStackBundle {
   readonly provider: ComponentProvider;
   readonly generatedSkillInputs: readonly ForgeSkillInput[];
   readonly discoveredSources: readonly DataSourceDescriptor[];
+  /** Demand signals for demand-triggered forge pipeline integration. */
+  readonly demandSignals: readonly ForgeDemandSignal[];
   readonly dispose: () => void;
   readonly config: ResolvedDataSourceStackMeta;
 }

@@ -3,7 +3,9 @@
  */
 
 import type {
+  BrickRequires,
   ComponentProvider,
+  CredentialComponent,
   ForgeStore,
   KoiError,
   KoiMiddleware,
@@ -37,6 +39,10 @@ export interface SkillStackConfig {
   readonly forgeProvider?: ComponentProvider;
   /** Optional store change notifier — bridge via subscribe() for StoreChangeEvent. */
   readonly notifier?: StoreChangeNotifier;
+  /** Optional credential component for async credential-aware gating. */
+  readonly credentialComponent?: CredentialComponent;
+  /** Optional requires map (skill name -> BrickRequires). When provided, enables credential gating. */
+  readonly requiresMap?: ReadonlyMap<string, BrickRequires>;
 }
 
 export interface SkillStackBundle {

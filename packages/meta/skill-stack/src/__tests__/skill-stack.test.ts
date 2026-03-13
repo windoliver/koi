@@ -21,8 +21,8 @@ beforeEach(() => {
 });
 
 describe("createSkillStack", () => {
-  test("creates bundle with provider and middleware", () => {
-    const bundle = createSkillStack({
+  test("creates bundle with provider and middleware", async () => {
+    const bundle = await createSkillStack({
       skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
@@ -36,8 +36,8 @@ describe("createSkillStack", () => {
     bundle.dispose();
   });
 
-  test("resolves preset from config", () => {
-    const restrictive = createSkillStack({
+  test("resolves preset from config", async () => {
+    const restrictive = await createSkillStack({
       skills: [],
       basePath: FIXTURES,
       preset: "restrictive",
@@ -45,7 +45,7 @@ describe("createSkillStack", () => {
     expect(restrictive.config.preset).toBe("restrictive");
     restrictive.dispose();
 
-    const permissive = createSkillStack({
+    const permissive = await createSkillStack({
       skills: [],
       basePath: FIXTURES,
       preset: "permissive",
@@ -55,7 +55,7 @@ describe("createSkillStack", () => {
   });
 
   test("provider attaches skills", async () => {
-    const bundle = createSkillStack({
+    const bundle = await createSkillStack({
       skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
@@ -70,7 +70,7 @@ describe("createSkillStack", () => {
   });
 
   test("mount adds skill to provider", async () => {
-    const bundle = createSkillStack({
+    const bundle = await createSkillStack({
       skills: [],
       basePath: FIXTURES,
     });
@@ -86,7 +86,7 @@ describe("createSkillStack", () => {
   });
 
   test("unmount removes skill from provider", async () => {
-    const bundle = createSkillStack({
+    const bundle = await createSkillStack({
       skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
@@ -100,8 +100,8 @@ describe("createSkillStack", () => {
     bundle.dispose();
   });
 
-  test("dispose cleans up watchers", () => {
-    const bundle = createSkillStack({
+  test("dispose cleans up watchers", async () => {
+    const bundle = await createSkillStack({
       skills: [],
       basePath: FIXTURES,
       watch: true,
@@ -114,8 +114,8 @@ describe("createSkillStack", () => {
     bundle.dispose();
   });
 
-  test("skillCount reflects eligible skills", () => {
-    const bundle = createSkillStack({
+  test("skillCount reflects eligible skills", async () => {
+    const bundle = await createSkillStack({
       skills: [fsSkill("code-review", "./valid-skill"), fsSkill("minimal", "./minimal-skill")],
       basePath: FIXTURES,
     });
@@ -125,8 +125,8 @@ describe("createSkillStack", () => {
     bundle.dispose();
   });
 
-  test("watcherCount is 0 when watch is disabled", () => {
-    const bundle = createSkillStack({
+  test("watcherCount is 0 when watch is disabled", async () => {
+    const bundle = await createSkillStack({
       skills: [],
       basePath: FIXTURES,
       watch: false,
@@ -139,7 +139,7 @@ describe("createSkillStack", () => {
 
   test("calls onSecurityFinding callback", async () => {
     const findings: Array<{ name: string }> = [];
-    const bundle = createSkillStack({
+    const bundle = await createSkillStack({
       skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
       onSecurityFinding: (name) => findings.push({ name }),

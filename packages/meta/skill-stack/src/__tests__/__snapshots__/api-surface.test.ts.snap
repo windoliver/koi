@@ -2,7 +2,7 @@
 
 exports[`@koi/skill-stack API surface . has stable type surface 1`] = `
 "import { Severity } from '@koi/validation';
-import { KoiMiddleware, SkillConfig, Result, KoiError, ForgeStore, ComponentProvider, StoreChangeNotifier } from '@koi/core';
+import { KoiMiddleware, SkillConfig, Result, KoiError, ForgeStore, ComponentProvider, StoreChangeNotifier, CredentialComponent, BrickRequires } from '@koi/core';
 import { ScanFinding } from '@koi/skill-scanner';
 import { ProgressiveSkillProvider } from '@koi/skills';
 
@@ -31,6 +31,10 @@ interface SkillStackConfig {
     readonly forgeProvider?: ComponentProvider;
     /** Optional store change notifier — bridge via subscribe() for StoreChangeEvent. */
     readonly notifier?: StoreChangeNotifier;
+    /** Optional credential component for async credential-aware gating. */
+    readonly credentialComponent?: CredentialComponent;
+    /** Optional requires map (skill name -> BrickRequires). When provided, enables credential gating. */
+    readonly requiresMap?: ReadonlyMap<string, BrickRequires>;
 }
 interface SkillStackBundle {
     readonly provider: ProgressiveSkillProvider;
@@ -74,7 +78,7 @@ declare const SKILL_STACK_PRESET_SPECS: Readonly<Record<SkillStackPreset, SkillS
  * - Optional file watcher (hot-plug on fs changes)
  * - Optional forge→mount bridge (via ComponentEvent)
  */
-declare function createSkillStack(config: SkillStackConfig): SkillStackBundle;
+declare function createSkillStack(config: SkillStackConfig): Promise<SkillStackBundle>;
 
 export { type ResolvedSkillStackMeta, SKILL_STACK_PRESET_SPECS, type SkillStackBundle, type SkillStackConfig, type SkillStackPreset, type SkillStackPresetSpec, type SkillUserConfig, createSkillStack };
 "

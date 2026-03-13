@@ -11,6 +11,7 @@ import {
   createSkillComponentProvider,
   createSkillFileWatcher,
   gateSkills,
+  gateSkillsWithCredentials,
 } from "@koi/skills";
 import { severityAtOrAbove } from "@koi/validation";
 import { SKILL_STACK_PRESET_SPECS } from "./presets.js";
@@ -24,7 +25,7 @@ import type { ResolvedSkillStackMeta, SkillStackBundle, SkillStackConfig } from 
  * - Optional file watcher (hot-plug on fs changes)
  * - Optional forge→mount bridge (via ComponentEvent)
  */
-export function createSkillStack(config: SkillStackConfig): SkillStackBundle {
+export async function createSkillStack(config: SkillStackConfig): Promise<SkillStackBundle> {
   const {
     skills,
     basePath,
@@ -36,13 +37,18 @@ export function createSkillStack(config: SkillStackConfig): SkillStackBundle {
     onSecurityFinding,
     forgeProvider,
     notifier,
+    credentialComponent,
+    requiresMap,
   } = config;
 
   const presetSpec = SKILL_STACK_PRESET_SPECS[preset];
   const shouldWatch = watchConfig ?? presetSpec.watchDefault;
 
-  // Phase 1: Gate skills by requirements (platform, bins, env)
-  const { eligible } = gateSkills(skills);
+  // Phase 1: Gate skills by requirements (platform, bins, env, credentials)
+  const { eligible } =
+    credentialComponent !== undefined
+      ? await gateSkillsWithCredentials(skills, requiresMap, credentialComponent)
+      : gateSkills(skills, requiresMap);
 
   // Phase 2: Create provider with eligible skills
   const findingCallback = createSecurityGate(presetSpec.securityThreshold, onSecurityFinding);

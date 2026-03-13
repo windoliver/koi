@@ -47,25 +47,6 @@ declare function validateBrickRequires(requires: BrickRequires | undefined): Res
 declare function validateCredentialRequires(requires: BrickRequires | undefined, credentialComponent: CredentialComponent | undefined): Promise<Result<void, KoiError>>;
 
 /**
- * Shared Zod schemas for credential requirements.
- *
- * Single source of truth — imported by @koi/validation brick-requires,
- * @koi/skills frontmatter, @koi/forge-tools input parsing, and @koi/manifest.
- */
-
-declare const credentialKindSchema: z.ZodType<string>;
-declare const credentialRequirementSchema: z.ZodType<{
-    readonly kind: string;
-    readonly ref: string;
-    readonly scopes?: readonly string[] | undefined;
-}>;
-declare const credentialRequiresSchema: z.ZodType<Readonly<Record<string, {
-    readonly kind: string;
-    readonly ref: string;
-    readonly scopes?: readonly string[] | undefined;
-}>>>;
-
-/**
  * Lightweight type guard for BrickArtifact loaded from storage.
  *
  * Validates discriminant fields and kind-specific properties
@@ -158,6 +139,25 @@ interface PipelineValidation {
  * - Reports all errors (not just the first)
  */
 declare function validatePipeline(steps: readonly PipelineStep[]): PipelineValidation;
+
+/**
+ * Shared Zod schemas for credential requirements.
+ *
+ * Single source of truth — imported by @koi/validation brick-requires,
+ * @koi/skills frontmatter, @koi/forge-tools input parsing, and @koi/manifest.
+ */
+
+declare const credentialKindSchema: z.ZodType<string>;
+declare const credentialRequirementSchema: z.ZodType<{
+    readonly kind: string;
+    readonly ref: string;
+    readonly scopes?: readonly string[] | undefined;
+}>;
+declare const credentialRequiresSchema: z.ZodType<Readonly<Record<string, {
+    readonly kind: string;
+    readonly ref: string;
+    readonly scopes?: readonly string[] | undefined;
+}>>>;
 
 /**
  * Drift scoring — measures how much a brick's source files have changed.

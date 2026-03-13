@@ -89,6 +89,7 @@ function buildSkillComponent(entry: SkillEntry): SkillComponent {
     description: entry.description,
     content,
     ...(entry.allowedTools !== undefined ? { tags: [...entry.allowedTools] } : {}),
+    ...(entry.requires !== undefined ? { requires: entry.requires } : {}),
   };
 }
 

@@ -30,6 +30,7 @@ export async function probeMcp(
               name: `mcp-${server.name}-${tool.name}`,
               protocol: "mcp",
               description: tool.description ?? `MCP tool: ${tool.name}`,
+              mcpToolName: tool.name,
             },
           }),
         );

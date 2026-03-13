@@ -33,4 +33,8 @@ export interface DataSourceDescriptor {
   readonly auth?: CredentialRequirement | undefined;
   readonly schemaProbed?: boolean | undefined;
   readonly allowedHosts?: readonly string[] | undefined;
+  /** For HTTP/GraphQL: the base URL or endpoint path. */
+  readonly endpoint?: string | undefined;
+  /** For MCP protocol: the underlying MCP tool name for invocation. */
+  readonly mcpToolName?: string | undefined;
 }

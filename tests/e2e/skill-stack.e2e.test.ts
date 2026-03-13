@@ -94,7 +94,7 @@ describeE2E("e2e: skill-stack through createKoi + createLoopAdapter", () => {
     async () => {
       clearSkillCache();
 
-      const bundle = createSkillStack({
+      const bundle = await createSkillStack({
         skills: [fsSkill("code-review", "./valid-skill")],
         basePath: FIXTURES,
       });
@@ -158,7 +158,7 @@ describeE2E("e2e: skill-stack through createKoi + createLoopAdapter", () => {
         },
       };
 
-      const bundle = createSkillStack({
+      const bundle = await createSkillStack({
         skills: [fsSkill("code-review", "./valid-skill")],
         basePath: FIXTURES,
       });
@@ -222,7 +222,7 @@ describeE2E("e2e: skill-stack through createKoi + createLoopAdapter", () => {
         },
       };
 
-      const bundle = createSkillStack({
+      const bundle = await createSkillStack({
         skills: [fsSkill("code-review", "./valid-skill")],
         basePath: FIXTURES,
       });
@@ -264,7 +264,7 @@ describeE2E("e2e: skill-stack through createKoi + createLoopAdapter", () => {
       clearSkillCache();
 
       // Start with an empty skill stack
-      const bundle = createSkillStack({
+      const bundle = await createSkillStack({
         skills: [],
         basePath: FIXTURES,
       });
@@ -317,7 +317,7 @@ describeE2E("e2e: skill-stack through createKoi + createLoopAdapter", () => {
     async () => {
       clearSkillCache();
 
-      const bundle = createSkillStack({
+      const bundle = await createSkillStack({
         skills: [fsSkill("code-review", "./valid-skill"), fsSkill("minimal", "./minimal-skill")],
         basePath: FIXTURES,
       });
@@ -412,7 +412,7 @@ describeE2E("e2e: skill-stack through createKoi + createLoopAdapter", () => {
         },
       };
 
-      const bundle = createSkillStack({
+      const bundle = await createSkillStack({
         skills: [fsSkill("code-review", "./valid-skill")],
         basePath: FIXTURES,
       });
@@ -498,7 +498,7 @@ describeE2E("e2e: skill-stack through createKoi + createLoopAdapter", () => {
     async () => {
       clearSkillCache();
 
-      const restrictive = createSkillStack({
+      const restrictive = await createSkillStack({
         skills: [fsSkill("code-review", "./valid-skill")],
         basePath: FIXTURES,
         preset: "restrictive",
@@ -544,7 +544,7 @@ describeE2E("e2e: skill-stack through createKoi + createLoopAdapter", () => {
       clearSkillCache();
 
       // Start empty, mount a skill, run with tool, then unmount
-      const bundle = createSkillStack({
+      const bundle = await createSkillStack({
         skills: [],
         basePath: FIXTURES,
         preset: "standard",
