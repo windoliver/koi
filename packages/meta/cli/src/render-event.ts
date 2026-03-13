@@ -45,8 +45,9 @@ export function renderEvent(event: EngineEvent, options: RenderEventOptions): vo
       }
       break;
     case "agent_spawned":
+      // Leading \n prevents injection into middle of streamed text_delta output
       err.write(
-        `${cyan("\u25B6")} ${bold("spawned")} ${green(event.agentName)}${
+        `\n${cyan("\u25B6")} ${bold("spawned")} ${green(event.agentName)}${
           event.parentAgentId !== undefined ? dim(` (parent: ${event.parentAgentId})`) : ""
         }\n`,
       );
@@ -57,7 +58,7 @@ export function renderEvent(event: EngineEvent, options: RenderEventOptions): vo
           event.previousStatus !== undefined
             ? `${event.previousStatus} ${yellow("\u2192")} ${event.status}`
             : event.status;
-        err.write(dim(`  [${event.agentName}] ${arrow}\n`));
+        err.write(`\n${dim(`  [${event.agentName}] ${arrow}`)}\n`);
       }
       break;
     case "turn_start":

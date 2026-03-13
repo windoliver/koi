@@ -129,6 +129,15 @@ describe("renderEvent", () => {
       expect(stderr).toContain("parent: a1");
     });
 
+    test("starts with newline to avoid mid-transcript injection", () => {
+      const { stderr } = render({
+        kind: "agent_spawned",
+        agentId: "a1" as never,
+        agentName: "researcher",
+      });
+      expect(stderr.startsWith("\n")).toBe(true);
+    });
+
     test("no parent info when parentAgentId is undefined", () => {
       const { stderr } = render({
         kind: "agent_spawned",

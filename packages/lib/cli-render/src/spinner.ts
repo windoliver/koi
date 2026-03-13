@@ -28,6 +28,8 @@ export interface Spinner {
   readonly stop: (finalText?: string) => void;
   /** Update the spinner text without restarting. */
   readonly update: (text: string) => void;
+  /** Whether the spinner is currently active. */
+  readonly isActive: () => boolean;
 }
 
 export function createSpinner(stream: NodeJS.WritableStream = process.stderr): Spinner {
@@ -37,6 +39,8 @@ export function createSpinner(stream: NodeJS.WritableStream = process.stderr): S
   let frameIndex = 0;
   // let justified: currentText mutates on update()
   let currentText = "";
+  // let justified: tracks whether static non-TTY line was already written
+  let nonTtyStarted = false;
 
   function clear(): void {
     if (isTTY) stream.write("\x1b[2K\r");
@@ -58,12 +62,31 @@ export function createSpinner(stream: NodeJS.WritableStream = process.stderr): S
     }
   }
 
+  function stopInternal(): void {
+    process.removeListener("exit", onExit);
+    if (timer !== undefined) {
+      clearInterval(timer);
+      timer = undefined;
+    }
+    clear();
+    nonTtyStarted = false;
+  }
+
   return {
     start(text: string): void {
+      // Reentrant safety: stop any existing interval before starting new one
+      if (timer !== undefined) {
+        clearInterval(timer);
+        timer = undefined;
+      }
       currentText = text;
       frameIndex = 0;
       if (!isTTY) {
-        stream.write(`${text}\n`);
+        // Only write the static line once per start() call (not on resume)
+        if (!nonTtyStarted) {
+          stream.write(`${text}\n`);
+          nonTtyStarted = true;
+        }
         return;
       }
       render();
@@ -71,16 +94,14 @@ export function createSpinner(stream: NodeJS.WritableStream = process.stderr): S
       process.on("exit", onExit);
     },
     stop(finalText?: string): void {
-      process.removeListener("exit", onExit);
-      if (timer !== undefined) {
-        clearInterval(timer);
-        timer = undefined;
-      }
-      clear();
+      stopInternal();
       if (finalText !== undefined) stream.write(`${finalText}\n`);
     },
     update(text: string): void {
       currentText = text;
+    },
+    isActive(): boolean {
+      return timer !== undefined || nonTtyStarted;
     },
   };
 }

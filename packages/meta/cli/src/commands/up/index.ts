@@ -84,7 +84,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const services = preset.services;
 
   // 4. PREFLIGHT
-  output.spinner.start("Running preflight checks...");
+  // Spinner is stopped before preflight because printPreflightIssues()
+  // writes directly to process.stderr and would garble active spinner output.
   const temporalAutoStart = services.temporal === "auto" && flags.temporalUrl === undefined;
   const preflight = await timer.time("preflight", async () =>
     runPreflight({
@@ -94,7 +95,6 @@ export async function runUp(flags: UpFlags): Promise<void> {
       output,
     }),
   );
-  output.spinner.stop(undefined);
   if (!preflight.passed) process.exit(EXIT_CONFIG);
   output.success("Preflight passed");
 

@@ -323,26 +323,42 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
       sessionStarted = true;
 
-      // Wire registry watcher → engine events for child agent visibility
+      // Wire registry watcher → engine events for child agent visibility.
+      // Only surface events for agents whose parentId matches this agent
+      // to avoid leaking sibling/unrelated activity from a shared registry.
       if (options.registry !== undefined) {
+        const thisAgentId = pid.id;
+        // Track child IDs so we can filter transitioned events (which lack parentId)
+        const childAgentIds = new Set<string>();
+
         unsubRegistryWatch = options.registry.watch((watchEvent) => {
           switch (watchEvent.kind) {
             case "registered":
-              pendingEngineEvents.push({
-                kind: "agent_spawned",
-                agentId: watchEvent.entry.agentId,
-                agentName: String(watchEvent.entry.metadata.name ?? watchEvent.entry.agentId),
-                parentAgentId: watchEvent.entry.parentId,
-              });
+              // Only emit for direct children of this agent
+              if (watchEvent.entry.parentId === thisAgentId) {
+                childAgentIds.add(String(watchEvent.entry.agentId));
+                pendingEngineEvents.push({
+                  kind: "agent_spawned",
+                  agentId: watchEvent.entry.agentId,
+                  agentName: String(watchEvent.entry.metadata.name ?? watchEvent.entry.agentId),
+                  parentAgentId: watchEvent.entry.parentId,
+                });
+              }
               break;
             case "transitioned":
-              pendingEngineEvents.push({
-                kind: "agent_status_changed",
-                agentId: watchEvent.agentId,
-                agentName: String(watchEvent.agentId),
-                status: watchEvent.to,
-                previousStatus: watchEvent.from,
-              });
+              // Only emit for known children (transitioned events lack parentId)
+              if (childAgentIds.has(String(watchEvent.agentId))) {
+                pendingEngineEvents.push({
+                  kind: "agent_status_changed",
+                  agentId: watchEvent.agentId,
+                  agentName: String(watchEvent.agentId),
+                  status: watchEvent.to,
+                  previousStatus: watchEvent.from,
+                });
+              }
+              break;
+            case "deregistered":
+              childAgentIds.delete(String(watchEvent.agentId));
               break;
             default:
               break;

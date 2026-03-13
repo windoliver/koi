@@ -103,6 +103,57 @@ describe("createSpinner", () => {
     });
   });
 
+  describe("reentrant safety", () => {
+    test("double start does not leak interval", () => {
+      const stream = createMockTTY();
+      const spinner = createSpinner(stream);
+
+      spinner.start("First");
+      spinner.start("Second"); // should clear first interval
+      spinner.stop();
+      // If interval leaked, process would stay alive — test passing = no leak
+    });
+
+    test("non-TTY start-start-stop does not duplicate static lines", () => {
+      const stream = new PassThrough();
+      const output = collectOutput(stream);
+      const spinner = createSpinner(stream);
+
+      spinner.start("Loading...");
+      spinner.start("Loading..."); // second start should not re-print
+      spinner.stop();
+
+      const lines = output()
+        .split("\n")
+        .filter((l) => l.includes("Loading..."));
+      expect(lines).toHaveLength(1);
+    });
+  });
+
+  describe("isActive", () => {
+    test("returns false before start", () => {
+      const stream = createMockTTY();
+      const spinner = createSpinner(stream);
+      expect(spinner.isActive()).toBe(false);
+    });
+
+    test("returns true after start", () => {
+      const stream = createMockTTY();
+      const spinner = createSpinner(stream);
+      spinner.start("Working...");
+      expect(spinner.isActive()).toBe(true);
+      spinner.stop();
+    });
+
+    test("returns false after stop", () => {
+      const stream = createMockTTY();
+      const spinner = createSpinner(stream);
+      spinner.start("Working...");
+      spinner.stop();
+      expect(spinner.isActive()).toBe(false);
+    });
+  });
+
   describe("exit handler", () => {
     test("registers handler on start and removes on stop", () => {
       const stream = createMockTTY();
