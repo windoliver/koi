@@ -35,6 +35,10 @@ export { resolveGoalStackConfig } from "./config-resolution.js";
 export { createGoalStack } from "./goal-stack.js";
 // ── Constants ──────────────────────────────────────────────────────────
 export { GOAL_STACK_PRESET_SPECS } from "./presets.js";
+export { createTaskAwareDrifting } from "./task-board-drift.js";
+// ── Types: task-board integration ──────────────────────────────────────
+export type { TaskBoardSourceConfig } from "./task-board-source.js";
+export { createTaskBoardSource } from "./task-board-source.js";
 // ── Types: goal-stack bundle ───────────────────────────────────────────
 export type {
   GoalStackBundle,

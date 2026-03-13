@@ -180,6 +180,21 @@ describe("resolveAllSources", () => {
     expect(result).toContain("[dynamic source unavailable]");
   });
 
+  test("returns empty string when tasks provider returns empty array", async () => {
+    const sources: readonly ReminderSource[] = [{ kind: "tasks", provider: () => [] }];
+    const result = await resolveAllSources(sources, mockCtx);
+    expect(result).toBe("");
+  });
+
+  test("returns empty string when all sources resolve to empty content", async () => {
+    const sources: readonly ReminderSource[] = [
+      { kind: "tasks", provider: () => [] },
+      { kind: "manifest", objectives: [] },
+    ];
+    const result = await resolveAllSources(sources, mockCtx);
+    expect(result).toBe("");
+  });
+
   test("combines multiple sources in order", async () => {
     const sources: readonly ReminderSource[] = [
       { kind: "manifest", objectives: ["goal 1"] },

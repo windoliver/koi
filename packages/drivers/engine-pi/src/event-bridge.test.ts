@@ -5,31 +5,7 @@ import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, AssistantMessageEvent } from "@mariozechner/pi-ai";
 import { AsyncQueue, createEventSubscriber, mapStopReason } from "./event-bridge.js";
 import { createMetricsAccumulator } from "./metrics.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makePartialMessage(overrides?: Partial<AssistantMessage>): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    api: "anthropic-messages",
-    provider: "anthropic",
-    model: "test-model",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop",
-    timestamp: Date.now(),
-    ...overrides,
-  };
-}
+import { makePartialMessage } from "./test-helpers.js";
 
 function makeMessageUpdate(assistantMessageEvent: AssistantMessageEvent): AgentEvent {
   return {
@@ -594,5 +570,124 @@ describe("createEventSubscriber", () => {
     // Only agent_end → done event
     expect(events).toHaveLength(1);
     expect(events[0]?.kind).toBe("done");
+  });
+
+  test("turn_end with cache tokens propagates to done metadata", async () => {
+    const queue = new AsyncQueue<EngineEvent>();
+    const metrics = createMetricsAccumulator();
+    const subscriber = createEventSubscriber(queue, metrics);
+
+    const turnMsg = makePartialMessage({
+      usage: {
+        input: 100,
+        output: 50,
+        cacheRead: 42,
+        cacheWrite: 15,
+        totalTokens: 150,
+        cost: { input: 0.01, output: 0.02, cacheRead: 0.003, cacheWrite: 0.005, total: 0.038 },
+      },
+    });
+    subscriber({ type: "turn_end", message: turnMsg, toolResults: [] });
+    subscriber({ type: "agent_end", messages: [] });
+
+    const events = await collectEvents(queue);
+    const doneEvent = events.find((e) => e.kind === "done");
+    if (doneEvent?.kind === "done") {
+      expect(doneEvent.output.metadata?.cacheReadTokens).toBe(42);
+      expect(doneEvent.output.metadata?.cacheCreationTokens).toBe(15);
+      expect(doneEvent.output.metadata?.totalCostUsd).toBeCloseTo(0.038);
+    } else {
+      throw new Error("Expected done event");
+    }
+  });
+
+  test("double-count guard: message_update done then turn_end counts usage once", async () => {
+    const queue = new AsyncQueue<EngineEvent>();
+    const metrics = createMetricsAccumulator();
+    const subscriber = createEventSubscriber(queue, metrics);
+
+    const msg = makePartialMessage({
+      usage: {
+        input: 100,
+        output: 50,
+        cacheRead: 20,
+        cacheWrite: 10,
+        totalTokens: 150,
+        cost: { input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0.003, total: 0.034 },
+      },
+    });
+
+    // Fire message_update "done" (rare but possible)
+    subscriber(makeMessageUpdate({ type: "done", reason: "stop", message: msg }));
+    // Then turn_end fires for the same turn — usage should NOT be double-counted
+    subscriber({ type: "turn_end", message: msg, toolResults: [] });
+    subscriber({ type: "agent_end", messages: [] });
+
+    const events = await collectEvents(queue);
+    const doneEvent = events.find((e) => e.kind === "done");
+    if (doneEvent?.kind === "done") {
+      // Should be 100/50, NOT 200/100 (which would indicate double-counting)
+      expect(doneEvent.output.metrics.inputTokens).toBe(100);
+      expect(doneEvent.output.metrics.outputTokens).toBe(50);
+    } else {
+      throw new Error("Expected done event");
+    }
+  });
+
+  test("agent_end output includes metadata with cache/cost fields when present", async () => {
+    const queue = new AsyncQueue<EngineEvent>();
+    const metrics = createMetricsAccumulator();
+    const subscriber = createEventSubscriber(queue, metrics);
+
+    const turnMsg = makePartialMessage({
+      usage: {
+        input: 200,
+        output: 100,
+        cacheRead: 80,
+        cacheWrite: 30,
+        totalTokens: 300,
+        cost: { input: 0.02, output: 0.04, cacheRead: 0.006, cacheWrite: 0.01, total: 0.076 },
+      },
+    });
+    subscriber({ type: "turn_end", message: turnMsg, toolResults: [] });
+    subscriber({ type: "agent_end", messages: [] });
+
+    const events = await collectEvents(queue);
+    const doneEvent = events.find((e) => e.kind === "done");
+    if (doneEvent?.kind === "done") {
+      expect(doneEvent.output.metadata).toBeDefined();
+      expect(doneEvent.output.metadata?.cacheReadTokens).toBe(80);
+      expect(doneEvent.output.metadata?.cacheCreationTokens).toBe(30);
+      expect(doneEvent.output.metadata?.costBreakdown).toBeDefined();
+    } else {
+      throw new Error("Expected done event");
+    }
+  });
+
+  test("agent_end output omits metadata when no cache/cost data", async () => {
+    const queue = new AsyncQueue<EngineEvent>();
+    const metrics = createMetricsAccumulator();
+    const subscriber = createEventSubscriber(queue, metrics);
+
+    const turnMsg = makePartialMessage({
+      usage: {
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 150,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    });
+    subscriber({ type: "turn_end", message: turnMsg, toolResults: [] });
+    subscriber({ type: "agent_end", messages: [] });
+
+    const events = await collectEvents(queue);
+    const doneEvent = events.find((e) => e.kind === "done");
+    if (doneEvent?.kind === "done") {
+      expect(doneEvent.output.metadata).toBeUndefined();
+    } else {
+      throw new Error("Expected done event");
+    }
   });
 });

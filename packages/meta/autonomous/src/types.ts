@@ -45,6 +45,13 @@ export interface AutonomousAgentParts {
   readonly healthRecorder?: import("./spawn-fitness-wrapper.js").SpawnHealthRecorder | undefined;
   /** Optional goal-stack middleware for intra-session goal tracking. */
   readonly goalStackMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * When true, automatically wires a full goal-stack (reminder + anchor + planning)
+   * with task-board-aware sources and drift detection, using the harness's live task
+   * board as the snapshot source. Includes the write_plan tool via the "autonomous" preset.
+   * Ignored when goalStackMiddleware is provided (caller has full control in that case).
+   */
+  readonly taskBoardGoalStack?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------

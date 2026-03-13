@@ -22,12 +22,15 @@ export async function resolveAllSources(
   ctx: TurnContext,
 ): Promise<string> {
   const resolved = await Promise.all(sources.map((s) => resolveSource(s, ctx)));
-  return `<reminder>\n${resolved.join("\n")}\n</reminder>`;
+  const nonEmpty = resolved.filter((s) => s.length > 0);
+  if (nonEmpty.length === 0) return "";
+  return `<reminder>\n${nonEmpty.join("\n")}\n</reminder>`;
 }
 
 async function resolveSource(source: ReminderSource, ctx: TurnContext): Promise<string> {
   switch (source.kind) {
     case "manifest": {
+      if (source.objectives.length === 0) return "";
       const items = source.objectives.map((o) => `- ${o}`).join("\n");
       return `<goals>\n${items}\n</goals>`;
     }
@@ -44,6 +47,7 @@ async function resolveSource(source: ReminderSource, ctx: TurnContext): Promise<
     case "tasks": {
       try {
         const tasks = await source.provider(ctx);
+        if (tasks.length === 0) return "";
         const items = tasks.map((t) => `- ${t}`).join("\n");
         return `<tasks>\n${items}\n</tasks>`;
       } catch (_e: unknown) {
