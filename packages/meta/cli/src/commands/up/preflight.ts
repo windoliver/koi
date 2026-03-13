@@ -8,6 +8,7 @@
 
 import type { CliOutput } from "@koi/cli-render";
 import type { AgentManifest } from "@koi/core";
+import type { PreflightResult as ValidatorResult } from "../../validate-preflight.js";
 import { printPreflightIssues, validateManifestPrerequisites } from "../../validate-preflight.js";
 
 export interface PreflightOptions {
@@ -64,14 +65,18 @@ export async function runPreflight(options: PreflightOptions): Promise<Preflight
 // Interactive recovery helpers
 // ---------------------------------------------------------------------------
 
-interface PreflightReport {
-  readonly errors: readonly { readonly message: string }[];
-}
-
-function findMissingApiKey(report: PreflightReport): string | undefined {
-  for (const err of report.errors) {
-    const match = /(\w+_API_KEY)\s.*not set/i.exec(err.message);
-    if (match?.[1] !== undefined) return match[1];
+/**
+ * Searches preflight issues for a missing API key error.
+ * Matches the MISSING_MODEL_API_KEY code from validate-preflight.ts
+ * and extracts the env var name (e.g., OPENAI_API_KEY, ANTHROPIC_API_KEY).
+ */
+function findMissingApiKey(result: ValidatorResult): string | undefined {
+  for (const issue of result.issues) {
+    if (issue.code === "MISSING_MODEL_API_KEY") {
+      // Extract the env var name: "Model ... requires OPENAI_API_KEY — set it..."
+      const match = /requires\s+(\w+_API_KEY)/i.exec(issue.message);
+      if (match?.[1] !== undefined) return match[1];
+    }
   }
   return undefined;
 }

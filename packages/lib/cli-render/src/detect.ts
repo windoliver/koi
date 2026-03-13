@@ -30,9 +30,9 @@ export function detectColorLevel(stream?: NodeJS.WriteStream): ColorLevel {
   // 3. NODE_DISABLE_COLORS
   if (process.env.NODE_DISABLE_COLORS !== undefined) return "none";
 
-  // 4. TTY check — no colors when piped
-  const target = stream ?? (process.stdout as NodeJS.WriteStream);
-  if (target.isTTY !== true) return "none";
+  // 4. TTY check — no colors when piped or when no stream provided
+  if (stream === undefined) return "none";
+  if (stream.isTTY !== true) return "none";
 
   // 5. Terminal capability detection
   const colorterm = process.env.COLORTERM;

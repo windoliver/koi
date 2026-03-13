@@ -102,6 +102,10 @@ describe("detectColorLevel", () => {
   test("plain TTY with no env vars returns ansi-16", () => {
     expect(detectColorLevel({ isTTY: true } as NodeJS.WriteStream)).toBe("ansi-16");
   });
+
+  test("no stream argument returns none (no stdout fallback)", () => {
+    expect(detectColorLevel()).toBe("none");
+  });
 });
 
 describe("isColorEnabled", () => {

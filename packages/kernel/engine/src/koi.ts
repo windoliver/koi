@@ -314,11 +314,41 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
     let adapterIterator: AsyncIterator<EngineEvent> | undefined;
 
+    // Track registry watcher unsubscribe for cleanup
+    let unsubRegistryWatch: (() => void) | undefined;
+
     try {
       // --- Session initialization ---
       agent.transition({ kind: "start" });
       await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
       sessionStarted = true;
+
+      // Wire registry watcher → engine events for child agent visibility
+      if (options.registry !== undefined) {
+        unsubRegistryWatch = options.registry.watch((watchEvent) => {
+          switch (watchEvent.kind) {
+            case "registered":
+              pendingEngineEvents.push({
+                kind: "agent_spawned",
+                agentId: watchEvent.entry.agentId,
+                agentName: String(watchEvent.entry.metadata.name ?? watchEvent.entry.agentId),
+                parentAgentId: watchEvent.entry.parentId,
+              });
+              break;
+            case "transitioned":
+              pendingEngineEvents.push({
+                kind: "agent_status_changed",
+                agentId: watchEvent.agentId,
+                agentName: String(watchEvent.agentId),
+                status: watchEvent.to,
+                previousStatus: watchEvent.from,
+              });
+              break;
+            default:
+              break;
+          }
+        });
+      }
 
       // Wire terminals → middleware → callHandlers if adapter is cooperating
       // let justified: effectiveInput may be replaced with callHandlers-augmented input
@@ -807,6 +837,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       throw error;
     } finally {
       running = false;
+      if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
 

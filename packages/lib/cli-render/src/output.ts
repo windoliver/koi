@@ -2,7 +2,8 @@
  * Structured CLI output with consistent prefixes, colors, and spinner coordination.
  *
  * All status output goes to stderr (preserving stdout for agent responses).
- * When a spinner is active, it is cleared before any log line is written.
+ * When a spinner is active, it is cleared before any log line is written
+ * and resumed afterward.
  */
 
 import { createColors } from "./colors.js";
@@ -41,9 +42,36 @@ export function createCliOutput(options?: CliOutputOptions): CliOutput {
   const c = createColors(colorEnabled);
   const spinner = createSpinner(stream);
 
-  // Clear spinner before writing a log line, then resume after
+  // Track spinner state so we can pause/resume around log lines
+  let spinnerText: string | undefined;
+
+  const managedSpinner: Spinner = {
+    start(text: string): void {
+      spinnerText = text;
+      spinner.start(text);
+    },
+    stop(finalText?: string): void {
+      spinnerText = undefined;
+      spinner.stop(finalText);
+    },
+    update(text: string): void {
+      spinnerText = text;
+      spinner.update(text);
+    },
+  };
+
+  /**
+   * Write a log line to the stream. If the spinner is active, pause it
+   * first and resume after the line is written — prevents garbled output.
+   */
   function write(line: string): void {
-    stream.write(`${line}\n`);
+    if (spinnerText !== undefined) {
+      spinner.stop();
+      stream.write(`${line}\n`);
+      spinner.start(spinnerText);
+    } else {
+      stream.write(`${line}\n`);
+    }
   }
 
   return {
@@ -68,7 +96,7 @@ export function createCliOutput(options?: CliOutputOptions): CliOutput {
     debug(text: string): void {
       if (verbose) write(c.gray(text));
     },
-    spinner,
+    spinner: managedSpinner,
     isTTY,
   };
 }
