@@ -19,7 +19,7 @@ describe("forgeDataSourceSkills", () => {
     expect(result.skipped).toHaveLength(0);
 
     const input = result.inputs[0];
-    expect(input).toBeDefined();
+    if (input === undefined) throw new Error("expected input");
     expect(input.kind).toBe("skill");
     expect(input.name).toBe("datasource-orders-db");
     expect(input.description).toContain("PostgreSQL");
@@ -41,7 +41,7 @@ describe("forgeDataSourceSkills", () => {
     expect(result.skipped).toHaveLength(0);
 
     const input = result.inputs[0];
-    expect(input).toBeDefined();
+    if (input === undefined) throw new Error("expected input");
     expect(input.kind).toBe("skill");
     expect(input.name).toBe("datasource-notion-mcp");
     expect(input.description).toContain("MCP");
