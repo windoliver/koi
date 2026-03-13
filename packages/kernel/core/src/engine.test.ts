@@ -43,6 +43,10 @@ function engineEventLabel(event: EngineEvent): string {
       return "miss";
     case "spawn_requested":
       return "spawn";
+    case "agent_spawned":
+      return "spawned";
+    case "agent_status_changed":
+      return "status";
     default: {
       const _exhaustive: never = event;
       return String(_exhaustive);
@@ -123,6 +127,36 @@ describe("EngineEvent exhaustiveness", () => {
       childAgentId: agentId("child-1"),
     };
     expect(engineEventLabel(event)).toBe("spawn");
+  });
+
+  test("agent_spawned variant is handled", () => {
+    const event: EngineEvent = {
+      kind: "agent_spawned",
+      agentId: agentId("child-1"),
+      agentName: "researcher",
+      parentAgentId: agentId("main"),
+    };
+    expect(engineEventLabel(event)).toBe("spawned");
+  });
+
+  test("agent_spawned without parent is handled", () => {
+    const event: EngineEvent = {
+      kind: "agent_spawned",
+      agentId: agentId("child-1"),
+      agentName: "researcher",
+    };
+    expect(engineEventLabel(event)).toBe("spawned");
+  });
+
+  test("agent_status_changed variant is handled", () => {
+    const event: EngineEvent = {
+      kind: "agent_status_changed",
+      agentId: agentId("child-1"),
+      agentName: "researcher",
+      status: "running",
+      previousStatus: "created",
+    };
+    expect(engineEventLabel(event)).toBe("status");
   });
 });
 

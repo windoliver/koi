@@ -221,6 +221,8 @@ export function mapEngineEventToAcp(event: EngineEvent): SessionUpdatePayload | 
     case "done":
     case "discovery:miss":
     case "spawn_requested":
+    case "agent_spawned":
+    case "agent_status_changed":
       // No ACP equivalent — handled at protocol level
       return undefined;
 
