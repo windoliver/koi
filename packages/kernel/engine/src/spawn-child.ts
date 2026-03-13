@@ -163,7 +163,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         lastTransitionAt: Date.now(),
       },
       agentType: childAgentType,
-      metadata: {},
+      metadata: { name: options.manifest.name },
       registeredAt: Date.now(),
       parentId: options.parentAgent.pid.id,
       spawner: options.parentAgent.pid.id,

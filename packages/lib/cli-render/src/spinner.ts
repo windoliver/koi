@@ -39,8 +39,8 @@ export function createSpinner(stream: NodeJS.WritableStream = process.stderr): S
   let frameIndex = 0;
   // let justified: currentText mutates on update()
   let currentText = "";
-  // let justified: tracks whether static non-TTY line was already written
-  let nonTtyStarted = false;
+  // let justified: active tracks whether the spinner is logically running
+  let active = false;
 
   function clear(): void {
     if (isTTY) stream.write("\x1b[2K\r");
@@ -69,7 +69,7 @@ export function createSpinner(stream: NodeJS.WritableStream = process.stderr): S
       timer = undefined;
     }
     clear();
-    nonTtyStarted = false;
+    active = false;
   }
 
   return {
@@ -81,12 +81,10 @@ export function createSpinner(stream: NodeJS.WritableStream = process.stderr): S
       }
       currentText = text;
       frameIndex = 0;
+      active = true;
       if (!isTTY) {
-        // Only write the static line once per start() call (not on resume)
-        if (!nonTtyStarted) {
-          stream.write(`${text}\n`);
-          nonTtyStarted = true;
-        }
+        // Non-TTY: always write the static line (each start() is a new phase)
+        stream.write(`${text}\n`);
         return;
       }
       render();
@@ -101,7 +99,7 @@ export function createSpinner(stream: NodeJS.WritableStream = process.stderr): S
       currentText = text;
     },
     isActive(): boolean {
-      return timer !== undefined || nonTtyStarted;
+      return active;
     },
   };
 }

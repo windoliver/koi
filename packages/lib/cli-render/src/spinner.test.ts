@@ -114,19 +114,18 @@ describe("createSpinner", () => {
       // If interval leaked, process would stay alive — test passing = no leak
     });
 
-    test("non-TTY start-start-stop does not duplicate static lines", () => {
+    test("non-TTY start with different text writes each phase", () => {
       const stream = new PassThrough();
       const output = collectOutput(stream);
       const spinner = createSpinner(stream);
 
       spinner.start("Loading...");
-      spinner.start("Loading..."); // second start should not re-print
+      spinner.start("Retrying...");
       spinner.stop();
 
-      const lines = output()
-        .split("\n")
-        .filter((l) => l.includes("Loading..."));
-      expect(lines).toHaveLength(1);
+      const text = output();
+      expect(text).toContain("Loading...");
+      expect(text).toContain("Retrying...");
     });
   });
 

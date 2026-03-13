@@ -216,13 +216,29 @@ export function mapEngineEventToAcp(event: EngineEvent): SessionUpdatePayload | 
       return undefined;
     }
 
+    case "agent_spawned":
+      return {
+        sessionUpdate: "agent_thought_chunk",
+        content: {
+          type: "text",
+          text: `[spawned agent "${event.agentName}"${event.parentAgentId !== undefined ? ` (parent: ${String(event.parentAgentId)})` : ""}]`,
+        },
+      };
+
+    case "agent_status_changed":
+      return {
+        sessionUpdate: "agent_thought_chunk",
+        content: {
+          type: "text",
+          text: `[agent "${event.agentName}" ${event.previousStatus !== undefined ? `${event.previousStatus} → ` : ""}${event.status}]`,
+        },
+      };
+
     case "turn_start":
     case "turn_end":
     case "done":
     case "discovery:miss":
     case "spawn_requested":
-    case "agent_spawned":
-    case "agent_status_changed":
       // No ACP equivalent — handled at protocol level
       return undefined;
 

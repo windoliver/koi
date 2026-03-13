@@ -328,37 +328,43 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // to avoid leaking sibling/unrelated activity from a shared registry.
       if (options.registry !== undefined) {
         const thisAgentId = pid.id;
-        // Track child IDs so we can filter transitioned events (which lack parentId)
-        const childAgentIds = new Set<string>();
+        // Track child IDs + names so we can filter and label transitioned events
+        // (transitioned events lack parentId and metadata)
+        const childAgentNames = new Map<string, string>();
 
         unsubRegistryWatch = options.registry.watch((watchEvent) => {
           switch (watchEvent.kind) {
             case "registered":
               // Only emit for direct children of this agent
               if (watchEvent.entry.parentId === thisAgentId) {
-                childAgentIds.add(String(watchEvent.entry.agentId));
+                const childName = String(
+                  watchEvent.entry.metadata.name ?? watchEvent.entry.agentId,
+                );
+                childAgentNames.set(String(watchEvent.entry.agentId), childName);
                 pendingEngineEvents.push({
                   kind: "agent_spawned",
                   agentId: watchEvent.entry.agentId,
-                  agentName: String(watchEvent.entry.metadata.name ?? watchEvent.entry.agentId),
+                  agentName: childName,
                   parentAgentId: watchEvent.entry.parentId,
                 });
               }
               break;
-            case "transitioned":
+            case "transitioned": {
               // Only emit for known children (transitioned events lack parentId)
-              if (childAgentIds.has(String(watchEvent.agentId))) {
+              const name = childAgentNames.get(String(watchEvent.agentId));
+              if (name !== undefined) {
                 pendingEngineEvents.push({
                   kind: "agent_status_changed",
                   agentId: watchEvent.agentId,
-                  agentName: String(watchEvent.agentId),
+                  agentName: name,
                   status: watchEvent.to,
                   previousStatus: watchEvent.from,
                 });
               }
               break;
+            }
             case "deregistered":
-              childAgentIds.delete(String(watchEvent.agentId));
+              childAgentNames.delete(String(watchEvent.agentId));
               break;
             default:
               break;
