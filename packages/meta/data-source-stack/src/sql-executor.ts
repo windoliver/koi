@@ -1,20 +1,19 @@
 /**
- * Built-in SQL executor using Bun's native postgres driver.
+ * Built-in multi-protocol data source executor.
  *
- * Executes parameterized queries only — no string concatenation.
- * Falls back to error result for non-SQL protocols.
+ * - SQL: Bun.SQL with parameterized queries
+ * - HTTP: fetch() with credential as Bearer token
+ * - GraphQL: fetch() with query + variables body
+ * - MCP: returns structured error (MCP execution requires the MCP bridge)
  */
 
 import type { QueryDataSourceResult } from "@koi/connector-forge";
 import type { DataSourceDescriptor } from "@koi/core";
 
 /**
- * Default SQL executor — uses the credential as a connection string
- * to execute parameterized queries via Bun's native SQL support.
- *
- * Only handles "sql" protocol queries. Returns error for other protocols.
+ * Default multi-protocol executor for data source queries.
  */
-export async function executeSqlQuery(
+export async function executeDataSourceQuery(
   source: DataSourceDescriptor,
   query: unknown,
   credential: string | undefined,
@@ -23,20 +22,37 @@ export async function executeSqlQuery(
     return { ok: false, error: "Invalid query object" };
   }
 
-  const q = query as {
-    readonly protocol?: string;
-    readonly query?: string;
-    readonly params?: readonly unknown[];
-  };
+  const q = query as Readonly<Record<string, unknown>>;
+  const protocol = q.protocol as string | undefined;
 
-  if (q.protocol !== "sql") {
-    return {
-      ok: false,
-      error: `Built-in executor only supports SQL protocol, got: ${q.protocol ?? "unknown"}`,
-    };
+  switch (protocol) {
+    case "sql":
+      return executeSql(source, q, credential);
+    case "http":
+      return executeHttp(source, q, credential);
+    case "graphql":
+      return executeGraphql(source, q, credential);
+    case "mcp":
+      return {
+        ok: false,
+        error: `MCP protocol execution requires the MCP bridge — use the underlying MCP tool "${source.mcpToolName ?? source.name}" directly`,
+      };
+    default:
+      return { ok: false, error: `Unsupported protocol: ${protocol ?? "unknown"}` };
   }
+}
 
-  if (typeof q.query !== "string") {
+// ---------------------------------------------------------------------------
+// SQL executor
+// ---------------------------------------------------------------------------
+
+async function executeSql(
+  source: DataSourceDescriptor,
+  q: Readonly<Record<string, unknown>>,
+  credential: string | undefined,
+): Promise<QueryDataSourceResult> {
+  const queryStr = q.query;
+  if (typeof queryStr !== "string") {
     return { ok: false, error: "SQL query must be a string" };
   }
 
@@ -47,25 +63,99 @@ export async function executeSqlQuery(
     };
   }
 
+  // let justified: assigned in try, closed in finally
+  let sqlClient: { close: () => void } | undefined;
   try {
-    // Use Bun's native SQL with parameterized query via raw()
     const { SQL } = await import("bun");
     const sql = new SQL(credential);
+    sqlClient = sql;
     const params = Array.isArray(q.params) ? q.params : [];
-    // sql.unsafe() allows arbitrary SQL with parameter binding
-    const result = await sql.unsafe(q.query, params);
-    sql.close();
-
+    const result = await sql.unsafe(queryStr, params);
     const rows = Array.isArray(result) ? result : [];
-    return {
-      ok: true,
-      data: {
-        rows,
-        rowCount: rows.length,
-      },
-    };
+    return { ok: true, data: { rows, rowCount: rows.length } };
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
     return { ok: false, error: `SQL execution failed: ${message}` };
+  } finally {
+    sqlClient?.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP executor
+// ---------------------------------------------------------------------------
+
+async function executeHttp(
+  source: DataSourceDescriptor,
+  q: Readonly<Record<string, unknown>>,
+  credential: string | undefined,
+): Promise<QueryDataSourceResult> {
+  const method = (q.method as string | undefined) ?? "GET";
+  const path = q.path as string | undefined;
+  if (typeof path !== "string") {
+    return { ok: false, error: "HTTP query requires a path string" };
+  }
+
+  const baseUrl = source.endpoint ?? "";
+  const url = baseUrl + path;
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (credential !== undefined) {
+    headers.Authorization = `Bearer ${credential}`;
+  }
+
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      ...(q.body !== undefined ? { body: JSON.stringify(q.body) } : {}),
+    });
+    const data: unknown = await response.json();
+    return {
+      ok: response.ok,
+      data,
+      ...(response.ok ? {} : { error: `HTTP ${String(response.status)}` }),
+    };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: `HTTP request failed: ${message}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GraphQL executor
+// ---------------------------------------------------------------------------
+
+async function executeGraphql(
+  source: DataSourceDescriptor,
+  q: Readonly<Record<string, unknown>>,
+  credential: string | undefined,
+): Promise<QueryDataSourceResult> {
+  const queryStr = q.query;
+  if (typeof queryStr !== "string") {
+    return { ok: false, error: "GraphQL query must be a string" };
+  }
+
+  const endpoint = source.endpoint;
+  if (endpoint === undefined) {
+    return { ok: false, error: `No endpoint configured for GraphQL source "${source.name}"` };
+  }
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (credential !== undefined) {
+    headers.Authorization = `Bearer ${credential}`;
+  }
+
+  try {
+    const body = JSON.stringify({
+      query: queryStr,
+      ...(q.variables !== undefined ? { variables: q.variables } : {}),
+    });
+    const response = await fetch(endpoint, { method: "POST", headers, body });
+    const data: unknown = await response.json();
+    return { ok: response.ok, data };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: `GraphQL request failed: ${message}` };
   }
 }

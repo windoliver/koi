@@ -13,7 +13,7 @@ import type {
 import { DATA_SOURCES, skillToken } from "@koi/core";
 import { discoverSources } from "@koi/data-source-discovery";
 import type { ForgeSkillInput } from "@koi/forge-types";
-import { executeSqlQuery } from "./sql-executor.js";
+import { executeDataSourceQuery } from "./sql-executor.js";
 import type {
   DataSourceStackBundle,
   DataSourceStackConfig,
@@ -33,7 +33,7 @@ export async function createDataSourceStack(
 ): Promise<DataSourceStackBundle> {
   const discoveryConfig = config.discoveryConfig;
   const shouldGenerateSkills = config.generateSkills !== false;
-  const executor = config.executor ?? executeSqlQuery;
+  const executor = config.executor ?? executeDataSourceQuery;
 
   // Phase 1: Discover data sources
   const sources: readonly DataSourceDescriptor[] = await discoverSources({
@@ -69,15 +69,30 @@ export async function createDataSourceStack(
         ]
       : [];
 
-  // Phase 3: Generate skill inputs + SkillComponent objects
+  // Phase 3: Generate skill inputs + SkillComponent objects (with credential gating)
   let generatedSkillInputs: readonly ForgeSkillInput[] = [];
   const skillComponents: SkillComponent[] = [];
   if (shouldGenerateSkills && sources.length > 0) {
     const result = forgeDataSourceSkills(sources);
     generatedSkillInputs = result.inputs;
 
-    // Build SkillComponents from generated inputs — mounted in-memory via provider
+    // Build SkillComponents — gate by credential availability
     for (const input of result.inputs) {
+      // Check if required credentials are resolvable before mounting
+      if (input.requires?.credentials !== undefined) {
+        let credentialsMissing = false;
+        for (const cred of Object.values(input.requires.credentials)) {
+          const value = await envCredentials.get(cred.ref);
+          if (value === undefined) {
+            credentialsMissing = true;
+            break;
+          }
+        }
+        if (credentialsMissing) {
+          continue; // Skip skills with unresolvable credentials
+        }
+      }
+
       skillComponents.push({
         name: input.name,
         description: input.description,

@@ -20,15 +20,30 @@ describe("createDataSourceStack", () => {
         { name: "orders-db", protocol: "postgres", description: "Orders" },
         { name: "api", protocol: "http", description: "REST API" },
       ],
-      env: {},
+      // Provide DATABASE_URL so the postgres skill passes credential gating
+      env: { DATABASE_URL: "postgres://localhost/test" },
       discoveryConfig: { enableEnvProbe: false, enableMcpProbe: false },
     });
 
     expect(bundle.discoveredSources).toHaveLength(2);
     expect(bundle.generatedSkillInputs.length).toBeGreaterThanOrEqual(2);
     expect(bundle.config.sourceCount).toBe(2);
+    // Both skills pass: postgres (DATABASE_URL available) and http (no credential required)
     expect(bundle.config.generatedSkillCount).toBeGreaterThanOrEqual(2);
     expect(bundle.config.probesEnabled.manifest).toBe(true);
+  });
+
+  test("skills with missing credentials are gated out", async () => {
+    const bundle = await createDataSourceStack({
+      manifestEntries: [{ name: "orders-db", protocol: "postgres", description: "Orders" }],
+      env: {}, // No DATABASE_URL → credential missing
+      discoveryConfig: { enableEnvProbe: false, enableMcpProbe: false },
+    });
+
+    expect(bundle.discoveredSources).toHaveLength(1);
+    expect(bundle.generatedSkillInputs).toHaveLength(1); // Input still generated
+    expect(bundle.skillComponents).toHaveLength(0); // But skill gated out
+    expect(bundle.config.generatedSkillCount).toBe(0);
   });
 
   test("generateSkills: false suppresses skill generation", async () => {
