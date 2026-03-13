@@ -55,7 +55,8 @@ describe("createPayMiddleware", () => {
       model: "test-model",
       usage: { inputTokens: 100, outputTokens: 50 },
     });
-    await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+    // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+    await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
     const spent = await tracker.totalSpend(ctx.session.sessionId);
     expect(spent).toBeGreaterThan(0);
   });
@@ -63,7 +64,8 @@ describe("createPayMiddleware", () => {
   test("model call returns response from next()", async () => {
     const mw = makeMiddleware(10);
     const spy = createSpyModelHandler({ content: "hello world" });
-    const response = await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+    // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+    const response = await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
     expect(response?.content).toBe("hello world");
   });
 
@@ -71,7 +73,8 @@ describe("createPayMiddleware", () => {
     const mw = makeMiddleware(10);
     const spy = createSpyModelHandler();
     const request: ModelRequest = { messages: [], model: "gpt-4" };
-    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+    await mw.wrapModelCall!(ctx, request, spy.handler);
     expect(spy.calls[0]).toBe(request);
   });
 
@@ -93,7 +96,8 @@ describe("createPayMiddleware", () => {
     });
     const spy = createSpyModelHandler();
     try {
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
       expect.unreachable("should have thrown");
     } catch (e) {
       const err = e as KoiError;
@@ -119,7 +123,8 @@ describe("createPayMiddleware", () => {
     });
     const spy = createSpyModelHandler();
     try {
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
     } catch {
       // expected
     }
@@ -143,7 +148,8 @@ describe("createPayMiddleware", () => {
       hardKill: false,
     });
     const spy = createSpyModelHandler();
-    const response = await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+    // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+    const response = await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
     expect(spy.calls).toHaveLength(1);
     expect(response?.content).toBe("mock response");
   });
@@ -156,7 +162,8 @@ describe("createPayMiddleware", () => {
     });
     const spy = createSpyModelHandler();
     try {
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
       expect.unreachable("should have thrown");
     } catch (e) {
       const err = e as KoiError;
@@ -183,7 +190,8 @@ describe("createPayMiddleware", () => {
       model: "test-model",
       usage: { inputTokens: 100, outputTokens: 50 },
     });
-    await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+    // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+    await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
     expect(alerts.length).toBeGreaterThanOrEqual(1);
     expect(alerts[0]?.pct).toBeGreaterThanOrEqual(0.5);
   });
@@ -205,7 +213,8 @@ describe("createPayMiddleware", () => {
     });
     const spy = createSpyToolHandler();
     try {
-      await mw.wrapToolCall?.(ctx, { toolId: "calc", input: {} }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapToolCall!(ctx, { toolId: "calc", input: {} }, spy.handler);
       expect.unreachable("should have thrown");
     } catch (e) {
       const err = e as KoiError;
@@ -217,7 +226,8 @@ describe("createPayMiddleware", () => {
   test("tool call passes through when within budget", async () => {
     const mw = makeMiddleware(10);
     const spy = createSpyToolHandler();
-    const response = await mw.wrapToolCall?.(ctx, { toolId: "calc", input: {} }, spy.handler);
+    // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+    const response = await mw.wrapToolCall!(ctx, { toolId: "calc", input: {} }, spy.handler);
     expect(spy.calls).toHaveLength(1);
     expect(response?.output).toEqual({ result: "mock" });
   });
@@ -239,7 +249,8 @@ describe("createPayMiddleware", () => {
       model: "test-model",
       usage: { inputTokens: 100, outputTokens: 50 },
     });
-    await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+    // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+    await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
     expect(usages).toHaveLength(1);
     expect(usages[0]?.totalSpent).toBeGreaterThan(0);
     expect(usages[0]?.remaining).toBeLessThan(10);
@@ -259,7 +270,8 @@ describe("createPayMiddleware", () => {
       content: "hi",
       model: "test",
     });
-    await mw.wrapModelCall?.(ctx, { messages: [] }, noUsageHandler);
+    // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+    await mw.wrapModelCall!(ctx, { messages: [] }, noUsageHandler);
     expect(called).toBe(false);
   });
 
@@ -274,7 +286,8 @@ describe("createPayMiddleware", () => {
       content: "hi",
       model: "test",
     });
-    await mw.wrapModelCall?.(ctx, { messages: [] }, noUsageHandler);
+    // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+    await mw.wrapModelCall!(ctx, { messages: [] }, noUsageHandler);
     const spent = await tracker.totalSpend(ctx.session.sessionId);
     expect(spent).toBe(0);
   });
@@ -471,7 +484,8 @@ describe("createPayMiddleware", () => {
         model: "test-model",
         usage: { inputTokens: 100, outputTokens: 50 },
       });
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
       const result = mw.describeCapabilities?.(ctx);
       // Should show less than 10 remaining after spending
       expect(result?.description).not.toContain("10.0000 of $10.0000");
@@ -497,7 +511,8 @@ describe("createPayMiddleware", () => {
         model: "test-model",
         usage: { inputTokens: 100, outputTokens: 50 },
       });
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
       expect(usages).toHaveLength(1);
       expect(usages[0]?.breakdown).toBeDefined();
       expect(usages[0]?.breakdown.totalCostUsd).toBeGreaterThan(0);
@@ -562,13 +577,15 @@ describe("createPayMiddleware", () => {
         model: "test-model",
         usage: { inputTokens: 100, outputTokens: 50 },
       });
-      await mw.wrapModelCall?.(ctxA, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctxA, { messages: [] }, spy.handler);
       expect(alerts).toHaveLength(1);
 
       // Session B: spend > 50% — should also fire (separate session)
       const sessionB = createMockSessionContext({ sessionId: sessionId("session-B") });
       const ctxB = createMockTurnContext({ session: sessionB });
-      await mw.wrapModelCall?.(ctxB, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctxB, { messages: [] }, spy.handler);
       expect(alerts).toHaveLength(2);
     });
 
@@ -592,11 +609,13 @@ describe("createPayMiddleware", () => {
         usage: { inputTokens: 400, outputTokens: 200 },
       });
       // First call: ~60% used
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
       expect(alerts).toHaveLength(1);
 
       // Second call: still in same session, threshold already fired
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
       expect(alerts).toHaveLength(1); // should NOT fire again
     });
 
@@ -620,7 +639,8 @@ describe("createPayMiddleware", () => {
         model: "test-model",
         usage: { inputTokens: 100, outputTokens: 50 },
       });
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
       expect(firedThresholds.length).toBeGreaterThanOrEqual(2);
     });
 
@@ -644,16 +664,19 @@ describe("createPayMiddleware", () => {
         usage: { inputTokens: 4000, outputTokens: 2000 },
       });
       // First call: 6000 * 0.001 = $6.00 = 60% of $10 => fires 50% threshold
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
       const alertCountBefore = alerts.length;
       expect(alertCountBefore).toBeGreaterThanOrEqual(1);
 
       // End session — clears fired thresholds for this session
       const sessionCtx = createMockSessionContext();
-      await mw.onSessionEnd?.(sessionCtx);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.onSessionEnd!(sessionCtx);
 
       // Second call: accumulates more cost, threshold re-fires since state was cleaned up
-      await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
       expect(alerts.length).toBeGreaterThan(alertCountBefore);
     });
   });
@@ -702,6 +725,103 @@ describe("createPayMiddleware", () => {
       });
       // onBeforeTurn should not throw even when budget is exhausted
       await expect(mw.onBeforeTurn?.(ctx)).resolves.toBeUndefined();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Per-agent budget integration
+  // -----------------------------------------------------------------------
+
+  describe("per-agent budget", () => {
+    // Default spy response: 10 input + 20 output = 30 tokens per call
+
+    test("throws RATE_LIMIT when per-agent budget exhausted", async () => {
+      const mw = createPayMiddleware({
+        tracker: createInMemoryBudgetTracker(),
+        calculator: createDefaultCostCalculator(),
+        budget: 1000,
+        agentBudget: { maxTokensPerAgent: 1024 },
+      });
+
+      const spy = createSpyModelHandler({
+        content: "ok",
+        model: "test",
+        usage: { inputTokens: 500, outputTokens: 600 },
+      });
+
+      // First call: 1100 tokens consumed > 1024 budget → records exceeded
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
+
+      // Second call should be blocked (budget exceeded after first call)
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await expect(mw.wrapModelCall!(ctx, { messages: [] }, spy.handler)).rejects.toThrow(
+        /Per-agent token budget exhausted/,
+      );
+    });
+
+    test("injects budget warning at soft threshold", async () => {
+      const mw = createPayMiddleware({
+        tracker: createInMemoryBudgetTracker(),
+        calculator: createDefaultCostCalculator(),
+        budget: 1000,
+        agentBudget: { maxTokensPerAgent: 50, softThresholdPercent: 0.5 },
+      });
+
+      const spy = createSpyModelHandler();
+
+      // First call: 30 tokens (60% > 50% threshold) → triggers warning
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
+
+      // Second call: warning should be injected into the request
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(
+        ctx,
+        {
+          messages: [
+            {
+              senderId: "user",
+              content: [{ kind: "text", text: "hi" }],
+              timestamp: 0,
+            },
+          ],
+        },
+        spy.handler,
+      );
+
+      // Check that the second call received a warning message
+      const secondCallReq = spy.calls[1];
+      expect(secondCallReq).toBeDefined();
+      if (secondCallReq !== undefined && secondCallReq.messages.length > 1) {
+        const lastMsg = secondCallReq.messages[secondCallReq.messages.length - 1];
+        expect(lastMsg?.senderId).toBe("system:budget-warning");
+      }
+    });
+
+    test("cleans up agent budget on session end", async () => {
+      const mw = createPayMiddleware({
+        tracker: createInMemoryBudgetTracker(),
+        calculator: createDefaultCostCalculator(),
+        budget: 1000,
+        agentBudget: { maxTokensPerAgent: 50 },
+      });
+
+      const spy = createSpyModelHandler();
+
+      // Consume budget: 2 calls × 30 = 60 tokens > 50 budget
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.wrapModelCall!(ctx, { messages: [] }, spy.handler);
+
+      // Clean up
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await mw.onSessionEnd!(ctx.session);
+
+      // After cleanup, budget should be reset — call should succeed
+      // biome-ignore lint/style/noNonNullAssertion: test assertion after type-narrowing guard
+      await expect(mw.wrapModelCall!(ctx, { messages: [] }, spy.handler)).resolves.toBeDefined();
     });
   });
 });

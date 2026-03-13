@@ -12,6 +12,8 @@ export type {
   ModelCostBreakdown,
   ToolCostBreakdown,
 } from "@koi/core/cost-tracker";
+export type { AgentBudgetConfig, AgentBudgetTracker } from "./agent-budget.js";
+export { createAgentBudgetTracker } from "./agent-budget.js";
 export type { PayMiddlewareConfig, UsageInfo } from "./config.js";
 export { validatePayConfig } from "./config.js";
 export { descriptor } from "./descriptor.js";

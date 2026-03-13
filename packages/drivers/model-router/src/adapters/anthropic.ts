@@ -6,6 +6,7 @@
  */
 
 import type { ContentBlock, KoiError, ModelRequest, ModelResponse } from "@koi/core";
+import { PROMPT_CACHE_HINTS } from "@koi/execution-context";
 import type { NormalizedRole } from "../normalize.js";
 import { normalizeMessages, normalizeToPlainText } from "../normalize.js";
 import type { ProviderAdapter, ProviderAdapterConfig, StreamChunk } from "../provider-adapter.js";
@@ -45,10 +46,18 @@ interface AnthropicMessage {
   readonly content: string | readonly AnthropicContentPart[];
 }
 
+/** Anthropic system content block with optional cache_control. */
+interface AnthropicSystemBlock {
+  readonly type: "text";
+  readonly text: string;
+  readonly cache_control?: { readonly type: "ephemeral" };
+}
+
 interface AnthropicRequest {
   readonly model: string;
   readonly messages: readonly AnthropicMessage[];
-  readonly system?: string;
+  /** System prompt — string for plain text, array for structured with cache_control. */
+  readonly system?: string | readonly AnthropicSystemBlock[];
   readonly max_tokens: number;
   readonly temperature?: number;
   readonly stream?: boolean;
@@ -158,10 +167,30 @@ export function toAnthropicRequest(request: ModelRequest): AnthropicRequest {
       content: contentBlocksToAnthropic(m.content),
     }));
 
+  // Check for prompt cache hints from middleware side-channel
+  const cacheHints = PROMPT_CACHE_HINTS.get(request);
+
+  // Apply cache_control to the system parameter when hints are present
+  let systemParam: string | readonly AnthropicSystemBlock[] | undefined;
+  if (systemPrompt.length > 0) {
+    if (cacheHints !== undefined && cacheHints.provider === "anthropic") {
+      // Use structured system blocks with cache_control on the last block
+      systemParam = [
+        {
+          type: "text" as const,
+          text: systemPrompt,
+          cache_control: { type: "ephemeral" as const },
+        },
+      ];
+    } else {
+      systemParam = systemPrompt;
+    }
+  }
+
   return {
     model: request.model ?? "claude-sonnet-4-5-20250929",
     messages,
-    ...(systemPrompt.length > 0 && { system: systemPrompt }),
+    ...(systemParam !== undefined && { system: systemParam }),
     max_tokens: request.maxTokens ?? 4096,
     ...(request.temperature !== undefined && { temperature: request.temperature }),
   };

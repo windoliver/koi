@@ -17,6 +17,8 @@ import type {
   TurnContext,
 } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
+import type { AgentBudgetTracker } from "./agent-budget.js";
+import { createAgentBudgetTracker } from "./agent-budget.js";
 import type { PayMiddlewareConfig } from "./config.js";
 
 const DEFAULT_ALERT_THRESHOLDS: readonly number[] = [0.8, 0.95];
@@ -40,6 +42,15 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
 
   // Sort once at factory level, not on every call
   const sortedThresholds = [...alertThresholds].sort((a, b) => a - b);
+
+  // Per-agent budget tracker (optional)
+  const agentBudgetTracker: AgentBudgetTracker | undefined =
+    config.agentBudget?.maxTokensPerAgent !== undefined
+      ? createAgentBudgetTracker({
+          maxTokensPerAgent: config.agentBudget.maxTokensPerAgent,
+          softThresholdPercent: config.agentBudget.softThresholdPercent ?? 0.8,
+        })
+      : undefined;
 
   function getSessionThresholds(sessionId: string): Set<number> {
     const existing = firedThresholds.get(sessionId);
@@ -143,6 +154,7 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
       const sessionId = ctx.sessionId;
       lastKnownRemaining.delete(sessionId);
       firedThresholds.delete(sessionId);
+      agentBudgetTracker?.cleanup(ctx.agentId);
     },
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
@@ -159,7 +171,26 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
       const sessionId = ctx.session.sessionId;
       await checkBudget(sessionId);
 
-      const response = await next(request);
+      // Per-agent budget: check before call, inject warning if needed
+      let effectiveRequest = request;
+      if (agentBudgetTracker !== undefined) {
+        const agentId = ctx.session.agentId;
+        const status = agentBudgetTracker.checkBudget(agentId);
+        if (status === "exceeded") {
+          throw KoiRuntimeError.from(
+            "RATE_LIMIT",
+            `Per-agent token budget exhausted for ${agentId}`,
+            { context: { agentId } },
+          );
+        }
+        // Inject soft warning message if at threshold (idempotent — fires once)
+        const warning = agentBudgetTracker.getBudgetWarning(agentId);
+        if (warning !== undefined) {
+          effectiveRequest = { ...request, messages: [...request.messages, warning] };
+        }
+      }
+
+      const response = await next(effectiveRequest);
 
       if (response.usage) {
         await recordCost(
@@ -168,6 +199,12 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
           response.usage.inputTokens,
           response.usage.outputTokens,
         );
+
+        // Record per-agent token usage
+        if (agentBudgetTracker !== undefined) {
+          const totalTokens = response.usage.inputTokens + response.usage.outputTokens;
+          agentBudgetTracker.recordUsage(ctx.session.agentId, totalTokens, 0);
+        }
       }
 
       return response;

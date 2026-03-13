@@ -204,52 +204,162 @@ export function composeModelChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelHandler,
 ): (ctx: TurnContext, request: ModelRequest) => Promise<ModelResponse> {
-  const entries: OnionEntry<ModelRequest, Promise<ModelResponse>>[] = [];
+  const regularEntries: OnionEntry<ModelRequest, Promise<ModelResponse>>[] = [];
+  const concurrentObservers: KoiMiddleware[] = [];
+
   for (const mw of middleware) {
-    if (mw.wrapModelCall !== undefined) {
-      entries.push({ name: mw.name, hook: mw.wrapModelCall });
+    if (mw.wrapModelCall === undefined) continue;
+    if (mw.concurrent === true && (mw.phase ?? "resolve") === "observe") {
+      concurrentObservers.push(mw);
+    } else {
+      regularEntries.push({ name: mw.name, hook: mw.wrapModelCall });
     }
   }
-  return composeOnion(entries, "wrapModelCall", terminal, (result, resetGuard) => {
-    // Reset double-call guard on rejection to allow retry-on-error.
-    // The .catch() handler runs before the caller's await-catch (Promise microtask ordering:
-    // handlers registered first are invoked first for the same rejected Promise).
+
+  const chain = composeOnion(regularEntries, "wrapModelCall", terminal, (result, resetGuard) => {
     void result.catch(() => {
       resetGuard();
     });
     return result;
   });
+
+  if (concurrentObservers.length === 0) return chain;
+
+  // Wrap: fire concurrent observers alongside the main chain, return main result immediately
+  return (ctx: TurnContext, request: ModelRequest): Promise<ModelResponse> => {
+    const mainResult = chain(ctx, request);
+    fireConcurrentModelObservers(concurrentObservers, ctx, request, mainResult);
+    return mainResult;
+  };
 }
 
 export function composeModelStreamChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelStreamHandler,
 ): (ctx: TurnContext, request: ModelRequest) => AsyncIterable<ModelChunk> {
-  const entries: OnionEntry<ModelRequest, AsyncIterable<ModelChunk>>[] = [];
+  const regularEntries: OnionEntry<ModelRequest, AsyncIterable<ModelChunk>>[] = [];
+  const concurrentObservers: KoiMiddleware[] = [];
+
   for (const mw of middleware) {
-    if (mw.wrapModelStream !== undefined) {
-      entries.push({ name: mw.name, hook: mw.wrapModelStream });
+    if (mw.wrapModelStream === undefined) continue;
+    if (mw.concurrent === true && (mw.phase ?? "resolve") === "observe") {
+      concurrentObservers.push(mw);
+    } else {
+      regularEntries.push({ name: mw.name, hook: mw.wrapModelStream });
     }
   }
-  return composeOnion(entries, "wrapModelStream", terminal, (result, resetGuard) => {
-    // Wrap the iterable to reset the double-call guard when iteration fails.
-    // This allows middleware (e.g., overflow recovery) to retry after catching
-    // a stream error, while still blocking accidental double-calls on success.
+
+  const chain = composeOnion(regularEntries, "wrapModelStream", terminal, (result, resetGuard) => {
     return wrapAsyncIterableWithErrorReset(result, resetGuard);
   });
+
+  if (concurrentObservers.length === 0) return chain;
+
+  // For streams, concurrent observers fire on the request but don't wrap the stream
+  return (ctx: TurnContext, request: ModelRequest): AsyncIterable<ModelChunk> => {
+    // Fire observers concurrently — they get their own pass-through next()
+    for (const mw of concurrentObservers) {
+      if (mw.wrapModelStream === undefined) continue;
+      try {
+        // Observers receive a no-op pass-through that returns an empty stream
+        const observeStream = mw.wrapModelStream(ctx, request, () => emptyAsyncIterable());
+        // Drain the observer stream in the background to trigger any side effects
+        void drainAsyncIterable(observeStream).catch(() => {});
+      } catch (_observeError: unknown) {
+        // Observer errors are silently swallowed
+      }
+    }
+    return chain(ctx, request);
+  };
 }
 
 export function composeToolChain(
   middleware: readonly KoiMiddleware[],
   terminal: ToolHandler,
 ): (ctx: TurnContext, request: ToolRequest) => Promise<ToolResponse> {
-  const entries: OnionEntry<ToolRequest, Promise<ToolResponse>>[] = [];
+  const regularEntries: OnionEntry<ToolRequest, Promise<ToolResponse>>[] = [];
+  const concurrentObservers: KoiMiddleware[] = [];
+
   for (const mw of middleware) {
-    if (mw.wrapToolCall !== undefined) {
-      entries.push({ name: mw.name, hook: mw.wrapToolCall });
+    if (mw.wrapToolCall === undefined) continue;
+    if (mw.concurrent === true && (mw.phase ?? "resolve") === "observe") {
+      concurrentObservers.push(mw);
+    } else {
+      regularEntries.push({ name: mw.name, hook: mw.wrapToolCall });
     }
   }
-  return composeOnion(entries, "wrapToolCall", terminal);
+
+  const chain = composeOnion(regularEntries, "wrapToolCall", terminal);
+
+  if (concurrentObservers.length === 0) return chain;
+
+  return (ctx: TurnContext, request: ToolRequest): Promise<ToolResponse> => {
+    const mainResult = chain(ctx, request);
+    fireConcurrentToolObservers(concurrentObservers, ctx, request, mainResult);
+    return mainResult;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent observer helpers (P2-A race pattern)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fire concurrent model-call observers alongside the main chain result.
+ * Observers receive a pass-through next() that resolves with the main result.
+ * Observer errors are silently swallowed — they're observe-only.
+ */
+function fireConcurrentModelObservers(
+  observers: readonly KoiMiddleware[],
+  ctx: TurnContext,
+  request: ModelRequest,
+  mainResult: Promise<ModelResponse>,
+): void {
+  for (const mw of observers) {
+    if (mw.wrapModelCall === undefined) continue;
+    // Each observer gets a next() that returns the main chain's result
+    const next = (): Promise<ModelResponse> => mainResult;
+    try {
+      // Fire and forget — don't await, don't propagate errors
+      const observerPromise = mw.wrapModelCall(ctx, request, next);
+      void observerPromise.catch(() => {});
+    } catch (_observeError: unknown) {
+      // Synchronous throw in observer — swallow
+    }
+  }
+}
+
+/**
+ * Fire concurrent tool-call observers alongside the main chain result.
+ */
+function fireConcurrentToolObservers(
+  observers: readonly KoiMiddleware[],
+  ctx: TurnContext,
+  request: ToolRequest,
+  mainResult: Promise<ToolResponse>,
+): void {
+  for (const mw of observers) {
+    if (mw.wrapToolCall === undefined) continue;
+    const next = (): Promise<ToolResponse> => mainResult;
+    try {
+      const observerPromise = mw.wrapToolCall(ctx, request, next);
+      void observerPromise.catch(() => {});
+    } catch (_observeError: unknown) {
+      // Synchronous throw in observer — swallow
+    }
+  }
+}
+
+/** Create an empty async iterable (pass-through for concurrent stream observers). */
+async function* emptyAsyncIterable(): AsyncIterable<ModelChunk> {
+  // intentionally empty
+}
+
+/** Drain an async iterable to trigger side effects, discarding values. */
+async function drainAsyncIterable<T>(iterable: AsyncIterable<T>): Promise<void> {
+  for await (const _ of iterable) {
+    // discard — we only want side effects
+  }
 }
 
 // ---------------------------------------------------------------------------

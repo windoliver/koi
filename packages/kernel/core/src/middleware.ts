@@ -137,6 +137,13 @@ export interface KoiMiddleware {
   readonly priority?: number;
   /** Pipeline phase for tier-based ordering. Default: "resolve". */
   readonly phase?: MiddlewarePhase;
+  /**
+   * When true AND phase is "observe", this middleware's wrapModelCall/wrapModelStream/wrapToolCall
+   * hooks run concurrently with the next handler instead of sequentially in the onion.
+   * Observer errors are logged but never propagated to the caller.
+   * Only valid for observe-phase middleware. Ignored for intercept/resolve phases.
+   */
+  readonly concurrent?: boolean;
   /** Called once when an agent session begins. */
   readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
   /** Called once when an agent session ends. */

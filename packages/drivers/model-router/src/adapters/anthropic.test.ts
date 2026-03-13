@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelRequest } from "@koi/core";
+import { PROMPT_CACHE_HINTS } from "@koi/execution-context";
 import { fromAnthropicResponse, mapAnthropicError, toAnthropicRequest } from "./anthropic.js";
 
 describe("toAnthropicRequest", () => {
@@ -227,6 +228,88 @@ describe("toAnthropicRequest", () => {
         },
       });
     }
+  });
+
+  test("applies cache_control to system when anthropic cache hints present", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "You are helpful." }],
+          senderId: "system",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 1,
+        },
+      ],
+      model: "anthropic:claude-sonnet-4-5-20250929",
+    };
+
+    PROMPT_CACHE_HINTS.set(request, {
+      provider: "anthropic",
+      lastStableIndex: 0,
+      staticPrefixTokens: 2000,
+    });
+
+    const result = toAnthropicRequest(request);
+    expect(Array.isArray(result.system)).toBe(true);
+    if (Array.isArray(result.system)) {
+      expect(result.system).toHaveLength(1);
+      expect(result.system[0]?.type).toBe("text");
+      expect(result.system[0]?.text).toBe("You are helpful.");
+      expect(result.system[0]?.cache_control).toEqual({ type: "ephemeral" });
+    }
+  });
+
+  test("no cache_control when hints are for non-anthropic provider", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "You are helpful." }],
+          senderId: "system",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 1,
+        },
+      ],
+      model: "openai:gpt-4o",
+    };
+
+    PROMPT_CACHE_HINTS.set(request, {
+      provider: "openai",
+      lastStableIndex: 0,
+      staticPrefixTokens: 2000,
+    });
+
+    const result = toAnthropicRequest(request);
+    // Should be plain string, not structured array
+    expect(typeof result.system).toBe("string");
+    expect(result.system).toBe("You are helpful.");
+  });
+
+  test("no cache_control when no hints are attached", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "You are helpful." }],
+          senderId: "system",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 1,
+        },
+      ],
+    };
+
+    const result = toAnthropicRequest(request);
+    expect(typeof result.system).toBe("string");
   });
 
   test("returns plain string for text-only content", () => {
