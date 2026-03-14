@@ -39,6 +39,41 @@ declare function parseCompositeKey(key: string): {
 declare function computeSuggestions(name: string, scope: ForgeScope | undefined, records: ReadonlyMap<string, NameRecord>, config: Pick<AnsConfig, "maxSuggestionDistance" | "maxSuggestions">): readonly NameSuggestion[];
 
 /**
+ * Model identifier parsing — extracts provider prefix from model strings.
+ *
+ * Model strings follow the convention \`provider:model-name\` (e.g., "anthropic:claude-sonnet-4-5-20250929").
+ * When no colon is present, the entire string is treated as the model name with an empty provider.
+ */
+/**
+ * Parsed model identifier with provider and model name components.
+ */
+interface ParsedModelId {
+    /** Provider prefix (e.g., "anthropic", "openai"). Empty string if no prefix. */
+    readonly provider: string;
+    /** Model name after the provider prefix. */
+    readonly modelName: string;
+}
+/**
+ * Parse a model identifier string into provider and model name.
+ *
+ * @example
+ * parseModelId("anthropic:claude-sonnet-4-5-20250929")
+ * // → { provider: "anthropic", modelName: "claude-sonnet-4-5-20250929" }
+ *
+ * parseModelId("claude-sonnet-4-5-20250929")
+ * // → { provider: "", modelName: "claude-sonnet-4-5-20250929" }
+ *
+ * parseModelId("openai:gpt-4:2024-05-13")
+ * // → { provider: "openai", modelName: "gpt-4:2024-05-13" }
+ */
+declare function parseModelId(model: string): ParsedModelId;
+/**
+ * Extract just the provider prefix from a model string.
+ * Returns empty string if no provider prefix is present.
+ */
+declare function extractProvider(model: string): string;
+
+/**
  * Name validation for ANS records.
  *
  * Names must start with a lowercase letter, followed by lowercase
@@ -68,6 +103,6 @@ declare function validateName(name: string): Result<string, KoiError>;
  */
 declare function resolveByScope(name: string, scope: ForgeScope | undefined, records: ReadonlyMap<string, NameRecord>, aliases: ReadonlyMap<string, string>): Result<NameResolution, KoiError>;
 
-export { compositeKey, computeSuggestions, parseCompositeKey, resolveByScope, validateName };
+export { type ParsedModelId, compositeKey, computeSuggestions, extractProvider, parseCompositeKey, parseModelId, resolveByScope, validateName };
 "
 `;

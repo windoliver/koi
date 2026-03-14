@@ -128,14 +128,14 @@ interface OnionEntry<Req, Res> {
 function composeOnion<Req, Res>(
   entries: readonly OnionEntry<Req, Res>[],
   hookLabel: string,
-  terminal: (req: Req) => Res,
+  terminal: (req: Req, ctx: TurnContext) => Res,
   wrapNextResult?: (result: Res, resetGuard: () => void) => Res,
 ): (ctx: TurnContext, request: Req) => Res {
   return (ctx: TurnContext, request: Req): Res => {
     const dispatch = (i: number, req: Req): Res => {
       const entry = entries[i];
       if (entry === undefined) {
-        return terminal(req);
+        return terminal(req, ctx);
       }
       // let required: toggled by next(), reset on error by wrapNextResult
       let called = false;
@@ -204,16 +204,40 @@ export function composeModelChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelHandler,
 ): (ctx: TurnContext, request: ModelRequest) => Promise<ModelResponse> {
-  const entries: OnionEntry<ModelRequest, Promise<ModelResponse>>[] = [];
+  const regularEntries: OnionEntry<ModelRequest, Promise<ModelResponse>>[] = [];
+  const concurrentObservers: KoiMiddleware[] = [];
+
   for (const mw of middleware) {
-    if (mw.wrapModelCall !== undefined) {
-      entries.push({ name: mw.name, hook: mw.wrapModelCall });
+    if (mw.wrapModelCall === undefined) continue;
+    if (mw.concurrent === true && (mw.phase ?? "resolve") === "observe") {
+      concurrentObservers.push(mw);
+    } else {
+      regularEntries.push({ name: mw.name, hook: mw.wrapModelCall });
     }
   }
-  return composeOnion(entries, "wrapModelCall", terminal, (result, resetGuard) => {
-    // Reset double-call guard on rejection to allow retry-on-error.
-    // The .catch() handler runs before the caller's await-catch (Promise microtask ordering:
-    // handlers registered first are invoked first for the same rejected Promise).
+
+  // Wrap external terminal to match (req, ctx) signature
+  const wrappedTerminal = (req: ModelRequest, _ctx: TurnContext): Promise<ModelResponse> =>
+    terminal(req);
+
+  if (concurrentObservers.length === 0) {
+    return composeOnion(regularEntries, "wrapModelCall", wrappedTerminal, (result, resetGuard) => {
+      void result.catch(() => {
+        resetGuard();
+      });
+      return result;
+    });
+  }
+
+  // Terminal that fires concurrent observers with the ctx it receives from the onion.
+  // ctx flows through composeOnion's dispatch closure — no shared mutable state, no WeakMap.
+  const observingTerminal = (req: ModelRequest, ctx: TurnContext): Promise<ModelResponse> => {
+    const result = terminal(req);
+    fireConcurrentModelObservers(concurrentObservers, ctx, req, result);
+    return result;
+  };
+
+  return composeOnion(regularEntries, "wrapModelCall", observingTerminal, (result, resetGuard) => {
     void result.catch(() => {
       resetGuard();
     });
@@ -225,16 +249,18 @@ export function composeModelStreamChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelStreamHandler,
 ): (ctx: TurnContext, request: ModelRequest) => AsyncIterable<ModelChunk> {
+  // Streams: all middleware runs sequentially (including concurrent observers).
+  // Concurrent observe is only meaningful for request/response (model call, tool call),
+  // not for streams — observers can't inspect chunks from an empty async iterable.
   const entries: OnionEntry<ModelRequest, AsyncIterable<ModelChunk>>[] = [];
   for (const mw of middleware) {
     if (mw.wrapModelStream !== undefined) {
       entries.push({ name: mw.name, hook: mw.wrapModelStream });
     }
   }
-  return composeOnion(entries, "wrapModelStream", terminal, (result, resetGuard) => {
-    // Wrap the iterable to reset the double-call guard when iteration fails.
-    // This allows middleware (e.g., overflow recovery) to retry after catching
-    // a stream error, while still blocking accidental double-calls on success.
+  const wrappedTerminal = (req: ModelRequest, _ctx: TurnContext): AsyncIterable<ModelChunk> =>
+    terminal(req);
+  return composeOnion(entries, "wrapModelStream", wrappedTerminal, (result, resetGuard) => {
     return wrapAsyncIterableWithErrorReset(result, resetGuard);
   });
 }
@@ -243,13 +269,81 @@ export function composeToolChain(
   middleware: readonly KoiMiddleware[],
   terminal: ToolHandler,
 ): (ctx: TurnContext, request: ToolRequest) => Promise<ToolResponse> {
-  const entries: OnionEntry<ToolRequest, Promise<ToolResponse>>[] = [];
+  const regularEntries: OnionEntry<ToolRequest, Promise<ToolResponse>>[] = [];
+  const concurrentObservers: KoiMiddleware[] = [];
+
   for (const mw of middleware) {
-    if (mw.wrapToolCall !== undefined) {
-      entries.push({ name: mw.name, hook: mw.wrapToolCall });
+    if (mw.wrapToolCall === undefined) continue;
+    if (mw.concurrent === true && (mw.phase ?? "resolve") === "observe") {
+      concurrentObservers.push(mw);
+    } else {
+      regularEntries.push({ name: mw.name, hook: mw.wrapToolCall });
     }
   }
-  return composeOnion(entries, "wrapToolCall", terminal);
+
+  const wrappedTerminal = (req: ToolRequest, _ctx: TurnContext): Promise<ToolResponse> =>
+    terminal(req);
+
+  if (concurrentObservers.length === 0) {
+    return composeOnion(regularEntries, "wrapToolCall", wrappedTerminal);
+  }
+
+  const observingTerminal = (req: ToolRequest, ctx: TurnContext): Promise<ToolResponse> => {
+    const result = terminal(req);
+    fireConcurrentToolObservers(concurrentObservers, ctx, req, result);
+    return result;
+  };
+
+  return composeOnion(regularEntries, "wrapToolCall", observingTerminal);
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent observer helpers (P2-A race pattern)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fire concurrent model-call observers alongside the terminal result.
+ * Called from the observing terminal wrapper, so observers see the
+ * post-rewrite request (after intercept/resolve middleware).
+ * Observer errors are silently swallowed — they're observe-only.
+ */
+function fireConcurrentModelObservers(
+  observers: readonly KoiMiddleware[],
+  ctx: TurnContext,
+  request: ModelRequest,
+  mainResult: Promise<ModelResponse>,
+): void {
+  for (const mw of observers) {
+    if (mw.wrapModelCall === undefined) continue;
+    const next = (): Promise<ModelResponse> => mainResult;
+    try {
+      const observerPromise = mw.wrapModelCall(ctx, request, next);
+      void observerPromise.catch(() => {});
+    } catch (_observeError: unknown) {
+      // Synchronous throw in observer — swallow
+    }
+  }
+}
+
+/**
+ * Fire concurrent tool-call observers alongside the main chain result.
+ */
+function fireConcurrentToolObservers(
+  observers: readonly KoiMiddleware[],
+  ctx: TurnContext,
+  request: ToolRequest,
+  mainResult: Promise<ToolResponse>,
+): void {
+  for (const mw of observers) {
+    if (mw.wrapToolCall === undefined) continue;
+    const next = (): Promise<ToolResponse> => mainResult;
+    try {
+      const observerPromise = mw.wrapToolCall(ctx, request, next);
+      void observerPromise.catch(() => {});
+    } catch (_observeError: unknown) {
+      // Synchronous throw in observer — swallow
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

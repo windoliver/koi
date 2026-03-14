@@ -1,0 +1,27 @@
+{
+  "name": "@koi/middleware-prompt-cache",
+  "description": "Reorder messages for LLM prompt cache optimization and emit provider-specific cache hints",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/execution-context": "workspace:*",
+    "@koi/name-resolution": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

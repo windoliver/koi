@@ -108,9 +108,13 @@ export function createNodeConnectionHandler(
         group.add(entry.agentId);
       }
     }
-    // Notify subscribers
+    // Notify subscribers — isolate errors so one failing handler doesn't break others
     for (const handler of agentStatusListeners) {
-      handler(entry, nodeId);
+      try {
+        handler(entry, nodeId);
+      } catch (_handlerError: unknown) {
+        // Handlers are responsible for their own error handling.
+      }
     }
   }
 
@@ -414,7 +418,10 @@ export function createNodeConnectionHandler(
 
     onAgentStatus(handler: (entry: AgentStatusEntry, nodeId: string) => void): () => void {
       agentStatusListeners.add(handler);
+      let removed = false; // let: set to true on first unsubscribe (idempotent guard)
       return () => {
+        if (removed) return;
+        removed = true;
         agentStatusListeners.delete(handler);
       };
     },

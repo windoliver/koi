@@ -5,6 +5,7 @@
 import type { BudgetTracker, CostCalculator, UsageInfo } from "@koi/core/cost-tracker";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { AgentBudgetConfig } from "./agent-budget.js";
 
 // Re-export L0 UsageInfo for backward compatibility
 export type { UsageInfo } from "@koi/core/cost-tracker";
@@ -17,6 +18,12 @@ export interface PayMiddlewareConfig {
   readonly onAlert?: (pctUsed: number, remaining: number) => void;
   readonly onUsage?: (info: UsageInfo) => void;
   readonly hardKill?: boolean;
+  /**
+   * Per-agent token budget configuration.
+   * When set, enforces per-agent limits based on agentId from session context.
+   * Budget allocation is depth-aware: deeper agents get smaller budgets.
+   */
+  readonly agentBudget?: AgentBudgetConfig;
 }
 
 export function validatePayConfig(config: unknown): Result<PayMiddlewareConfig, KoiError> {

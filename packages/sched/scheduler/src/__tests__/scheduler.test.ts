@@ -321,6 +321,24 @@ describe("TaskScheduler", () => {
     expect(events[0]?.kind).toBe("task:submitted");
   });
 
+  test("throwing listener does not break subsequent listeners", async () => {
+    const events: SchedulerEvent[] = [];
+    const { scheduler } = setup();
+    teardown = async () => scheduler[Symbol.asyncDispose]();
+
+    // First listener throws
+    scheduler.watch(() => {
+      throw new Error("listener boom");
+    });
+    // Second listener should still receive events
+    scheduler.watch((e) => events.push(e));
+
+    await scheduler.submit(agentId("a1"), TEXT_INPUT, "spawn", { delayMs: 5000 });
+
+    expect(events.length).toBe(1);
+    expect(events[0]?.kind).toBe("task:submitted");
+  });
+
   test("cancel returns false for non-existent task", async () => {
     const { scheduler } = setup();
     teardown = async () => scheduler[Symbol.asyncDispose]();

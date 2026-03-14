@@ -5,7 +5,7 @@
  * Uses raw fetch — no SDK dependency.
  */
 
-import type { ContentBlock, KoiError, ModelRequest, ModelResponse } from "@koi/core";
+import type { ContentBlock, JsonObject, KoiError, ModelRequest, ModelResponse } from "@koi/core";
 import type { NormalizedRole } from "../normalize.js";
 import { normalizeMessages, normalizeToPlainText } from "../normalize.js";
 import type { ProviderAdapter, ProviderAdapterConfig, StreamChunk } from "../provider-adapter.js";
@@ -17,6 +17,24 @@ import {
   parseSSEStream,
   streamFetch,
 } from "./shared.js";
+
+/** Cache hints written by @koi/middleware-prompt-cache into request.metadata. */
+interface CacheHints {
+  readonly provider: string;
+  readonly lastStableIndex: number;
+  readonly staticPrefixTokens: number;
+}
+
+/** Well-known metadata key written by @koi/middleware-prompt-cache. */
+const CACHE_HINTS_KEY = "__koi_cache_hints__";
+
+/** Read cache hints from request metadata (survives object spread cloning). */
+function readCacheHints(metadata: JsonObject | undefined): CacheHints | undefined {
+  if (metadata === undefined) return undefined;
+  const raw = metadata[CACHE_HINTS_KEY];
+  if (raw === undefined || typeof raw !== "object" || raw === null) return undefined;
+  return raw as unknown as CacheHints;
+}
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -45,10 +63,18 @@ interface AnthropicMessage {
   readonly content: string | readonly AnthropicContentPart[];
 }
 
+/** Anthropic system content block with optional cache_control. */
+interface AnthropicSystemBlock {
+  readonly type: "text";
+  readonly text: string;
+  readonly cache_control?: { readonly type: "ephemeral" };
+}
+
 interface AnthropicRequest {
   readonly model: string;
   readonly messages: readonly AnthropicMessage[];
-  readonly system?: string;
+  /** System prompt — string for plain text, array for structured with cache_control. */
+  readonly system?: string | readonly AnthropicSystemBlock[];
   readonly max_tokens: number;
   readonly temperature?: number;
   readonly stream?: boolean;
@@ -158,10 +184,30 @@ export function toAnthropicRequest(request: ModelRequest): AnthropicRequest {
       content: contentBlocksToAnthropic(m.content),
     }));
 
+  // Check for prompt cache hints from middleware metadata
+  const cacheHints = readCacheHints(request.metadata);
+
+  // Apply cache_control to the system parameter when hints are present
+  let systemParam: string | readonly AnthropicSystemBlock[] | undefined;
+  if (systemPrompt.length > 0) {
+    if (cacheHints !== undefined) {
+      // Use structured system blocks with cache_control on the last block
+      systemParam = [
+        {
+          type: "text" as const,
+          text: systemPrompt,
+          cache_control: { type: "ephemeral" as const },
+        },
+      ];
+    } else {
+      systemParam = systemPrompt;
+    }
+  }
+
   return {
     model: request.model ?? "claude-sonnet-4-5-20250929",
     messages,
-    ...(systemPrompt.length > 0 && { system: systemPrompt }),
+    ...(systemParam !== undefined && { system: systemParam }),
     max_tokens: request.maxTokens ?? 4096,
     ...(request.temperature !== undefined && { temperature: request.temperature }),
   };

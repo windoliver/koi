@@ -1,6 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import type { ModelRequest } from "@koi/core";
+import type { JsonObject, ModelRequest } from "@koi/core";
 import { fromAnthropicResponse, mapAnthropicError, toAnthropicRequest } from "./anthropic.js";
+
+interface CacheHints {
+  readonly provider: string;
+  readonly lastStableIndex: number;
+  readonly staticPrefixTokens: number;
+}
+
+/** Helper: build a request with cache hints embedded in metadata (survives cloning). */
+function withCacheHints(request: ModelRequest, hints: CacheHints): ModelRequest {
+  return {
+    ...request,
+    metadata: { ...request.metadata, __koi_cache_hints__: hints as unknown as JsonObject },
+  };
+}
 
 describe("toAnthropicRequest", () => {
   test("transforms basic ModelRequest to Anthropic format", () => {
@@ -227,6 +241,87 @@ describe("toAnthropicRequest", () => {
         },
       });
     }
+  });
+
+  test("applies cache_control to system when anthropic cache hints present", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "You are helpful." }],
+          senderId: "system",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 1,
+        },
+      ],
+      model: "anthropic:claude-sonnet-4-5-20250929",
+    };
+
+    const withHints = withCacheHints(request, {
+      provider: "anthropic",
+      lastStableIndex: 0,
+      staticPrefixTokens: 2000,
+    });
+
+    const result = toAnthropicRequest(withHints);
+    expect(Array.isArray(result.system)).toBe(true);
+    if (Array.isArray(result.system)) {
+      expect(result.system).toHaveLength(1);
+      expect(result.system[0]?.type).toBe("text");
+      expect(result.system[0]?.text).toBe("You are helpful.");
+      expect(result.system[0]?.cache_control).toEqual({ type: "ephemeral" });
+    }
+  });
+
+  test("applies cache_control regardless of provider hint value", () => {
+    // The Anthropic adapter always applies cache_control when hints exist,
+    // regardless of hints.provider — the adapter already knows it's Anthropic.
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "You are helpful." }],
+          senderId: "system",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 1,
+        },
+      ],
+    };
+
+    const withHints = withCacheHints(request, {
+      provider: "unknown",
+      lastStableIndex: 0,
+      staticPrefixTokens: 2000,
+    });
+
+    const result = toAnthropicRequest(withHints);
+    expect(Array.isArray(result.system)).toBe(true);
+  });
+
+  test("no cache_control when no hints are attached", () => {
+    const request: ModelRequest = {
+      messages: [
+        {
+          content: [{ kind: "text" as const, text: "You are helpful." }],
+          senderId: "system",
+          timestamp: 0,
+        },
+        {
+          content: [{ kind: "text" as const, text: "Hello" }],
+          senderId: "user",
+          timestamp: 1,
+        },
+      ],
+    };
+
+    const result = toAnthropicRequest(request);
+    expect(typeof result.system).toBe("string");
   });
 
   test("returns plain string for text-only content", () => {
