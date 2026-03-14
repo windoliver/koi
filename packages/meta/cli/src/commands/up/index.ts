@@ -52,7 +52,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     await runDetach(manifestPath);
   }
 
-  const output = createCliOutput({ verbose: flags.verbose });
+  const output = createCliOutput({ verbose: flags.verbose, logFormat: flags.logFormat });
   const timer = createTimer(flags.timing);
 
   // 1. RESOLVE

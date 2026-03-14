@@ -8,6 +8,7 @@
 import type { JsonObject } from "@koi/core/common";
 import type { Agent, Tool, ToolDescriptor } from "@koi/core/ecs";
 import type { ToolHandler } from "@koi/core/middleware";
+import { formatToolError } from "@koi/errors";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { TSchema } from "@sinclair/typebox";
 
@@ -65,17 +66,24 @@ export function wrapTool(descriptor: ToolDescriptor, toolCall: ToolHandler): Age
     label: descriptor.name,
     parameters: jsonSchemaToTSchema(descriptor.inputSchema),
     execute: async (toolCallId: string, params: unknown): Promise<AgentToolResult<unknown>> => {
-      // Validate params at the boundary — pi passes unknown from LLM JSON parsing
-      const input =
-        typeof params === "object" && params !== null && !Array.isArray(params)
-          ? (params as JsonObject)
-          : {};
-      const response = await toolCall({
-        toolId: descriptor.name,
-        input,
-        metadata: { toolCallId },
-      });
-      return formatToolResult(response.output);
+      try {
+        // Validate params at the boundary — pi passes unknown from LLM JSON parsing
+        const input =
+          typeof params === "object" && params !== null && !Array.isArray(params)
+            ? (params as JsonObject)
+            : {};
+        const response = await toolCall({
+          toolId: descriptor.name,
+          input,
+          metadata: { toolCallId },
+        });
+        return formatToolResult(response.output);
+      } catch (error: unknown) {
+        // Defense-in-depth: catch errors that bypass middleware and return a
+        // structured error result instead of letting pi runtime handle it opaquely.
+        const text = formatToolError(error, descriptor.name);
+        return { content: [{ type: "text", text }], details: { error: text } };
+      }
     },
   };
 }

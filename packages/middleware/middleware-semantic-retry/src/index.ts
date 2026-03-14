@@ -11,6 +11,8 @@ export { createDefaultFailureAnalyzer } from "./default-analyzer.js";
 export { createDefaultPromptRewriter } from "./default-rewriter.js";
 export { descriptor } from "./descriptor.js";
 export { createSemanticRetryMiddleware } from "./semantic-retry.js";
+export { createValidationAnalyzer } from "./validation-analyzer.js";
+export { createValidationRewriter } from "./validation-rewriter.js";
 export type {
   FailureAnalyzer,
   FailureClass,

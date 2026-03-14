@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
+import { createSafeReplacer } from "./json-replacer.js";
 import { createCliOutput } from "./output.js";
 
-function createTestOutput(options?: { verbose?: boolean }) {
+function createTestOutput(options?: {
+  readonly verbose?: boolean;
+  readonly logFormat?: "text" | "json";
+}) {
   const stream = new PassThrough();
   const chunks: Buffer[] = [];
   stream.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -10,12 +14,24 @@ function createTestOutput(options?: { verbose?: boolean }) {
   const output = createCliOutput({
     stream,
     verbose: options?.verbose ?? false,
+    logFormat: options?.logFormat,
   });
 
   return {
     output,
     text: () => Buffer.concat(chunks).toString("utf-8"),
   };
+}
+
+/**
+ * Parses all NDJSON lines from raw output text into an array of objects.
+ */
+function parseNdjson(raw: string): readonly Record<string, unknown>[] {
+  return raw
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 describe("createCliOutput", () => {
@@ -86,5 +102,143 @@ describe("createCliOutput", () => {
     expect(typeof output.spinner.start).toBe("function");
     expect(typeof output.spinner.stop).toBe("function");
     expect(typeof output.spinner.update).toBe("function");
+  });
+});
+
+describe("createCliOutput — json mode", () => {
+  test("writes valid NDJSON lines", () => {
+    const { output, text } = createTestOutput({ logFormat: "json" });
+    output.info("hello");
+    output.warn("caution");
+
+    const lines = parseNdjson(text());
+    expect(lines).toHaveLength(2);
+    // Each line should be valid JSON (parseNdjson would throw if not)
+    expect(lines[0]).toBeDefined();
+    expect(lines[1]).toBeDefined();
+  });
+
+  test("includes level, msg, ts fields", () => {
+    const { output, text } = createTestOutput({ logFormat: "json" });
+    output.info("test message");
+
+    const lines = parseNdjson(text());
+    expect(lines).toHaveLength(1);
+    const entry = lines[0]!;
+    expect(entry.level).toBe("info");
+    expect(entry.msg).toBe("test message");
+    expect(typeof entry.ts).toBe("string");
+    // ts should be a valid ISO 8601 date
+    expect(Number.isNaN(Date.parse(entry.ts as string))).toBe(false);
+  });
+
+  test("warn level is correct", () => {
+    const { output, text } = createTestOutput({ logFormat: "json" });
+    output.warn("caution ahead");
+
+    const lines = parseNdjson(text());
+    expect(lines[0]!.level).toBe("warn");
+    expect(lines[0]!.msg).toBe("caution ahead");
+  });
+
+  test("error includes hint field when provided", () => {
+    const { output, text } = createTestOutput({ logFormat: "json" });
+    output.error("config invalid", "run koi doctor");
+
+    const lines = parseNdjson(text());
+    expect(lines).toHaveLength(1);
+    const entry = lines[0]!;
+    expect(entry.level).toBe("error");
+    expect(entry.msg).toBe("config invalid");
+    expect(entry.hint).toBe("run koi doctor");
+  });
+
+  test("error without hint omits hint field", () => {
+    const { output, text } = createTestOutput({ logFormat: "json" });
+    output.error("something broke");
+
+    const lines = parseNdjson(text());
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.hint).toBeUndefined();
+  });
+
+  test("debug messages only appear when verbose", () => {
+    const quiet = createTestOutput({ logFormat: "json", verbose: false });
+    quiet.output.debug("hidden");
+    expect(quiet.text()).toBe("");
+
+    const loud = createTestOutput({ logFormat: "json", verbose: true });
+    loud.output.debug("visible");
+    const lines = parseNdjson(loud.text());
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.level).toBe("debug");
+    expect(lines[0]!.msg).toBe("visible");
+  });
+
+  test("success maps to info level", () => {
+    const { output, text } = createTestOutput({ logFormat: "json" });
+    output.success("done");
+
+    const lines = parseNdjson(text());
+    expect(lines[0]!.level).toBe("info");
+    expect(lines[0]!.msg).toBe("done");
+  });
+
+  test("hint maps to info level", () => {
+    const { output, text } = createTestOutput({ logFormat: "json" });
+    output.hint("try this");
+
+    const lines = parseNdjson(text());
+    expect(lines[0]!.level).toBe("info");
+    expect(lines[0]!.msg).toBe("try this");
+  });
+});
+
+describe("createSafeReplacer", () => {
+  test("handles circular references", () => {
+    const obj: Record<string, unknown> = { name: "test" };
+    obj.self = obj;
+
+    const result = JSON.stringify(obj, createSafeReplacer());
+    const parsed = JSON.parse(result) as Record<string, unknown>;
+    expect(parsed.name).toBe("test");
+    expect(parsed.self).toBe("[Circular]");
+  });
+
+  test("sanitizes sk- secret patterns", () => {
+    const obj = { key: "sk-abc123def456", name: "safe" };
+    const result = JSON.stringify(obj, createSafeReplacer());
+    const parsed = JSON.parse(result) as Record<string, unknown>;
+    expect(parsed.key).toBe("[REDACTED]");
+    expect(parsed.name).toBe("safe");
+  });
+
+  test("sanitizes Bearer token patterns", () => {
+    const obj = { auth: "Bearer eyJhbGciOiJIUzI1NiJ9.test" };
+    const result = JSON.stringify(obj, createSafeReplacer());
+    const parsed = JSON.parse(result) as Record<string, unknown>;
+    expect(parsed.auth).toBe("[REDACTED]");
+  });
+
+  test("sanitizes GitHub personal access tokens", () => {
+    const obj = { token: "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZab" };
+    const result = JSON.stringify(obj, createSafeReplacer());
+    const parsed = JSON.parse(result) as Record<string, unknown>;
+    expect(parsed.token).toBe("[REDACTED]");
+  });
+
+  test("sanitizes AWS access key patterns", () => {
+    const obj = { aws: "AKIAIOSFODNN7EXAMPLE" };
+    const result = JSON.stringify(obj, createSafeReplacer());
+    const parsed = JSON.parse(result) as Record<string, unknown>;
+    expect(parsed.aws).toBe("[REDACTED]");
+  });
+
+  test("does not redact normal strings", () => {
+    const obj = { msg: "just a normal message", count: 42 };
+    const result = JSON.stringify(obj, createSafeReplacer());
+    const parsed = JSON.parse(result) as Record<string, unknown>;
+    expect(parsed.msg).toBe("just a normal message");
+    expect(parsed.count).toBe(42);
   });
 });

@@ -138,6 +138,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@mariozechner/pi-agent-core": "0.54.0",
         "@mariozechner/pi-ai": "0.54.0",
@@ -152,7 +153,6 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
-        "@koi/execution-context": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/validation": "workspace:*",
@@ -1743,6 +1743,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware/middleware-tool-error-formatter": {
+      "name": "@koi/middleware-tool-error-formatter",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware/middleware-tool-recovery": {
       "name": "@koi/middleware-tool-recovery",
       "version": "0.0.0",
@@ -1927,6 +1938,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/hash": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -3884,6 +3896,8 @@
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/middleware/middleware-semantic-retry"],
 
     "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/middleware/middleware-tool-audit"],
+
+    "@koi/middleware-tool-error-formatter": ["@koi/middleware-tool-error-formatter@workspace:packages/middleware/middleware-tool-error-formatter"],
 
     "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/middleware/middleware-tool-recovery"],
 

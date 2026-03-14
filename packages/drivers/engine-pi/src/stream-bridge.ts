@@ -31,6 +31,29 @@ import type { PiNativeParams } from "./model-terminal.js";
 import { createCacheResultChannel, PI_PARAMS_NONCE_KEY, piParamsStore } from "./model-terminal.js";
 
 // ---------------------------------------------------------------------------
+// Tool argument parsing — throws VALIDATION KoiError on malformed JSON
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse accumulated tool call argument JSON. Throws a descriptive error
+ * (caught by semantic-retry as VALIDATION) instead of silently defaulting to {}.
+ */
+function parseToolCallArgs(argsJson: string, toolName: string): Record<string, unknown> {
+  const raw = argsJson || "{}";
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch (parseError: unknown) {
+    const message = parseError instanceof Error ? parseError.message : String(parseError);
+    throw Object.freeze({
+      code: "VALIDATION" as const,
+      message: `Tool '${toolName}' received malformed JSON arguments: ${message}`,
+      retryable: false,
+      context: { toolName, rawJson: raw.slice(0, 500) },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Partial message builder — accumulates streaming chunks into content blocks
 // ---------------------------------------------------------------------------
 
@@ -119,14 +142,10 @@ function createPartialBuilder(initial: AssistantMessage): PartialBuilder {
 
         case "tool_call_end":
           if (currentToolCallEntry !== undefined) {
-            try {
-              currentToolCallEntry.arguments = JSON.parse(currentArgsJson || "{}") as Record<
-                string,
-                unknown
-              >;
-            } catch {
-              currentToolCallEntry.arguments = {};
-            }
+            currentToolCallEntry.arguments = parseToolCallArgs(
+              currentArgsJson,
+              currentToolCallEntry.name,
+            );
             currentToolCallEntry = undefined;
             currentArgsJson = "";
           }
@@ -140,14 +159,10 @@ function createPartialBuilder(initial: AssistantMessage): PartialBuilder {
     finalize(usage: StreamUsage): AssistantMessage {
       // Finalize any in-flight tool call (shouldn't happen with well-formed streams)
       if (currentToolCallEntry !== undefined) {
-        try {
-          currentToolCallEntry.arguments = JSON.parse(currentArgsJson || "{}") as Record<
-            string,
-            unknown
-          >;
-        } catch {
-          currentToolCallEntry.arguments = {};
-        }
+        currentToolCallEntry.arguments = parseToolCallArgs(
+          currentArgsJson,
+          currentToolCallEntry.name,
+        );
       }
       return {
         ...partial,

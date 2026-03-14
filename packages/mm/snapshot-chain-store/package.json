@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/hash": "workspace:*"
+    "@koi/hash": "workspace:*",
+    "@koi/sqlite-utils": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"
