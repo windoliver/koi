@@ -497,9 +497,25 @@ export function createSqliteSnapshotChainStore<T>(dbPath: string): SnapshotChain
           removedCount += 1;
         }
 
-        // Update head if all nodes were removed
+        // Update head: if all nodes removed, delete head entirely.
+        // If the head was pruned but other nodes remain, point to the newest surviving member.
         if (removedCount === rows.length) {
           deleteHeadStmt.run(cid);
+        } else if (toRemove.has(0)) {
+          // Head (index 0 = newest) was pruned — find the first surviving node
+          const newHeadRow = db
+            .query<{ readonly node_id: string }, [string]>(
+              `SELECT node_id FROM chain_members
+               WHERE chain_id = ?
+               ORDER BY created_at DESC, seq DESC
+               LIMIT 1`,
+            )
+            .get(cid);
+          if (newHeadRow !== null) {
+            upsertHeadStmt.run({ $chain_id: cid, $node_id: newHeadRow.node_id });
+          } else {
+            deleteHeadStmt.run(cid);
+          }
         }
       })();
 

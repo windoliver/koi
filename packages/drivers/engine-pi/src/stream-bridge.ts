@@ -31,12 +31,23 @@ import type { PiNativeParams } from "./model-terminal.js";
 import { createCacheResultChannel, PI_PARAMS_NONCE_KEY, piParamsStore } from "./model-terminal.js";
 
 // ---------------------------------------------------------------------------
-// Tool argument parsing — throws VALIDATION KoiError on malformed JSON
+// Tool argument parsing — attaches parse error metadata for tool-bridge to throw
 // ---------------------------------------------------------------------------
 
 /**
- * Parse accumulated tool call argument JSON. Throws a descriptive error
- * (caught by semantic-retry as VALIDATION) instead of silently defaulting to {}.
+ * Marker property attached to tool call arguments when JSON parsing fails.
+ * The tool-bridge checks for this and throws a VALIDATION KoiError during
+ * tool execution (inside wrapToolCall), where retry middleware can catch it.
+ *
+ * Throwing here would abort the entire stream (caught by the pump loop's
+ * outer catch) — the error must surface during tool *execution*, not streaming.
+ */
+export const PARSE_ERROR_KEY = "__koi_parse_error__" as const;
+
+/**
+ * Parse accumulated tool call argument JSON. On failure, returns an object
+ * with a parse error marker instead of throwing — the error is deferred
+ * to tool execution time where middleware can intercept it.
  */
 function parseToolCallArgs(argsJson: string, toolName: string): Record<string, unknown> {
   const raw = argsJson || "{}";
@@ -44,12 +55,10 @@ function parseToolCallArgs(argsJson: string, toolName: string): Record<string, u
     return JSON.parse(raw) as Record<string, unknown>;
   } catch (parseError: unknown) {
     const message = parseError instanceof Error ? parseError.message : String(parseError);
-    throw Object.freeze({
-      code: "VALIDATION" as const,
-      message: `Tool '${toolName}' received malformed JSON arguments: ${message}`,
-      retryable: false,
-      context: { toolName, rawJson: raw.slice(0, 500) },
-    });
+    // Return a marker object; tool-bridge will detect and throw at execution time
+    return {
+      [PARSE_ERROR_KEY]: `Tool '${toolName}' received malformed JSON arguments: ${message}`,
+    };
   }
 }
 

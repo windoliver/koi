@@ -144,7 +144,7 @@ describe("createValidationAnalyzer", () => {
       }
     });
 
-    test("returns abort when prior validation retry exists", () => {
+    test("returns add_context even with prior validation retries (budget enforced upstream)", () => {
       const analyzer = createValidationAnalyzer();
       const failure: FailureClass = {
         kind: "validation_failure",
@@ -153,26 +153,29 @@ describe("createValidationAnalyzer", () => {
       const records = [
         makeRecord({ failureClass: { kind: "validation_failure", reason: "first attempt" } }),
       ];
+      // Analyzer always returns add_context; the middleware's selectActionWithFallback
+      // handles abort when the per-class budget is exhausted.
       const action = analyzer.selectAction(failure, records);
-      expect(action.kind).toBe("abort");
-      if (action.kind === "abort") {
-        expect(action.reason).toContain("persist");
+      expect(action.kind).toBe("add_context");
+      if (action.kind === "add_context") {
+        expect(action.context).toContain("Validation failed");
       }
     });
 
-    test("never returns escalate_model for validation failures", () => {
+    test("never returns escalate_model or narrow_scope for validation failures", () => {
       const analyzer = createValidationAnalyzer();
       const failure: FailureClass = {
         kind: "validation_failure",
         reason: "Validation failed: bad output",
       };
-      // Even with many prior records, should abort rather than escalate
+      // Even with many prior records, always add_context (never escalate/narrow)
       const records = [
         makeRecord({ failureClass: { kind: "validation_failure", reason: "attempt 1" } }),
         makeRecord({ failureClass: { kind: "validation_failure", reason: "attempt 2" } }),
         makeRecord({ failureClass: { kind: "validation_failure", reason: "attempt 3" } }),
       ];
       const action = analyzer.selectAction(failure, records);
+      expect(action.kind).toBe("add_context");
       expect(action.kind).not.toBe("escalate_model");
       expect(action.kind).not.toBe("narrow_scope");
     });

@@ -11,6 +11,7 @@ import type { ToolHandler } from "@koi/core/middleware";
 import { formatToolError } from "@koi/errors";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { TSchema } from "@sinclair/typebox";
+import { PARSE_ERROR_KEY } from "./stream-bridge.js";
 
 /** Maximum length for Anthropic API tool names. */
 const MAX_TOOL_NAME_LENGTH = 64;
@@ -72,6 +73,19 @@ export function wrapTool(descriptor: ToolDescriptor, toolCall: ToolHandler): Age
           typeof params === "object" && params !== null && !Array.isArray(params)
             ? (params as JsonObject)
             : {};
+
+        // Check for deferred parse error from stream-bridge. Throw a VALIDATION
+        // KoiError here (inside wrapToolCall) where retry middleware can catch it.
+        const parseErrorMsg = input[PARSE_ERROR_KEY];
+        if (typeof parseErrorMsg === "string") {
+          throw Object.freeze({
+            code: "VALIDATION" as const,
+            message: parseErrorMsg,
+            retryable: false,
+            context: { toolName: descriptor.name },
+          });
+        }
+
         const response = await toolCall({
           toolId: descriptor.name,
           input,

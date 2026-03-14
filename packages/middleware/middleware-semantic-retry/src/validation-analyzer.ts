@@ -99,20 +99,10 @@ export function createValidationAnalyzer(fallback?: FailureAnalyzer): FailureAna
         return { kind: "add_context", context: `Previous attempt failed: ${failure.reason}` };
       }
 
-      // Count prior validation-specific retries
-      const validationRetries = records.filter(
-        (r) => r.failureClass.kind === "validation_failure",
-      ).length;
-
-      // Abort if we've already retried validation errors
-      if (validationRetries > 0) {
-        return {
-          kind: "abort",
-          reason: `Validation error persists after ${validationRetries} retry attempt(s)`,
-        };
-      }
-
-      // First validation retry: provide the actual error details as context
+      // Always provide the actual error details as context for validation failures.
+      // Budget enforcement is handled upstream by the middleware's selectActionWithFallback(),
+      // which returns "abort" when the per-class budget is exhausted. The analyzer should
+      // not duplicate that check — doing so defeats configurable budgetOverrides.
       return {
         kind: "add_context",
         context: failure.reason,

@@ -299,7 +299,41 @@ for (const { name, create } of factories) {
     });
 
     // -------------------------------------------------------------------
-    // 13. close releases resources
+    // 13. prune with retainBranches: false updates head to newest survivor
+    // -------------------------------------------------------------------
+    test("prune with retainBranches: false updates head when head is removed", async () => {
+      store = create();
+      // Create 3 nodes (oldest to newest): node-0, node-1, node-2
+      for (let i = 0; i < 3; i++) {
+        await store.put(c1, `node-${i}`, []);
+      }
+
+      // Prune keeping only 1 (the newest) with retainBranches: false
+      // This should remove node-0 and node-1, keeping only node-2
+      const pruneResult = await store.prune(c1, { retainCount: 1, retainBranches: false });
+      expect(pruneResult.ok).toBe(true);
+      if (pruneResult.ok) {
+        expect(pruneResult.value).toBe(2);
+      }
+
+      // Head should point to the surviving node, not a deleted one
+      const headResult = await store.head(c1);
+      expect(headResult.ok).toBe(true);
+      if (headResult.ok) {
+        expect(headResult.value).toBeDefined();
+        expect(headResult.value?.data).toBe("node-2");
+      }
+
+      // List should only have 1 node
+      const listResult = await store.list(c1);
+      expect(listResult.ok).toBe(true);
+      if (listResult.ok) {
+        expect(listResult.value.length).toBe(1);
+      }
+    });
+
+    // -------------------------------------------------------------------
+    // 14. close releases resources
     // -------------------------------------------------------------------
     test("close releases resources", async () => {
       store = create();
