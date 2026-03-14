@@ -271,7 +271,9 @@ describe("toAnthropicRequest", () => {
     }
   });
 
-  test("no cache_control when hints are for non-anthropic provider", () => {
+  test("applies cache_control regardless of provider hint value", () => {
+    // The Anthropic adapter always applies cache_control when hints exist,
+    // regardless of hints.provider — the adapter already knows it's Anthropic.
     const request: ModelRequest = {
       messages: [
         {
@@ -285,19 +287,16 @@ describe("toAnthropicRequest", () => {
           timestamp: 1,
         },
       ],
-      model: "openai:gpt-4o",
     };
 
     const withHints = withCacheHints(request, {
-      provider: "openai",
+      provider: "unknown",
       lastStableIndex: 0,
       staticPrefixTokens: 2000,
     });
 
     const result = toAnthropicRequest(withHints);
-    // Should be plain string, not structured array
-    expect(typeof result.system).toBe("string");
-    expect(result.system).toBe("You are helpful.");
+    expect(Array.isArray(result.system)).toBe(true);
   });
 
   test("no cache_control when no hints are attached", () => {

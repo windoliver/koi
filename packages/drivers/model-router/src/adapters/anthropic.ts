@@ -184,7 +184,7 @@ export function toAnthropicRequest(request: ModelRequest): AnthropicRequest {
   // Apply cache_control to the system parameter when hints are present
   let systemParam: string | readonly AnthropicSystemBlock[] | undefined;
   if (systemPrompt.length > 0) {
-    if (cacheHints !== undefined && cacheHints.provider === "anthropic") {
+    if (cacheHints !== undefined) {
       // Use structured system blocks with cache_control on the last block
       systemParam = [
         {

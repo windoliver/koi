@@ -560,7 +560,15 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
       ? createGovernanceBackendMiddleware(resolved.governanceBackend) // 150
       : undefined,
     resolved.pay !== undefined
-      ? createPayMiddleware(resolved.pay) // 200
+      ? createPayMiddleware(
+          // Auto-inject agentDepth into pay.agentBudget when both are configured
+          resolved.pay.agentBudget !== undefined && config.agentDepth !== undefined
+            ? {
+                ...resolved.pay,
+                agentBudget: { ...resolved.pay.agentBudget, agentDepth: config.agentDepth },
+              }
+            : resolved.pay,
+        ) // 200
       : undefined,
     config.intentCapsule !== undefined
       ? createIntentCapsuleMiddleware(config.intentCapsule) // 290

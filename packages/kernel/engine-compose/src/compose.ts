@@ -225,11 +225,31 @@ export function composeModelChain(
 
   if (concurrentObservers.length === 0) return chain;
 
-  // Wrap: fire concurrent observers alongside the main chain, return main result immediately
+  // Wrap the terminal so concurrent observers fire with the post-rewrite request
+  // (after all intercept/resolve middleware have modified it).
+  // let: set before dispatch so the terminal closure can read it
+  let currentCtx: TurnContext;
+  const observingTerminal: ModelHandler = (req: ModelRequest): Promise<ModelResponse> => {
+    const result = terminal(req);
+    fireConcurrentModelObservers(concurrentObservers, currentCtx, req, result);
+    return result;
+  };
+
+  const innerChain = composeOnion(
+    regularEntries,
+    "wrapModelCall",
+    observingTerminal,
+    (result, resetGuard) => {
+      void result.catch(() => {
+        resetGuard();
+      });
+      return result;
+    },
+  );
+
   return (ctx: TurnContext, request: ModelRequest): Promise<ModelResponse> => {
-    const mainResult = chain(ctx, request);
-    fireConcurrentModelObservers(concurrentObservers, ctx, request, mainResult);
-    return mainResult;
+    currentCtx = ctx;
+    return innerChain(ctx, request);
   };
 }
 
@@ -237,40 +257,18 @@ export function composeModelStreamChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelStreamHandler,
 ): (ctx: TurnContext, request: ModelRequest) => AsyncIterable<ModelChunk> {
-  const regularEntries: OnionEntry<ModelRequest, AsyncIterable<ModelChunk>>[] = [];
-  const concurrentObservers: KoiMiddleware[] = [];
-
+  // Streams: all middleware runs sequentially (including concurrent observers).
+  // Concurrent observe is only meaningful for request/response (model call, tool call),
+  // not for streams — observers can't inspect chunks from an empty async iterable.
+  const entries: OnionEntry<ModelRequest, AsyncIterable<ModelChunk>>[] = [];
   for (const mw of middleware) {
-    if (mw.wrapModelStream === undefined) continue;
-    if (mw.concurrent === true && (mw.phase ?? "resolve") === "observe") {
-      concurrentObservers.push(mw);
-    } else {
-      regularEntries.push({ name: mw.name, hook: mw.wrapModelStream });
+    if (mw.wrapModelStream !== undefined) {
+      entries.push({ name: mw.name, hook: mw.wrapModelStream });
     }
   }
-
-  const chain = composeOnion(regularEntries, "wrapModelStream", terminal, (result, resetGuard) => {
+  return composeOnion(entries, "wrapModelStream", terminal, (result, resetGuard) => {
     return wrapAsyncIterableWithErrorReset(result, resetGuard);
   });
-
-  if (concurrentObservers.length === 0) return chain;
-
-  // For streams, concurrent observers fire on the request but don't wrap the stream
-  return (ctx: TurnContext, request: ModelRequest): AsyncIterable<ModelChunk> => {
-    // Fire observers concurrently — they get their own pass-through next()
-    for (const mw of concurrentObservers) {
-      if (mw.wrapModelStream === undefined) continue;
-      try {
-        // Observers receive a no-op pass-through that returns an empty stream
-        const observeStream = mw.wrapModelStream(ctx, request, () => emptyAsyncIterable());
-        // Drain the observer stream in the background to trigger any side effects
-        void drainAsyncIterable(observeStream).catch(() => {});
-      } catch (_observeError: unknown) {
-        // Observer errors are silently swallowed
-      }
-    }
-    return chain(ctx, request);
-  };
 }
 
 export function composeToolChain(
@@ -289,14 +287,22 @@ export function composeToolChain(
     }
   }
 
-  const chain = composeOnion(regularEntries, "wrapToolCall", terminal);
+  if (concurrentObservers.length === 0) {
+    return composeOnion(regularEntries, "wrapToolCall", terminal);
+  }
 
-  if (concurrentObservers.length === 0) return chain;
+  // let: set before dispatch so the terminal closure can read it
+  let currentCtx: TurnContext;
+  const observingTerminal: ToolHandler = (req: ToolRequest): Promise<ToolResponse> => {
+    const result = terminal(req);
+    fireConcurrentToolObservers(concurrentObservers, currentCtx, req, result);
+    return result;
+  };
 
+  const innerChain = composeOnion(regularEntries, "wrapToolCall", observingTerminal);
   return (ctx: TurnContext, request: ToolRequest): Promise<ToolResponse> => {
-    const mainResult = chain(ctx, request);
-    fireConcurrentToolObservers(concurrentObservers, ctx, request, mainResult);
-    return mainResult;
+    currentCtx = ctx;
+    return innerChain(ctx, request);
   };
 }
 
@@ -305,8 +311,9 @@ export function composeToolChain(
 // ---------------------------------------------------------------------------
 
 /**
- * Fire concurrent model-call observers alongside the main chain result.
- * Observers receive a pass-through next() that resolves with the main result.
+ * Fire concurrent model-call observers alongside the terminal result.
+ * Called from the observing terminal wrapper, so observers see the
+ * post-rewrite request (after intercept/resolve middleware).
  * Observer errors are silently swallowed — they're observe-only.
  */
 function fireConcurrentModelObservers(
@@ -317,10 +324,8 @@ function fireConcurrentModelObservers(
 ): void {
   for (const mw of observers) {
     if (mw.wrapModelCall === undefined) continue;
-    // Each observer gets a next() that returns the main chain's result
     const next = (): Promise<ModelResponse> => mainResult;
     try {
-      // Fire and forget — don't await, don't propagate errors
       const observerPromise = mw.wrapModelCall(ctx, request, next);
       void observerPromise.catch(() => {});
     } catch (_observeError: unknown) {
@@ -347,18 +352,6 @@ function fireConcurrentToolObservers(
     } catch (_observeError: unknown) {
       // Synchronous throw in observer — swallow
     }
-  }
-}
-
-/** Create an empty async iterable (pass-through for concurrent stream observers). */
-async function* emptyAsyncIterable(): AsyncIterable<ModelChunk> {
-  // intentionally empty
-}
-
-/** Drain an async iterable to trigger side effects, discarding values. */
-async function drainAsyncIterable<T>(iterable: AsyncIterable<T>): Promise<void> {
-  for await (const _ of iterable) {
-    // discard — we only want side effects
   }
 }
 
