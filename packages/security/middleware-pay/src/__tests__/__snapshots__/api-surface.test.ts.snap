@@ -3,11 +3,64 @@
 exports[`@koi/middleware-pay API surface . has stable type surface 1`] = `
 "import { BudgetTracker, CostCalculator, UsageInfo } from '@koi/core/cost-tracker';
 export { BudgetTracker, CostBreakdown, CostCalculator, ModelCostBreakdown, ToolCostBreakdown, UsageInfo } from '@koi/core/cost-tracker';
+import { InboundMessage, KoiMiddleware } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
-import { KoiMiddleware } from '@koi/core';
 import { BrickDescriptor } from '@koi/resolve';
 import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 import { PayLedger } from '@koi/core/pay-ledger';
+
+/**
+ * Per-agent token budget enforcement.
+ *
+ * Tracks token consumption per agent and enforces soft (80%) / hard (100%) limits.
+ * Budget allocation is depth-aware: deeper agents receive smaller budgets.
+ *
+ * Integrated into the pay middleware via composition — not a standalone middleware.
+ */
+
+interface AgentBudgetConfig {
+    /** Maximum tokens per agent. Applied per agentId. Default: undefined (no per-agent limit). */
+    readonly maxTokensPerAgent?: number;
+    /** Soft threshold percentage (0-1). At this level, a system warning is injected. Default: 0.8. */
+    readonly softThresholdPercent?: number;
+    /**
+     * Agent depth in the process tree (0 = root copilot).
+     * Used for depth-based budget allocation: deeper agents get smaller budgets.
+     * Should be set from CreateKoiOptions.parentPid.depth + 1 (computed in @koi/starter).
+     * Default: 0 (full budget).
+     */
+    readonly agentDepth?: number;
+}
+interface ResolvedAgentBudgetConfig {
+    readonly maxTokensPerAgent: number;
+    readonly softThresholdPercent: number;
+}
+interface AgentBudgetTracker {
+    /**
+     * Compute the allocated budget for an agent based on depth.
+     * Depth 0 = full budget, depth 1 = 50%, depth 2 = 25%, etc.
+     * Minimum floor: 1024 tokens.
+     */
+    readonly computeAllocation: (agentDepth: number) => number;
+    /**
+     * Record token usage for an agent. Returns whether the hard limit is exceeded.
+     */
+    readonly recordUsage: (agentId: string, tokens: number, agentDepth: number) => boolean;
+    /**
+     * Check if the agent has exceeded its budget. Returns "ok" | "warn" | "exceeded".
+     */
+    readonly checkBudget: (agentId: string) => "ok" | "warn" | "exceeded";
+    /**
+     * Get the budget warning message to inject, or undefined if not needed.
+     * Returns the message only once (idempotent soft warning).
+     */
+    readonly getBudgetWarning: (agentId: string) => InboundMessage | undefined;
+    /**
+     * Clean up budget state for an agent.
+     */
+    readonly cleanup: (agentId: string) => void;
+}
+declare function createAgentBudgetTracker(config: ResolvedAgentBudgetConfig): AgentBudgetTracker;
 
 /**
  * Pay middleware configuration and validation.
@@ -21,6 +74,12 @@ interface PayMiddlewareConfig {
     readonly onAlert?: (pctUsed: number, remaining: number) => void;
     readonly onUsage?: (info: UsageInfo) => void;
     readonly hardKill?: boolean;
+    /**
+     * Per-agent token budget configuration.
+     * When set, enforces per-agent limits based on agentId from session context.
+     * Budget allocation is depth-aware: deeper agents get smaller budgets.
+     */
+    readonly agentBudget?: AgentBudgetConfig;
 }
 declare function validatePayConfig(config: unknown): Result<PayMiddlewareConfig, KoiError>;
 
@@ -84,6 +143,6 @@ declare function createDefaultCostCalculator(rates?: Partial<Record<string, {
     readonly output: number;
 }>>): CostCalculator;
 
-export { type PayMiddlewareConfig, createDefaultCostCalculator, createInMemoryBudgetTracker, createInMemoryPayLedger, createPayMiddleware, descriptor, validatePayConfig };
+export { type AgentBudgetConfig, type AgentBudgetTracker, type PayMiddlewareConfig, createAgentBudgetTracker, createDefaultCostCalculator, createInMemoryBudgetTracker, createInMemoryPayLedger, createPayMiddleware, descriptor, validatePayConfig };
 "
 `;
