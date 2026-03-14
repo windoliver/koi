@@ -34,6 +34,8 @@ export function createInteractiveConsent(output: CliOutput): ConsentCallbacks {
   };
 }
 
+const MAX_DISPLAYED_SOURCES = 10;
+
 async function presentBatchInteractive(
   descriptors: readonly DataSourceDescriptor[],
   output: CliOutput,
@@ -41,11 +43,17 @@ async function presentBatchInteractive(
   try {
     const p = await import("@clack/prompts");
 
-    // Show summary of discovered sources
+    // Show summary of discovered sources (cap display to avoid wall of text)
     output.info(`Found ${String(descriptors.length)} data source(s):`);
-    for (const ds of descriptors) {
+    const displayed = descriptors.slice(0, MAX_DISPLAYED_SOURCES);
+    for (const ds of displayed) {
       const desc = ds.description !== undefined ? ` — ${ds.description}` : "";
       output.info(`  ${ds.name} (${ds.protocol})${desc}`);
+    }
+    if (descriptors.length > MAX_DISPLAYED_SOURCES) {
+      output.info(
+        `  ... and ${String(descriptors.length - MAX_DISPLAYED_SOURCES)} more`,
+      );
     }
 
     const choice = await p.select({
