@@ -14,6 +14,13 @@ export {
 export { type SelectVariantOptions, selectVariant } from "./select.js";
 export { selectByContext } from "./select-by-context.js";
 export { selectByFitness } from "./select-by-fitness.js";
+export {
+  createThompsonState,
+  selectByThompson,
+  type ThompsonState,
+  type ThompsonStates,
+  updateThompson,
+} from "./select-by-thompson.js";
 export { selectRandom } from "./select-random.js";
 export {
   createRoundRobinState,

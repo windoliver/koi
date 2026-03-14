@@ -280,6 +280,29 @@
         "@koi/validation": "workspace:*",
       },
     },
+    "packages/forge/harness-search": {
+      "name": "@koi/harness-search",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/variant-selection": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/forge/harness-synth": {
+      "name": "@koi/harness-synth",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/failure-context": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/fs/catalog": {
       "name": "@koi/catalog",
       "version": "0.0.0",
@@ -1052,6 +1075,23 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/meta/auto-harness": {
+      "name": "@koi/auto-harness",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/failure-context": "workspace:*",
+        "@koi/forge-optimizer": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/harness-search": "workspace:*",
+        "@koi/harness-synth": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/middleware-policy-cache": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/meta/autonomous": {
       "name": "@koi/autonomous",
       "version": "0.0.0",
@@ -1642,6 +1682,16 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-policy-cache": {
+      "name": "@koi/middleware-policy-cache",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -3596,6 +3646,8 @@
 
     "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/security/audit-sink-nexus"],
 
+    "@koi/auto-harness": ["@koi/auto-harness@workspace:packages/meta/auto-harness"],
+
     "@koi/autonomous": ["@koi/autonomous@workspace:packages/meta/autonomous"],
 
     "@koi/bootstrap": ["@koi/bootstrap@workspace:packages/kernel/bootstrap"],
@@ -3772,6 +3824,10 @@
 
     "@koi/harness-scheduler": ["@koi/harness-scheduler@workspace:packages/sched/harness-scheduler"],
 
+    "@koi/harness-search": ["@koi/harness-search@workspace:packages/forge/harness-search"],
+
+    "@koi/harness-synth": ["@koi/harness-synth@workspace:packages/forge/harness-synth"],
+
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
 
     "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/ipc/ipc-local"],
@@ -3839,6 +3895,8 @@
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
     "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/security/middleware-pii"],
+
+    "@koi/middleware-policy-cache": ["@koi/middleware-policy-cache@workspace:packages/middleware/middleware-policy-cache"],
 
     "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/middleware/middleware-reflex"],
 

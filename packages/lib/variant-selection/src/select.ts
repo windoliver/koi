@@ -5,6 +5,7 @@
 import type { SelectionStrategy } from "@koi/core";
 import { selectByContext } from "./select-by-context.js";
 import { selectByFitness } from "./select-by-fitness.js";
+import { selectByThompson, type ThompsonStates } from "./select-by-thompson.js";
 import { selectRandom } from "./select-random.js";
 import { type RoundRobinState, selectRoundRobin } from "./select-round-robin.js";
 import type {
@@ -22,6 +23,7 @@ export interface SelectVariantOptions<T> {
   readonly ctx: SelectionContext;
   readonly roundRobinState?: RoundRobinState;
   readonly contextMatcher?: ContextMatcher<T>;
+  readonly thompsonStates?: ThompsonStates;
 }
 
 export function selectVariant<T>(options: SelectVariantOptions<T>): VariantSelection<T> {
@@ -40,6 +42,10 @@ export function selectVariant<T>(options: SelectVariantOptions<T>): VariantSelec
     }
     case "random":
       return selectRandom(pool, breakers, ctx);
+    case "thompson": {
+      const states = options.thompsonStates ?? new Map();
+      return selectByThompson(pool, breakers, states, ctx);
+    }
     default: {
       const _exhaustive: never = strategy;
       return { ok: false, reason: `Unknown strategy: ${String(_exhaustive)}` };

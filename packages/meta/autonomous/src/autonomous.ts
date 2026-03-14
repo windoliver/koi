@@ -162,6 +162,14 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
     }
   }
 
+  // Auto-harness middleware — opt-in failure-driven middleware synthesis.
+  // Created via createAutoHarnessStack() from @koi/auto-harness.
+  if (parts.autoHarnessMiddleware !== undefined) {
+    for (const mw of parts.autoHarnessMiddleware) {
+      middlewareList.push(mw);
+    }
+  }
+
   const cachedMiddleware: readonly KoiMiddleware[] = middlewareList;
 
   // --- Build providers list ---

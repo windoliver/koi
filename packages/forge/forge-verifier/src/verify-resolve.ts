@@ -49,6 +49,27 @@ export async function verifyResolve(
     };
   }
 
+  // Fast path: reuse existing workspace (skip audit + install)
+  // Used by harness-search to avoid repeated dependency resolution per refinement iteration
+  if (config.reuseWorkspace !== undefined) {
+    // let justified: entryPath is conditionally assigned based on brick kind
+    let entryPath: string | undefined;
+    if (hasImplementation(input)) {
+      entryPath = await writeBrickEntry(config.reuseWorkspace, input.implementation, input.name);
+    }
+    return {
+      ok: true,
+      value: {
+        stage: "resolve",
+        passed: true,
+        durationMs: performance.now() - start,
+        workspacePath: config.reuseWorkspace,
+        ...(entryPath !== undefined ? { entryPath } : {}),
+        message: "Dependencies resolved (workspace reuse)",
+      },
+    };
+  }
+
   // Step 1: Audit dependencies
   const auditResult = auditDependencies(packages, config);
   if (!auditResult.ok) {

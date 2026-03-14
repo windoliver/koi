@@ -198,6 +198,97 @@ describe("createBrickOptimizer - evaluate", () => {
     expect(result.reason).toContain("No component tool data");
   });
 
+  test("returns promote_to_policy for harness-synth bricks with 100% success", async () => {
+    const fitness = createFitness({
+      successCount: 60,
+      errorCount: 0,
+      latency: { samples: [50], count: 1, cap: 200 },
+      lastUsedAt: 1000,
+    });
+    const brick = createTestToolArtifact({
+      id: brickId("harness-1"),
+      name: "harness-test",
+      fitness,
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        source: { origin: "forged", forgedBy: "harness-synth" },
+        buildDefinition: {
+          buildType: "koi.harness-synth/middleware/v1",
+          externalParameters: {},
+        },
+      },
+    });
+
+    const store = createMockStore([brick]);
+    const optimizer = createBrickOptimizer({
+      store,
+      minSampleSize: 10,
+      minPolicySamples: 50,
+      clock: () => 1000,
+    });
+
+    const result = await optimizer.evaluate(brick.id);
+    expect(result.action).toBe("promote_to_policy");
+    expect(result.reason).toContain("100% success rate");
+    expect(result.reason).toContain("60");
+  });
+
+  test("does not promote to policy when below minPolicySamples", async () => {
+    const fitness = createFitness({
+      successCount: 30,
+      errorCount: 0,
+      latency: { samples: [50], count: 1, cap: 200 },
+      lastUsedAt: 1000,
+    });
+    const brick = createTestToolArtifact({
+      id: brickId("harness-2"),
+      name: "harness-test",
+      fitness,
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        source: { origin: "forged", forgedBy: "harness-synth" },
+        buildDefinition: {
+          buildType: "koi.harness-synth/middleware/v1",
+          externalParameters: {},
+        },
+      },
+    });
+
+    const store = createMockStore([brick]);
+    const optimizer = createBrickOptimizer({
+      store,
+      minSampleSize: 10,
+      minPolicySamples: 50,
+      clock: () => 1000,
+    });
+
+    const result = await optimizer.evaluate(brick.id);
+    // 30 < 50 minPolicySamples — should keep, not promote
+    expect(result.action).not.toBe("promote_to_policy");
+  });
+
+  test("does not promote non-harness-synth bricks to policy", async () => {
+    const fitness = createFitness({
+      successCount: 60,
+      errorCount: 0,
+      latency: { samples: [50], count: 1, cap: 200 },
+      lastUsedAt: 1000,
+    });
+    const brick = createCrystallizedBrick("auto-forge-1", fitness);
+
+    const store = createMockStore([brick]);
+    const optimizer = createBrickOptimizer({
+      store,
+      minSampleSize: 10,
+      minPolicySamples: 50,
+      clock: () => 1000,
+    });
+
+    const result = await optimizer.evaluate(brick.id);
+    // auto-forge-middleware bricks should not be promoted to policy
+    expect(result.action).not.toBe("promote_to_policy");
+  });
+
   test("returns keep when composite fitness exceeds threshold", async () => {
     const compositeFitness = createFitness({
       successCount: 30,

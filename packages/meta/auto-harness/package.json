@@ -1,0 +1,32 @@
+{
+  "name": "@koi/auto-harness",
+  "description": "Auto-harness middleware synthesis from observed failures — wires synth + search + forge pipeline",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/failure-context": "workspace:*",
+    "@koi/forge-optimizer": "workspace:*",
+    "@koi/forge-types": "workspace:*",
+    "@koi/harness-search": "workspace:*",
+    "@koi/harness-synth": "workspace:*",
+    "@koi/hash": "workspace:*",
+    "@koi/middleware-policy-cache": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  }
+}
