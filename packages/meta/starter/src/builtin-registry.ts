@@ -15,10 +15,12 @@
 
 import type { AgentMonitorCallbacks } from "./adapters/agent-monitor.js";
 import { createAgentMonitorAdapter } from "./adapters/agent-monitor.js";
+import { createCircuitBreakerAdapter } from "./adapters/circuit-breaker.js";
 import type { GoalAnchorCallbacks } from "./adapters/goal-anchor.js";
 import { createGoalAnchorAdapter } from "./adapters/goal-anchor.js";
 import type { PermissionsCallbacks } from "./adapters/permissions.js";
 import { createPermissionsAdapter } from "./adapters/permissions.js";
+import { createPromptCacheAdapter } from "./adapters/prompt-cache.js";
 import { createSoulAdapter } from "./adapters/soul.js";
 import type { MiddlewareFactory } from "./registry.js";
 import { createMiddlewareRegistry, type MiddlewareRegistry } from "./registry.js";
@@ -60,6 +62,8 @@ export function createDefaultRegistry(callbacks?: BuiltinCallbacks): MiddlewareR
     ["soul", createSoulAdapter],
     ["permissions", permissionsFactory],
     ["goal-anchor", goalAnchorFactory],
+    ["prompt-cache", createPromptCacheAdapter],
+    ["circuit-breaker", createCircuitBreakerAdapter],
   ]);
 
   return createMiddlewareRegistry(entries);

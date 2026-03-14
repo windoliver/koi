@@ -152,6 +152,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/execution-context": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/validation": "workspace:*",
@@ -1483,8 +1484,10 @@
         "@koi/filesystem": "workspace:*",
         "@koi/ipc-local": "workspace:*",
         "@koi/manifest": "workspace:*",
+        "@koi/middleware-circuit-breaker": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-prompt-cache": "workspace:*",
         "@koi/pay-local": "workspace:*",
         "@koi/scope": "workspace:*",
         "@koi/scratchpad-local": "workspace:*",
@@ -1546,6 +1549,18 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-circuit-breaker": {
+      "name": "@koi/middleware-circuit-breaker",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/name-resolution": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1642,6 +1657,18 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-prompt-cache": {
+      "name": "@koi/middleware-prompt-cache",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
+        "@koi/name-resolution": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -3800,6 +3827,8 @@
 
     "@koi/middleware-call-limits": ["@koi/middleware-call-limits@workspace:packages/middleware/middleware-call-limits"],
 
+    "@koi/middleware-circuit-breaker": ["@koi/middleware-circuit-breaker@workspace:packages/middleware/middleware-circuit-breaker"],
+
     "@koi/middleware-collective-memory": ["@koi/middleware-collective-memory@workspace:packages/mm/middleware-collective-memory"],
 
     "@koi/middleware-compactor": ["@koi/middleware-compactor@workspace:packages/mm/middleware-compactor"],
@@ -3839,6 +3868,8 @@
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
     "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/security/middleware-pii"],
+
+    "@koi/middleware-prompt-cache": ["@koi/middleware-prompt-cache@workspace:packages/middleware/middleware-prompt-cache"],
 
     "@koi/middleware-reflex": ["@koi/middleware-reflex@workspace:packages/middleware/middleware-reflex"],
 

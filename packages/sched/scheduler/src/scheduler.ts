@@ -89,7 +89,12 @@ export function createScheduler(
 
   function emit(event: SchedulerEvent): void {
     for (const listener of listeners) {
-      listener(event);
+      try {
+        listener(event);
+      } catch (_listenerError: unknown) {
+        // Isolate listener failures — one failing listener must not break others.
+        // Errors are silently swallowed; listeners are responsible for their own error handling.
+      }
     }
   }
 
