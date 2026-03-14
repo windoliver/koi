@@ -428,6 +428,9 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     verbose: flags.verbose,
     additionalMiddleware: [...(autonomous?.middleware ?? [])],
     additionalProviders: [...(autonomous?.providers ?? [])],
+    onDashboardEvent: (event) => {
+      emitDashboardEvent?.(event as DashboardEvent);
+    },
   });
 
   const bridge = createAdminPanelBridge({

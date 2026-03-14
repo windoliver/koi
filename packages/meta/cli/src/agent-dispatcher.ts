@@ -84,6 +84,7 @@ export interface DispatcherDeps {
     readonly providers: readonly unknown[];
     readonly extensions: readonly unknown[];
     readonly forge?: unknown;
+    readonly onDashboardEvent?: ((event: unknown) => void) | undefined;
   }) => Promise<{
     readonly runtime: {
       readonly agent: { readonly pid: { readonly id: AgentId } };
