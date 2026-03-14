@@ -465,25 +465,26 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   }
 
   function forwardConsentPrompts(batch: DashboardEventBatch): void {
-    const pendingSources: import("@koi/dashboard-types").DataSourceSummary[] = [];
+    let hasDiscovery = false;
     for (const evt of batch.events) {
       if (isDataSourceEvent(evt) && evt.subKind === "data_source_discovered") {
-        // Check if this source has "pending" status (not yet approved)
-        const existing = store.getState().dataSources.find((s) => s.name === evt.name);
-        if (existing === undefined || existing.status === "pending") {
-          pendingSources.push({
-            name: evt.name,
-            protocol: evt.protocol,
-            status: "pending",
-            source: evt.source,
-          });
-        }
+        hasDiscovery = true;
+        break;
       }
     }
-    if (pendingSources.length > 0) {
-      store.dispatch({ kind: "set_pending_consent", sources: pendingSources });
-      store.dispatch({ kind: "set_view", view: "consent" });
-    }
+    if (!hasDiscovery) return;
+
+    // Refresh from server to get actual statuses, then show consent only for pending
+    openDataSources()
+      .then(() => {
+        const sources = store.getState().dataSources;
+        const pending = sources.filter((s) => s.status === "pending");
+        if (pending.length > 0) {
+          store.dispatch({ kind: "set_pending_consent", sources: pending });
+          store.dispatch({ kind: "set_view", view: "consent" });
+        }
+      })
+      .catch(() => {});
   }
 
   function formatAgentEvent(evt: AgentDashboardEvent): string | null {
@@ -656,6 +657,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   }
 
   function consentDeny(): void {
+    const pending = store.getState().pendingConsent;
+    if (pending !== undefined) {
+      for (const s of pending) {
+        rejectDataSource(s.name).catch(() => {});
+      }
+    }
     store.dispatch({ kind: "clear_pending_consent" });
     store.dispatch({ kind: "set_view", view: "agents" });
     addLifecycleMessage("Data source denied");
@@ -717,6 +724,17 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       }
     } catch {
       addLifecycleMessage(`Failed to approve "${name}"`);
+    }
+  }
+
+  async function rejectDataSource(name: string): Promise<void> {
+    try {
+      await fetch(`${adminUrl}/data-sources/${encodeURIComponent(name)}/reject`, {
+        method: "POST",
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch {
+      // Rejection is best-effort
     }
   }
 

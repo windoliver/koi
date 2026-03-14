@@ -335,8 +335,8 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       });
     },
     approveDataSource(name: string): Result<void, KoiError> {
-      const source = currentSources.find((s) => s.name === name);
-      if (source === undefined) {
+      const idx = currentSources.findIndex((s) => s.name === name);
+      if (idx === -1) {
         return {
           ok: false,
           error: {
@@ -346,6 +346,45 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
           },
         };
       }
+      const source = currentSources[idx]!;
+      if (source.status === "approved") {
+        return { ok: true, value: undefined };
+      }
+      // Transition to approved and emit activation events
+      currentSources = currentSources.map((s) =>
+        s.name === name ? { ...s, status: "approved" as const } : s,
+      );
+      emitEvent({
+        kind: "datasource",
+        subKind: "connector_forged",
+        name: source.name,
+        protocol: source.protocol,
+        timestamp: Date.now(),
+      });
+      emitEvent({
+        kind: "datasource",
+        subKind: "connector_health_update",
+        name: source.name,
+        healthy: true,
+        timestamp: Date.now(),
+      });
+      return { ok: true, value: undefined };
+    },
+    rejectDataSource(name: string): Result<void, KoiError> {
+      const idx = currentSources.findIndex((s) => s.name === name);
+      if (idx === -1) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Data source "${name}" not found`,
+            retryable: false,
+          },
+        };
+      }
+      currentSources = currentSources.map((s) =>
+        s.name === name ? { ...s, status: "rejected" as const } : s,
+      );
       return { ok: true, value: undefined };
     },
     async getDataSourceSchema(name: string): Promise<DataSourceDetail | undefined> {
@@ -395,16 +434,14 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
           "*_CONNECTION_STRING",
         ]);
         const existingNames = new Set(currentSources.map((s) => s.name));
-        const newSources: DataSourceSummary[] = [];
         for (const r of results) {
           if (!existingNames.has(r.descriptor.name)) {
             const summary: DataSourceSummary = {
               name: r.descriptor.name,
               protocol: r.descriptor.protocol,
-              status: "approved",
+              status: "pending",
               source: "env",
             };
-            newSources.push(summary);
             currentSources = [...currentSources, summary];
             currentDescriptors = [...currentDescriptors, r.descriptor];
             emitEvent({
@@ -416,16 +453,6 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
               timestamp: Date.now(),
             });
           }
-        }
-        // Emit connector_forged for each newly discovered source
-        for (const s of newSources) {
-          emitEvent({
-            kind: "datasource",
-            subKind: "connector_forged",
-            name: s.name,
-            protocol: s.protocol,
-            timestamp: Date.now(),
-          });
         }
       } catch {
         // probeEnv not available — non-fatal

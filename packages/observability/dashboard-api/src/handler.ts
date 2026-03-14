@@ -32,6 +32,7 @@ import {
   handleApproveDataSource,
   handleGetDataSourceSchema,
   handleListDataSources,
+  handleRejectDataSource,
   handleRescanDataSources,
 } from "./routes/data-sources.js";
 import type { EditablePathMatcher } from "./routes/filesystem.js";
@@ -232,6 +233,11 @@ export function createDashboardHandler(
       method: "POST",
       pattern: "/data-sources/:name/approve",
       handler: (req, params) => handleApproveDataSource(req, params, dataSource),
+    },
+    {
+      method: "POST",
+      pattern: "/data-sources/:name/reject",
+      handler: (req, params) => handleRejectDataSource(req, params, dataSource),
     },
     {
       method: "GET",

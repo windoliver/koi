@@ -173,6 +173,10 @@ export interface DashboardDataSource {
     name: string,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
 
+  readonly rejectDataSource?: (
+    name: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
   readonly getDataSourceSchema?: (
     name: string,
   ) => DataSourceDetail | undefined | Promise<DataSourceDetail | undefined>;

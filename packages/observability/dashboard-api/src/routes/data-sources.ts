@@ -42,6 +42,26 @@ export async function handleApproveDataSource(
   return jsonResponse(null);
 }
 
+export async function handleRejectDataSource(
+  _req: Request,
+  params: RouteParams,
+  dataSource: DashboardDataSource,
+): Promise<Response> {
+  const name = params.name;
+  if (name === undefined) {
+    return errorResponse("VALIDATION", "Missing data source name", 400);
+  }
+  if (dataSource.rejectDataSource === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Data source rejection not supported", 501);
+  }
+  const result = await dataSource.rejectDataSource(name);
+  if (!result.ok) {
+    const status = result.error.code === "NOT_FOUND" ? 404 : 500;
+    return errorResponse(result.error.code, result.error.message, status);
+  }
+  return jsonResponse(null);
+}
+
 export async function handleRescanDataSources(
   _req: Request,
   _params: RouteParams,

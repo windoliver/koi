@@ -404,6 +404,7 @@ interface DashboardDataSource {
     readonly subscribe: (listener: (event: DashboardEvent) => void) => () => void;
     readonly listDataSources?: () => readonly DataSourceSummary[] | Promise<readonly DataSourceSummary[]>;
     readonly approveDataSource?: (name: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly rejectDataSource?: (name: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     readonly getDataSourceSchema?: (name: string) => DataSourceDetail | undefined | Promise<DataSourceDetail | undefined>;
     /** Trigger a server-side re-scan for new data sources (env, MCP). */
     readonly rescanDataSources?: () => readonly DataSourceSummary[] | Promise<readonly DataSourceSummary[]>;
