@@ -51,9 +51,7 @@ async function presentBatchInteractive(
       output.info(`  ${ds.name} (${ds.protocol})${desc}`);
     }
     if (descriptors.length > MAX_DISPLAYED_SOURCES) {
-      output.info(
-        `  ... and ${String(descriptors.length - MAX_DISPLAYED_SOURCES)} more`,
-      );
+      output.info(`  ... and ${String(descriptors.length - MAX_DISPLAYED_SOURCES)} more`);
     }
 
     const choice = await p.select({

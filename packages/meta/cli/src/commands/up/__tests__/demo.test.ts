@@ -6,15 +6,17 @@ import { join } from "node:path";
 import type { NexusClient } from "@koi/nexus-client";
 
 // Mock @koi/demo-packs
-const mockRunSeed = mock(async (): Promise<{
-  readonly ok: boolean;
-  readonly counts: Readonly<Record<string, number>>;
-  readonly summary: readonly string[];
-}> => ({
-  ok: true,
-  counts: { memory: 3 },
-  summary: ["Memory: 3 entities ready"],
-}));
+const mockRunSeed = mock(
+  async (): Promise<{
+    readonly ok: boolean;
+    readonly counts: Readonly<Record<string, number>>;
+    readonly summary: readonly string[];
+  }> => ({
+    ok: true,
+    counts: { memory: 3 },
+    summary: ["Memory: 3 entities ready"],
+  }),
+);
 
 const mockGetPack = mock((id: string) => {
   if (id === "connected") {
@@ -70,21 +72,6 @@ function makeSuccessClient(): NexusClient {
       value: undefined,
     }),
   } as unknown as NexusClient;
-}
-
-function captureStderr(fn: () => unknown): string {
-  const original = process.stderr.write;
-  const chunks: string[] = [];
-  process.stderr.write = ((chunk: string) => {
-    chunks.push(chunk);
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    fn();
-  } finally {
-    process.stderr.write = original;
-  }
-  return chunks.join("");
 }
 
 // ---------------------------------------------------------------------------

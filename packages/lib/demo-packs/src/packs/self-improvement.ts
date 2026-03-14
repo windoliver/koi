@@ -4,7 +4,7 @@
  */
 
 import { writeJson } from "@koi/nexus-client";
-import type { DemoPack, SeededBrickView, SeedContext, SeedResult } from "../types.js";
+import type { DemoPack, SeedContext, SeededBrickView, SeedResult } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Seed data — forge events
@@ -179,11 +179,7 @@ async function seedSelfImprovement(ctx: SeedContext): Promise<SeedResult> {
   // 2. Seed brick metadata (parallel)
   const brickResults = await Promise.all(
     BRICK_METADATA.map((entry) =>
-      writeJson(
-        ctx.nexusClient,
-        `/global/bricks/${entry.key}`,
-        entry.value,
-      ).then((result) => {
+      writeJson(ctx.nexusClient, `/global/bricks/${entry.key}`, entry.value).then((result) => {
         if (!result.ok && ctx.verbose) {
           summary.push(`  warn: failed to seed brick ${entry.key}: ${result.error.message}`);
         }
@@ -198,16 +194,14 @@ async function seedSelfImprovement(ctx: SeedContext): Promise<SeedResult> {
   // 3. Seed fitness history (parallel)
   const fitnessResults = await Promise.all(
     FITNESS_HISTORY.map((entry) =>
-      writeJson(
-        ctx.nexusClient,
-        `/global/bricks/fitness/${entry.key}`,
-        entry.value,
-      ).then((result) => {
-        if (!result.ok && ctx.verbose) {
-          summary.push(`  warn: failed to seed fitness ${entry.key}: ${result.error.message}`);
-        }
-        return result;
-      }),
+      writeJson(ctx.nexusClient, `/global/bricks/fitness/${entry.key}`, entry.value).then(
+        (result) => {
+          if (!result.ok && ctx.verbose) {
+            summary.push(`  warn: failed to seed fitness ${entry.key}: ${result.error.message}`);
+          }
+          return result;
+        },
+      ),
     ),
   );
   const fitnessCount = fitnessResults.filter((r) => r.ok).length;
