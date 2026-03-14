@@ -9,7 +9,7 @@
 export { discoverSkillCatalogEntries, mapSkillToCatalogEntry } from "./catalog.js";
 // Gating
 export type { GateResult } from "./gate.js";
-export { gateSkills } from "./gate.js";
+export { gateSkills, gateSkillsWithCredentials } from "./gate.js";
 // Loader (filesystem)
 export {
   clearSkillCache,

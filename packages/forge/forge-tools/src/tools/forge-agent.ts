@@ -10,7 +10,13 @@
 
 import type { BrickArtifact, EngineAdapter, Result, Tool } from "@koi/core";
 import { brickId } from "@koi/core";
-import type { AgentArtifact, ForgeAgentInput, ForgeError, ForgeResult } from "@koi/forge-types";
+import type {
+  AgentArtifact,
+  ForgeAgentInput,
+  ForgeError,
+  ForgeResult,
+  VerificationReport,
+} from "@koi/forge-types";
 import { resolveError, staticError } from "@koi/forge-types";
 import { assembleManifest } from "../assemble-manifest.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
@@ -203,7 +209,7 @@ async function forgeAgentHandler(
     ...mapParsedBaseFields(parsed.value),
   };
 
-  const result = await runForgePipeline(forgeInput, deps, (report) => ({
+  const result = await runForgePipeline(forgeInput, deps, (report: VerificationReport) => ({
     ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
     kind: "agent" as const,
     manifestYaml,

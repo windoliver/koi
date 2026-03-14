@@ -27,6 +27,7 @@ export default defineConfig({
     safety: "src/safety/index.ts",
     middleware: "src/middleware/index.ts",
     observability: "src/observability/index.ts",
+    "data-source": "src/data-source/index.ts",
   },
   format: ["esm"],
   dts: {

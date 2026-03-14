@@ -5,7 +5,12 @@
 
 import type { Result, Tool } from "@koi/core";
 import { brickId } from "@koi/core";
-import type { ForgeError, ForgeResult, ForgeSkillInput } from "@koi/forge-types";
+import type {
+  ForgeError,
+  ForgeResult,
+  ForgeSkillInput,
+  VerificationReport,
+} from "@koi/forge-types";
 import { generateSkillMd } from "../generate-skill-md.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
@@ -33,7 +38,7 @@ const FORGE_SKILL_CONFIG: ForgeToolConfig = {
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
         type: "object",
-        description: "Runtime requirements (bins, env, tools, agents, npm packages)",
+        description: "Runtime requirements (bins, env, tools, agents, npm packages, credentials)",
         properties: {
           bins: { type: "array", items: { type: "string" } },
           env: { type: "array", items: { type: "string" } },
@@ -52,7 +57,16 @@ const FORGE_SKILL_CONFIG: ForgeToolConfig = {
             type: "boolean",
             description: "Whether this brick requires network access at runtime (default: false)",
           },
+          credentials: {
+            type: "object",
+            description: "Named credentials required at runtime: key → { kind, ref, scopes? }",
+          },
         },
+      },
+      configSchema: {
+        type: "object",
+        description:
+          "Optional JSON Schema for skill configuration (e.g., data source connection params)",
       },
     },
     required: ["name", "description", "body"],
@@ -89,10 +103,17 @@ async function forgeSkillHandler(
     agentId: deps.context.agentId,
     version: "0.0.1",
     body: forgeInput.body,
+    ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
+    ...(parsed.value.configSchema !== undefined ? { configSchema: parsed.value.configSchema } : {}),
   });
 
-  return runForgePipeline(forgeInput, deps, (report) => ({
-    ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
+  // datasource:* tag convention — skills with "datasource" tag get a prefixed tag for discovery
+  const inputForPipeline = forgeInput.tags?.some((t) => t === "datasource")
+    ? { ...forgeInput, tags: [`datasource:${forgeInput.name}`, ...forgeInput.tags] }
+    : forgeInput;
+
+  return runForgePipeline(inputForPipeline, deps, (report: VerificationReport) => ({
+    ...buildBaseFields(brickId("placeholder"), inputForPipeline, report, deps),
     kind: "skill" as const,
     content: generatedContent,
     ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),

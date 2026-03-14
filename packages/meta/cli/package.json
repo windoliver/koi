@@ -29,6 +29,7 @@
     "@koi/context": "workspace:*",
     "@koi/context-arena": "workspace:*",
     "@koi/core": "workspace:*",
+    "@koi/data-source-stack": "workspace:*",
     "@koi/dashboard-api": "workspace:*",
     "@koi/dashboard-types": "workspace:*",
     "@koi/dashboard-ui": "workspace:*",

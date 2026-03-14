@@ -6,6 +6,7 @@
 
 import type { ComponentProvider, KoiError, Result, SkillConfig } from "@koi/core";
 import type { ScanFinding } from "@koi/skill-scanner";
+import type { ValidatedSkillRequires } from "./validate.js";
 
 /** Discriminant for progressive loading depth. */
 export type SkillLoadLevel = "metadata" | "body" | "bundled";
@@ -32,6 +33,10 @@ interface SkillEntryBase {
   readonly allowedTools?: readonly string[];
   /** Absolute path to the skill directory. */
   readonly dirPath: string;
+  /** Runtime requirements parsed from frontmatter. */
+  readonly requires?: ValidatedSkillRequires;
+  /** Optional JSON Schema for skill configuration. */
+  readonly configSchema?: Readonly<Record<string, unknown>>;
 }
 
 /** Level 1: frontmatter only — cheapest to load. */

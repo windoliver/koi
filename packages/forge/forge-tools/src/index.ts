@@ -99,5 +99,15 @@ export { createRunSkillScriptTool } from "./tools/run-skill-script.js";
 export { createSearchForgeTool } from "./tools/search-forge.js";
 
 // shared — tool utilities, parsers, pipeline runner
-export type { DelegateOptions, ForgeDeps, ForgeToolConfig } from "./tools/shared.js";
-export { createForgeTool, mapParsedBaseFields, mapParsedTestCases } from "./tools/shared.js";
+export type {
+  ArtifactBuilder,
+  DelegateOptions,
+  ForgeDeps,
+  ForgeToolConfig,
+} from "./tools/shared.js";
+export {
+  createForgeTool,
+  mapParsedBaseFields,
+  mapParsedTestCases,
+  runForgePipeline,
+} from "./tools/shared.js";

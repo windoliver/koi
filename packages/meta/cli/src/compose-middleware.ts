@@ -5,7 +5,8 @@
  * Reused by start.ts, serve.ts, and up.ts.
  */
 
-import type { ComponentProvider, KoiMiddleware } from "@koi/core";
+import type { ComponentProvider, KoiMiddleware, Tool } from "@koi/core";
+import { createSingleToolProvider } from "@koi/core";
 import type { createForgeBootstrap } from "@koi/forge";
 import type { AgentChatBridge } from "./agui-chat-bridge.js";
 import type { AutonomousResult } from "./resolve-autonomous.js";
@@ -30,6 +31,10 @@ export interface MiddlewareCompositionInput {
   readonly extra?: readonly KoiMiddleware[];
   /** Additional providers to prepend (e.g., arena providers for serve). */
   readonly extraProviders?: readonly ComponentProvider[];
+  /** Data source stack provider (from createDataSourceStack). */
+  readonly dataSourceProvider?: ComponentProvider | undefined;
+  /** Data source runtime tools (query_datasource, probe_schema). */
+  readonly dataSourceTools?: readonly Tool[] | undefined;
 }
 
 export interface ComposedMiddleware {
@@ -57,7 +62,18 @@ export function composeRuntimeMiddleware(input: MiddlewareCompositionInput): Com
     ...(input.chatBridge !== undefined ? [input.chatBridge.middleware] : []),
   ];
 
+  // Register data source tools as ComponentProviders (one per tool)
+  const dsToolProviders: readonly ComponentProvider[] = (input.dataSourceTools ?? []).map((tool) =>
+    createSingleToolProvider({
+      name: `data-source:${tool.descriptor.name}`,
+      toolName: tool.descriptor.name,
+      createTool: () => tool,
+    }),
+  );
+
   const providers: readonly ComponentProvider[] = [
+    ...(input.dataSourceProvider !== undefined ? [input.dataSourceProvider] : []),
+    ...dsToolProviders,
     ...(input.extraProviders ?? []),
     ...input.nexus.providers,
     ...(input.forge !== undefined ? [input.forge.provider, input.forge.forgeToolsProvider] : []),

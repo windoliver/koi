@@ -33,6 +33,28 @@ export interface CounterExample {
 }
 
 // ---------------------------------------------------------------------------
+// Credential requirements (used by BrickRequires + data source auth)
+// ---------------------------------------------------------------------------
+
+/** Known credential kinds + extensible via `(string & {})`. */
+export type CredentialKind =
+  | "connection_string"
+  | "api_key"
+  | "oauth2"
+  | "bearer_token"
+  | "mcp_transport"
+  | (string & {});
+
+/** A single credential requirement — declares what kind of secret is needed and where to find it. */
+export interface CredentialRequirement {
+  readonly kind: CredentialKind;
+  /** Reference key used to resolve the credential at runtime (e.g., env var name, secret manager path). */
+  readonly ref: string;
+  /** OAuth2/OIDC scopes required, if applicable. */
+  readonly scopes?: readonly string[] | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Brick requirements (universal — applies to all forgeable brick kinds)
 // ---------------------------------------------------------------------------
 
@@ -51,6 +73,8 @@ export interface BrickRequires {
   readonly network?: boolean;
   /** OS platforms where this brick can run (e.g., "darwin", "linux", "win32"). Empty = all. */
   readonly platform?: readonly string[];
+  /** Named credentials required at runtime. Key = logical name, value = credential spec. */
+  readonly credentials?: Readonly<Record<string, CredentialRequirement>> | undefined;
 }
 
 // ---------------------------------------------------------------------------

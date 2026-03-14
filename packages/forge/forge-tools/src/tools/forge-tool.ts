@@ -4,7 +4,7 @@
 
 import type { Result, Tool } from "@koi/core";
 import { brickId } from "@koi/core";
-import type { ForgeError, ForgeResult, ForgeToolInput } from "@koi/forge-types";
+import type { ForgeError, ForgeResult, ForgeToolInput, VerificationReport } from "@koi/forge-types";
 import { staticError } from "@koi/forge-types";
 import { delegateImplementation } from "./delegate.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
@@ -155,7 +155,7 @@ async function forgeToolHandler(
   };
 
   // Placeholder id — pipeline replaces with content-addressed hash
-  return runForgePipeline(forgeInput, deps, (report) => ({
+  return runForgePipeline(forgeInput, deps, (report: VerificationReport) => ({
     ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
     kind: "tool" as const,
     implementation: forgeInput.implementation,

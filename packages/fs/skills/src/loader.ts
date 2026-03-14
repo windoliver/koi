@@ -199,6 +199,8 @@ export async function loadSkillMetadata(
       ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
       ...(fm.metadata !== undefined ? { metadata: fm.metadata } : {}),
       ...(fm.allowedTools !== undefined ? { allowedTools: fm.allowedTools } : {}),
+      ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
+      ...(fm.configSchema !== undefined ? { configSchema: fm.configSchema } : {}),
     },
   };
 }
@@ -274,6 +276,8 @@ export async function loadSkillBody(
       ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
       ...(fm.metadata !== undefined ? { metadata: fm.metadata } : {}),
       ...(fm.allowedTools !== undefined ? { allowedTools: fm.allowedTools } : {}),
+      ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
+      ...(fm.configSchema !== undefined ? { configSchema: fm.configSchema } : {}),
     },
   };
 }

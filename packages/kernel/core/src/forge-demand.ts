@@ -38,6 +38,17 @@ export type ForgeTrigger =
       readonly brickId: BrickId;
       readonly p95Ms: number;
     }
+  // Data source triggers
+  | {
+      readonly kind: "data_source_detected";
+      readonly sourceName: string;
+      readonly protocol: string;
+    }
+  | {
+      readonly kind: "data_source_gap";
+      readonly sourceName: string;
+      readonly missingCapability: string;
+    }
   // Success-side triggers (Phase 3 — skill proposals, not immediate code generation)
   | {
       readonly kind: "complex_task_completed";

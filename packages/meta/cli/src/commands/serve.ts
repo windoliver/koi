@@ -184,6 +184,37 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.stderr.write(`warn: conversation persistence disabled: ${message}\n`);
   }
 
+  // 6c. Data source auto-discovery (non-fatal — skip on error)
+  let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
+  let dataSourceTools: readonly import("@koi/core").Tool[] = [];
+  try {
+    const { createDataSourceStack } = await import("@koi/data-source-stack");
+    const dsStack = await createDataSourceStack({
+      manifestEntries: (manifest as unknown as Record<string, unknown>).dataSources as
+        | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
+        | undefined,
+      env: process.env,
+      // Headless serve: auto-approve all discovered sources (no interactive consent).
+      // TODO(#954): Interactive consent for `koi start` via @clack/prompts TUI.
+      consent: { approve: async () => true },
+      // Credentials resolved from env by default (stack's built-in fallback).
+      // TODO(#954): MCP discovery — resolveAgent() resolves MCP tools as Tool objects
+      // before data-source bootstrap. Threading McpServerDescriptor back requires
+      // refactoring the agent resolution pipeline to expose raw MCP server handles.
+    });
+    if (dsStack.discoveredSources.length > 0) {
+      dataSourceProvider = dsStack.provider;
+      dataSourceTools = dsStack.tools;
+      if (flags.verbose) {
+        process.stderr.write(
+          `Data sources: ${String(dsStack.discoveredSources.length)} discovered, ${String(dsStack.config.generatedSkillCount)} skills mounted, ${String(dsStack.tools.length)} tools registered\n`,
+        );
+      }
+    }
+  } catch {
+    // Data source discovery is non-fatal — agent works without it
+  }
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -192,6 +223,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     chatBridge,
     extra: arenaMiddleware,
     extraProviders: arenaProviders,
+    dataSourceProvider,
+    dataSourceTools,
   });
 
   const { runtime } = await createForgeConfiguredKoi({

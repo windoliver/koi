@@ -211,6 +211,10 @@ function describeTrigger(trigger: ForgeTrigger): string {
       return trigger.correctedToolCall;
     case "novel_workflow":
       return trigger.toolSequence.slice(0, 3).join("-");
+    case "data_source_detected":
+      return `ds-${trigger.sourceName}`;
+    case "data_source_gap":
+      return `ds-gap-${trigger.sourceName}`;
   }
   // Exhaustiveness guard
   const _exhaustive: never = trigger;

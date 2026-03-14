@@ -87,6 +87,11 @@ function triggerKey(trigger: ForgeTrigger): string {
       return `uc:${trigger.correctionDescription.slice(0, 50)}`;
     case "novel_workflow":
       return `nw:${trigger.workflowDescription.slice(0, 50)}`;
+    // Data source triggers
+    case "data_source_detected":
+      return `dsd:${trigger.sourceName}`;
+    case "data_source_gap":
+      return `dsg:${trigger.sourceName}:${trigger.missingCapability}`;
   }
   // Exhaustiveness guard — compiler errors if a trigger kind is missing above
   const _exhaustive: never = trigger;

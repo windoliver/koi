@@ -7,7 +7,7 @@
  * ```typescript
  * import { createSkillStack } from "@koi/skill-stack";
  *
- * const { provider, middleware, mount, unmount, dispose } = createSkillStack({
+ * const { provider, middleware, mount, unmount, dispose } = await createSkillStack({
  *   skills: manifest.skills,
  *   basePath: manifestDir,
  *   preset: "standard",

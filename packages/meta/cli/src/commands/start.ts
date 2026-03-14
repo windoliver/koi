@@ -228,12 +228,35 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const contextExt = createContextExtension(contextConfig);
   const extensions = contextExt !== undefined ? [contextExt] : [];
 
+  // Data source auto-discovery (non-fatal)
+  let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
+  let dataSourceTools: readonly import("@koi/core").Tool[] = [];
+  try {
+    const { createDataSourceStack } = await import("@koi/data-source-stack");
+    const dsStack = await createDataSourceStack({
+      manifestEntries: (manifest as unknown as Record<string, unknown>).dataSources as
+        | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
+        | undefined,
+      env: process.env,
+      // TODO(#954): Interactive consent via @clack/prompts TUI for `koi start`.
+      consent: { approve: async () => true },
+    });
+    if (dsStack.discoveredSources.length > 0) {
+      dataSourceProvider = dsStack.provider;
+      dataSourceTools = dsStack.tools;
+    }
+  } catch {
+    // Data source discovery is non-fatal
+  }
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
     forge: forgeBootstrap,
     autonomous,
     chatBridge,
+    dataSourceProvider,
+    dataSourceTools,
   });
 
   const { runtime } = await createForgeConfiguredKoi({

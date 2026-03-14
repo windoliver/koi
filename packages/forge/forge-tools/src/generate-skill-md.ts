@@ -11,11 +11,19 @@
  *   version: "0.0.1"
  *   tags:
  *     - tag1
+ * requires:
+ *   credentials:
+ *     db:
+ *       kind: connection_string
+ *       ref: DATABASE_URL
  * ---
  *
  * <body content>
  * ```
  */
+
+import type { BrickRequires } from "@koi/core";
+import { stringify as yamlStringify } from "yaml";
 
 // ---------------------------------------------------------------------------
 // Input type
@@ -28,6 +36,8 @@ export interface SkillMdInput {
   readonly agentId: string;
   readonly version: string;
   readonly body: string;
+  readonly requires?: BrickRequires;
+  readonly configSchema?: Readonly<Record<string, unknown>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +52,20 @@ function yamlQuote(value: string): string {
     return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   }
   return value;
+}
+
+/**
+ * Renders a nested object as indented YAML lines using the `yaml` package.
+ * Trims trailing newline to mesh with the hand-built lines array.
+ */
+function renderYamlBlock(key: string, value: unknown, indent: number): string {
+  const raw = yamlStringify({ [key]: value }, { indent: 2 }).trimEnd();
+  if (indent === 0) return raw;
+  const prefix = " ".repeat(indent);
+  return raw
+    .split("\n")
+    .map((line) => prefix + line)
+    .join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +89,16 @@ export function generateSkillMd(input: SkillMdInput): string {
     for (const tag of input.tags) {
       lines.push(`    - ${yamlQuote(tag)}`);
     }
+  }
+
+  // Requires block (uses yaml package for nested credential/config objects)
+  if (input.requires !== undefined) {
+    lines.push(renderYamlBlock("requires", input.requires, 0));
+  }
+
+  // Config schema (for data source connectors)
+  if (input.configSchema !== undefined) {
+    lines.push(renderYamlBlock("configSchema", input.configSchema, 0));
   }
 
   lines.push("---");

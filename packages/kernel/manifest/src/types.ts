@@ -67,6 +67,21 @@ export interface NexusManifestConfig {
   readonly url?: string | undefined;
 }
 
+/** A data source entry in the manifest `dataSources` extension. */
+export interface DataSourceManifestEntry {
+  readonly name: string;
+  readonly protocol: string;
+  readonly description?: string | undefined;
+  readonly auth?:
+    | {
+        readonly kind: string;
+        readonly ref: string;
+        readonly scopes?: readonly string[] | undefined;
+      }
+    | undefined;
+  readonly allowedHosts?: readonly string[] | undefined;
+}
+
 export interface ManifestExtensions {
   readonly engine?: unknown;
   readonly schedule?: unknown;
@@ -78,6 +93,7 @@ export interface ManifestExtensions {
   readonly deploy?: DeployConfig | undefined;
   readonly scope?: ManifestScopeConfig | undefined;
   readonly nexus?: NexusManifestConfig | undefined;
+  readonly dataSources?: readonly DataSourceManifestEntry[] | undefined;
 }
 
 /**

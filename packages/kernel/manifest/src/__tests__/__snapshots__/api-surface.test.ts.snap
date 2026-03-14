@@ -61,6 +61,18 @@ interface ManifestScopeConfig {
 interface NexusManifestConfig {
     readonly url?: string | undefined;
 }
+/** A data source entry in the manifest \`dataSources\` extension. */
+interface DataSourceManifestEntry {
+    readonly name: string;
+    readonly protocol: string;
+    readonly description?: string | undefined;
+    readonly auth?: {
+        readonly kind: string;
+        readonly ref: string;
+        readonly scopes?: readonly string[] | undefined;
+    } | undefined;
+    readonly allowedHosts?: readonly string[] | undefined;
+}
 interface ManifestExtensions {
     readonly engine?: unknown;
     readonly schedule?: unknown;
@@ -72,6 +84,7 @@ interface ManifestExtensions {
     readonly deploy?: DeployConfig | undefined;
     readonly scope?: ManifestScopeConfig | undefined;
     readonly nexus?: NexusManifestConfig | undefined;
+    readonly dataSources?: readonly DataSourceManifestEntry[] | undefined;
 }
 /**
  * The fully loaded and validated agent manifest.
@@ -126,6 +139,6 @@ declare function loadManifest(filePath: string, env?: Readonly<Record<string, st
  */
 declare function loadManifestFromString(yaml: string, env?: Readonly<Record<string, string | undefined>>): Result<LoadResult, KoiError>;
 
-export { type DeployConfig, type LoadResult, type LoadedManifest, type ManifestBrowserScope, type ManifestCredentialsScope, type ManifestFileSystemScope, type ManifestMemoryScope, type ManifestScopeConfig, type ManifestWarning, type SoulUserConfig, getEngineName, loadManifest, loadManifestFromString };
+export { type DataSourceManifestEntry, type DeployConfig, type LoadResult, type LoadedManifest, type ManifestBrowserScope, type ManifestCredentialsScope, type ManifestFileSystemScope, type ManifestMemoryScope, type ManifestScopeConfig, type ManifestWarning, type SoulUserConfig, getEngineName, loadManifest, loadManifestFromString };
 "
 `;

@@ -95,6 +95,30 @@ export async function loadForgeSkillMetadata(
       description: artifact.description,
       dirPath: `forge:${brickId}`,
       ...(artifact.tags.length > 0 ? { allowedTools: artifact.tags } : {}),
+      ...(artifact.requires !== undefined
+        ? {
+            requires: {
+              ...(artifact.requires.bins !== undefined ? { bins: artifact.requires.bins } : {}),
+              ...(artifact.requires.env !== undefined ? { env: artifact.requires.env } : {}),
+              ...(artifact.requires.tools !== undefined ? { tools: artifact.requires.tools } : {}),
+              ...(artifact.requires.agents !== undefined
+                ? { agents: artifact.requires.agents }
+                : {}),
+              ...(artifact.requires.packages !== undefined
+                ? { packages: artifact.requires.packages }
+                : {}),
+              ...(artifact.requires.network !== undefined
+                ? { network: artifact.requires.network }
+                : {}),
+              ...(artifact.requires.platform !== undefined
+                ? { platform: artifact.requires.platform }
+                : {}),
+              ...(artifact.requires.credentials !== undefined
+                ? { credentials: artifact.requires.credentials }
+                : {}),
+            },
+          }
+        : {}),
     },
   };
 }
@@ -153,6 +177,8 @@ export async function loadForgeSkillBody(
       ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
       ...(fm.metadata !== undefined ? { metadata: fm.metadata } : {}),
       ...(fm.allowedTools !== undefined ? { allowedTools: fm.allowedTools } : {}),
+      ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
+      ...(fm.configSchema !== undefined ? { configSchema: fm.configSchema } : {}),
     },
   };
 }

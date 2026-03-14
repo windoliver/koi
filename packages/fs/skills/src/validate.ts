@@ -5,8 +5,8 @@
  * optional license, compatibility, metadata, allowed-tools.
  */
 
-import type { KoiError, Result } from "@koi/core";
-import { zodToKoiError } from "@koi/validation";
+import type { CredentialRequirement, KoiError, Result } from "@koi/core";
+import { credentialRequiresSchema, zodToKoiError } from "@koi/validation";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -16,7 +16,12 @@ import { z } from "zod";
 export interface ValidatedSkillRequires {
   readonly bins?: readonly string[];
   readonly env?: readonly string[];
+  readonly tools?: readonly string[];
+  readonly agents?: readonly string[];
+  readonly packages?: Readonly<Record<string, string>>;
+  readonly network?: boolean;
   readonly platform?: readonly string[];
+  readonly credentials?: Readonly<Record<string, CredentialRequirement>>;
 }
 
 export interface ValidatedSkillFrontmatter {
@@ -28,6 +33,7 @@ export interface ValidatedSkillFrontmatter {
   readonly allowedTools?: readonly string[];
   readonly includes?: readonly string[];
   readonly requires?: ValidatedSkillRequires;
+  readonly configSchema?: Readonly<Record<string, unknown>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,9 +79,15 @@ const skillFrontmatterSchema = z.object({
     .object({
       bins: z.array(z.string()).optional(),
       env: z.array(z.string()).optional(),
+      tools: z.array(z.string()).optional(),
+      agents: z.array(z.string()).optional(),
+      packages: z.record(z.string(), z.string()).optional(),
+      network: z.boolean().optional(),
       platform: z.array(z.string()).optional(),
+      credentials: credentialRequiresSchema.optional(),
     })
     .optional(),
+  configSchema: z.record(z.string(), z.unknown()).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -96,7 +108,8 @@ export function validateSkillFrontmatter(
     return { ok: false, error: zodToKoiError(result.error, "Skill frontmatter validation failed") };
   }
 
-  const { name, description, license, compatibility, metadata, includes, requires } = result.data;
+  const { name, description, license, compatibility, metadata, includes, requires, configSchema } =
+    result.data;
   const allowedToolsRaw = result.data["allowed-tools"];
 
   // Parse allowed-tools: space-delimited string → array
@@ -118,10 +131,22 @@ export function validateSkillFrontmatter(
           requires: {
             ...(requires.bins !== undefined ? { bins: requires.bins } : {}),
             ...(requires.env !== undefined ? { env: requires.env } : {}),
+            ...(requires.tools !== undefined ? { tools: requires.tools } : {}),
+            ...(requires.agents !== undefined ? { agents: requires.agents } : {}),
+            ...(requires.packages !== undefined ? { packages: requires.packages } : {}),
+            ...(requires.network !== undefined ? { network: requires.network } : {}),
             ...(requires.platform !== undefined ? { platform: requires.platform } : {}),
+            ...(requires.credentials !== undefined
+              ? {
+                  credentials: requires.credentials as Readonly<
+                    Record<string, CredentialRequirement>
+                  >,
+                }
+              : {}),
           },
         }
       : {}),
+    ...(configSchema !== undefined ? { configSchema } : {}),
   };
 
   return { ok: true, value: validated };
