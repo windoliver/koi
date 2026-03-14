@@ -41,4 +41,4 @@ function render(ui: React.ReactElement, options?: RenderOptions): RenderResult {
   return { ...result, ...scopedQueries };
 }
 
-export { render, cleanup };
+export { cleanup, render };

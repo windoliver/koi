@@ -112,4 +112,45 @@ describe("selectVariant", () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.selected.id).toBe("a");
   });
+
+  test("dispatches to thompson strategy", () => {
+    const pool = makePool([makeEntry("a", 0.5)], "thompson");
+    const result = selectVariant({
+      pool,
+      breakers: EMPTY_BREAKERS,
+      strategy: "thompson",
+      ctx: defaultCtx,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.selected.id).toBe("a");
+  });
+
+  test("thompson uses default states when none provided", () => {
+    const pool = makePool([makeEntry("a", 0.9), makeEntry("b", 0.3)], "thompson");
+    const result = selectVariant({
+      pool,
+      breakers: EMPTY_BREAKERS,
+      strategy: "thompson",
+      ctx: defaultCtx,
+    });
+    // With default states (uniform priors), selection is random — just verify it works
+    expect(result.ok).toBe(true);
+  });
+
+  test("thompson uses provided states", () => {
+    const pool = makePool([makeEntry("a", 0.5), makeEntry("b", 0.5)], "thompson");
+    const thompsonStates = new Map([
+      ["a", { alpha: 100, beta: 1 }], // a is heavily favored
+      ["b", { alpha: 1, beta: 100 }],
+    ]);
+    const result = selectVariant({
+      pool,
+      breakers: EMPTY_BREAKERS,
+      strategy: "thompson",
+      ctx: defaultCtx,
+      thompsonStates,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.selected.id).toBe("a");
+  });
 });

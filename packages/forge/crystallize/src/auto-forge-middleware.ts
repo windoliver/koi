@@ -90,6 +90,17 @@ export interface AutoForgeConfig {
   /** Called when a demand signal triggers a forge. */
   readonly onDemandForged?: ((signal: ForgeDemandSignal, brick: BrickArtifact) => void) | undefined;
   /**
+   * Optional harness synthesis callback. When provided and a demand signal
+   * has trigger.kind === "repeated_failure", this callback is invoked instead
+   * of creating a pioneer stub. The callback runs in the background (fire-and-forget).
+   * Injected by L3 wiring from @koi/harness-synth + @koi/harness-search.
+   */
+  readonly synthesizeHarness?:
+    | ((signal: ForgeDemandSignal) => Promise<BrickArtifact | null>)
+    | undefined;
+  /** Maximum harness synthesis attempts per session. Default: 3. */
+  readonly maxSynthesesPerSession?: number | undefined;
+  /**
    * Optional pre-save gate. When provided, called before each brick is saved.
    * Return true to allow, false to skip. Enables mutation pressure checks
    * without L2→L2 imports (L3 wiring injects the check).
@@ -251,7 +262,9 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
   // justified: mutable counters reset per session via onSessionStart
   let lastForgedCount = 0;
   let demandForgedCount = 0;
+  let synthesesCount = 0; // let: harness synthesis counter, reset per session
   const demandBudget = config.demandBudget ?? DEFAULT_FORGE_BUDGET;
+  const maxSyntheses = config.maxSynthesesPerSession ?? 3;
 
   /**
    * Process candidates asynchronously — fire-and-forget from the middleware hook.
@@ -450,6 +463,7 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       forgeHandler.resetForSession();
       lastForgedCount = 0;
       demandForgedCount = 0;
+      synthesesCount = 0;
     },
 
     async onAfterTurn(_ctx: TurnContext): Promise<void> {
@@ -480,15 +494,37 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
           // across concurrent fire-and-forget tasks
           demandForgedCount++;
 
-          // Fire-and-forget: demand forge runs asynchronously
-          // justified: fire-and-forget pattern — errors handled via onError callback
-          void Promise.resolve().then(async () => {
-            try {
-              await processDemandForge(signal);
-            } catch (err: unknown) {
-              onError(err);
-            }
-          });
+          // Route failure-driven signals to harness synthesis when configured
+          const useHarnessSynth =
+            config.synthesizeHarness !== undefined &&
+            signal.trigger.kind === "repeated_failure" &&
+            synthesesCount < maxSyntheses;
+
+          if (useHarnessSynth) {
+            synthesesCount++;
+            // Fire-and-forget: harness synthesis runs in background (Issue 15A)
+            // justified: fire-and-forget pattern — errors handled via onError callback
+            void Promise.resolve().then(async () => {
+              try {
+                const brick = (await config.synthesizeHarness?.(signal)) ?? null;
+                if (brick !== null) {
+                  config.onDemandForged?.(signal, brick);
+                }
+              } catch (err: unknown) {
+                onError(err);
+              }
+            });
+          } else {
+            // Fire-and-forget: demand forge (pioneer stub) runs asynchronously
+            // justified: fire-and-forget pattern — errors handled via onError callback
+            void Promise.resolve().then(async () => {
+              try {
+                await processDemandForge(signal);
+              } catch (err: unknown) {
+                onError(err);
+              }
+            });
+          }
 
           // Dismiss the signal after triggering forge (success or failure)
           config.demandHandle?.dismiss(signal.id);
@@ -498,7 +534,7 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
       const totalForged = lastForgedCount + demandForgedCount;
-      if (totalForged === 0) return undefined;
+      if (totalForged === 0 && synthesesCount === 0) return undefined;
       const parts: string[] = [];
       if (lastForgedCount > 0) {
         parts.push(
@@ -508,6 +544,11 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       if (demandForgedCount > 0) {
         parts.push(
           `${String(demandForgedCount)} pioneer tool${demandForgedCount === 1 ? "" : "s"} demand-forged`,
+        );
+      }
+      if (synthesesCount > 0) {
+        parts.push(
+          `${String(synthesesCount)} harness${synthesesCount === 1 ? "" : "es"} synthesized`,
         );
       }
       return {

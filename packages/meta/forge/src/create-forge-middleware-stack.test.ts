@@ -2,11 +2,15 @@
  * Unit tests for createForgeMiddlewareStack factory.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { ForgeStore, KoiError, Result, TurnTrace } from "@koi/core";
 import { createInMemoryForgeStore } from "@koi/forge-tools";
 import { createDefaultForgeConfig } from "@koi/forge-types";
-import { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
+import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
+import {
+  createForgeMiddlewareStack,
+  createPromotionCallback,
+} from "./create-forge-middleware-stack.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -154,6 +158,153 @@ describe("createForgeMiddlewareStack", () => {
     const feedbackLoop = result.middlewares.find((m) => m.name === "feedback-loop");
     expect(feedbackLoop).toBeDefined();
     expect(feedbackLoop?.priority).toBe(450);
+  });
+
+  test("includes policy-cache middleware when policyCacheHandle is provided", () => {
+    const store = createInMemoryForgeStore();
+    const cacheHandle = createPolicyCacheMiddleware();
+    const result = createForgeMiddlewareStack({
+      forgeStore: store,
+      forgeConfig: createDefaultForgeConfig(),
+      scope: "agent",
+      readTraces: emptyTraces,
+      resolveBrickId: noopResolveBrickId,
+      policyCacheHandle: cacheHandle,
+    });
+
+    // 7 base + 1 policy-cache = 8
+    expect(result.middlewares).toHaveLength(8);
+    expect(result.middlewares[0]?.name).toBe("policy-cache");
+    expect(result.middlewares[0]?.priority).toBe(150);
+  });
+
+  test("forwards minPolicySamples to optimizer without error", () => {
+    const store = createInMemoryForgeStore();
+    const result = createForgeMiddlewareStack({
+      forgeStore: store,
+      forgeConfig: createDefaultForgeConfig(),
+      scope: "agent",
+      readTraces: emptyTraces,
+      resolveBrickId: noopResolveBrickId,
+      minPolicySamples: 100,
+    });
+
+    expect(result.middlewares).toHaveLength(7);
+  });
+
+  test("does not register no-op entry when compilePolicyExecutor is absent", () => {
+    const store = createInMemoryForgeStore();
+    const cacheHandle = createPolicyCacheMiddleware();
+
+    // policyCacheHandle without compilePolicyExecutor: auto-wiring is skipped
+    const result = createForgeMiddlewareStack({
+      forgeStore: store,
+      forgeConfig: createDefaultForgeConfig(),
+      scope: "agent",
+      readTraces: emptyTraces,
+      resolveBrickId: noopResolveBrickId,
+      policyCacheHandle: cacheHandle,
+    });
+
+    // Policy-cache middleware is mounted but nothing will be registered
+    expect(result.middlewares[0]?.name).toBe("policy-cache");
+    expect(cacheHandle.size()).toBe(0);
+  });
+
+  test("createPromotionCallback loads brick, compiles, and registers with cache", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save({
+      id: "brick-promo" as never,
+      kind: "middleware",
+      name: "harness-search",
+      description: "test harness",
+      scope: "agent",
+      origin: "forged",
+      lifecycle: "active",
+      version: "0.1.0",
+      usageCount: 50,
+      implementation: "check(input.query)",
+      policy: { sandbox: true, trust: "low", maxRetries: 3, timeoutMs: 5000 },
+      provenance: {} as never,
+      tags: ["harness", "search"],
+    } as never);
+
+    const cacheHandle = createPolicyCacheMiddleware();
+    const errors: unknown[] = [];
+    const compiledExecutor = (_input: Readonly<Record<string, unknown>>) => ({
+      action: "block" as const,
+      reason: "test policy",
+    });
+    const compileSpy = mock((_impl: string, _toolId: string) => compiledExecutor);
+
+    const callback = createPromotionCallback({
+      forgeStore: store,
+      policyCacheHandle: cacheHandle,
+      compilePolicyExecutor: compileSpy,
+      onError: (err) => errors.push(err),
+    });
+
+    // Simulate the optimizer firing onPolicyPromotion
+    callback("brick-promo", {
+      brickId: "brick-promo" as never,
+      action: "promote_to_policy",
+      fitnessOriginal: 1.0,
+      reason: "100% success over 50 samples",
+    });
+
+    // Fire-and-forget: give the async callback time to settle
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Verify the compiler was called with the brick's implementation
+    expect(compileSpy).toHaveBeenCalledTimes(1);
+    expect(compileSpy).toHaveBeenCalledWith("check(input.query)", "search");
+
+    // Verify the compiled executor was registered in the cache
+    expect(cacheHandle.size()).toBe(1);
+    expect(errors).toHaveLength(0);
+  });
+
+  test("createPromotionCallback reports error when compilation fails", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save({
+      id: "brick-fail" as never,
+      kind: "middleware",
+      name: "harness-write",
+      description: "test",
+      scope: "agent",
+      origin: "forged",
+      lifecycle: "active",
+      version: "0.1.0",
+      usageCount: 50,
+      implementation: "bad code",
+      policy: { sandbox: true, trust: "low", maxRetries: 3, timeoutMs: 5000 },
+      provenance: {} as never,
+      tags: ["harness", "write"],
+    } as never);
+
+    const cacheHandle = createPolicyCacheMiddleware();
+    const errors: unknown[] = [];
+
+    const callback = createPromotionCallback({
+      forgeStore: store,
+      policyCacheHandle: cacheHandle,
+      compilePolicyExecutor: () => null, // compilation fails
+      onError: (err) => errors.push(err),
+    });
+
+    callback("brick-fail", {
+      brickId: "brick-fail" as never,
+      action: "promote_to_policy",
+      fitnessOriginal: 1.0,
+      reason: "100% success",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Cache should remain empty — compilation failed
+    expect(cacheHandle.size()).toBe(0);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toContain("compilation failed");
   });
 
   test("accepts optional snapshotStore", () => {

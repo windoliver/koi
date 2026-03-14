@@ -28,6 +28,7 @@ import type { ForgeDemandHandle } from "@koi/forge-demand";
 import { createForgeDemandDetector } from "@koi/forge-demand";
 import type { ExaptationHandle } from "@koi/forge-exaptation";
 import { createDefaultExaptationConfig, createExaptationDetector } from "@koi/forge-exaptation";
+import type { OptimizationResult } from "@koi/forge-optimizer";
 import { createOptimizerMiddleware } from "@koi/forge-optimizer";
 import { createForgeUsageMiddleware } from "@koi/forge-policy";
 import type { ForgeConfig } from "@koi/forge-types";
@@ -36,6 +37,7 @@ import {
   createFeedbackLoopMiddleware,
   createForgeRepairStrategy,
 } from "@koi/middleware-feedback-loop";
+import type { PolicyCacheHandle, PolicyDecision } from "@koi/middleware-policy-cache";
 
 // ---------------------------------------------------------------------------
 // Forge-specific retry budgets (Issue #937: 4A)
@@ -90,6 +92,41 @@ export interface ForgeMiddlewareStackConfig {
   readonly notifier?: StoreChangeNotifier | undefined;
   /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
   readonly snapshotStore?: SnapshotStore | undefined;
+  /**
+   * Optional auto-harness synthesis callback. When provided, failure-driven
+   * demand signals are routed to harness synthesis instead of pioneer stubs.
+   * Created via createAutoHarnessStack() from @koi/auto-harness.
+   */
+  readonly synthesizeHarness?:
+    | ((
+        signal: import("@koi/core").ForgeDemandSignal,
+      ) => Promise<import("@koi/core").BrickArtifact | null>)
+    | undefined;
+  /** Maximum harness synthesis attempts per session. Default: 3. */
+  readonly maxSynthesesPerSession?: number | undefined;
+  /**
+   * Optional policy-cache handle for promotion wiring.
+   * When provided, the optimizer's onPolicyPromotion callback is auto-wired:
+   * promoted bricks are loaded from the store and registered with the cache.
+   * The handle's middleware is added to the stack at priority 150.
+   */
+  readonly policyCacheHandle?: PolicyCacheHandle | undefined;
+  /** Explicit callback fired when optimizer promotes a brick to policy mode.
+   *  Overrides the auto-wired default when policyCacheHandle is also set. */
+  readonly onPolicyPromotion?: ((brickId: string, result: OptimizationResult) => void) | undefined;
+  /** Minimum policy samples for promotion. Default: 50 (from optimizer). */
+  readonly minPolicySamples?: number | undefined;
+  /**
+   * Compiles verified harness code into a synchronous policy executor.
+   * Required for the promotion→cache loop to enforce real validation.
+   * Without this, promotions are logged but NOT registered (avoids no-op entries).
+   */
+  readonly compilePolicyExecutor?:
+    | ((
+        implementation: string,
+        toolId: string,
+      ) => ((input: Readonly<Record<string, unknown>>) => PolicyDecision) | null)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +216,8 @@ export function createForgeMiddlewareStack(
   });
 
   // 4. Auto-forge — consumes crystallize + demand handles (priority 960)
+  //    When synthesizeHarness is provided, failure-driven demand signals are routed
+  //    to harness synthesis instead of creating pioneer stubs.
   const autoForge = createAutoForgeMiddleware({
     crystallizeHandle,
     demandHandle,
@@ -186,6 +225,12 @@ export function createForgeMiddlewareStack(
     scope: config.scope,
     notifier: config.notifier,
     ...(config.onError !== undefined ? { onError: config.onError } : {}),
+    ...(config.synthesizeHarness !== undefined
+      ? { synthesizeHarness: config.synthesizeHarness }
+      : {}),
+    ...(config.maxSynthesesPerSession !== undefined
+      ? { maxSynthesesPerSession: config.maxSynthesesPerSession }
+      : {}),
     clock,
   });
 
@@ -193,10 +238,15 @@ export function createForgeMiddlewareStack(
   const exaptationHandle = createExaptationDetector(createDefaultExaptationConfig());
 
   // 6. Optimizer — sweep on session end (priority 990)
+  //    When policyCacheHandle is provided and no explicit onPolicyPromotion callback,
+  //    auto-wire the promotion → cache registration loop.
+  const policyPromotion = resolvePolicyPromotion(config);
   const optimizer = createOptimizerMiddleware({
     store: config.forgeStore,
     clock,
     ...(config.notifier !== undefined ? { notifier: config.notifier } : {}),
+    ...(policyPromotion !== undefined ? { onPolicyPromotion: policyPromotion } : {}),
+    ...(config.minPolicySamples !== undefined ? { minPolicySamples: config.minPolicySamples } : {}),
   });
 
   // 7. Usage tracking — record brick usage (priority 900)
@@ -208,6 +258,8 @@ export function createForgeMiddlewareStack(
 
   // Return middlewares in priority order (ascending)
   const middlewares: readonly KoiMiddleware[] = [
+    // Policy-cache at priority 150 (before permissions) — only when auto-harness is wired
+    ...(config.policyCacheHandle !== undefined ? [config.policyCacheHandle.middleware] : []),
     feedbackLoopHandle.middleware, // 450
     demandHandle.middleware, // 455
     exaptationHandle.middleware, // 465
@@ -225,5 +277,96 @@ export function createForgeMiddlewareStack(
       exaptation: exaptationHandle,
       feedbackLoop: feedbackLoopHandle,
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Policy promotion wiring
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the onPolicyPromotion callback for the optimizer:
+ * 1. Explicit callback wins (user controls behavior)
+ * 2. policyCacheHandle + compilePolicyExecutor → auto-wire via createPromotionCallback
+ * 3. Neither → undefined (promotions are not tracked)
+ */
+function resolvePolicyPromotion(
+  config: ForgeMiddlewareStackConfig,
+): ((brickId: string, result: OptimizationResult) => void) | undefined {
+  if (config.onPolicyPromotion !== undefined) {
+    return config.onPolicyPromotion;
+  }
+
+  const handle = config.policyCacheHandle;
+  const compiler = config.compilePolicyExecutor;
+  if (handle === undefined || compiler === undefined) {
+    return undefined;
+  }
+
+  return createPromotionCallback({
+    forgeStore: config.forgeStore,
+    policyCacheHandle: handle,
+    compilePolicyExecutor: compiler,
+    onError: config.onError,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Promotion callback (exported for direct testing)
+// ---------------------------------------------------------------------------
+
+export interface PromotionCallbackConfig {
+  readonly forgeStore: ForgeStore;
+  readonly policyCacheHandle: PolicyCacheHandle;
+  readonly compilePolicyExecutor: (
+    implementation: string,
+    toolId: string,
+  ) => ((input: Readonly<Record<string, unknown>>) => PolicyDecision) | null;
+  readonly onError?: ((error: unknown) => void) | undefined;
+}
+
+/**
+ * Create a promotion callback that loads the promoted brick, compiles its
+ * implementation into a policy executor, and registers it with the cache.
+ */
+export function createPromotionCallback(
+  config: PromotionCallbackConfig,
+): (brickId: string, result: OptimizationResult) => void {
+  return (brickId: string, _result: OptimizationResult): void => {
+    void (async () => {
+      const loadResult = await config.forgeStore.load(brickId as BrickId);
+      if (!loadResult.ok) {
+        config.onError?.(
+          new Error(
+            `Policy promotion: failed to load brick ${brickId}: ${loadResult.error.message}`,
+          ),
+        );
+        return;
+      }
+
+      const brick = loadResult.value;
+      const toolId = brick.name.startsWith("harness-")
+        ? brick.name.slice("harness-".length)
+        : brick.name;
+
+      if (brick.kind !== "middleware" && brick.kind !== "tool") {
+        config.onError?.(
+          new Error(
+            `Policy promotion: brick ${brickId} (kind: ${brick.kind}) has no implementation`,
+          ),
+        );
+        return;
+      }
+
+      const execute = config.compilePolicyExecutor(brick.implementation, toolId);
+      if (execute === null) {
+        config.onError?.(new Error(`Policy promotion: compilation failed for brick ${brickId}`));
+        return;
+      }
+
+      config.policyCacheHandle.register({ toolId, brickId, execute });
+    })().catch((err: unknown) => {
+      config.onError?.(new Error(`Policy promotion failed for ${brickId}`, { cause: err }));
+    });
   };
 }

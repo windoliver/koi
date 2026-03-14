@@ -347,7 +347,7 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
       lastSidForLoad !== undefined ? sessionPersistence.loadSession(lastSidForLoad) : undefined,
     ]);
 
-    if (needsHead && headResult !== undefined && headResult.ok && headResult.value !== undefined) {
+    if (needsHead && headResult?.ok && headResult.value !== undefined) {
       currentSnapshot = headResult.value.data;
       currentNodeId = headResult.value.nodeId;
     }

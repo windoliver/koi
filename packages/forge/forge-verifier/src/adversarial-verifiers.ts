@@ -483,9 +483,9 @@ export function createAdversarialVerifiers(executor: SandboxExecutor): readonly 
 }
 
 export {
+  createContentScanningVerifier,
+  createExfiltrationVerifier,
   createInjectionVerifier,
   createResourceExhaustionVerifier,
-  createExfiltrationVerifier,
-  createContentScanningVerifier,
   createStructuralHidingVerifier,
 };

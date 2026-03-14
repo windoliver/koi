@@ -12,8 +12,9 @@
  * - `"round-robin"` — rotate for load distribution + data collection
  * - `"context-match"` — select based on input characteristics
  * - `"random"` — uniform random (for A/B testing)
+ * - `"thompson"` — Thompson sampling via Beta posteriors (exploration/exploitation balance)
  */
-export type SelectionStrategy = "fitness" | "round-robin" | "context-match" | "random";
+export type SelectionStrategy = "fitness" | "round-robin" | "context-match" | "random" | "thompson";
 
 /**
  * Per-capability degeneracy configuration declared in the agent manifest.

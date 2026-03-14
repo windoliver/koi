@@ -73,6 +73,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
  */
 export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/agent-spawner",
+  "@koi/auto-harness",
   "@koi/autonomous",
   "@koi/channels",
   "@koi/cli",

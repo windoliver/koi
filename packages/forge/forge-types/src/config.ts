@@ -46,6 +46,12 @@ export interface DependencyConfig {
   readonly maxBrickMemoryMb: number;
   /** Maximum number of child processes for brick subprocess (Linux only). */
   readonly maxBrickPids: number;
+  /**
+   * Existing workspace path to reuse (skip audit + install).
+   * When set, verifyResolve skips workspace creation and only writes the entry file.
+   * Used by harness-search to avoid repeating dependency resolution per refinement iteration.
+   */
+  readonly reuseWorkspace?: string | undefined;
 }
 
 export interface FormatConfig {

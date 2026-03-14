@@ -363,8 +363,12 @@ export { createForgeDelegation } from "./create-forge-delegation.js";
 export type {
   ForgeMiddlewareStackConfig,
   ForgeMiddlewareStackResult,
+  PromotionCallbackConfig,
 } from "./create-forge-middleware-stack.js";
-export { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
+export {
+  createForgeMiddlewareStack,
+  createPromotionCallback,
+} from "./create-forge-middleware-stack.js";
 export { createForgePipeline } from "./create-forge-stack.js";
 export type { ForgeToolsProviderConfig } from "./create-forge-tools-provider.js";
 export { createForgeToolsProvider } from "./create-forge-tools-provider.js";

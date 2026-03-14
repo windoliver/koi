@@ -109,6 +109,13 @@ interface AutonomousAgentParts {
      * Ignored when goalStackMiddleware is provided (caller has full control in that case).
      */
     readonly taskBoardGoalStack?: boolean | undefined;
+    /**
+     * Optional auto-harness middleware stack for failure-driven middleware synthesis.
+     * When provided, includes the policy-cache middleware and wires the synthesis
+     * callback into the forge pipeline. Requires forgeStore to also be provided.
+     * Created via createAutoHarnessStack() from @koi/auto-harness.
+     */
+    readonly autoHarnessMiddleware?: readonly KoiMiddleware[] | undefined;
 }
 interface AutonomousAgent {
     /** The underlying harness. */

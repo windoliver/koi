@@ -30,6 +30,12 @@ export interface OptimizationConfig {
   readonly improvementThreshold?: number | undefined;
   /** Time window for recency factor in milliseconds. Default: 604_800_000 (7 days). */
   readonly evaluationWindowMs?: number | undefined;
+  /**
+   * Minimum invocations with 100% success rate to promote to policy mode.
+   * Policy-eligible bricks can short-circuit model calls. Default: 50.
+   * Set to Infinity to disable policy promotion.
+   */
+  readonly minPolicySamples?: number | undefined;
   /** Clock function. Default: Date.now. */
   readonly clock?: (() => number) | undefined;
   /** Optional notifier for cross-agent cache invalidation after deprecation. */
@@ -39,7 +45,12 @@ export interface OptimizationConfig {
 /** Result of evaluating a single brick. */
 export interface OptimizationResult {
   readonly brickId: BrickId;
-  readonly action: "keep" | "deprecate" | "variant_better" | "insufficient_data";
+  readonly action:
+    | "keep"
+    | "deprecate"
+    | "variant_better"
+    | "insufficient_data"
+    | "promote_to_policy";
   readonly fitnessOriginal: number;
   readonly fitnessVariant?: number | undefined;
   readonly reason: string;
@@ -60,6 +71,7 @@ export interface BrickOptimizer {
 const DEFAULT_MIN_SAMPLE_SIZE = 20;
 const DEFAULT_IMPROVEMENT_THRESHOLD = 0.1;
 const DEFAULT_EVALUATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const DEFAULT_MIN_POLICY_SAMPLES = 50;
 
 // ---------------------------------------------------------------------------
 // Pure fitness scoring
@@ -115,6 +127,7 @@ export function createBrickOptimizer(config: OptimizationConfig): BrickOptimizer
   const minSampleSize = config.minSampleSize ?? DEFAULT_MIN_SAMPLE_SIZE;
   const threshold = config.improvementThreshold ?? DEFAULT_IMPROVEMENT_THRESHOLD;
   const windowMs = config.evaluationWindowMs ?? DEFAULT_EVALUATION_WINDOW_MS;
+  const minPolicySamples = config.minPolicySamples ?? DEFAULT_MIN_POLICY_SAMPLES;
   const clock = config.clock ?? Date.now;
 
   const evaluate = async (brickId: BrickId): Promise<OptimizationResult> => {
@@ -148,6 +161,20 @@ export function createBrickOptimizer(config: OptimizationConfig): BrickOptimizer
         action: "insufficient_data",
         fitnessOriginal: 0,
         reason: `Insufficient data: ${String(totalInvocations)}/${String(minSampleSize)} invocations`,
+      };
+    }
+
+    // Check for policy promotion: 100% success over minPolicySamples
+    if (
+      fitness.errorCount === 0 &&
+      totalInvocations >= minPolicySamples &&
+      isHarnessSynthesizedBrick(brick)
+    ) {
+      return {
+        brickId,
+        action: "promote_to_policy",
+        fitnessOriginal: computeFitnessScore(fitness, clock(), windowMs),
+        reason: `100% success rate over ${String(totalInvocations)} invocations — eligible for policy mode`,
       };
     }
 
@@ -214,18 +241,17 @@ export function createBrickOptimizer(config: OptimizationConfig): BrickOptimizer
   };
 
   const sweep = async (): Promise<readonly OptimizationResult[]> => {
-    // Query for all active crystallized bricks
+    // Query for all active bricks (tools + middleware)
     const searchResult = await config.store.search({
       lifecycle: "active",
-      kind: "tool",
     });
 
     if (!searchResult.ok) return [];
 
     const results: OptimizationResult[] = [];
     for (const brick of searchResult.value) {
-      // Only evaluate crystallized bricks (check provenance source)
-      if (!isCrystallizedBrick(brick)) continue;
+      // Only evaluate crystallized bricks or harness-synth bricks
+      if (!isCrystallizedBrick(brick) && !isHarnessSynthesizedBrick(brick)) continue;
 
       const result = await evaluate(brick.id);
       // justified: mutable local array being constructed, not shared state
@@ -309,6 +335,12 @@ async function computeComponentAggregateFitness(
 
   // Average fitness of available components
   return totalFitness / foundComponents;
+}
+
+/** Check if a brick was created by harness synthesis. */
+function isHarnessSynthesizedBrick(brick: BrickArtifact): boolean {
+  const source = brick.provenance.source;
+  return source.origin === "forged" && source.forgedBy === "harness-synth";
 }
 
 /** Format percentage difference between two values. */
