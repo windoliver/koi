@@ -32,6 +32,7 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "cancel", label: "/cancel", description: "Cancel active stream" },
   { id: "sessions", label: "/sessions", description: "Browse agent sessions" },
   { id: "sources", label: "/sources", description: "Show data source panel" },
+  { id: "sources-add", label: "/sources add", description: "Re-scan environment for new data sources" },
   { id: "sources-approve", label: "/sources approve", description: "Approve a pending data source" },
   { id: "sources-schema", label: "/sources schema", description: "View data source schema" },
   { id: "logs", label: "/logs", description: "Show agent lifecycle events" },

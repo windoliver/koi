@@ -638,6 +638,23 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     });
   };
 
+  // Emit data_source_discovered events for initial sources (deferred to next tick
+  // so SSE subscribers are connected before events fire)
+  if (options.discoveredSources !== undefined && options.discoveredSources.length > 0) {
+    queueMicrotask(() => {
+      for (const source of options.discoveredSources ?? []) {
+        emitEvent({
+          kind: "datasource",
+          subKind: "data_source_discovered",
+          name: source.name,
+          protocol: source.protocol,
+          source: source.source,
+          timestamp: Date.now(),
+        });
+      }
+    });
+  }
+
   return {
     agentId: primaryAgentId,
     dataSource,

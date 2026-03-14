@@ -242,6 +242,34 @@ export type HarnessDashboardEvent =
     };
 
 // ---------------------------------------------------------------------------
+// Data source events (discovery + connector lifecycle)
+// ---------------------------------------------------------------------------
+
+export type DataSourceDashboardEvent =
+  | {
+      readonly kind: "datasource";
+      readonly subKind: "data_source_discovered";
+      readonly name: string;
+      readonly protocol: string;
+      readonly source: "manifest" | "env" | "mcp";
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "datasource";
+      readonly subKind: "connector_forged";
+      readonly name: string;
+      readonly protocol: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "datasource";
+      readonly subKind: "connector_health_update";
+      readonly name: string;
+      readonly healthy: boolean;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
 // Union + batch envelope
 // ---------------------------------------------------------------------------
 
@@ -255,7 +283,8 @@ export type DashboardEvent =
   | TemporalDashboardEvent
   | SchedulerDashboardEvent
   | TaskBoardDashboardEvent
-  | HarnessDashboardEvent;
+  | HarnessDashboardEvent
+  | DataSourceDashboardEvent;
 
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 export interface DashboardEventBatch {
@@ -279,6 +308,7 @@ const VALID_KINDS = new Set([
   "scheduler",
   "taskboard",
   "harness",
+  "datasource",
 ]);
 
 /** Type guard for DashboardEvent. Validates kind + subKind presence. */
@@ -341,4 +371,9 @@ export function isTaskBoardEvent(event: DashboardEvent): event is TaskBoardDashb
 /** Type guard for harness domain events. */
 export function isHarnessEvent(event: DashboardEvent): event is HarnessDashboardEvent {
   return event.kind === "harness";
+}
+
+/** Type guard for data source domain events. */
+export function isDataSourceEvent(event: DashboardEvent): event is DataSourceDashboardEvent {
+  return event.kind === "datasource";
 }

@@ -18,8 +18,12 @@ import {
   type ReconnectHandle,
   startChatStream,
 } from "@koi/dashboard-client";
-import type { AgentDashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
-import { isAgentEvent } from "@koi/dashboard-types";
+import type {
+  AgentDashboardEvent,
+  DashboardEventBatch,
+  DataSourceDashboardEvent,
+} from "@koi/dashboard-types";
+import { isAgentEvent, isDataSourceEvent } from "@koi/dashboard-types";
 import { type CliRenderer, createCliRenderer, SyntaxStyle } from "@opentui/core";
 import { createRoot, type Root } from "@opentui/react";
 import { createElement } from "react";
@@ -363,6 +367,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         openDataSources().catch(() => {});
         break;
 
+      case "sources-add":
+        rescanDataSources().catch(() => {});
+        break;
+
       case "sources-approve": {
         const sources = store.getState().dataSources;
         const pending = sources.filter((s) => s.status === "pending");
@@ -429,9 +437,22 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   function forwardAgentEventsToConsole(batch: DashboardEventBatch): void {
     const session = store.getState().activeSession;
-    if (session === null) return;
 
     for (const evt of batch.events) {
+      // Data source events are global (not agent-scoped)
+      if (isDataSourceEvent(evt)) {
+        const desc = formatDataSourceEvent(evt);
+        if (desc !== null) {
+          addLifecycleMessage(desc);
+          // Auto-refresh data sources list on discovery events
+          if (evt.subKind === "data_source_discovered") {
+            openDataSources().catch(() => {});
+          }
+        }
+        continue;
+      }
+
+      if (session === null) continue;
       if (!isAgentEvent(evt)) continue;
       if (evt.agentId !== session.agentId) continue;
 
@@ -452,6 +473,19 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         return `Agent terminated${evt.reason !== undefined ? `: ${evt.reason}` : ""}`;
       case "metrics_updated":
         return `Turns: ${String(evt.turns)}, tokens: ${String(evt.tokenCount)}`;
+      default:
+        return null;
+    }
+  }
+
+  function formatDataSourceEvent(evt: DataSourceDashboardEvent): string | null {
+    switch (evt.subKind) {
+      case "data_source_discovered":
+        return `Data source discovered: ${evt.name} (${evt.protocol}) from ${evt.source}`;
+      case "connector_forged":
+        return `Connector forged for: ${evt.name} (${evt.protocol})`;
+      case "connector_health_update":
+        return `Connector ${evt.name}: ${evt.healthy ? "healthy" : "unhealthy"}`;
       default:
         return null;
     }
@@ -647,6 +681,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       }
     } catch {
       addLifecycleMessage(`Failed to fetch schema for "${name}"`);
+    }
+  }
+
+  async function rescanDataSources(): Promise<void> {
+    addLifecycleMessage("Re-scanning environment for data sources...");
+    // Refresh the data sources list from the admin API
+    await openDataSources();
+    const sources = store.getState().dataSources;
+    if (sources.length > 0) {
+      addLifecycleMessage(`Found ${String(sources.length)} data source(s)`);
+    } else {
+      addLifecycleMessage("No data sources found");
     }
   }
 
