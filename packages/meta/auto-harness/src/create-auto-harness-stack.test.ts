@@ -276,7 +276,35 @@ describe("createAutoHarnessStack", () => {
     expect(store.save).toHaveBeenCalledTimes(1); // no additional save
   });
 
-  test("resetSession clears recursion gate for same tool", async () => {
+  test("recursion gate auto-expires after gateDurationMs", async () => {
+    const store = createMockForgeStore();
+    let currentTime = 1_700_000_000_000; // let: mutable clock for test
+    const stack = createAutoHarnessStack({
+      forgeStore: store,
+      generate: async () => LLM_RESPONSE,
+      clock: () => currentTime,
+      gateDurationMs: 60_000, // 1 minute gate
+    });
+
+    const signal = createDemandSignal();
+
+    // First synthesis succeeds
+    const brick1 = await stack.synthesizeHarness(signal);
+    expect(brick1).not.toBeNull();
+
+    // Second attempt within gate window is blocked
+    currentTime += 30_000; // 30 seconds later
+    const brick2 = await stack.synthesizeHarness(signal);
+    expect(brick2).toBeNull();
+
+    // After gate expires, synthesis is allowed again
+    currentTime += 60_000; // 60 more seconds (90 total, past the 1-minute gate)
+    const brick3 = await stack.synthesizeHarness(signal);
+    expect(brick3).not.toBeNull();
+    expect(store.save).toHaveBeenCalledTimes(2);
+  });
+
+  test("resetSession clears recursion gate immediately", async () => {
     const store = createMockForgeStore();
     const stack = createAutoHarnessStack({
       forgeStore: store,
@@ -286,15 +314,12 @@ describe("createAutoHarnessStack", () => {
 
     const signal = createDemandSignal();
 
-    // First synthesis succeeds
     const brick1 = await stack.synthesizeHarness(signal);
     expect(brick1).not.toBeNull();
 
-    // Second attempt blocked by recursion gate
     const brick2 = await stack.synthesizeHarness(signal);
     expect(brick2).toBeNull();
 
-    // After resetSession, synthesis is allowed again
     stack.resetSession();
     const brick3 = await stack.synthesizeHarness(signal);
     expect(brick3).not.toBeNull();

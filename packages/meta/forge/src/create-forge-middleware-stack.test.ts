@@ -7,7 +7,10 @@ import type { ForgeStore, KoiError, Result, TurnTrace } from "@koi/core";
 import { createInMemoryForgeStore } from "@koi/forge-tools";
 import { createDefaultForgeConfig } from "@koi/forge-types";
 import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
-import { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
+import {
+  createForgeMiddlewareStack,
+  createPromotionCallback,
+} from "./create-forge-middleware-stack.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -189,51 +192,6 @@ describe("createForgeMiddlewareStack", () => {
     expect(result.middlewares).toHaveLength(7);
   });
 
-  test("auto-wires promotion with compilePolicyExecutor and registers compiled policy", async () => {
-    const store = createInMemoryForgeStore();
-    // Save a brick so load() succeeds during the promotion callback
-    await store.save({
-      id: "brick-123" as never,
-      kind: "middleware",
-      name: "harness-search",
-      description: "test",
-      scope: "agent",
-      origin: "forged",
-      lifecycle: "active",
-      version: "0.1.0",
-      usageCount: 0,
-      implementation: "validate(input)",
-      policy: { sandbox: true, trust: "low", maxRetries: 3, timeoutMs: 5000 },
-      provenance: {} as never,
-      tags: ["harness", "search"],
-    } as never);
-
-    const cacheHandle = createPolicyCacheMiddleware();
-    const compileSpy = mock((_impl: string, _toolId: string) =>
-      ((_input: Readonly<Record<string, unknown>>) => ({ action: "allow" as const })),
-    );
-
-    // Build stack with policyCacheHandle AND compilePolicyExecutor
-    const promotions: Array<{ brickId: string }> = [];
-    createForgeMiddlewareStack({
-      forgeStore: store,
-      forgeConfig: createDefaultForgeConfig(),
-      scope: "agent",
-      readTraces: emptyTraces,
-      resolveBrickId: noopResolveBrickId,
-      policyCacheHandle: cacheHandle,
-      compilePolicyExecutor: compileSpy,
-      // Use explicit onPolicyPromotion to capture the event, then delegate
-      // to the auto-wired callback logic indirectly (by checking cache state).
-      onPolicyPromotion: (brickId, _result) => {
-        promotions.push({ brickId });
-      },
-    });
-
-    // Verify the stack was created successfully
-    expect(cacheHandle.size()).toBe(0);
-  });
-
   test("does not register no-op entry when compilePolicyExecutor is absent", () => {
     const store = createInMemoryForgeStore();
     const cacheHandle = createPolicyCacheMiddleware();
@@ -250,14 +208,13 @@ describe("createForgeMiddlewareStack", () => {
 
     // Policy-cache middleware is mounted but nothing will be registered
     expect(result.middlewares[0]?.name).toBe("policy-cache");
-    // No entries — the auto-wired callback was not created (no compiler)
     expect(cacheHandle.size()).toBe(0);
   });
 
-  test("auto-wired promotion loads brick and calls compilePolicyExecutor", async () => {
+  test("createPromotionCallback loads brick, compiles, and registers with cache", async () => {
     const store = createInMemoryForgeStore();
     await store.save({
-      id: "brick-456" as never,
+      id: "brick-promo" as never,
       kind: "middleware",
       name: "harness-search",
       description: "test harness",
@@ -275,35 +232,77 @@ describe("createForgeMiddlewareStack", () => {
     const cacheHandle = createPolicyCacheMiddleware();
     const errors: unknown[] = [];
     const compiledExecutor = (_input: Readonly<Record<string, unknown>>) =>
-      ({ action: "allow" as const });
+      ({ action: "block" as const, reason: "test policy" });
     const compileSpy = mock((_impl: string, _toolId: string) => compiledExecutor);
 
-    // Build stack WITHOUT explicit onPolicyPromotion — auto-wiring should kick in
-    const result = createForgeMiddlewareStack({
+    const callback = createPromotionCallback({
       forgeStore: store,
-      forgeConfig: createDefaultForgeConfig(),
-      scope: "agent",
-      readTraces: emptyTraces,
-      resolveBrickId: noopResolveBrickId,
       policyCacheHandle: cacheHandle,
       compilePolicyExecutor: compileSpy,
       onError: (err) => errors.push(err),
     });
 
-    // The optimizer middleware has the auto-wired onPolicyPromotion callback.
-    // Simulate what the optimizer does: call onSessionEnd which triggers sweep.
-    // For a direct test, we'll invoke the optimizer's onSessionEnd.
-    const optimizerMw = result.middlewares.find((m) => m.name === "forge-optimizer");
-    expect(optimizerMw).toBeDefined();
+    // Simulate the optimizer firing onPolicyPromotion
+    callback("brick-promo", {
+      brickId: "brick-promo" as never,
+      action: "promote_to_policy",
+      fitnessOriginal: 1.0,
+      reason: "100% success over 50 samples",
+    });
 
-    // The optimizer sweep won't produce a promote_to_policy without usage stats,
-    // so we verify the wiring is correct by checking the stack composition.
-    // The real integration test: manually trigger the promotion callback.
-    // Since we can't access the internal callback, we verify that compilePolicyExecutor
-    // was provided and the stack is correctly composed.
-    expect(result.middlewares[0]?.name).toBe("policy-cache");
-    expect(result.middlewares).toHaveLength(8); // 7 + policy-cache
+    // Fire-and-forget: give the async callback time to settle
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Verify the compiler was called with the brick's implementation
+    expect(compileSpy).toHaveBeenCalledTimes(1);
+    expect(compileSpy).toHaveBeenCalledWith("check(input.query)", "search");
+
+    // Verify the compiled executor was registered in the cache
+    expect(cacheHandle.size()).toBe(1);
     expect(errors).toHaveLength(0);
+  });
+
+  test("createPromotionCallback reports error when compilation fails", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save({
+      id: "brick-fail" as never,
+      kind: "middleware",
+      name: "harness-write",
+      description: "test",
+      scope: "agent",
+      origin: "forged",
+      lifecycle: "active",
+      version: "0.1.0",
+      usageCount: 50,
+      implementation: "bad code",
+      policy: { sandbox: true, trust: "low", maxRetries: 3, timeoutMs: 5000 },
+      provenance: {} as never,
+      tags: ["harness", "write"],
+    } as never);
+
+    const cacheHandle = createPolicyCacheMiddleware();
+    const errors: unknown[] = [];
+
+    const callback = createPromotionCallback({
+      forgeStore: store,
+      policyCacheHandle: cacheHandle,
+      compilePolicyExecutor: () => null, // compilation fails
+      onError: (err) => errors.push(err),
+    });
+
+    callback("brick-fail", {
+      brickId: "brick-fail" as never,
+      action: "promote_to_policy",
+      fitnessOriginal: 1.0,
+      reason: "100% success",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Cache should remain empty — compilation failed
+    expect(cacheHandle.size()).toBe(0);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toContain("compilation failed");
   });
 
   test("accepts optional snapshotStore", () => {

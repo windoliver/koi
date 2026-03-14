@@ -35,6 +35,9 @@ export interface AutoHarnessConfig {
   readonly random?: (() => number) | undefined;
   /** Error handler. Default: console.error. */
   readonly onError?: ((error: unknown) => void) | undefined;
+  /** Recursion gate duration in ms. After this window, the same tool can be
+   *  re-synthesized. Default: 1_800_000 (30 minutes). */
+  readonly gateDurationMs?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------

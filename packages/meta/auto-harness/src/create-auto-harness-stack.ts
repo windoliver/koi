@@ -35,6 +35,8 @@ import type { AutoHarnessConfig, AutoHarnessStack } from "./types.js";
 
 const DEFAULT_MAX_ITERATIONS = 20;
 const DEFAULT_MAX_SYNTHESES = 3;
+/** Default gate duration: 30 minutes. Covers most session lengths. */
+const DEFAULT_GATE_DURATION_MS = 30 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -64,11 +66,12 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     notifier: config.notifier,
   });
 
+  const gateDurationMs = config.gateDurationMs ?? DEFAULT_GATE_DURATION_MS;
+
   // Recursion gate: track which tools already have a synthesized harness.
-  // The aggregator's forgedBy filter cannot work here because the demand signal context
-  // carries only strings — no provenance metadata. Caller must invoke resetSession()
-  // between sessions to clear the gate; otherwise it persists for the stack's lifetime.
-  const synthesizedTools = new Set<string>();
+  // Entries auto-expire after gateDurationMs so the gate is effectively session-scoped
+  // without requiring external callers to invoke resetSession().
+  const synthesizedTools = new Map<string, number>(); // toolName → expiresAt
 
   /**
    * The main synthesis callback — injected into auto-forge middleware.
@@ -83,8 +86,9 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     const now = clock();
     const targetToolName = extractTargetToolName(signal);
 
-    // Recursion prevention: skip if we already synthesized a harness for this tool
-    if (synthesizedTools.has(targetToolName)) {
+    // Recursion prevention: skip if we recently synthesized a harness for this tool
+    const gateExpiry = synthesizedTools.get(targetToolName);
+    if (gateExpiry !== undefined && now < gateExpiry) {
       return null;
     }
 
@@ -181,8 +185,8 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return null;
     }
 
-    // Record that this tool now has a harness (recursion prevention)
-    synthesizedTools.add(targetToolName);
+    // Record that this tool now has a harness (recursion prevention, auto-expires)
+    synthesizedTools.set(targetToolName, now + gateDurationMs);
 
     // Notify for hot-attach
     if (config.notifier !== undefined) {

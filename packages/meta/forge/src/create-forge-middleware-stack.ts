@@ -291,7 +291,7 @@ export function createForgeMiddlewareStack(
 /**
  * Resolve the onPolicyPromotion callback for the optimizer:
  * 1. Explicit callback wins (user controls behavior)
- * 2. policyCacheHandle → auto-wire: load brick from store, register with cache
+ * 2. policyCacheHandle + compilePolicyExecutor → auto-wire via createPromotionCallback
  * 3. Neither → undefined (promotions are not tracked)
  */
 function resolvePolicyPromotion(
@@ -302,18 +302,40 @@ function resolvePolicyPromotion(
   }
 
   const handle = config.policyCacheHandle;
-  if (handle === undefined) {
-    return undefined;
-  }
-
   const compiler = config.compilePolicyExecutor;
-  if (compiler === undefined) {
-    // Without a compiler, we can't produce a real executor — don't register no-op entries.
+  if (handle === undefined || compiler === undefined) {
     return undefined;
   }
 
-  // Auto-wired: load the promoted brick, compile its implementation into a real
-  // policy executor, and register with the cache for deterministic interception.
+  return createPromotionCallback({
+    forgeStore: config.forgeStore,
+    policyCacheHandle: handle,
+    compilePolicyExecutor: compiler,
+    onError: config.onError,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Promotion callback (exported for direct testing)
+// ---------------------------------------------------------------------------
+
+export interface PromotionCallbackConfig {
+  readonly forgeStore: ForgeStore;
+  readonly policyCacheHandle: PolicyCacheHandle;
+  readonly compilePolicyExecutor: (
+    implementation: string,
+    toolId: string,
+  ) => ((input: Readonly<Record<string, unknown>>) => PolicyDecision) | null;
+  readonly onError?: ((error: unknown) => void) | undefined;
+}
+
+/**
+ * Create a promotion callback that loads the promoted brick, compiles its
+ * implementation into a policy executor, and registers it with the cache.
+ */
+export function createPromotionCallback(
+  config: PromotionCallbackConfig,
+): (brickId: string, result: OptimizationResult) => void {
   return (brickId: string, _result: OptimizationResult): void => {
     void (async () => {
       const loadResult = await config.forgeStore.load(brickId as BrickId);
@@ -325,12 +347,10 @@ function resolvePolicyPromotion(
       }
 
       const brick = loadResult.value;
-      // Harness bricks are named "harness-<toolName>" by createHarnessBrick
       const toolId = brick.name.startsWith("harness-")
         ? brick.name.slice("harness-".length)
         : brick.name;
 
-      // Only ImplementationArtifact / ToolArtifact have implementation code
       if (brick.kind !== "middleware" && brick.kind !== "tool") {
         config.onError?.(
           new Error(`Policy promotion: brick ${brickId} (kind: ${brick.kind}) has no implementation`),
@@ -338,7 +358,7 @@ function resolvePolicyPromotion(
         return;
       }
 
-      const execute = compiler(brick.implementation, toolId);
+      const execute = config.compilePolicyExecutor(brick.implementation, toolId);
       if (execute === null) {
         config.onError?.(
           new Error(`Policy promotion: compilation failed for brick ${brickId}`),
@@ -346,7 +366,7 @@ function resolvePolicyPromotion(
         return;
       }
 
-      handle.register({ toolId, brickId, execute });
+      config.policyCacheHandle.register({ toolId, brickId, execute });
     })().catch((err: unknown) => {
       config.onError?.(new Error(`Policy promotion failed for ${brickId}`, { cause: err }));
     });
