@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isBlockedIp, isBlockedUrl } from "./url-policy.js";
+import { isBlockedIp, isBlockedUrl, pinResolvedIp } from "./url-policy.js";
 
 // ---------------------------------------------------------------------------
 // isBlockedUrl (string-based first pass)
@@ -191,17 +191,36 @@ describe("isBlockedIp", () => {
     expect(isBlockedIp("FC00::1")).toBe(true);
   });
 
-  // IPv4-mapped IPv6
-  test("blocks IPv4-mapped IPv6 with private IPv4", () => {
+  // IPv4-mapped IPv6 (dotted-decimal form)
+  test("blocks IPv4-mapped IPv6 (dotted) with private IPv4", () => {
     expect(isBlockedIp("::ffff:127.0.0.1")).toBe(true);
     expect(isBlockedIp("::ffff:10.0.0.1")).toBe(true);
     expect(isBlockedIp("::ffff:192.168.1.1")).toBe(true);
     expect(isBlockedIp("::ffff:169.254.169.254")).toBe(true);
   });
 
-  test("allows IPv4-mapped IPv6 with public IPv4", () => {
+  test("allows IPv4-mapped IPv6 (dotted) with public IPv4", () => {
     expect(isBlockedIp("::ffff:8.8.8.8")).toBe(false);
     expect(isBlockedIp("::ffff:93.184.216.34")).toBe(false);
+  });
+
+  // IPv4-mapped IPv6 (hex form — e.g. ::ffff:7f00:1 = 127.0.0.1)
+  test("blocks IPv4-mapped IPv6 (hex) with private IPv4", () => {
+    // ::ffff:7f00:1 = 127.0.0.1
+    expect(isBlockedIp("::ffff:7f00:1")).toBe(true);
+    // ::ffff:a00:1 = 10.0.0.1
+    expect(isBlockedIp("::ffff:a00:1")).toBe(true);
+    // ::ffff:c0a8:101 = 192.168.1.1
+    expect(isBlockedIp("::ffff:c0a8:101")).toBe(true);
+    // ::ffff:a9fe:a9fe = 169.254.169.254
+    expect(isBlockedIp("::ffff:a9fe:a9fe")).toBe(true);
+  });
+
+  test("allows IPv4-mapped IPv6 (hex) with public IPv4", () => {
+    // ::ffff:808:808 = 8.8.8.8
+    expect(isBlockedIp("::ffff:808:808")).toBe(false);
+    // ::ffff:5db8:d822 = 93.184.216.34
+    expect(isBlockedIp("::ffff:5db8:d822")).toBe(false);
   });
 
   // Public IPv6
@@ -214,5 +233,42 @@ describe("isBlockedIp", () => {
   test("blocks unparseable IPv4 defensively", () => {
     expect(isBlockedIp("999.999.999.999")).toBe(true);
     expect(isBlockedIp("not-an-ip")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pinResolvedIp (IP pinning for DNS rebinding prevention)
+// ---------------------------------------------------------------------------
+
+describe("pinResolvedIp", () => {
+  test("pins IPv4 for HTTP URL", () => {
+    const result = pinResolvedIp("http://example.com/path?q=1", "93.184.216.34");
+    expect(result).not.toBeUndefined();
+    expect(result?.url).toBe("http://93.184.216.34/path?q=1");
+    expect(result?.hostHeader).toBe("example.com");
+  });
+
+  test("pins IPv4 for HTTP URL with non-default port", () => {
+    const result = pinResolvedIp("http://example.com:8080/api", "93.184.216.34");
+    expect(result).not.toBeUndefined();
+    expect(result?.url).toBe("http://93.184.216.34:8080/api");
+    expect(result?.hostHeader).toBe("example.com:8080");
+  });
+
+  test("pins IPv6 for HTTP URL (wraps in brackets)", () => {
+    const result = pinResolvedIp("http://example.com/", "2001:db8::1");
+    expect(result).not.toBeUndefined();
+    expect(result?.url).toBe("http://[2001:db8::1]/");
+    expect(result?.hostHeader).toBe("example.com");
+  });
+
+  test("returns undefined for HTTPS (no SNI support)", () => {
+    const result = pinResolvedIp("https://example.com/", "93.184.216.34");
+    expect(result).toBeUndefined();
+  });
+
+  test("returns undefined for invalid URL", () => {
+    const result = pinResolvedIp("not-a-url", "1.2.3.4");
+    expect(result).toBeUndefined();
   });
 });

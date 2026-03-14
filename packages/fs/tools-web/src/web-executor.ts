@@ -8,7 +8,7 @@
 import type { KoiError, Result } from "@koi/core";
 import type { SearchProvider, WebSearchOptions, WebSearchResult } from "@koi/search-provider";
 import type { DnsResolverFn } from "./url-policy.js";
-import { isBlockedUrl, resolveAndValidateUrl } from "./url-policy.js";
+import { isBlockedUrl, pinResolvedIp, resolveAndValidateUrl } from "./url-policy.js";
 
 // ---------------------------------------------------------------------------
 // Fetch
@@ -236,10 +236,20 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
           };
         }
 
+        // Pin the resolved IP into the URL for HTTP to prevent DNS rebinding
+        // between validation and the actual TCP connect. HTTPS can't be pinned
+        // because Bun's fetch doesn't support custom TLS SNI (serverName).
+        const pinned = pinResolvedIp(url, dnsResult.ip);
+        const pinnedUrl = pinned?.url ?? url;
+        const pinnedHostHeader = pinned?.hostHeader;
+
         // Manual redirect loop: validate each redirect URL BEFORE following it
-        let currentUrl = url;
+        let currentUrl = pinnedUrl;
+        let currentLogicalUrl = url; // original hostname URL for redirect resolution
         let currentMethod = method;
-        let currentHeaders: Readonly<Record<string, string>> | undefined = options?.headers;
+        let currentHeaders: Readonly<Record<string, string>> | undefined = pinnedHostHeader !== undefined
+          ? { ...options?.headers, Host: pinnedHostHeader }
+          : options?.headers;
         let currentBody = options?.body;
         let response: Response | undefined;
 
@@ -257,8 +267,8 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
           const location = response.headers.get("location");
           if (location === null || location === "") break;
 
-          // Resolve relative redirect URLs against the current URL
-          const nextUrl = new URL(location, currentUrl).href;
+          // Resolve relative redirect URLs against the logical URL (original hostname)
+          const nextUrl = new URL(location, currentLogicalUrl).href;
 
           // Validate redirect target BEFORE following it (string-based first pass)
           if (isBlockedUrl(nextUrl)) {
@@ -289,7 +299,7 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
 
           // Strip sensitive headers on cross-origin redirects (RFC 7231 / browser behavior)
           if (currentHeaders !== undefined) {
-            const currentOrigin = new URL(currentUrl).origin;
+            const currentOrigin = new URL(currentLogicalUrl).origin;
             const nextOrigin = new URL(nextUrl).origin;
             if (currentOrigin !== nextOrigin) {
               currentHeaders = Object.fromEntries(
@@ -300,7 +310,13 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
             }
           }
 
-          currentUrl = nextUrl;
+          // Pin redirect target's resolved IP for HTTP
+          const redirectPinned = pinResolvedIp(nextUrl, redirectDns.ip);
+          currentUrl = redirectPinned?.url ?? nextUrl;
+          currentLogicalUrl = nextUrl;
+          if (redirectPinned?.hostHeader !== undefined) {
+            currentHeaders = { ...currentHeaders, Host: redirectPinned.hostHeader };
+          }
 
           // 303 always converts to GET with no body; 301/302 convert to GET for
           // non-GET/HEAD methods per HTTP spec (browser behavior)
@@ -343,7 +359,7 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
 
         clearTimeout(timer);
 
-        const finalUrl = currentUrl;
+        const finalUrl = currentLogicalUrl;
         const rawBody = await response.text();
         const truncated = rawBody.length > maxBodyChars;
         const body = truncated ? rawBody.slice(0, maxBodyChars) : rawBody;

@@ -124,10 +124,19 @@ export function isBlockedIp(ip: string): boolean {
     if (normalized.startsWith(prefix)) return true;
   }
 
-  // IPv4-mapped IPv6 (::ffff:x.x.x.x) — extract and check the IPv4 part
-  const v4MappedMatch = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(normalized);
-  if (v4MappedMatch?.[1] !== undefined) {
-    return isBlockedIp(v4MappedMatch[1]);
+  // IPv4-mapped IPv6 in dotted-decimal form (::ffff:127.0.0.1)
+  const v4MappedDotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(normalized);
+  if (v4MappedDotted?.[1] !== undefined) {
+    return isBlockedIp(v4MappedDotted[1]);
+  }
+
+  // IPv4-mapped IPv6 in hex form (::ffff:7f00:1 = 127.0.0.1)
+  const v4MappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(normalized);
+  if (v4MappedHex?.[1] !== undefined && v4MappedHex?.[2] !== undefined) {
+    const high = parseInt(v4MappedHex[1], 16);
+    const low = parseInt(v4MappedHex[2], 16);
+    const ipv4 = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+    return isBlockedIp(ipv4);
   }
 
   // If we reach here, it looks like a valid public IPv6 address
@@ -150,12 +159,12 @@ export type DnsResolverFn = (hostname: string) => Promise<readonly string[]>;
 
 /**
  * Default DNS resolver using Bun's built-in DNS lookup API.
- * Resolves IPv4 addresses (family: 4).
+ * Resolves both IPv4 (A) and IPv6 (AAAA) records.
  */
 export const defaultDnsResolver: DnsResolverFn = async (
   hostname: string,
 ): Promise<readonly string[]> => {
-  const results = await Bun.dns.lookup(hostname, { family: 4 });
+  const results = await Bun.dns.lookup(hostname, {});
   return results.map((r) => r.address);
 };
 
@@ -234,6 +243,44 @@ export async function resolveAndValidateUrl(
     const message = e instanceof Error ? e.message : String(e);
     return { blocked: true, reason: `DNS resolution failed for ${hostname}: ${message}` };
   }
+}
+
+// ---------------------------------------------------------------------------
+// IP pinning — rewrite URL to connect to the resolved IP directly
+// ---------------------------------------------------------------------------
+
+/** Result of pinning a resolved IP into a URL for direct connection. */
+export interface PinnedUrl {
+  /** The rewritten URL with IP substituted for hostname. */
+  readonly url: string;
+  /** The original Host header value (hostname[:port]) to send with the request. */
+  readonly hostHeader: string;
+}
+
+/**
+ * Rewrite a URL to connect to the resolved IP directly, setting the Host header
+ * to the original hostname. This prevents DNS rebinding between validation and
+ * the actual TCP connect.
+ *
+ * Only works for `http:` URLs. For `https:`, Bun's `fetch` does not support
+ * custom TLS SNI (serverName), so pinning would break certificate validation.
+ * Returns `undefined` for HTTPS or on parse failure.
+ */
+export function pinResolvedIp(originalUrl: string, resolvedIp: string): PinnedUrl | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(originalUrl);
+  } catch {
+    return undefined;
+  }
+
+  // Only pin HTTP — HTTPS requires TLS SNI which Bun's fetch doesn't support
+  if (parsed.protocol !== "http:") return undefined;
+
+  const hostHeader = parsed.host; // includes port if non-default
+  // For IPv6 IPs, wrap in brackets for URL
+  parsed.hostname = resolvedIp.includes(":") ? `[${resolvedIp}]` : resolvedIp;
+  return { url: parsed.href, hostHeader };
 }
 
 // ---------------------------------------------------------------------------

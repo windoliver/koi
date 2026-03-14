@@ -33,8 +33,8 @@ export { stripHtml } from "./strip-html.js";
 export { createWebFetchTool } from "./tools/web-fetch.js";
 export { createWebSearchTool } from "./tools/web-search.js";
 // URL policy (SSRF protection)
-export type { DnsResolverFn, DnsValidationResult } from "./url-policy.js";
-export { defaultDnsResolver, isBlockedIp, isBlockedUrl, resolveAndValidateUrl } from "./url-policy.js";
+export type { DnsResolverFn, DnsValidationResult, PinnedUrl } from "./url-policy.js";
+export { defaultDnsResolver, isBlockedIp, isBlockedUrl, pinResolvedIp, resolveAndValidateUrl } from "./url-policy.js";
 // provider
 export type { WebProviderConfig } from "./web-component-provider.js";
 export { createWebProvider } from "./web-component-provider.js";
