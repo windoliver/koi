@@ -2,7 +2,7 @@
  * Tests for createSandboxMiddleware — 15 cases covering all behavior.
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import type { ToolPolicy } from "@koi/core/ecs";
 import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core/ecs";
 import type {

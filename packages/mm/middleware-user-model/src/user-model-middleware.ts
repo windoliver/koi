@@ -77,9 +77,7 @@ function computeCapabilityDescription(cfg: ResolvedUserModelConfig): string {
 
 interface SessionState {
   sensorState: Record<string, unknown>;
-  recallCache:
-    | { readonly query: string; readonly results: readonly MemoryResult[] }
-    | undefined;
+  recallCache: { readonly query: string; readonly results: readonly MemoryResult[] } | undefined;
 }
 
 function createSessionState(): SessionState {
@@ -145,7 +143,10 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
     session.recallCache = undefined;
   }
 
-  async function recallPreferences(sessionId: string, query: string): Promise<readonly MemoryResult[]> {
+  async function recallPreferences(
+    sessionId: string,
+    query: string,
+  ): Promise<readonly MemoryResult[]> {
     const session = getSession(sessionId);
     if (session.recallCache !== undefined && session.recallCache.query === query) {
       return session.recallCache.results;

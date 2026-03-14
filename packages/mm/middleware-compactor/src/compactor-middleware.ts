@@ -108,9 +108,7 @@ export function createCompactorMiddleware(config: CompactorConfig): CompactorMid
    * values when available. Uncached messages are estimated individually
    * and stored for future calls on the same object references.
    */
-  async function estimateMessagesWithCache(
-    messages: readonly InboundMessage[],
-  ): Promise<number> {
+  async function estimateMessagesWithCache(messages: readonly InboundMessage[]): Promise<number> {
     let total = 0; // let: accumulator for cached token sum
     const uncached: readonly InboundMessage[] = messages.filter((msg) => {
       const cached = messageTokenCache.get(msg);
