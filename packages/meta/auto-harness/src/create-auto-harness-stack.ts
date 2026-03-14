@@ -21,10 +21,11 @@ import { linearSearch } from "@koi/harness-search";
 import {
   aggregateFailures,
   buildRefinementPrompt,
+  parseSynthesisOutput,
   synthesize,
   type ToolFailureRecord,
 } from "@koi/harness-synth";
-import { computeBrickId } from "@koi/hash";
+import { computeBrickId, computeContentHash } from "@koi/hash";
 import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
 import type { AutoHarnessConfig, AutoHarnessStack } from "./types.js";
 
@@ -34,7 +35,6 @@ import type { AutoHarnessConfig, AutoHarnessStack } from "./types.js";
 
 const DEFAULT_MAX_ITERATIONS = 20;
 const DEFAULT_MAX_SYNTHESES = 3;
-const _DEFAULT_MIN_POLICY_SAMPLES = 50;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -64,6 +64,12 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     notifier: config.notifier,
   });
 
+  // Session-level recursion gate: track which tools already have a synthesized harness.
+  // The aggregator's forgedBy filter cannot work here because the demand signal context
+  // carries only strings — no provenance metadata. This gate prevents the auto-harness
+  // from synthesizing a second harness for the same tool in the same session.
+  const synthesizedTools = new Set<string>();
+
   /**
    * The main synthesis callback — injected into auto-forge middleware.
    *
@@ -75,6 +81,12 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
    */
   async function synthesizeHarness(signal: ForgeDemandSignal): Promise<BrickArtifact | null> {
     const now = clock();
+    const targetToolName = extractTargetToolName(signal);
+
+    // Recursion prevention: skip if we already synthesized a harness for this tool
+    if (synthesizedTools.has(targetToolName)) {
+      return null;
+    }
 
     // Extract failure data from the demand signal context
     const rawFailures = mapSignalToFailures(signal, now);
@@ -87,9 +99,6 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     if (qualified === null) {
       return null; // Insufficient data
     }
-
-    // Get the target tool name from the signal
-    const targetToolName = extractTargetToolName(signal);
 
     // Step 1: Initial synthesis
     const synthResult = await synthesize(
@@ -135,14 +144,28 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
           });
           return config.generate(prompt);
         },
-        evaluate: async (_code, _descriptor) => {
-          // Lightweight evaluation: parse the code and check basic structure.
-          // Full forge-verifier evaluation happens after search completes.
-          // For now, report 100% success (actual verification is downstream).
+        evaluate: async (code, _descriptor) => {
+          // Structural validation: parse the code to verify it has
+          // createMiddleware export, wrapToolCall hook, correct API fields,
+          // and lowercase phase. Full forge-verifier runs after search.
+          const wrapped = `\`\`\`typescript\n${code}\n\`\`\``;
+          const parseResult = parseSynthesisOutput(wrapped, targetToolName);
+          if (parseResult.ok) {
+            // Passes structural checks — report converged
+            return { successRate: 1.0, sampleCount: 5, failures: [] };
+          }
+          // Failed structural validation — trigger refinement
           return {
-            successRate: 1.0,
-            sampleCount: 1,
-            failures: [],
+            successRate: 0,
+            sampleCount: 5,
+            failures: [
+              {
+                toolName: targetToolName,
+                errorCode: "STRUCTURAL_VALIDATION",
+                errorMessage: parseResult.reason,
+                parameters: {},
+              },
+            ],
           };
         },
       },
@@ -157,6 +180,9 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       onError(new Error(`Failed to save harness brick: ${saveResult.error.message}`));
       return null;
     }
+
+    // Record that this tool now has a harness (recursion prevention)
+    synthesizedTools.add(targetToolName);
 
     // Notify for hot-attach
     if (config.notifier !== undefined) {
@@ -193,7 +219,7 @@ function mapSignalToFailures(signal: ForgeDemandSignal, now: number): readonly T
   return ctx.failedToolCalls.map((callDescription, index) => ({
     timestamp: now - index * 1000, // let: distinct timestamps for ordering
     toolName: targetTool,
-    errorCode: `FAILURE_${String(index)}`,
+    errorCode: computeContentHash(callDescription),
     errorMessage: callDescription,
     parameters: {},
   }));
@@ -225,7 +251,7 @@ function createHarnessBrick(
     description: `Auto-synthesized harness middleware for ${toolName}. Prevents observed failure patterns.`,
     scope: "agent",
     origin: "forged",
-    lifecycle: "active",
+    lifecycle: "draft",
     version: "0.1.0",
     usageCount: 0,
     implementation: code,
@@ -253,8 +279,8 @@ function createHarnessBrick(
         depth: 0,
       },
       verification: {
-        passed: true,
-        sandbox: true,
+        passed: false,
+        sandbox: false,
         totalDurationMs: 0,
         stageResults: [],
       },

@@ -114,6 +114,21 @@ describe("createPolicyCacheMiddleware", () => {
     expect(handle.size()).toBe(1); // brick-2 still active
   });
 
+  test("cleans stale forward index when brickId re-registers for different tool", () => {
+    const handle = createPolicyCacheMiddleware();
+    handle.register(makePolicy("search", "brick-A"));
+    expect(handle.size()).toBe(1);
+
+    // Re-register brick-A for a different tool
+    handle.register(makePolicy("query", "brick-A"));
+    // Old "search" entry should be cleaned up
+    expect(handle.size()).toBe(1);
+
+    // Evicting brick-A should leave zero entries (no stale forward cache)
+    handle.evict("brick-A");
+    expect(handle.size()).toBe(0);
+  });
+
   test("respects maxEntries limit", () => {
     const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
     handle.register(makePolicy("tool-a", "brick-a"));

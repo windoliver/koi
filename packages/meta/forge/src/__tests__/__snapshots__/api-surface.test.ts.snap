@@ -1,7 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ForgeScope, Result, TurnTrace, KoiError, StoreChangeNotifier, SnapshotStore, ComponentProvider, KoiMiddleware, SandboxExecutor as SandboxExecutor$1, SandboxAdapter, SkillComponent } from '@koi/core';
+"import * as _koi_core from '@koi/core';
+import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ForgeScope, Result, TurnTrace, KoiError, StoreChangeNotifier, SnapshotStore, ComponentProvider, KoiMiddleware, SandboxExecutor as SandboxExecutor$1, SandboxAdapter, SkillComponent } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, CounterExample, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from '@koi/core';
 import { SandboxExecutor, DependencyConfig, ForgeConfig, ForgePipeline } from '@koi/forge-types';
 export { BrickContentInput, CreateProvenanceOptions, DEFAULT_REVERIFICATION_CONFIG, DependencyConfig, DriftCheckResult, DriftChecker, ForgeAgentInput, ForgeAgentInputWithBricks, ForgeAgentInputWithManifest, ForgeChannelInput, ForgeConfig, ForgeContext, ForgeError, ForgeInput, ForgeInputBase, ForgeMiddlewareInput, ForgePipeline, ForgeResult, ForgeResultMetadata, ForgeSkillInput, ForgeToolInput, ForgeVerifier, FormatConfig, GovernanceResult, ManifestParseResult, ManifestParser, MutationPressureConfig, PromoteChange, PromoteResult, ResolveStageReport, ReverificationConfig, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, ScopePromotionConfig, SelfTestStageReport, StageReport, TestFailure, TrustStageReport, VerificationConfig, VerificationReport, VerificationStage, VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig } from '@koi/forge-types';
@@ -14,6 +15,7 @@ import { ForgeDemandHandle } from '@koi/forge-demand';
 export { ConfidenceWeights, DEFAULT_CAPABILITY_GAP_PATTERNS, DEFAULT_FORGE_DEMAND_CONFIG, FeedbackLoopHealthHandle, ForgeDemandConfig, ForgeDemandHandle, HeuristicThresholds, createDefaultForgeDemandConfig, createForgeDemandDetector, validateForgeDemandConfig } from '@koi/forge-demand';
 import { ExaptationHandle } from '@koi/forge-exaptation';
 export { DEFAULT_EXAPTATION_CONFIG, ExaptationConfig, ExaptationHandle, ExaptationThresholds, computeExaptationConfidence, computeJaccardDistance, createDefaultExaptationConfig, createExaptationDetector, detectPurposeDrift, tokenize, truncateToWords, validateExaptationConfig } from '@koi/forge-exaptation';
+import { OptimizationResult } from '@koi/forge-optimizer';
 export { BrickOptimizer, OptimizationConfig, OptimizationResult, OptimizerMiddlewareConfig, computeFitnessScore, createBrickOptimizer, createOptimizerMiddleware } from '@koi/forge-optimizer';
 import { CrystallizeHandle } from '@koi/crystallize';
 export { AutoForgeConfig, AutoForgeVerifier, AutoForgeVerifierResult, CrystallizationCandidate, CrystallizeConfig, CrystallizeHandle, ToolNgram, ToolStep, createAutoForgeMiddleware, createCrystallizeMiddleware } from '@koi/crystallize';
@@ -21,6 +23,7 @@ import { KoiRuntime } from '@koi/engine';
 import { ConfiguredKoiOptions } from '@koi/starter';
 import { FeedbackLoopHandle } from '@koi/middleware-feedback-loop';
 import { DiscoverySource } from '@koi/agent-discovery';
+import { PolicyCacheHandle } from '@koi/middleware-policy-cache';
 
 /**
  * ForgeRuntime factory — creates a live forge runtime backed by a ForgeStore.
@@ -195,15 +198,6 @@ interface ForgeDelegation {
  */
 declare function createForgeDelegation(config: ForgeDelegationConfig): ForgeDelegation;
 
-/**
- * createForgeMiddlewareStack — wires the forge middleware packages
- * into a single, correctly-ordered middleware array.
- *
- * Lives in L3 @koi/forge because it imports from multiple L2 peers
- * (forge-demand, forge-exaptation, forge-optimizer, forge-policy,
- * middleware-feedback-loop) and the L0u @koi/crystallize package.
- */
-
 interface ForgeMiddlewareStackConfig {
     readonly forgeStore: ForgeStore;
     readonly forgeConfig: ForgeConfig;
@@ -216,6 +210,26 @@ interface ForgeMiddlewareStackConfig {
     readonly notifier?: StoreChangeNotifier | undefined;
     /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
     readonly snapshotStore?: SnapshotStore | undefined;
+    /**
+     * Optional auto-harness synthesis callback. When provided, failure-driven
+     * demand signals are routed to harness synthesis instead of pioneer stubs.
+     * Created via createAutoHarnessStack() from @koi/auto-harness.
+     */
+    readonly synthesizeHarness?: ((signal: _koi_core.ForgeDemandSignal) => Promise<_koi_core.BrickArtifact | null>) | undefined;
+    /** Maximum harness synthesis attempts per session. Default: 3. */
+    readonly maxSynthesesPerSession?: number | undefined;
+    /**
+     * Optional policy-cache handle for promotion wiring.
+     * When provided, the optimizer's onPolicyPromotion callback is auto-wired:
+     * promoted bricks are loaded from the store and registered with the cache.
+     * The handle's middleware is added to the stack at priority 150.
+     */
+    readonly policyCacheHandle?: PolicyCacheHandle | undefined;
+    /** Explicit callback fired when optimizer promotes a brick to policy mode.
+     *  Overrides the auto-wired default when policyCacheHandle is also set. */
+    readonly onPolicyPromotion?: ((brickId: string, result: OptimizationResult) => void) | undefined;
+    /** Minimum policy samples for promotion. Default: 50 (from optimizer). */
+    readonly minPolicySamples?: number | undefined;
 }
 interface ForgeMiddlewareStackResult {
     readonly middlewares: readonly KoiMiddleware[];

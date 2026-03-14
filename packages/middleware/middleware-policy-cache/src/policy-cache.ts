@@ -83,6 +83,12 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   const brickIndex = new Map<string, string>();
 
   const register = (entry: PolicyEntry): void => {
+    // Clean up stale forward cache entry when brickId re-registers for a different toolId
+    const previousToolId = brickIndex.get(entry.brickId);
+    if (previousToolId !== undefined && previousToolId !== entry.toolId) {
+      cache.delete(previousToolId);
+    }
+
     // Clean up stale reverse index for the previous entry on the same toolId
     const existing = cache.get(entry.toolId);
     if (existing !== undefined && existing.brickId !== entry.brickId) {

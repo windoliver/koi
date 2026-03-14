@@ -27,8 +27,6 @@ export interface AutoHarnessConfig {
   readonly maxIterations?: number | undefined;
   /** Maximum synthesis attempts per session. Default: 3. */
   readonly maxSynthesesPerSession?: number | undefined;
-  /** Minimum policy samples for promotion. Default: 50. */
-  readonly minPolicySamples?: number | undefined;
   /** Optional notifier for cross-agent cache invalidation. */
   readonly notifier?: StoreChangeNotifier | undefined;
   /** Clock function. Default: Date.now. */

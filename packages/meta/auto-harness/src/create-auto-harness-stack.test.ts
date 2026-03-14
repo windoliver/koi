@@ -135,8 +135,30 @@ describe("createAutoHarnessStack", () => {
     expect(brick).not.toBeNull();
     expect(brick?.kind).toBe("middleware");
     expect(brick?.name).toContain("harness");
-    expect(brick?.provenance.source.forgedBy).toBe("harness-synth");
+    const source = brick?.provenance.source;
+    expect(source?.origin).toBe("forged");
+    if (source !== undefined && source.origin === "forged") {
+      expect(source.forgedBy).toBe("harness-synth");
+    }
     expect(store.save).toHaveBeenCalledTimes(1);
+  });
+
+  test("synthesized brick is saved as draft with verification.passed: false", async () => {
+    const store = createMockForgeStore();
+    const stack = createAutoHarnessStack({
+      forgeStore: store,
+      generate: async () => LLM_RESPONSE,
+      clock: () => 1_700_000_000_000,
+    });
+
+    const signal = createDemandSignal();
+    const brick = await stack.synthesizeHarness(signal);
+
+    expect(brick).not.toBeNull();
+    // Brick must NOT be saved as active — it hasn't been forge-verified yet
+    expect(brick?.lifecycle).toBe("draft");
+    expect(brick?.provenance.verification.passed).toBe(false);
+    expect(brick?.provenance.verification.sandbox).toBe(false);
   });
 
   test("synthesizeHarness returns null when no failures in signal", async () => {
@@ -231,6 +253,78 @@ describe("createAutoHarnessStack", () => {
     expect(stack.policyCacheHandle.size()).toBe(1);
     stack.policyCacheHandle.evict("brick-1");
     expect(stack.policyCacheHandle.size()).toBe(0);
+  });
+
+  test("blocks repeat synthesis for same tool (recursion prevention)", async () => {
+    const store = createMockForgeStore();
+    const stack = createAutoHarnessStack({
+      forgeStore: store,
+      generate: async () => LLM_RESPONSE,
+      clock: () => 1_700_000_000_000,
+    });
+
+    const signal = createDemandSignal();
+
+    // First synthesis succeeds
+    const brick1 = await stack.synthesizeHarness(signal);
+    expect(brick1).not.toBeNull();
+    expect(store.save).toHaveBeenCalledTimes(1);
+
+    // Second synthesis for same tool is blocked
+    const brick2 = await stack.synthesizeHarness(signal);
+    expect(brick2).toBeNull();
+    expect(store.save).toHaveBeenCalledTimes(1); // no additional save
+  });
+
+  test("allows synthesis for different tools", async () => {
+    const store = createMockForgeStore();
+    const stack = createAutoHarnessStack({
+      forgeStore: store,
+      generate: async () => LLM_RESPONSE,
+      clock: () => 1_700_000_000_000,
+    });
+
+    const signal1 = createDemandSignal();
+    const signal2 = createDemandSignal({
+      id: "demand-2",
+      trigger: { kind: "repeated_failure", toolName: "write_file", count: 5 },
+    });
+
+    const brick1 = await stack.synthesizeHarness(signal1);
+    const brick2 = await stack.synthesizeHarness(signal2);
+
+    expect(brick1).not.toBeNull();
+    expect(brick2).not.toBeNull();
+    expect(store.save).toHaveBeenCalledTimes(2);
+  });
+
+  test("deduplicates identical failure descriptions via stable errorCodes", async () => {
+    const store = createMockForgeStore();
+    const stack = createAutoHarnessStack({
+      forgeStore: store,
+      generate: async () => LLM_RESPONSE,
+      clock: () => 1_700_000_000_000,
+    });
+
+    // 5 identical failures — should dedup to 1, which is below minFailures (3)
+    const signal = createDemandSignal({
+      context: {
+        failureCount: 5,
+        failedToolCalls: [
+          "search: Missing query parameter",
+          "search: Missing query parameter",
+          "search: Missing query parameter",
+          "search: Missing query parameter",
+          "search: Missing query parameter",
+        ],
+      },
+      emittedAt: 1_700_000_000_000,
+    });
+
+    const brick = await stack.synthesizeHarness(signal);
+    // Aggregator deduplicates to 1 distinct failure, below minFailures threshold
+    expect(brick).toBeNull();
+    expect(store.save).not.toHaveBeenCalled();
   });
 
   test("respects custom maxSynthesesPerSession", () => {

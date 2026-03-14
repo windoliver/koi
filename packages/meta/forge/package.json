@@ -30,6 +30,7 @@
     "@koi/forge-types": "workspace:*",
     "@koi/middleware-ace": "workspace:*",
     "@koi/middleware-feedback-loop": "workspace:*",
+    "@koi/middleware-policy-cache": "workspace:*",
     "@koi/forge-optimizer": "workspace:*",
     "@koi/forge-verifier": "workspace:*",
     "@koi/git-utils": "workspace:*",
