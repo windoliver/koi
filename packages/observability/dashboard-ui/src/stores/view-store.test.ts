@@ -37,7 +37,7 @@ describe("view-store", () => {
   });
 
   test("activeView rootPaths match the saved view definition", () => {
-    useViewStore.getState().setActiveView("forge");
+    useViewStore.getState().setActiveView("self-improvement");
     const { activeView } = useViewStore.getState();
     expect(activeView.rootPaths).toEqual(["/agents/", "/global/bricks/"]);
   });
