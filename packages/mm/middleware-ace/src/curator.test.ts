@@ -69,10 +69,10 @@ describe("applyOperations", () => {
       ];
 
       const result = await applyOperations(pb, ops, 10000, clock);
-      const section = result.sections[0]!;
+      const section = result.sections[0];
 
-      expect(section.bullets).toHaveLength(3);
-      const newBullet = section.bullets[2]!;
+      expect(section?.bullets).toHaveLength(3);
+      const newBullet = section?.bullets[2];
       expect(newBullet.content).toBe("New strategy bullet");
       expect(newBullet.helpful).toBe(0);
       expect(newBullet.harmful).toBe(0);
@@ -123,11 +123,11 @@ describe("applyOperations", () => {
       ];
 
       const result = await applyOperations(pb, ops, 10000, clock);
-      const section = result.sections[0]!;
+      const section = result.sections[0];
 
       // Two removed, one added
-      expect(section.bullets).toHaveLength(1);
-      const merged = section.bullets[0]!;
+      expect(section?.bullets).toHaveLength(1);
+      const merged = section?.bullets[0];
       expect(merged.content).toBe("Merged content");
       expect(merged.helpful).toBe(5); // 3 + 2
       expect(merged.harmful).toBe(1); // 1 + 0

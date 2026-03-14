@@ -72,11 +72,7 @@ export function createCliOutput(options?: CliOutputOptions): CliOutput {
   /**
    * Write a JSON log line (NDJSON) to the stream.
    */
-  function writeJson(
-    level: string,
-    msg: string,
-    extra?: Readonly<Record<string, string>>,
-  ): void {
+  function writeJson(level: string, msg: string, extra?: Readonly<Record<string, string>>): void {
     const entry: Record<string, string> = {
       level,
       msg,

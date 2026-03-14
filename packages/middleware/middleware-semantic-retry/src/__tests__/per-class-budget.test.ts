@@ -7,7 +7,11 @@
 
 import { describe, expect, test } from "bun:test";
 import type { KoiError, ModelRequest, ModelResponse } from "@koi/core";
-import { createMockSessionContext, createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
+import {
+  createMockSessionContext,
+  createMockTurnContext,
+  createSpyModelHandler,
+} from "@koi/test-utils";
 import { createSemanticRetryMiddleware } from "../semantic-retry.js";
 import type { FailureAnalyzer, FailureContext, SemanticRetryHandle } from "../types.js";
 
@@ -51,12 +55,7 @@ function createClassifyingAnalyzer(): FailureAnalyzer {
   return {
     classify(ctx: FailureContext) {
       const error = ctx.error;
-      if (
-        error !== null &&
-        error !== undefined &&
-        typeof error === "object" &&
-        "code" in error
-      ) {
+      if (error !== null && error !== undefined && typeof error === "object" && "code" in error) {
         // eslint-disable-next-line -- narrowing unknown via Record
         const code = (error as Record<string, unknown>).code;
         if (code === "VALIDATION") {
@@ -88,9 +87,16 @@ describe("per-failure-class retry budgets", () => {
     await initSession(handle);
 
     // First validation failure: budget goes from 1 → 0
-    const validationError = Object.assign(new Error("bad schema"), makeKoiError("VALIDATION", "bad schema"));
+    const validationError = Object.assign(
+      new Error("bad schema"),
+      makeKoiError("VALIDATION", "bad schema"),
+    );
     await expect(
-      handle.middleware.wrapModelCall?.(mockCtx, baseRequest, createFailingHandler(validationError)),
+      handle.middleware.wrapModelCall?.(
+        mockCtx,
+        baseRequest,
+        createFailingHandler(validationError),
+      ),
     ).rejects.toThrow();
 
     expect(handle.getRecords()).toHaveLength(1);
@@ -98,7 +104,11 @@ describe("per-failure-class retry budgets", () => {
 
     // Second validation failure: budget is already 0, handleFailure skips
     await expect(
-      handle.middleware.wrapModelCall?.(mockCtx, baseRequest, createFailingHandler(validationError)),
+      handle.middleware.wrapModelCall?.(
+        mockCtx,
+        baseRequest,
+        createFailingHandler(validationError),
+      ),
     ).rejects.toThrow();
 
     // Only 1 record because the second validation failure was skipped (budget exhausted)
@@ -121,7 +131,11 @@ describe("per-failure-class retry budgets", () => {
       makeKoiError("VALIDATION", "bad schema"),
     );
     await expect(
-      handle.middleware.wrapModelCall?.(mockCtx, baseRequest, createFailingHandler(validationError)),
+      handle.middleware.wrapModelCall?.(
+        mockCtx,
+        baseRequest,
+        createFailingHandler(validationError),
+      ),
     ).rejects.toThrow();
 
     expect(handle.getRecords()).toHaveLength(1);
@@ -193,12 +207,13 @@ describe("per-failure-class retry budgets", () => {
     expect(handle.getRetryBudget()).toBe(1);
 
     // After one validation failure: min(0, 3, 5, 5, 5, 5, 5) = 0
-    const validationError = Object.assign(
-      new Error("bad"),
-      makeKoiError("VALIDATION", "bad"),
-    );
+    const validationError = Object.assign(new Error("bad"), makeKoiError("VALIDATION", "bad"));
     await expect(
-      handle.middleware.wrapModelCall?.(mockCtx, baseRequest, createFailingHandler(validationError)),
+      handle.middleware.wrapModelCall?.(
+        mockCtx,
+        baseRequest,
+        createFailingHandler(validationError),
+      ),
     ).rejects.toThrow();
 
     expect(handle.getRetryBudget()).toBe(0);
@@ -213,12 +228,13 @@ describe("per-failure-class retry budgets", () => {
     await initSession(handle);
 
     // Exhaust validation budget
-    const validationError = Object.assign(
-      new Error("bad"),
-      makeKoiError("VALIDATION", "bad"),
-    );
+    const validationError = Object.assign(new Error("bad"), makeKoiError("VALIDATION", "bad"));
     await expect(
-      handle.middleware.wrapModelCall?.(mockCtx, baseRequest, createFailingHandler(validationError)),
+      handle.middleware.wrapModelCall?.(
+        mockCtx,
+        baseRequest,
+        createFailingHandler(validationError),
+      ),
     ).rejects.toThrow();
 
     expect(handle.getRetryBudget()).toBe(0);

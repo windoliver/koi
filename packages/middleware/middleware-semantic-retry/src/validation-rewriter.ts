@@ -64,8 +64,7 @@ export function createValidationRewriter(fallback?: PromptRewriter): PromptRewri
       }
 
       // Extract error details from the action context or failure reason
-      const errorDetails =
-        action.kind === "add_context" ? action.context : ctx.failureClass.reason;
+      const errorDetails = action.kind === "add_context" ? action.context : ctx.failureClass.reason;
 
       const message = createInjectedMessage(
         [

@@ -332,7 +332,7 @@ describe("ACE lifecycle integration", () => {
     expect(structuredPlaybooks.length).toBeGreaterThan(0);
 
     // Verify the ADD operation was applied
-    const pb = structuredPlaybooks[0]!;
+    const pb = structuredPlaybooks[0];
     const strSection = pb.sections.find((s) => s.slug === "str");
     expect(strSection).toBeDefined();
     expect(strSection?.bullets.length).toBeGreaterThan(0);
