@@ -123,7 +123,92 @@ describe("SQLite persistence", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Eviction tests
+// 3. Transaction isolation tests
+// ---------------------------------------------------------------------------
+
+describe("SQLite transaction isolation", () => {
+  test("sequential appends with expectedSequence both succeed", async () => {
+    const backend = createSqliteEventBackend({ db: new Database(":memory:") });
+
+    const r1 = await backend.append("s", {
+      type: "evt-1",
+      data: 1,
+      expectedSequence: 0,
+    });
+    expect(r1.ok).toBe(true);
+    if (r1.ok) {
+      expect(r1.value.sequence).toBe(1);
+    }
+
+    const r2 = await backend.append("s", {
+      type: "evt-2",
+      data: 2,
+      expectedSequence: 1,
+    });
+    expect(r2.ok).toBe(true);
+    if (r2.ok) {
+      expect(r2.value.sequence).toBe(2);
+    }
+
+    backend.close();
+  });
+
+  test("sequential appends without expectedSequence produce monotonic sequences", async () => {
+    const backend = createSqliteEventBackend({ db: new Database(":memory:") });
+    const sequences: number[] = [];
+
+    for (let i = 0; i < 10; i++) {
+      const r = await backend.append("s", { type: "evt", data: i });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        sequences.push(r.value.sequence);
+      }
+    }
+
+    // Verify monotonically increasing with no gaps and no duplicates
+    expect(sequences).toHaveLength(10);
+    for (let i = 0; i < sequences.length; i++) {
+      expect(sequences[i]).toBe(i + 1);
+    }
+
+    // Verify stream length matches
+    const len = await backend.streamLength("s");
+    expect(len).toBe(10);
+
+    backend.close();
+  });
+
+  test("expectedSequence conflict returns error without corrupting stream", async () => {
+    const backend = createSqliteEventBackend({ db: new Database(":memory:") });
+
+    const r1 = await backend.append("s", { type: "evt-1", data: 1 });
+    expect(r1.ok).toBe(true);
+
+    // Attempt with stale expectedSequence (0 instead of 1)
+    const r2 = await backend.append("s", {
+      type: "evt-conflict",
+      data: 2,
+      expectedSequence: 0,
+    });
+    expect(r2.ok).toBe(false);
+
+    // Stream is still consistent — next append with correct sequence works
+    const r3 = await backend.append("s", {
+      type: "evt-2",
+      data: 3,
+      expectedSequence: 1,
+    });
+    expect(r3.ok).toBe(true);
+    if (r3.ok) {
+      expect(r3.value.sequence).toBe(2);
+    }
+
+    backend.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Eviction tests
 // ---------------------------------------------------------------------------
 
 describe("SQLite eviction", () => {

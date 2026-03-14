@@ -104,36 +104,32 @@ export function createToolCallLimitMiddleware(config: ToolCallLimitConfig): KoiM
       const sessionId = ctx.session.sessionId;
       const toolId = request.toolId;
 
-      // Check both limits before incrementing to avoid phantom counter drift.
-      // Uses get() for read-only check, then increment() only after both pass.
+      // Atomic increment-if-below avoids TOCTOU races between concurrent calls.
+      // Order: global first, then per-tool. If per-tool fails, rollback global.
 
-      // Check global limit first
+      // Atomically check + increment global counter
       if (globalLimit !== undefined) {
         const globalKey = globalStoreKey(sessionId);
-        const currentGlobal = await store.get(globalKey);
-        if (currentGlobal >= globalLimit) {
-          return handleLimitExceeded(toolId, sessionId, currentGlobal + 1, globalLimit);
+        const globalResult = await store.incrementIfBelow(globalKey, globalLimit);
+        if (!globalResult.allowed) {
+          return handleLimitExceeded(toolId, sessionId, globalResult.current + 1, globalLimit);
         }
       }
 
-      // Check per-tool limit (only if defined for this specific tool)
+      // Atomically check + increment per-tool counter
       if (limits !== undefined) {
         const perToolLimit = limits[toolId];
         if (perToolLimit !== undefined) {
           const toolKey = toolStoreKey(sessionId, toolId);
-          const currentTool = await store.get(toolKey);
-          if (currentTool >= perToolLimit) {
-            return handleLimitExceeded(toolId, sessionId, currentTool + 1, perToolLimit);
+          const toolResult = await store.incrementIfBelow(toolKey, perToolLimit);
+          if (!toolResult.allowed) {
+            // Rollback global increment so a blocked per-tool call does not consume global quota
+            if (globalLimit !== undefined) {
+              await store.decrement(globalStoreKey(sessionId));
+            }
+            return handleLimitExceeded(toolId, sessionId, toolResult.current + 1, perToolLimit);
           }
         }
-      }
-
-      // Both checks passed — now increment counters
-      if (globalLimit !== undefined) {
-        await store.increment(globalStoreKey(sessionId));
-      }
-      if (limits !== undefined && limits[toolId] !== undefined) {
-        await store.increment(toolStoreKey(sessionId, toolId));
       }
 
       return next(request);

@@ -14,6 +14,7 @@ export { createInMemoryCallLimitStore } from "./store.js";
 export { createToolCallLimitMiddleware } from "./tool-call-limit.js";
 export type {
   CallLimitStore,
+  IncrementIfBelowResult,
   LimitReachedInfo,
   ModelExitBehavior,
   ToolExitBehavior,

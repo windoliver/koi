@@ -2,7 +2,7 @@
  * Tests for createSandboxMiddleware — 15 cases covering all behavior.
  */
 
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import type { ToolPolicy } from "@koi/core/ecs";
 import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core/ecs";
 import type {
@@ -119,25 +119,34 @@ describe("createSandboxMiddleware", () => {
     });
 
     it("treats unknown tools as sandboxed when failClosed=true", async () => {
-      const onMetrics = mock(
-        (_toolId: string, _policy: ToolPolicy, _d: number, _b: number, _t: boolean) => {},
-      );
-      const mw = createSandboxMiddleware(
-        makeConfig(
-          {}, // empty — all tools unknown
-          { failClosedOnLookupError: true, timeoutGraceMs: 100, onSandboxMetrics: onMetrics },
-        ),
-      );
-      const spy = createSpyToolHandler({ output: { fallback: true } });
-      const request = makeRequest("unknown-tool");
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const onMetrics = mock(
+          (_toolId: string, _policy: ToolPolicy, _d: number, _b: number, _t: boolean) => {},
+        );
+        const mw = createSandboxMiddleware(
+          makeConfig(
+            {}, // empty — all tools unknown
+            { failClosedOnLookupError: true, timeoutGraceMs: 100, onSandboxMetrics: onMetrics },
+          ),
+        );
+        const spy = createSpyToolHandler({ output: { fallback: true } });
+        const request = makeRequest("unknown-tool");
 
-      const response = await mw.wrapToolCall?.(ctx, request, spy.handler);
+        const response = await mw.wrapToolCall?.(ctx, request, spy.handler);
 
-      expect(response?.output).toEqual({ fallback: true });
-      // Metrics should fire with DEFAULT_SANDBOXED_POLICY (fail-closed fallback)
-      expect(onMetrics).toHaveBeenCalledTimes(1);
-      const call = onMetrics.mock.calls.at(0);
-      expect(call?.at(1)).toEqual(DEFAULT_SANDBOXED_POLICY);
+        expect(response?.output).toEqual({ fallback: true });
+        // Metrics should fire with DEFAULT_SANDBOXED_POLICY (fail-closed fallback)
+        expect(onMetrics).toHaveBeenCalledTimes(1);
+        const call = onMetrics.mock.calls.at(0);
+        expect(call?.at(1)).toEqual(DEFAULT_SANDBOXED_POLICY);
+        // Warning should be logged for the fallback
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy.mock.calls.at(0)?.at(0)).toContain("unknown-tool");
+        expect(warnSpy.mock.calls.at(0)?.at(0)).toContain("DEFAULT_SANDBOXED_POLICY");
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
     it("passes through unknown tools when failClosed=false", async () => {
@@ -158,6 +167,26 @@ describe("createSandboxMiddleware", () => {
       expect(response?.output).toEqual({ passThrough: true });
       // No metrics — tool was passed through without wrapping
       expect(onMetrics).toHaveBeenCalledTimes(0);
+    });
+
+    it("does not warn for unknown tools when failClosed=false", async () => {
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const mw = createSandboxMiddleware(
+          makeConfig(
+            {}, // empty — all tools unknown
+            { failClosedOnLookupError: false },
+          ),
+        );
+        const spy = createSpyToolHandler({ output: { passThrough: true } });
+        const request = makeRequest("unknown-tool");
+
+        await mw.wrapToolCall?.(ctx, request, spy.handler);
+
+        expect(warnSpy).toHaveBeenCalledTimes(0);
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 

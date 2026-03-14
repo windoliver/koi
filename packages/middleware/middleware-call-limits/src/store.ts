@@ -2,7 +2,7 @@
  * In-memory call limit store — Map-backed, sync returns.
  */
 
-import type { CallLimitStore } from "./types.js";
+import type { CallLimitStore, IncrementIfBelowResult } from "./types.js";
 
 /**
  * Creates a Map-backed call limit store.
@@ -22,8 +22,29 @@ export function createInMemoryCallLimitStore(): CallLimitStore {
       return next;
     },
 
+    decrement(key: string): number {
+      const current = counts.get(key) ?? 0;
+      const next = Math.max(0, current - 1);
+      if (next === 0) {
+        counts.delete(key);
+      } else {
+        counts.set(key, next);
+      }
+      return next;
+    },
+
     reset(key: string): void {
       counts.delete(key);
+    },
+
+    incrementIfBelow(key: string, limit: number): IncrementIfBelowResult {
+      const current = counts.get(key) ?? 0;
+      if (current >= limit) {
+        return { allowed: false, current };
+      }
+      const next = current + 1;
+      counts.set(key, next);
+      return { allowed: true, current: next };
     },
   };
 }

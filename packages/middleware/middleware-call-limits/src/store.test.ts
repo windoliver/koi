@@ -57,4 +57,70 @@ describe("createInMemoryCallLimitStore", () => {
     expect(store1.get("key")).toBe(2);
     expect(store2.get("key")).toBe(0);
   });
+
+  test("decrement reduces count by 1", () => {
+    const store = createInMemoryCallLimitStore();
+    store.increment("key");
+    store.increment("key");
+    expect(store.decrement("key")).toBe(1);
+    expect(store.get("key")).toBe(1);
+  });
+
+  test("decrement does not go below 0", () => {
+    const store = createInMemoryCallLimitStore();
+    expect(store.decrement("key")).toBe(0);
+    expect(store.get("key")).toBe(0);
+  });
+
+  test("decrement from 1 removes key entirely", () => {
+    const store = createInMemoryCallLimitStore();
+    store.increment("key");
+    store.decrement("key");
+    expect(store.get("key")).toBe(0);
+  });
+
+  test("incrementIfBelow allows when current is below limit", () => {
+    const store = createInMemoryCallLimitStore();
+    const result = store.incrementIfBelow("key", 3);
+    expect(result).toEqual({ allowed: true, current: 1 });
+    expect(store.get("key")).toBe(1);
+  });
+
+  test("incrementIfBelow rejects when current equals limit", () => {
+    const store = createInMemoryCallLimitStore();
+    store.increment("key");
+    store.increment("key");
+    const result = store.incrementIfBelow("key", 2);
+    expect(result).toEqual({ allowed: false, current: 2 });
+    // Count should NOT have changed
+    expect(store.get("key")).toBe(2);
+  });
+
+  test("incrementIfBelow rejects when current exceeds limit", () => {
+    const store = createInMemoryCallLimitStore();
+    store.increment("key");
+    store.increment("key");
+    store.increment("key");
+    const result = store.incrementIfBelow("key", 2);
+    expect(result).toEqual({ allowed: false, current: 3 });
+  });
+
+  test("incrementIfBelow with limit 0 rejects immediately", () => {
+    const store = createInMemoryCallLimitStore();
+    const result = store.incrementIfBelow("key", 0);
+    expect(result).toEqual({ allowed: false, current: 0 });
+  });
+
+  test("incrementIfBelow increments atomically across successive calls", () => {
+    const store = createInMemoryCallLimitStore();
+    const r1 = store.incrementIfBelow("key", 3);
+    const r2 = store.incrementIfBelow("key", 3);
+    const r3 = store.incrementIfBelow("key", 3);
+    const r4 = store.incrementIfBelow("key", 3);
+
+    expect(r1).toEqual({ allowed: true, current: 1 });
+    expect(r2).toEqual({ allowed: true, current: 2 });
+    expect(r3).toEqual({ allowed: true, current: 3 });
+    expect(r4).toEqual({ allowed: false, current: 3 });
+  });
 });

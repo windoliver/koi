@@ -5,6 +5,7 @@
  * Depends on @koi/core only.
  */
 
+export type { HotMemoryMiddleware } from "./hot-memory-middleware.js";
 export { createHotMemoryMiddleware } from "./hot-memory-middleware.js";
 export type { HotMemoryConfig, HotMemoryDefaults } from "./types.js";
 export { HOT_MEMORY_DEFAULTS } from "./types.js";

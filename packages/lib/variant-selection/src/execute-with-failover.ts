@@ -123,12 +123,9 @@ export async function executeWithFailover<T, R>(
   return { ok: false, attempts, lastError };
 }
 
-interface TryResult<R> {
-  readonly ok: boolean;
-  readonly result: R;
-  readonly error: unknown;
-  readonly attempt: VariantAttempt;
-}
+type TryResult<R> =
+  | { readonly ok: true; readonly result: R; readonly attempt: VariantAttempt }
+  | { readonly ok: false; readonly error: unknown; readonly attempt: VariantAttempt };
 
 async function tryVariant<T, R>(
   variant: VariantEntry<T>,
@@ -148,7 +145,6 @@ async function tryVariant<T, R>(
     return {
       ok: true,
       result,
-      error: undefined,
       attempt: { variantId: variant.id, success: true, durationMs },
     };
   } catch (e: unknown) {
@@ -161,7 +157,6 @@ async function tryVariant<T, R>(
     const errorMsg = e instanceof Error ? e.message : String(e);
     return {
       ok: false,
-      result: undefined as R,
       error: e,
       attempt: { variantId: variant.id, success: false, durationMs, error: errorMsg },
     };

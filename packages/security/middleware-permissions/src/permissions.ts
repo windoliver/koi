@@ -418,11 +418,16 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
  * Input keys are sorted before serialization so `{a:1,b:2}` and `{b:2,a:1}`
  * produce the same cache key — property insertion order is an implementation
  * detail, not a semantic difference.
+ *
+ * agentId is included because agent boundaries are trust boundaries: an
+ * approval granted to Agent A must not carry over to Agent B, even when
+ * the same user invokes the same tool with the same input. Each agent may
+ * operate under different policies, manifests, or scopes.
  */
 function computeApprovalCacheKey(
   backendFingerprint: number,
   userId: string,
-  _agentId: string,
+  agentId: string,
   toolId: string,
   input: unknown,
 ): number {
@@ -442,9 +447,5 @@ function computeApprovalCacheKey(
       { context: { toolId } },
     );
   }
-  // agentId intentionally excluded: approvals are user-scoped, not agent-scoped.
-  // If the same user approves tool X with input Y, that approval is valid across
-  // agents sharing the same middleware instance. The userId + backendFingerprint
-  // already scope the cache appropriately.
-  return fnv1a(`${backendFingerprint}\0${userId}\0${toolId}\0${serialized}`);
+  return fnv1a(`${backendFingerprint}\0${userId}\0${agentId}\0${toolId}\0${serialized}`);
 }

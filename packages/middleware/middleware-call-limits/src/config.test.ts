@@ -75,7 +75,8 @@ describe("validateModelCallLimitConfig", () => {
   test("rejects store without required methods", () => {
     const result = validateModelCallLimitConfig({ limit: 5, store: { get: () => 0 } });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.message).toContain("get, increment, and reset");
+    if (!result.ok)
+      expect(result.error.message).toContain("increment, decrement, reset, and incrementIfBelow");
   });
 
   test("rejects invalid exitBehavior", () => {

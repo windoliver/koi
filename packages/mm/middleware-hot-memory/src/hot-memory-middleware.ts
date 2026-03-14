@@ -14,6 +14,18 @@ import type { CapabilityFragment, KoiMiddleware, SessionContext } from "@koi/cor
 import type { HotMemoryConfig } from "./types.js";
 import { HOT_MEMORY_DEFAULTS } from "./types.js";
 
+/**
+ * Extended middleware interface with store-change notification.
+ *
+ * Call `notifyStoreOccurred()` after writing to the same `MemoryComponent`
+ * that this middleware reads from. This lets the middleware skip expensive
+ * recall() calls when nothing has changed since the last refresh.
+ */
+export interface HotMemoryMiddleware extends KoiMiddleware {
+  /** Signal that a memory.store() has occurred, so the next refresh will re-recall. */
+  readonly notifyStoreOccurred: () => void;
+}
+
 /** Format recalled memories into a single text block. */
 function formatMemories(memories: readonly MemoryResult[]): string {
   return memories.map((m) => `- ${m.content}`).join("\n");
@@ -38,7 +50,7 @@ function truncateToTokenBudget(text: string, maxTokens: number): string {
  * Subsequent refreshes happen at the configured turn interval.
  * Errors during recall are logged and swallowed — the middleware never blocks model calls.
  */
-export function createHotMemoryMiddleware(config: HotMemoryConfig): KoiMiddleware {
+export function createHotMemoryMiddleware(config: HotMemoryConfig): HotMemoryMiddleware {
   const memory = config.memory;
   const maxTokens = config.maxTokens ?? HOT_MEMORY_DEFAULTS.maxTokens;
   const refreshInterval = config.refreshInterval ?? HOT_MEMORY_DEFAULTS.refreshInterval;
@@ -53,10 +65,23 @@ export function createHotMemoryMiddleware(config: HotMemoryConfig): KoiMiddlewar
   let cachedTokenCount = 0;
   // let justified: tracks whether initial fetch has completed
   let initialized = false;
+  // let justified: timestamp of last memory store notification, used to skip recall when unchanged
+  let lastStoreTimestamp = 0;
+  // let justified: timestamp of last successful recall, used with lastStoreTimestamp to skip no-op recalls
+  let lastRecallTimestamp = 0;
 
   async function fetchHotMemories(): Promise<void> {
+    // Skip recall if no store has occurred since the last recall (nothing changed).
+    // Always execute when no recall has happened yet (lastRecallTimestamp === 0 means first load).
+    // Use strict less-than so same-millisecond stores are not missed.
+    if (lastRecallTimestamp > 0 && lastStoreTimestamp < lastRecallTimestamp) {
+      return;
+    }
+
     try {
       const results = await memory.recall("*", { tierFilter: "hot", limit: 20 });
+      lastRecallTimestamp = Date.now();
+
       if (results.length === 0) {
         cachedMessage = undefined;
         hotCount = 0;
@@ -94,12 +119,18 @@ export function createHotMemoryMiddleware(config: HotMemoryConfig): KoiMiddlewar
     name: "koi:hot-memory",
     priority: 310,
 
+    notifyStoreOccurred(): void {
+      lastStoreTimestamp = Date.now();
+    },
+
     async onSessionStart(_ctx: SessionContext): Promise<void> {
       initialized = false;
       turnCount = 0;
       hotCount = 0;
       cachedTokenCount = 0;
       cachedMessage = undefined;
+      lastStoreTimestamp = 0;
+      lastRecallTimestamp = 0;
     },
 
     describeCapabilities(): CapabilityFragment | undefined {

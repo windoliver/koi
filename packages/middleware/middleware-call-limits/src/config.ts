@@ -66,9 +66,13 @@ export function validateModelCallLimitConfig(
     if (
       typeof store.get !== "function" ||
       typeof store.increment !== "function" ||
-      typeof store.reset !== "function"
+      typeof store.decrement !== "function" ||
+      typeof store.reset !== "function" ||
+      typeof store.incrementIfBelow !== "function"
     ) {
-      return validationError("'store' must have get, increment, and reset methods");
+      return validationError(
+        "'store' must have get, increment, decrement, reset, and incrementIfBelow methods",
+      );
     }
   }
 
@@ -135,9 +139,13 @@ export function validateToolCallLimitConfig(
     if (
       typeof store.get !== "function" ||
       typeof store.increment !== "function" ||
-      typeof store.reset !== "function"
+      typeof store.decrement !== "function" ||
+      typeof store.reset !== "function" ||
+      typeof store.incrementIfBelow !== "function"
     ) {
-      return validationError("'store' must have get, increment, and reset methods");
+      return validationError(
+        "'store' must have get, increment, decrement, reset, and incrementIfBelow methods",
+      );
     }
   }
 

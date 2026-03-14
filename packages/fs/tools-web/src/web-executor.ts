@@ -7,7 +7,8 @@
 
 import type { KoiError, Result } from "@koi/core";
 import type { SearchProvider, WebSearchOptions, WebSearchResult } from "@koi/search-provider";
-import { isBlockedUrl } from "./url-policy.js";
+import type { DnsResolverFn } from "./url-policy.js";
+import { isBlockedUrl, pinResolvedIp, resolveAndValidateUrl } from "./url-policy.js";
 
 // ---------------------------------------------------------------------------
 // Fetch
@@ -59,6 +60,8 @@ export interface WebExecutor {
 export interface WebExecutorConfig {
   /** Custom fetch function (default: globalThis.fetch). */
   readonly fetchFn?: typeof globalThis.fetch | undefined;
+  /** Custom DNS resolver for pre-flight SSRF validation (default: Bun.dns.resolve). */
+  readonly dnsResolver?: DnsResolverFn | undefined;
   /**
    * @deprecated Use `searchProvider` instead. Kept for backward compatibility.
    * Custom search backend function. If both `searchProvider` and `searchFn` are set,
@@ -165,6 +168,7 @@ function createCache<T>(
  */
 export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
   const fetchFn = config.fetchFn ?? globalThis.fetch;
+  const dnsResolver = config.dnsResolver;
   const maxBodyChars = config.maxBodyChars ?? DEFAULT_MAX_BODY_CHARS;
   const defaultTimeout = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const cacheTtlMs = config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
@@ -218,10 +222,35 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
         }
 
+        // DNS rebinding mitigation: resolve and validate the initial URL's IP
+        const dnsResult = await resolveAndValidateUrl(url, dnsResolver);
+        if (dnsResult.blocked) {
+          clearTimeout(timer);
+          return {
+            ok: false,
+            error: {
+              code: "PERMISSION",
+              message: `DNS validation blocked: ${dnsResult.reason}`,
+              retryable: false,
+            },
+          };
+        }
+
+        // Pin the resolved IP into the URL for HTTP to prevent DNS rebinding
+        // between validation and the actual TCP connect. HTTPS can't be pinned
+        // because Bun's fetch doesn't support custom TLS SNI (serverName).
+        const pinned = pinResolvedIp(url, dnsResult.ip);
+        const pinnedUrl = pinned?.url ?? url;
+        const pinnedHostHeader = pinned?.hostHeader;
+
         // Manual redirect loop: validate each redirect URL BEFORE following it
-        let currentUrl = url;
+        let currentUrl = pinnedUrl;
+        let currentLogicalUrl = url; // original hostname URL for redirect resolution
         let currentMethod = method;
-        let currentHeaders: Readonly<Record<string, string>> | undefined = options?.headers;
+        let currentHeaders: Readonly<Record<string, string>> | undefined =
+          pinnedHostHeader !== undefined
+            ? { ...options?.headers, Host: pinnedHostHeader }
+            : options?.headers;
         let currentBody = options?.body;
         let response: Response | undefined;
 
@@ -239,10 +268,10 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
           const location = response.headers.get("location");
           if (location === null || location === "") break;
 
-          // Resolve relative redirect URLs against the current URL
-          const nextUrl = new URL(location, currentUrl).href;
+          // Resolve relative redirect URLs against the logical URL (original hostname)
+          const nextUrl = new URL(location, currentLogicalUrl).href;
 
-          // Validate redirect target BEFORE following it
+          // Validate redirect target BEFORE following it (string-based first pass)
           if (isBlockedUrl(nextUrl)) {
             clearTimeout(timer);
             return {
@@ -255,9 +284,23 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
             };
           }
 
+          // DNS rebinding mitigation: resolve and validate redirect target's IP
+          const redirectDns = await resolveAndValidateUrl(nextUrl, dnsResolver);
+          if (redirectDns.blocked) {
+            clearTimeout(timer);
+            return {
+              ok: false,
+              error: {
+                code: "PERMISSION",
+                message: `Redirect DNS validation blocked: ${redirectDns.reason}`,
+                retryable: false,
+              },
+            };
+          }
+
           // Strip sensitive headers on cross-origin redirects (RFC 7231 / browser behavior)
           if (currentHeaders !== undefined) {
-            const currentOrigin = new URL(currentUrl).origin;
+            const currentOrigin = new URL(currentLogicalUrl).origin;
             const nextOrigin = new URL(nextUrl).origin;
             if (currentOrigin !== nextOrigin) {
               currentHeaders = Object.fromEntries(
@@ -268,7 +311,17 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
             }
           }
 
-          currentUrl = nextUrl;
+          // Pin redirect target's resolved IP for HTTP
+          const redirectPinned = pinResolvedIp(nextUrl, redirectDns.ip);
+          currentUrl = redirectPinned?.url ?? nextUrl;
+          currentLogicalUrl = nextUrl;
+          if (redirectPinned?.hostHeader !== undefined) {
+            currentHeaders = { ...currentHeaders, Host: redirectPinned.hostHeader };
+          } else if (currentHeaders !== undefined && "Host" in currentHeaders) {
+            // Remove stale Host from a previous pinned hop (e.g., http→https redirect)
+            const { Host: _, ...rest } = currentHeaders;
+            currentHeaders = rest;
+          }
 
           // 303 always converts to GET with no body; 301/302 convert to GET for
           // non-GET/HEAD methods per HTTP spec (browser behavior)
@@ -311,7 +364,7 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
 
         clearTimeout(timer);
 
-        const finalUrl = currentUrl;
+        const finalUrl = currentLogicalUrl;
         const rawBody = await response.text();
         const truncated = rawBody.length > maxBodyChars;
         const body = truncated ? rawBody.slice(0, maxBodyChars) : rawBody;

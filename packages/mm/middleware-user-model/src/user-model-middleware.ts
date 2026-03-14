@@ -75,6 +75,15 @@ function computeCapabilityDescription(cfg: ResolvedUserModelConfig): string {
   return `User model active (${channels.join(" + ")})`;
 }
 
+interface SessionState {
+  sensorState: Record<string, unknown>;
+  recallCache: { readonly query: string; readonly results: readonly MemoryResult[] } | undefined;
+}
+
+function createSessionState(): SessionState {
+  return { sensorState: {}, recallCache: undefined };
+}
+
 export function createUserModelMiddleware(config: UserModelConfig): KoiMiddleware {
   const cfg = resolveUserModelDefaults(config);
   const snapshotCache = createSnapshotCache();
@@ -84,14 +93,16 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
     description: capabilityDescription,
   };
 
-  // Accumulated sensor state across turns (mutable accumulator)
-  let sensorState: Record<string, unknown> = {}; // let: mutable sensor accumulator
-  const activeSessions = new Set<string>();
+  // Per-session mutable state (sensor accumulator + recall cache)
+  const sessions = new Map<string, SessionState>();
 
-  // Turn-level memory recall cache (keyed by query to avoid stale cross-query hits)
-  let recallCache:
-    | { readonly query: string; readonly results: readonly MemoryResult[] }
-    | undefined; // let: mutable recall cache
+  function getSession(sessionId: string): SessionState {
+    const existing = sessions.get(sessionId);
+    if (existing !== undefined) return existing;
+    const fresh = createSessionState();
+    sessions.set(sessionId, fresh);
+    return fresh;
+  }
 
   function handleError(error: unknown): void {
     if (cfg.onError) {
@@ -104,10 +115,12 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
     }
   }
 
-  async function ingestSignal(signal: UserSignal): Promise<void> {
+  async function ingestSignal(sessionId: string, signal: UserSignal): Promise<void> {
+    const session = getSession(sessionId);
+
     if (signal.kind === "sensor") {
       // Merge sensor values into accumulated state
-      sensorState = { ...sensorState, [signal.source]: signal.values };
+      session.sensorState = { ...session.sensorState, [signal.source]: signal.values };
     }
 
     if (signal.kind === "post_action") {
@@ -127,25 +140,32 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
     }
 
     snapshotCache.invalidate();
-    recallCache = undefined;
+    session.recallCache = undefined;
   }
 
-  async function recallPreferences(query: string): Promise<readonly MemoryResult[]> {
-    if (recallCache !== undefined && recallCache.query === query) return recallCache.results;
+  async function recallPreferences(
+    sessionId: string,
+    query: string,
+  ): Promise<readonly MemoryResult[]> {
+    const session = getSession(sessionId);
+    if (session.recallCache !== undefined && session.recallCache.query === query) {
+      return session.recallCache.results;
+    }
 
     const results = await cfg.memory.recall(query, {
       namespace: cfg.preferenceNamespace,
       limit: cfg.recallLimit,
     });
-    recallCache = { query, results };
+    session.recallCache = { query, results };
     return results;
   }
 
-  async function buildSnapshot(messageText: string): Promise<UserSnapshot> {
+  async function buildSnapshot(sessionId: string, messageText: string): Promise<UserSnapshot> {
     const cached = snapshotCache.get();
     if (cached !== undefined) return cached;
 
-    const allResults = await recallPreferences(messageText);
+    const session = getSession(sessionId);
+    const allResults = await recallPreferences(sessionId, messageText);
     const relevant = filterByRelevance(allResults, cfg.relevanceThreshold);
 
     // Check ambiguity if pre-action enabled and no relevant preferences
@@ -164,7 +184,7 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
 
     const snapshot: UserSnapshot = {
       preferences: relevant,
-      state: { ...sensorState },
+      state: { ...session.sensorState },
       ambiguityDetected,
       suggestedQuestion,
     };
@@ -181,15 +201,16 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
     describeCapabilities: (_ctx: TurnContext) => capabilityFragment,
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
-      activeSessions.add(ctx.sessionId as string);
+      getSession(ctx.sessionId as string);
     },
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
       const sessionId = ctx.session.sessionId as string;
-      if (!activeSessions.has(sessionId)) return;
+      if (!sessions.has(sessionId)) return;
 
       // Reset turn-level caches
-      recallCache = undefined;
+      const session = getSession(sessionId);
+      session.recallCache = undefined;
       snapshotCache.invalidate();
 
       // 1. Read signal sources in parallel
@@ -197,7 +218,7 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
         try {
           const readResult = await readSignalSources(cfg.signalSources, cfg.signalTimeoutMs);
           for (const signal of readResult.signals) {
-            await ingestSignal(signal);
+            await ingestSignal(sessionId, signal);
           }
         } catch (error: unknown) {
           handleError(error);
@@ -217,7 +238,7 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
           try {
             const assessment = await cfg.postAction.detector.detect(messageText, ctx.messages);
             if (assessment.corrective && assessment.preferenceUpdate) {
-              await ingestSignal({
+              await ingestSignal(sessionId, {
                 kind: "post_action",
                 correction: assessment.preferenceUpdate,
                 source: "explicit",
@@ -242,6 +263,7 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
         if (driftSignal.kind === "drift_detected") {
           // Find supersession targets
           const recalled = await recallPreferences(
+            sessionId,
             driftSignal.oldPreference ?? driftSignal.newPreference,
           );
           const matchingOldFacts = recalled.filter((r) => {
@@ -268,7 +290,7 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
               .map((r) => (r.metadata as Readonly<Record<string, unknown>>)?.id)
               .filter((id): id is string => typeof id === "string");
 
-            await ingestSignal({
+            await ingestSignal(sessionId, {
               kind: "post_action",
               correction: driftSignal.newPreference,
               source: "drift",
@@ -280,12 +302,12 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
     },
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const messageText = extractLastMessageText(request.messages);
-      const snapshot = await buildSnapshot(messageText);
+      const snapshot = await buildSnapshot(ctx.session.sessionId as string, messageText);
 
       const contextText = formatUserContext(snapshot, {
         maxPreferenceTokens: cfg.maxPreferenceTokens,
@@ -307,10 +329,8 @@ export function createUserModelMiddleware(config: UserModelConfig): KoiMiddlewar
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
-      activeSessions.delete(ctx.sessionId as string);
-      if (activeSessions.size === 0) {
-        sensorState = {};
-        recallCache = undefined;
+      sessions.delete(ctx.sessionId as string);
+      if (sessions.size === 0) {
         snapshotCache.invalidate();
       }
     },

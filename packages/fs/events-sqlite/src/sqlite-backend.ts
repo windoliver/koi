@@ -269,7 +269,8 @@ export function createSqliteEventBackend(config: SqliteEventBackendConfig = {}):
   }
 
   // -------------------------------------------------------------------------
-  // Append transaction
+  // Append transaction (IMMEDIATE — acquires write lock at start to prevent
+  // two concurrent DEFERRED readers from both passing the CAS check)
   // -------------------------------------------------------------------------
 
   const appendTx = db.transaction(
@@ -358,7 +359,7 @@ export function createSqliteEventBackend(config: SqliteEventBackendConfig = {}):
       }
 
       try {
-        const result = appendTx(streamId, event);
+        const result = appendTx.immediate(streamId, event);
         if (result.ok) {
           delivery.notifySubscribers(streamId, result.value);
         }

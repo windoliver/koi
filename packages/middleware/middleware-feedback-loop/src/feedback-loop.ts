@@ -70,15 +70,26 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
     maybeFlush(tracker, toolId);
   }
 
-  /** Fire-and-forget flush check with circuit breaker. */
+  // Serialize flush operations to prevent race conditions on consecutiveFlushFailures (Issue 8A)
+  // let: promise chain that serializes all flush operations
+  let flushChain: Promise<void> = Promise.resolve();
+
+  /** Serialized flush check with circuit breaker. */
   function maybeFlush(tracker: ToolHealthTracker, toolId: string): void {
     if (consecutiveFlushFailures >= MAX_CONSECUTIVE_FLUSH_FAILURES) return;
     if (tracker.shouldFlushTool(toolId)) {
-      tracker.flushTool(toolId).then(
-        () => {
-          consecutiveFlushFailures = 0;
-        },
-        (e: unknown) => {
+      flushChain = flushChain.then(async () => {
+        // Re-check after awaiting prior flushes — circuit may have opened
+        if (consecutiveFlushFailures >= MAX_CONSECUTIVE_FLUSH_FAILURES) return;
+        // Snapshot dirty state before flush to detect failure.
+        // flushTool swallows errors internally (reports via onFlushError) and
+        // leaves the dirty flag set on failure, so we use shouldFlushTool as
+        // a post-condition check to detect whether the flush succeeded.
+        const wasDirty = tracker.shouldFlushTool(toolId);
+        try {
+          await tracker.flushTool(toolId);
+        } catch (e: unknown) {
+          // flushTool should not reject (swallows internally), but guard anyway
           consecutiveFlushFailures++;
           config.forgeHealth?.onFlushError?.(toolId, e);
           if (consecutiveFlushFailures >= MAX_CONSECUTIVE_FLUSH_FAILURES) {
@@ -89,8 +100,24 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): Feedba
               ),
             );
           }
-        },
-      );
+          return;
+        }
+        // Detect swallowed failure: if it was dirty before and still needs flush after,
+        // the flush failed internally (dirty flag was restored in catch block).
+        if (wasDirty && tracker.shouldFlushTool(toolId)) {
+          consecutiveFlushFailures++;
+          if (consecutiveFlushFailures >= MAX_CONSECUTIVE_FLUSH_FAILURES) {
+            config.forgeHealth?.onFlushError?.(
+              toolId,
+              new Error(
+                `Flush circuit breaker open after ${String(MAX_CONSECUTIVE_FLUSH_FAILURES)} consecutive failures — flush disabled for session`,
+              ),
+            );
+          }
+        } else {
+          consecutiveFlushFailures = 0;
+        }
+      });
     }
   }
 

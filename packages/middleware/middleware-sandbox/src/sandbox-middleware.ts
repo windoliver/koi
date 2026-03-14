@@ -54,6 +54,11 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
     ): Promise<ToolResponse> {
       // 1. Resolve policy
       const resolvedPolicy = policyFor(request.toolId);
+      if (resolvedPolicy === undefined && failClosedOnLookupError) {
+        console.warn(
+          `[middleware-sandbox] Unknown tool '${request.toolId}' — applying DEFAULT_SANDBOXED_POLICY (failClosedOnLookupError=true)`,
+        );
+      }
       const policy: ToolPolicy | undefined =
         resolvedPolicy ?? (failClosedOnLookupError ? DEFAULT_SANDBOXED_POLICY : undefined);
 

@@ -275,7 +275,8 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
     `Call FINAL with your answer when done.`;
 
   // Mutable message array (local to this function)
-  const messages: InboundMessage[] = [
+  // let: reassigned during compaction to avoid O(n²) clear-and-push
+  let messages: InboundMessage[] = [
     {
       content: [{ kind: "text" as const, text: systemContext }],
       senderId: "user",
@@ -300,8 +301,7 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
     if (shouldCompact(tracker, compactionThreshold) && messages.length > 1) {
       onEvent?.({ kind: "compaction", turn, utilization: tracker.utilization() });
       const compacted = await compactHistory(messages, modelCall, config.subCallModel);
-      messages.length = 0;
-      messages.push(...compacted);
+      messages = [...compacted];
     }
 
     onEvent?.({ kind: "turn_start", turn });
