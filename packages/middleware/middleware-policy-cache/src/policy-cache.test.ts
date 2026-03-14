@@ -37,8 +37,11 @@ describe("createPolicyCacheMiddleware", () => {
     const handle = createPolicyCacheMiddleware();
     const req = makeToolReq("search", { query: "test" });
     const next = mock(async () => makeToolResp());
+    const wrapToolCall = handle.middleware.wrapToolCall;
+    expect(wrapToolCall).toBeDefined();
+    if (wrapToolCall === undefined) return;
 
-    const result = await handle.middleware.wrapToolCall?.({} as never, req, next);
+    const result = await wrapToolCall({} as never, req, next);
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(result.output).toBe("ok");
@@ -50,8 +53,11 @@ describe("createPolicyCacheMiddleware", () => {
 
     const req = makeToolReq("search", { query: "test" });
     const next = mock(async () => makeToolResp());
+    const wrapToolCall = handle.middleware.wrapToolCall;
+    expect(wrapToolCall).toBeDefined();
+    if (wrapToolCall === undefined) return;
 
-    const result = await handle.middleware.wrapToolCall?.({} as never, req, next);
+    const result = await wrapToolCall({} as never, req, next);
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(result.output).toBe("ok");
@@ -63,8 +69,11 @@ describe("createPolicyCacheMiddleware", () => {
 
     const req = makeToolReq("search", { query: "" });
     const next = mock(async () => makeToolResp());
+    const wrapToolCall = handle.middleware.wrapToolCall;
+    expect(wrapToolCall).toBeDefined();
+    if (wrapToolCall === undefined) return;
 
-    const result = await handle.middleware.wrapToolCall?.({} as never, req, next);
+    const result = await wrapToolCall({} as never, req, next);
 
     // Should NOT call next — model/tool call is short-circuited
     expect(next).toHaveBeenCalledTimes(0);
@@ -111,8 +120,10 @@ describe("createPolicyCacheMiddleware", () => {
 
     const req = makeToolReq("write_file", { path: "/tmp/test" });
     const next = mock(async () => makeToolResp());
+    const wrapToolCall = handle.middleware.wrapToolCall;
+    if (wrapToolCall === undefined) return;
 
-    await handle.middleware.wrapToolCall?.({} as never, req, next);
+    await wrapToolCall({} as never, req, next);
 
     // write_file is not cached — should pass through
     expect(next).toHaveBeenCalledTimes(1);
