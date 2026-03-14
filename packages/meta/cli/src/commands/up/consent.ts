@@ -3,7 +3,7 @@
  *
  * Uses @clack/prompts to present discovered data sources to the user,
  * allowing them to approve all, deny all, or selectively approve.
- * Non-TTY environments auto-approve manifest sources and skip others.
+ * Non-TTY environments and prompt failures deny all sources (fail closed).
  */
 
 import type { CliOutput } from "@koi/cli-render";
@@ -24,9 +24,9 @@ export function createInteractiveConsent(output: CliOutput): ConsentCallbacks {
         return { kind: "deny_all" };
       }
 
-      // Non-TTY: auto-approve manifest sources only
+      // Non-TTY (CI/piped): deny all — require explicit interactive approval
       if (!output.isTTY) {
-        return { kind: "approve_all" };
+        return { kind: "deny_all" };
       }
 
       return presentBatchInteractive(descriptors, output);
@@ -86,7 +86,7 @@ async function presentBatchInteractive(
 
     return { kind: "select", approved: selected as string[] };
   } catch {
-    // Prompt failure (e.g., piped input) — auto-approve
-    return { kind: "approve_all" };
+    // Prompt failure (e.g., piped input) — fail closed, deny all
+    return { kind: "deny_all" };
   }
 }

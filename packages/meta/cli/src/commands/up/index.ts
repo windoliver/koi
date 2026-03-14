@@ -191,12 +191,16 @@ export async function runUp(flags: UpFlags): Promise<void> {
   let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
   let dataSourceTools: readonly import("@koi/core").Tool[] = [];
   let discoveredSourceNames: readonly { readonly name: string; readonly protocol: string }[] = [];
+  let discoveredSourceSummaries:
+    | readonly import("@koi/dashboard-types").DataSourceSummary[]
+    | undefined;
   try {
     const { createDataSourceStack } = await import("@koi/data-source-stack");
+    const manifestEntries = (manifest as unknown as Record<string, unknown>).dataSources as
+      | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
+      | undefined;
     const dsStack = await createDataSourceStack({
-      manifestEntries: (manifest as unknown as Record<string, unknown>).dataSources as
-        | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
-        | undefined,
+      manifestEntries,
       env: process.env,
       consent: createInteractiveConsent(output),
     });
@@ -206,6 +210,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
       discoveredSourceNames = dsStack.discoveredSources.map((s) => ({
         name: s.name,
         protocol: s.protocol,
+      }));
+      // Build summaries for the dashboard bridge
+      const manifestNames = new Set((manifestEntries ?? []).map((e) => e.name));
+      discoveredSourceSummaries = dsStack.discoveredSources.map((s) => ({
+        name: s.name,
+        protocol: s.protocol,
+        status: "approved" as const,
+        source: (manifestNames.has(s.name) ? "manifest" : "env") as "manifest" | "env" | "mcp",
       }));
     }
   } catch {
@@ -285,6 +297,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       channels: channelNames,
       skills: skillNames,
       fileSystem: createLocalFileSystem(workspaceRoot),
+      discoveredSources: discoveredSourceSummaries,
       dispatchAgent: dispatcher.dispatchAgent,
       onTerminateAgent: async (id) => {
         await dispatcher.terminateAgent(id);

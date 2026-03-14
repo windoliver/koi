@@ -58,6 +58,15 @@ export function generateManifestYaml(state: WizardState): string {
     lines.push(`  - name: "@koi/channel-${channel}"`);
   }
 
+  if (state.dataSources.length > 0) {
+    lines.push("");
+    lines.push("dataSources:");
+    for (const ds of state.dataSources) {
+      lines.push(`  - name: ${ds.name}`);
+      lines.push(`    protocol: ${ds.protocol}`);
+    }
+  }
+
   if (state.template === "copilot") {
     lines.push("");
     lines.push("tools:");

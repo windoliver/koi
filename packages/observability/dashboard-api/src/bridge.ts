@@ -24,6 +24,7 @@ import type {
   DashboardEvent,
   DashboardSkillSummary,
   DashboardSystemMetrics,
+  DataSourceSummary,
   GatewayTopology,
   MiddlewareChain,
   ProcessTreeSnapshot,
@@ -71,6 +72,8 @@ export interface BridgeOptions {
         | "resumeHarness"
       >
     | undefined;
+  /** Discovered data sources to expose via the dashboard API. */
+  readonly discoveredSources?: readonly DataSourceSummary[] | undefined;
   /** Optional agent dispatch implementation (e.g. from AgentHost). */
   readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
   /** Called when a dispatched agent is terminated — disposes the runtime. */
@@ -290,6 +293,15 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
         listeners.delete(listener);
       };
     },
+
+    // Data source discovery (populated when discoveredSources provided)
+    ...(options.discoveredSources !== undefined && options.discoveredSources.length > 0
+      ? {
+          listDataSources(): readonly DataSourceSummary[] {
+            return options.discoveredSources ?? [];
+          },
+        }
+      : {}),
   };
 
   const runtimeViews: RuntimeViewDataSource = {

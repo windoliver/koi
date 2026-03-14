@@ -123,26 +123,31 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
   }
 
   // Data sources: probe admin API, fall back to manifest
-  if (adminOk) {
-    const dataSources = await fetchDataSources(adminUrl);
-    if (dataSources !== undefined && dataSources.length > 0) {
-      process.stdout.write("Data Sources:\n");
-      for (const ds of dataSources) {
-        process.stdout.write(`  - ${ds.name} (${ds.protocol}) [${ds.status}]\n`);
+  {
+    let shown = false;
+    if (adminOk) {
+      const dataSources = await fetchDataSources(adminUrl);
+      if (dataSources !== undefined && dataSources.length > 0) {
+        process.stdout.write("Data Sources:\n");
+        for (const ds of dataSources) {
+          process.stdout.write(`  - ${ds.name} (${ds.protocol}) [${ds.status}]\n`);
+        }
+        shown = true;
       }
     }
-  } else {
-    // Fall back to manifest dataSources
-    const manifestData = manifest as unknown as Record<string, unknown>;
-    const manifestSources = manifestData.dataSources as
-      | readonly { readonly name?: string; readonly protocol?: string }[]
-      | undefined;
-    if (manifestSources !== undefined && manifestSources.length > 0) {
-      process.stdout.write("Data Sources:\n");
-      for (const ds of manifestSources) {
-        const name = typeof ds.name === "string" ? ds.name : "unknown";
-        const protocol = typeof ds.protocol === "string" ? ds.protocol : "unknown";
-        process.stdout.write(`  - ${name} (${protocol}) [configured]\n`);
+    // Fall back to manifest dataSources when admin is down or returns empty
+    if (!shown) {
+      const manifestData = manifest as unknown as Record<string, unknown>;
+      const manifestSources = manifestData.dataSources as
+        | readonly { readonly name?: string; readonly protocol?: string }[]
+        | undefined;
+      if (manifestSources !== undefined && manifestSources.length > 0) {
+        process.stdout.write("Data Sources:\n");
+        for (const ds of manifestSources) {
+          const name = typeof ds.name === "string" ? ds.name : "unknown";
+          const protocol = typeof ds.protocol === "string" ? ds.protocol : "unknown";
+          process.stdout.write(`  - ${name} (${protocol}) [configured]\n`);
+        }
       }
     }
   }

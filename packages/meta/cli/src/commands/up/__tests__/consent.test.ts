@@ -84,9 +84,9 @@ describe("createInteractiveConsent", () => {
     expect(decision).toEqual({ kind: "deny_all" });
   });
 
-  test("auto-approve in non-TTY mode", async () => {
+  test("deny all in non-TTY mode (fail closed)", async () => {
     const decision = await callPresentBatch(createMockOutput(false), DESCRIPTORS);
-    expect(decision).toEqual({ kind: "approve_all" });
+    expect(decision).toEqual({ kind: "deny_all" });
   });
 
   test("approve fallback always returns true", async () => {
