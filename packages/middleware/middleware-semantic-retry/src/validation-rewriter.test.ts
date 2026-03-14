@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelRequest } from "@koi/core";
-import { createValidationRewriter } from "./validation-rewriter.js";
 import type { PromptRewriter, RetryAction, RewriteContext } from "./types.js";
+import { createValidationRewriter } from "./validation-rewriter.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

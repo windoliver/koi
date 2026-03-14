@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
-import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { KoiError } from "@koi/core";
+import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { Agent, Tool, ToolDescriptor } from "@koi/core/ecs";
 import type { ToolHandler, ToolRequest, ToolResponse } from "@koi/core/middleware";
 import { PARSE_ERROR_KEY } from "./stream-bridge.js";
@@ -313,7 +313,9 @@ describe("wrapTool error handling", () => {
 
     const piTool = wrapTool(descriptor, toolCall);
     // Simulate stream-bridge's deferred parse error marker in arguments
-    const poisonedInput = { [PARSE_ERROR_KEY]: "Tool 'search' received malformed JSON: Unexpected token" };
+    const poisonedInput = {
+      [PARSE_ERROR_KEY]: "Tool 'search' received malformed JSON: Unexpected token",
+    };
 
     // Should throw (propagate to pi runtime), NOT be caught by defense-in-depth
     await expect(piTool.execute("call-6", poisonedInput)).rejects.toMatchObject({

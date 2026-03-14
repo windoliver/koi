@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { KoiError } from "@koi/core";
-import { createValidationAnalyzer } from "./validation-analyzer.js";
 import type { FailureAnalyzer, FailureClass, FailureContext, RetryRecord } from "./types.js";
+import { createValidationAnalyzer } from "./validation-analyzer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
