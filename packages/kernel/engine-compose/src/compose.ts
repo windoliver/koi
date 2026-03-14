@@ -128,14 +128,14 @@ interface OnionEntry<Req, Res> {
 function composeOnion<Req, Res>(
   entries: readonly OnionEntry<Req, Res>[],
   hookLabel: string,
-  terminal: (req: Req) => Res,
+  terminal: (req: Req, ctx: TurnContext) => Res,
   wrapNextResult?: (result: Res, resetGuard: () => void) => Res,
 ): (ctx: TurnContext, request: Req) => Res {
   return (ctx: TurnContext, request: Req): Res => {
     const dispatch = (i: number, req: Req): Res => {
       const entry = entries[i];
       if (entry === undefined) {
-        return terminal(req);
+        return terminal(req, ctx);
       }
       // let required: toggled by next(), reset on error by wrapNextResult
       let called = false;
@@ -216,44 +216,33 @@ export function composeModelChain(
     }
   }
 
-  const chain = composeOnion(regularEntries, "wrapModelCall", terminal, (result, resetGuard) => {
+  // Wrap external terminal to match (req, ctx) signature
+  const wrappedTerminal = (req: ModelRequest, _ctx: TurnContext): Promise<ModelResponse> =>
+    terminal(req);
+
+  if (concurrentObservers.length === 0) {
+    return composeOnion(regularEntries, "wrapModelCall", wrappedTerminal, (result, resetGuard) => {
+      void result.catch(() => {
+        resetGuard();
+      });
+      return result;
+    });
+  }
+
+  // Terminal that fires concurrent observers with the ctx it receives from the onion.
+  // ctx flows through composeOnion's dispatch closure — no shared mutable state, no WeakMap.
+  const observingTerminal = (req: ModelRequest, ctx: TurnContext): Promise<ModelResponse> => {
+    const result = terminal(req);
+    fireConcurrentModelObservers(concurrentObservers, ctx, req, result);
+    return result;
+  };
+
+  return composeOnion(regularEntries, "wrapModelCall", observingTerminal, (result, resetGuard) => {
     void result.catch(() => {
       resetGuard();
     });
     return result;
   });
-
-  if (concurrentObservers.length === 0) return chain;
-
-  // Per-call ctx binding: avoids shared mutable state that races under concurrent calls.
-  // Each request object maps to its own TurnContext via WeakMap (GC-safe, no leaks).
-  const ctxByRequest = new WeakMap<ModelRequest, TurnContext>();
-
-  const observingTerminal: ModelHandler = (req: ModelRequest): Promise<ModelResponse> => {
-    const ctx = ctxByRequest.get(req);
-    const result = terminal(req);
-    if (ctx !== undefined) {
-      fireConcurrentModelObservers(concurrentObservers, ctx, req, result);
-    }
-    return result;
-  };
-
-  const innerChain = composeOnion(
-    regularEntries,
-    "wrapModelCall",
-    observingTerminal,
-    (result, resetGuard) => {
-      void result.catch(() => {
-        resetGuard();
-      });
-      return result;
-    },
-  );
-
-  return (ctx: TurnContext, request: ModelRequest): Promise<ModelResponse> => {
-    ctxByRequest.set(request, ctx);
-    return innerChain(ctx, request);
-  };
 }
 
 export function composeModelStreamChain(
@@ -269,7 +258,9 @@ export function composeModelStreamChain(
       entries.push({ name: mw.name, hook: mw.wrapModelStream });
     }
   }
-  return composeOnion(entries, "wrapModelStream", terminal, (result, resetGuard) => {
+  const wrappedTerminal = (req: ModelRequest, _ctx: TurnContext): AsyncIterable<ModelChunk> =>
+    terminal(req);
+  return composeOnion(entries, "wrapModelStream", wrappedTerminal, (result, resetGuard) => {
     return wrapAsyncIterableWithErrorReset(result, resetGuard);
   });
 }
@@ -290,26 +281,20 @@ export function composeToolChain(
     }
   }
 
+  const wrappedTerminal = (req: ToolRequest, _ctx: TurnContext): Promise<ToolResponse> =>
+    terminal(req);
+
   if (concurrentObservers.length === 0) {
-    return composeOnion(regularEntries, "wrapToolCall", terminal);
+    return composeOnion(regularEntries, "wrapToolCall", wrappedTerminal);
   }
 
-  const ctxByRequest = new WeakMap<ToolRequest, TurnContext>();
-
-  const observingTerminal: ToolHandler = (req: ToolRequest): Promise<ToolResponse> => {
-    const ctx = ctxByRequest.get(req);
+  const observingTerminal = (req: ToolRequest, ctx: TurnContext): Promise<ToolResponse> => {
     const result = terminal(req);
-    if (ctx !== undefined) {
-      fireConcurrentToolObservers(concurrentObservers, ctx, req, result);
-    }
+    fireConcurrentToolObservers(concurrentObservers, ctx, req, result);
     return result;
   };
 
-  const innerChain = composeOnion(regularEntries, "wrapToolCall", observingTerminal);
-  return (ctx: TurnContext, request: ToolRequest): Promise<ToolResponse> => {
-    ctxByRequest.set(request, ctx);
-    return innerChain(ctx, request);
-  };
+  return composeOnion(regularEntries, "wrapToolCall", observingTerminal);
 }
 
 // ---------------------------------------------------------------------------

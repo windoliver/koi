@@ -221,6 +221,40 @@ describe("concurrent observe — composeModelChain", () => {
     // Each observer should see its own context — NOT both seeing "B"
     expect(observedContexts.sort()).toEqual(["A", "B"]);
   });
+
+  test("observers fire even when resolve middleware clones the request (regression)", async () => {
+    let observerFired = false;
+
+    const cloningMiddleware: KoiMiddleware = {
+      name: "cloner",
+      phase: "resolve",
+      async wrapModelCall(_ctx, req, next) {
+        // Clone the request — changes object identity
+        return next({ ...req, metadata: { ...req.metadata, cloned: true } });
+      },
+      describeCapabilities: () => undefined,
+    };
+
+    const observer: KoiMiddleware = {
+      name: "observer",
+      phase: "observe",
+      concurrent: true,
+      async wrapModelCall(_ctx, _req, next) {
+        observerFired = true;
+        return next(_req);
+      },
+      describeCapabilities: () => undefined,
+    };
+
+    const terminal = mock(async () => STUB_MODEL_RESPONSE);
+    const chain = composeModelChain([cloningMiddleware, observer], terminal);
+
+    await chain(STUB_CTX, modelRequest());
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Observer must fire despite the request being cloned by upstream middleware
+    expect(observerFired).toBe(true);
+  });
 });
 
 describe("concurrent observe — composeToolChain", () => {
