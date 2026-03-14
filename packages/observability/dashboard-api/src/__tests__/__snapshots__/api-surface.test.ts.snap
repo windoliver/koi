@@ -343,6 +343,8 @@ interface BridgeOptions {
         readonly taskBoard?: RuntimeViewDataSource["taskBoard"];
         readonly harness?: RuntimeViewDataSource["harness"];
     } | undefined;
+    /** Optional forge view data source for self-improvement observability. */
+    readonly forge?: RuntimeViewDataSource["forge"] | undefined;
     /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
     readonly orchestrationCommands?: Pick<CommandDispatcher, "signalWorkflow" | "terminateWorkflow" | "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter" | "pauseHarness" | "resumeHarness"> | undefined;
     /** Discovered data sources to expose via the dashboard API. */

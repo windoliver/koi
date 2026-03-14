@@ -190,6 +190,24 @@ export function fetchGatewayTopology(): Promise<GatewayTopology> {
 }
 
 // ---------------------------------------------------------------------------
+// Forge view endpoints (self-improvement observability)
+// ---------------------------------------------------------------------------
+
+export interface ForgeBrickViewResponse {
+  readonly brickId: string;
+  readonly name: string;
+  readonly status: "active" | "deprecated" | "promoted" | "quarantined";
+  readonly fitness: number;
+  readonly sampleCount: number;
+  readonly createdAt: number;
+  readonly lastUpdatedAt: number;
+}
+
+export function fetchForgeBricks(): Promise<readonly ForgeBrickViewResponse[]> {
+  return fetchApi<readonly ForgeBrickViewResponse[]>("/view/forge/bricks");
+}
+
+// ---------------------------------------------------------------------------
 // Command endpoints
 // ---------------------------------------------------------------------------
 

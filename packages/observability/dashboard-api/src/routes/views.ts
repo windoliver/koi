@@ -5,6 +5,8 @@
  * GET /view/agents/:id/procfs — agent runtime state
  * GET /view/middleware/:id    — middleware chain for agent
  * GET /view/gateway/topology  — connected channels/nodes
+ * GET /view/forge/bricks      — forge brick metadata
+ * GET /view/forge/stats       — forge aggregate stats
  */
 
 import { agentId } from "@koi/core";
@@ -59,4 +61,28 @@ export async function handleGatewayTopology(
 ): Promise<Response> {
   const topology = await runtimeViews.getGatewayTopology();
   return jsonResponse(topology);
+}
+
+export async function handleForgeBricks(
+  _req: Request,
+  _params: RouteParams,
+  runtimeViews: RuntimeViewDataSource,
+): Promise<Response> {
+  if (runtimeViews.forge === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Forge not configured", 501);
+  }
+  const bricks = await runtimeViews.forge.listBricks();
+  return jsonResponse(bricks);
+}
+
+export async function handleForgeStats(
+  _req: Request,
+  _params: RouteParams,
+  runtimeViews: RuntimeViewDataSource,
+): Promise<Response> {
+  if (runtimeViews.forge === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Forge not configured", 501);
+  }
+  const stats = await runtimeViews.forge.getStats();
+  return jsonResponse(stats);
 }

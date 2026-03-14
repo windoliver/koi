@@ -47,6 +47,58 @@ import { runPreflight } from "./preflight.js";
 import { extractDemoPack, inferPresetId } from "./preset.js";
 import { startTemporalEmbed } from "./temporal.js";
 
+/** Creates a forge view data source from a ForgeStore for the admin bridge. */
+function createForgeViewSource(store: import("@koi/core").ForgeStore): {
+  readonly listBricks: () => Promise<readonly import("@koi/dashboard-types").ForgeBrickView[]>;
+  readonly getStats: () => Promise<import("@koi/dashboard-types").ForgeStats>;
+} {
+  return {
+    async listBricks() {
+      const result = await store.search({});
+      if (!result.ok) return [];
+      return result.value.map((brick) => ({
+        brickId: brick.id,
+        name: brick.name,
+        status: mapLifecycleToStatus(brick.lifecycle),
+        fitness: brick.fitness?.successCount
+          ? brick.fitness.successCount / (brick.fitness.successCount + brick.fitness.errorCount)
+          : 0,
+        sampleCount: (brick.fitness?.successCount ?? 0) + (brick.fitness?.errorCount ?? 0),
+        createdAt: brick.provenance.metadata.startedAt,
+        lastUpdatedAt: brick.fitness?.lastUsedAt ?? brick.provenance.metadata.startedAt,
+      }));
+    },
+    async getStats() {
+      const result = await store.search({});
+      const bricks = result.ok ? result.value : [];
+      return {
+        totalBricks: bricks.length,
+        activeBricks: bricks.filter((b) => b.lifecycle === "active").length,
+        demandSignals: 0,
+        crystallizeCandidates: 0,
+        timestamp: Date.now(),
+      };
+    },
+  };
+}
+
+function mapLifecycleToStatus(
+  lifecycle: string,
+): "active" | "deprecated" | "promoted" | "quarantined" {
+  switch (lifecycle) {
+    case "active":
+      return "active";
+    case "deprecated":
+      return "deprecated";
+    case "promoted":
+      return "promoted";
+    case "quarantined":
+      return "quarantined";
+    default:
+      return "active";
+  }
+}
+
 /** Captures probeEnv in a closure to avoid L2→L2 import in the bridge. */
 function createProbeCallback(
   probeEnv: (
@@ -254,6 +306,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
             : ("env" as const),
       }));
       discoveredDescriptors = dsStack.discoveredSources;
+
+      // Print credential fallback guidance for sources needing auth
+      for (const source of dsStack.discoveredSources) {
+        if (source.auth?.ref !== undefined && process.env[source.auth.ref] === undefined) {
+          output.warn(
+            `Source "${source.name}" needs credential — set ${source.auth.ref} in your environment`,
+          );
+        }
+      }
     }
     // Capture executor for schema probing in dashboard bridge
     const { executeDataSourceQuery } = await import("@koi/data-source-stack");
@@ -362,6 +423,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       },
       ...(orch.hasAny
         ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
+        : {}),
+      ...(forgeBootstrap !== undefined
+        ? { forge: createForgeViewSource(forgeBootstrap.store) }
         : {}),
     });
 

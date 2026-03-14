@@ -70,6 +70,8 @@ import {
 import { handleSkills } from "./routes/skills.js";
 import {
   handleAgentProcfs,
+  handleForgeBricks,
+  handleForgeStats,
   handleGatewayTopology,
   handleMiddlewareChain,
   handleProcessTree,
@@ -304,6 +306,20 @@ export function createDashboardHandler(
         method: "GET",
         pattern: "/view/gateway/topology",
         handler: (req, params) => handleGatewayTopology(req, params, runtimeViews),
+      },
+    );
+
+    // Forge views (self-improvement observability)
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/view/forge/bricks",
+        handler: (req, params) => handleForgeBricks(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/forge/stats",
+        handler: (req, params) => handleForgeStats(req, params, runtimeViews),
       },
     );
 

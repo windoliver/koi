@@ -100,6 +100,8 @@ export type {
   AgentProcfs,
   CheckpointEntry,
   CronSchedule,
+  ForgeBrickView,
+  ForgeStats,
   GatewayConnection,
   GatewayTopology,
   HarnessStatus,

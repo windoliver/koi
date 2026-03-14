@@ -11,7 +11,7 @@
 import type { DashboardEventBatch, ForgeDashboardEvent } from "@koi/dashboard-types";
 import { isForgeEvent } from "@koi/dashboard-types";
 import { useEffect } from "react";
-import { fetchAgents } from "../lib/api-client.js";
+import { fetchAgents, fetchForgeBricks } from "../lib/api-client.js";
 import { getDashboardConfig } from "../lib/dashboard-config.js";
 import { createSseClient } from "../lib/sse-client.js";
 import { useAgentsStore } from "../stores/agents-store.js";
@@ -51,6 +51,29 @@ export function useSse(): void {
         void fetchAgents().then((agents) => {
           useAgentsStore.getState().setAgents(agents, reconnectedAt);
         });
+        // Rehydrate forge brick state via REST
+        void fetchForgeBricks()
+          .then((bricks) => {
+            const forgeState = useForgeStore.getState();
+            for (const brick of bricks) {
+              forgeState.applyBatch([
+                {
+                  kind: "forge",
+                  subKind: "brick_forged",
+                  brickId: brick.brickId,
+                  name: brick.name,
+                  origin: "crystallize",
+                  ngramKey: "",
+                  occurrences: brick.sampleCount,
+                  score: brick.fitness,
+                  timestamp: brick.createdAt,
+                },
+              ]);
+            }
+          })
+          .catch(() => {
+            // Forge rehydration is non-fatal — page works with SSE-only data
+          });
       },
     });
 
