@@ -114,6 +114,38 @@ function createForgeViewSource(
   };
 }
 
+/** Creates a forge view source backed only by seeded data (no live ForgeStore). */
+function createSeededOnlyForgeViewSource(
+  seededBricks: readonly import("@koi/dashboard-types").ForgeBrickView[],
+  seededForgeEvents: readonly Readonly<Record<string, unknown>>[],
+): {
+  readonly listBricks: () => Promise<readonly import("@koi/dashboard-types").ForgeBrickView[]>;
+  readonly getStats: () => Promise<import("@koi/dashboard-types").ForgeStats>;
+  readonly listRecentEvents: () => Promise<readonly import("@koi/dashboard-types").ForgeDashboardEvent[]>;
+} {
+  return {
+    async listBricks() {
+      return seededBricks;
+    },
+    async getStats() {
+      return {
+        totalBricks: seededBricks.length,
+        activeBricks: seededBricks.filter((b) => b.status === "active").length,
+        demandSignals: seededForgeEvents.filter(
+          (e) => (e as Record<string, unknown>).subKind === "demand_detected",
+        ).length,
+        crystallizeCandidates: seededForgeEvents.filter(
+          (e) => (e as Record<string, unknown>).subKind === "crystallize_candidate",
+        ).length,
+        timestamp: Date.now(),
+      };
+    },
+    async listRecentEvents() {
+      return seededForgeEvents as unknown as import("@koi/dashboard-types").ForgeDashboardEvent[];
+    },
+  };
+}
+
 function mapLifecycleToStatus(
   lifecycle: string,
 ): "active" | "deprecated" | "promoted" | "quarantined" {
@@ -483,7 +515,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
               seedResult.seededForgeEvents,
             ),
           }
-        : {}),
+        : seedResult.seededBricks.length > 0
+          ? { forge: createSeededOnlyForgeViewSource(seedResult.seededBricks, seedResult.seededForgeEvents) }
+          : {}),
     });
 
     // Wire forge/monitor SSE event sink now that the bridge exists

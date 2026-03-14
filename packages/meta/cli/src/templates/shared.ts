@@ -244,6 +244,10 @@ export function generateDemoManifestYaml(state: WizardState): string {
   lines.push('    - name: "@koi/tools-web"');
   lines.push("");
 
+  lines.push("forge:");
+  lines.push("  enabled: true");
+  lines.push("");
+
   if (state.demoPack !== undefined) {
     lines.push("demo:");
     lines.push(`  pack: ${state.demoPack}`);
