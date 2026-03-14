@@ -168,14 +168,17 @@ describe("ForgeStore", () => {
   });
 
   describe("reconnect reset", () => {
-    test("resetBuffer clears events but retains brick snapshot", () => {
+    test("resetBuffer clears all forge state (no REST rehydration path)", () => {
       useForgeStore.getState().applyBatch([brickForged("b-1", "tool")]);
       useForgeStore.getState().applyMonitorEvent(monitorEvent());
       useForgeStore.getState().resetBuffer();
       const state = useForgeStore.getState();
       expect(state.recentEvents).toHaveLength(0);
       expect(state.recentMonitorEvents).toHaveLength(0);
-      expect(state.bricks["b-1"]).toBeDefined();
+      expect(Object.keys(state.bricks)).toHaveLength(0);
+      expect(Object.keys(state.sparklineData)).toHaveLength(0);
+      expect(state.demandCount).toBe(0);
+      expect(state.crystallizeCount).toBe(0);
     });
   });
 

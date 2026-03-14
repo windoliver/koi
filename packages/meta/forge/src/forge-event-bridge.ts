@@ -185,6 +185,8 @@ export interface AnomalySignalLike {
   readonly kind: string;
   readonly agentId: string;
   readonly sessionId: string;
+  readonly timestamp: number;
+  readonly turnIndex: number;
   readonly [key: string]: unknown;
 }
 
@@ -206,16 +208,16 @@ export interface MonitorEventBridgeConfig {
  * ```
  */
 export function createMonitorEventBridge(config: MonitorEventBridgeConfig): {
-  readonly wrapOnAnomaly: (
-    existing?: ((signal: AnomalySignalLike) => void | Promise<void>) | undefined,
-  ) => (signal: AnomalySignalLike) => void;
+  readonly wrapOnAnomaly: <T extends AnomalySignalLike>(
+    existing?: ((signal: T) => void | Promise<void>) | undefined,
+  ) => (signal: T) => void;
 } {
   const clock = config.clock ?? Date.now;
 
   return {
     wrapOnAnomaly:
-      (existing) =>
-      (signal: AnomalySignalLike): void => {
+      <T extends AnomalySignalLike>(existing?: ((signal: T) => void | Promise<void>) | undefined) =>
+      (signal: T): void => {
         // Forward to existing handler first
         if (existing !== undefined) {
           existing(signal);
@@ -229,7 +231,7 @@ export function createMonitorEventBridge(config: MonitorEventBridgeConfig): {
             subKind: "anomaly_detected",
             anomalyKind: signal.kind,
             agentId,
-            sessionId,
+            sessionId: sessionId as string,
             detail: rest as Readonly<Record<string, unknown>>,
             timestamp: clock(),
           });

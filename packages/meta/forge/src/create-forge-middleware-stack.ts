@@ -206,6 +206,9 @@ export function createForgeMiddlewareStack(
         bridge?.onQuarantine(brickId);
         config.onError?.(new Error(`Forge tool quarantined: ${brickId}`));
       },
+      onFitnessFlush: (brickId: string, successRate: number, sampleCount: number): void => {
+        bridge?.onFitnessFlush(brickId, successRate, sampleCount);
+      },
       onFlushError: (toolId: string, error: unknown): void => {
         config.onError?.(new Error(`Forge health flush failed for ${toolId}`, { cause: error }));
       },

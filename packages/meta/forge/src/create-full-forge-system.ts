@@ -18,6 +18,7 @@ import type {
   TurnTrace,
 } from "@koi/core";
 import type { CrystallizeHandle } from "@koi/crystallize";
+import type { ForgeDashboardEvent } from "@koi/dashboard-types";
 import type { ForgeDemandHandle } from "@koi/forge-demand";
 import type { ExaptationHandle } from "@koi/forge-exaptation";
 import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
@@ -48,6 +49,8 @@ export interface CreateFullForgeSystemConfig {
   readonly notifier?: StoreChangeNotifier | undefined;
   /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
   readonly snapshotStore?: SnapshotStore | undefined;
+  /** Optional SSE event sink for self-improvement observability. */
+  readonly onDashboardEvent?: ((events: readonly ForgeDashboardEvent[]) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +118,7 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
     clock: config.clock,
     notifier,
     snapshotStore: config.snapshotStore,
+    onDashboardEvent: config.onDashboardEvent,
   });
 
   return {

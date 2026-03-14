@@ -287,6 +287,7 @@ describe("createMonitorEventBridge", () => {
       kind: "error_spike",
       agentId: "a-1",
       sessionId: "s-1",
+      timestamp: NOW,
       turnIndex: 5,
       errorCount: 10,
     };
@@ -314,6 +315,8 @@ describe("createMonitorEventBridge", () => {
       kind: "tool_rate_exceeded",
       agentId: "a-1",
       sessionId: "s-1",
+      timestamp: NOW,
+      turnIndex: 3,
     };
 
     const wrapped = bridge.wrapOnAnomaly(() => {
@@ -337,7 +340,13 @@ describe("createMonitorEventBridge", () => {
     });
 
     const wrapped = bridge.wrapOnAnomaly();
-    wrapped({ kind: "error_spike", agentId: "a-1", sessionId: "s-1" });
+    wrapped({
+      kind: "error_spike",
+      agentId: "a-1",
+      sessionId: "s-1",
+      timestamp: NOW,
+      turnIndex: 1,
+    });
 
     expect(errs).toHaveLength(1);
     expect((errs[0] as Error).message).toBe("emit failed");

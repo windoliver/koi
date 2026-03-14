@@ -167,8 +167,12 @@ export const useForgeStore = create<ForgeState>((set) => ({
 
   resetBuffer: () =>
     set({
+      bricks: {},
       recentEvents: [],
       recentMonitorEvents: [],
+      sparklineData: {},
+      demandCount: 0,
+      crystallizeCount: 0,
     }),
 }));
 
