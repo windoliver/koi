@@ -247,9 +247,10 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
         let currentUrl = pinnedUrl;
         let currentLogicalUrl = url; // original hostname URL for redirect resolution
         let currentMethod = method;
-        let currentHeaders: Readonly<Record<string, string>> | undefined = pinnedHostHeader !== undefined
-          ? { ...options?.headers, Host: pinnedHostHeader }
-          : options?.headers;
+        let currentHeaders: Readonly<Record<string, string>> | undefined =
+          pinnedHostHeader !== undefined
+            ? { ...options?.headers, Host: pinnedHostHeader }
+            : options?.headers;
         let currentBody = options?.body;
         let response: Response | undefined;
 

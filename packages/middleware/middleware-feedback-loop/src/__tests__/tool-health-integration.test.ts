@@ -398,9 +398,7 @@ describe("flush serialization", () => {
     // Fire 5 rapid tool calls without awaiting flush completion between them
     const promises: Promise<unknown>[] = [];
     for (let i = 0; i < 5; i++) {
-      promises.push(
-        mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler) ?? Promise.resolve(),
-      );
+      promises.push(mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler) ?? Promise.resolve());
     }
     await Promise.all(promises);
 
@@ -416,9 +414,7 @@ describe("flush serialization", () => {
   test("interleaved success/failure — circuit breaker opens after 3 consecutive failures", async () => {
     const forgeStore = createMockForgeStore();
     // Make every flush fail (flushToolImpl catches and calls onFlushError internally)
-    forgeStore.load = mock(() =>
-      Promise.reject(new Error("store unavailable")),
-    );
+    forgeStore.load = mock(() => Promise.reject(new Error("store unavailable")));
 
     const onFlushError = mock(() => {});
     const forgeHealth = createForgeHealthConfig({
