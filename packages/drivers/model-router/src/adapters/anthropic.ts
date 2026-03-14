@@ -6,7 +6,6 @@
  */
 
 import type { ContentBlock, JsonObject, KoiError, ModelRequest, ModelResponse } from "@koi/core";
-import type { CacheHints } from "@koi/execution-context";
 import type { NormalizedRole } from "../normalize.js";
 import { normalizeMessages, normalizeToPlainText } from "../normalize.js";
 import type { ProviderAdapter, ProviderAdapterConfig, StreamChunk } from "../provider-adapter.js";
@@ -18,6 +17,13 @@ import {
   parseSSEStream,
   streamFetch,
 } from "./shared.js";
+
+/** Cache hints written by @koi/middleware-prompt-cache into request.metadata. */
+interface CacheHints {
+  readonly provider: string;
+  readonly lastStableIndex: number;
+  readonly staticPrefixTokens: number;
+}
 
 /** Well-known metadata key written by @koi/middleware-prompt-cache. */
 const CACHE_HINTS_KEY = "__koi_cache_hints__";

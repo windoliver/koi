@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { JsonObject, ModelRequest } from "@koi/core";
-import type { CacheHints } from "@koi/execution-context";
 import { fromAnthropicResponse, mapAnthropicError, toAnthropicRequest } from "./anthropic.js";
+
+interface CacheHints {
+  readonly provider: string;
+  readonly lastStableIndex: number;
+  readonly staticPrefixTokens: number;
+}
 
 /** Helper: build a request with cache hints embedded in metadata (survives cloning). */
 function withCacheHints(request: ModelRequest, hints: CacheHints): ModelRequest {
