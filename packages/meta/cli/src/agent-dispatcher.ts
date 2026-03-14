@@ -45,6 +45,8 @@ export interface AgentDispatcherOptions {
   readonly forgeStore?: unknown;
   /** Forge runtime from host bootstrap — passed to createForgeConfiguredKoi as `forge`. */
   readonly forgeRuntime?: unknown;
+  /** Optional SSE event sink for forge/monitor observability on dispatched agents. */
+  readonly onDashboardEvent?: ((event: unknown) => void) | undefined;
   /** Injected deps for testing — bypasses dynamic import() to avoid mock.module contamination. */
   readonly _testDeps?: DispatcherDeps;
 }
@@ -82,6 +84,7 @@ export interface DispatcherDeps {
     readonly providers: readonly unknown[];
     readonly extensions: readonly unknown[];
     readonly forge?: unknown;
+    readonly onDashboardEvent?: ((event: unknown) => void) | undefined;
   }) => Promise<{
     readonly runtime: {
       readonly agent: { readonly pid: { readonly id: AgentId } };
@@ -244,6 +247,9 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
         providers: options.additionalProviders ?? [],
         extensions: options.additionalExtensions ?? [],
         ...(options.forgeRuntime !== undefined ? { forge: options.forgeRuntime } : {}),
+        ...(options.onDashboardEvent !== undefined
+          ? { onDashboardEvent: options.onDashboardEvent }
+          : {}),
       });
 
       const id = runtime.agent.pid.id;

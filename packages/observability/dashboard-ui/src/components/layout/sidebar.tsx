@@ -8,7 +8,7 @@
  */
 
 import { NavLink } from "react-router-dom";
-import { Bot, FolderTree, X } from "lucide-react";
+import { Bot, FolderTree, Sparkles, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useLayoutStore } from "../../stores/layout-store.js";
 
@@ -21,6 +21,7 @@ interface NavItem {
 const NAV_ITEMS: readonly NavItem[] = [
   { to: "/agents", label: "Agents", icon: Bot },
   { to: "/browser", label: "Browser", icon: FolderTree },
+  { to: "/self-improvement", label: "Self-Improvement", icon: Sparkles },
 ] as const;
 
 export function Sidebar(): React.ReactElement {

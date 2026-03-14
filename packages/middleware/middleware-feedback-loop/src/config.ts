@@ -45,6 +45,8 @@ export interface ForgeHealthConfig {
   readonly flushThreshold?: number;
   /** Error rate delta that triggers an early flush (0-1). Default: 0.05. */
   readonly errorRateDeltaThreshold?: number;
+  /** Callback fired after a successful fitness flush. Reports the merged success rate. */
+  readonly onFitnessFlush?: (brickId: string, successRate: number, sampleCount: number) => void;
   /** Callback fired when a fitness flush fails. */
   readonly onFlushError?: (toolId: string, error: unknown) => void;
   /** Callback fired when a demotion check fails (replaces empty catch). */

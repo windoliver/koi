@@ -3,7 +3,7 @@
  *
  * Extracted from tui-app to keep the orchestrator lean.
  * Registers shortcuts: Ctrl+P (palette), Ctrl+R (refresh),
- * Ctrl+O (browser), q (quit), Esc (back/close).
+ * Ctrl+O (browser), Ctrl+G (forge), q (quit), Esc (back/close).
  */
 
 import type { TuiStore } from "../state/store.js";
@@ -25,6 +25,7 @@ export interface KeyboardCallbacks {
   readonly consentDeny: () => void;
   readonly consentDetails: () => void;
   readonly closeConsent: () => void;
+  readonly toggleForge: () => void;
 }
 
 /**
@@ -59,6 +60,12 @@ export function createKeyboardHandler(
       return true;
     }
 
+    // Ctrl+G — toggle forge view
+    if (sequence === "\x07") {
+      callbacks.toggleForge();
+      return true;
+    }
+
     // Escape — context-dependent back/close
     if (sequence === "\x1b") {
       if (view === "palette") {
@@ -83,6 +90,10 @@ export function createKeyboardHandler(
       }
       if (view === "consent") {
         callbacks.closeConsent();
+        return true;
+      }
+      if (view === "forge") {
+        callbacks.toggleForge();
         return true;
       }
     }

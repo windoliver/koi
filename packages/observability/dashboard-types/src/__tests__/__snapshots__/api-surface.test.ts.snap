@@ -263,7 +263,77 @@ type DataSourceDashboardEvent = {
     readonly healthy: boolean;
     readonly timestamp: number;
 };
-type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent | DataSourceDashboardEvent;
+type ForgeDashboardEvent = {
+    readonly kind: "forge";
+    readonly subKind: "brick_forged";
+    readonly brickId: string;
+    readonly name: string;
+    readonly origin: "crystallize";
+    readonly ngramKey: string;
+    readonly occurrences: number;
+    readonly score: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "brick_demand_forged";
+    readonly brickId: string;
+    readonly name: string;
+    readonly triggerId: string;
+    readonly triggerKind: string;
+    readonly confidence: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "brick_deprecated";
+    readonly brickId: string;
+    readonly reason: string;
+    readonly fitnessOriginal: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "brick_promoted";
+    readonly brickId: string;
+    readonly fitnessOriginal: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "brick_quarantined";
+    readonly brickId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "demand_detected";
+    readonly signalId: string;
+    readonly triggerKind: string;
+    readonly confidence: number;
+    readonly suggestedBrickKind: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "crystallize_candidate";
+    readonly ngramKey: string;
+    readonly occurrences: number;
+    readonly suggestedName: string;
+    readonly score: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "forge";
+    readonly subKind: "fitness_flushed";
+    readonly brickId: string;
+    readonly successRate: number;
+    readonly sampleCount: number;
+    readonly timestamp: number;
+};
+type MonitorDashboardEvent = {
+    readonly kind: "monitor";
+    readonly subKind: "anomaly_detected";
+    readonly anomalyKind: string;
+    readonly agentId: string;
+    readonly sessionId: string;
+    readonly detail: Readonly<Record<string, unknown>>;
+    readonly timestamp: number;
+};
+type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent | DataSourceDashboardEvent | ForgeDashboardEvent | MonitorDashboardEvent;
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 interface DashboardEventBatch {
     readonly events: readonly DashboardEvent[];
@@ -272,28 +342,19 @@ interface DashboardEventBatch {
 }
 /** Type guard for DashboardEvent. Validates kind + subKind presence. */
 declare function isDashboardEvent(value: unknown): value is DashboardEvent;
-/** Type guard for agent domain events. */
-declare function isAgentEvent(event: DashboardEvent): event is AgentDashboardEvent;
-/** Type guard for skill domain events. */
-declare function isSkillEvent(event: DashboardEvent): event is SkillDashboardEvent;
-/** Type guard for channel domain events. */
-declare function isChannelEvent(event: DashboardEvent): event is ChannelDashboardEvent;
-/** Type guard for system domain events. */
-declare function isSystemEvent(event: DashboardEvent): event is SystemDashboardEvent;
-/** Type guard for nexus domain events. */
-declare function isNexusEvent(event: DashboardEvent): event is NexusDashboardEvent;
-/** Type guard for gateway domain events. */
-declare function isGatewayEvent(event: DashboardEvent): event is GatewayDashboardEvent;
-/** Type guard for temporal domain events. */
-declare function isTemporalEvent(event: DashboardEvent): event is TemporalDashboardEvent;
-/** Type guard for scheduler domain events. */
-declare function isSchedulerEvent(event: DashboardEvent): event is SchedulerDashboardEvent;
-/** Type guard for task board domain events. */
-declare function isTaskBoardEvent(event: DashboardEvent): event is TaskBoardDashboardEvent;
-/** Type guard for harness domain events. */
-declare function isHarnessEvent(event: DashboardEvent): event is HarnessDashboardEvent;
-/** Type guard for data source domain events. */
-declare function isDataSourceEvent(event: DashboardEvent): event is DataSourceDashboardEvent;
+declare const isAgentEvent: (event: DashboardEvent) => event is AgentDashboardEvent;
+declare const isSkillEvent: (event: DashboardEvent) => event is SkillDashboardEvent;
+declare const isChannelEvent: (event: DashboardEvent) => event is ChannelDashboardEvent;
+declare const isSystemEvent: (event: DashboardEvent) => event is SystemDashboardEvent;
+declare const isNexusEvent: (event: DashboardEvent) => event is NexusDashboardEvent;
+declare const isGatewayEvent: (event: DashboardEvent) => event is GatewayDashboardEvent;
+declare const isTemporalEvent: (event: DashboardEvent) => event is TemporalDashboardEvent;
+declare const isSchedulerEvent: (event: DashboardEvent) => event is SchedulerDashboardEvent;
+declare const isTaskBoardEvent: (event: DashboardEvent) => event is TaskBoardDashboardEvent;
+declare const isHarnessEvent: (event: DashboardEvent) => event is HarnessDashboardEvent;
+declare const isDataSourceEvent: (event: DashboardEvent) => event is DataSourceDashboardEvent;
+declare const isForgeEvent: (event: DashboardEvent) => event is ForgeDashboardEvent;
+declare const isMonitorEvent: (event: DashboardEvent) => event is MonitorDashboardEvent;
 
 /**
  * DashboardDataSource — adapter interface for dashboard data access.
@@ -963,6 +1024,6 @@ type AdminRoutes = typeof ADMIN_ROUTES;
  */
 declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
 
-export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DispatchAgentRequest, type DispatchAgentResponse, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeDashboardEvent, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isMonitorEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
 "
 `;

@@ -24,6 +24,7 @@ import type {
 import { DEFAULT_FORGE_BUDGET, RETRYABLE_DEFAULTS } from "@koi/core";
 import type { CrystallizeHandle } from "@koi/crystallize";
 import { createAutoForgeMiddleware, createCrystallizeMiddleware } from "@koi/crystallize";
+import type { DashboardEvent } from "@koi/dashboard-types";
 import type { ForgeDemandHandle } from "@koi/forge-demand";
 import { createForgeDemandDetector } from "@koi/forge-demand";
 import type { ExaptationHandle } from "@koi/forge-exaptation";
@@ -38,6 +39,7 @@ import {
   createForgeRepairStrategy,
 } from "@koi/middleware-feedback-loop";
 import type { PolicyCacheHandle, PolicyDecision } from "@koi/middleware-policy-cache";
+import { createForgeEventBridge } from "./forge-event-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Forge-specific retry budgets (Issue #937: 4A)
@@ -127,6 +129,11 @@ export interface ForgeMiddlewareStackConfig {
         toolId: string,
       ) => ((input: Readonly<Record<string, unknown>>) => PolicyDecision) | null)
     | undefined;
+  /**
+   * Optional SSE event sink for self-improvement observability.
+   * When provided, forge callbacks are bridged to ForgeDashboardEvent SSE events.
+   */
+  readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +176,21 @@ export function createForgeMiddlewareStack(
   const clock = config.clock ?? Date.now;
   const snapshotStore = config.snapshotStore ?? createNoOpSnapshotStore();
 
+  // Optional dashboard event bridge for self-improvement observability.
+  // The bridge batches events via microtask; the per-event sink is fanned out here.
+  const bridge =
+    config.onDashboardEvent !== undefined
+      ? createForgeEventBridge({
+          onDashboardEvent: (events) => {
+            for (const event of events) {
+              config.onDashboardEvent?.(event);
+            }
+          },
+          onBridgeError: config.onError,
+          clock,
+        })
+      : undefined;
+
   // 1. Feedback-loop middleware — validate, retry with forge repair, health tracking (priority 450)
   //    Uses lazy repair strategy to break circular dependency: the forge repair strategy
   //    needs the FeedbackLoopHandle (for health snapshots), which is returned by the factory.
@@ -186,7 +208,11 @@ export function createForgeMiddlewareStack(
       snapshotStore,
       clock,
       onQuarantine: (brickId: string): void => {
+        bridge?.onQuarantine(brickId);
         config.onError?.(new Error(`Forge tool quarantined: ${brickId}`));
+      },
+      onFitnessFlush: (brickId: string, successRate: number, sampleCount: number): void => {
+        bridge?.onFitnessFlush(brickId, successRate, sampleCount);
       },
       onFlushError: (toolId: string, error: unknown): void => {
         config.onError?.(new Error(`Forge health flush failed for ${toolId}`, { cause: error }));
@@ -201,8 +227,8 @@ export function createForgeMiddlewareStack(
   const crystallizeHandle = createCrystallizeMiddleware({
     readTraces: config.readTraces,
     clock,
-    onCandidatesDetected: () => {
-      // auto-forge middleware consumes candidates via handle
+    onCandidatesDetected: (candidates) => {
+      bridge?.onCandidatesDetected(candidates);
     },
   });
 
@@ -210,8 +236,8 @@ export function createForgeMiddlewareStack(
   const demandHandle = createForgeDemandDetector({
     budget: DEFAULT_FORGE_BUDGET,
     clock,
-    onDemand: () => {
-      // auto-forge middleware consumes signals via handle
+    onDemand: (signal) => {
+      bridge?.onDemand(signal);
     },
   });
 
@@ -231,6 +257,9 @@ export function createForgeMiddlewareStack(
     ...(config.maxSynthesesPerSession !== undefined
       ? { maxSynthesesPerSession: config.maxSynthesesPerSession }
       : {}),
+    ...(bridge !== undefined
+      ? { onForged: bridge.onForged, onDemandForged: bridge.onDemandForged }
+      : {}),
     clock,
   });
 
@@ -240,7 +269,17 @@ export function createForgeMiddlewareStack(
   // 6. Optimizer — sweep on session end (priority 990)
   //    When policyCacheHandle is provided and no explicit onPolicyPromotion callback,
   //    auto-wire the promotion → cache registration loop.
-  const policyPromotion = resolvePolicyPromotion(config);
+  const basePolicyPromotion = resolvePolicyPromotion(config);
+  // Wrap promotion callback to also emit dashboard events when bridge is active
+  const policyPromotion =
+    bridge !== undefined && basePolicyPromotion !== undefined
+      ? (brickId: string, result: OptimizationResult): void => {
+          basePolicyPromotion(brickId, result);
+          bridge.onPolicyPromotion(brickId, result);
+        }
+      : bridge !== undefined
+        ? bridge.onPolicyPromotion
+        : basePolicyPromotion;
   const optimizer = createOptimizerMiddleware({
     store: config.forgeStore,
     clock,

@@ -6,9 +6,14 @@
  */
 
 import type { ChatMessage } from "@koi/dashboard-client";
-import type { DashboardAgentSummary } from "@koi/dashboard-types";
-import { isAgentEvent } from "@koi/dashboard-types";
+import type { DashboardAgentSummary, ForgeDashboardEvent } from "@koi/dashboard-types";
+import { isAgentEvent, isForgeEvent, isMonitorEvent } from "@koi/dashboard-types";
+import type { TuiBrickSummary } from "./types.js";
 import { MAX_SESSION_MESSAGES, type TuiAction, type TuiState } from "./types.js";
+
+const MAX_FORGE_EVENTS = 200;
+const MAX_MONITOR_EVENTS = 50;
+const MAX_FORGE_SPARKLINE_POINTS = 50;
 
 /** Listener callback for state changes. */
 export type StateListener = (state: TuiState) => void;
@@ -188,6 +193,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "apply_event_batch": {
       const { batch } = action;
       let updatedAgents: readonly DashboardAgentSummary[] | null = null;
+      const forgeEvents: ForgeDashboardEvent[] = [];
 
       // Gap detection: warn if sequence numbers are not contiguous
       const expectedSeq = state.lastEventSeq + 1;
@@ -197,12 +203,36 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         if (isAgentEvent(event)) {
           updatedAgents = state.agents;
         }
+        if (isForgeEvent(event)) {
+          forgeEvents.push(event);
+        }
+      }
+
+      // Apply forge events inline if any were found
+      const forgeState = forgeEvents.length > 0 ? applyForgeBatch(state, forgeEvents) : {};
+
+      // Apply monitor events
+      let monitorState = {};
+      for (const event of batch.events) {
+        if (isMonitorEvent(event)) {
+          const combined = [
+            ...((monitorState as { readonly monitorEvents?: readonly (typeof event)[] })
+              .monitorEvents ?? state.monitorEvents),
+            event,
+          ];
+          monitorState = {
+            monitorEvents:
+              combined.length > MAX_MONITOR_EVENTS ? combined.slice(-MAX_MONITOR_EVENTS) : combined,
+          };
+        }
       }
 
       return {
         ...state,
         lastEventSeq: batch.seq,
         ...(updatedAgents !== null ? { agents: updatedAgents } : {}),
+        ...forgeState,
+        ...monitorState,
         // Surface gap as an error for UI to handle
         ...(hasGap
           ? {
@@ -215,7 +245,76 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
           : {}),
       };
     }
+
+    case "apply_forge_batch":
+      return { ...state, ...applyForgeBatch(state, action.events) };
+
+    case "apply_monitor_event": {
+      const combined = [...state.monitorEvents, action.event];
+      return {
+        ...state,
+        monitorEvents:
+          combined.length > MAX_MONITOR_EVENTS ? combined.slice(-MAX_MONITOR_EVENTS) : combined,
+      };
+    }
   }
+}
+
+/** Apply a batch of forge events to the TUI state. */
+function applyForgeBatch(
+  state: TuiState,
+  events: readonly ForgeDashboardEvent[],
+): Partial<TuiState> {
+  if (events.length === 0) return {};
+
+  const bricks: Record<string, TuiBrickSummary> = { ...state.forgeBricks };
+  const sparklines: Record<string, readonly number[]> = { ...state.forgeSparklines };
+
+  for (const event of events) {
+    switch (event.subKind) {
+      case "brick_forged":
+      case "brick_demand_forged":
+        bricks[event.brickId] = { name: event.name, status: "active", fitness: 0 };
+        break;
+      case "brick_deprecated":
+        if (bricks[event.brickId] !== undefined) {
+          bricks[event.brickId] = {
+            ...bricks[event.brickId]!,
+            status: "deprecated",
+            fitness: event.fitnessOriginal,
+          };
+        }
+        break;
+      case "brick_promoted":
+        if (bricks[event.brickId] !== undefined) {
+          bricks[event.brickId] = {
+            ...bricks[event.brickId]!,
+            status: "promoted",
+            fitness: event.fitnessOriginal,
+          };
+        }
+        break;
+      case "brick_quarantined":
+        if (bricks[event.brickId] !== undefined) {
+          bricks[event.brickId] = { ...bricks[event.brickId]!, status: "quarantined" };
+        }
+        break;
+      case "fitness_flushed": {
+        if (bricks[event.brickId] !== undefined) {
+          bricks[event.brickId] = { ...bricks[event.brickId]!, fitness: event.successRate };
+        }
+        const prev = sparklines[event.brickId] ?? [];
+        sparklines[event.brickId] = [...prev, event.successRate].slice(-MAX_FORGE_SPARKLINE_POINTS);
+        break;
+      }
+    }
+  }
+
+  const combined = [...state.forgeEvents, ...events];
+  const forgeEvents =
+    combined.length > MAX_FORGE_EVENTS ? combined.slice(-MAX_FORGE_EVENTS) : combined;
+
+  return { forgeEvents, forgeBricks: bricks, forgeSparklines: sparklines };
 }
 
 /** Create an immutable store with dispatch + subscribe. */

@@ -12,6 +12,7 @@ import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineInput } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
+import type { DashboardEvent } from "@koi/dashboard-types";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
@@ -274,6 +275,10 @@ export async function runUp(flags: UpFlags): Promise<void> {
     dataSourceTools,
   });
 
+  // Late-binding event sink for forge/monitor SSE events
+  // let justified: mutable ref set when adminBridge is created
+  let emitDashboardEvent: ((event: DashboardEvent) => void) | undefined;
+
   const { runtime } = await timer.time("runtime", () =>
     createForgeConfiguredKoi({
       manifest,
@@ -282,6 +287,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       providers: composed.providers,
       extensions,
       ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
+      onDashboardEvent: (event: DashboardEvent) => {
+        emitDashboardEvent?.(event);
+      },
     }),
   );
   output.spinner.stop(undefined);
@@ -327,6 +335,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       ...(forgeBootstrap !== undefined
         ? { forgeStore: forgeBootstrap.store, forgeRuntime: forgeBootstrap.runtime }
         : {}),
+      onDashboardEvent: (event) => {
+        emitDashboardEvent?.(event as DashboardEvent);
+      },
     });
     adminDispatcher = dispatcher;
 
@@ -353,6 +364,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
         ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
         : {}),
     });
+
+    // Wire forge/monitor SSE event sink now that the bridge exists
+    emitDashboardEvent = adminBridge.emitEvent;
 
     const routingChatHandler = createChatRouter({
       primaryHandler: chatBridge.handler,

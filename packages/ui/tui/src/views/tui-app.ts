@@ -855,6 +855,13 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     consentDeny,
     consentDetails,
     closeConsent,
+    toggleForge: () => {
+      const currentView = store.getState().view;
+      store.dispatch({
+        kind: "set_view",
+        view: currentView === "forge" ? "agents" : "forge",
+      });
+    },
   });
 
   // ─── Public API for console input ──────────────────────────────────

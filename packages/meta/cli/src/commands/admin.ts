@@ -15,6 +15,7 @@
 import type { EngineEvent, EngineInput } from "@koi/core";
 import type { DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
+import type { DashboardEvent } from "@koi/dashboard-types";
 import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
@@ -355,6 +356,10 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   // let justified: captured from embedded runtime for chat dispatch
   let runtimeRef: { readonly run: (input: EngineInput) => AsyncIterable<EngineEvent> } | undefined;
 
+  // Late-binding event sink for forge/monitor SSE events
+  // let justified: mutable ref set when admin bridge is created
+  let emitDashboardEvent: ((event: DashboardEvent) => void) | undefined;
+
   // Create chat bridge for agent chat endpoint in standalone mode
   // let justified: conditionally set, read for dashboard handler
   let chatBridge: AgentChatBridge | undefined;
@@ -381,6 +386,9 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
         ],
         providers: [...(autonomous?.providers ?? [])],
         extensions: [],
+        onDashboardEvent: (event: DashboardEvent) => {
+          emitDashboardEvent?.(event);
+        },
       });
 
       embeddedOrch = resolveOrchestrationFromAgent({
@@ -420,6 +428,9 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     verbose: flags.verbose,
     additionalMiddleware: [...(autonomous?.middleware ?? [])],
     additionalProviders: [...(autonomous?.providers ?? [])],
+    onDashboardEvent: (event) => {
+      emitDashboardEvent?.(event as DashboardEvent);
+    },
   });
 
   const bridge = createAdminPanelBridge({
@@ -440,6 +451,9 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
         }
       : {}),
   });
+
+  // Wire forge/monitor SSE event sink now that the bridge exists
+  emitDashboardEvent = bridge.emitEvent;
 
   // Wire chat dispatch if embedded runtime is available
   if (chatBridge !== undefined && runtimeRef !== undefined) {

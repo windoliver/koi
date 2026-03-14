@@ -2,7 +2,7 @@
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
 "import * as _koi_core from '@koi/core';
-import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ForgeScope, Result, TurnTrace, KoiError, StoreChangeNotifier, SnapshotStore, ComponentProvider, KoiMiddleware, SandboxExecutor as SandboxExecutor$1, SandboxAdapter, SkillComponent } from '@koi/core';
+import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ForgeScope, Result, TurnTrace, KoiError, StoreChangeNotifier, SnapshotStore, ComponentProvider, KoiMiddleware, SandboxExecutor as SandboxExecutor$1, SandboxAdapter, SkillComponent, ForgeDemandSignal, BrickArtifact } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, CounterExample, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from '@koi/core';
 import { SandboxExecutor, DependencyConfig, ForgeConfig, ForgePipeline } from '@koi/forge-types';
 export { BrickContentInput, CreateProvenanceOptions, DEFAULT_REVERIFICATION_CONFIG, DependencyConfig, DriftCheckResult, DriftChecker, ForgeAgentInput, ForgeAgentInputWithBricks, ForgeAgentInputWithManifest, ForgeChannelInput, ForgeConfig, ForgeContext, ForgeError, ForgeInput, ForgeInputBase, ForgeMiddlewareInput, ForgePipeline, ForgeResult, ForgeResultMetadata, ForgeSkillInput, ForgeToolInput, ForgeVerifier, FormatConfig, GovernanceResult, ManifestParseResult, ManifestParser, MutationPressureConfig, PromoteChange, PromoteResult, ResolveStageReport, ReverificationConfig, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, ScopePromotionConfig, SelfTestStageReport, StageReport, TestFailure, TrustStageReport, VerificationConfig, VerificationReport, VerificationStage, VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig } from '@koi/forge-types';
@@ -17,8 +17,9 @@ import { ExaptationHandle } from '@koi/forge-exaptation';
 export { DEFAULT_EXAPTATION_CONFIG, ExaptationConfig, ExaptationHandle, ExaptationThresholds, computeExaptationConfidence, computeJaccardDistance, createDefaultExaptationConfig, createExaptationDetector, detectPurposeDrift, tokenize, truncateToWords, validateExaptationConfig } from '@koi/forge-exaptation';
 import { OptimizationResult } from '@koi/forge-optimizer';
 export { BrickOptimizer, OptimizationConfig, OptimizationResult, OptimizerMiddlewareConfig, computeFitnessScore, createBrickOptimizer, createOptimizerMiddleware } from '@koi/forge-optimizer';
-import { CrystallizeHandle } from '@koi/crystallize';
+import { CrystallizeHandle, CrystallizationCandidate, CrystallizedToolDescriptor } from '@koi/crystallize';
 export { AutoForgeConfig, AutoForgeVerifier, AutoForgeVerifierResult, CrystallizationCandidate, CrystallizeConfig, CrystallizeHandle, ToolNgram, ToolStep, createAutoForgeMiddleware, createCrystallizeMiddleware } from '@koi/crystallize';
+import { DashboardEvent, ForgeDashboardEvent, MonitorDashboardEvent } from '@koi/dashboard-types';
 import { KoiRuntime } from '@koi/engine';
 import { ConfiguredKoiOptions } from '@koi/starter';
 import { FeedbackLoopHandle } from '@koi/middleware-feedback-loop';
@@ -85,6 +86,8 @@ interface CreateFullForgeSystemConfig {
     readonly notifier?: StoreChangeNotifier | undefined;
     /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
     readonly snapshotStore?: SnapshotStore | undefined;
+    /** Optional SSE event sink for self-improvement observability. */
+    readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
 }
 interface FullForgeSystem {
     readonly runtime: ForgeRuntimeInstance;
@@ -140,6 +143,13 @@ interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
     readonly readTraces?: (() => Promise<Result<readonly TurnTrace[], KoiError>>) | undefined;
     /** Optional SnapshotStore for quarantine/demotion event recording. */
     readonly forgeSnapshotStore?: SnapshotStore | undefined;
+    /**
+     * Optional SSE event sink for self-improvement observability.
+     * When provided, forge events are batched and delivered via this callback.
+     * Monitor anomaly events are also routed through this sink individually
+     * by wrapping the agent-monitor's onAnomaly callback.
+     */
+    readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
 }
 /** Return type for createForgeConfiguredKoi — runtime + optional forge system handle. */
 interface ForgeConfiguredKoiResult {
@@ -236,6 +246,11 @@ interface ForgeMiddlewareStackConfig {
      * Without this, promotions are logged but NOT registered (avoids no-op entries).
      */
     readonly compilePolicyExecutor?: ((implementation: string, toolId: string) => ((input: Readonly<Record<string, unknown>>) => PolicyDecision) | null) | undefined;
+    /**
+     * Optional SSE event sink for self-improvement observability.
+     * When provided, forge callbacks are bridged to ForgeDashboardEvent SSE events.
+     */
+    readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
 }
 interface ForgeMiddlewareStackResult {
     readonly middlewares: readonly KoiMiddleware[];
@@ -388,6 +403,62 @@ declare function createForgeBootstrap(config: ForgeBootstrapConfig): ForgeBootst
  */
 declare const FORGE_COMPANION_SKILL: SkillComponent;
 
-export { type CreateForgeRuntimeOptions, type CreateFullForgeSystemConfig, FORGE_COMPANION_SKILL, type ForgeBootstrapConfig, type ForgeBootstrapResult, type ForgeConfiguredKoiOptions, type ForgeConfiguredKoiResult, type ForgeDelegation, type ForgeDelegationConfig, type ForgeMiddlewareStackConfig, type ForgeMiddlewareStackResult, type ForgeRuntimeInstance, type ForgeToolsProviderConfig, type FullForgeSystem, type PromotionCallbackConfig, createForgeBootstrap, createForgeConfiguredKoi, createForgeDelegation, createForgeMiddlewareStack, createForgePipeline, createForgeRuntime, createForgeToolsProvider, createFullForgeSystem, createPromotionCallback };
+/**
+ * Forge event bridge — translates forge middleware callbacks into
+ * ForgeDashboardEvent SSE events with microtask-batched delivery.
+ *
+ * Pure mapping layer: no side effects beyond calling onDashboardEvent.
+ * Error handling: every callback is wrapped in try/catch to prevent
+ * bridge failures from disrupting forge middleware execution.
+ */
+
+interface ForgeEventBridgeConfig {
+    readonly onDashboardEvent: (events: readonly ForgeDashboardEvent[]) => void;
+    readonly onBridgeError?: ((error: unknown) => void) | undefined;
+    readonly clock?: (() => number) | undefined;
+}
+interface ForgeEventBridge {
+    readonly onCandidatesDetected: (candidates: readonly CrystallizationCandidate[]) => void;
+    readonly onDemand: (signal: ForgeDemandSignal) => void;
+    readonly onForged: (descriptor: CrystallizedToolDescriptor) => void;
+    readonly onDemandForged: (signal: ForgeDemandSignal, brick: BrickArtifact) => void;
+    readonly onPolicyPromotion: (brickId: string, result: OptimizationResult) => void;
+    readonly onQuarantine: (brickId: string) => void;
+    readonly onFitnessFlush: (brickId: string, successRate: number, sampleCount: number) => void;
+}
+declare function createForgeEventBridge(config: ForgeEventBridgeConfig): ForgeEventBridge;
+/**
+ * Anomaly signal shape — matches @koi/agent-monitor's AnomalySignal base fields.
+ * Declared here to avoid importing from @koi/agent-monitor (which is not a dependency).
+ */
+interface AnomalySignalLike {
+    readonly kind: string;
+    readonly agentId: string;
+    readonly sessionId: string;
+    readonly timestamp: number;
+    readonly turnIndex: number;
+    readonly [key: string]: unknown;
+}
+interface MonitorEventBridgeConfig {
+    readonly onDashboardEvent: (event: MonitorDashboardEvent) => void;
+    readonly onBridgeError?: ((error: unknown) => void) | undefined;
+    readonly clock?: (() => number) | undefined;
+}
+/**
+ * Wraps an existing onAnomaly callback to also emit MonitorDashboardEvent.
+ * Use at the BuiltinCallbacks wiring site:
+ *
+ * \`\`\`ts
+ * const monitorBridge = createMonitorEventBridge({ onDashboardEvent: sink });
+ * createDefaultRegistry({
+ *   "agent-monitor": { onAnomaly: monitorBridge.wrapOnAnomaly(existingHandler) },
+ * });
+ * \`\`\`
+ */
+declare function createMonitorEventBridge(config: MonitorEventBridgeConfig): {
+    readonly wrapOnAnomaly: <T extends AnomalySignalLike>(existing?: ((signal: T) => void | Promise<void>) | undefined) => (signal: T) => void;
+};
+
+export { type AnomalySignalLike, type CreateForgeRuntimeOptions, type CreateFullForgeSystemConfig, FORGE_COMPANION_SKILL, type ForgeBootstrapConfig, type ForgeBootstrapResult, type ForgeConfiguredKoiOptions, type ForgeConfiguredKoiResult, type ForgeDelegation, type ForgeDelegationConfig, type ForgeEventBridge, type ForgeEventBridgeConfig, type ForgeMiddlewareStackConfig, type ForgeMiddlewareStackResult, type ForgeRuntimeInstance, type ForgeToolsProviderConfig, type FullForgeSystem, type MonitorEventBridgeConfig, type PromotionCallbackConfig, createForgeBootstrap, createForgeConfiguredKoi, createForgeDelegation, createForgeEventBridge, createForgeMiddlewareStack, createForgePipeline, createForgeRuntime, createForgeToolsProvider, createFullForgeSystem, createMonitorEventBridge, createPromotionCallback };
 "
 `;

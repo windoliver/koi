@@ -9,6 +9,8 @@ import type {
   DashboardAgentSummary,
   DashboardEventBatch,
   DataSourceSummary,
+  ForgeDashboardEvent,
+  MonitorDashboardEvent,
 } from "@koi/dashboard-types";
 
 // Re-export shared types from dashboard-client
@@ -39,6 +41,7 @@ export type TuiView =
   | "consent"
   | "console"
   | "datasources"
+  | "forge"
   | "palette"
   | "sessions"
   | "sourcedetail";
@@ -55,6 +58,13 @@ export interface SessionPickerEntry {
   readonly agentName: string;
   readonly connectedAt: number;
   readonly messageCount: number;
+}
+
+/** Forge brick summary for TUI display. */
+export interface TuiBrickSummary {
+  readonly name: string;
+  readonly status: string;
+  readonly fitness: number;
 }
 
 /** Complete TUI application state. Immutable — new object on every update. */
@@ -84,6 +94,14 @@ export interface TuiState {
   readonly sourceDetailLoading: boolean;
   /** Pending consent data sources awaiting user approval. */
   readonly pendingConsent: readonly DataSourceSummary[] | undefined;
+  /** Forge self-improvement events buffer. */
+  readonly forgeEvents: readonly ForgeDashboardEvent[];
+  /** Monitor anomaly events buffer. */
+  readonly monitorEvents: readonly MonitorDashboardEvent[];
+  /** Forge brick summaries by ID. */
+  readonly forgeBricks: Readonly<Record<string, TuiBrickSummary>>;
+  /** Forge sparkline data by brick ID. */
+  readonly forgeSparklines: Readonly<Record<string, readonly number[]>>;
 }
 
 /** Create initial TUI state for a given admin URL. */
@@ -105,6 +123,10 @@ export function createInitialState(adminUrl: string): TuiState {
     sourceDetail: null,
     sourceDetailLoading: false,
     pendingConsent: undefined,
+    forgeEvents: [],
+    monitorEvents: [],
+    forgeBricks: {},
+    forgeSparklines: {},
   };
 }
 
@@ -172,7 +194,15 @@ export type TuiAction =
       readonly kind: "set_pending_consent";
       readonly sources: readonly DataSourceSummary[];
     }
-  | { readonly kind: "clear_pending_consent" };
+  | { readonly kind: "clear_pending_consent" }
+  | {
+      readonly kind: "apply_forge_batch";
+      readonly events: readonly ForgeDashboardEvent[];
+    }
+  | {
+      readonly kind: "apply_monitor_event";
+      readonly event: MonitorDashboardEvent;
+    };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;

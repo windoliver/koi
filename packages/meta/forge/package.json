@@ -21,6 +21,7 @@
     "@koi/agent-spawner": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/crystallize": "workspace:*",
+    "@koi/dashboard-types": "workspace:*",
     "@koi/edit-match": "workspace:*",
     "@koi/forge-demand": "workspace:*",
     "@koi/forge-exaptation": "workspace:*",

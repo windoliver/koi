@@ -444,6 +444,11 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       fs.latencyBuffer.length = 0;
       fs.latencyTotalCount = 0;
       fs.dirty = false;
+
+      // Notify observers of the successful fitness flush
+      const sampleCount = merged.successCount + merged.errorCount;
+      const successRate = sampleCount > 0 ? merged.successCount / sampleCount : 0;
+      config.onFitnessFlush?.(resolvedBrickId, successRate, sampleCount);
     } catch (e: unknown) {
       // Restore dirty so next check can retry (deltas still in cumulative counters)
       fs.dirty = true;

@@ -26,6 +26,7 @@ import type {
   ToolPolicy,
   TurnTrace,
 } from "@koi/core";
+import type { DashboardEvent } from "@koi/dashboard-types";
 import type { KoiRuntime } from "@koi/engine";
 import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import type { ForgeConfig } from "@koi/forge-types";
@@ -37,6 +38,7 @@ import { createConfiguredKoi, createMiddlewareRegistry } from "@koi/starter";
 import { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 import type { FullForgeSystem } from "./create-full-forge-system.js";
 import { createFullForgeSystem } from "./create-full-forge-system.js";
+import { createMonitorEventBridge } from "./forge-event-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -68,6 +70,13 @@ export interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
   readonly readTraces?: (() => Promise<Result<readonly TurnTrace[], KoiError>>) | undefined;
   /** Optional SnapshotStore for quarantine/demotion event recording. */
   readonly forgeSnapshotStore?: SnapshotStore | undefined;
+  /**
+   * Optional SSE event sink for self-improvement observability.
+   * When provided, forge events are batched and delivered via this callback.
+   * Monitor anomaly events are also routed through this sink individually
+   * by wrapping the agent-monitor's onAnomaly callback.
+   */
+  readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
 }
 
 /** Return type for createForgeConfiguredKoi — runtime + optional forge system handle. */
@@ -281,6 +290,7 @@ export async function createForgeConfiguredKoi(
     },
     ...(options.forgeSigner !== undefined ? { signer: options.forgeSigner } : {}),
     snapshotStore: options.forgeSnapshotStore,
+    onDashboardEvent: options.onDashboardEvent,
   });
 
   // Build forge tools provider (5 tools + companion skill, created at attach time)
@@ -313,6 +323,27 @@ export async function createForgeConfiguredKoi(
     ...(options.providers ?? []),
   ];
 
+  // Wire monitor event bridge into agent-monitor callbacks when dashboard events are enabled.
+  // This wraps the existing onAnomaly callback so monitor anomalies also emit MonitorDashboardEvent
+  // through the same onDashboardEvent sink as forge events.
+  const monitorCallbacks =
+    options.onDashboardEvent !== undefined
+      ? (() => {
+          const monitorBridge = createMonitorEventBridge({
+            onDashboardEvent: (event) => {
+              options.onDashboardEvent?.(event);
+            },
+          });
+          const existingCbs = options.callbacks?.["agent-monitor"] ?? options.callbacks?.monitor;
+          return {
+            "agent-monitor": {
+              ...existingCbs,
+              onAnomaly: monitorBridge.wrapOnAnomaly(existingCbs?.onAnomaly),
+            },
+          };
+        })()
+      : {};
+
   const runtime = await createConfiguredKoi({
     ...options,
     manifest: effectiveManifest,
@@ -320,6 +351,7 @@ export async function createForgeConfiguredKoi(
     providers: mergedProviders,
     forge: forgeSystem.runtime,
     ...(skipManifestResolve ? { middlewareRegistry: EMPTY_MIDDLEWARE_REGISTRY } : {}),
+    callbacks: { ...options.callbacks, ...monitorCallbacks },
   });
 
   const providerInstance = forgeSystem.provider as ForgeComponentProviderInstance;

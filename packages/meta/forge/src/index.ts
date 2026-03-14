@@ -377,5 +377,12 @@ export { createFullForgeSystem } from "./create-full-forge-system.js";
 export type { ForgeBootstrapConfig, ForgeBootstrapResult } from "./forge-bootstrap.js";
 export { createForgeBootstrap } from "./forge-bootstrap.js";
 export { FORGE_COMPANION_SKILL } from "./forge-companion-skill.js";
+export type {
+  AnomalySignalLike,
+  ForgeEventBridge,
+  ForgeEventBridgeConfig,
+  MonitorEventBridgeConfig,
+} from "./forge-event-bridge.js";
+export { createForgeEventBridge, createMonitorEventBridge } from "./forge-event-bridge.js";
 export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";
 export { createForgeRuntime } from "./forge-runtime.js";

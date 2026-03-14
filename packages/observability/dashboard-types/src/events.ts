@@ -270,6 +270,94 @@ export type DataSourceDashboardEvent =
     };
 
 // ---------------------------------------------------------------------------
+// Forge events (self-improvement observability)
+// ---------------------------------------------------------------------------
+
+export type ForgeDashboardEvent =
+  | {
+      readonly kind: "forge";
+      readonly subKind: "brick_forged";
+      readonly brickId: string;
+      readonly name: string;
+      readonly origin: "crystallize";
+      readonly ngramKey: string;
+      readonly occurrences: number;
+      readonly score: number;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "forge";
+      readonly subKind: "brick_demand_forged";
+      readonly brickId: string;
+      readonly name: string;
+      readonly triggerId: string;
+      readonly triggerKind: string;
+      readonly confidence: number;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "forge";
+      readonly subKind: "brick_deprecated";
+      readonly brickId: string;
+      readonly reason: string;
+      readonly fitnessOriginal: number;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "forge";
+      readonly subKind: "brick_promoted";
+      readonly brickId: string;
+      readonly fitnessOriginal: number;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "forge";
+      readonly subKind: "brick_quarantined";
+      readonly brickId: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "forge";
+      readonly subKind: "demand_detected";
+      readonly signalId: string;
+      readonly triggerKind: string;
+      readonly confidence: number;
+      readonly suggestedBrickKind: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "forge";
+      readonly subKind: "crystallize_candidate";
+      readonly ngramKey: string;
+      readonly occurrences: number;
+      readonly suggestedName: string;
+      readonly score: number;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "forge";
+      readonly subKind: "fitness_flushed";
+      readonly brickId: string;
+      readonly successRate: number;
+      readonly sampleCount: number;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
+// Monitor events (agent anomaly detection)
+// ---------------------------------------------------------------------------
+
+export type MonitorDashboardEvent = {
+  readonly kind: "monitor";
+  readonly subKind: "anomaly_detected";
+  readonly anomalyKind: string;
+  readonly agentId: string;
+  readonly sessionId: string;
+  readonly detail: Readonly<Record<string, unknown>>;
+  readonly timestamp: number;
+};
+
+// ---------------------------------------------------------------------------
 // Union + batch envelope
 // ---------------------------------------------------------------------------
 
@@ -284,7 +372,9 @@ export type DashboardEvent =
   | SchedulerDashboardEvent
   | TaskBoardDashboardEvent
   | HarnessDashboardEvent
-  | DataSourceDashboardEvent;
+  | DataSourceDashboardEvent
+  | ForgeDashboardEvent
+  | MonitorDashboardEvent;
 
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 export interface DashboardEventBatch {
@@ -297,7 +387,7 @@ export interface DashboardEventBatch {
 // Type guards
 // ---------------------------------------------------------------------------
 
-const VALID_KINDS = new Set([
+const VALID_KINDS_ARRAY = [
   "agent",
   "skill",
   "channel",
@@ -309,7 +399,11 @@ const VALID_KINDS = new Set([
   "taskboard",
   "harness",
   "datasource",
-]);
+  "forge",
+  "monitor",
+] as const;
+
+const VALID_KINDS = new Set<string>(VALID_KINDS_ARRAY);
 
 /** Type guard for DashboardEvent. Validates kind + subKind presence. */
 export function isDashboardEvent(value: unknown): value is DashboardEvent {
@@ -323,57 +417,37 @@ export function isDashboardEvent(value: unknown): value is DashboardEvent {
   );
 }
 
-/** Type guard for agent domain events. */
-export function isAgentEvent(event: DashboardEvent): event is AgentDashboardEvent {
-  return event.kind === "agent";
+/** Factory for domain-scoped type guards. */
+function createKindGuard<K extends DashboardEvent["kind"]>(
+  kind: K,
+): (event: DashboardEvent) => event is Extract<DashboardEvent, { readonly kind: K }> {
+  return (event: DashboardEvent): event is Extract<DashboardEvent, { readonly kind: K }> =>
+    event.kind === kind;
 }
 
-/** Type guard for skill domain events. */
-export function isSkillEvent(event: DashboardEvent): event is SkillDashboardEvent {
-  return event.kind === "skill";
-}
-
-/** Type guard for channel domain events. */
-export function isChannelEvent(event: DashboardEvent): event is ChannelDashboardEvent {
-  return event.kind === "channel";
-}
-
-/** Type guard for system domain events. */
-export function isSystemEvent(event: DashboardEvent): event is SystemDashboardEvent {
-  return event.kind === "system";
-}
-
-/** Type guard for nexus domain events. */
-export function isNexusEvent(event: DashboardEvent): event is NexusDashboardEvent {
-  return event.kind === "nexus";
-}
-
-/** Type guard for gateway domain events. */
-export function isGatewayEvent(event: DashboardEvent): event is GatewayDashboardEvent {
-  return event.kind === "gateway";
-}
-
-/** Type guard for temporal domain events. */
-export function isTemporalEvent(event: DashboardEvent): event is TemporalDashboardEvent {
-  return event.kind === "temporal";
-}
-
-/** Type guard for scheduler domain events. */
-export function isSchedulerEvent(event: DashboardEvent): event is SchedulerDashboardEvent {
-  return event.kind === "scheduler";
-}
-
-/** Type guard for task board domain events. */
-export function isTaskBoardEvent(event: DashboardEvent): event is TaskBoardDashboardEvent {
-  return event.kind === "taskboard";
-}
-
-/** Type guard for harness domain events. */
-export function isHarnessEvent(event: DashboardEvent): event is HarnessDashboardEvent {
-  return event.kind === "harness";
-}
-
-/** Type guard for data source domain events. */
-export function isDataSourceEvent(event: DashboardEvent): event is DataSourceDashboardEvent {
-  return event.kind === "datasource";
-}
+export const isAgentEvent: (event: DashboardEvent) => event is AgentDashboardEvent =
+  createKindGuard("agent");
+export const isSkillEvent: (event: DashboardEvent) => event is SkillDashboardEvent =
+  createKindGuard("skill");
+export const isChannelEvent: (event: DashboardEvent) => event is ChannelDashboardEvent =
+  createKindGuard("channel");
+export const isSystemEvent: (event: DashboardEvent) => event is SystemDashboardEvent =
+  createKindGuard("system");
+export const isNexusEvent: (event: DashboardEvent) => event is NexusDashboardEvent =
+  createKindGuard("nexus");
+export const isGatewayEvent: (event: DashboardEvent) => event is GatewayDashboardEvent =
+  createKindGuard("gateway");
+export const isTemporalEvent: (event: DashboardEvent) => event is TemporalDashboardEvent =
+  createKindGuard("temporal");
+export const isSchedulerEvent: (event: DashboardEvent) => event is SchedulerDashboardEvent =
+  createKindGuard("scheduler");
+export const isTaskBoardEvent: (event: DashboardEvent) => event is TaskBoardDashboardEvent =
+  createKindGuard("taskboard");
+export const isHarnessEvent: (event: DashboardEvent) => event is HarnessDashboardEvent =
+  createKindGuard("harness");
+export const isDataSourceEvent: (event: DashboardEvent) => event is DataSourceDashboardEvent =
+  createKindGuard("datasource");
+export const isForgeEvent: (event: DashboardEvent) => event is ForgeDashboardEvent =
+  createKindGuard("forge");
+export const isMonitorEvent: (event: DashboardEvent) => event is MonitorDashboardEvent =
+  createKindGuard("monitor");
