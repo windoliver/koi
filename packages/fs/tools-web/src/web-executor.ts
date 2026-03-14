@@ -7,7 +7,8 @@
 
 import type { KoiError, Result } from "@koi/core";
 import type { SearchProvider, WebSearchOptions, WebSearchResult } from "@koi/search-provider";
-import { isBlockedUrl } from "./url-policy.js";
+import type { DnsResolverFn } from "./url-policy.js";
+import { isBlockedUrl, resolveAndValidateUrl } from "./url-policy.js";
 
 // ---------------------------------------------------------------------------
 // Fetch
@@ -59,6 +60,8 @@ export interface WebExecutor {
 export interface WebExecutorConfig {
   /** Custom fetch function (default: globalThis.fetch). */
   readonly fetchFn?: typeof globalThis.fetch | undefined;
+  /** Custom DNS resolver for pre-flight SSRF validation (default: Bun.dns.resolve). */
+  readonly dnsResolver?: DnsResolverFn | undefined;
   /**
    * @deprecated Use `searchProvider` instead. Kept for backward compatibility.
    * Custom search backend function. If both `searchProvider` and `searchFn` are set,
@@ -165,6 +168,7 @@ function createCache<T>(
  */
 export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
   const fetchFn = config.fetchFn ?? globalThis.fetch;
+  const dnsResolver = config.dnsResolver;
   const maxBodyChars = config.maxBodyChars ?? DEFAULT_MAX_BODY_CHARS;
   const defaultTimeout = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const cacheTtlMs = config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
@@ -218,6 +222,20 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
         }
 
+        // DNS rebinding mitigation: resolve and validate the initial URL's IP
+        const dnsResult = await resolveAndValidateUrl(url, dnsResolver);
+        if (dnsResult.blocked) {
+          clearTimeout(timer);
+          return {
+            ok: false,
+            error: {
+              code: "PERMISSION",
+              message: `DNS validation blocked: ${dnsResult.reason}`,
+              retryable: false,
+            },
+          };
+        }
+
         // Manual redirect loop: validate each redirect URL BEFORE following it
         let currentUrl = url;
         let currentMethod = method;
@@ -242,7 +260,7 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
           // Resolve relative redirect URLs against the current URL
           const nextUrl = new URL(location, currentUrl).href;
 
-          // Validate redirect target BEFORE following it
+          // Validate redirect target BEFORE following it (string-based first pass)
           if (isBlockedUrl(nextUrl)) {
             clearTimeout(timer);
             return {
@@ -250,6 +268,20 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
               error: {
                 code: "PERMISSION",
                 message: `Redirect to private/internal URL blocked: ${nextUrl}`,
+                retryable: false,
+              },
+            };
+          }
+
+          // DNS rebinding mitigation: resolve and validate redirect target's IP
+          const redirectDns = await resolveAndValidateUrl(nextUrl, dnsResolver);
+          if (redirectDns.blocked) {
+            clearTimeout(timer);
+            return {
+              ok: false,
+              error: {
+                code: "PERMISSION",
+                message: `Redirect DNS validation blocked: ${redirectDns.reason}`,
                 retryable: false,
               },
             };

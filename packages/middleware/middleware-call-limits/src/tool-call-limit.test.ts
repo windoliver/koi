@@ -297,6 +297,39 @@ describe("createToolCallLimitMiddleware", () => {
     expect(tools).toContain("read");
   });
 
+  test("concurrent calls respect global limit without TOCTOU race", async () => {
+    const store = createInMemoryCallLimitStore();
+    const mw = createToolCallLimitMiddleware({ globalLimit: 4, store });
+    const wrap = getWrapToolCall(mw);
+    const spy = createSpyToolHandler();
+    const ctx = createTurnCtx("s1");
+
+    // Fire 5 concurrent tool calls against a limit of 4
+    const results = await Promise.all([
+      wrap(ctx, toolReq("a"), spy.handler),
+      wrap(ctx, toolReq("b"), spy.handler),
+      wrap(ctx, toolReq("c"), spy.handler),
+      wrap(ctx, toolReq("d"), spy.handler),
+      wrap(ctx, toolReq("e"), spy.handler),
+    ]);
+
+    const blocked = results.filter(
+      (r) => typeof r.output === "string" && r.output.includes("blocked"),
+    );
+    const allowed = results.filter(
+      (r) => typeof r.output !== "string" || !r.output.includes("blocked"),
+    );
+
+    // Exactly 4 allowed, 1 blocked
+    expect(allowed.length).toBe(4);
+    expect(blocked.length).toBe(1);
+    expect(spy.calls.length).toBe(4);
+
+    // Global counter should be exactly at the limit
+    const globalCount = await store.get("tool:s1:__global__");
+    expect(globalCount).toBe(4);
+  });
+
   describe("describeCapabilities", () => {
     test("is defined on the middleware", () => {
       const mw = createToolCallLimitMiddleware({ globalLimit: 5 });

@@ -175,26 +175,15 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
     expect(findDoneOutput(events1)).toBeDefined();
     expect(requestApproval).toHaveBeenCalledTimes(1);
 
-    await runtime.dispose();
-
-    // Second run — same middleware instance, same tool+input — cache hit
-    const adapter2 = createLoopAdapter({ modelCall, maxTurns: 5 });
-    const runtime2 = await createKoi({
-      manifest: testManifest(),
-      adapter: adapter2,
-      middleware: [permissionsMw],
-      providers: [createToolProvider([DEPLOY_TOOL])],
-      loopDetection: false,
-    });
-
+    // Second run — same runtime (same agentId), same tool+input — cache hit
     const events2 = await collectEvents(
-      runtime2.run({ kind: "text", text: "Deploy to staging again" }),
+      runtime.run({ kind: "text", text: "Deploy to staging again" }),
     );
     expect(findDoneOutput(events2)).toBeDefined();
-    // Should NOT have prompted again — cache hit
+    // Should NOT have prompted again — cache hit (same agent, same user, same tool+input)
     expect(requestApproval).toHaveBeenCalledTimes(1);
 
-    await runtime2.dispose();
+    await runtime.dispose();
   });
 
   test("different userId causes cache miss through full stack", async () => {
@@ -299,35 +288,26 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
       cache: { ttlMs: 0 },
     });
 
-    const adapter1 = createLoopAdapter({ modelCall, maxTurns: 5 });
-    const runtime1 = await createKoi({
+    const adapter = createLoopAdapter({ modelCall, maxTurns: 5 });
+    const runtime = await createKoi({
       manifest: testManifest(),
-      adapter: adapter1,
+      adapter,
       middleware: [permissionsMw],
       providers: [createToolProvider([DEPLOY_TOOL])],
       loopDetection: false,
     });
 
-    await collectEvents(runtime1.run({ kind: "text", text: "Deploy" }));
+    await collectEvents(runtime.run({ kind: "text", text: "Deploy" }));
     expect(requestApproval).toHaveBeenCalledTimes(1);
-    await runtime1.dispose();
 
-    // Wait a bit — should still be cached
+    // Wait a bit — should still be cached (ttlMs: 0 means no expiry)
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const adapter2 = createLoopAdapter({ modelCall, maxTurns: 5 });
-    const runtime2 = await createKoi({
-      manifest: testManifest(),
-      adapter: adapter2,
-      middleware: [permissionsMw],
-      providers: [createToolProvider([DEPLOY_TOOL])],
-      loopDetection: false,
-    });
-
-    await collectEvents(runtime2.run({ kind: "text", text: "Deploy" }));
+    // Second run — same runtime (same agentId), same tool+input — cache hit
+    await collectEvents(runtime.run({ kind: "text", text: "Deploy" }));
     // Still cached — no new prompt
     expect(requestApproval).toHaveBeenCalledTimes(1);
-    await runtime2.dispose();
+    await runtime.dispose();
   });
 
   test("different backend instances have independent caches", async () => {
@@ -353,44 +333,35 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
       cache: true,
     });
 
-    // Approve on mwA
-    const adapter1 = createLoopAdapter({ modelCall, maxTurns: 5 });
-    const runtime1 = await createKoi({
+    // Approve on mwA — first run prompts
+    const adapterA = createLoopAdapter({ modelCall, maxTurns: 5 });
+    const runtimeA = await createKoi({
       manifest: testManifest(),
-      adapter: adapter1,
+      adapter: adapterA,
       middleware: [mwA],
       providers: [createToolProvider([DEPLOY_TOOL])],
       loopDetection: false,
     });
-    await collectEvents(runtime1.run({ kind: "text", text: "Deploy" }));
+    await collectEvents(runtimeA.run({ kind: "text", text: "Deploy" }));
     expect(requestApprovalA).toHaveBeenCalledTimes(1);
-    await runtime1.dispose();
 
-    // Cache hit on mwA — no re-prompt
-    const adapter2 = createLoopAdapter({ modelCall, maxTurns: 5 });
-    const runtime2 = await createKoi({
-      manifest: testManifest(),
-      adapter: adapter2,
-      middleware: [mwA],
-      providers: [createToolProvider([DEPLOY_TOOL])],
-      loopDetection: false,
-    });
-    await collectEvents(runtime2.run({ kind: "text", text: "Deploy" }));
+    // Cache hit on mwA — same runtime (same agentId), no re-prompt
+    await collectEvents(runtimeA.run({ kind: "text", text: "Deploy" }));
     expect(requestApprovalA).toHaveBeenCalledTimes(1);
-    await runtime2.dispose();
+    await runtimeA.dispose();
 
     // mwB is a separate middleware instance with different backend — must prompt
-    const adapter3 = createLoopAdapter({ modelCall, maxTurns: 5 });
-    const runtime3 = await createKoi({
+    const adapterB = createLoopAdapter({ modelCall, maxTurns: 5 });
+    const runtimeB = await createKoi({
       manifest: testManifest(),
-      adapter: adapter3,
+      adapter: adapterB,
       middleware: [mwB],
       providers: [createToolProvider([DEPLOY_TOOL])],
       loopDetection: false,
     });
-    await collectEvents(runtime3.run({ kind: "text", text: "Deploy" }));
+    await collectEvents(runtimeB.run({ kind: "text", text: "Deploy" }));
     expect(requestApprovalB).toHaveBeenCalledTimes(1);
-    await runtime3.dispose();
+    await runtimeB.dispose();
   });
 
   test("denied tool throws and middleware chain propagates error", async () => {
@@ -425,6 +396,53 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
     }
 
     await runtime.dispose();
+  });
+
+  test("different agentId causes cache miss (cross-agent isolation)", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const { modelCall } = createMockModelHandler();
+
+    const permissionsMw = createPermissionsMiddleware({
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: [], ask: ["deploy"] },
+      }),
+      approvalHandler,
+      cache: true,
+    });
+
+    // Run as Agent A — prompts for approval
+    const adapter1 = createLoopAdapter({ modelCall, maxTurns: 5 });
+    const runtime1 = await createKoi({
+      manifest: testManifest(),
+      adapter: adapter1,
+      middleware: [permissionsMw],
+      providers: [createToolProvider([DEPLOY_TOOL])],
+      loopDetection: false,
+      userId: "user-x",
+    });
+
+    await collectEvents(runtime1.run({ kind: "text", text: "Deploy" }));
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    await runtime1.dispose();
+
+    // Run as Agent B — same user, same tool, same input, different agentId.
+    // Each createKoi call generates a unique agentId, so this is a new agent.
+    // The approval from Agent A must NOT carry over — cache miss, prompts again.
+    const adapter2 = createLoopAdapter({ modelCall, maxTurns: 5 });
+    const runtime2 = await createKoi({
+      manifest: testManifest(),
+      adapter: adapter2,
+      middleware: [permissionsMw],
+      providers: [createToolProvider([DEPLOY_TOOL])],
+      loopDetection: false,
+      userId: "user-x",
+    });
+
+    await collectEvents(runtime2.run({ kind: "text", text: "Deploy" }));
+    // Must have prompted again — agent boundaries are trust boundaries
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+    await runtime2.dispose();
   });
 
   test("allowed tool bypasses approval entirely through full stack", async () => {

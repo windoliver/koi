@@ -1,6 +1,14 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { SearchProvider } from "@koi/search-provider";
+import type { DnsResolverFn } from "./url-policy.js";
 import { createWebExecutor } from "./web-executor.js";
+
+// ---------------------------------------------------------------------------
+// Shared mock DNS resolver — returns a public IP for all hostnames
+// ---------------------------------------------------------------------------
+
+const PUBLIC_IP = "93.184.216.34"; // example.com's real public IP
+const mockDnsResolver: DnsResolverFn = async (): Promise<readonly string[]> => [PUBLIC_IP];
 
 // ---------------------------------------------------------------------------
 // fetch — basic
@@ -12,7 +20,7 @@ describe("createWebExecutor.fetch", () => {
       async () => new Response("Hello", { status: 200, headers: { "content-type": "text/plain" } }),
     ) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://example.com");
 
     expect(result.ok).toBe(true);
@@ -29,7 +37,7 @@ describe("createWebExecutor.fetch", () => {
       async () => new Response(largeBody, { status: 200 }),
     ) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn, maxBodyChars: 100 });
+    const executor = createWebExecutor({ fetchFn, maxBodyChars: 100, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://example.com");
 
     expect(result.ok).toBe(true);
@@ -44,7 +52,7 @@ describe("createWebExecutor.fetch", () => {
       throw new Error("DNS resolution failed");
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://unreachable.example.com");
 
     expect(result.ok).toBe(false);
@@ -60,7 +68,7 @@ describe("createWebExecutor.fetch", () => {
       throw new Error("The operation was aborted");
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://slow.example.com");
 
     expect(result.ok).toBe(false);
@@ -71,7 +79,7 @@ describe("createWebExecutor.fetch", () => {
 
   test("returns TIMEOUT when signal is pre-aborted", async () => {
     const fetchFn = mock(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
 
     const controller = new AbortController();
     controller.abort();
@@ -92,7 +100,7 @@ describe("createWebExecutor.fetch", () => {
         }),
     ) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://example.com");
 
     expect(result.ok).toBe(true);
@@ -107,7 +115,7 @@ describe("createWebExecutor.fetch", () => {
       async () => new Response("ok", { status: 200 }),
     ) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://example.com/page");
 
     expect(result.ok).toBe(true);
@@ -140,7 +148,7 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
       return new Response("secret", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://evil-redirect.example.com");
 
     expect(result.ok).toBe(false);
@@ -169,7 +177,7 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
       return new Response("", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://evil.example.com");
 
     expect(result.ok).toBe(false);
@@ -193,7 +201,7 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://example.com");
 
     expect(result.ok).toBe(true);
@@ -221,7 +229,7 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
       return new Response("done", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://a.example.com");
 
     expect(result.ok).toBe(true);
@@ -252,7 +260,7 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
       return new Response("secret", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://a.example.com");
 
     expect(result.ok).toBe(false);
@@ -272,7 +280,7 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
       });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://loop.example.com");
 
     expect(result.ok).toBe(false);
@@ -295,7 +303,7 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://example.com/old");
 
     expect(result.ok).toBe(true);
@@ -319,7 +327,7 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://example.com/submit", {
       method: "POST",
       body: "data",
@@ -351,7 +359,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://origin-a.com/start", {
       headers: {
         Authorization: "Bearer secret",
@@ -390,7 +398,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     await executor.fetch("https://example.com/a", {
       headers: { Authorization: "Bearer secret", "X-Custom": "keep" },
     });
@@ -423,7 +431,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
       return new Response("done", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     await executor.fetch("https://a.com/start", {
       headers: { Authorization: "Bearer token", Accept: "text/html" },
     });
@@ -454,7 +462,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     await executor.fetch("https://a.com/", {
       headers: { AUTHORIZATION: "Bearer upper", cookie: "lower=val" },
     });
@@ -477,7 +485,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn });
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
     const result = await executor.fetch("https://a.com/");
 
     // Should succeed without errors when there are no headers to strip
@@ -497,7 +505,7 @@ describe("createWebExecutor.fetch caching", () => {
       return new Response("cached", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000 });
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, dnsResolver: mockDnsResolver });
 
     await executor.fetch("https://example.com");
     await executor.fetch("https://example.com");
@@ -511,7 +519,7 @@ describe("createWebExecutor.fetch caching", () => {
       return new Response("no-cache", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 0 });
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 0, dnsResolver: mockDnsResolver });
 
     await executor.fetch("https://example.com");
     await executor.fetch("https://example.com");
@@ -525,7 +533,7 @@ describe("createWebExecutor.fetch caching", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000 });
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, dnsResolver: mockDnsResolver });
 
     await executor.fetch("https://example.com", { method: "POST" });
     await executor.fetch("https://example.com", { method: "POST" });
@@ -539,7 +547,7 @@ describe("createWebExecutor.fetch caching", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000 });
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, dnsResolver: mockDnsResolver });
 
     await executor.fetch("https://example.com/a");
     await executor.fetch("https://example.com/b");

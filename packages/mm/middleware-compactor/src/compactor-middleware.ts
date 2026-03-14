@@ -99,8 +99,39 @@ export function createCompactorMiddleware(config: CompactorConfig): CompactorMid
     contextWindowSize,
   );
 
+  // Per-message token cache — WeakMap keys on object identity so entries
+  // are automatically GC'd when messages are discarded after compaction.
+  const messageTokenCache = new WeakMap<InboundMessage, number>();
+
+  /**
+   * Estimate total tokens for a message array, using cached per-message
+   * values when available. Uncached messages are estimated individually
+   * and stored for future calls on the same object references.
+   */
+  async function estimateMessagesWithCache(
+    messages: readonly InboundMessage[],
+  ): Promise<number> {
+    let total = 0; // let: accumulator for cached token sum
+    const uncached: readonly InboundMessage[] = messages.filter((msg) => {
+      const cached = messageTokenCache.get(msg);
+      if (cached !== undefined) {
+        total += cached;
+        return false;
+      }
+      return true;
+    });
+
+    for (const msg of uncached) {
+      const estimate = await tokenEstimator.estimateMessages([msg]);
+      messageTokenCache.set(msg, estimate);
+      total += estimate;
+    }
+
+    return total;
+  }
+
   async function updateOccupancyTracking(messages: readonly InboundMessage[]): Promise<void> {
-    const estimated = await tokenEstimator.estimateMessages(messages);
+    const estimated = await estimateMessagesWithCache(messages);
     lastKnownTokenCount = estimated;
     trendTracker.record(estimated);
   }

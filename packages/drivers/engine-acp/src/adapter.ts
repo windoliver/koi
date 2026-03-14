@@ -363,6 +363,14 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
         await routeMessage(msg);
       }
     } catch (error: unknown) {
+      // Emit structured error event so consumers get observability via EngineEvent
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      currentQueue?.push({
+        kind: "custom",
+        type: "engine-acp:receive_loop_error",
+        data: { error: errorMessage },
+      });
+      // Belt-and-suspenders: keep console.warn for environments without event consumers
       console.warn("[engine-acp] Receive loop error:", error);
     } finally {
       // Transport closed — end any active turn

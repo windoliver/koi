@@ -359,3 +359,173 @@ describe("tool health integration", () => {
     expect(snapshotStore.record).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Flush serialization tests (Issue 8A + 11A)
+// ---------------------------------------------------------------------------
+
+describe("flush serialization", () => {
+  test("rapid concurrent flushes — counter is consistent (no race)", async () => {
+    // Configure flush to trigger on every invocation (threshold=1, delta=0)
+    const forgeStore = createMockForgeStore();
+    // let: track the order of concurrent flush calls to detect serialization
+    let concurrentFlushes = 0;
+    let maxConcurrentFlushes = 0;
+
+    const originalUpdate = forgeStore.update;
+    forgeStore.update = mock(async (...args: Parameters<typeof originalUpdate>) => {
+      concurrentFlushes++;
+      if (concurrentFlushes > maxConcurrentFlushes) {
+        maxConcurrentFlushes = concurrentFlushes;
+      }
+      // Simulate async delay to expose race conditions
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      concurrentFlushes--;
+      return originalUpdate(...args);
+    });
+
+    const onFlushError = mock(() => {});
+    const forgeHealth = createForgeHealthConfig({
+      forgeStore,
+      onFlushError,
+      flushThreshold: 1,
+      errorRateDeltaThreshold: 0,
+    });
+
+    const spy = createSpyToolHandler({ output: "ok" });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
+
+    // Fire 5 rapid tool calls without awaiting flush completion between them
+    const promises: Promise<unknown>[] = [];
+    for (let i = 0; i < 5; i++) {
+      promises.push(
+        mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler) ?? Promise.resolve(),
+      );
+    }
+    await Promise.all(promises);
+
+    // Drain the serialized flush chain by awaiting a microtask cycle
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Serialization means max concurrent flushes should be 1
+    expect(maxConcurrentFlushes).toBeLessThanOrEqual(1);
+    // No errors should have been reported
+    expect(onFlushError).not.toHaveBeenCalled();
+  });
+
+  test("interleaved success/failure — circuit breaker opens after 3 consecutive failures", async () => {
+    const forgeStore = createMockForgeStore();
+    // Make every flush fail (flushToolImpl catches and calls onFlushError internally)
+    forgeStore.load = mock(() =>
+      Promise.reject(new Error("store unavailable")),
+    );
+
+    const onFlushError = mock(() => {});
+    const forgeHealth = createForgeHealthConfig({
+      forgeStore,
+      onFlushError,
+      flushThreshold: 1,
+      errorRateDeltaThreshold: 0,
+    });
+
+    const spy = createSpyToolHandler({ output: "ok" });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
+
+    // Trigger 5 tool calls — each will attempt a flush that fails
+    for (let i = 0; i < 5; i++) {
+      await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+    }
+
+    // Drain the flush chain
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // flushToolImpl calls onFlushError for each of the 3 actual flush attempts,
+    // then maybeFlush fires the circuit-breaker-open notification on the 3rd.
+    // Flushes 4 and 5 are skipped by the serialized re-check.
+    // Total: 3 (from flushToolImpl) + 1 (circuit open from maybeFlush) = 4
+    expect(onFlushError).toHaveBeenCalledTimes(4);
+
+    // Verify the last call is the circuit breaker open notification
+    const lastCallArgs = onFlushError.mock.calls[3] as unknown[];
+    expect(lastCallArgs[0]).toBe("forged-tool-1");
+    const circuitError = lastCallArgs[1] as Error;
+    expect(circuitError.message).toContain("circuit breaker open");
+  });
+
+  test("circuit breaker resets on successful flush after failures", async () => {
+    const forgeStore = createMockForgeStore();
+    // let: control whether flush succeeds or fails
+    let shouldFail = true;
+    forgeStore.load = mock(() => {
+      if (shouldFail) {
+        return Promise.reject(new Error("transient failure"));
+      }
+      return Promise.resolve({ ok: true as const, value: {} as never });
+    });
+
+    const onFlushError = mock(() => {});
+    const forgeHealth = createForgeHealthConfig({
+      forgeStore,
+      onFlushError,
+      flushThreshold: 1,
+      errorRateDeltaThreshold: 0,
+    });
+
+    const spy = createSpyToolHandler({ output: "ok" });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
+
+    // Trigger 2 failures (not enough to open circuit)
+    await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+    await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // 2 calls from flushToolImpl's internal error reporting
+    expect(onFlushError).toHaveBeenCalledTimes(2);
+
+    // Now succeed — should reset counter
+    shouldFail = false;
+    await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // No additional error calls
+    expect(onFlushError).toHaveBeenCalledTimes(2);
+
+    // Fail again — circuit should open fresh because counter was reset
+    shouldFail = true;
+    for (let i = 0; i < 4; i++) {
+      await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // 2 initial + 3 new failures (from flushToolImpl) + 1 circuit open (from maybeFlush) = 6
+    expect(onFlushError).toHaveBeenCalledTimes(6);
+  });
+
+  test("onFlushError callback fires with toolId and error on flush failure", async () => {
+    const forgeStore = createMockForgeStore();
+    const flushError = new Error("disk full");
+    forgeStore.load = mock(() => Promise.reject(flushError));
+
+    const onFlushError = mock(() => {});
+    const forgeHealth = createForgeHealthConfig({
+      forgeStore,
+      onFlushError,
+      flushThreshold: 1,
+      errorRateDeltaThreshold: 0,
+    });
+
+    const spy = createSpyToolHandler({ output: "ok" });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
+
+    await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+
+    // Drain the flush chain
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // flushToolImpl reports the error via onFlushError
+    expect(onFlushError).toHaveBeenCalledTimes(1);
+    const args = onFlushError.mock.calls[0] as unknown[];
+    expect(args[0]).toBe("forged-tool-1");
+    expect(args[1]).toBe(flushError);
+  });
+});

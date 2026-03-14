@@ -578,6 +578,49 @@ describe("createCompactorMiddleware", () => {
       const result = mw.describeCapabilities?.(ctx);
       expect(result?.description).toMatch(/K\/turn/);
     });
+
+    test("caches per-message token estimates across repeated calls", async () => {
+      let estimateCallCount = 0;
+      const countingEstimator = {
+        estimateText(text: string): number {
+          return Math.ceil(text.length / 4);
+        },
+        estimateMessages(messages: readonly InboundMessage[]): number {
+          estimateCallCount += messages.length;
+          let total = 0; // let: accumulator
+          for (const msg of messages) {
+            total += 4; // overhead
+            for (const block of msg.content) {
+              if (block.kind === "text") {
+                total += Math.ceil(block.text.length / 4);
+              }
+            }
+          }
+          return total;
+        },
+      };
+
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        contextWindowSize: 200_000,
+        trigger: { messageCount: 100 },
+        tokenEstimator: countingEstimator,
+      });
+
+      const msgA = userMsg("a".repeat(400));
+      const msgB = userMsg("b".repeat(400));
+      const spy = createSpyModelHandler();
+
+      // First call — both messages are uncached, so estimator is called for each
+      await mw.wrapModelCall?.(ctx, { messages: [msgA, msgB] }, spy.handler);
+      const firstCallCount = estimateCallCount;
+      expect(firstCallCount).toBe(2);
+
+      // Second call — same message references, should use cache
+      await mw.wrapModelCall?.(ctx, { messages: [msgA, msgB] }, spy.handler);
+      // estimateCallCount should not increase — all messages were cached
+      expect(estimateCallCount).toBe(firstCallCount);
+    });
   });
 
   describe("soft trigger", () => {

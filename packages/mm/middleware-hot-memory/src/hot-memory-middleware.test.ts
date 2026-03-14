@@ -140,7 +140,7 @@ describe("createHotMemoryMiddleware", () => {
     }
   });
 
-  test("refreshes at correct interval", async () => {
+  test("refreshes at correct interval when store has occurred", async () => {
     let recallCount = 0;
     const memory: MemoryComponent = {
       recall: async () => {
@@ -158,23 +158,62 @@ describe("createHotMemoryMiddleware", () => {
     const messages = [userMsg("hello")];
     const spy = createSpyModelHandler();
 
-    // Turn 0: initial fetch (recallCount = 1) + refresh at turn 0 (but turn++ happens after)
+    // Turn 0: initial fetch (recallCount = 1)
     await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
-    expect(recallCount).toBe(1); // Initial fetch only
+    expect(recallCount).toBe(1);
 
-    // Turns 1-2: no refresh
+    // Notify that a store occurred so the next scheduled refresh will actually recall
+    mw.notifyStoreOccurred();
+
+    // Turns 1-2: no refresh (not at interval boundary)
     await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
     await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
 
     // Wait for any fire-and-forget refreshes
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    // Turn 3 triggers refresh (turnCount=3, 3 % 3 === 0)
+    // Turn 3 triggers refresh (turnCount=3, 3 % 3 === 0) — and store occurred, so recall runs
     await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    // Should have 1 (initial) + 1 (turn 3 refresh) = at least 2
+    // Should have 1 (initial) + 1 (turn 3 refresh after store notification) = 2
     expect(recallCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test("skips recall at refresh interval when no store has occurred", async () => {
+    let recallCount = 0;
+    const memory: MemoryComponent = {
+      recall: async () => {
+        recallCount++;
+        return [createMemoryResult("fact")];
+      },
+      store: async () => {},
+    };
+
+    const mw = createHotMemoryMiddleware({
+      memory,
+      refreshInterval: 3,
+    });
+
+    const messages = [userMsg("hello")];
+    const spy = createSpyModelHandler();
+
+    // Turn 0: initial fetch (recallCount = 1)
+    await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+    expect(recallCount).toBe(1);
+
+    // No store notification — memory unchanged
+
+    // Turns 1-2: no refresh
+    await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+    await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+
+    // Turn 3: refresh interval reached, but no store occurred — recall is skipped
+    await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Only the initial fetch should have happened
+    expect(recallCount).toBe(1);
   });
 
   test("describeCapabilities reports count and budget", async () => {

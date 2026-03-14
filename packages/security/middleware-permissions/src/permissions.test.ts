@@ -441,7 +441,7 @@ describe("approval cache", () => {
     expect(requestApproval).toHaveBeenCalledTimes(2);
   });
 
-  test("different agentId shares approval cache (user-scoped, not agent-scoped)", async () => {
+  test("different agentId causes cache miss (agent boundaries are trust boundaries)", async () => {
     const requestApproval = mock(async () => true);
     const approvalHandler: ApprovalHandler = { requestApproval };
     const askBackend = createPatternPermissionBackend({
@@ -464,9 +464,9 @@ describe("approval cache", () => {
     await mw.wrapToolCall?.(ctxAgent1, makeToolRequest("deploy"), spy.handler);
     expect(requestApproval).toHaveBeenCalledTimes(1);
 
-    // Same user, different agent — cache hit (approvals are user-scoped)
+    // Same user, different agent — cache miss (approvals are agent-scoped)
     await mw.wrapToolCall?.(ctxAgent2, makeToolRequest("deploy"), spy.handler);
-    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(requestApproval).toHaveBeenCalledTimes(2);
   });
 
   test("anonymous userId does not leak to authenticated userId", async () => {

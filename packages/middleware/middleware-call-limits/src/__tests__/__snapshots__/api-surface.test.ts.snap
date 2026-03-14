@@ -9,6 +9,11 @@ import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 /**
  * Call limit types — store interface, exit behaviors, limit info.
  */
+/** Result of an atomic increment-if-below-limit operation. */
+interface IncrementIfBelowResult {
+    readonly allowed: boolean;
+    readonly current: number;
+}
 /**
  * Key-value counter store for tracking call counts.
  * Implementations may be sync (in-memory) or async (network).
@@ -16,7 +21,10 @@ import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 interface CallLimitStore {
     readonly get: (key: string) => number | Promise<number>;
     readonly increment: (key: string) => number | Promise<number>;
+    readonly decrement: (key: string) => number | Promise<number>;
     readonly reset: (key: string) => void | Promise<void>;
+    /** Atomically check current < limit, increment if so. Avoids TOCTOU races. */
+    readonly incrementIfBelow: (key: string, limit: number) => IncrementIfBelowResult | Promise<IncrementIfBelowResult>;
 }
 /** Exit behavior when model call limit is reached. Both throw RATE_LIMIT. */
 type ModelExitBehavior = "end" | "error";
@@ -99,6 +107,6 @@ declare function createInMemoryCallLimitStore(): CallLimitStore;
 
 declare function createToolCallLimitMiddleware(config: ToolCallLimitConfig): KoiMiddleware$1;
 
-export { type CallLimitStore, type LimitReachedInfo, type ModelCallLimitConfig, type ModelExitBehavior, type ToolCallLimitConfig, type ToolExitBehavior, createInMemoryCallLimitStore, createModelCallLimitMiddleware, createToolCallLimitMiddleware, descriptor, validateModelCallLimitConfig, validateToolCallLimitConfig };
+export { type CallLimitStore, type IncrementIfBelowResult, type LimitReachedInfo, type ModelCallLimitConfig, type ModelExitBehavior, type ToolCallLimitConfig, type ToolExitBehavior, createInMemoryCallLimitStore, createModelCallLimitMiddleware, createToolCallLimitMiddleware, descriptor, validateModelCallLimitConfig, validateToolCallLimitConfig };
 "
 `;
