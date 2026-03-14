@@ -13,6 +13,21 @@ exports[`@koi/snapshot-chain-store API surface . has stable type surface 1`] = `
 declare function createInMemorySnapshotChainStore<T>(): SnapshotChainStore<T>;
 
 /**
+ * SQLite-backed SnapshotChainStore<T> — persistent DAG snapshot storage.
+ *
+ * Uses bun:sqlite via @koi/sqlite-utils openDb() for WAL mode and optimized
+ * PRAGMAs. Supports full DAG topology with separate parent tracking,
+ * content-hash deduplication, ancestor walking, forking, and pruning.
+ *
+ * Chain membership is tracked in \`chain_heads\` + node \`chain_id\` columns.
+ * A \`chain_members\` bridge table allows a single node to belong to
+ * multiple chains (as required by fork semantics).
+ */
+
+/** Create a SQLite-backed SnapshotChainStore. */
+declare function createSqliteSnapshotChainStore<T>(dbPath: string): SnapshotChainStore<T>;
+
+/**
  * ThreadStore facade — thin adapter over SnapshotChainStore<ThreadSnapshot>.
  *
  * Maps ThreadId → ChainId (identity), provides idempotent append-and-checkpoint,
@@ -30,6 +45,6 @@ interface CreateThreadStoreConfig {
  */
 declare function createThreadStore(config: CreateThreadStoreConfig): ThreadStore;
 
-export { type CreateThreadStoreConfig, createInMemorySnapshotChainStore, createThreadStore };
+export { type CreateThreadStoreConfig, createInMemorySnapshotChainStore, createSqliteSnapshotChainStore, createThreadStore };
 "
 `;

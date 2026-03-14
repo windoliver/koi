@@ -14,6 +14,15 @@ const VALID_CODES: ReadonlySet<string> = new Set<string>(Object.keys(RETRYABLE_D
 export function extractMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
+  // Handle plain objects with a message property (e.g., KoiError data objects)
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof (error as Record<string, unknown>).message === "string"
+  ) {
+    return (error as Record<string, unknown>).message as string;
+  }
   return String(error);
 }
 
@@ -48,6 +57,19 @@ export function toKoiError(error: unknown): KoiError {
     retryable: false,
     cause: error,
   };
+}
+
+/**
+ * Format a tool execution error into a string suitable for sending back to the model.
+ * Centralizes the error-to-string pattern previously duplicated across engine adapters.
+ *
+ * @param error - The caught error value (unknown).
+ * @param toolId - The tool identifier for context.
+ * @returns A formatted error string: `Tool '{toolId}' failed: {message}`.
+ */
+export function formatToolError(error: unknown, toolId: string): string {
+  const message = extractMessage(error);
+  return `Tool '${toolId}' failed: ${message}`;
 }
 
 /** Log a non-critical error at warn level, then discard. Makes intent explicit. */

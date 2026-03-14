@@ -450,7 +450,7 @@ describe("createSemanticRetryMiddleware", () => {
       const handle = createSemanticRetryMiddleware({ maxRetries: 1 });
       await initSession(handle);
 
-      // First failure: budget 1 → 0, sets abort
+      // First failure: budget for "unknown" class 1 → 0, sets abort
       await expect(
         handle.middleware.wrapModelCall?.(
           mockCtx,
@@ -462,17 +462,18 @@ describe("createSemanticRetryMiddleware", () => {
       expect(handle.getRetryBudget()).toBe(0);
       expect(handle.getRecords()).toHaveLength(1);
 
-      // Second failure after budget exhausted: should be ignored, budget stays 0
+      // Second failure of SAME class after budget exhausted: skipped, budget stays 0
+      // (per-class budgets: different failure classes have independent budgets)
       await expect(
-        handle.middleware.wrapToolCall?.(
+        handle.middleware.wrapModelCall?.(
           mockCtx,
-          baseToolRequest,
-          createFailingToolHandler(new Error("tool-fail-after-budget")),
+          baseRequest,
+          createFailingModelHandler(new Error("fail-2")),
         ),
-      ).rejects.toThrow("tool-fail-after-budget");
+      ).rejects.toThrow();
 
       expect(handle.getRetryBudget()).toBe(0);
-      // No new record added — handleFailure skipped
+      // No new record added — handleFailure skipped for exhausted "unknown" class
       expect(handle.getRecords()).toHaveLength(1);
     });
   });

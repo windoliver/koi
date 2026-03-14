@@ -8,8 +8,10 @@
 import type { JsonObject } from "@koi/core/common";
 import type { Agent, Tool, ToolDescriptor } from "@koi/core/ecs";
 import type { ToolHandler } from "@koi/core/middleware";
+import { formatToolError } from "@koi/errors";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { TSchema } from "@sinclair/typebox";
+import { PARSE_ERROR_KEY } from "./stream-bridge.js";
 
 /** Maximum length for Anthropic API tool names. */
 const MAX_TOOL_NAME_LENGTH = 64;
@@ -70,12 +72,38 @@ export function wrapTool(descriptor: ToolDescriptor, toolCall: ToolHandler): Age
         typeof params === "object" && params !== null && !Array.isArray(params)
           ? (params as JsonObject)
           : {};
-      const response = await toolCall({
-        toolId: descriptor.name,
-        input,
-        metadata: { toolCallId },
-      });
-      return formatToolResult(response.output);
+
+      // Check for deferred parse error from stream-bridge.
+      // Throw BEFORE the defense-in-depth catch so the error propagates to
+      // pi runtime, which converts it to a tool error response for the model.
+      //
+      // This error intentionally bypasses the defense-in-depth catch below.
+      // Pi runtime sends the error message back to the model, which can then
+      // produce valid JSON on the next turn. Semantic-retry's wrapModelCall
+      // on subsequent turns handles the retry flow.
+      const parseErrorMsg = input[PARSE_ERROR_KEY];
+      if (typeof parseErrorMsg === "string") {
+        throw Object.freeze({
+          code: "VALIDATION" as const,
+          message: parseErrorMsg,
+          retryable: false,
+          context: { toolName: descriptor.name },
+        });
+      }
+
+      try {
+        const response = await toolCall({
+          toolId: descriptor.name,
+          input,
+          metadata: { toolCallId },
+        });
+        return formatToolResult(response.output);
+      } catch (error: unknown) {
+        // Defense-in-depth: catch errors that bypass middleware and return a
+        // structured error result instead of letting pi runtime handle it opaquely.
+        const text = formatToolError(error, descriptor.name);
+        return { content: [{ type: "text", text }], details: { error: text } };
+      }
     },
   };
 }
