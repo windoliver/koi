@@ -1,8 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
+import type { KoiError } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { Agent, Tool, ToolDescriptor } from "@koi/core/ecs";
 import type { ToolHandler, ToolRequest, ToolResponse } from "@koi/core/middleware";
-import { createPiTools, sanitizeToolName } from "./tool-bridge.js";
+import { PARSE_ERROR_KEY } from "./stream-bridge.js";
+import { createPiTools, sanitizeToolName, wrapTool } from "./tool-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -215,5 +217,110 @@ describe("createPiTools", () => {
     const params = piTools[0]?.parameters as Record<string, unknown>;
     expect(params?.type).toBe("object");
     expect(params?.properties).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapTool — error handling (defense-in-depth)
+// ---------------------------------------------------------------------------
+
+describe("wrapTool error handling", () => {
+  test("returns formatted error result when toolCall throws a KoiError", async () => {
+    const descriptor = makeToolDescriptor("search", "Search");
+    const koiError: KoiError = {
+      code: "VALIDATION",
+      message: "Invalid query format",
+      retryable: false,
+    };
+    const toolCall: ToolHandler = async () => {
+      throw koiError;
+    };
+
+    const piTool = wrapTool(descriptor, toolCall);
+    const result = await piTool.execute("call-1", { query: "test" });
+
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]?.type).toBe("text");
+    if (result.content[0]?.type === "text") {
+      expect(result.content[0].text).toContain("search");
+      expect(result.content[0].text).toContain("Invalid query format");
+    }
+  });
+
+  test("returns formatted error result when toolCall throws a generic Error", async () => {
+    const descriptor = makeToolDescriptor("write", "Write file");
+    const toolCall: ToolHandler = async () => {
+      throw new Error("ENOENT: no such file or directory");
+    };
+
+    const piTool = wrapTool(descriptor, toolCall);
+    const result = await piTool.execute("call-2", {});
+
+    expect(result.content).toHaveLength(1);
+    if (result.content[0]?.type === "text") {
+      expect(result.content[0].text).toContain("write");
+      expect(result.content[0].text).toContain("ENOENT");
+    }
+  });
+
+  test("returns formatted error result when toolCall throws a non-Error value", async () => {
+    const descriptor = makeToolDescriptor("fetch", "Fetch data");
+    const toolCall: ToolHandler = async () => {
+      throw "connection refused";
+    };
+
+    const piTool = wrapTool(descriptor, toolCall);
+    const result = await piTool.execute("call-3", {});
+
+    expect(result.content).toHaveLength(1);
+    if (result.content[0]?.type === "text") {
+      expect(result.content[0].text).toContain("fetch");
+      expect(result.content[0].text).toContain("connection refused");
+    }
+  });
+
+  test("error result does not throw (does not propagate to pi runtime)", async () => {
+    const descriptor = makeToolDescriptor("crash", "Crash tool");
+    const toolCall: ToolHandler = async () => {
+      throw new Error("boom");
+    };
+
+    const piTool = wrapTool(descriptor, toolCall);
+
+    // Should resolve, not reject
+    const result = await piTool.execute("call-4", {});
+    expect(result).toBeDefined();
+    expect(result.content).toHaveLength(1);
+  });
+
+  test("error result includes error details in details field", async () => {
+    const descriptor = makeToolDescriptor("broken", "Broken tool");
+    const toolCall: ToolHandler = async () => {
+      throw new Error("something went wrong");
+    };
+
+    const piTool = wrapTool(descriptor, toolCall);
+    const result = await piTool.execute("call-5", {});
+
+    expect(result.details).toBeDefined();
+    const details = result.details as { readonly error: string };
+    expect(details.error).toContain("something went wrong");
+  });
+
+  test("deferred parse error throws VALIDATION to pi runtime (bypasses defense-in-depth)", async () => {
+    const descriptor = makeToolDescriptor("search", "Search");
+    const toolCall: ToolHandler = async () => ({ output: "should not reach" });
+
+    const piTool = wrapTool(descriptor, toolCall);
+    // Simulate stream-bridge's deferred parse error marker in arguments
+    const poisonedInput = {
+      [PARSE_ERROR_KEY]: "Tool 'search' received malformed JSON: Unexpected token",
+    };
+
+    // Should throw (propagate to pi runtime), NOT be caught by defense-in-depth
+    await expect(piTool.execute("call-6", poisonedInput)).rejects.toMatchObject({
+      code: "VALIDATION",
+      message: expect.stringContaining("malformed JSON"),
+    });
   });
 });

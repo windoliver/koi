@@ -136,6 +136,7 @@ function makeFlags(overrides: Partial<ServeFlags> = {}): ServeFlags {
     admin: false,
     adminPort: undefined,
     temporalUrl: undefined,
+    logFormat: "text" as const,
     ...overrides,
   };
 }

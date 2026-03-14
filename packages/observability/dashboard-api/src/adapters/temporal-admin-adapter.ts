@@ -251,7 +251,7 @@ function mapExecutionToSummary(exec: TemporalWorkflowExecutionLike): WorkflowSum
  */
 function inferEntityType(desc: TemporalWorkflowExecutionLike): "copilot" | "worker" | undefined {
   const attrs = desc.searchAttributes;
-  const agentType = attrs["KoiAgentType"] ?? attrs["agentType"];
+  const agentType = attrs.KoiAgentType ?? attrs.agentType;
   if (agentType === "copilot" || agentType === "worker") return agentType;
 
   // Heuristic: workflow type containing "worker" suggests worker agent

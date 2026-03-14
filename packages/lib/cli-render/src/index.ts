@@ -24,6 +24,7 @@ export {
   isColorEnabled,
   type StreamCapabilities,
 } from "./detect.js";
+export { createSafeReplacer } from "./json-replacer.js";
 export {
   type CliOutput,
   type CliOutputOptions,

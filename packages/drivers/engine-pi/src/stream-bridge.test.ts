@@ -382,7 +382,7 @@ describe("createBridgeStreamFn", () => {
     }
   });
 
-  test("handles malformed JSON in tool call delta with empty args", async () => {
+  test("handles malformed JSON in tool call delta with parse error marker", async () => {
     const mockModelStream: ModelStreamHandler = async function* (_request: ModelRequest) {
       yield { kind: "tool_call_start" as const, toolName: "my_tool", callId: toolCallId("x1") };
       yield { kind: "tool_call_delta" as const, callId: toolCallId("x1"), delta: "not-valid-json" };
@@ -404,7 +404,10 @@ describe("createBridgeStreamFn", () => {
       const toolCalls = doneEvent.message.content.filter((c) => c.type === "toolCall");
       expect(toolCalls).toHaveLength(1);
       if (toolCalls[0]?.type === "toolCall") {
-        expect(toolCalls[0].arguments).toEqual({});
+        // Malformed JSON now produces a parse error marker instead of silent {}
+        const args = toolCalls[0].arguments as Record<string, unknown>;
+        expect(typeof args.__koi_parse_error__).toBe("string");
+        expect(args.__koi_parse_error__).toContain("malformed JSON");
       }
     }
   });

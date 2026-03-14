@@ -233,7 +233,9 @@ describe("non-linear escalation paths", () => {
 
     // Both should be recorded
     expect(handle.getRecords()).toHaveLength(2);
-    expect(handle.getRetryBudget()).toBe(3); // 5 - 2 = 3
+    // Per-class budgets: tool_misuse and unknown each decremented once (5→4).
+    // getRetryBudget() returns min across all classes = 4.
+    expect(handle.getRetryBudget()).toBe(4);
   });
 
   test("model escalation changes ModelRequest.model", async () => {

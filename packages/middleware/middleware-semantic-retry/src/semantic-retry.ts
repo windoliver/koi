@@ -25,6 +25,7 @@ import { createDefaultPromptRewriter } from "./default-rewriter.js";
 import type {
   FailureAnalyzer,
   FailureClass,
+  FailureClassKind,
   FailureContext,
   PromptRewriter,
   RetryAction,
@@ -35,11 +36,22 @@ import type {
   ToolFailureRequest,
 } from "./types.js";
 
+/** All recognized failure class kinds — used to initialize per-class budgets. */
+const FAILURE_CLASS_KINDS: readonly FailureClassKind[] = [
+  "hallucination",
+  "tool_misuse",
+  "scope_drift",
+  "token_exhaustion",
+  "api_error",
+  "validation_failure",
+  "unknown",
+] as const;
+
 /** Per-session mutable state for the semantic-retry middleware. */
 interface SemanticRetrySessionState {
   records: readonly RetryRecord[];
   pendingAction: RetryAction | undefined;
-  budget: number;
+  budgets: Record<FailureClassKind, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,10 +172,16 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
   const analyzer: FailureAnalyzer = config.analyzer ?? createDefaultFailureAnalyzer();
   const rewriter = config.rewriter ?? createDefaultPromptRewriter();
   const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const budgetOverrides = config.budgetOverrides ?? {};
   const maxHistorySize = config.maxHistorySize ?? DEFAULT_MAX_HISTORY_SIZE;
   const analyzerTimeoutMs = config.analyzerTimeoutMs ?? DEFAULT_ANALYZER_TIMEOUT_MS;
   const rewriterTimeoutMs = config.rewriterTimeoutMs ?? DEFAULT_REWRITER_TIMEOUT_MS;
   const onRetry = config.onRetry;
+
+  /** Returns the minimum remaining budget across all failure classes. */
+  function minBudget(budgets: Readonly<Record<FailureClassKind, number>>): number {
+    return Math.min(...Object.values(budgets));
+  }
 
   // Per-session state map — keyed by sessionId to prevent cross-session leaks.
   const sessions = new Map<string, SemanticRetrySessionState>();
@@ -172,8 +190,16 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     return sessions.get(sessionId);
   }
 
+  function createInitialBudgets(): Record<FailureClassKind, number> {
+    const budgets = {} as Record<FailureClassKind, number>;
+    for (const kind of FAILURE_CLASS_KINDS) {
+      budgets[kind] = budgetOverrides[kind] ?? maxRetries;
+    }
+    return budgets;
+  }
+
   function createSessionState(): SemanticRetrySessionState {
-    return { records: [], pendingAction: undefined, budget: maxRetries };
+    return { records: [], pendingAction: undefined, budgets: createInitialBudgets() };
   }
 
   async function handleFailure(
@@ -182,9 +208,6 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     request: ModelRequest | ToolFailureRequest,
     turnIndex: number,
   ): Promise<void> {
-    // Guard: skip analysis once budget is exhausted — prevents negative counter
-    if (state.budget <= 0) return;
-
     const ctx: FailureContext = { error, request, records: state.records, turnIndex };
     const { failureClass, classifyFailed } = await classifyWithFallback(
       analyzer,
@@ -192,13 +215,19 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
       analyzerTimeoutMs,
     );
 
-    state.budget--;
+    const classBudget = state.budgets[failureClass.kind];
+    // Guard: skip once budget for this failure class is exhausted
+    if (classBudget !== undefined && classBudget <= 0) return;
+
+    state.budgets[failureClass.kind] = (classBudget ?? 0) - 1;
+    const remainingBudget = state.budgets[failureClass.kind] ?? 0;
+    const effectiveMax = budgetOverrides[failureClass.kind] ?? maxRetries;
     const action = selectActionWithFallback(
       analyzer,
       failureClass,
       state.records,
-      state.budget,
-      maxRetries,
+      remainingBudget,
+      effectiveMax,
       error,
       classifyFailed,
     );
@@ -228,7 +257,7 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
 
     describeCapabilities: (ctx: TurnContext): CapabilityFragment => {
       const state = getSession(ctx.session.sessionId as string);
-      const currentBudget = state?.budget ?? maxRetries;
+      const currentBudget = state !== undefined ? minBudget(state.budgets) : maxRetries;
       return {
         label: "semantic-retry",
         description: `Semantic retry: ${String(currentBudget)}/${String(maxRetries)} retries remaining, failure analysis + prompt rewrite`,
@@ -322,10 +351,11 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     },
     getRetryBudget: (sessionId?: string) => {
       if (sessionId !== undefined) {
-        return getSession(sessionId)?.budget ?? maxRetries;
+        const state = getSession(sessionId);
+        return state !== undefined ? minBudget(state.budgets) : maxRetries;
       }
       const first = sessions.values().next();
-      return first.done ? maxRetries : first.value.budget;
+      return first.done ? maxRetries : minBudget(first.value.budgets);
     },
     reset: (sessionId?: string) => {
       if (sessionId !== undefined) {
@@ -333,14 +363,14 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         if (state !== undefined) {
           state.records = [];
           state.pendingAction = undefined;
-          state.budget = maxRetries;
+          state.budgets = createInitialBudgets();
         }
         return;
       }
       for (const state of sessions.values()) {
         state.records = [];
         state.pendingAction = undefined;
-        state.budget = maxRetries;
+        state.budgets = createInitialBudgets();
       }
     },
   };

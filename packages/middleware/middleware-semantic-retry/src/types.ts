@@ -133,6 +133,8 @@ export interface SemanticRetryConfig {
   readonly rewriter?: PromptRewriter | undefined;
   /** Maximum number of retries before forced abort (default: 3). */
   readonly maxRetries?: number | undefined;
+  /** Per-failure-class retry budget overrides. Unspecified classes use maxRetries. */
+  readonly budgetOverrides?: Readonly<Partial<Record<FailureClassKind, number>>> | undefined;
   /** Maximum retry records to keep in memory (default: 20). */
   readonly maxHistorySize?: number | undefined;
   /** Timeout for analyzer.classify() in ms (default: 5000). */

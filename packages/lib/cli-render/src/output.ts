@@ -9,6 +9,7 @@
 
 import { createColors } from "./colors.js";
 import { isColorEnabled } from "./detect.js";
+import { createSafeReplacer } from "./json-replacer.js";
 import { createSpinner, type Spinner } from "./spinner.js";
 
 export interface CliOutput {
@@ -33,11 +34,14 @@ export interface CliOutput {
 export interface CliOutputOptions {
   readonly stream?: NodeJS.WritableStream;
   readonly verbose?: boolean;
+  /** Log format: "text" (default) for human-readable, "json" for NDJSON. */
+  readonly logFormat?: "text" | "json" | undefined;
 }
 
 export function createCliOutput(options?: CliOutputOptions): CliOutput {
   const stream = options?.stream ?? process.stderr;
   const verbose = options?.verbose ?? false;
+  const logFormat = options?.logFormat ?? "text";
   const isTTY = "isTTY" in stream && (stream as NodeJS.WriteStream).isTTY === true;
   const colorEnabled = isColorEnabled(isTTY ? (stream as NodeJS.WriteStream) : undefined);
   const c = createColors(colorEnabled);
@@ -49,20 +53,34 @@ export function createCliOutput(options?: CliOutputOptions): CliOutput {
   const managedSpinner: Spinner = {
     start(text: string): void {
       spinnerText = text;
-      spinner.start(text);
+      // JSON mode skips spinner coordination (no TTY formatting needed)
+      if (logFormat !== "json") spinner.start(text);
     },
     stop(finalText?: string): void {
       spinnerText = undefined;
-      spinner.stop(finalText);
+      if (logFormat !== "json") spinner.stop(finalText);
     },
     update(text: string): void {
       spinnerText = text;
-      spinner.update(text);
+      if (logFormat !== "json") spinner.update(text);
     },
     isActive(): boolean {
       return spinnerText !== undefined;
     },
   };
+
+  /**
+   * Write a JSON log line (NDJSON) to the stream.
+   */
+  function writeJson(level: string, msg: string, extra?: Readonly<Record<string, string>>): void {
+    const entry: Record<string, string> = {
+      level,
+      msg,
+      ts: new Date().toISOString(),
+      ...extra,
+    };
+    stream.write(`${JSON.stringify(entry, createSafeReplacer())}\n`);
+  }
 
   /**
    * Write a log line to the stream. On TTY with active spinner, clears the
@@ -77,6 +95,31 @@ export function createCliOutput(options?: CliOutputOptions): CliOutput {
     } else {
       stream.write(`${line}\n`);
     }
+  }
+
+  if (logFormat === "json") {
+    return {
+      info(text: string): void {
+        writeJson("info", text);
+      },
+      warn(text: string): void {
+        writeJson("warn", text);
+      },
+      error(text: string, hint?: string): void {
+        writeJson("error", text, hint !== undefined ? { hint } : undefined);
+      },
+      success(text: string): void {
+        writeJson("info", text);
+      },
+      hint(text: string): void {
+        writeJson("info", text);
+      },
+      debug(text: string): void {
+        if (verbose) writeJson("debug", text);
+      },
+      spinner: managedSpinner,
+      isTTY,
+    };
   }
 
   return {

@@ -381,10 +381,10 @@ describeE2E("e2e: 3-agent ACE pipeline with real LLM calls", () => {
       const structuredPlaybooks = await structuredPlaybookStore.list();
       // May be 0 if LLM pipeline errored — that's acceptable for fire-and-forget
       if (structuredPlaybooks.length > 0) {
-        const sp = structuredPlaybooks[0]!;
-        expect(sp.id).toMatch(/^ace:structured:/);
-        expect(sp.sections.length).toBeGreaterThan(0);
-        expect(sp.sessionCount).toBeGreaterThanOrEqual(1);
+        const sp = structuredPlaybooks[0];
+        expect(sp?.id).toMatch(/^ace:structured:/);
+        expect(sp?.sections.length).toBeGreaterThan(0);
+        expect(sp?.sessionCount).toBeGreaterThanOrEqual(1);
       }
     },
     TIMEOUT_MS * 2,

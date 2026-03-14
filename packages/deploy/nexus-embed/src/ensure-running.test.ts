@@ -117,7 +117,7 @@ describe("ensureNexusRunning", () => {
     // Spawn should have been called once
     expect(calls.length).toBe(1);
     // The command should include serve, host, port, profile
-    const cmd = calls[0]!.cmd;
+    const cmd = calls[0]?.cmd;
     expect(cmd).toContain("serve");
     expect(cmd).toContain("--port");
     expect(cmd).toContain("3000");

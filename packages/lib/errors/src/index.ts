@@ -21,6 +21,7 @@ export {
 export {
   extractCode,
   extractMessage,
+  formatToolError,
   isContextOverflowError,
   isKoiError,
   swallowError,

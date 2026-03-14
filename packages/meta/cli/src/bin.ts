@@ -12,6 +12,7 @@ import {
   isDoctorFlags,
   isInitFlags,
   isLogsFlags,
+  isReplayFlags,
   isServeFlags,
   isStartFlags,
   isStatusFlags,
@@ -115,6 +116,14 @@ const COMMANDS: readonly CommandEntry[] = [
       return runDoctor(f as Parameters<typeof runDoctor>[0]);
     },
     description: "koi doctor [manifest]  Diagnose service health",
+  },
+  {
+    match: isReplayFlags,
+    run: async (f) => {
+      const { runReplay } = await import("./commands/replay.js");
+      return runReplay(f as Parameters<typeof runReplay>[0]);
+    },
+    description: "koi replay             Replay agent state at a specific turn",
   },
   {
     match: isTuiFlags,

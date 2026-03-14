@@ -36,6 +36,7 @@ export interface StartFlags extends BaseFlags {
   readonly nexusUrl: string | undefined;
   readonly admin: boolean;
   readonly temporalUrl: string | undefined;
+  readonly logFormat: "text" | "json";
 }
 
 export interface ServeFlags extends BaseFlags {
@@ -47,6 +48,7 @@ export interface ServeFlags extends BaseFlags {
   readonly admin: boolean;
   readonly adminPort: number | undefined;
   readonly temporalUrl: string | undefined;
+  readonly logFormat: "text" | "json";
 }
 
 export interface AdminFlags extends BaseFlags {
@@ -115,6 +117,15 @@ export interface UpFlags extends BaseFlags {
   readonly timing: boolean;
   readonly nexusUrl: string | undefined;
   readonly temporalUrl: string | undefined;
+  readonly logFormat: "text" | "json";
+}
+
+export interface ReplayFlags extends BaseFlags {
+  readonly command: "replay";
+  readonly session: string | undefined;
+  readonly turn: number | undefined;
+  readonly db: string | undefined;
+  readonly events: boolean;
 }
 
 export interface DemoFlags extends BaseFlags {
@@ -137,6 +148,7 @@ export type CliFlags =
   | TuiFlags
   | DoctorFlags
   | UpFlags
+  | ReplayFlags
   | DemoFlags
   | BaseFlags;
 
@@ -159,6 +171,15 @@ function extractCommand(argv: readonly string[]): {
   }
 
   return { command: first, rest: argv.slice(1) };
+}
+
+/**
+ * Resolves log format from a flag value or the LOG_FORMAT env var.
+ * Returns "text" unless explicitly set to "json".
+ */
+function resolveLogFormat(flagValue: string | undefined): "text" | "json" {
+  const raw = flagValue ?? process.env.LOG_FORMAT;
+  return raw === "json" ? "json" : "text";
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +227,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
       "nexus-url": { type: "string" },
       admin: { type: "boolean", default: false },
       "temporal-url": { type: "string" },
+      "log-format": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -223,6 +245,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     nexusUrl: values["nexus-url"] as string | undefined,
     admin: (values.admin as boolean | undefined) ?? false,
     temporalUrl: values["temporal-url"] as string | undefined,
+    logFormat: resolveLogFormat(values["log-format"] as string | undefined),
   };
 }
 
@@ -237,6 +260,7 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
       admin: { type: "boolean", default: false },
       "admin-port": { type: "string" },
       "temporal-url": { type: "string" },
+      "log-format": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -256,6 +280,7 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
     admin: (values.admin as boolean | undefined) ?? false,
     adminPort: adminPortStr !== undefined ? Number.parseInt(adminPortStr, 10) : undefined,
     temporalUrl: values["temporal-url"] as string | undefined,
+    logFormat: resolveLogFormat(values["log-format"] as string | undefined),
   };
 }
 
@@ -425,6 +450,7 @@ export function parseUpFlags(rest: readonly string[]): UpFlags {
       timing: { type: "boolean", default: false },
       "nexus-url": { type: "string" },
       "temporal-url": { type: "string" },
+      "log-format": { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -442,6 +468,7 @@ export function parseUpFlags(rest: readonly string[]): UpFlags {
     timing: (values.timing as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
     temporalUrl: values["temporal-url"] as string | undefined,
+    logFormat: resolveLogFormat(values["log-format"] as string | undefined),
   };
 }
 
@@ -498,6 +525,31 @@ export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
   };
 }
 
+export function parseReplayFlags(rest: readonly string[]): ReplayFlags {
+  const { values } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      session: { type: "string" },
+      turn: { type: "string" },
+      db: { type: "string" },
+      events: { type: "boolean", default: false },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const turnStr = values.turn as string | undefined;
+
+  return {
+    command: "replay" as const,
+    directory: undefined,
+    session: values.session as string | undefined,
+    turn: turnStr !== undefined ? Number.parseInt(turnStr, 10) : undefined,
+    db: values.db as string | undefined,
+    events: (values.events as boolean | undefined) ?? false,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Type guards
 // ---------------------------------------------------------------------------
@@ -546,6 +598,10 @@ export function isUpFlags(flags: CliFlags): flags is UpFlags {
   return flags.command === "up";
 }
 
+export function isReplayFlags(flags: CliFlags): flags is ReplayFlags {
+  return flags.command === "replay";
+}
+
 export function isDemoFlags(flags: CliFlags): flags is DemoFlags {
   return flags.command === "demo";
 }
@@ -567,6 +623,7 @@ const COMMAND_PARSERS: Readonly<Record<string, (rest: readonly string[]) => CliF
   tui: parseTuiFlags,
   doctor: parseDoctorFlags,
   up: parseUpFlags,
+  replay: parseReplayFlags,
   demo: parseDemoFlags,
 };
 
