@@ -7,7 +7,7 @@ export type {
   AgentLifecycle,
   AgentRole,
   DemoPack,
-  SeededBrickView,
   SeedContext,
+  SeededBrickView,
   SeedResult,
 } from "./types.js";
