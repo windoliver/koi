@@ -180,6 +180,47 @@ describe("concurrent observe — composeModelChain", () => {
     expect(fired).toContain("obs-2");
     expect(fired).toContain("obs-3");
   });
+
+  test("concurrent calls with different contexts do not race (regression)", async () => {
+    const observedContexts: string[] = [];
+
+    const observer: KoiMiddleware = {
+      name: "ctx-observer",
+      phase: "observe",
+      concurrent: true,
+      async wrapModelCall(ctx, _req, next) {
+        observedContexts.push(ctx.session.agentId);
+        return next(_req);
+      },
+      describeCapabilities: () => undefined,
+    };
+
+    const terminal = mock(async () => {
+      // Simulate async work so calls overlap
+      await new Promise((r) => setTimeout(r, 10));
+      return STUB_MODEL_RESPONSE;
+    });
+
+    const chain = composeModelChain([observer], terminal);
+
+    const ctxA = { ...STUB_CTX, session: { ...STUB_CTX.session, agentId: "A" } } as TurnContext;
+    const ctxB = { ...STUB_CTX, session: { ...STUB_CTX.session, agentId: "B" } } as TurnContext;
+
+    // Fire two concurrent calls with different contexts
+    const [resultA, resultB] = await Promise.all([
+      chain(ctxA, modelRequest()),
+      chain(ctxB, modelRequest()),
+    ]);
+
+    expect(resultA.content).toBe("ok");
+    expect(resultB.content).toBe("ok");
+
+    // Allow observers to settle
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Each observer should see its own context — NOT both seeing "B"
+    expect(observedContexts.sort()).toEqual(["A", "B"]);
+  });
 });
 
 describe("concurrent observe — composeToolChain", () => {

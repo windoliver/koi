@@ -225,13 +225,16 @@ export function composeModelChain(
 
   if (concurrentObservers.length === 0) return chain;
 
-  // Wrap the terminal so concurrent observers fire with the post-rewrite request
-  // (after all intercept/resolve middleware have modified it).
-  // let: set before dispatch so the terminal closure can read it
-  let currentCtx: TurnContext;
+  // Per-call ctx binding: avoids shared mutable state that races under concurrent calls.
+  // Each request object maps to its own TurnContext via WeakMap (GC-safe, no leaks).
+  const ctxByRequest = new WeakMap<ModelRequest, TurnContext>();
+
   const observingTerminal: ModelHandler = (req: ModelRequest): Promise<ModelResponse> => {
+    const ctx = ctxByRequest.get(req);
     const result = terminal(req);
-    fireConcurrentModelObservers(concurrentObservers, currentCtx, req, result);
+    if (ctx !== undefined) {
+      fireConcurrentModelObservers(concurrentObservers, ctx, req, result);
+    }
     return result;
   };
 
@@ -248,7 +251,7 @@ export function composeModelChain(
   );
 
   return (ctx: TurnContext, request: ModelRequest): Promise<ModelResponse> => {
-    currentCtx = ctx;
+    ctxByRequest.set(request, ctx);
     return innerChain(ctx, request);
   };
 }
@@ -291,17 +294,20 @@ export function composeToolChain(
     return composeOnion(regularEntries, "wrapToolCall", terminal);
   }
 
-  // let: set before dispatch so the terminal closure can read it
-  let currentCtx: TurnContext;
+  const ctxByRequest = new WeakMap<ToolRequest, TurnContext>();
+
   const observingTerminal: ToolHandler = (req: ToolRequest): Promise<ToolResponse> => {
+    const ctx = ctxByRequest.get(req);
     const result = terminal(req);
-    fireConcurrentToolObservers(concurrentObservers, currentCtx, req, result);
+    if (ctx !== undefined) {
+      fireConcurrentToolObservers(concurrentObservers, ctx, req, result);
+    }
     return result;
   };
 
   const innerChain = composeOnion(regularEntries, "wrapToolCall", observingTerminal);
   return (ctx: TurnContext, request: ToolRequest): Promise<ToolResponse> => {
-    currentCtx = ctx;
+    ctxByRequest.set(request, ctx);
     return innerChain(ctx, request);
   };
 }
