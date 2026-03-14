@@ -217,7 +217,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
         name: s.name,
         protocol: s.protocol,
         status: "approved" as const,
-        source: (manifestNames.has(s.name) ? "manifest" : "env") as "manifest" | "env" | "mcp",
+        source: manifestNames.has(s.name)
+          ? ("manifest" as const)
+          : s.mcpToolName !== undefined
+            ? ("mcp" as const)
+            : ("env" as const),
       }));
     }
   } catch {

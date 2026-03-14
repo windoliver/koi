@@ -300,6 +300,31 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
           listDataSources(): readonly DataSourceSummary[] {
             return options.discoveredSources ?? [];
           },
+          approveDataSource(name: string): Result<void, KoiError> {
+            const source = (options.discoveredSources ?? []).find((s) => s.name === name);
+            if (source === undefined) {
+              return {
+                ok: false,
+                error: {
+                  code: "NOT_FOUND",
+                  message: `Data source "${name}" not found`,
+                  retryable: false,
+                },
+              };
+            }
+            // Sources are pre-approved during koi up consent flow
+            return { ok: true, value: undefined };
+          },
+          getDataSourceSchema(name: string): Readonly<Record<string, unknown>> | undefined {
+            const source = (options.discoveredSources ?? []).find((s) => s.name === name);
+            if (source === undefined) return undefined;
+            return {
+              name: source.name,
+              protocol: source.protocol,
+              status: source.status,
+              source: source.source,
+            };
+          },
         }
       : {}),
   };

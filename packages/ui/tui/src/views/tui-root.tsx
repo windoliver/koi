@@ -30,6 +30,9 @@ export interface TuiRootProps {
   /** Session picker callbacks. */
   readonly onSessionSelect?: ((sessionId: string) => void) | undefined;
   readonly onSessionCancel?: (() => void) | undefined;
+  /** Data source callbacks. */
+  readonly onDataSourceApprove?: ((name: string) => void) | undefined;
+  readonly onDataSourceViewSchema?: ((name: string) => void) | undefined;
 }
 
 /**
@@ -99,6 +102,8 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           <DataSourcesView
             sources={state.dataSources}
             loading={state.dataSourcesLoading}
+            onApprove={props.onDataSourceApprove}
+            onViewSchema={props.onDataSourceViewSchema}
             focused={true}
           />
         )}

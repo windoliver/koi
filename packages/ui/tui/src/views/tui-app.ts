@@ -363,6 +363,27 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         openDataSources().catch(() => {});
         break;
 
+      case "sources-approve": {
+        const sources = store.getState().dataSources;
+        const pending = sources.filter((s) => s.status === "pending");
+        if (pending.length > 0 && pending[0] !== undefined) {
+          approveDataSource(pending[0].name).catch(() => {});
+        } else {
+          addLifecycleMessage("No pending data sources to approve");
+        }
+        break;
+      }
+
+      case "sources-schema": {
+        const allSources = store.getState().dataSources;
+        if (allSources.length > 0 && allSources[0] !== undefined) {
+          viewDataSourceSchema(allSources[0].name).catch(() => {});
+        } else {
+          addLifecycleMessage("No data sources available");
+        }
+        break;
+      }
+
       case "logs":
         showAgentLogs().catch(() => {});
         break;
@@ -591,6 +612,44 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     store.dispatch({ kind: "set_data_sources", sources: [] });
   }
 
+  async function approveDataSource(name: string): Promise<void> {
+    try {
+      const res = await fetch(`${adminUrl}/data-sources/${encodeURIComponent(name)}/approve`, {
+        method: "POST",
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        addLifecycleMessage(`Data source "${name}" approved`);
+        // Refresh the list
+        await openDataSources();
+      } else {
+        addLifecycleMessage(`Failed to approve "${name}"`);
+      }
+    } catch {
+      addLifecycleMessage(`Failed to approve "${name}"`);
+    }
+  }
+
+  async function viewDataSourceSchema(name: string): Promise<void> {
+    try {
+      const res = await fetch(`${adminUrl}/data-sources/${encodeURIComponent(name)}/schema`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { readonly ok?: boolean; readonly data?: unknown };
+        if (data.ok === true && data.data !== undefined) {
+          addLifecycleMessage(`Schema for "${name}":\n${JSON.stringify(data.data, null, 2)}`);
+        } else {
+          addLifecycleMessage(`No schema available for "${name}"`);
+        }
+      } else {
+        addLifecycleMessage(`Schema not available for "${name}"`);
+      }
+    } catch {
+      addLifecycleMessage(`Failed to fetch schema for "${name}"`);
+    }
+  }
+
   // ─── Data fetching ──────────────────────────────────────────────────
 
   async function refreshAgents(): Promise<void> {
@@ -698,6 +757,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         syntaxStyle,
         onSessionSelect: handleSessionSelect,
         onSessionCancel: closeSessions,
+        onDataSourceApprove: (name: string) => {
+          approveDataSource(name).catch(() => {});
+        },
+        onDataSourceViewSchema: (name: string) => {
+          viewDataSourceSchema(name).catch(() => {});
+        },
       }),
     );
   }
