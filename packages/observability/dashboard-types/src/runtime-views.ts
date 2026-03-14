@@ -9,6 +9,7 @@
  */
 
 import type { AgentId, KoiError, ProcessState, Result } from "@koi/core";
+import type { ForgeDashboardEvent } from "./events.js";
 
 // ---------------------------------------------------------------------------
 // Process tree — recursive agent hierarchy
@@ -290,5 +291,6 @@ export interface RuntimeViewDataSource {
   readonly forge?: {
     readonly listBricks: () => Promise<readonly ForgeBrickView[]>;
     readonly getStats: () => ForgeStats | Promise<ForgeStats>;
+    readonly listRecentEvents: () => Promise<readonly ForgeDashboardEvent[]>;
   };
 }

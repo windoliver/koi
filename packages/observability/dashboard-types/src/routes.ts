@@ -57,6 +57,7 @@ export const ADMIN_ROUTES = {
   // ─── Forge Views ───────────────────────────────────────────────
   forgeBricks: { method: "GET", path: "/view/forge/bricks" },
   forgeStats: { method: "GET", path: "/view/forge/stats" },
+  forgeEvents: { method: "GET", path: "/view/forge/events" },
 
   // ─── AG-UI Chat ─────────────────────────────────────────────────
   agentChat: { method: "POST", path: "/agents/:id/chat" },

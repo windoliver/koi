@@ -687,6 +687,7 @@ interface RuntimeViewDataSource {
     readonly forge?: {
         readonly listBricks: () => Promise<readonly ForgeBrickView[]>;
         readonly getStats: () => ForgeStats | Promise<ForgeStats>;
+        readonly listRecentEvents: () => Promise<readonly ForgeDashboardEvent[]>;
     };
 }
 
@@ -1011,6 +1012,10 @@ declare const ADMIN_ROUTES: {
     readonly forgeStats: {
         readonly method: "GET";
         readonly path: "/view/forge/stats";
+    };
+    readonly forgeEvents: {
+        readonly method: "GET";
+        readonly path: "/view/forge/events";
     };
     readonly agentChat: {
         readonly method: "POST";

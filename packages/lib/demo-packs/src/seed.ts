@@ -70,5 +70,8 @@ export async function runSeed(packId: string, ctx: SeedContext): Promise<SeedRes
     counts,
     summary,
     ...(packResult.seededBricks !== undefined ? { seededBricks: packResult.seededBricks } : {}),
+    ...(packResult.seededForgeEvents !== undefined
+      ? { seededForgeEvents: packResult.seededForgeEvents }
+      : {}),
   };
 }

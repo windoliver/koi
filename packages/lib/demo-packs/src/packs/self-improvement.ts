@@ -230,7 +230,10 @@ async function seedSelfImprovement(ctx: SeedContext): Promise<SeedResult> {
     lastUpdatedAt: entry.value.lastUpdatedAt as number,
   }));
 
-  return { ok: allSeeded, counts, summary, seededBricks };
+  // Provide seeded forge events for timeline/demand panel hydration
+  const seededForgeEvents = FORGE_EVENTS.map((entry) => entry.value);
+
+  return { ok: allSeeded, counts, summary, seededBricks, seededForgeEvents };
 }
 
 export const SELF_IMPROVEMENT_PACK: DemoPack = {

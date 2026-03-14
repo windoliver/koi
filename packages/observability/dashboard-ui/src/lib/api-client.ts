@@ -207,6 +207,12 @@ export function fetchForgeBricks(): Promise<readonly ForgeBrickViewResponse[]> {
   return fetchApi<readonly ForgeBrickViewResponse[]>("/view/forge/bricks");
 }
 
+export function fetchForgeEvents(): Promise<readonly import("@koi/dashboard-types").ForgeDashboardEvent[]> {
+  return fetchApi<readonly import("@koi/dashboard-types").ForgeDashboardEvent[]>(
+    "/view/forge/events",
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Command endpoints
 // ---------------------------------------------------------------------------

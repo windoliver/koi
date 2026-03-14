@@ -71,6 +71,7 @@ import { handleSkills } from "./routes/skills.js";
 import {
   handleAgentProcfs,
   handleForgeBricks,
+  handleForgeEvents,
   handleForgeStats,
   handleGatewayTopology,
   handleMiddlewareChain,
@@ -320,6 +321,11 @@ export function createDashboardHandler(
         method: "GET",
         pattern: "/view/forge/stats",
         handler: (req, params) => handleForgeStats(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/forge/events",
+        handler: (req, params) => handleForgeEvents(req, params, runtimeViews),
       },
     );
 

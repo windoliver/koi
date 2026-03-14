@@ -56,6 +56,8 @@ export interface SeedResult {
   readonly summary: readonly string[];
   /** Optional pre-computed brick views for forge view hydration. */
   readonly seededBricks?: readonly SeededBrickView[];
+  /** Optional pre-recorded forge events for timeline/demand panel hydration. */
+  readonly seededForgeEvents?: readonly Readonly<Record<string, unknown>>[];
 }
 
 // ---------------------------------------------------------------------------

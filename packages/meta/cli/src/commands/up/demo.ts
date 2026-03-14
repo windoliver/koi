@@ -10,9 +10,10 @@ import type { ProvisionedAgent } from "./types.js";
 export interface SeedDemoResult {
   readonly prompts: readonly string[];
   readonly seededBricks: readonly import("@koi/demo-packs").SeededBrickView[];
+  readonly seededForgeEvents: readonly Readonly<Record<string, unknown>>[];
 }
 
-const EMPTY_RESULT: SeedDemoResult = { prompts: [], seededBricks: [] };
+const EMPTY_RESULT: SeedDemoResult = { prompts: [], seededBricks: [], seededForgeEvents: [] };
 
 export async function seedDemoPackIfNeeded(
   demoPack: string | undefined,
@@ -35,9 +36,13 @@ export async function seedDemoPackIfNeeded(
       // Re-run seed to get seeded brick views (idempotent writes to Nexus)
       if (nexusClient !== undefined && pack !== undefined) {
         const result = await runSeed(demoPack, { nexusClient, agentName, workspaceRoot, verbose });
-        return { prompts: pack.prompts, seededBricks: result.seededBricks ?? [] };
+        return {
+          prompts: pack.prompts,
+          seededBricks: result.seededBricks ?? [],
+          seededForgeEvents: result.seededForgeEvents ?? [],
+        };
       }
-      return { prompts: pack?.prompts ?? [], seededBricks: [] };
+      return { prompts: pack?.prompts ?? [], seededBricks: [], seededForgeEvents: [] };
     } catch {
       // Marker doesn't exist — proceed with seeding
     }
@@ -73,7 +78,11 @@ export async function seedDemoPackIfNeeded(
       await writeFile(markerPath, demoPack);
     }
 
-    return { prompts: pack.prompts, seededBricks: result.seededBricks ?? [] };
+    return {
+      prompts: pack.prompts,
+      seededBricks: result.seededBricks ?? [],
+      seededForgeEvents: result.seededForgeEvents ?? [],
+    };
   } catch (error: unknown) {
     if (error instanceof Error && error.message.includes("ECONNREFUSED")) {
       const msg = nexusClient !== undefined ? "" : " — is it running?";

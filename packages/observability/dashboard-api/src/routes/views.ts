@@ -75,6 +75,18 @@ export async function handleForgeBricks(
   return jsonResponse(bricks);
 }
 
+export async function handleForgeEvents(
+  _req: Request,
+  _params: RouteParams,
+  runtimeViews: RuntimeViewDataSource,
+): Promise<Response> {
+  if (runtimeViews.forge === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Forge not configured", 501);
+  }
+  const events = await runtimeViews.forge.listRecentEvents();
+  return jsonResponse(events);
+}
+
 export async function handleForgeStats(
   _req: Request,
   _params: RouteParams,

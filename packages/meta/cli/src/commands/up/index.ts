@@ -51,9 +51,11 @@ import { startTemporalEmbed } from "./temporal.js";
 function createForgeViewSource(
   store: import("@koi/core").ForgeStore,
   seededBricks: readonly import("@koi/dashboard-types").ForgeBrickView[],
+  seededForgeEvents: readonly Readonly<Record<string, unknown>>[],
 ): {
   readonly listBricks: () => Promise<readonly import("@koi/dashboard-types").ForgeBrickView[]>;
   readonly getStats: () => Promise<import("@koi/dashboard-types").ForgeStats>;
+  readonly listRecentEvents: () => Promise<readonly import("@koi/dashboard-types").ForgeDashboardEvent[]>;
 } {
   return {
     async listBricks() {
@@ -96,10 +98,18 @@ function createForgeViewSource(
       return {
         totalBricks: seededBricks.length,
         activeBricks: seededBricks.filter((b) => b.status === "active").length,
-        demandSignals: 0,
-        crystallizeCandidates: 0,
+        demandSignals: seededForgeEvents.filter(
+          (e) => (e as Record<string, unknown>).subKind === "demand_detected",
+        ).length,
+        crystallizeCandidates: seededForgeEvents.filter(
+          (e) => (e as Record<string, unknown>).subKind === "crystallize_candidate",
+        ).length,
         timestamp: Date.now(),
       };
+    },
+    async listRecentEvents() {
+      // Seeded forge events are typed as ForgeDashboardEvent
+      return seededForgeEvents as unknown as import("@koi/dashboard-types").ForgeDashboardEvent[];
     },
   };
 }
@@ -466,7 +476,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
         ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
         : {}),
       ...(forgeBootstrap !== undefined
-        ? { forge: createForgeViewSource(forgeBootstrap.store, seedResult.seededBricks) }
+        ? {
+            forge: createForgeViewSource(
+              forgeBootstrap.store,
+              seedResult.seededBricks,
+              seedResult.seededForgeEvents,
+            ),
+          }
         : {}),
     });
 
