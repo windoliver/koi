@@ -50,14 +50,23 @@ ${schemaSection}
 
 ${failureSection}
 
+## Koi Runtime API
+
+The middleware contract uses these types (do NOT deviate):
+- \`req.toolId\` (string) — the tool identifier
+- \`req.input\` (JsonObject) — the tool call input parameters
+- \`phase: "intercept"\` (lowercase) — runs before tool execution
+- Return \`{ output: ... }\` for blocked calls (ToolResponse shape)
+- Call \`next(req)\` to pass through to the actual tool
+
 ## Requirements
 
 1. Export a single function \`createMiddleware\` that returns a \`KoiMiddleware\` object.
 2. The middleware must implement \`wrapToolCall(ctx, req, next)\`.
-3. It should validate tool call parameters BEFORE calling \`next(req)\`.
-4. If validation fails, return an error response WITHOUT calling the tool.
+3. It should validate \`req.input\` BEFORE calling \`next(req)\`.
+4. If validation fails, return \`{ output: { error: true, message: "..." } }\` WITHOUT calling next.
 5. If validation passes, call \`next(req)\` and return the result.
-6. The middleware should ONLY intercept calls to "${ctx.targetToolName}".
+6. The middleware should ONLY intercept calls where \`req.toolId === "${ctx.targetToolName}"\`.
 7. For all other tools, pass through by calling \`next(req)\`.
 
 ## Output Format
@@ -69,12 +78,13 @@ export function createMiddleware() {
   return {
     name: "harness-${ctx.targetToolName}",
     priority: 180,
-    phase: "INTERCEPT" as const,
+    phase: "intercept" as const,
     async wrapToolCall(ctx, req, next) {
-      if (req.toolName !== "${ctx.targetToolName}") return next(req);
-      // ... validation logic based on failure patterns ...
+      if (req.toolId !== "${ctx.targetToolName}") return next(req);
+      // ... validation logic on req.input based on failure patterns ...
       return next(req);
     },
+    describeCapabilities() { return undefined; },
   };
 }
 \`\`\``;

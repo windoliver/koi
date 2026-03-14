@@ -83,6 +83,12 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   const brickIndex = new Map<string, string>();
 
   const register = (entry: PolicyEntry): void => {
+    // Clean up stale reverse index for the previous entry on the same toolId
+    const existing = cache.get(entry.toolId);
+    if (existing !== undefined && existing.brickId !== entry.brickId) {
+      brickIndex.delete(existing.brickId);
+    }
+
     // Evict oldest if at capacity
     if (cache.size >= maxEntries && !cache.has(entry.toolId)) {
       const oldestKey = cache.keys().next().value;

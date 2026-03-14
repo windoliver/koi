@@ -397,7 +397,7 @@ describe("createTemporalAdminAdapter", () => {
         // Only the STARTED event should be in the timeline
         // Workflow task events are internal and filtered out
         expect(result.value.timeline).toHaveLength(1);
-        expect(result.value.timeline![0]!.label).toBe("Workflow started");
+        expect(result.value.timeline?.[0]?.label).toBe("Workflow started");
       }
     });
   });

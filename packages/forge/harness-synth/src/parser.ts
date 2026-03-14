@@ -37,6 +37,16 @@ function validateStructure(code: string): string | null {
   if (!code.includes("wrapToolCall")) {
     return "Missing required hook: wrapToolCall";
   }
+  // Catch common LLM mistakes: wrong Koi API (toolName/args instead of toolId/input)
+  if (code.includes("req.toolName") || code.includes("request.toolName")) {
+    return "Invalid API: use req.toolId (not req.toolName). Koi ToolRequest uses toolId.";
+  }
+  if (code.includes("req.args") || code.includes("request.args")) {
+    return "Invalid API: use req.input (not req.args). Koi ToolRequest uses input.";
+  }
+  if (code.includes('"INTERCEPT"') || code.includes("'INTERCEPT'")) {
+    return 'Invalid API: use phase: "intercept" (lowercase). Koi uses lowercase phases.';
+  }
   return null;
 }
 

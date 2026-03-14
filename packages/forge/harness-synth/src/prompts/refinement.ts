@@ -43,13 +43,21 @@ ${ctx.currentCode}
 
 ${failureSection}
 
+## Koi Runtime API Reminder
+
+- \`req.toolId\` (string) — tool identifier (NOT toolName)
+- \`req.input\` (JsonObject) — input parameters (NOT args)
+- \`phase: "intercept"\` (lowercase)
+- Return \`{ output: { error: true, message: "..." } }\` for blocked calls
+
 ## Instructions
 
 1. Analyze why the current middleware did not prevent these failures.
 2. Modify the code to handle these additional failure patterns.
 3. Do NOT remove existing validation logic — extend it.
 4. Keep the same export shape: \`createMiddleware()\` returning a \`KoiMiddleware\`.
-5. Be concise — only change what's necessary.
+5. Use \`req.toolId\` and \`req.input\` — NOT \`req.toolName\` or \`req.args\`.
+6. Be concise — only change what's necessary.
 
 Return ONLY the updated TypeScript code block.
 

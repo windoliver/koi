@@ -241,18 +241,17 @@ export function createBrickOptimizer(config: OptimizationConfig): BrickOptimizer
   };
 
   const sweep = async (): Promise<readonly OptimizationResult[]> => {
-    // Query for all active crystallized bricks
+    // Query for all active bricks (tools + middleware)
     const searchResult = await config.store.search({
       lifecycle: "active",
-      kind: "tool",
     });
 
     if (!searchResult.ok) return [];
 
     const results: OptimizationResult[] = [];
     for (const brick of searchResult.value) {
-      // Only evaluate crystallized bricks (check provenance source)
-      if (!isCrystallizedBrick(brick)) continue;
+      // Only evaluate crystallized bricks or harness-synth bricks
+      if (!isCrystallizedBrick(brick) && !isHarnessSynthesizedBrick(brick)) continue;
 
       const result = await evaluate(brick.id);
       // justified: mutable local array being constructed, not shared state

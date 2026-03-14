@@ -24,14 +24,15 @@ const VALID_MIDDLEWARE_CODE = `export function createMiddleware() {
   return {
     name: "harness-search",
     priority: 180,
-    phase: "INTERCEPT",
+    phase: "intercept",
     async wrapToolCall(ctx, req, next) {
-      if (req.toolName !== "search") return next(req);
-      if (!req.args?.query || typeof req.args.query !== "string") {
-        return { error: "Query must be a non-empty string" };
+      if (req.toolId !== "search") return next(req);
+      if (!req.input?.query || typeof req.input.query !== "string") {
+        return { output: { error: true, message: "Query must be a non-empty string" } };
       }
       return next(req);
     },
+    describeCapabilities() { return undefined; },
   };
 }`;
 
@@ -132,7 +133,7 @@ describe("createAutoHarnessStack", () => {
     const brick = await stack.synthesizeHarness(signal);
 
     expect(brick).not.toBeNull();
-    expect(brick?.kind).toBe("tool");
+    expect(brick?.kind).toBe("middleware");
     expect(brick?.name).toContain("harness");
     expect(brick?.provenance.source.forgedBy).toBe("harness-synth");
     expect(store.save).toHaveBeenCalledTimes(1);

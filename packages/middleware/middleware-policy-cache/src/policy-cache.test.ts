@@ -105,6 +105,15 @@ describe("createPolicyCacheMiddleware", () => {
     expect(handle.size()).toBe(1);
   });
 
+  test("cleans stale reverse index when replacing policy for same tool", () => {
+    const handle = createPolicyCacheMiddleware();
+    handle.register(makePolicy("search", "brick-1", "allow"));
+    handle.register(makePolicy("search", "brick-2", "block"));
+    // Evicting old brick-1 should NOT remove the current search policy
+    handle.evict("brick-1");
+    expect(handle.size()).toBe(1); // brick-2 still active
+  });
+
   test("respects maxEntries limit", () => {
     const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
     handle.register(makePolicy("tool-a", "brick-a"));

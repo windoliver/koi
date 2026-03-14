@@ -201,6 +201,6 @@ export async function linearSearch(
     history,
     stopReason,
     totalIterations: history.length,
-    converged: bestSuccessRate >= convergenceThreshold,
+    converged: bestSuccessRate >= convergenceThreshold && finalBest.evalSamples >= minEvalSamples,
   };
 }

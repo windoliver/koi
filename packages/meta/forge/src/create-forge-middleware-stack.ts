@@ -90,6 +90,20 @@ export interface ForgeMiddlewareStackConfig {
   readonly notifier?: StoreChangeNotifier | undefined;
   /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
   readonly snapshotStore?: SnapshotStore | undefined;
+  /**
+   * Optional auto-harness synthesis callback. When provided, failure-driven
+   * demand signals are routed to harness synthesis instead of pioneer stubs.
+   * Created via createAutoHarnessStack() from @koi/auto-harness.
+   */
+  readonly synthesizeHarness?:
+    | ((
+        signal: import("@koi/core").ForgeDemandSignal,
+      ) => Promise<import("@koi/core").BrickArtifact | null>)
+    | undefined;
+  /** Maximum harness synthesis attempts per session. Default: 3. */
+  readonly maxSynthesesPerSession?: number | undefined;
+  /** Optional policy-cache middleware to add to the stack (priority 150). */
+  readonly policyCacheMiddleware?: KoiMiddleware | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +193,8 @@ export function createForgeMiddlewareStack(
   });
 
   // 4. Auto-forge — consumes crystallize + demand handles (priority 960)
+  //    When synthesizeHarness is provided, failure-driven demand signals are routed
+  //    to harness synthesis instead of creating pioneer stubs.
   const autoForge = createAutoForgeMiddleware({
     crystallizeHandle,
     demandHandle,
@@ -186,6 +202,12 @@ export function createForgeMiddlewareStack(
     scope: config.scope,
     notifier: config.notifier,
     ...(config.onError !== undefined ? { onError: config.onError } : {}),
+    ...(config.synthesizeHarness !== undefined
+      ? { synthesizeHarness: config.synthesizeHarness }
+      : {}),
+    ...(config.maxSynthesesPerSession !== undefined
+      ? { maxSynthesesPerSession: config.maxSynthesesPerSession }
+      : {}),
     clock,
   });
 
@@ -208,6 +230,8 @@ export function createForgeMiddlewareStack(
 
   // Return middlewares in priority order (ascending)
   const middlewares: readonly KoiMiddleware[] = [
+    // Policy-cache at priority 150 (before permissions) — only when auto-harness is wired
+    ...(config.policyCacheMiddleware !== undefined ? [config.policyCacheMiddleware] : []),
     feedbackLoopHandle.middleware, // 450
     demandHandle.middleware, // 455
     exaptationHandle.middleware, // 465

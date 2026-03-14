@@ -9,14 +9,15 @@ export function createMiddleware() {
   return {
     name: "harness-search",
     priority: 180,
-    phase: "INTERCEPT" as const,
+    phase: "intercept" as const,
     async wrapToolCall(ctx, req, next) {
-      if (req.toolName !== "search") return next(req);
-      if (!req.args?.query) {
-        return { error: "Query parameter is required" };
+      if (req.toolId !== "search") return next(req);
+      if (!req.input?.query) {
+        return { output: { error: true, message: "Query parameter is required" } };
       }
       return next(req);
     },
+    describeCapabilities() { return undefined; },
   };
 }
 \`\`\``;

@@ -5,14 +5,15 @@ const VALID_CODE = `export function createMiddleware() {
   return {
     name: "harness-search",
     priority: 180,
-    phase: "INTERCEPT" as const,
+    phase: "intercept" as const,
     async wrapToolCall(ctx, req, next) {
-      if (req.toolName !== "search") return next(req);
-      if (!req.args.query || req.args.query.length === 0) {
-        return { error: "Query must not be empty" };
+      if (req.toolId !== "search") return next(req);
+      if (!req.input.query || req.input.query.length === 0) {
+        return { output: { error: true, message: "Query must not be empty" } };
       }
       return next(req);
     },
+    describeCapabilities() { return undefined; },
   };
 }`;
 
@@ -113,6 +114,52 @@ export function createMiddleware() {
     if (result.ok) {
       expect(result.value.descriptor.name).toBe("harness-my_tool");
     }
+  });
+
+  test("rejects code using wrong API: req.toolName", () => {
+    const raw = `\`\`\`typescript
+export function createMiddleware() {
+  return {
+    async wrapToolCall(ctx, req, next) {
+      if (req.toolName !== "x") return next(req);
+      return next(req);
+    },
+  };
+}
+\`\`\``;
+    const result = parseSynthesisOutput(raw, "x");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("toolId");
+  });
+
+  test("rejects code using wrong API: req.args", () => {
+    const raw = `\`\`\`typescript
+export function createMiddleware() {
+  return {
+    async wrapToolCall(ctx, req, next) {
+      if (!req.args.query) return { output: "err" };
+      return next(req);
+    },
+  };
+}
+\`\`\``;
+    const result = parseSynthesisOutput(raw, "x");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("input");
+  });
+
+  test("rejects code using uppercase INTERCEPT phase", () => {
+    const raw = `\`\`\`typescript
+export function createMiddleware() {
+  return {
+    phase: "INTERCEPT",
+    async wrapToolCall(ctx, req, next) { return next(req); },
+  };
+}
+\`\`\``;
+    const result = parseSynthesisOutput(raw, "x");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("intercept");
   });
 
   test("extracts name from code when present", () => {

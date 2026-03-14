@@ -15,7 +15,7 @@
  *   → policy-cache short-circuits model calls
  */
 
-import type { BrickArtifact, ForgeDemandSignal, ToolArtifact } from "@koi/core";
+import type { BrickArtifact, ForgeDemandSignal, ImplementationArtifact } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { linearSearch } from "@koi/harness-search";
 import {
@@ -210,17 +210,17 @@ function extractTargetToolName(signal: ForgeDemandSignal): string {
   return `harness-${signal.id}`;
 }
 
-/** Create a ToolArtifact for the synthesized harness middleware. */
+/** Create an ImplementationArtifact (kind: "middleware") for the synthesized harness. */
 function createHarnessBrick(
   toolName: string,
   code: string,
   signal: ForgeDemandSignal,
   now: number,
-): ToolArtifact {
-  const id = computeBrickId("tool", code);
+): ImplementationArtifact {
+  const id = computeBrickId("middleware", code);
   return {
     id,
-    kind: "tool",
+    kind: "middleware",
     name: `harness-${toolName}`,
     description: `Auto-synthesized harness middleware for ${toolName}. Prevents observed failure patterns.`,
     scope: "agent",
@@ -229,7 +229,6 @@ function createHarnessBrick(
     version: "0.1.0",
     usageCount: 0,
     implementation: code,
-    inputSchema: { type: "object", properties: {} },
     policy: DEFAULT_SANDBOXED_POLICY,
     provenance: {
       source: {

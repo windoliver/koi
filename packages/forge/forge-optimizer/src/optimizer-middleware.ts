@@ -29,12 +29,19 @@ export interface OptimizerMiddlewareConfig {
   readonly improvementThreshold?: number | undefined;
   /** Evaluation window in ms. Default: 604_800_000 (7 days). */
   readonly evaluationWindowMs?: number | undefined;
+  /** Minimum policy samples for promotion. Default: 50. */
+  readonly minPolicySamples?: number | undefined;
   /** Clock function. Default: Date.now. */
   readonly clock?: (() => number) | undefined;
   /** Called with sweep results. Default: no-op. */
   readonly onSweepComplete?: ((results: readonly OptimizationResult[]) => void) | undefined;
   /** Optional notifier for cross-agent cache invalidation after deprecation. */
   readonly notifier?: StoreChangeNotifier | undefined;
+  /**
+   * Called when a brick is promoted to policy mode (100% success over minPolicySamples).
+   * The caller should register the brick with the policy-cache middleware.
+   */
+  readonly onPolicyPromotion?: ((brickId: string, result: OptimizationResult) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +60,7 @@ export function createOptimizerMiddleware(config: OptimizerMiddlewareConfig): Ko
     minSampleSize: config.minSampleSize,
     improvementThreshold: config.improvementThreshold,
     evaluationWindowMs: config.evaluationWindowMs,
+    minPolicySamples: config.minPolicySamples,
     clock: config.clock,
     ...(config.notifier !== undefined ? { notifier: config.notifier } : {}),
   });
@@ -66,6 +74,16 @@ export function createOptimizerMiddleware(config: OptimizerMiddlewareConfig): Ko
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       const results = await optimizer.sweep();
       resultsBySession.set(ctx.sessionId, results);
+
+      // Notify policy promotions so the caller can register with policy-cache
+      if (config.onPolicyPromotion !== undefined) {
+        for (const result of results) {
+          if (result.action === "promote_to_policy") {
+            config.onPolicyPromotion(result.brickId, result);
+          }
+        }
+      }
+
       config.onSweepComplete?.(results);
     },
 
