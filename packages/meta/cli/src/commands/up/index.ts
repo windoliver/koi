@@ -351,7 +351,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       consent: createInteractiveConsent(output),
     });
     if (dsStack.discoveredSources.length === 0) {
-      output.debug(
+      output.info(
         "No data sources found — add MCP servers to koi.yaml or set credentials in .env",
       );
     } else {
