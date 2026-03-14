@@ -46,6 +46,21 @@ import { runPreflight } from "./preflight.js";
 import { inferPresetId } from "./preset.js";
 import { startTemporalEmbed } from "./temporal.js";
 
+/** Captures probeEnv in a closure to avoid L2→L2 import in the bridge. */
+function createProbeCallback(
+  probeEnv: (
+    env: Readonly<Record<string, string | undefined>>,
+    patterns: readonly string[],
+  ) => readonly { readonly descriptor: import("@koi/core").DataSourceDescriptor }[],
+): () => readonly { readonly descriptor: import("@koi/core").DataSourceDescriptor }[] {
+  return () =>
+    probeEnv(process.env as Readonly<Record<string, string | undefined>>, [
+      "*DATABASE_URL*",
+      "*_DSN",
+      "*_CONNECTION_STRING",
+    ]);
+}
+
 export async function runUp(flags: UpFlags): Promise<void> {
   // 0. DETACH
   if (flags.detach) {
@@ -202,6 +217,12 @@ export async function runUp(flags: UpFlags): Promise<void> {
         credential: string | undefined,
       ) => Promise<{ readonly ok: boolean; readonly data?: unknown; readonly error?: string }>)
     | undefined;
+  let probeEnvFn:
+    | ((
+        env: Readonly<Record<string, string | undefined>>,
+        patterns: readonly string[],
+      ) => readonly { readonly descriptor: import("@koi/core").DataSourceDescriptor }[])
+    | undefined;
   try {
     const { createDataSourceStack } = await import("@koi/data-source-stack");
     const manifestEntries = (manifest as unknown as Record<string, unknown>).dataSources as
@@ -236,6 +257,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
     // Capture executor for schema probing in dashboard bridge
     const { executeDataSourceQuery } = await import("@koi/data-source-stack");
     dataSourceExecutorFn = executeDataSourceQuery;
+    // Capture probeEnv for rescan callback (avoids L2→L2 import in bridge)
+    const { probeEnv } = await import("@koi/data-source-discovery");
+    probeEnvFn = probeEnv;
   } catch {
     // Data source discovery is non-fatal
   }
@@ -316,6 +340,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
       discoveredSources: discoveredSourceSummaries,
       dataSourceDescriptors: discoveredDescriptors,
       ...(dataSourceExecutorFn !== undefined ? { dataSourceExecutor: dataSourceExecutorFn } : {}),
+      ...(probeEnvFn !== undefined
+        ? {
+            probeEnvForSources: createProbeCallback(probeEnvFn),
+          }
+        : {}),
       dispatchAgent: dispatcher.dispatchAgent,
       onTerminateAgent: async (id) => {
         await dispatcher.terminateAgent(id);

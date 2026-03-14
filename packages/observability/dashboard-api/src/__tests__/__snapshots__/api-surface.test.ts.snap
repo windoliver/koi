@@ -359,6 +359,10 @@ interface BridgeOptions {
     readonly dataSourceCredentials?: ReadonlyMap<string, string> | undefined;
     /** Per-source fitness metrics — keyed by source name. */
     readonly dataSourceFitness?: ReadonlyMap<string, DataSourceFitnessSummary> | undefined;
+    /** Callback to probe environment for new data sources (injected to avoid L2→L2 import). */
+    readonly probeEnvForSources?: (() => readonly {
+        readonly descriptor: DataSourceDescriptor;
+    }[]) | undefined;
     /** Optional agent dispatch implementation (e.g. from AgentHost). */
     readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
     /** Called when a dispatched agent is terminated — disposes the runtime. */

@@ -99,6 +99,12 @@ export interface BridgeOptions {
   readonly dataSourceCredentials?: ReadonlyMap<string, string> | undefined;
   /** Per-source fitness metrics — keyed by source name. */
   readonly dataSourceFitness?: ReadonlyMap<string, DataSourceFitnessSummary> | undefined;
+  /** Callback to probe environment for new data sources (injected to avoid L2→L2 import). */
+  readonly probeEnvForSources?:
+    | (() => readonly {
+        readonly descriptor: DataSourceDescriptor;
+      }[])
+    | undefined;
   /** Optional agent dispatch implementation (e.g. from AgentHost). */
   readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
   /** Called when a dispatched agent is terminated — disposes the runtime. */
@@ -425,14 +431,10 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       };
       return detail;
     },
-    async rescanDataSources(): Promise<readonly DataSourceSummary[]> {
+    rescanDataSources(): readonly DataSourceSummary[] {
+      if (options.probeEnvForSources === undefined) return currentSources;
       try {
-        const { probeEnv } = await import("@koi/data-source-discovery");
-        const results = probeEnv(process.env as Readonly<Record<string, string | undefined>>, [
-          "*DATABASE_URL*",
-          "*_DSN",
-          "*_CONNECTION_STRING",
-        ]);
+        const results = options.probeEnvForSources();
         const existingNames = new Set(currentSources.map((s) => s.name));
         for (const r of results) {
           if (!existingNames.has(r.descriptor.name)) {

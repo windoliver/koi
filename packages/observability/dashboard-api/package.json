@@ -12,8 +12,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/dashboard-types": "workspace:*",
-    "@koi/data-source-discovery": "workspace:*"
+    "@koi/dashboard-types": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",

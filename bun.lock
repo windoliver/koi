@@ -2484,7 +2484,6 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/dashboard-types": "workspace:*",
-        "@koi/data-source-discovery": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
