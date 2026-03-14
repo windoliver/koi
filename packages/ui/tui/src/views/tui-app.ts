@@ -678,6 +678,33 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "agents" });
     },
     closeSessions,
+    closeDataSources: () => {
+      store.dispatch({ kind: "set_view", view: "agents" });
+    },
+    dataSourceUp: () => {
+      const idx = store.getState().selectedDataSourceIndex;
+      store.dispatch({ kind: "select_data_source", index: idx - 1 });
+    },
+    dataSourceDown: () => {
+      const idx = store.getState().selectedDataSourceIndex;
+      store.dispatch({ kind: "select_data_source", index: idx + 1 });
+    },
+    dataSourceApprove: () => {
+      const sources = store.getState().dataSources;
+      const idx = store.getState().selectedDataSourceIndex;
+      const source = sources[idx];
+      if (source !== undefined) {
+        approveDataSource(source.name).catch(() => {});
+      }
+    },
+    dataSourceSchema: () => {
+      const sources = store.getState().dataSources;
+      const idx = store.getState().selectedDataSourceIndex;
+      const source = sources[idx];
+      if (source !== undefined) {
+        viewDataSourceSchema(source.name).catch(() => {});
+      }
+    },
   });
 
   // ─── Public API for console input ──────────────────────────────────

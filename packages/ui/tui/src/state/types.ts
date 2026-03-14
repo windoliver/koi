@@ -69,6 +69,8 @@ export interface TuiState {
   readonly dataSources: readonly DataSourceSummary[];
   /** Whether data sources are loading. */
   readonly dataSourcesLoading: boolean;
+  /** Selected data source index. */
+  readonly selectedDataSourceIndex: number;
 }
 
 /** Create initial TUI state for a given admin URL. */
@@ -86,6 +88,7 @@ export function createInitialState(adminUrl: string): TuiState {
     sessionPickerLoading: false,
     dataSources: [],
     dataSourcesLoading: false,
+    selectedDataSourceIndex: 0,
   };
 }
 
@@ -136,6 +139,10 @@ export type TuiAction =
   | {
       readonly kind: "set_data_sources_loading";
       readonly loading: boolean;
+    }
+  | {
+      readonly kind: "select_data_source";
+      readonly index: number;
     };
 
 /** Maximum messages kept in session memory (sliding window). */

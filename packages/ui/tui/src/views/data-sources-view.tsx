@@ -3,15 +3,17 @@
  *
  * Renders a selectable list of data sources fetched from the admin API,
  * displaying name, protocol, status, source origin, and detail on select.
+ * Navigation: arrow keys / j/k to move, [a] approve, [s] schema, [Esc] back.
  */
 
 import type { DataSourceSummary } from "@koi/dashboard-types";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { COLORS } from "../theme.js";
 
 export interface DataSourcesViewProps {
   readonly sources: readonly DataSourceSummary[];
   readonly loading: boolean;
+  readonly selectedIndex: number;
   readonly onApprove?: ((name: string) => void) | undefined;
   readonly onViewSchema?: ((name: string) => void) | undefined;
   readonly focused: boolean;
@@ -44,8 +46,7 @@ function statusIcon(status: string): string {
 }
 
 export function DataSourcesView(props: DataSourcesViewProps): React.ReactNode {
-  const { sources, loading, onApprove, onViewSchema } = props;
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const { sources, loading, selectedIndex, onApprove, onViewSchema } = props;
 
   const rows = useMemo(
     () =>

@@ -16,6 +16,11 @@ export interface KeyboardCallbacks {
   readonly stop: () => void;
   readonly cancelAndGoBack: () => void;
   readonly closeSessions: () => void;
+  readonly closeDataSources: () => void;
+  readonly dataSourceUp: () => void;
+  readonly dataSourceDown: () => void;
+  readonly dataSourceApprove: () => void;
+  readonly dataSourceSchema: () => void;
 }
 
 /**
@@ -62,6 +67,30 @@ export function createKeyboardHandler(
       }
       if (view === "sessions") {
         callbacks.closeSessions();
+        return true;
+      }
+      if (view === "datasources") {
+        callbacks.closeDataSources();
+        return true;
+      }
+    }
+
+    // Data sources view — arrow keys and action keys
+    if (view === "datasources") {
+      if (sequence === "\x1b[A" || sequence === "k") {
+        callbacks.dataSourceUp();
+        return true;
+      }
+      if (sequence === "\x1b[B" || sequence === "j") {
+        callbacks.dataSourceDown();
+        return true;
+      }
+      if (sequence === "a") {
+        callbacks.dataSourceApprove();
+        return true;
+      }
+      if (sequence === "s") {
+        callbacks.dataSourceSchema();
         return true;
       }
     }

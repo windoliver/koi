@@ -154,10 +154,24 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       };
 
     case "set_data_sources":
-      return { ...state, dataSources: action.sources, dataSourcesLoading: false };
+      return {
+        ...state,
+        dataSources: action.sources,
+        dataSourcesLoading: false,
+        selectedDataSourceIndex: Math.min(
+          state.selectedDataSourceIndex,
+          Math.max(0, action.sources.length - 1),
+        ),
+      };
 
     case "set_data_sources_loading":
       return { ...state, dataSourcesLoading: action.loading };
+
+    case "select_data_source":
+      return {
+        ...state,
+        selectedDataSourceIndex: Math.max(0, Math.min(action.index, state.dataSources.length - 1)),
+      };
 
     case "apply_event_batch": {
       const { batch } = action;

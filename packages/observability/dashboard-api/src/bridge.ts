@@ -12,7 +12,14 @@
  * directly with a full data source implementation.
  */
 
-import type { AgentId, FileSystemBackend, KoiError, ProcessState, Result } from "@koi/core";
+import type {
+  AgentId,
+  DataSourceDescriptor,
+  FileSystemBackend,
+  KoiError,
+  ProcessState,
+  Result,
+} from "@koi/core";
 import { agentId } from "@koi/core";
 import type {
   AgentProcfs,
@@ -74,6 +81,8 @@ export interface BridgeOptions {
     | undefined;
   /** Discovered data sources to expose via the dashboard API. */
   readonly discoveredSources?: readonly DataSourceSummary[] | undefined;
+  /** Full data source descriptors — used for schema/detail endpoint responses. */
+  readonly dataSourceDescriptors?: readonly DataSourceDescriptor[] | undefined;
   /** Optional agent dispatch implementation (e.g. from AgentHost). */
   readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
   /** Called when a dispatched agent is terminated — disposes the runtime. */
@@ -316,13 +325,34 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
             return { ok: true, value: undefined };
           },
           getDataSourceSchema(name: string): Readonly<Record<string, unknown>> | undefined {
-            const source = (options.discoveredSources ?? []).find((s) => s.name === name);
-            if (source === undefined) return undefined;
+            const summary = (options.discoveredSources ?? []).find((s) => s.name === name);
+            if (summary === undefined) return undefined;
+            // Return full descriptor details when available
+            const descriptor = (options.dataSourceDescriptors ?? []).find((d) => d.name === name);
+            if (descriptor !== undefined) {
+              return {
+                name: descriptor.name,
+                protocol: descriptor.protocol,
+                ...(descriptor.description !== undefined
+                  ? { description: descriptor.description }
+                  : {}),
+                ...(descriptor.endpoint !== undefined ? { endpoint: descriptor.endpoint } : {}),
+                ...(descriptor.allowedHosts !== undefined
+                  ? { allowedHosts: [...descriptor.allowedHosts] }
+                  : {}),
+                ...(descriptor.schemaProbed !== undefined
+                  ? { schemaProbed: descriptor.schemaProbed }
+                  : {}),
+                ...(descriptor.auth !== undefined ? { auth: { kind: descriptor.auth.kind } } : {}),
+                status: summary.status,
+                source: summary.source,
+              };
+            }
             return {
-              name: source.name,
-              protocol: source.protocol,
-              status: source.status,
-              source: source.source,
+              name: summary.name,
+              protocol: summary.protocol,
+              status: summary.status,
+              source: summary.source,
             };
           },
         }

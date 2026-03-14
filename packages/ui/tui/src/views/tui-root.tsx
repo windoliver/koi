@@ -51,7 +51,13 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
     }
   }
   if (key.name === "Escape") return "\x1b";
+  if (key.name === "ArrowUp") return "\x1b[A";
+  if (key.name === "ArrowDown") return "\x1b[B";
   if (key.name === "q" && !key.ctrl && !key.meta && !key.shift) return "q";
+  if (key.name === "a" && !key.ctrl && !key.meta && !key.shift) return "a";
+  if (key.name === "s" && !key.ctrl && !key.meta && !key.shift) return "s";
+  if (key.name === "j" && !key.ctrl && !key.meta && !key.shift) return "j";
+  if (key.name === "k" && !key.ctrl && !key.meta && !key.shift) return "k";
   return null;
 }
 
@@ -102,6 +108,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           <DataSourcesView
             sources={state.dataSources}
             loading={state.dataSourcesLoading}
+            selectedIndex={state.selectedDataSourceIndex}
             onApprove={props.onDataSourceApprove}
             onViewSchema={props.onDataSourceViewSchema}
             focused={true}

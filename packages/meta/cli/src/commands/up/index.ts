@@ -194,6 +194,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   let discoveredSourceSummaries:
     | readonly import("@koi/dashboard-types").DataSourceSummary[]
     | undefined;
+  let discoveredDescriptors: readonly import("@koi/core").DataSourceDescriptor[] | undefined;
   try {
     const { createDataSourceStack } = await import("@koi/data-source-stack");
     const manifestEntries = (manifest as unknown as Record<string, unknown>).dataSources as
@@ -223,6 +224,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
             ? ("mcp" as const)
             : ("env" as const),
       }));
+      discoveredDescriptors = dsStack.discoveredSources;
     }
   } catch {
     // Data source discovery is non-fatal
@@ -302,6 +304,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       skills: skillNames,
       fileSystem: createLocalFileSystem(workspaceRoot),
       discoveredSources: discoveredSourceSummaries,
+      dataSourceDescriptors: discoveredDescriptors,
       dispatchAgent: dispatcher.dispatchAgent,
       onTerminateAgent: async (id) => {
         await dispatcher.terminateAgent(id);
