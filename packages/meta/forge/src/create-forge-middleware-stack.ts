@@ -31,13 +31,13 @@ import { createDefaultExaptationConfig, createExaptationDetector } from "@koi/fo
 import type { OptimizationResult } from "@koi/forge-optimizer";
 import { createOptimizerMiddleware } from "@koi/forge-optimizer";
 import { createForgeUsageMiddleware } from "@koi/forge-policy";
-import type { PolicyCacheHandle, PolicyDecision } from "@koi/middleware-policy-cache";
 import type { ForgeConfig } from "@koi/forge-types";
 import type { FeedbackLoopHandle } from "@koi/middleware-feedback-loop";
 import {
   createFeedbackLoopMiddleware,
   createForgeRepairStrategy,
 } from "@koi/middleware-feedback-loop";
+import type { PolicyCacheHandle, PolicyDecision } from "@koi/middleware-policy-cache";
 
 // ---------------------------------------------------------------------------
 // Forge-specific retry budgets (Issue #937: 4A)
@@ -113,9 +113,7 @@ export interface ForgeMiddlewareStackConfig {
   readonly policyCacheHandle?: PolicyCacheHandle | undefined;
   /** Explicit callback fired when optimizer promotes a brick to policy mode.
    *  Overrides the auto-wired default when policyCacheHandle is also set. */
-  readonly onPolicyPromotion?:
-    | ((brickId: string, result: OptimizationResult) => void)
-    | undefined;
+  readonly onPolicyPromotion?: ((brickId: string, result: OptimizationResult) => void) | undefined;
   /** Minimum policy samples for promotion. Default: 50 (from optimizer). */
   readonly minPolicySamples?: number | undefined;
   /**
@@ -248,9 +246,7 @@ export function createForgeMiddlewareStack(
     clock,
     ...(config.notifier !== undefined ? { notifier: config.notifier } : {}),
     ...(policyPromotion !== undefined ? { onPolicyPromotion: policyPromotion } : {}),
-    ...(config.minPolicySamples !== undefined
-      ? { minPolicySamples: config.minPolicySamples }
-      : {}),
+    ...(config.minPolicySamples !== undefined ? { minPolicySamples: config.minPolicySamples } : {}),
   });
 
   // 7. Usage tracking — record brick usage (priority 900)
@@ -341,7 +337,9 @@ export function createPromotionCallback(
       const loadResult = await config.forgeStore.load(brickId as BrickId);
       if (!loadResult.ok) {
         config.onError?.(
-          new Error(`Policy promotion: failed to load brick ${brickId}: ${loadResult.error.message}`),
+          new Error(
+            `Policy promotion: failed to load brick ${brickId}: ${loadResult.error.message}`,
+          ),
         );
         return;
       }
@@ -353,16 +351,16 @@ export function createPromotionCallback(
 
       if (brick.kind !== "middleware" && brick.kind !== "tool") {
         config.onError?.(
-          new Error(`Policy promotion: brick ${brickId} (kind: ${brick.kind}) has no implementation`),
+          new Error(
+            `Policy promotion: brick ${brickId} (kind: ${brick.kind}) has no implementation`,
+          ),
         );
         return;
       }
 
       const execute = config.compilePolicyExecutor(brick.implementation, toolId);
       if (execute === null) {
-        config.onError?.(
-          new Error(`Policy promotion: compilation failed for brick ${brickId}`),
-        );
+        config.onError?.(new Error(`Policy promotion: compilation failed for brick ${brickId}`));
         return;
       }
 

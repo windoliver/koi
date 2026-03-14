@@ -231,8 +231,10 @@ describe("createForgeMiddlewareStack", () => {
 
     const cacheHandle = createPolicyCacheMiddleware();
     const errors: unknown[] = [];
-    const compiledExecutor = (_input: Readonly<Record<string, unknown>>) =>
-      ({ action: "block" as const, reason: "test policy" });
+    const compiledExecutor = (_input: Readonly<Record<string, unknown>>) => ({
+      action: "block" as const,
+      reason: "test policy",
+    });
     const compileSpy = mock((_impl: string, _toolId: string) => compiledExecutor);
 
     const callback = createPromotionCallback({
