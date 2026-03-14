@@ -67,25 +67,31 @@ export function wrapTool(descriptor: ToolDescriptor, toolCall: ToolHandler): Age
     label: descriptor.name,
     parameters: jsonSchemaToTSchema(descriptor.inputSchema),
     execute: async (toolCallId: string, params: unknown): Promise<AgentToolResult<unknown>> => {
+      // Validate params at the boundary — pi passes unknown from LLM JSON parsing
+      const input =
+        typeof params === "object" && params !== null && !Array.isArray(params)
+          ? (params as JsonObject)
+          : {};
+
+      // Check for deferred parse error from stream-bridge.
+      // Throw BEFORE the defense-in-depth catch so the error propagates to
+      // pi runtime, which converts it to a tool error response for the model.
+      //
+      // This error intentionally bypasses the defense-in-depth catch below.
+      // Pi runtime sends the error message back to the model, which can then
+      // produce valid JSON on the next turn. Semantic-retry's wrapModelCall
+      // on subsequent turns handles the retry flow.
+      const parseErrorMsg = input[PARSE_ERROR_KEY];
+      if (typeof parseErrorMsg === "string") {
+        throw Object.freeze({
+          code: "VALIDATION" as const,
+          message: parseErrorMsg,
+          retryable: false,
+          context: { toolName: descriptor.name },
+        });
+      }
+
       try {
-        // Validate params at the boundary — pi passes unknown from LLM JSON parsing
-        const input =
-          typeof params === "object" && params !== null && !Array.isArray(params)
-            ? (params as JsonObject)
-            : {};
-
-        // Check for deferred parse error from stream-bridge. Throw a VALIDATION
-        // KoiError here (inside wrapToolCall) where retry middleware can catch it.
-        const parseErrorMsg = input[PARSE_ERROR_KEY];
-        if (typeof parseErrorMsg === "string") {
-          throw Object.freeze({
-            code: "VALIDATION" as const,
-            message: parseErrorMsg,
-            retryable: false,
-            context: { toolName: descriptor.name },
-          });
-        }
-
         const response = await toolCall({
           toolId: descriptor.name,
           input,
