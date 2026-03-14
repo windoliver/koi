@@ -115,7 +115,7 @@ export async function runInit(flags: InitFlags): Promise<void> {
   if (state.preset === "demo" || state.preset === "mesh") {
     process.stderr.write(`\nNext steps:\n  ${cdHint}koi up\n\n`);
   } else {
-    process.stderr.write(`\nNext steps:\n  ${cdHint}bun run start:admin\n\n`);
+    process.stderr.write(`\nNext steps:\n  ${cdHint}koi up\n\n`);
   }
 }
 

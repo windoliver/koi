@@ -28,11 +28,11 @@ export const SAVED_VIEWS: readonly SavedViewDefinition[] = [
   { id: "all", label: "All Files", rootPaths: ["/"], urlParam: "all" },
   { id: "agents", label: "Agents", rootPaths: ["/agents/"], urlParam: "agents" },
   {
-    id: "forge",
-    label: "Forge",
+    id: "self-improvement",
+    label: "Self-Improvement",
     rootPaths: ["/agents/", "/global/bricks/"],
     globPattern: "**/bricks/*.json",
-    urlParam: "forge",
+    urlParam: "self-improvement",
   },
   {
     id: "events",

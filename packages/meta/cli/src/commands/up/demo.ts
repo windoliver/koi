@@ -3,48 +3,64 @@
  */
 
 import { readFile } from "node:fs/promises";
+import type { NexusClient } from "@koi/nexus-client";
 import type { createAgentDispatcher } from "../../agent-dispatcher.js";
 import type { ProvisionedAgent } from "./types.js";
 
+export interface SeedDemoResult {
+  readonly prompts: readonly string[];
+  readonly seededBricks: readonly import("@koi/demo-packs").SeededBrickView[];
+  readonly seededForgeEvents: readonly Readonly<Record<string, unknown>>[];
+}
+
+const EMPTY_RESULT: SeedDemoResult = { prompts: [], seededBricks: [], seededForgeEvents: [] };
+
 export async function seedDemoPackIfNeeded(
-  manifestPath: string,
+  demoPack: string | undefined,
   workspaceRoot: string,
   agentName: string,
-  nexusBaseUrl: string | undefined,
+  nexusClient: NexusClient | undefined,
   verbose: boolean,
-): Promise<void> {
+): Promise<SeedDemoResult> {
+  if (demoPack === undefined) return EMPTY_RESULT;
+
   try {
     const { join } = await import("node:path");
-
-    const raw = await readFile(manifestPath, "utf-8");
-    const demoMatch = /^demo:\s*\n\s+pack:\s*(\S+)/m.exec(raw);
-    if (demoMatch === null) return;
-
-    const packId = demoMatch[1];
-    if (packId === undefined) return;
 
     const markerPath = join(workspaceRoot, ".koi", ".demo-seeded");
     try {
       await readFile(markerPath, "utf-8");
-      return;
+      // Already seeded — still return prompts and run seed to get brick views
+      const { getPack, runSeed } = await import("@koi/demo-packs");
+      const pack = getPack(demoPack);
+      // Re-run seed to get seeded brick views (idempotent writes to Nexus)
+      if (nexusClient !== undefined && pack !== undefined) {
+        const result = await runSeed(demoPack, { nexusClient, agentName, workspaceRoot, verbose });
+        return {
+          prompts: pack.prompts,
+          seededBricks: result.seededBricks ?? [],
+          seededForgeEvents: result.seededForgeEvents ?? [],
+        };
+      }
+      return { prompts: pack?.prompts ?? [], seededBricks: [], seededForgeEvents: [] };
     } catch {
       // Marker doesn't exist — proceed with seeding
     }
 
-    if (nexusBaseUrl === undefined) {
+    if (nexusClient === undefined) {
       process.stderr.write("warn: demo pack requires Nexus — skipping auto-seed\n");
-      return;
+      return EMPTY_RESULT;
     }
 
-    const { runSeed } = await import("@koi/demo-packs");
-    const { createNexusClient } = await import("@koi/nexus-client");
-    const apiKey = process.env.NEXUS_API_KEY;
-    const nexusClient = createNexusClient({
-      baseUrl: nexusBaseUrl,
-      ...(apiKey !== undefined ? { apiKey } : {}),
-    });
+    const { getPack, runSeed } = await import("@koi/demo-packs");
+    const pack = getPack(demoPack);
 
-    const result = await runSeed(packId, {
+    if (pack === undefined) {
+      process.stderr.write(`Unknown demo pack "${demoPack}". Run 'koi demo list'.\n`);
+      return EMPTY_RESULT;
+    }
+
+    const result = await runSeed(demoPack, {
       nexusClient,
       agentName,
       workspaceRoot,
@@ -59,11 +75,23 @@ export async function seedDemoPackIfNeeded(
       const { mkdir, writeFile } = await import("node:fs/promises");
       const pidDir = join(workspaceRoot, ".koi");
       await mkdir(pidDir, { recursive: true });
-      await writeFile(markerPath, packId);
+      await writeFile(markerPath, demoPack);
     }
+
+    return {
+      prompts: pack.prompts,
+      seededBricks: result.seededBricks ?? [],
+      seededForgeEvents: result.seededForgeEvents ?? [],
+    };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`warn: demo pack seeding failed: ${message}\n`);
+    if (error instanceof Error && error.message.includes("ECONNREFUSED")) {
+      const msg = nexusClient !== undefined ? "" : " — is it running?";
+      process.stderr.write(`warn: cannot reach Nexus${msg}\n`);
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`warn: demo pack seeding failed: ${message}\n`);
+    }
+    return EMPTY_RESULT;
   }
 }
 
@@ -72,22 +100,16 @@ export async function seedDemoPackIfNeeded(
  * Skips the "primary" role (already running as the main runtime).
  */
 export async function provisionDemoAgents(
+  demoPack: string | undefined,
   manifestPath: string,
   dispatcher: ReturnType<typeof createAgentDispatcher> | undefined,
   verbose: boolean,
 ): Promise<readonly ProvisionedAgent[]> {
-  if (dispatcher === undefined) return [];
+  if (dispatcher === undefined || demoPack === undefined) return [];
 
   try {
-    const raw = await readFile(manifestPath, "utf-8");
-    const demoMatch = /^demo:\s*\n\s+pack:\s*(\S+)/m.exec(raw);
-    if (demoMatch === null) return [];
-
-    const packId = demoMatch[1];
-    if (packId === undefined) return [];
-
     const { getPack } = await import("@koi/demo-packs");
-    const pack = getPack(packId);
+    const pack = getPack(demoPack);
     if (pack === undefined) return [];
 
     const provisioned: ProvisionedAgent[] = [];

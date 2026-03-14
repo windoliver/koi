@@ -645,6 +645,22 @@ interface CheckpointEntry {
     readonly sessionId?: string;
     readonly metadata?: Readonly<Record<string, unknown>>;
 }
+interface ForgeBrickView {
+    readonly brickId: string;
+    readonly name: string;
+    readonly status: "active" | "deprecated" | "promoted" | "quarantined";
+    readonly fitness: number;
+    readonly sampleCount: number;
+    readonly createdAt: number;
+    readonly lastUpdatedAt: number;
+}
+interface ForgeStats {
+    readonly totalBricks: number;
+    readonly activeBricks: number;
+    readonly demandSignals: number;
+    readonly crystallizeCandidates: number;
+    readonly timestamp: number;
+}
 interface RuntimeViewDataSource {
     readonly getProcessTree: () => ProcessTreeSnapshot | Promise<ProcessTreeSnapshot>;
     readonly getAgentProcfs: (agentId: AgentId) => AgentProcfs | undefined | Promise<AgentProcfs | undefined>;
@@ -667,6 +683,11 @@ interface RuntimeViewDataSource {
     readonly harness?: {
         readonly getStatus: () => HarnessStatus | Promise<HarnessStatus>;
         readonly getCheckpoints: () => Promise<readonly CheckpointEntry[]>;
+    };
+    readonly forge?: {
+        readonly listBricks: () => Promise<readonly ForgeBrickView[]>;
+        readonly getStats: () => ForgeStats | Promise<ForgeStats>;
+        readonly listRecentEvents: () => Promise<readonly ForgeDashboardEvent[]>;
     };
 }
 
@@ -984,6 +1005,18 @@ declare const ADMIN_ROUTES: {
         readonly method: "GET";
         readonly path: "/view/gateway/topology";
     };
+    readonly forgeBricks: {
+        readonly method: "GET";
+        readonly path: "/view/forge/bricks";
+    };
+    readonly forgeStats: {
+        readonly method: "GET";
+        readonly path: "/view/forge/stats";
+    };
+    readonly forgeEvents: {
+        readonly method: "GET";
+        readonly path: "/view/forge/events";
+    };
     readonly agentChat: {
         readonly method: "POST";
         readonly path: "/agents/:id/chat";
@@ -1024,6 +1057,6 @@ type AdminRoutes = typeof ADMIN_ROUTES;
  */
 declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
 
-export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeDashboardEvent, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isMonitorEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isMonitorEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
 "
 `;

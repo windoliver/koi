@@ -4,6 +4,7 @@
 
 import { BASE_PACK } from "./packs/base.js";
 import { CONNECTED_PACK } from "./packs/connected.js";
+import { SELF_IMPROVEMENT_PACK } from "./packs/self-improvement.js";
 import type { DemoPack, SeedContext, SeedResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -13,6 +14,7 @@ import type { DemoPack, SeedContext, SeedResult } from "./types.js";
 const PACK_REGISTRY: Readonly<Record<string, DemoPack>> = {
   base: BASE_PACK,
   connected: CONNECTED_PACK,
+  "self-improvement": SELF_IMPROVEMENT_PACK,
 } as const;
 
 /** All known pack IDs. */
@@ -67,5 +69,9 @@ export async function runSeed(packId: string, ctx: SeedContext): Promise<SeedRes
     ok: baseResult.ok && packResult.ok,
     counts,
     summary,
+    ...(packResult.seededBricks !== undefined ? { seededBricks: packResult.seededBricks } : {}),
+    ...(packResult.seededForgeEvents !== undefined
+      ? { seededForgeEvents: packResult.seededForgeEvents }
+      : {}),
   };
 }

@@ -9,6 +9,7 @@
  */
 
 import type { AgentId, KoiError, ProcessState, Result } from "@koi/core";
+import type { ForgeDashboardEvent } from "./events.js";
 
 // ---------------------------------------------------------------------------
 // Process tree — recursive agent hierarchy
@@ -227,6 +228,28 @@ export interface CheckpointEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Forge views (self-improvement observability)
+// ---------------------------------------------------------------------------
+
+export interface ForgeBrickView {
+  readonly brickId: string;
+  readonly name: string;
+  readonly status: "active" | "deprecated" | "promoted" | "quarantined";
+  readonly fitness: number;
+  readonly sampleCount: number;
+  readonly createdAt: number;
+  readonly lastUpdatedAt: number;
+}
+
+export interface ForgeStats {
+  readonly totalBricks: number;
+  readonly activeBricks: number;
+  readonly demandSignals: number;
+  readonly crystallizeCandidates: number;
+  readonly timestamp: number;
+}
+
+// ---------------------------------------------------------------------------
 // Data source interface
 // ---------------------------------------------------------------------------
 
@@ -263,5 +286,11 @@ export interface RuntimeViewDataSource {
   readonly harness?: {
     readonly getStatus: () => HarnessStatus | Promise<HarnessStatus>;
     readonly getCheckpoints: () => Promise<readonly CheckpointEntry[]>;
+  };
+
+  readonly forge?: {
+    readonly listBricks: () => Promise<readonly ForgeBrickView[]>;
+    readonly getStats: () => ForgeStats | Promise<ForgeStats>;
+    readonly listRecentEvents: () => Promise<readonly ForgeDashboardEvent[]>;
   };
 }

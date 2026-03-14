@@ -36,6 +36,17 @@ export interface SeedContext {
   readonly verbose: boolean;
 }
 
+/** A seeded brick snapshot for forge view hydration. */
+export interface SeededBrickView {
+  readonly brickId: string;
+  readonly name: string;
+  readonly status: "active" | "deprecated" | "promoted" | "quarantined";
+  readonly fitness: number;
+  readonly sampleCount: number;
+  readonly createdAt: number;
+  readonly lastUpdatedAt: number;
+}
+
 /** Result of running a demo pack's seed function. */
 export interface SeedResult {
   readonly ok: boolean;
@@ -43,6 +54,10 @@ export interface SeedResult {
   readonly counts: Readonly<Record<string, number>>;
   /** Human-readable summary lines. */
   readonly summary: readonly string[];
+  /** Optional pre-computed brick views for forge view hydration. */
+  readonly seededBricks?: readonly SeededBrickView[];
+  /** Optional pre-recorded forge events for timeline/demand panel hydration. */
+  readonly seededForgeEvents?: readonly Readonly<Record<string, unknown>>[];
 }
 
 // ---------------------------------------------------------------------------

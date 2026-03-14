@@ -195,8 +195,9 @@ export function HarnessTab(): React.ReactElement {
 
   if (status === undefined) {
     return (
-      <div className="flex h-[300px] items-center justify-center text-xs text-[var(--color-muted,#888)]">
-        Harness not available
+      <div className="flex h-[300px] flex-col items-center justify-center gap-2 text-xs text-[var(--color-muted,#888)]">
+        <span>No harness activity yet.</span>
+        <span>Run an agent to see auto-synthesized middleware here.</span>
       </div>
     );
   }

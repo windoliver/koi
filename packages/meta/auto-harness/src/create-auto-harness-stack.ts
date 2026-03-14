@@ -188,6 +188,11 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     // Record that this tool now has a harness (recursion prevention, auto-expires)
     synthesizedTools.set(targetToolName, now + gateDurationMs);
 
+    // Log synthesis for operator visibility
+    process.stderr.write(
+      `Auto-harness: synthesized middleware for "${targetToolName}" (brick ${brick.id})\n`,
+    );
+
     // Notify for hot-attach
     if (config.notifier !== undefined) {
       void Promise.resolve(

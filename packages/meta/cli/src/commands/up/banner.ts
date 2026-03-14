@@ -45,5 +45,13 @@ export function printBanner(info: BannerInfo): void {
     err.write(`  ${green("\u2713")} Browser admin at ${cyan("http://localhost:3100/admin")}\n`);
   }
 
+  if (info.prompts.length > 0) {
+    err.write("\n");
+    err.write("Try:\n");
+    for (const prompt of info.prompts) {
+      err.write(`  "${prompt}"\n`);
+    }
+  }
+
   err.write("\n");
 }
