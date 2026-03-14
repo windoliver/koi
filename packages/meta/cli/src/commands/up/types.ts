@@ -23,4 +23,5 @@ export interface BannerInfo {
   readonly temporalUrl: string | undefined;
   readonly provisionedAgents: readonly ProvisionedAgent[];
   readonly discoveredSources: readonly { readonly name: string; readonly protocol: string }[];
+  readonly prompts: readonly string[];
 }

@@ -24,3 +24,17 @@ export async function inferPresetId(manifestPath: string): Promise<PresetId> {
     return "local";
   }
 }
+
+/**
+ * Extracts the demo pack ID from manifest YAML.
+ * Returns undefined if no `demo.pack` field is present.
+ */
+export async function extractDemoPack(manifestPath: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(manifestPath, "utf-8");
+    const match = /^demo:\s*\n\s+pack:\s*(\S+)/m.exec(raw);
+    return match?.[1];
+  } catch {
+    return undefined;
+  }
+}

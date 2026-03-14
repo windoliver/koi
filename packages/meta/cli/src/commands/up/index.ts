@@ -44,7 +44,7 @@ import { provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
 import { runDetach } from "./detach.js";
 import { mapNexusModeToProfile, startNexusStack, stopNexusStack } from "./nexus.js";
 import { runPreflight } from "./preflight.js";
-import { inferPresetId } from "./preset.js";
+import { extractDemoPack, inferPresetId } from "./preset.js";
 import { startTemporalEmbed } from "./temporal.js";
 
 /** Captures probeEnv in a closure to avoid L2→L2 import in the bridge. */
@@ -405,14 +405,29 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const persistAgentId = adminBridge?.agentId ?? manifest.name;
 
   // 9b. Demo pack
-  await seedDemoPackIfNeeded(
-    manifestPath,
+  const demoPack = await extractDemoPack(manifestPath);
+  let demoNexusClient: import("@koi/nexus-client").NexusClient | undefined;
+  if (demoPack !== undefined && nexus.baseUrl !== undefined) {
+    const { createNexusClient } = await import("@koi/nexus-client");
+    const apiKey = process.env.NEXUS_API_KEY;
+    demoNexusClient = createNexusClient({
+      baseUrl: nexus.baseUrl,
+      ...(apiKey !== undefined ? { apiKey } : {}),
+    });
+  }
+  const seedResult = await seedDemoPackIfNeeded(
+    demoPack,
     workspaceRoot,
     manifest.name,
-    nexus.baseUrl,
+    demoNexusClient,
     flags.verbose,
   );
-  const provisionedAgents = await provisionDemoAgents(manifestPath, adminDispatcher, flags.verbose);
+  const provisionedAgents = await provisionDemoAgents(
+    demoPack,
+    manifestPath,
+    adminDispatcher,
+    flags.verbose,
+  );
 
   // 10. Health server
   const DEFAULT_HEALTH_PORT = 9100;
@@ -446,6 +461,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     temporalUrl,
     provisionedAgents,
     discoveredSources: discoveredSourceNames,
+    prompts: seedResult.prompts,
   });
 
   // 12. TUI

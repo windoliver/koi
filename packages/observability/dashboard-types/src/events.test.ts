@@ -206,6 +206,33 @@ describe("isMonitorEvent", () => {
   });
 });
 
+describe("createKindGuard covers all valid kinds", () => {
+  const ALL_KINDS = [
+    "agent",
+    "skill",
+    "channel",
+    "system",
+    "nexus",
+    "gateway",
+    "temporal",
+    "scheduler",
+    "taskboard",
+    "harness",
+    "datasource",
+    "forge",
+    "monitor",
+  ] as const;
+
+  test.each([...ALL_KINDS])("isDashboardEvent accepts kind '%s'", (kind) => {
+    const event = { kind, subKind: "test_sub", timestamp: Date.now() };
+    expect(isDashboardEvent(event)).toBe(true);
+  });
+
+  test("rejects kind not in VALID_KINDS", () => {
+    expect(isDashboardEvent({ kind: "unknown", subKind: "x", timestamp: 1 })).toBe(false);
+  });
+});
+
 describe("isDashboardEvent with forge and monitor", () => {
   test("returns true for valid forge event", () => {
     expect(

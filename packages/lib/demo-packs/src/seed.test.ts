@@ -49,9 +49,10 @@ function makeCtx(overrides?: Partial<SeedContext>): SeedContext {
 // ---------------------------------------------------------------------------
 
 describe("PACK_IDS", () => {
-  test("contains base and connected", () => {
+  test("contains base, connected, and self-improvement", () => {
     expect(PACK_IDS).toContain("base");
     expect(PACK_IDS).toContain("connected");
+    expect(PACK_IDS).toContain("self-improvement");
   });
 });
 
@@ -74,6 +75,7 @@ describe("listPacks", () => {
     const ids = packs.map((p) => p.id);
     expect(ids).toContain("base");
     expect(ids).toContain("connected");
+    expect(ids).toContain("self-improvement");
   });
 
   test("each pack has required fields", () => {
@@ -211,5 +213,64 @@ describe("runSeed", () => {
     // Connected pack counts should be merged in
     expect("memory" in result.counts).toBe(true);
     expect("corpus" in result.counts).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Self-improvement pack
+// ---------------------------------------------------------------------------
+
+describe("self-improvement pack", () => {
+  test("has valid pack metadata", () => {
+    const pack = getPack("self-improvement");
+    expect(pack).toBeDefined();
+    if (pack === undefined) return;
+    expect(pack.id).toBe("self-improvement");
+    expect(pack.name).toBe("Self-Improvement");
+    expect(pack.prompts.length).toBeGreaterThan(0);
+    expect(pack.agentRoles.length).toBeGreaterThan(0);
+  });
+
+  test("only has primary agent role", () => {
+    const pack = getPack("self-improvement");
+    expect(pack).toBeDefined();
+    if (pack === undefined) return;
+    expect(pack.agentRoles.length).toBe(1);
+    expect(pack.agentRoles[0]?.name).toBe("primary");
+  });
+
+  test("returns failure when nexus client cannot connect", async () => {
+    const ctx = makeCtx();
+    const pack = getPack("self-improvement");
+    expect(pack).toBeDefined();
+    if (pack === undefined) return;
+    const result = await pack.seed(ctx);
+
+    expect(result.ok).toBe(false);
+    expect(result.counts.forgeEvents).toBe(0);
+    expect(result.counts.bricks).toBe(0);
+    expect(result.counts.fitnessHistory).toBe(0);
+  });
+
+  test("includes warnings in verbose mode", async () => {
+    const ctx = makeCtx({ verbose: true });
+    const pack = getPack("self-improvement");
+    expect(pack).toBeDefined();
+    if (pack === undefined) return;
+    const result = await pack.seed(ctx);
+
+    expect(result.summary.some((s) => s.includes("warn:"))).toBe(true);
+  });
+
+  test("runs base pack before self-improvement via runSeed", async () => {
+    const ctx = makeCtx();
+    const result = await runSeed("self-improvement", ctx);
+
+    // Base pack should have run (files count from base)
+    expect(result.counts.files).toBe(1);
+    // Self-improvement pack counts should be merged in
+    expect("forgeEvents" in result.counts).toBe(true);
+    expect("bricks" in result.counts).toBe(true);
+    expect("fitnessHistory" in result.counts).toBe(true);
   });
 });

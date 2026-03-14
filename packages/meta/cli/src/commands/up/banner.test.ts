@@ -40,6 +40,7 @@ const BASE_INFO: BannerInfo = {
   temporalUrl: undefined,
   provisionedAgents: [],
   discoveredSources: [],
+  prompts: [],
 };
 
 describe("printBanner", () => {
@@ -113,5 +114,34 @@ describe("printBanner", () => {
     });
     expect(text).toContain("researcher");
     expect(text).toContain("writer");
+  });
+
+  test("prints Try section when prompts provided", () => {
+    const text = captureBanner({
+      ...BASE_INFO,
+      prompts: ["What did I learn about React?", "Summarize authentication."],
+    });
+    expect(text).toContain("Try:");
+    expect(text).toContain('"What did I learn about React?"');
+    expect(text).toContain('"Summarize authentication."');
+  });
+
+  test("does not print Try section when prompts empty", () => {
+    const text = captureBanner(BASE_INFO);
+    expect(text).not.toContain("Try:");
+  });
+
+  test("formats multiple prompts on separate lines", () => {
+    const prompts = ["First prompt", "Second prompt", "Third prompt"];
+    const text = captureBanner({ ...BASE_INFO, prompts });
+    for (const p of prompts) {
+      expect(text).toContain(`"${p}"`);
+    }
+    // Each prompt appears as its own indented line under "Try:"
+    const tryIndex = text.indexOf("Try:");
+    const trySection = text.slice(tryIndex);
+    for (const p of prompts) {
+      expect(trySection).toContain(`"${p}"`);
+    }
   });
 });

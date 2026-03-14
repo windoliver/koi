@@ -645,6 +645,22 @@ interface CheckpointEntry {
     readonly sessionId?: string;
     readonly metadata?: Readonly<Record<string, unknown>>;
 }
+interface ForgeBrickView {
+    readonly brickId: string;
+    readonly name: string;
+    readonly status: "active" | "deprecated" | "promoted" | "quarantined";
+    readonly fitness: number;
+    readonly sampleCount: number;
+    readonly createdAt: number;
+    readonly lastUpdatedAt: number;
+}
+interface ForgeStats {
+    readonly totalBricks: number;
+    readonly activeBricks: number;
+    readonly demandSignals: number;
+    readonly crystallizeCandidates: number;
+    readonly timestamp: number;
+}
 interface RuntimeViewDataSource {
     readonly getProcessTree: () => ProcessTreeSnapshot | Promise<ProcessTreeSnapshot>;
     readonly getAgentProcfs: (agentId: AgentId) => AgentProcfs | undefined | Promise<AgentProcfs | undefined>;
@@ -667,6 +683,10 @@ interface RuntimeViewDataSource {
     readonly harness?: {
         readonly getStatus: () => HarnessStatus | Promise<HarnessStatus>;
         readonly getCheckpoints: () => Promise<readonly CheckpointEntry[]>;
+    };
+    readonly forge?: {
+        readonly listBricks: () => Promise<readonly ForgeBrickView[]>;
+        readonly getStats: () => ForgeStats | Promise<ForgeStats>;
     };
 }
 
@@ -983,6 +1003,14 @@ declare const ADMIN_ROUTES: {
     readonly gatewayTopology: {
         readonly method: "GET";
         readonly path: "/view/gateway/topology";
+    };
+    readonly forgeBricks: {
+        readonly method: "GET";
+        readonly path: "/view/forge/bricks";
+    };
+    readonly forgeStats: {
+        readonly method: "GET";
+        readonly path: "/view/forge/stats";
     };
     readonly agentChat: {
         readonly method: "POST";

@@ -144,53 +144,57 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
   const counts: Record<string, number> = {};
   const summary: string[] = [];
 
-  // 1. Seed memory entries via Nexus
-  let memoryCount = 0;
-  for (const entry of MEMORY_ENTRIES) {
-    const result = await writeJson(
-      ctx.nexusClient,
-      `/agents/${ctx.agentName}/memory/${entry.key}`,
-      entry.value,
-    );
-    if (result.ok) {
-      memoryCount++;
-    } else if (ctx.verbose) {
-      summary.push(`  warn: failed to seed memory ${entry.key}: ${result.error.message}`);
-    }
-  }
+  // 1. Seed memory entries via Nexus (parallel)
+  const memoryResults = await Promise.all(
+    MEMORY_ENTRIES.map((entry) =>
+      writeJson(ctx.nexusClient, `/agents/${ctx.agentName}/memory/${entry.key}`, entry.value).then(
+        (result) => {
+          if (!result.ok && ctx.verbose) {
+            summary.push(`  warn: failed to seed memory ${entry.key}: ${result.error.message}`);
+          }
+          return result;
+        },
+      ),
+    ),
+  );
+  const memoryCount = memoryResults.filter((r) => r.ok).length;
   counts.memory = memoryCount;
   summary.push(`Memory: ${String(memoryCount)} entities ready`);
 
-  // 2. Seed corpus documents via Nexus
-  let corpusCount = 0;
-  for (const doc of CORPUS_DOCS) {
-    const result = await writeJson(ctx.nexusClient, `/agents/${ctx.agentName}/corpus/${doc.key}`, {
-      content: doc.content,
-      indexedAt: Date.now(),
-    });
-    if (result.ok) {
-      corpusCount++;
-    } else if (ctx.verbose) {
-      summary.push(`  warn: failed to seed corpus ${doc.key}: ${result.error.message}`);
-    }
-  }
+  // 2. Seed corpus documents via Nexus (parallel)
+  const corpusResults = await Promise.all(
+    CORPUS_DOCS.map((doc) =>
+      writeJson(ctx.nexusClient, `/agents/${ctx.agentName}/corpus/${doc.key}`, {
+        content: doc.content,
+        indexedAt: Date.now(),
+      }).then((result) => {
+        if (!result.ok && ctx.verbose) {
+          summary.push(`  warn: failed to seed corpus ${doc.key}: ${result.error.message}`);
+        }
+        return result;
+      }),
+    ),
+  );
+  const corpusCount = corpusResults.filter((r) => r.ok).length;
   counts.corpus = corpusCount;
   summary.push(`Corpus: ${String(corpusCount)} documents ready`);
 
-  // 3. Seed data source descriptors for discovery demo
-  let dataSourceCount = 0;
-  for (const ds of DATA_SOURCE_SEEDS) {
-    const result = await writeJson(
-      ctx.nexusClient,
-      `/agents/${ctx.agentName}/workspace/datasources/${ds.name}`,
-      ds,
-    );
-    if (result.ok) {
-      dataSourceCount++;
-    } else if (ctx.verbose) {
-      summary.push(`  warn: failed to seed datasource ${ds.name}: ${result.error.message}`);
-    }
-  }
+  // 3. Seed data source descriptors for discovery demo (parallel)
+  const dataSourceResults = await Promise.all(
+    DATA_SOURCE_SEEDS.map((ds) =>
+      writeJson(
+        ctx.nexusClient,
+        `/agents/${ctx.agentName}/workspace/datasources/${ds.name}`,
+        ds,
+      ).then((result) => {
+        if (!result.ok && ctx.verbose) {
+          summary.push(`  warn: failed to seed datasource ${ds.name}: ${result.error.message}`);
+        }
+        return result;
+      }),
+    ),
+  );
+  const dataSourceCount = dataSourceResults.filter((r) => r.ok).length;
   counts.dataSources = dataSourceCount;
   summary.push(`Data Sources: ${String(dataSourceCount)} descriptors ready`);
 
