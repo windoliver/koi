@@ -276,6 +276,31 @@ describe("createAutoHarnessStack", () => {
     expect(store.save).toHaveBeenCalledTimes(1); // no additional save
   });
 
+  test("resetSession clears recursion gate for same tool", async () => {
+    const store = createMockForgeStore();
+    const stack = createAutoHarnessStack({
+      forgeStore: store,
+      generate: async () => LLM_RESPONSE,
+      clock: () => 1_700_000_000_000,
+    });
+
+    const signal = createDemandSignal();
+
+    // First synthesis succeeds
+    const brick1 = await stack.synthesizeHarness(signal);
+    expect(brick1).not.toBeNull();
+
+    // Second attempt blocked by recursion gate
+    const brick2 = await stack.synthesizeHarness(signal);
+    expect(brick2).toBeNull();
+
+    // After resetSession, synthesis is allowed again
+    stack.resetSession();
+    const brick3 = await stack.synthesizeHarness(signal);
+    expect(brick3).not.toBeNull();
+    expect(store.save).toHaveBeenCalledTimes(2);
+  });
+
   test("allows synthesis for different tools", async () => {
     const store = createMockForgeStore();
     const stack = createAutoHarnessStack({

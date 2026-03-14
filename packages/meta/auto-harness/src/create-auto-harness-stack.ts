@@ -64,10 +64,10 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     notifier: config.notifier,
   });
 
-  // Session-level recursion gate: track which tools already have a synthesized harness.
+  // Recursion gate: track which tools already have a synthesized harness.
   // The aggregator's forgedBy filter cannot work here because the demand signal context
-  // carries only strings — no provenance metadata. This gate prevents the auto-harness
-  // from synthesizing a second harness for the same tool in the same session.
+  // carries only strings — no provenance metadata. Caller must invoke resetSession()
+  // between sessions to clear the gate; otherwise it persists for the stack's lifetime.
   const synthesizedTools = new Set<string>();
 
   /**
@@ -199,6 +199,9 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     policyCacheHandle,
     synthesizeHarness,
     maxSynthesesPerSession,
+    resetSession: () => {
+      synthesizedTools.clear();
+    },
   };
 }
 

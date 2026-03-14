@@ -23,7 +23,7 @@ import { KoiRuntime } from '@koi/engine';
 import { ConfiguredKoiOptions } from '@koi/starter';
 import { FeedbackLoopHandle } from '@koi/middleware-feedback-loop';
 import { DiscoverySource } from '@koi/agent-discovery';
-import { PolicyCacheHandle } from '@koi/middleware-policy-cache';
+import { PolicyCacheHandle, PolicyDecision } from '@koi/middleware-policy-cache';
 
 /**
  * ForgeRuntime factory — creates a live forge runtime backed by a ForgeStore.
@@ -230,6 +230,12 @@ interface ForgeMiddlewareStackConfig {
     readonly onPolicyPromotion?: ((brickId: string, result: OptimizationResult) => void) | undefined;
     /** Minimum policy samples for promotion. Default: 50 (from optimizer). */
     readonly minPolicySamples?: number | undefined;
+    /**
+     * Compiles verified harness code into a synchronous policy executor.
+     * Required for the promotion→cache loop to enforce real validation.
+     * Without this, promotions are logged but NOT registered (avoids no-op entries).
+     */
+    readonly compilePolicyExecutor?: ((implementation: string, toolId: string) => ((input: Readonly<Record<string, unknown>>) => PolicyDecision) | null) | undefined;
 }
 interface ForgeMiddlewareStackResult {
     readonly middlewares: readonly KoiMiddleware[];

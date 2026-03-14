@@ -31,7 +31,7 @@ import { createDefaultExaptationConfig, createExaptationDetector } from "@koi/fo
 import type { OptimizationResult } from "@koi/forge-optimizer";
 import { createOptimizerMiddleware } from "@koi/forge-optimizer";
 import { createForgeUsageMiddleware } from "@koi/forge-policy";
-import type { PolicyCacheHandle } from "@koi/middleware-policy-cache";
+import type { PolicyCacheHandle, PolicyDecision } from "@koi/middleware-policy-cache";
 import type { ForgeConfig } from "@koi/forge-types";
 import type { FeedbackLoopHandle } from "@koi/middleware-feedback-loop";
 import {
@@ -118,6 +118,17 @@ export interface ForgeMiddlewareStackConfig {
     | undefined;
   /** Minimum policy samples for promotion. Default: 50 (from optimizer). */
   readonly minPolicySamples?: number | undefined;
+  /**
+   * Compiles verified harness code into a synchronous policy executor.
+   * Required for the promotion→cache loop to enforce real validation.
+   * Without this, promotions are logged but NOT registered (avoids no-op entries).
+   */
+  readonly compilePolicyExecutor?:
+    | ((
+        implementation: string,
+        toolId: string,
+      ) => ((input: Readonly<Record<string, unknown>>) => PolicyDecision) | null)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,9 +306,14 @@ function resolvePolicyPromotion(
     return undefined;
   }
 
-  // Auto-wired: load the promoted brick from the store and register with policy cache.
-  // The execute function allows all calls — the brick has 100% success over minPolicySamples
-  // evaluations, and the harness middleware (still in the stack) provides the validation safety net.
+  const compiler = config.compilePolicyExecutor;
+  if (compiler === undefined) {
+    // Without a compiler, we can't produce a real executor — don't register no-op entries.
+    return undefined;
+  }
+
+  // Auto-wired: load the promoted brick, compile its implementation into a real
+  // policy executor, and register with the cache for deterministic interception.
   return (brickId: string, _result: OptimizationResult): void => {
     void (async () => {
       const loadResult = await config.forgeStore.load(brickId as BrickId);
@@ -314,11 +330,23 @@ function resolvePolicyPromotion(
         ? brick.name.slice("harness-".length)
         : brick.name;
 
-      handle.register({
-        toolId,
-        brickId,
-        execute: () => ({ action: "allow" as const }),
-      });
+      // Only ImplementationArtifact / ToolArtifact have implementation code
+      if (brick.kind !== "middleware" && brick.kind !== "tool") {
+        config.onError?.(
+          new Error(`Policy promotion: brick ${brickId} (kind: ${brick.kind}) has no implementation`),
+        );
+        return;
+      }
+
+      const execute = compiler(brick.implementation, toolId);
+      if (execute === null) {
+        config.onError?.(
+          new Error(`Policy promotion: compilation failed for brick ${brickId}`),
+        );
+        return;
+      }
+
+      handle.register({ toolId, brickId, execute });
     })().catch((err: unknown) => {
       config.onError?.(new Error(`Policy promotion failed for ${brickId}`, { cause: err }));
     });

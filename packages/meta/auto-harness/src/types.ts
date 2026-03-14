@@ -54,4 +54,6 @@ export interface AutoHarnessStack {
   readonly synthesizeHarness: (signal: ForgeDemandSignal) => Promise<BrickArtifact | null>;
   /** Maximum syntheses per session — pass to auto-forge config. */
   readonly maxSynthesesPerSession: number;
+  /** Clear the per-session recursion gate. Call between sessions. */
+  readonly resetSession: () => void;
 }
