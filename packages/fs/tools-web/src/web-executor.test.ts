@@ -37,7 +37,11 @@ describe("createWebExecutor.fetch", () => {
       async () => new Response(largeBody, { status: 200 }),
     ) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn, maxBodyChars: 100, dnsResolver: mockDnsResolver });
+    const executor = createWebExecutor({
+      fetchFn,
+      maxBodyChars: 100,
+      dnsResolver: mockDnsResolver,
+    });
     const result = await executor.fetch("https://example.com");
 
     expect(result.ok).toBe(true);
@@ -531,7 +535,11 @@ describe("createWebExecutor.fetch caching", () => {
       return new Response("cached", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, dnsResolver: mockDnsResolver });
+    const executor = createWebExecutor({
+      fetchFn,
+      cacheTtlMs: 60_000,
+      dnsResolver: mockDnsResolver,
+    });
 
     await executor.fetch("https://example.com");
     await executor.fetch("https://example.com");
@@ -559,7 +567,11 @@ describe("createWebExecutor.fetch caching", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, dnsResolver: mockDnsResolver });
+    const executor = createWebExecutor({
+      fetchFn,
+      cacheTtlMs: 60_000,
+      dnsResolver: mockDnsResolver,
+    });
 
     await executor.fetch("https://example.com", { method: "POST" });
     await executor.fetch("https://example.com", { method: "POST" });
@@ -573,7 +585,11 @@ describe("createWebExecutor.fetch caching", () => {
       return new Response("ok", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
-    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, dnsResolver: mockDnsResolver });
+    const executor = createWebExecutor({
+      fetchFn,
+      cacheTtlMs: 60_000,
+      dnsResolver: mockDnsResolver,
+    });
 
     await executor.fetch("https://example.com/a");
     await executor.fetch("https://example.com/b");

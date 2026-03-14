@@ -61,12 +61,12 @@ export function isBlockedUrl(url: string): boolean {
  * Each entry: [networkBigInt, maskBigInt].
  */
 const BLOCKED_IPV4_CIDRS: readonly (readonly [bigint, bigint])[] = [
-  /* 127.0.0.0/8   — loopback      */ [0x7F000000n, 0xFF000000n],
-  /* 10.0.0.0/8    — RFC 1918      */ [0x0A000000n, 0xFF000000n],
-  /* 172.16.0.0/12 — RFC 1918      */ [0xAC100000n, 0xFFF00000n],
-  /* 192.168.0.0/16 — RFC 1918     */ [0xC0A80000n, 0xFFFF0000n],
-  /* 169.254.0.0/16 — link-local   */ [0xA9FE0000n, 0xFFFF0000n],
-  /* 0.0.0.0/8     — unspecified   */ [0x00000000n, 0xFF000000n],
+  /* 127.0.0.0/8   — loopback      */ [0x7f000000n, 0xff000000n],
+  /* 10.0.0.0/8    — RFC 1918      */ [0x0a000000n, 0xff000000n],
+  /* 172.16.0.0/12 — RFC 1918      */ [0xac100000n, 0xfff00000n],
+  /* 192.168.0.0/16 — RFC 1918     */ [0xc0a80000n, 0xffff0000n],
+  /* 169.254.0.0/16 — link-local   */ [0xa9fe0000n, 0xffff0000n],
+  /* 0.0.0.0/8     — unspecified   */ [0x00000000n, 0xff000000n],
 ];
 
 /**
@@ -74,8 +74,8 @@ const BLOCKED_IPV4_CIDRS: readonly (readonly [bigint, bigint])[] = [
  * fc00::/7 covers both fc00::/8 and fd00::/8.
  */
 const BLOCKED_IPV6_PREFIXES: readonly string[] = [
-  "fc",   // unique local fc00::/8 (part of fc00::/7)
-  "fd",   // unique local fd00::/8 (part of fc00::/7)
+  "fc", // unique local fc00::/8 (part of fc00::/7)
+  "fd", // unique local fd00::/8 (part of fc00::/7)
 ];
 
 /**
@@ -104,9 +104,7 @@ export function isBlockedIp(ip: string): boolean {
   if (ip.includes(".") && !ip.includes(":")) {
     const ipBigInt = parseIpv4ToBigInt(ip);
     if (ipBigInt === undefined) return true; // Unparseable IP — block defensively
-    return BLOCKED_IPV4_CIDRS.some(
-      ([network, mask]) => (ipBigInt & mask) === network,
-    );
+    return BLOCKED_IPV4_CIDRS.some(([network, mask]) => (ipBigInt & mask) === network);
   }
 
   // IPv6 check
@@ -211,9 +209,8 @@ export async function resolveAndValidateUrl(
   // Skip DNS for raw IP addresses — validate directly
   if (isIpLiteral(hostname)) {
     // Strip brackets from IPv6 literals (URL parser keeps them)
-    const bareIp = hostname.startsWith("[") && hostname.endsWith("]")
-      ? hostname.slice(1, -1)
-      : hostname;
+    const bareIp =
+      hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
     if (isBlockedIp(bareIp)) {
       return { blocked: true, reason: `Resolved IP ${bareIp} is in a private/reserved range` };
     }
