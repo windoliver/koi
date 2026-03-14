@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { DashboardAgentSummary } from "@koi/dashboard-types";
+import type {
+  DashboardAgentSummary,
+  ForgeDashboardEvent,
+  MonitorDashboardEvent,
+} from "@koi/dashboard-types";
 import { createStore, reduce } from "./store.js";
 import { createInitialState, MAX_SESSION_MESSAGES, type TuiState } from "./types.js";
 
@@ -537,5 +541,117 @@ describe("createStore", () => {
     // append_tokens with no session → returns same reference
     store.dispatch({ kind: "append_tokens", text: "hi" });
     expect(callCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forge reducer tests
+// ---------------------------------------------------------------------------
+
+function makeForgeEvent(subKind: string, extra: Record<string, unknown> = {}): ForgeDashboardEvent {
+  return { kind: "forge", subKind, timestamp: 1_000_000, ...extra } as ForgeDashboardEvent;
+}
+
+function makeMonitorEvent(): MonitorDashboardEvent {
+  return {
+    kind: "monitor",
+    subKind: "anomaly_detected",
+    anomalyKind: "error_spike",
+    agentId: "a-1",
+    sessionId: "s-1",
+    detail: {},
+    timestamp: 1_000_000,
+  };
+}
+
+describe("reduce — apply_forge_batch", () => {
+  test("creates brick on brick_forged", () => {
+    const next = reduce(BASE_STATE, {
+      kind: "apply_forge_batch",
+      events: [
+        makeForgeEvent("brick_forged", {
+          brickId: "b-1",
+          name: "my-tool",
+          origin: "crystallize",
+          ngramKey: "a>b",
+          occurrences: 5,
+          score: 0.9,
+        }),
+      ],
+    });
+    expect(next.forgeBricks["b-1"]).toBeDefined();
+    expect(next.forgeBricks["b-1"]!.name).toBe("my-tool");
+    expect(next.forgeBricks["b-1"]!.status).toBe("active");
+  });
+
+  test("updates sparkline on fitness_flushed", () => {
+    const state = reduce(BASE_STATE, {
+      kind: "apply_forge_batch",
+      events: [
+        makeForgeEvent("brick_forged", {
+          brickId: "b-1",
+          name: "tool",
+          origin: "crystallize",
+          ngramKey: "a>b",
+          occurrences: 5,
+          score: 0.9,
+        }),
+      ],
+    });
+    const next = reduce(state, {
+      kind: "apply_forge_batch",
+      events: [
+        makeForgeEvent("fitness_flushed", { brickId: "b-1", successRate: 0.85, sampleCount: 100 }),
+      ],
+    });
+    expect(next.forgeSparklines["b-1"]).toEqual([0.85]);
+    expect(next.forgeBricks["b-1"]!.fitness).toBe(0.85);
+  });
+
+  test("caps forge events buffer at 200", () => {
+    const events: ForgeDashboardEvent[] = [];
+    for (let i = 0; i < 201; i++) {
+      events.push(
+        makeForgeEvent("demand_detected", {
+          signalId: `sig-${String(i)}`,
+          triggerKind: "gap",
+          confidence: 0.5,
+          suggestedBrickKind: "tool",
+        }),
+      );
+    }
+    const next = reduce(BASE_STATE, { kind: "apply_forge_batch", events });
+    expect(next.forgeEvents).toHaveLength(200);
+  });
+
+  test("empty batch is a no-op for forge state", () => {
+    const next = reduce(BASE_STATE, { kind: "apply_forge_batch", events: [] });
+    expect(next.forgeEvents).toEqual([]);
+    expect(next.forgeBricks).toEqual({});
+  });
+});
+
+describe("reduce — apply_monitor_event", () => {
+  test("appends monitor event", () => {
+    const next = reduce(BASE_STATE, {
+      kind: "apply_monitor_event",
+      event: makeMonitorEvent(),
+    });
+    expect(next.monitorEvents).toHaveLength(1);
+  });
+
+  test("caps monitor events at 50", () => {
+    let state = BASE_STATE;
+    for (let i = 0; i < 51; i++) {
+      state = reduce(state, { kind: "apply_monitor_event", event: makeMonitorEvent() });
+    }
+    expect(state.monitorEvents).toHaveLength(50);
+  });
+});
+
+describe("reduce — set_view forge", () => {
+  test("switches to forge view", () => {
+    const next = reduce(BASE_STATE, { kind: "set_view", view: "forge" });
+    expect(next.view).toBe("forge");
   });
 });

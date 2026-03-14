@@ -14,6 +14,7 @@ import { CommandPaletteView } from "./command-palette-view.js";
 import { ConsentView } from "./consent-view.js";
 import { ConsoleView } from "./console-view.js";
 import { DataSourcesView } from "./data-sources-view.js";
+import { ForgeView } from "./forge-view.js";
 import { SessionPickerView } from "./session-picker-view.js";
 import type { SourceDetailData } from "./source-detail-view.js";
 import { SourceDetailView } from "./source-detail-view.js";
@@ -56,6 +57,8 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
         return "\x12"; // Ctrl+R
       case "o":
         return "\x0F"; // Ctrl+O
+      case "g":
+        return "\x07"; // Ctrl+G
     }
   }
   if (key.name === "Escape") return "\x1b";
@@ -89,7 +92,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
   const session = state.activeSession;
   const pendingText = session?.pendingText ?? "";
   const isPalette = view === "palette";
-  const backgroundView = session !== null ? "console" : "agents";
+  const backgroundView = session !== null ? "console" : view === "forge" ? "forge" : "agents";
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS.bg}>
@@ -148,6 +151,10 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onDismiss={() => props.onConsentDismiss?.()}
             focused={true}
           />
+        )}
+
+        {(view === "forge" || (isPalette && backgroundView === "forge")) && (
+          <ForgeView state={state} focused={view === "forge"} />
         )}
 
         {view === "sessions" && (

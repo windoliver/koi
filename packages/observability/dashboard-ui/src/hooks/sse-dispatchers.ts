@@ -1,15 +1,18 @@
 /**
  * Domain-scoped SSE event dispatchers (Decision 8A).
  *
- * Each domain (agent, nexus, gateway, temporal, scheduler, taskboard, harness)
- * owns its own dispatch function. The SSE hook routes by event.kind and delegates.
+ * Each domain (agent, nexus, gateway, temporal, scheduler, taskboard, harness,
+ * forge, monitor) owns its own dispatch function. A dispatch table routes
+ * by event.kind (Decision 7A).
  */
 
 import type { DashboardEvent } from "@koi/dashboard-types";
 import {
   isAgentEvent,
+  isForgeEvent,
   isGatewayEvent,
   isHarnessEvent,
+  isMonitorEvent,
   isNexusEvent,
   isSchedulerEvent,
   isTaskBoardEvent,
@@ -18,6 +21,7 @@ import {
 import { fetchAgents } from "../lib/api-client.js";
 import { useAgentsStore } from "../stores/agents-store.js";
 import { useChatStore } from "../stores/chat-store.js";
+import { useForgeStore } from "../stores/forge-store.js";
 import { useOrchestrationStore } from "../stores/orchestration-store.js";
 import { useTreeStore } from "../stores/tree-store.js";
 
@@ -133,35 +137,38 @@ function dispatchHarnessEvent(event: DashboardEvent): void {
   invalidateOrchestrationDebounced();
 }
 
+/** Dispatch a forge event — batched via ForgeStore.applyBatch. */
+function dispatchForgeEvent(event: DashboardEvent): void {
+  if (!isForgeEvent(event)) return;
+  useForgeStore.getState().applyBatch([event]);
+}
+
+/** Dispatch a monitor event to the forge store for TUI co-display. */
+function dispatchMonitorEvent(event: DashboardEvent): void {
+  if (!isMonitorEvent(event)) return;
+  useForgeStore.getState().applyMonitorEvent(event);
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch table (Decision 7A)
+// ---------------------------------------------------------------------------
+
+const DISPATCHERS: Partial<Record<DashboardEvent["kind"], (e: DashboardEvent) => void>> = {
+  agent: dispatchAgentEvent,
+  nexus: dispatchNexusEvent,
+  gateway: dispatchGatewayEvent,
+  temporal: dispatchTemporalEvent,
+  scheduler: dispatchSchedulerEvent,
+  taskboard: dispatchTaskBoardEvent,
+  harness: dispatchHarnessEvent,
+  forge: dispatchForgeEvent,
+  monitor: dispatchMonitorEvent,
+};
+
 /**
  * Route a dashboard event to the appropriate domain dispatcher.
  * Called from the SSE hook for each event in a batch.
  */
 export function dispatchDashboardEvent(event: DashboardEvent): void {
-  switch (event.kind) {
-    case "agent":
-      dispatchAgentEvent(event);
-      break;
-    case "nexus":
-      dispatchNexusEvent(event);
-      break;
-    case "gateway":
-      dispatchGatewayEvent(event);
-      break;
-    case "temporal":
-      dispatchTemporalEvent(event);
-      break;
-    case "scheduler":
-      dispatchSchedulerEvent(event);
-      break;
-    case "taskboard":
-      dispatchTaskBoardEvent(event);
-      break;
-    case "harness":
-      dispatchHarnessEvent(event);
-      break;
-    // skill, channel, system — no store dispatch needed currently
-    default:
-      break;
-  }
+  DISPATCHERS[event.kind]?.(event);
 }

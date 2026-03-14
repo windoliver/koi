@@ -5,6 +5,8 @@ import {
   isAgentEvent,
   isChannelEvent,
   isDashboardEvent,
+  isForgeEvent,
+  isMonitorEvent,
   isSkillEvent,
   isSystemEvent,
 } from "./events.js";
@@ -149,5 +151,87 @@ describe("isSystemEvent", () => {
       timestamp: Date.now(),
     };
     expect(isSystemEvent(event)).toBe(false);
+  });
+});
+
+describe("isForgeEvent", () => {
+  test("returns true for forge event", () => {
+    const event: DashboardEvent = {
+      kind: "forge",
+      subKind: "brick_forged",
+      brickId: "brick-1",
+      name: "my-tool",
+      origin: "crystallize",
+      ngramKey: "a>b>c",
+      occurrences: 5,
+      score: 0.9,
+      timestamp: Date.now(),
+    };
+    expect(isForgeEvent(event)).toBe(true);
+  });
+
+  test("returns false for non-forge event", () => {
+    const event: DashboardEvent = {
+      kind: "agent",
+      subKind: "terminated",
+      agentId: AGENT_ID,
+      timestamp: Date.now(),
+    };
+    expect(isForgeEvent(event)).toBe(false);
+  });
+});
+
+describe("isMonitorEvent", () => {
+  test("returns true for monitor event", () => {
+    const event: DashboardEvent = {
+      kind: "monitor",
+      subKind: "anomaly_detected",
+      anomalyKind: "tool_rate_exceeded",
+      agentId: "agent-1",
+      sessionId: "sess-1",
+      detail: { toolName: "read_file", rate: 42 },
+      timestamp: Date.now(),
+    };
+    expect(isMonitorEvent(event)).toBe(true);
+  });
+
+  test("returns false for non-monitor event", () => {
+    const event: DashboardEvent = {
+      kind: "system",
+      subKind: "activity",
+      message: "test",
+      timestamp: Date.now(),
+    };
+    expect(isMonitorEvent(event)).toBe(false);
+  });
+});
+
+describe("isDashboardEvent with forge and monitor", () => {
+  test("returns true for valid forge event", () => {
+    expect(
+      isDashboardEvent({
+        kind: "forge",
+        subKind: "demand_detected",
+        signalId: "sig-1",
+        triggerKind: "capability_gap",
+        confidence: 0.85,
+        suggestedBrickKind: "tool",
+        timestamp: Date.now(),
+      }),
+    ).toBe(true);
+  });
+
+  test("returns true for valid monitor event", () => {
+    expect(
+      isDashboardEvent({
+        kind: "monitor",
+        subKind: "anomaly_detected",
+        anomalyKind: "error_spike",
+        agentId: "a-1",
+        sessionId: "s-1",
+        detail: {},
+        timestamp: Date.now(),
+      }),
+    ).toBe(true);
   });
 });

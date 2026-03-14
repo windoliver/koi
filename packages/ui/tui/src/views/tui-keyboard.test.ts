@@ -56,6 +56,9 @@ function makeCallbacks(): KeyboardCallbacks & {
     closeConsent: () => {
       mutableCalls.push("closeConsent");
     },
+    toggleForge: () => {
+      mutableCalls.push("toggleForge");
+    },
   };
 }
 

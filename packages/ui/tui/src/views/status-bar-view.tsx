@@ -11,10 +11,11 @@ import type { TuiState, TuiView } from "../state/types.js";
 
 /** View-specific keyboard hints. */
 const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
-  agents: "↑↓ navigate  Enter select  Ctrl+P commands  q quit",
+  agents: "↑↓ navigate  Enter select  Ctrl+G forge  Ctrl+P commands  q quit",
   consent: "[y] approve  [n] deny  [d] details  Esc dismiss",
   console: "Type message  Enter send  Esc back  Ctrl+P commands",
   datasources: "↑↓ navigate  [a] approve  [s] schema  Esc back",
+  forge: "Esc back  Ctrl+G close  Ctrl+P commands",
   sourcedetail: "Esc back  [a] approve",
   palette: "↑↓ navigate  Enter select  Esc close",
   sessions: "↑↓ navigate  Enter select  Esc back",
