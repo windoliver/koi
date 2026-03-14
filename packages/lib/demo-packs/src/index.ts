@@ -3,4 +3,11 @@
  */
 
 export { getPack, listPacks, PACK_IDS, runSeed } from "./seed.js";
-export type { AgentLifecycle, AgentRole, DemoPack, SeedContext, SeedResult } from "./types.js";
+export type {
+  AgentLifecycle,
+  AgentRole,
+  DemoPack,
+  SeededBrickView,
+  SeedContext,
+  SeedResult,
+} from "./types.js";

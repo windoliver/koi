@@ -30,6 +30,17 @@ export interface BrickSummary {
   readonly lastUpdatedAt: number;
 }
 
+/** REST brick snapshot for hydration (mirrors ForgeBrickView from dashboard-types). */
+export interface BrickViewSnapshot {
+  readonly brickId: string;
+  readonly name: string;
+  readonly status: "active" | "deprecated" | "promoted" | "quarantined";
+  readonly fitness: number;
+  readonly sampleCount: number;
+  readonly createdAt: number;
+  readonly lastUpdatedAt: number;
+}
+
 interface ForgeState {
   readonly bricks: Readonly<Record<string, BrickSummary>>;
   readonly recentEvents: readonly ForgeDashboardEvent[];
@@ -39,6 +50,8 @@ interface ForgeState {
   readonly crystallizeCount: number;
   readonly applyBatch: (events: readonly ForgeDashboardEvent[]) => void;
   readonly applyMonitorEvent: (event: MonitorDashboardEvent) => void;
+  /** Hydrate bricks from REST response, preserving status and fitness. */
+  readonly hydrateBricks: (bricks: readonly BrickViewSnapshot[]) => void;
   readonly resetBuffer: () => void;
 }
 
@@ -155,6 +168,26 @@ export const useForgeStore = create<ForgeState>((set) => ({
         demandCount,
         crystallizeCount,
       };
+    }),
+
+  hydrateBricks: (snapshots) =>
+    set((state) => {
+      if (snapshots.length === 0) return state;
+
+      const bricks = { ...state.bricks };
+      for (const snap of snapshots) {
+        // Only hydrate if not already tracked (live SSE data takes precedence)
+        if (bricks[snap.brickId] === undefined) {
+          bricks[snap.brickId] = {
+            brickId: snap.brickId,
+            name: snap.name,
+            status: snap.status,
+            lastFitness: snap.fitness,
+            lastUpdatedAt: snap.lastUpdatedAt,
+          };
+        }
+      }
+      return { bricks };
     }),
 
   applyMonitorEvent: (event) =>

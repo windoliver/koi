@@ -4,7 +4,7 @@
  */
 
 import { writeJson } from "@koi/nexus-client";
-import type { DemoPack, SeedContext, SeedResult } from "../types.js";
+import type { DemoPack, SeededBrickView, SeedContext, SeedResult } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Seed data — forge events
@@ -219,7 +219,18 @@ async function seedSelfImprovement(ctx: SeedContext): Promise<SeedResult> {
     brickCount === BRICK_METADATA.length &&
     fitnessCount === FITNESS_HISTORY.length;
 
-  return { ok: allSeeded, counts, summary };
+  // Build seeded brick views for forge view hydration
+  const seededBricks: readonly SeededBrickView[] = BRICK_METADATA.map((entry) => ({
+    brickId: entry.value.brickId as string,
+    name: entry.value.name as string,
+    status: entry.value.status as SeededBrickView["status"],
+    fitness: entry.value.fitness as number,
+    sampleCount: entry.value.sampleCount as number,
+    createdAt: entry.value.createdAt as number,
+    lastUpdatedAt: entry.value.lastUpdatedAt as number,
+  }));
+
+  return { ok: allSeeded, counts, summary, seededBricks };
 }
 
 export const SELF_IMPROVEMENT_PACK: DemoPack = {

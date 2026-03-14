@@ -47,33 +47,55 @@ import { runPreflight } from "./preflight.js";
 import { extractDemoPack, inferPresetId } from "./preset.js";
 import { startTemporalEmbed } from "./temporal.js";
 
-/** Creates a forge view data source from a ForgeStore for the admin bridge. */
-function createForgeViewSource(store: import("@koi/core").ForgeStore): {
+/** Creates a forge view data source from a ForgeStore + optional seeded bricks. */
+function createForgeViewSource(
+  store: import("@koi/core").ForgeStore,
+  seededBricks: readonly import("@koi/dashboard-types").ForgeBrickView[],
+): {
   readonly listBricks: () => Promise<readonly import("@koi/dashboard-types").ForgeBrickView[]>;
   readonly getStats: () => Promise<import("@koi/dashboard-types").ForgeStats>;
 } {
   return {
     async listBricks() {
       const result = await store.search({});
-      if (!result.ok) return [];
-      return result.value.map((brick) => ({
-        brickId: brick.id,
-        name: brick.name,
-        status: mapLifecycleToStatus(brick.lifecycle),
-        fitness: brick.fitness?.successCount
-          ? brick.fitness.successCount / (brick.fitness.successCount + brick.fitness.errorCount)
-          : 0,
-        sampleCount: (brick.fitness?.successCount ?? 0) + (brick.fitness?.errorCount ?? 0),
-        createdAt: brick.provenance.metadata.startedAt,
-        lastUpdatedAt: brick.fitness?.lastUsedAt ?? brick.provenance.metadata.startedAt,
-      }));
+      const liveBricks: import("@koi/dashboard-types").ForgeBrickView[] = result.ok
+        ? result.value.map((brick) => ({
+            brickId: brick.id,
+            name: brick.name,
+            status: mapLifecycleToStatus(brick.lifecycle),
+            fitness: brick.fitness?.successCount
+              ? brick.fitness.successCount /
+                (brick.fitness.successCount + brick.fitness.errorCount)
+              : 0,
+            sampleCount:
+              (brick.fitness?.successCount ?? 0) + (brick.fitness?.errorCount ?? 0),
+            createdAt: brick.provenance.metadata.startedAt,
+            lastUpdatedAt: brick.fitness?.lastUsedAt ?? brick.provenance.metadata.startedAt,
+          }))
+        : [];
+
+      if (liveBricks.length > 0) return liveBricks;
+      // Fall back to seeded brick data from demo packs
+      return seededBricks;
     },
     async getStats() {
       const result = await store.search({});
-      const bricks = result.ok ? result.value : [];
+      const liveBricks = result.ok ? result.value : [];
+
+      if (liveBricks.length > 0) {
+        return {
+          totalBricks: liveBricks.length,
+          activeBricks: liveBricks.filter((b) => b.lifecycle === "active").length,
+          demandSignals: 0,
+          crystallizeCandidates: 0,
+          timestamp: Date.now(),
+        };
+      }
+
+      // Fall back to seeded brick data
       return {
-        totalBricks: bricks.length,
-        activeBricks: bricks.filter((b) => b.lifecycle === "active").length,
+        totalBricks: seededBricks.length,
+        activeBricks: seededBricks.filter((b) => b.status === "active").length,
         demandSignals: 0,
         crystallizeCandidates: 0,
         timestamp: Date.now(),
@@ -360,6 +382,25 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
   for (const ch of channels) await ch.connect();
 
+  // 8b. Demo pack seed (before admin so seeded bricks are available for forge view)
+  const demoPack = await extractDemoPack(manifestPath);
+  let demoNexusClient: import("@koi/nexus-client").NexusClient | undefined;
+  if (demoPack !== undefined && nexus.baseUrl !== undefined) {
+    const { createNexusClient } = await import("@koi/nexus-client");
+    const apiKey = process.env.NEXUS_API_KEY;
+    demoNexusClient = createNexusClient({
+      baseUrl: nexus.baseUrl,
+      ...(apiKey !== undefined ? { apiKey } : {}),
+    });
+  }
+  const seedResult = await seedDemoPackIfNeeded(
+    demoPack,
+    workspaceRoot,
+    manifest.name,
+    demoNexusClient,
+    flags.verbose,
+  );
+
   // 9. ADMIN
   const DEFAULT_ADMIN_PORT = 3100;
   let stopAdmin: (() => void) | undefined;
@@ -425,7 +466,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
         ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
         : {}),
       ...(forgeBootstrap !== undefined
-        ? { forge: createForgeViewSource(forgeBootstrap.store) }
+        ? { forge: createForgeViewSource(forgeBootstrap.store, seedResult.seededBricks) }
         : {}),
     });
 
@@ -468,24 +509,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   const persistAgentId = adminBridge?.agentId ?? manifest.name;
 
-  // 9b. Demo pack
-  const demoPack = await extractDemoPack(manifestPath);
-  let demoNexusClient: import("@koi/nexus-client").NexusClient | undefined;
-  if (demoPack !== undefined && nexus.baseUrl !== undefined) {
-    const { createNexusClient } = await import("@koi/nexus-client");
-    const apiKey = process.env.NEXUS_API_KEY;
-    demoNexusClient = createNexusClient({
-      baseUrl: nexus.baseUrl,
-      ...(apiKey !== undefined ? { apiKey } : {}),
-    });
-  }
-  const seedResult = await seedDemoPackIfNeeded(
-    demoPack,
-    workspaceRoot,
-    manifest.name,
-    demoNexusClient,
-    flags.verbose,
-  );
+  // 9b. Demo agent provisioning
   const provisionedAgents = await provisionDemoAgents(
     demoPack,
     manifestPath,

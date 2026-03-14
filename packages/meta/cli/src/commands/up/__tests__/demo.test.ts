@@ -98,7 +98,7 @@ describe("seedDemoPackIfNeeded", () => {
     expect(mockRunSeed).not.toHaveBeenCalled();
   });
 
-  test("skips with marker file and returns prompts", async () => {
+  test("re-seeds with marker file to get brick views and returns prompts", async () => {
     const koiDir = join(tempDir, ".koi");
     await mkdir(koiDir, { recursive: true });
     await writeFile(join(koiDir, ".demo-seeded"), "connected");
@@ -111,7 +111,8 @@ describe("seedDemoPackIfNeeded", () => {
       false,
     );
     expect(result.prompts).toEqual(["What did I learn?", "Show me data."]);
-    expect(mockRunSeed).not.toHaveBeenCalled();
+    // Re-runs seed to get seeded brick views for forge view hydration
+    expect(mockRunSeed).toHaveBeenCalledTimes(1);
   });
 
   test("warns and returns empty when nexus client is undefined", async () => {

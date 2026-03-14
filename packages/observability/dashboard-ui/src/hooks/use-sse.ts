@@ -51,25 +51,10 @@ export function useSse(): void {
         void fetchAgents().then((agents) => {
           useAgentsStore.getState().setAgents(agents, reconnectedAt);
         });
-        // Rehydrate forge brick state via REST
+        // Rehydrate forge brick state via REST (preserves status + fitness)
         void fetchForgeBricks()
           .then((bricks) => {
-            const forgeState = useForgeStore.getState();
-            for (const brick of bricks) {
-              forgeState.applyBatch([
-                {
-                  kind: "forge",
-                  subKind: "brick_forged",
-                  brickId: brick.brickId,
-                  name: brick.name,
-                  origin: "crystallize",
-                  ngramKey: "",
-                  occurrences: brick.sampleCount,
-                  score: brick.fitness,
-                  timestamp: brick.createdAt,
-                },
-              ]);
-            }
+            useForgeStore.getState().hydrateBricks(bricks);
           })
           .catch(() => {
             // Forge rehydration is non-fatal — page works with SSE-only data

@@ -69,5 +69,6 @@ export async function runSeed(packId: string, ctx: SeedContext): Promise<SeedRes
     ok: baseResult.ok && packResult.ok,
     counts,
     summary,
+    ...(packResult.seededBricks !== undefined ? { seededBricks: packResult.seededBricks } : {}),
   };
 }
