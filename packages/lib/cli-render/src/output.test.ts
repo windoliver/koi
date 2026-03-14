@@ -124,7 +124,7 @@ describe("createCliOutput — json mode", () => {
 
     const lines = parseNdjson(text());
     expect(lines).toHaveLength(1);
-    const entry = lines[0]!;
+    const entry = lines[0];
     expect(entry.level).toBe("info");
     expect(entry.msg).toBe("test message");
     expect(typeof entry.ts).toBe("string");
@@ -137,8 +137,8 @@ describe("createCliOutput — json mode", () => {
     output.warn("caution ahead");
 
     const lines = parseNdjson(text());
-    expect(lines[0]!.level).toBe("warn");
-    expect(lines[0]!.msg).toBe("caution ahead");
+    expect(lines[0].level).toBe("warn");
+    expect(lines[0].msg).toBe("caution ahead");
   });
 
   test("error includes hint field when provided", () => {
@@ -147,7 +147,7 @@ describe("createCliOutput — json mode", () => {
 
     const lines = parseNdjson(text());
     expect(lines).toHaveLength(1);
-    const entry = lines[0]!;
+    const entry = lines[0];
     expect(entry.level).toBe("error");
     expect(entry.msg).toBe("config invalid");
     expect(entry.hint).toBe("run koi doctor");
@@ -159,7 +159,7 @@ describe("createCliOutput — json mode", () => {
 
     const lines = parseNdjson(text());
     expect(lines).toHaveLength(1);
-    expect(lines[0]!.hint).toBeUndefined();
+    expect(lines[0].hint).toBeUndefined();
   });
 
   test("debug messages only appear when verbose", () => {
@@ -171,8 +171,8 @@ describe("createCliOutput — json mode", () => {
     loud.output.debug("visible");
     const lines = parseNdjson(loud.text());
     expect(lines).toHaveLength(1);
-    expect(lines[0]!.level).toBe("debug");
-    expect(lines[0]!.msg).toBe("visible");
+    expect(lines[0].level).toBe("debug");
+    expect(lines[0].msg).toBe("visible");
   });
 
   test("success maps to info level", () => {
@@ -180,8 +180,8 @@ describe("createCliOutput — json mode", () => {
     output.success("done");
 
     const lines = parseNdjson(text());
-    expect(lines[0]!.level).toBe("info");
-    expect(lines[0]!.msg).toBe("done");
+    expect(lines[0].level).toBe("info");
+    expect(lines[0].msg).toBe("done");
   });
 
   test("hint maps to info level", () => {
@@ -189,8 +189,8 @@ describe("createCliOutput — json mode", () => {
     output.hint("try this");
 
     const lines = parseNdjson(text());
-    expect(lines[0]!.level).toBe("info");
-    expect(lines[0]!.msg).toBe("try this");
+    expect(lines[0].level).toBe("info");
+    expect(lines[0].msg).toBe("try this");
   });
 });
 

@@ -58,6 +58,15 @@ declare function extractCode(error: unknown): string | undefined;
 declare function isKoiError(error: unknown): error is KoiError;
 /** Convert any thrown value to a KoiError. Returns as-is if already valid. */
 declare function toKoiError(error: unknown): KoiError;
+/**
+ * Format a tool execution error into a string suitable for sending back to the model.
+ * Centralizes the error-to-string pattern previously duplicated across engine adapters.
+ *
+ * @param error - The caught error value (unknown).
+ * @param toolId - The tool identifier for context.
+ * @returns A formatted error string: \`Tool '{toolId}' failed: {message}\`.
+ */
+declare function formatToolError(error: unknown, toolId: string): string;
 /** Log a non-critical error at warn level, then discard. Makes intent explicit. */
 declare function swallowError(error: unknown, context: {
     readonly package: string;
@@ -160,6 +169,6 @@ declare class KoiRuntimeError extends Error {
     toKoiError(): KoiError;
 }
 
-export { type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, createCircuitBreaker, extractCode, extractMessage, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, sleep, swallowError, toKoiError, withRetry };
+export { type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, createCircuitBreaker, extractCode, extractMessage, formatToolError, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, sleep, swallowError, toKoiError, withRetry };
 "
 `;
