@@ -55,7 +55,9 @@ function createForgeViewSource(
 ): {
   readonly listBricks: () => Promise<readonly import("@koi/dashboard-types").ForgeBrickView[]>;
   readonly getStats: () => Promise<import("@koi/dashboard-types").ForgeStats>;
-  readonly listRecentEvents: () => Promise<readonly import("@koi/dashboard-types").ForgeDashboardEvent[]>;
+  readonly listRecentEvents: () => Promise<
+    readonly import("@koi/dashboard-types").ForgeDashboardEvent[]
+  >;
 } {
   return {
     async listBricks() {
@@ -66,11 +68,9 @@ function createForgeViewSource(
             name: brick.name,
             status: mapLifecycleToStatus(brick.lifecycle),
             fitness: brick.fitness?.successCount
-              ? brick.fitness.successCount /
-                (brick.fitness.successCount + brick.fitness.errorCount)
+              ? brick.fitness.successCount / (brick.fitness.successCount + brick.fitness.errorCount)
               : 0,
-            sampleCount:
-              (brick.fitness?.successCount ?? 0) + (brick.fitness?.errorCount ?? 0),
+            sampleCount: (brick.fitness?.successCount ?? 0) + (brick.fitness?.errorCount ?? 0),
             createdAt: brick.provenance.metadata.startedAt,
             lastUpdatedAt: brick.fitness?.lastUsedAt ?? brick.provenance.metadata.startedAt,
           }))
@@ -121,7 +121,9 @@ function createSeededOnlyForgeViewSource(
 ): {
   readonly listBricks: () => Promise<readonly import("@koi/dashboard-types").ForgeBrickView[]>;
   readonly getStats: () => Promise<import("@koi/dashboard-types").ForgeStats>;
-  readonly listRecentEvents: () => Promise<readonly import("@koi/dashboard-types").ForgeDashboardEvent[]>;
+  readonly listRecentEvents: () => Promise<
+    readonly import("@koi/dashboard-types").ForgeDashboardEvent[]
+  >;
 } {
   return {
     async listBricks() {
@@ -351,9 +353,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       consent: createInteractiveConsent(output),
     });
     if (dsStack.discoveredSources.length === 0) {
-      output.info(
-        "No data sources found — add MCP servers to koi.yaml or set credentials in .env",
-      );
+      output.info("No data sources found — add MCP servers to koi.yaml or set credentials in .env");
     } else {
       dataSourceProvider = dsStack.provider;
       dataSourceTools = dsStack.tools;
@@ -520,7 +520,12 @@ export async function runUp(flags: UpFlags): Promise<void> {
             ),
           }
         : seedResult.seededBricks.length > 0
-          ? { forge: createSeededOnlyForgeViewSource(seedResult.seededBricks, seedResult.seededForgeEvents) }
+          ? {
+              forge: createSeededOnlyForgeViewSource(
+                seedResult.seededBricks,
+                seedResult.seededForgeEvents,
+              ),
+            }
           : {}),
     });
 
