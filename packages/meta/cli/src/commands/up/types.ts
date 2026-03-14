@@ -22,4 +22,5 @@ export interface BannerInfo {
   readonly temporalAdmin: { readonly dispose: () => Promise<void> } | undefined;
   readonly temporalUrl: string | undefined;
   readonly provisionedAgents: readonly ProvisionedAgent[];
+  readonly discoveredSources: readonly { readonly name: string; readonly protocol: string }[];
 }

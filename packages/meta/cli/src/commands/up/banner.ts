@@ -30,6 +30,10 @@ export function printBanner(info: BannerInfo): void {
     err.write(`  ${green("\u2713")} Temporal orchestration connected\n`);
   }
 
+  for (const src of info.discoveredSources) {
+    err.write(`  ${green("\u2713")} Source ${bold(`"${src.name}"`)} (${src.protocol})\n`);
+  }
+
   for (const ch of info.channels) {
     err.write(`  ${green("\u2713")} Channel ${bold(`"${ch.name}"`)} connected\n`);
   }

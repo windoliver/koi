@@ -39,6 +39,7 @@ const BASE_INFO: BannerInfo = {
   temporalAdmin: undefined,
   temporalUrl: undefined,
   provisionedAgents: [],
+  discoveredSources: [],
 };
 
 describe("printBanner", () => {
@@ -86,6 +87,20 @@ describe("printBanner", () => {
     });
     expect(text).toContain("Temporal ready");
     expect(text).toContain("localhost:7233");
+  });
+
+  test("shows discovered sources", () => {
+    const text = captureBanner({
+      ...BASE_INFO,
+      discoveredSources: [
+        { name: "orders-db", protocol: "postgres" },
+        { name: "api", protocol: "http" },
+      ],
+    });
+    expect(text).toContain("orders-db");
+    expect(text).toContain("postgres");
+    expect(text).toContain("api");
+    expect(text).toContain("http");
   });
 
   test("shows provisioned agents", () => {

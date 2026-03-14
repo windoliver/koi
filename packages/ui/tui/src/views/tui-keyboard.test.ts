@@ -29,6 +29,33 @@ function makeCallbacks(): KeyboardCallbacks & {
     closeSessions: () => {
       mutableCalls.push("closeSessions");
     },
+    closeDataSources: () => {
+      mutableCalls.push("closeDataSources");
+    },
+    dataSourceUp: () => {
+      mutableCalls.push("dataSourceUp");
+    },
+    dataSourceDown: () => {
+      mutableCalls.push("dataSourceDown");
+    },
+    dataSourceApprove: () => {
+      mutableCalls.push("dataSourceApprove");
+    },
+    dataSourceSchema: () => {
+      mutableCalls.push("dataSourceSchema");
+    },
+    consentApprove: () => {
+      mutableCalls.push("consentApprove");
+    },
+    consentDeny: () => {
+      mutableCalls.push("consentDeny");
+    },
+    consentDetails: () => {
+      mutableCalls.push("consentDetails");
+    },
+    closeConsent: () => {
+      mutableCalls.push("closeConsent");
+    },
   };
 }
 
@@ -126,6 +153,39 @@ describe("createKeyboardHandler", () => {
     const consumed = handler("\x1b");
     expect(consumed).toBe(true);
     expect(cbs.calls).toEqual(["closeSessions"]);
+  });
+
+  test("Escape closes datasources view", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "datasources" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    const consumed = handler("\x1b");
+    expect(consumed).toBe(true);
+    expect(cbs.calls).toEqual(["closeDataSources"]);
+  });
+
+  test("arrow keys navigate datasources", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "datasources" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("\x1b[A")).toBe(true);
+    expect(handler("\x1b[B")).toBe(true);
+    expect(cbs.calls).toEqual(["dataSourceUp", "dataSourceDown"]);
+  });
+
+  test("a and s keys trigger datasource actions", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "datasources" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("a")).toBe(true);
+    expect(handler("s")).toBe(true);
+    expect(cbs.calls).toEqual(["dataSourceApprove", "dataSourceSchema"]);
   });
 
   test("unrecognized keys return false", () => {

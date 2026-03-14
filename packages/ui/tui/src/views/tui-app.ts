@@ -18,8 +18,12 @@ import {
   type ReconnectHandle,
   startChatStream,
 } from "@koi/dashboard-client";
-import type { AgentDashboardEvent, DashboardEventBatch } from "@koi/dashboard-types";
-import { isAgentEvent } from "@koi/dashboard-types";
+import type {
+  AgentDashboardEvent,
+  DashboardEventBatch,
+  DataSourceDashboardEvent,
+} from "@koi/dashboard-types";
+import { isAgentEvent, isDataSourceEvent } from "@koi/dashboard-types";
 import { type CliRenderer, createCliRenderer, SyntaxStyle } from "@opentui/core";
 import { createRoot, type Root } from "@opentui/react";
 import { createElement } from "react";
@@ -229,6 +233,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
               // Debounced refresh on any agent event
               debouncedRefresh.call();
               forwardAgentEventsToConsole(typedBatch);
+              forwardConsentPrompts(typedBatch);
             }
           } catch {
             // Malformed SSE data — skip
@@ -359,6 +364,35 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         openSessionPicker().catch(() => {});
         break;
 
+      case "sources":
+        openDataSources().catch(() => {});
+        break;
+
+      case "sources-add":
+        rescanDataSources().catch(() => {});
+        break;
+
+      case "sources-approve": {
+        const sources = store.getState().dataSources;
+        const pending = sources.filter((s) => s.status === "pending");
+        if (pending.length > 0 && pending[0] !== undefined) {
+          approveDataSource(pending[0].name).catch(() => {});
+        } else {
+          addLifecycleMessage("No pending data sources to approve");
+        }
+        break;
+      }
+
+      case "sources-schema": {
+        const allSources = store.getState().dataSources;
+        if (allSources.length > 0 && allSources[0] !== undefined) {
+          viewDataSourceSchema(allSources[0].name).catch(() => {});
+        } else {
+          addLifecycleMessage("No data sources available");
+        }
+        break;
+      }
+
       case "logs":
         showAgentLogs().catch(() => {});
         break;
@@ -404,9 +438,22 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   function forwardAgentEventsToConsole(batch: DashboardEventBatch): void {
     const session = store.getState().activeSession;
-    if (session === null) return;
 
     for (const evt of batch.events) {
+      // Data source events are global (not agent-scoped)
+      if (isDataSourceEvent(evt)) {
+        const desc = formatDataSourceEvent(evt);
+        if (desc !== null) {
+          addLifecycleMessage(desc);
+          // Auto-refresh data sources list on discovery events
+          if (evt.subKind === "data_source_discovered") {
+            openDataSources().catch(() => {});
+          }
+        }
+        continue;
+      }
+
+      if (session === null) continue;
       if (!isAgentEvent(evt)) continue;
       if (evt.agentId !== session.agentId) continue;
 
@@ -415,6 +462,29 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         addLifecycleMessage(desc);
       }
     }
+  }
+
+  function forwardConsentPrompts(batch: DashboardEventBatch): void {
+    let hasDiscovery = false;
+    for (const evt of batch.events) {
+      if (isDataSourceEvent(evt) && evt.subKind === "data_source_discovered") {
+        hasDiscovery = true;
+        break;
+      }
+    }
+    if (!hasDiscovery) return;
+
+    // Refresh from server to get actual statuses, then show consent only for pending
+    openDataSources()
+      .then(() => {
+        const sources = store.getState().dataSources;
+        const pending = sources.filter((s) => s.status === "pending");
+        if (pending.length > 0) {
+          store.dispatch({ kind: "set_pending_consent", sources: pending });
+          store.dispatch({ kind: "set_view", view: "consent" });
+        }
+      })
+      .catch(() => {});
   }
 
   function formatAgentEvent(evt: AgentDashboardEvent): string | null {
@@ -427,6 +497,19 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         return `Agent terminated${evt.reason !== undefined ? `: ${evt.reason}` : ""}`;
       case "metrics_updated":
         return `Turns: ${String(evt.turns)}, tokens: ${String(evt.tokenCount)}`;
+      default:
+        return null;
+    }
+  }
+
+  function formatDataSourceEvent(evt: DataSourceDashboardEvent): string | null {
+    switch (evt.subKind) {
+      case "data_source_discovered":
+        return `Data source discovered: ${evt.name} (${evt.protocol}) from ${evt.source}`;
+      case "connector_forged":
+        return `Connector forged for: ${evt.name} (${evt.protocol})`;
+      case "connector_health_update":
+        return `Connector ${evt.name}: ${evt.healthy ? "healthy" : "unhealthy"}`;
       default:
         return null;
     }
@@ -561,6 +644,152 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     store.dispatch({ kind: "set_view", view: "agents" });
   }
 
+  // ─── Consent ────────────────────────────────────────────────────────
+
+  function consentApprove(): void {
+    const pending = store.getState().pendingConsent;
+    if (pending === undefined || pending.length === 0) return;
+    const first = pending[0];
+    if (first === undefined) return;
+    approveDataSource(first.name).catch(() => {});
+    store.dispatch({ kind: "clear_pending_consent" });
+    store.dispatch({ kind: "set_view", view: "agents" });
+  }
+
+  function consentDeny(): void {
+    const pending = store.getState().pendingConsent;
+    if (pending !== undefined) {
+      for (const s of pending) {
+        rejectDataSource(s.name).catch(() => {});
+      }
+    }
+    store.dispatch({ kind: "clear_pending_consent" });
+    store.dispatch({ kind: "set_view", view: "agents" });
+    addLifecycleMessage("Data source denied");
+  }
+
+  function consentDetails(): void {
+    const pending = store.getState().pendingConsent;
+    if (pending === undefined || pending.length === 0) return;
+    const first = pending[0];
+    if (first === undefined) return;
+    viewDataSourceSchema(first.name).catch(() => {});
+  }
+
+  function closeConsent(): void {
+    store.dispatch({ kind: "clear_pending_consent" });
+    const session = store.getState().activeSession;
+    const targetView = session !== null ? "console" : "agents";
+    store.dispatch({ kind: "set_view", view: targetView });
+  }
+
+  // ─── Data sources ────────────────────────────────────────────────────
+
+  async function openDataSources(): Promise<void> {
+    store.dispatch({ kind: "set_data_sources_loading", loading: true });
+    store.dispatch({ kind: "set_view", view: "datasources" });
+
+    try {
+      const res = await fetch(`${adminUrl}/data-sources`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          readonly ok?: boolean;
+          readonly data?: readonly import("@koi/dashboard-types").DataSourceSummary[];
+        };
+        if (data.ok === true && data.data !== undefined) {
+          store.dispatch({ kind: "set_data_sources", sources: data.data });
+          return;
+        }
+      }
+    } catch {
+      // Fetch failed — show empty state
+    }
+    store.dispatch({ kind: "set_data_sources", sources: [] });
+  }
+
+  async function approveDataSource(name: string): Promise<void> {
+    try {
+      const res = await fetch(`${adminUrl}/data-sources/${encodeURIComponent(name)}/approve`, {
+        method: "POST",
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        addLifecycleMessage(`Data source "${name}" approved`);
+        // Refresh the list
+        await openDataSources();
+      } else {
+        addLifecycleMessage(`Failed to approve "${name}"`);
+      }
+    } catch {
+      addLifecycleMessage(`Failed to approve "${name}"`);
+    }
+  }
+
+  async function rejectDataSource(name: string): Promise<void> {
+    try {
+      await fetch(`${adminUrl}/data-sources/${encodeURIComponent(name)}/reject`, {
+        method: "POST",
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch {
+      // Rejection is best-effort
+    }
+  }
+
+  async function viewDataSourceSchema(name: string): Promise<void> {
+    store.dispatch({ kind: "set_source_detail_loading", loading: true });
+    store.dispatch({ kind: "set_view", view: "sourcedetail" });
+
+    try {
+      const res = await fetch(`${adminUrl}/data-sources/${encodeURIComponent(name)}/schema`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          readonly ok?: boolean;
+          readonly data?: Readonly<Record<string, unknown>>;
+        };
+        if (data.ok === true && data.data !== undefined) {
+          store.dispatch({ kind: "set_source_detail", detail: data.data });
+          return;
+        }
+      }
+    } catch {
+      // Fetch failed
+    }
+    store.dispatch({ kind: "set_source_detail", detail: null });
+    addLifecycleMessage(`Schema not available for "${name}"`);
+  }
+
+  async function rescanDataSources(): Promise<void> {
+    addLifecycleMessage("Re-scanning environment for data sources...");
+    try {
+      // Trigger server-side re-scan which probes env for new sources
+      const res = await fetch(`${adminUrl}/data-sources/rescan`, {
+        method: "POST",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          readonly ok?: boolean;
+          readonly data?: readonly import("@koi/dashboard-types").DataSourceSummary[];
+        };
+        if (data.ok === true && data.data !== undefined) {
+          store.dispatch({ kind: "set_data_sources", sources: data.data });
+          addLifecycleMessage(`Scan complete: ${String(data.data.length)} data source(s)`);
+          return;
+        }
+      }
+      // Fallback: just refresh the list
+      await openDataSources();
+    } catch {
+      addLifecycleMessage("Re-scan failed — refreshing list");
+      await openDataSources();
+    }
+  }
+
   // ─── Data fetching ──────────────────────────────────────────────────
 
   async function refreshAgents(): Promise<void> {
@@ -589,6 +818,43 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "agents" });
     },
     closeSessions,
+    closeDataSources: () => {
+      const currentView = store.getState().view;
+      // Navigate back: sourcedetail → datasources → agents
+      if (currentView === "sourcedetail") {
+        store.dispatch({ kind: "set_view", view: "datasources" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "agents" });
+      }
+    },
+    dataSourceUp: () => {
+      const idx = store.getState().selectedDataSourceIndex;
+      store.dispatch({ kind: "select_data_source", index: idx - 1 });
+    },
+    dataSourceDown: () => {
+      const idx = store.getState().selectedDataSourceIndex;
+      store.dispatch({ kind: "select_data_source", index: idx + 1 });
+    },
+    dataSourceApprove: () => {
+      const sources = store.getState().dataSources;
+      const idx = store.getState().selectedDataSourceIndex;
+      const source = sources[idx];
+      if (source !== undefined) {
+        approveDataSource(source.name).catch(() => {});
+      }
+    },
+    dataSourceSchema: () => {
+      const sources = store.getState().dataSources;
+      const idx = store.getState().selectedDataSourceIndex;
+      const source = sources[idx];
+      if (source !== undefined) {
+        viewDataSourceSchema(source.name).catch(() => {});
+      }
+    },
+    consentApprove,
+    consentDeny,
+    consentDetails,
+    closeConsent,
   });
 
   // ─── Public API for console input ──────────────────────────────────
@@ -668,6 +934,26 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         syntaxStyle,
         onSessionSelect: handleSessionSelect,
         onSessionCancel: closeSessions,
+        onDataSourceApprove: (name: string) => {
+          approveDataSource(name).catch(() => {});
+        },
+        onDataSourceViewSchema: (name: string) => {
+          viewDataSourceSchema(name).catch(() => {});
+        },
+        onConsentApprove: (name: string) => {
+          approveDataSource(name).catch(() => {});
+          store.dispatch({ kind: "clear_pending_consent" });
+          store.dispatch({ kind: "set_view", view: "agents" });
+        },
+        onConsentDeny: () => {
+          consentDeny();
+        },
+        onConsentDetails: (name: string) => {
+          viewDataSourceSchema(name).catch(() => {});
+        },
+        onConsentDismiss: () => {
+          closeConsent();
+        },
       }),
     );
   }

@@ -122,6 +122,40 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
     }
   }
 
+  // Data sources: probe admin API, fall back to manifest
+  {
+    let shown = false;
+    if (adminOk) {
+      const dataSources = await fetchDataSources(adminUrl);
+      if (dataSources !== undefined && dataSources.length > 0) {
+        process.stdout.write("Data Sources:\n");
+        for (const ds of dataSources) {
+          const fitnessLabel =
+            ds.fitness !== undefined
+              ? ` ${String(Math.round(ds.fitness.successRate * 100))}% success, ${String(ds.fitness.successCount + ds.fitness.errorCount)} queries${ds.fitness.p95LatencyMs !== undefined ? `, p95: ${String(ds.fitness.p95LatencyMs)}ms` : ""}`
+              : "";
+          process.stdout.write(`  - ${ds.name} (${ds.protocol}) [${ds.status}]${fitnessLabel}\n`);
+        }
+        shown = true;
+      }
+    }
+    // Fall back to manifest dataSources when admin is down or returns empty
+    if (!shown) {
+      const manifestData = manifest as unknown as Record<string, unknown>;
+      const manifestSources = manifestData.dataSources as
+        | readonly { readonly name?: string; readonly protocol?: string }[]
+        | undefined;
+      if (manifestSources !== undefined && manifestSources.length > 0) {
+        process.stdout.write("Data Sources:\n");
+        for (const ds of manifestSources) {
+          const name = typeof ds.name === "string" ? ds.name : "unknown";
+          const protocol = typeof ds.protocol === "string" ? ds.protocol : "unknown";
+          process.stdout.write(`  - ${name} (${protocol}) [configured]\n`);
+        }
+      }
+    }
+  }
+
   // Channels: probe live state from admin API, fall back to manifest
   const channels = manifest.channels ?? [];
   if (channels.length > 0) {
@@ -290,6 +324,57 @@ async function inferNexusMode(manifestPath: string): Promise<string | undefined>
     // Infer from demo.pack presence
     if (/^demo:\s*\n\s+pack:/m.test(raw)) return "embed-auth";
     return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface DataSourceInfo {
+  readonly name: string;
+  readonly protocol: string;
+  readonly status: string;
+  readonly fitness?: {
+    readonly successCount: number;
+    readonly errorCount: number;
+    readonly successRate: number;
+    readonly p95LatencyMs: number | undefined;
+  };
+}
+
+async function fetchDataSources(adminUrl: string): Promise<readonly DataSourceInfo[] | undefined> {
+  try {
+    const res = await fetch(`${adminUrl}/data-sources`, { signal: AbortSignal.timeout(2000) });
+    if (res.status !== 200) return undefined;
+    const data = (await res.json()) as {
+      readonly ok?: boolean;
+      readonly data?: readonly {
+        readonly name?: string;
+        readonly protocol?: string;
+        readonly status?: string;
+        readonly fitness?: {
+          readonly successCount?: number;
+          readonly errorCount?: number;
+          readonly successRate?: number;
+          readonly p95LatencyMs?: number;
+        };
+      }[];
+    };
+    if (data.ok !== true || data.data === undefined) return undefined;
+    return data.data.map((ds) => ({
+      name: typeof ds.name === "string" ? ds.name : "unknown",
+      protocol: typeof ds.protocol === "string" ? ds.protocol : "unknown",
+      status: typeof ds.status === "string" ? ds.status : "unknown",
+      ...(ds.fitness !== undefined
+        ? {
+            fitness: {
+              successCount: ds.fitness.successCount ?? 0,
+              errorCount: ds.fitness.errorCount ?? 0,
+              successRate: ds.fitness.successRate ?? 0,
+              p95LatencyMs: ds.fitness.p95LatencyMs,
+            },
+          }
+        : {}),
+    }));
   } catch {
     return undefined;
   }

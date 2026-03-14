@@ -12,7 +12,14 @@
  * directly with a full data source implementation.
  */
 
-import type { AgentId, FileSystemBackend, KoiError, ProcessState, Result } from "@koi/core";
+import type {
+  AgentId,
+  DataSourceDescriptor,
+  FileSystemBackend,
+  KoiError,
+  ProcessState,
+  Result,
+} from "@koi/core";
 import { agentId } from "@koi/core";
 import type {
   AgentProcfs,
@@ -22,8 +29,13 @@ import type {
   DashboardChannelSummary,
   DashboardDataSource,
   DashboardEvent,
+  DashboardSchemaColumn,
+  DashboardSchemaTable,
   DashboardSkillSummary,
   DashboardSystemMetrics,
+  DataSourceDetail,
+  DataSourceFitnessSummary,
+  DataSourceSummary,
   GatewayTopology,
   MiddlewareChain,
   ProcessTreeSnapshot,
@@ -71,6 +83,28 @@ export interface BridgeOptions {
         | "resumeHarness"
       >
     | undefined;
+  /** Discovered data sources to expose via the dashboard API. */
+  readonly discoveredSources?: readonly DataSourceSummary[] | undefined;
+  /** Full data source descriptors — used for schema/detail endpoint responses. */
+  readonly dataSourceDescriptors?: readonly DataSourceDescriptor[] | undefined;
+  /** Executor callback for schema probing (SQL/HTTP/GraphQL queries). */
+  readonly dataSourceExecutor?:
+    | ((
+        source: DataSourceDescriptor,
+        query: unknown,
+        credential: string | undefined,
+      ) => Promise<{ readonly ok: boolean; readonly data?: unknown; readonly error?: string }>)
+    | undefined;
+  /** Credential resolver — maps auth.ref to credential string. */
+  readonly dataSourceCredentials?: ReadonlyMap<string, string> | undefined;
+  /** Per-source fitness metrics — keyed by source name. */
+  readonly dataSourceFitness?: ReadonlyMap<string, DataSourceFitnessSummary> | undefined;
+  /** Callback to probe environment for new data sources (injected to avoid L2→L2 import). */
+  readonly probeEnvForSources?:
+    | (() => readonly {
+        readonly descriptor: DataSourceDescriptor;
+      }[])
+    | undefined;
   /** Optional agent dispatch implementation (e.g. from AgentHost). */
   readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
   /** Called when a dispatched agent is terminated — disposes the runtime. */
@@ -108,6 +142,12 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   const primaryAgentId = agentId(`cli:${options.agentName}:${Date.now()}`);
   const startedAt = Date.now();
   const listeners = new Set<(event: DashboardEvent) => void>();
+
+  // Mutable data source state — updated by rescan
+  // let justified: rescan adds newly discovered sources at runtime
+  let currentSources: readonly DataSourceSummary[] = options.discoveredSources ?? [];
+  // let justified: rescan adds newly discovered descriptors for schema detail
+  let currentDescriptors: readonly DataSourceDescriptor[] = options.dataSourceDescriptors ?? [];
 
   // Mutable agent state — tracks lifecycle transitions
   // let justified: state changes on terminate, read by list/get/terminate
@@ -289,6 +329,137 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       return () => {
         listeners.delete(listener);
       };
+    },
+
+    // Data source discovery — always defined so routes return real data
+    // let justified: mutable so rescan can add newly discovered sources
+    listDataSources(): readonly DataSourceSummary[] {
+      if (options.dataSourceFitness === undefined) return currentSources;
+      return currentSources.map((s) => {
+        const fitness = options.dataSourceFitness?.get(s.name);
+        return fitness !== undefined ? { ...s, fitness } : s;
+      });
+    },
+    approveDataSource(name: string): Result<void, KoiError> {
+      const idx = currentSources.findIndex((s) => s.name === name);
+      if (idx === -1) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Data source "${name}" not found`,
+            retryable: false,
+          },
+        };
+      }
+      const source = currentSources[idx]!;
+      if (source.status === "approved") {
+        return { ok: true, value: undefined };
+      }
+      // Transition to approved and emit activation events
+      currentSources = currentSources.map((s) =>
+        s.name === name ? { ...s, status: "approved" as const } : s,
+      );
+      emitEvent({
+        kind: "datasource",
+        subKind: "connector_forged",
+        name: source.name,
+        protocol: source.protocol,
+        timestamp: Date.now(),
+      });
+      emitEvent({
+        kind: "datasource",
+        subKind: "connector_health_update",
+        name: source.name,
+        healthy: true,
+        timestamp: Date.now(),
+      });
+      return { ok: true, value: undefined };
+    },
+    rejectDataSource(name: string): Result<void, KoiError> {
+      const idx = currentSources.findIndex((s) => s.name === name);
+      if (idx === -1) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Data source "${name}" not found`,
+            retryable: false,
+          },
+        };
+      }
+      currentSources = currentSources.map((s) =>
+        s.name === name ? { ...s, status: "rejected" as const } : s,
+      );
+      return { ok: true, value: undefined };
+    },
+    async getDataSourceSchema(name: string): Promise<DataSourceDetail | undefined> {
+      const summary = currentSources.find((s) => s.name === name);
+      if (summary === undefined) return undefined;
+      const descriptor = currentDescriptors.find((d) => d.name === name);
+      const fitness = options.dataSourceFitness?.get(name);
+
+      // Attempt real schema probing if executor is available
+      let tables: readonly DashboardSchemaTable[] | undefined;
+      if (descriptor !== undefined && options.dataSourceExecutor !== undefined) {
+        const probeQuery = getSchemaProbeQuery(descriptor.protocol);
+        if (probeQuery !== undefined) {
+          const credential =
+            descriptor.auth !== undefined
+              ? options.dataSourceCredentials?.get(descriptor.auth.ref)
+              : undefined;
+          try {
+            const result = await options.dataSourceExecutor(descriptor, probeQuery, credential);
+            if (result.ok && result.data !== undefined) {
+              tables = parseSchemaRows(result.data);
+            }
+          } catch {
+            // Schema probing is non-fatal
+          }
+        }
+      }
+
+      const detail: DataSourceDetail = {
+        name: descriptor?.name ?? summary.name,
+        protocol: descriptor?.protocol ?? summary.protocol,
+        status: summary.status,
+        source: summary.source,
+        ...(descriptor?.description !== undefined ? { description: descriptor.description } : {}),
+        ...(descriptor?.endpoint !== undefined ? { endpoint: descriptor.endpoint } : {}),
+        ...(tables !== undefined ? { tables } : {}),
+        ...(fitness !== undefined ? { fitness } : {}),
+      };
+      return detail;
+    },
+    rescanDataSources(): readonly DataSourceSummary[] {
+      if (options.probeEnvForSources === undefined) return currentSources;
+      try {
+        const results = options.probeEnvForSources();
+        const existingNames = new Set(currentSources.map((s) => s.name));
+        for (const r of results) {
+          if (!existingNames.has(r.descriptor.name)) {
+            const summary: DataSourceSummary = {
+              name: r.descriptor.name,
+              protocol: r.descriptor.protocol,
+              status: "pending",
+              source: "env",
+            };
+            currentSources = [...currentSources, summary];
+            currentDescriptors = [...currentDescriptors, r.descriptor];
+            emitEvent({
+              kind: "datasource",
+              subKind: "data_source_discovered",
+              name: r.descriptor.name,
+              protocol: r.descriptor.protocol,
+              source: "env",
+              timestamp: Date.now(),
+            });
+          }
+        }
+      } catch {
+        // probeEnv not available — non-fatal
+      }
+      return currentSources;
     },
   };
 
@@ -571,6 +742,40 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     });
   };
 
+  // Emit data source lifecycle events for initial sources (deferred to next tick
+  // so SSE subscribers are connected before events fire)
+  if (currentSources.length > 0) {
+    queueMicrotask(() => {
+      for (const source of currentSources) {
+        emitEvent({
+          kind: "datasource",
+          subKind: "data_source_discovered",
+          name: source.name,
+          protocol: source.protocol,
+          source: source.source,
+          timestamp: Date.now(),
+        });
+        // Approved sources have their connectors forged
+        if (source.status === "approved") {
+          emitEvent({
+            kind: "datasource",
+            subKind: "connector_forged",
+            name: source.name,
+            protocol: source.protocol,
+            timestamp: Date.now(),
+          });
+          emitEvent({
+            kind: "datasource",
+            subKind: "connector_health_update",
+            name: source.name,
+            healthy: true,
+            timestamp: Date.now(),
+          });
+        }
+      }
+    });
+  }
+
   return {
     agentId: primaryAgentId,
     dataSource,
@@ -583,4 +788,61 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       dispatchedAgents.set(entry.agentId, { entry, state: "running" });
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Schema probing helpers
+// ---------------------------------------------------------------------------
+
+/** Returns a protocol-specific probe query for information_schema, or undefined. */
+function getSchemaProbeQuery(protocol: string): unknown | undefined {
+  if (protocol === "sql" || protocol === "postgres" || protocol === "mysql") {
+    return {
+      protocol: "sql",
+      query:
+        "SELECT table_schema, table_name, column_name, data_type, is_nullable " +
+        "FROM information_schema.columns " +
+        "WHERE table_schema NOT IN ('information_schema', 'pg_catalog') " +
+        "ORDER BY table_schema, table_name, ordinal_position",
+    };
+  }
+  return undefined;
+}
+
+/** Parses information_schema rows into DashboardSchemaTable[]. */
+function parseSchemaRows(data: unknown): readonly DashboardSchemaTable[] {
+  if (typeof data !== "object" || data === null) return [];
+  const obj = data as Readonly<Record<string, unknown>>;
+  const rows = obj.rows;
+  if (!Array.isArray(rows)) return [];
+
+  const tableMap = new Map<string, { readonly schema: string; columns: DashboardSchemaColumn[] }>();
+  for (const row of rows) {
+    if (typeof row !== "object" || row === null) continue;
+    const r = row as Readonly<Record<string, unknown>>;
+    const tableName = String(r.table_name ?? "");
+    const schema = String(r.table_schema ?? "public");
+    const key = `${schema}.${tableName}`;
+    let entry = tableMap.get(key);
+    if (entry === undefined) {
+      entry = { schema, columns: [] };
+      tableMap.set(key, entry);
+    }
+    entry.columns.push({
+      name: String(r.column_name ?? ""),
+      type: String(r.data_type ?? "unknown"),
+      nullable: String(r.is_nullable ?? "YES") === "YES",
+    });
+  }
+
+  const tables: DashboardSchemaTable[] = [];
+  for (const [key, entry] of tableMap) {
+    const dotIdx = key.indexOf(".");
+    tables.push({
+      name: key.slice(dotIdx + 1),
+      schema: entry.schema,
+      columns: entry.columns,
+    });
+  }
+  return tables;
 }

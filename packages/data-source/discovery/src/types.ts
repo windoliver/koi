@@ -26,9 +26,19 @@ export const DEFAULT_DISCOVERY_CONFIG: DiscoveryConfig = {
   envPatterns: ["*DATABASE_URL*", "*_DSN", "*_CONNECTION_STRING"],
 } as const satisfies DiscoveryConfig;
 
+/** Batch consent decision returned by `presentBatch`. */
+export type ConsentDecision =
+  | { readonly kind: "approve_all" }
+  | { readonly kind: "deny_all" }
+  | { readonly kind: "select"; readonly approved: readonly string[] };
+
 /** Consent callbacks — user must approve before a data source is registered. */
 export interface ConsentCallbacks {
   readonly approve: (descriptor: DataSourceDescriptor) => boolean | Promise<boolean>;
+  /** Optional batch consent UI — called once with all descriptors before per-source gating. */
+  readonly presentBatch?: (
+    descriptors: readonly DataSourceDescriptor[],
+  ) => ConsentDecision | Promise<ConsentDecision>;
 }
 
 /** MCP server descriptor for probing. */

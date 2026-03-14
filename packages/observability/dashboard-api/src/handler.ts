@@ -28,6 +28,13 @@ import {
   handleSuspendAgent,
   handleTerminateAgentCmd,
 } from "./routes/commands.js";
+import {
+  handleApproveDataSource,
+  handleGetDataSourceSchema,
+  handleListDataSources,
+  handleRejectDataSource,
+  handleRescanDataSources,
+} from "./routes/data-sources.js";
 import type { EditablePathMatcher } from "./routes/filesystem.js";
 import {
   createDefaultEditablePaths,
@@ -120,6 +127,7 @@ export function createDashboardHandler(
     fileSystem: fileSystem !== undefined,
     runtimeViews: runtimeViews !== undefined,
     commands: commands !== undefined,
+    dataSources: dataSource.listDataSources !== undefined,
     orchestration: {
       temporal: runtimeViews?.temporal !== undefined,
       scheduler: runtimeViews?.scheduler !== undefined,
@@ -214,6 +222,32 @@ export function createDashboardHandler(
       method: "GET",
       pattern: "/metrics",
       handler: (req, params) => handleMetrics(req, params, dataSource),
+    },
+    // Data source discovery routes (always registered, return empty when not configured)
+    {
+      method: "GET",
+      pattern: "/data-sources",
+      handler: (req, params) => handleListDataSources(req, params, dataSource),
+    },
+    {
+      method: "POST",
+      pattern: "/data-sources/:name/approve",
+      handler: (req, params) => handleApproveDataSource(req, params, dataSource),
+    },
+    {
+      method: "POST",
+      pattern: "/data-sources/:name/reject",
+      handler: (req, params) => handleRejectDataSource(req, params, dataSource),
+    },
+    {
+      method: "GET",
+      pattern: "/data-sources/:name/schema",
+      handler: (req, params) => handleGetDataSourceSchema(req, params, dataSource),
+    },
+    {
+      method: "POST",
+      pattern: "/data-sources/rescan",
+      handler: (req, params) => handleRescanDataSources(req, params, dataSource),
     },
   ];
 

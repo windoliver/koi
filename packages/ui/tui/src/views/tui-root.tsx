@@ -11,8 +11,12 @@ import type { TuiStore } from "../state/store.js";
 import { COLORS } from "../theme.js";
 import { AgentListView } from "./agent-list-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
+import { ConsentView } from "./consent-view.js";
 import { ConsoleView } from "./console-view.js";
+import { DataSourcesView } from "./data-sources-view.js";
 import { SessionPickerView } from "./session-picker-view.js";
+import type { SourceDetailData } from "./source-detail-view.js";
+import { SourceDetailView } from "./source-detail-view.js";
 import { StatusBarView } from "./status-bar-view.js";
 import { useStoreState } from "./store-bridge.js";
 
@@ -29,6 +33,14 @@ export interface TuiRootProps {
   /** Session picker callbacks. */
   readonly onSessionSelect?: ((sessionId: string) => void) | undefined;
   readonly onSessionCancel?: (() => void) | undefined;
+  /** Data source callbacks. */
+  readonly onDataSourceApprove?: ((name: string) => void) | undefined;
+  readonly onDataSourceViewSchema?: ((name: string) => void) | undefined;
+  /** Consent callbacks. */
+  readonly onConsentApprove?: ((name: string) => void) | undefined;
+  readonly onConsentDeny?: ((name: string) => void) | undefined;
+  readonly onConsentDetails?: ((name: string) => void) | undefined;
+  readonly onConsentDismiss?: (() => void) | undefined;
 }
 
 /**
@@ -47,7 +59,16 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
     }
   }
   if (key.name === "Escape") return "\x1b";
+  if (key.name === "ArrowUp") return "\x1b[A";
+  if (key.name === "ArrowDown") return "\x1b[B";
   if (key.name === "q" && !key.ctrl && !key.meta && !key.shift) return "q";
+  if (key.name === "a" && !key.ctrl && !key.meta && !key.shift) return "a";
+  if (key.name === "s" && !key.ctrl && !key.meta && !key.shift) return "s";
+  if (key.name === "j" && !key.ctrl && !key.meta && !key.shift) return "j";
+  if (key.name === "k" && !key.ctrl && !key.meta && !key.shift) return "k";
+  if (key.name === "y" && !key.ctrl && !key.meta && !key.shift) return "y";
+  if (key.name === "n" && !key.ctrl && !key.meta && !key.shift) return "n";
+  if (key.name === "d" && !key.ctrl && !key.meta && !key.shift) return "d";
   return null;
 }
 
@@ -91,6 +112,41 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onSubmit={props.onConsoleInput}
             focused={view === "console"}
             syntaxStyle={props.syntaxStyle}
+          />
+        )}
+
+        {view === "datasources" && (
+          <DataSourcesView
+            sources={state.dataSources}
+            loading={state.dataSourcesLoading}
+            selectedIndex={state.selectedDataSourceIndex}
+            onApprove={props.onDataSourceApprove}
+            onViewSchema={props.onDataSourceViewSchema}
+            focused={true}
+          />
+        )}
+
+        {view === "sourcedetail" && (
+          <SourceDetailView
+            data={state.sourceDetail as SourceDetailData | null}
+            loading={state.sourceDetailLoading}
+            onApprove={props.onDataSourceApprove}
+            onViewSchema={props.onDataSourceViewSchema}
+            onBack={() => {
+              props.store.dispatch({ kind: "set_view", view: "datasources" });
+            }}
+            focused={true}
+          />
+        )}
+
+        {view === "consent" && state.pendingConsent !== undefined && (
+          <ConsentView
+            sources={state.pendingConsent}
+            onApprove={(name) => props.onConsentApprove?.(name)}
+            onDeny={(name) => props.onConsentDeny?.(name)}
+            onDetails={(name) => props.onConsentDetails?.(name)}
+            onDismiss={() => props.onConsentDismiss?.()}
+            focused={true}
           />
         )}
 

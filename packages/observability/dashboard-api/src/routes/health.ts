@@ -10,6 +10,7 @@ export interface DashboardCapabilities {
   readonly fileSystem: boolean;
   readonly runtimeViews: boolean;
   readonly commands: boolean;
+  readonly dataSources: boolean;
   readonly orchestration: {
     readonly temporal: boolean;
     readonly scheduler: boolean;

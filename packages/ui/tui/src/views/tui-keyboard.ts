@@ -16,6 +16,15 @@ export interface KeyboardCallbacks {
   readonly stop: () => void;
   readonly cancelAndGoBack: () => void;
   readonly closeSessions: () => void;
+  readonly closeDataSources: () => void;
+  readonly dataSourceUp: () => void;
+  readonly dataSourceDown: () => void;
+  readonly dataSourceApprove: () => void;
+  readonly dataSourceSchema: () => void;
+  readonly consentApprove: () => void;
+  readonly consentDeny: () => void;
+  readonly consentDetails: () => void;
+  readonly closeConsent: () => void;
 }
 
 /**
@@ -62,6 +71,54 @@ export function createKeyboardHandler(
       }
       if (view === "sessions") {
         callbacks.closeSessions();
+        return true;
+      }
+      if (view === "datasources") {
+        callbacks.closeDataSources();
+        return true;
+      }
+      if (view === "sourcedetail") {
+        callbacks.closeDataSources();
+        return true;
+      }
+      if (view === "consent") {
+        callbacks.closeConsent();
+        return true;
+      }
+    }
+
+    // Consent view — y/n/d keys
+    if (view === "consent") {
+      if (sequence === "y") {
+        callbacks.consentApprove();
+        return true;
+      }
+      if (sequence === "n") {
+        callbacks.consentDeny();
+        return true;
+      }
+      if (sequence === "d") {
+        callbacks.consentDetails();
+        return true;
+      }
+    }
+
+    // Data sources view — arrow keys and action keys
+    if (view === "datasources") {
+      if (sequence === "\x1b[A" || sequence === "k") {
+        callbacks.dataSourceUp();
+        return true;
+      }
+      if (sequence === "\x1b[B" || sequence === "j") {
+        callbacks.dataSourceDown();
+        return true;
+      }
+      if (sequence === "a") {
+        callbacks.dataSourceApprove();
+        return true;
+      }
+      if (sequence === "s") {
+        callbacks.dataSourceSchema();
         return true;
       }
     }

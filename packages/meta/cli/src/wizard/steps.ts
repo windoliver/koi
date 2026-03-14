@@ -215,3 +215,56 @@ export async function selectChannels(state: WizardState, flags: InitFlags): Prom
 
   return { ...state, channels: value as ChannelName[] };
 }
+
+/**
+ * Scans environment for common data source patterns (e.g., DATABASE_URL)
+ * and offers to include them in the manifest.
+ * Skipped for demo/mesh presets (those get sources from Nexus).
+ */
+export async function selectDataSources(state: WizardState, flags: InitFlags): Promise<StepResult> {
+  // Demo/mesh presets get data sources via Nexus seeding, not wizard
+  if (state.preset === "demo" || state.preset === "mesh") {
+    return state;
+  }
+
+  if (flags.yes) {
+    return state;
+  }
+
+  try {
+    const { probeEnv } = await import("@koi/data-source-discovery");
+    const results = probeEnv(process.env as Readonly<Record<string, string | undefined>>, [
+      "*DATABASE_URL*",
+      "*_DSN",
+      "*_CONNECTION_STRING",
+    ]);
+
+    if (results.length === 0) {
+      return state;
+    }
+
+    const sources: { readonly name: string; readonly protocol: string }[] = [];
+    for (const result of results) {
+      const confirmed = await p.confirm({
+        message: `Found ${result.descriptor.name} (${result.descriptor.protocol}). Add as data source?`,
+      });
+
+      if (p.isCancel(confirmed)) {
+        p.cancel("Setup cancelled.");
+        return null;
+      }
+
+      if (confirmed) {
+        sources.push({
+          name: result.descriptor.name,
+          protocol: result.descriptor.protocol,
+        });
+      }
+    }
+
+    return { ...state, dataSources: sources };
+  } catch {
+    // Discovery not available — skip gracefully
+    return state;
+  }
+}

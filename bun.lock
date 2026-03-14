@@ -1155,6 +1155,7 @@
         "@koi/dashboard-api": "workspace:*",
         "@koi/dashboard-types": "workspace:*",
         "@koi/dashboard-ui": "workspace:*",
+        "@koi/data-source-discovery": "workspace:*",
         "@koi/data-source-stack": "workspace:*",
         "@koi/demo-packs": "workspace:*",
         "@koi/deploy": "workspace:*",

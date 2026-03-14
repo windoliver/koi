@@ -243,7 +243,27 @@ type HarnessDashboardEvent = {
     readonly to: string;
     readonly timestamp: number;
 };
-type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent;
+type DataSourceDashboardEvent = {
+    readonly kind: "datasource";
+    readonly subKind: "data_source_discovered";
+    readonly name: string;
+    readonly protocol: string;
+    readonly source: "manifest" | "env" | "mcp";
+    readonly timestamp: number;
+} | {
+    readonly kind: "datasource";
+    readonly subKind: "connector_forged";
+    readonly name: string;
+    readonly protocol: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "datasource";
+    readonly subKind: "connector_health_update";
+    readonly name: string;
+    readonly healthy: boolean;
+    readonly timestamp: number;
+};
+type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent | DataSourceDashboardEvent;
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 interface DashboardEventBatch {
     readonly events: readonly DashboardEvent[];
@@ -272,6 +292,8 @@ declare function isSchedulerEvent(event: DashboardEvent): event is SchedulerDash
 declare function isTaskBoardEvent(event: DashboardEvent): event is TaskBoardDashboardEvent;
 /** Type guard for harness domain events. */
 declare function isHarnessEvent(event: DashboardEvent): event is HarnessDashboardEvent;
+/** Type guard for data source domain events. */
+declare function isDataSourceEvent(event: DashboardEvent): event is DataSourceDashboardEvent;
 
 /**
  * DashboardDataSource — adapter interface for dashboard data access.
@@ -320,6 +342,58 @@ interface DashboardSystemMetrics {
     readonly totalAgents: number;
     readonly activeChannels: number;
 }
+interface DashboardSchemaColumn {
+    readonly name: string;
+    readonly type: string;
+    readonly nullable: boolean;
+}
+interface DashboardSchemaTable {
+    readonly name: string;
+    readonly schema: string;
+    readonly columns: readonly DashboardSchemaColumn[];
+    readonly foreignKeys?: readonly {
+        readonly column: string;
+        readonly referencedTable: string;
+        readonly referencedColumn: string;
+    }[] | undefined;
+}
+interface DashboardVerificationStage {
+    readonly stage: string;
+    readonly passed: boolean;
+    readonly durationMs: number;
+}
+interface DataSourceFitnessSummary {
+    readonly successCount: number;
+    readonly errorCount: number;
+    readonly successRate: number;
+    readonly p95LatencyMs: number | undefined;
+    readonly lastUsedAt: number;
+}
+interface DataSourceSummary {
+    readonly name: string;
+    readonly protocol: string;
+    readonly status: "approved" | "pending" | "rejected";
+    readonly source: "manifest" | "env" | "mcp";
+    readonly fitness?: DataSourceFitnessSummary | undefined;
+    readonly verificationProgress?: number | undefined;
+}
+interface DataSourceDetail {
+    readonly name: string;
+    readonly protocol: string;
+    readonly status: "approved" | "pending" | "rejected";
+    readonly source: "manifest" | "env" | "mcp";
+    readonly description?: string | undefined;
+    readonly endpoint?: string | undefined;
+    readonly tables?: readonly DashboardSchemaTable[] | undefined;
+    readonly fitness?: DataSourceFitnessSummary | undefined;
+    readonly trailStrength?: number | undefined;
+    readonly verification?: readonly DashboardVerificationStage[] | undefined;
+    readonly provenance?: {
+        readonly builder: string;
+        readonly forgedAt: number;
+        readonly verificationPassed: boolean;
+    } | undefined;
+}
 interface DashboardDataSource {
     readonly listAgents: () => readonly DashboardAgentSummary[] | Promise<readonly DashboardAgentSummary[]>;
     readonly getAgent: (agentId: AgentId) => DashboardAgentDetail | undefined | Promise<DashboardAgentDetail | undefined>;
@@ -328,6 +402,12 @@ interface DashboardDataSource {
     readonly listSkills: () => readonly DashboardSkillSummary[] | Promise<readonly DashboardSkillSummary[]>;
     readonly getSystemMetrics: () => DashboardSystemMetrics | Promise<DashboardSystemMetrics>;
     readonly subscribe: (listener: (event: DashboardEvent) => void) => () => void;
+    readonly listDataSources?: () => readonly DataSourceSummary[] | Promise<readonly DataSourceSummary[]>;
+    readonly approveDataSource?: (name: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly rejectDataSource?: (name: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly getDataSourceSchema?: (name: string) => DataSourceDetail | undefined | Promise<DataSourceDetail | undefined>;
+    /** Trigger a server-side re-scan for new data sources (env, MCP). */
+    readonly rescanDataSources?: () => readonly DataSourceSummary[] | Promise<readonly DataSourceSummary[]>;
 }
 
 /**
@@ -883,6 +963,6 @@ type AdminRoutes = typeof ADMIN_ROUTES;
  */
 declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
 
-export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type DispatchAgentRequest, type DispatchAgentResponse, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DispatchAgentRequest, type DispatchAgentResponse, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isGatewayEvent, isHarnessEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
 "
 `;

@@ -17,6 +17,7 @@ export { createDataSourceDiscoveryProvider } from "./provider.js";
 // Types
 export type {
   ConsentCallbacks,
+  ConsentDecision,
   DataSourceProbeResult,
   DiscoveryConfig,
   McpServerDescriptor,

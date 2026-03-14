@@ -153,6 +153,38 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         sessionPickerLoading: action.loading,
       };
 
+    case "set_data_sources":
+      return {
+        ...state,
+        dataSources: action.sources,
+        dataSourcesLoading: false,
+        selectedDataSourceIndex: Math.min(
+          state.selectedDataSourceIndex,
+          Math.max(0, action.sources.length - 1),
+        ),
+      };
+
+    case "set_data_sources_loading":
+      return { ...state, dataSourcesLoading: action.loading };
+
+    case "select_data_source":
+      return {
+        ...state,
+        selectedDataSourceIndex: Math.max(0, Math.min(action.index, state.dataSources.length - 1)),
+      };
+
+    case "set_source_detail":
+      return { ...state, sourceDetail: action.detail, sourceDetailLoading: false };
+
+    case "set_source_detail_loading":
+      return { ...state, sourceDetailLoading: action.loading };
+
+    case "set_pending_consent":
+      return { ...state, pendingConsent: action.sources };
+
+    case "clear_pending_consent":
+      return { ...state, pendingConsent: undefined };
+
     case "apply_event_batch": {
       const { batch } = action;
       let updatedAgents: readonly DashboardAgentSummary[] | null = null;

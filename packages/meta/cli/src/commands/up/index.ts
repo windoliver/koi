@@ -38,12 +38,28 @@ import { resolveOrchestrationFromAgent } from "../../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../../resolve-temporal.js";
 
 import { printBanner } from "./banner.js";
+import { createInteractiveConsent } from "./consent.js";
 import { provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
 import { runDetach } from "./detach.js";
 import { mapNexusModeToProfile, startNexusStack, stopNexusStack } from "./nexus.js";
 import { runPreflight } from "./preflight.js";
 import { inferPresetId } from "./preset.js";
 import { startTemporalEmbed } from "./temporal.js";
+
+/** Captures probeEnv in a closure to avoid L2→L2 import in the bridge. */
+function createProbeCallback(
+  probeEnv: (
+    env: Readonly<Record<string, string | undefined>>,
+    patterns: readonly string[],
+  ) => readonly { readonly descriptor: import("@koi/core").DataSourceDescriptor }[],
+): () => readonly { readonly descriptor: import("@koi/core").DataSourceDescriptor }[] {
+  return () =>
+    probeEnv(process.env as Readonly<Record<string, string | undefined>>, [
+      "*DATABASE_URL*",
+      "*_DSN",
+      "*_CONNECTION_STRING",
+    ]);
+}
 
 export async function runUp(flags: UpFlags): Promise<void> {
   // 0. DETACH
@@ -189,20 +205,61 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // Data source auto-discovery (non-fatal)
   let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
   let dataSourceTools: readonly import("@koi/core").Tool[] = [];
+  let discoveredSourceNames: readonly { readonly name: string; readonly protocol: string }[] = [];
+  let discoveredSourceSummaries:
+    | readonly import("@koi/dashboard-types").DataSourceSummary[]
+    | undefined;
+  let discoveredDescriptors: readonly import("@koi/core").DataSourceDescriptor[] | undefined;
+  let dataSourceExecutorFn:
+    | ((
+        source: import("@koi/core").DataSourceDescriptor,
+        query: unknown,
+        credential: string | undefined,
+      ) => Promise<{ readonly ok: boolean; readonly data?: unknown; readonly error?: string }>)
+    | undefined;
+  let probeEnvFn:
+    | ((
+        env: Readonly<Record<string, string | undefined>>,
+        patterns: readonly string[],
+      ) => readonly { readonly descriptor: import("@koi/core").DataSourceDescriptor }[])
+    | undefined;
   try {
     const { createDataSourceStack } = await import("@koi/data-source-stack");
+    const manifestEntries = (manifest as unknown as Record<string, unknown>).dataSources as
+      | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
+      | undefined;
     const dsStack = await createDataSourceStack({
-      manifestEntries: (manifest as unknown as Record<string, unknown>).dataSources as
-        | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
-        | undefined,
+      manifestEntries,
       env: process.env,
-      // TODO(#954): Interactive consent for `koi up`.
-      consent: { approve: async () => true },
+      consent: createInteractiveConsent(output),
     });
     if (dsStack.discoveredSources.length > 0) {
       dataSourceProvider = dsStack.provider;
       dataSourceTools = dsStack.tools;
+      discoveredSourceNames = dsStack.discoveredSources.map((s) => ({
+        name: s.name,
+        protocol: s.protocol,
+      }));
+      // Build summaries for the dashboard bridge
+      const manifestNames = new Set((manifestEntries ?? []).map((e) => e.name));
+      discoveredSourceSummaries = dsStack.discoveredSources.map((s) => ({
+        name: s.name,
+        protocol: s.protocol,
+        status: "approved" as const,
+        source: manifestNames.has(s.name)
+          ? ("manifest" as const)
+          : s.mcpToolName !== undefined
+            ? ("mcp" as const)
+            : ("env" as const),
+      }));
+      discoveredDescriptors = dsStack.discoveredSources;
     }
+    // Capture executor for schema probing in dashboard bridge
+    const { executeDataSourceQuery } = await import("@koi/data-source-stack");
+    dataSourceExecutorFn = executeDataSourceQuery;
+    // Capture probeEnv for rescan callback (avoids L2→L2 import in bridge)
+    const { probeEnv } = await import("@koi/data-source-discovery");
+    probeEnvFn = probeEnv;
   } catch {
     // Data source discovery is non-fatal
   }
@@ -280,6 +337,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
       channels: channelNames,
       skills: skillNames,
       fileSystem: createLocalFileSystem(workspaceRoot),
+      discoveredSources: discoveredSourceSummaries,
+      dataSourceDescriptors: discoveredDescriptors,
+      ...(dataSourceExecutorFn !== undefined ? { dataSourceExecutor: dataSourceExecutorFn } : {}),
+      ...(probeEnvFn !== undefined
+        ? {
+            probeEnvForSources: createProbeCallback(probeEnvFn),
+          }
+        : {}),
       dispatchAgent: dispatcher.dispatchAgent,
       onTerminateAgent: async (id) => {
         await dispatcher.terminateAgent(id);
@@ -366,6 +431,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     temporalAdmin,
     temporalUrl,
     provisionedAgents,
+    discoveredSources: discoveredSourceNames,
   });
 
   // 12. TUI
