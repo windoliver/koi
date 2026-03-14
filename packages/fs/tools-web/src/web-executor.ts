@@ -316,6 +316,10 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
           currentLogicalUrl = nextUrl;
           if (redirectPinned?.hostHeader !== undefined) {
             currentHeaders = { ...currentHeaders, Host: redirectPinned.hostHeader };
+          } else if (currentHeaders !== undefined && "Host" in currentHeaders) {
+            // Remove stale Host from a previous pinned hop (e.g., http→https redirect)
+            const { Host: _, ...rest } = currentHeaders;
+            currentHeaders = rest;
           }
 
           // 303 always converts to GET with no body; 301/302 convert to GET for

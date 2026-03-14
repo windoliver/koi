@@ -176,11 +176,18 @@ describe("isBlockedIp", () => {
     expect(isBlockedIp("0:0:0:0:0:0:0:0")).toBe(true);
   });
 
-  // IPv6 link-local (fe80::/10)
+  // IPv6 link-local (fe80::/10 — covers fe80:: through febf::)
   test("blocks IPv6 link-local addresses (fe80::/10)", () => {
     expect(isBlockedIp("fe80::1")).toBe(true);
     expect(isBlockedIp("fe80::abcd:1234")).toBe(true);
     expect(isBlockedIp("FE80::1")).toBe(true);
+    // Full fe80::/10 range: fe80 through febf
+    expect(isBlockedIp("fe90::1")).toBe(true);
+    expect(isBlockedIp("fea0::1")).toBe(true);
+    expect(isBlockedIp("feb0::1")).toBe(true);
+    expect(isBlockedIp("febf::1")).toBe(true);
+    // fec0:: is NOT link-local (outside /10)
+    expect(isBlockedIp("fec0::1")).toBe(false);
   });
 
   // IPv6 unique local (fc00::/7 = fc00::/8 + fd00::/8)

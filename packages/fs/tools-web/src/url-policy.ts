@@ -74,7 +74,6 @@ const BLOCKED_IPV4_CIDRS: readonly (readonly [bigint, bigint])[] = [
  * fc00::/7 covers both fc00::/8 and fd00::/8.
  */
 const BLOCKED_IPV6_PREFIXES: readonly string[] = [
-  "fe80", // link-local (fe80::/10)
   "fc",   // unique local fc00::/8 (part of fc00::/7)
   "fd",   // unique local fd00::/8 (part of fc00::/7)
 ];
@@ -119,7 +118,11 @@ export function isBlockedIp(ip: string): boolean {
   // Unspecified address
   if (normalized === "::" || normalized === "0:0:0:0:0:0:0:0") return true;
 
-  // Prefix-based checks (fe80, fc, fd)
+  // Link-local fe80::/10 — covers fe80:: through febf::
+  // The 10-bit prefix means the third hex char must be 8, 9, a, or b
+  if (/^fe[89ab]/.test(normalized)) return true;
+
+  // Prefix-based checks (fc, fd — unique local)
   for (const prefix of BLOCKED_IPV6_PREFIXES) {
     if (normalized.startsWith(prefix)) return true;
   }

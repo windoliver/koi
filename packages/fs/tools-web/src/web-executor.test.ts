@@ -272,6 +272,32 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
     expect(mutableCalls).toHaveLength(2);
   });
 
+  test("does not leak stale Host header on http-to-https cross-origin redirect", async () => {
+    const mutableHeaderSnaps: Record<string, string | undefined>[] = [];
+    const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const headers = init?.headers as Record<string, string> | undefined;
+      mutableHeaderSnaps.push({ url: reqUrl, Host: headers?.Host });
+      if (reqUrl.includes(PUBLIC_IP) || reqUrl.includes("a.example")) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://b.example/next" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, dnsResolver: mockDnsResolver });
+    const result = await executor.fetch("http://a.example/start");
+
+    expect(result.ok).toBe(true);
+    // First hop: HTTP, pinned — Host should be "a.example"
+    expect(mutableHeaderSnaps[0]?.Host).toBe("a.example");
+    // Second hop: HTTPS, can't pin — Host must NOT be "a.example"
+    expect(mutableHeaderSnaps[1]?.Host).toBeUndefined();
+  });
+
   test("returns error when exceeding max redirects", async () => {
     const fetchFn = mock(async () => {
       return new Response(null, {
