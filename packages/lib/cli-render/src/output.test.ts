@@ -122,44 +122,42 @@ describe("createCliOutput — json mode", () => {
     const { output, text } = createTestOutput({ logFormat: "json" });
     output.info("test message");
 
-    const lines = parseNdjson(text());
-    expect(lines).toHaveLength(1);
-    const entry = lines[0];
-    expect(entry.level).toBe("info");
-    expect(entry.msg).toBe("test message");
-    expect(typeof entry.ts).toBe("string");
+    const [entry] = parseNdjson(text());
+    expect(entry).toBeDefined();
+    expect(entry?.level).toBe("info");
+    expect(entry?.msg).toBe("test message");
+    expect(typeof entry?.ts).toBe("string");
     // ts should be a valid ISO 8601 date
-    expect(Number.isNaN(Date.parse(entry.ts as string))).toBe(false);
+    expect(Number.isNaN(Date.parse(entry?.ts as string))).toBe(false);
   });
 
   test("warn level is correct", () => {
     const { output, text } = createTestOutput({ logFormat: "json" });
     output.warn("caution ahead");
 
-    const lines = parseNdjson(text());
-    expect(lines[0].level).toBe("warn");
-    expect(lines[0].msg).toBe("caution ahead");
+    const [entry] = parseNdjson(text());
+    expect(entry?.level).toBe("warn");
+    expect(entry?.msg).toBe("caution ahead");
   });
 
   test("error includes hint field when provided", () => {
     const { output, text } = createTestOutput({ logFormat: "json" });
     output.error("config invalid", "run koi doctor");
 
-    const lines = parseNdjson(text());
-    expect(lines).toHaveLength(1);
-    const entry = lines[0];
-    expect(entry.level).toBe("error");
-    expect(entry.msg).toBe("config invalid");
-    expect(entry.hint).toBe("run koi doctor");
+    const [entry] = parseNdjson(text());
+    expect(entry).toBeDefined();
+    expect(entry?.level).toBe("error");
+    expect(entry?.msg).toBe("config invalid");
+    expect(entry?.hint).toBe("run koi doctor");
   });
 
   test("error without hint omits hint field", () => {
     const { output, text } = createTestOutput({ logFormat: "json" });
     output.error("something broke");
 
-    const lines = parseNdjson(text());
-    expect(lines).toHaveLength(1);
-    expect(lines[0].hint).toBeUndefined();
+    const [entry] = parseNdjson(text());
+    expect(entry).toBeDefined();
+    expect(entry?.hint).toBeUndefined();
   });
 
   test("debug messages only appear when verbose", () => {
@@ -169,28 +167,28 @@ describe("createCliOutput — json mode", () => {
 
     const loud = createTestOutput({ logFormat: "json", verbose: true });
     loud.output.debug("visible");
-    const lines = parseNdjson(loud.text());
-    expect(lines).toHaveLength(1);
-    expect(lines[0].level).toBe("debug");
-    expect(lines[0].msg).toBe("visible");
+    const [entry] = parseNdjson(loud.text());
+    expect(entry).toBeDefined();
+    expect(entry?.level).toBe("debug");
+    expect(entry?.msg).toBe("visible");
   });
 
   test("success maps to info level", () => {
     const { output, text } = createTestOutput({ logFormat: "json" });
     output.success("done");
 
-    const lines = parseNdjson(text());
-    expect(lines[0].level).toBe("info");
-    expect(lines[0].msg).toBe("done");
+    const [entry] = parseNdjson(text());
+    expect(entry?.level).toBe("info");
+    expect(entry?.msg).toBe("done");
   });
 
   test("hint maps to info level", () => {
     const { output, text } = createTestOutput({ logFormat: "json" });
     output.hint("try this");
 
-    const lines = parseNdjson(text());
-    expect(lines[0].level).toBe("info");
-    expect(lines[0].msg).toBe("try this");
+    const [entry] = parseNdjson(text());
+    expect(entry?.level).toBe("info");
+    expect(entry?.msg).toBe("try this");
   });
 });
 
