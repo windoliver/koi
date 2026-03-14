@@ -73,6 +73,10 @@ export function createKeyboardHandler(
         callbacks.closeDataSources();
         return true;
       }
+      if (view === "sourcedetail") {
+        callbacks.closeDataSources();
+        return true;
+      }
     }
 
     // Data sources view — arrow keys and action keys

@@ -665,34 +665,54 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   }
 
   async function viewDataSourceSchema(name: string): Promise<void> {
+    store.dispatch({ kind: "set_source_detail_loading", loading: true });
+    store.dispatch({ kind: "set_view", view: "sourcedetail" });
+
     try {
       const res = await fetch(`${adminUrl}/data-sources/${encodeURIComponent(name)}/schema`, {
         signal: AbortSignal.timeout(3000),
       });
       if (res.ok) {
-        const data = (await res.json()) as { readonly ok?: boolean; readonly data?: unknown };
+        const data = (await res.json()) as {
+          readonly ok?: boolean;
+          readonly data?: Readonly<Record<string, unknown>>;
+        };
         if (data.ok === true && data.data !== undefined) {
-          addLifecycleMessage(`Schema for "${name}":\n${JSON.stringify(data.data, null, 2)}`);
-        } else {
-          addLifecycleMessage(`No schema available for "${name}"`);
+          store.dispatch({ kind: "set_source_detail", detail: data.data });
+          return;
         }
-      } else {
-        addLifecycleMessage(`Schema not available for "${name}"`);
       }
     } catch {
-      addLifecycleMessage(`Failed to fetch schema for "${name}"`);
+      // Fetch failed
     }
+    store.dispatch({ kind: "set_source_detail", detail: null });
+    addLifecycleMessage(`Schema not available for "${name}"`);
   }
 
   async function rescanDataSources(): Promise<void> {
     addLifecycleMessage("Re-scanning environment for data sources...");
-    // Refresh the data sources list from the admin API
-    await openDataSources();
-    const sources = store.getState().dataSources;
-    if (sources.length > 0) {
-      addLifecycleMessage(`Found ${String(sources.length)} data source(s)`);
-    } else {
-      addLifecycleMessage("No data sources found");
+    try {
+      // Trigger server-side re-scan which probes env for new sources
+      const res = await fetch(`${adminUrl}/data-sources/rescan`, {
+        method: "POST",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          readonly ok?: boolean;
+          readonly data?: readonly import("@koi/dashboard-types").DataSourceSummary[];
+        };
+        if (data.ok === true && data.data !== undefined) {
+          store.dispatch({ kind: "set_data_sources", sources: data.data });
+          addLifecycleMessage(`Scan complete: ${String(data.data.length)} data source(s)`);
+          return;
+        }
+      }
+      // Fallback: just refresh the list
+      await openDataSources();
+    } catch {
+      addLifecycleMessage("Re-scan failed — refreshing list");
+      await openDataSources();
     }
   }
 
@@ -725,7 +745,13 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     closeSessions,
     closeDataSources: () => {
-      store.dispatch({ kind: "set_view", view: "agents" });
+      const currentView = store.getState().view;
+      // Navigate back: sourcedetail → datasources → agents
+      if (currentView === "sourcedetail") {
+        store.dispatch({ kind: "set_view", view: "datasources" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "agents" });
+      }
     },
     dataSourceUp: () => {
       const idx = store.getState().selectedDataSourceIndex;

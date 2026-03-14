@@ -34,7 +34,13 @@ export interface SessionState {
 // ─── View Types ──────────────────────────────────────────────────────
 
 /** Which TUI view is currently active. */
-export type TuiView = "agents" | "console" | "datasources" | "palette" | "sessions";
+export type TuiView =
+  | "agents"
+  | "console"
+  | "datasources"
+  | "palette"
+  | "sessions"
+  | "sourcedetail";
 
 /** Admin API connection state. */
 export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
@@ -71,6 +77,10 @@ export interface TuiState {
   readonly dataSourcesLoading: boolean;
   /** Selected data source index. */
   readonly selectedDataSourceIndex: number;
+  /** Source detail data for the detail view. */
+  readonly sourceDetail: Readonly<Record<string, unknown>> | null;
+  /** Whether source detail is loading. */
+  readonly sourceDetailLoading: boolean;
 }
 
 /** Create initial TUI state for a given admin URL. */
@@ -89,6 +99,8 @@ export function createInitialState(adminUrl: string): TuiState {
     dataSources: [],
     dataSourcesLoading: false,
     selectedDataSourceIndex: 0,
+    sourceDetail: null,
+    sourceDetailLoading: false,
   };
 }
 
@@ -143,6 +155,14 @@ export type TuiAction =
   | {
       readonly kind: "select_data_source";
       readonly index: number;
+    }
+  | {
+      readonly kind: "set_source_detail";
+      readonly detail: Readonly<Record<string, unknown>> | null;
+    }
+  | {
+      readonly kind: "set_source_detail_loading";
+      readonly loading: boolean;
     };
 
 /** Maximum messages kept in session memory (sliding window). */

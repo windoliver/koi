@@ -42,6 +42,18 @@ export async function handleApproveDataSource(
   return jsonResponse(null);
 }
 
+export async function handleRescanDataSources(
+  _req: Request,
+  _params: RouteParams,
+  dataSource: DashboardDataSource,
+): Promise<Response> {
+  if (dataSource.rescanDataSources === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Data source re-scan not supported", 501);
+  }
+  const sources = await dataSource.rescanDataSources();
+  return jsonResponse(sources);
+}
+
 export async function handleGetDataSourceSchema(
   _req: Request,
   params: RouteParams,

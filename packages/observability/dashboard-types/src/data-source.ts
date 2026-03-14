@@ -112,4 +112,9 @@ export interface DashboardDataSource {
     | Readonly<Record<string, unknown>>
     | undefined
     | Promise<Readonly<Record<string, unknown>> | undefined>;
+
+  /** Trigger a server-side re-scan for new data sources (env, MCP). */
+  readonly rescanDataSources?: () =>
+    | readonly DataSourceSummary[]
+    | Promise<readonly DataSourceSummary[]>;
 }

@@ -14,6 +14,8 @@ import { CommandPaletteView } from "./command-palette-view.js";
 import { ConsoleView } from "./console-view.js";
 import { DataSourcesView } from "./data-sources-view.js";
 import { SessionPickerView } from "./session-picker-view.js";
+import type { SourceDetailData } from "./source-detail-view.js";
+import { SourceDetailView } from "./source-detail-view.js";
 import { StatusBarView } from "./status-bar-view.js";
 import { useStoreState } from "./store-bridge.js";
 
@@ -111,6 +113,19 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             selectedIndex={state.selectedDataSourceIndex}
             onApprove={props.onDataSourceApprove}
             onViewSchema={props.onDataSourceViewSchema}
+            focused={true}
+          />
+        )}
+
+        {view === "sourcedetail" && (
+          <SourceDetailView
+            data={state.sourceDetail as SourceDetailData | null}
+            loading={state.sourceDetailLoading}
+            onApprove={props.onDataSourceApprove}
+            onViewSchema={props.onDataSourceViewSchema}
+            onBack={() => {
+              props.store.dispatch({ kind: "set_view", view: "datasources" });
+            }}
             focused={true}
           />
         )}

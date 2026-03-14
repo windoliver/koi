@@ -173,6 +173,12 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         selectedDataSourceIndex: Math.max(0, Math.min(action.index, state.dataSources.length - 1)),
       };
 
+    case "set_source_detail":
+      return { ...state, sourceDetail: action.detail, sourceDetailLoading: false };
+
+    case "set_source_detail_loading":
+      return { ...state, sourceDetailLoading: action.loading };
+
     case "apply_event_batch": {
       const { batch } = action;
       let updatedAgents: readonly DashboardAgentSummary[] | null = null;

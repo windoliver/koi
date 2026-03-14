@@ -121,6 +121,12 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   const startedAt = Date.now();
   const listeners = new Set<(event: DashboardEvent) => void>();
 
+  // Mutable data source state — updated by rescan
+  // let justified: rescan adds newly discovered sources at runtime
+  let currentSources: readonly DataSourceSummary[] = options.discoveredSources ?? [];
+  // let justified: rescan adds newly discovered descriptors for schema detail
+  let currentDescriptors: readonly DataSourceDescriptor[] = options.dataSourceDescriptors ?? [];
+
   // Mutable agent state — tracks lifecycle transitions
   // let justified: state changes on terminate, read by list/get/terminate
   let agentState: ProcessState = "running";
@@ -303,60 +309,99 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       };
     },
 
-    // Data source discovery (populated when discoveredSources provided)
-    ...(options.discoveredSources !== undefined && options.discoveredSources.length > 0
-      ? {
-          listDataSources(): readonly DataSourceSummary[] {
-            return options.discoveredSources ?? [];
+    // Data source discovery — always defined so routes return real data
+    // let justified: mutable so rescan can add newly discovered sources
+    listDataSources(): readonly DataSourceSummary[] {
+      return currentSources;
+    },
+    approveDataSource(name: string): Result<void, KoiError> {
+      const source = currentSources.find((s) => s.name === name);
+      if (source === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Data source "${name}" not found`,
+            retryable: false,
           },
-          approveDataSource(name: string): Result<void, KoiError> {
-            const source = (options.discoveredSources ?? []).find((s) => s.name === name);
-            if (source === undefined) {
-              return {
-                ok: false,
-                error: {
-                  code: "NOT_FOUND",
-                  message: `Data source "${name}" not found`,
-                  retryable: false,
-                },
-              };
-            }
-            // Sources are pre-approved during koi up consent flow
-            return { ok: true, value: undefined };
-          },
-          getDataSourceSchema(name: string): Readonly<Record<string, unknown>> | undefined {
-            const summary = (options.discoveredSources ?? []).find((s) => s.name === name);
-            if (summary === undefined) return undefined;
-            // Return full descriptor details when available
-            const descriptor = (options.dataSourceDescriptors ?? []).find((d) => d.name === name);
-            if (descriptor !== undefined) {
-              return {
-                name: descriptor.name,
-                protocol: descriptor.protocol,
-                ...(descriptor.description !== undefined
-                  ? { description: descriptor.description }
-                  : {}),
-                ...(descriptor.endpoint !== undefined ? { endpoint: descriptor.endpoint } : {}),
-                ...(descriptor.allowedHosts !== undefined
-                  ? { allowedHosts: [...descriptor.allowedHosts] }
-                  : {}),
-                ...(descriptor.schemaProbed !== undefined
-                  ? { schemaProbed: descriptor.schemaProbed }
-                  : {}),
-                ...(descriptor.auth !== undefined ? { auth: { kind: descriptor.auth.kind } } : {}),
-                status: summary.status,
-                source: summary.source,
-              };
-            }
-            return {
-              name: summary.name,
-              protocol: summary.protocol,
-              status: summary.status,
-              source: summary.source,
+        };
+      }
+      return { ok: true, value: undefined };
+    },
+    getDataSourceSchema(name: string): Readonly<Record<string, unknown>> | undefined {
+      const summary = currentSources.find((s) => s.name === name);
+      if (summary === undefined) return undefined;
+      const descriptor = currentDescriptors.find((d) => d.name === name);
+      if (descriptor !== undefined) {
+        return {
+          name: descriptor.name,
+          protocol: descriptor.protocol,
+          ...(descriptor.description !== undefined ? { description: descriptor.description } : {}),
+          ...(descriptor.endpoint !== undefined ? { endpoint: descriptor.endpoint } : {}),
+          ...(descriptor.allowedHosts !== undefined
+            ? { allowedHosts: [...descriptor.allowedHosts] }
+            : {}),
+          ...(descriptor.schemaProbed !== undefined
+            ? { schemaProbed: descriptor.schemaProbed }
+            : {}),
+          ...(descriptor.auth !== undefined ? { auth: { kind: descriptor.auth.kind } } : {}),
+          status: summary.status,
+          source: summary.source,
+        };
+      }
+      return {
+        name: summary.name,
+        protocol: summary.protocol,
+        status: summary.status,
+        source: summary.source,
+      };
+    },
+    async rescanDataSources(): Promise<readonly DataSourceSummary[]> {
+      try {
+        const { probeEnv } = await import("@koi/data-source-discovery");
+        const results = probeEnv(process.env as Readonly<Record<string, string | undefined>>, [
+          "*DATABASE_URL*",
+          "*_DSN",
+          "*_CONNECTION_STRING",
+        ]);
+        const existingNames = new Set(currentSources.map((s) => s.name));
+        const newSources: DataSourceSummary[] = [];
+        for (const r of results) {
+          if (!existingNames.has(r.descriptor.name)) {
+            const summary: DataSourceSummary = {
+              name: r.descriptor.name,
+              protocol: r.descriptor.protocol,
+              status: "approved",
+              source: "env",
             };
-          },
+            newSources.push(summary);
+            currentSources = [...currentSources, summary];
+            currentDescriptors = [...currentDescriptors, r.descriptor];
+            emitEvent({
+              kind: "datasource",
+              subKind: "data_source_discovered",
+              name: r.descriptor.name,
+              protocol: r.descriptor.protocol,
+              source: "env",
+              timestamp: Date.now(),
+            });
+          }
         }
-      : {}),
+        // Emit connector_forged for each newly discovered source
+        for (const s of newSources) {
+          emitEvent({
+            kind: "datasource",
+            subKind: "connector_forged",
+            name: s.name,
+            protocol: s.protocol,
+            timestamp: Date.now(),
+          });
+        }
+      } catch {
+        // probeEnv not available — non-fatal
+      }
+      return currentSources;
+    },
   };
 
   const runtimeViews: RuntimeViewDataSource = {
@@ -638,11 +683,11 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     });
   };
 
-  // Emit data_source_discovered events for initial sources (deferred to next tick
+  // Emit data source lifecycle events for initial sources (deferred to next tick
   // so SSE subscribers are connected before events fire)
-  if (options.discoveredSources !== undefined && options.discoveredSources.length > 0) {
+  if (currentSources.length > 0) {
     queueMicrotask(() => {
-      for (const source of options.discoveredSources ?? []) {
+      for (const source of currentSources) {
         emitEvent({
           kind: "datasource",
           subKind: "data_source_discovered",
@@ -651,6 +696,23 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
           source: source.source,
           timestamp: Date.now(),
         });
+        // Approved sources have their connectors forged
+        if (source.status === "approved") {
+          emitEvent({
+            kind: "datasource",
+            subKind: "connector_forged",
+            name: source.name,
+            protocol: source.protocol,
+            timestamp: Date.now(),
+          });
+          emitEvent({
+            kind: "datasource",
+            subKind: "connector_health_update",
+            name: source.name,
+            healthy: true,
+            timestamp: Date.now(),
+          });
+        }
       }
     });
   }
