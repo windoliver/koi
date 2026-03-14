@@ -24,7 +24,7 @@ import type {
 import { DEFAULT_FORGE_BUDGET, RETRYABLE_DEFAULTS } from "@koi/core";
 import type { CrystallizeHandle } from "@koi/crystallize";
 import { createAutoForgeMiddleware, createCrystallizeMiddleware } from "@koi/crystallize";
-import type { ForgeDashboardEvent } from "@koi/dashboard-types";
+import type { DashboardEvent } from "@koi/dashboard-types";
 import type { ForgeDemandHandle } from "@koi/forge-demand";
 import { createForgeDemandDetector } from "@koi/forge-demand";
 import type { ExaptationHandle } from "@koi/forge-exaptation";
@@ -133,7 +133,7 @@ export interface ForgeMiddlewareStackConfig {
    * Optional SSE event sink for self-improvement observability.
    * When provided, forge callbacks are bridged to ForgeDashboardEvent SSE events.
    */
-  readonly onDashboardEvent?: ((events: readonly ForgeDashboardEvent[]) => void) | undefined;
+  readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,11 +176,16 @@ export function createForgeMiddlewareStack(
   const clock = config.clock ?? Date.now;
   const snapshotStore = config.snapshotStore ?? createNoOpSnapshotStore();
 
-  // Optional dashboard event bridge for self-improvement observability
+  // Optional dashboard event bridge for self-improvement observability.
+  // The bridge batches events via microtask; the per-event sink is fanned out here.
   const bridge =
     config.onDashboardEvent !== undefined
       ? createForgeEventBridge({
-          onDashboardEvent: config.onDashboardEvent,
+          onDashboardEvent: (events) => {
+            for (const event of events) {
+              config.onDashboardEvent?.(event);
+            }
+          },
           onBridgeError: config.onError,
           clock,
         })

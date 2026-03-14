@@ -22,6 +22,7 @@ import type {
 import { sessionId } from "@koi/core";
 import type { AdminPanelBridgeResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
+import type { DashboardEvent } from "@koi/dashboard-types";
 import { createHealthHandler, createHealthServer } from "@koi/deploy";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeConfiguredKoi } from "@koi/forge";
@@ -227,6 +228,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     dataSourceTools,
   });
 
+  // Late-binding event sink for forge/monitor SSE events
+  // let justified: mutable ref set when adminBridge is created
+  let emitDashboardEvent: ((event: DashboardEvent) => void) | undefined;
+
   const { runtime } = await createForgeConfiguredKoi({
     manifest,
     adapter,
@@ -234,6 +239,13 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     providers: composed.providers,
     extensions,
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
+    ...(flags.admin
+      ? {
+          onDashboardEvent: (event: DashboardEvent) => {
+            emitDashboardEvent?.(event);
+          },
+        }
+      : {}),
   });
 
   // 6c. Connect resolved channels and wire per-session concurrency
@@ -286,6 +298,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       ...(forgeBootstrap !== undefined
         ? { forgeStore: forgeBootstrap.store, forgeRuntime: forgeBootstrap.runtime }
         : {}),
+      onDashboardEvent: (event) => {
+        emitDashboardEvent?.(event as DashboardEvent);
+      },
     });
     adminDispatcher = dispatcher;
 
@@ -307,6 +322,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
           }
         : {}),
     });
+
+    // Wire forge/monitor SSE event sink now that the bridge exists
+    emitDashboardEvent = adminBridge.emitEvent;
   }
 
   // Agent directory name for chat persistence — matches the bridge's synthetic agentId

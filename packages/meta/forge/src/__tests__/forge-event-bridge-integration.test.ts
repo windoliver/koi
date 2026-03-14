@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { ForgeStore, KoiError, Result, TurnTrace } from "@koi/core";
-import type { ForgeDashboardEvent } from "@koi/dashboard-types";
+import type { DashboardEvent } from "@koi/dashboard-types";
 import { createInMemoryForgeStore } from "@koi/forge-tools";
 import { createDefaultForgeConfig } from "@koi/forge-types";
 import { createForgeMiddlewareStack } from "../create-forge-middleware-stack.js";
@@ -22,7 +22,7 @@ function emptyTraces(): Promise<Result<readonly TurnTrace[], KoiError>> {
 
 describe("forge-event-bridge integration", () => {
   test("createForgeMiddlewareStack with onDashboardEvent creates bridge", () => {
-    const received: ForgeDashboardEvent[][] = [];
+    const received: DashboardEvent[] = [];
 
     const result = createForgeMiddlewareStack({
       forgeStore: createTestStore(),
@@ -30,8 +30,8 @@ describe("forge-event-bridge integration", () => {
       scope: "agent",
       readTraces: emptyTraces,
       resolveBrickId: () => undefined,
-      onDashboardEvent: (events) => {
-        received.push([...events]);
+      onDashboardEvent: (event) => {
+        received.push(event);
       },
     });
 

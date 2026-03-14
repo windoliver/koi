@@ -18,7 +18,7 @@ import type {
   TurnTrace,
 } from "@koi/core";
 import type { CrystallizeHandle } from "@koi/crystallize";
-import type { ForgeDashboardEvent } from "@koi/dashboard-types";
+import type { DashboardEvent } from "@koi/dashboard-types";
 import type { ForgeDemandHandle } from "@koi/forge-demand";
 import type { ExaptationHandle } from "@koi/forge-exaptation";
 import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
@@ -50,7 +50,7 @@ export interface CreateFullForgeSystemConfig {
   /** Optional SnapshotStore for quarantine/demotion event recording. Falls back to no-op. */
   readonly snapshotStore?: SnapshotStore | undefined;
   /** Optional SSE event sink for self-improvement observability. */
-  readonly onDashboardEvent?: ((events: readonly ForgeDashboardEvent[]) => void) | undefined;
+  readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------

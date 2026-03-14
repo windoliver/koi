@@ -26,7 +26,7 @@ import type {
   ToolPolicy,
   TurnTrace,
 } from "@koi/core";
-import type { ForgeDashboardEvent, MonitorDashboardEvent } from "@koi/dashboard-types";
+import type { DashboardEvent } from "@koi/dashboard-types";
 import type { KoiRuntime } from "@koi/engine";
 import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import type { ForgeConfig } from "@koi/forge-types";
@@ -72,11 +72,11 @@ export interface ForgeConfiguredKoiOptions extends ConfiguredKoiOptions {
   readonly forgeSnapshotStore?: SnapshotStore | undefined;
   /**
    * Optional SSE event sink for self-improvement observability.
-   * When provided, forge + monitor events are bridged to dashboard SSE events.
+   * When provided, forge events are batched and delivered via this callback.
+   * Monitor anomaly events are also routed through this sink individually
+   * by wrapping the agent-monitor's onAnomaly callback.
    */
-  readonly onDashboardEvent?: ((events: readonly ForgeDashboardEvent[]) => void) | undefined;
-  /** Optional sink for individual monitor events (anomaly detection). */
-  readonly onMonitorEvent?: ((event: MonitorDashboardEvent) => void) | undefined;
+  readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
 }
 
 /** Return type for createForgeConfiguredKoi — runtime + optional forge system handle. */
@@ -324,12 +324,15 @@ export async function createForgeConfiguredKoi(
   ];
 
   // Wire monitor event bridge into agent-monitor callbacks when dashboard events are enabled.
-  // This wraps the existing onAnomaly callback so monitor anomalies also emit MonitorDashboardEvent.
+  // This wraps the existing onAnomaly callback so monitor anomalies also emit MonitorDashboardEvent
+  // through the same onDashboardEvent sink as forge events.
   const monitorCallbacks =
-    options.onMonitorEvent !== undefined
+    options.onDashboardEvent !== undefined
       ? (() => {
           const monitorBridge = createMonitorEventBridge({
-            onDashboardEvent: options.onMonitorEvent,
+            onDashboardEvent: (event) => {
+              options.onDashboardEvent?.(event);
+            },
           });
           const existingCbs = options.callbacks?.["agent-monitor"] ?? options.callbacks?.monitor;
           return {
