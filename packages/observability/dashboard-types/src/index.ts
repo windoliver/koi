@@ -49,6 +49,7 @@ export type {
   DashboardDataSource,
   DashboardSkillSummary,
   DashboardSystemMetrics,
+  DataSourceSummary,
 } from "./data-source.js";
 // Events
 export type {

@@ -359,6 +359,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         openSessionPicker().catch(() => {});
         break;
 
+      case "sources":
+        openDataSources().catch(() => {});
+        break;
+
       case "logs":
         showAgentLogs().catch(() => {});
         break;
@@ -559,6 +563,32 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   function closeSessions(): void {
     store.dispatch({ kind: "set_view", view: "agents" });
+  }
+
+  // ─── Data sources ────────────────────────────────────────────────────
+
+  async function openDataSources(): Promise<void> {
+    store.dispatch({ kind: "set_data_sources_loading", loading: true });
+    store.dispatch({ kind: "set_view", view: "datasources" });
+
+    try {
+      const res = await fetch(`${adminUrl}/data-sources`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          readonly ok?: boolean;
+          readonly data?: readonly import("@koi/dashboard-types").DataSourceSummary[];
+        };
+        if (data.ok === true && data.data !== undefined) {
+          store.dispatch({ kind: "set_data_sources", sources: data.data });
+          return;
+        }
+      }
+    } catch {
+      // Fetch failed — show empty state
+    }
+    store.dispatch({ kind: "set_data_sources", sources: [] });
   }
 
   // ─── Data fetching ──────────────────────────────────────────────────

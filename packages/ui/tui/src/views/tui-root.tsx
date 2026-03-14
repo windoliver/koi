@@ -12,6 +12,7 @@ import { COLORS } from "../theme.js";
 import { AgentListView } from "./agent-list-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { ConsoleView } from "./console-view.js";
+import { DataSourcesView } from "./data-sources-view.js";
 import { SessionPickerView } from "./session-picker-view.js";
 import { StatusBarView } from "./status-bar-view.js";
 import { useStoreState } from "./store-bridge.js";
@@ -91,6 +92,14 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onSubmit={props.onConsoleInput}
             focused={view === "console"}
             syntaxStyle={props.syntaxStyle}
+          />
+        )}
+
+        {view === "datasources" && (
+          <DataSourcesView
+            sources={state.dataSources}
+            loading={state.dataSourcesLoading}
+            focused={true}
           />
         )}
 

@@ -35,6 +35,8 @@ export interface WizardState {
   readonly addons: readonly string[];
   /** Demo pack ID to auto-seed. */
   readonly demoPack: string | undefined;
+  /** Discovered data sources from env probing. */
+  readonly dataSources: readonly { readonly name: string; readonly protocol: string }[];
 }
 
 export const DEFAULT_STATE: WizardState = {
@@ -49,4 +51,5 @@ export const DEFAULT_STATE: WizardState = {
   preset: "local",
   addons: [],
   demoPack: undefined,
+  dataSources: [],
 } as const;

@@ -38,6 +38,7 @@ import { resolveOrchestrationFromAgent } from "../../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../../resolve-temporal.js";
 
 import { printBanner } from "./banner.js";
+import { createInteractiveConsent } from "./consent.js";
 import { provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
 import { runDetach } from "./detach.js";
 import { mapNexusModeToProfile, startNexusStack, stopNexusStack } from "./nexus.js";
@@ -189,6 +190,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // Data source auto-discovery (non-fatal)
   let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
   let dataSourceTools: readonly import("@koi/core").Tool[] = [];
+  let discoveredSourceNames: readonly { readonly name: string; readonly protocol: string }[] = [];
   try {
     const { createDataSourceStack } = await import("@koi/data-source-stack");
     const dsStack = await createDataSourceStack({
@@ -196,12 +198,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
         | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
         | undefined,
       env: process.env,
-      // TODO(#954): Interactive consent for `koi up`.
-      consent: { approve: async () => true },
+      consent: createInteractiveConsent(output),
     });
     if (dsStack.discoveredSources.length > 0) {
       dataSourceProvider = dsStack.provider;
       dataSourceTools = dsStack.tools;
+      discoveredSourceNames = dsStack.discoveredSources.map((s) => ({
+        name: s.name,
+        protocol: s.protocol,
+      }));
     }
   } catch {
     // Data source discovery is non-fatal
@@ -366,6 +371,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     temporalAdmin,
     temporalUrl,
     provisionedAgents,
+    discoveredSources: discoveredSourceNames,
   });
 
   // 12. TUI

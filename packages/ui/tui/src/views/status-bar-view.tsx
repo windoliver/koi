@@ -13,6 +13,7 @@ import type { TuiState, TuiView } from "../state/types.js";
 const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   agents: "↑↓ navigate  Enter select  Ctrl+P commands  q quit",
   console: "Type message  Enter send  Esc back  Ctrl+P commands",
+  datasources: "Esc back  Ctrl+P commands",
   palette: "↑↓ navigate  Enter select  Esc close",
   sessions: "↑↓ navigate  Enter select  Esc back",
 } as const;

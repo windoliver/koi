@@ -31,6 +31,7 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "terminate", label: "/terminate", description: "Terminate current agent" },
   { id: "cancel", label: "/cancel", description: "Cancel active stream" },
   { id: "sessions", label: "/sessions", description: "Browse agent sessions" },
+  { id: "sources", label: "/sources", description: "Show data source panel" },
   { id: "logs", label: "/logs", description: "Show agent lifecycle events" },
   { id: "health", label: "/health", description: "Check server health" },
   {

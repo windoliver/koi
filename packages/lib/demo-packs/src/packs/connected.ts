@@ -114,6 +114,28 @@ const CORPUS_DOCS: readonly {
   },
 ];
 
+const DATA_SOURCE_SEEDS: readonly {
+  readonly name: string;
+  readonly protocol: string;
+  readonly description: string;
+  readonly tables?: readonly string[];
+  readonly sampleQueries?: readonly string[];
+}[] = [
+  {
+    name: "customers-db",
+    protocol: "sqlite",
+    description: "Demo customer database",
+    tables: ["customers", "orders", "subscriptions"],
+    sampleQueries: ["SELECT * FROM customers LIMIT 10"],
+  },
+  {
+    name: "analytics-api",
+    protocol: "http",
+    description: "Demo analytics REST endpoint",
+    sampleQueries: ["GET /api/v1/metrics/churn"],
+  },
+];
+
 // ---------------------------------------------------------------------------
 // Seeder
 // ---------------------------------------------------------------------------
@@ -155,7 +177,27 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
   counts.corpus = corpusCount;
   summary.push(`Corpus: ${String(corpusCount)} documents ready`);
 
-  const allSeeded = memoryCount === MEMORY_ENTRIES.length && corpusCount === CORPUS_DOCS.length;
+  // 3. Seed data source descriptors for discovery demo
+  let dataSourceCount = 0;
+  for (const ds of DATA_SOURCE_SEEDS) {
+    const result = await writeJson(
+      ctx.nexusClient,
+      `/agents/${ctx.agentName}/workspace/datasources/${ds.name}`,
+      ds,
+    );
+    if (result.ok) {
+      dataSourceCount++;
+    } else if (ctx.verbose) {
+      summary.push(`  warn: failed to seed datasource ${ds.name}: ${result.error.message}`);
+    }
+  }
+  counts.dataSources = dataSourceCount;
+  summary.push(`Data Sources: ${String(dataSourceCount)} descriptors ready`);
+
+  const allSeeded =
+    memoryCount === MEMORY_ENTRIES.length &&
+    corpusCount === CORPUS_DOCS.length &&
+    dataSourceCount === DATA_SOURCE_SEEDS.length;
 
   return { ok: allSeeded, counts, summary };
 }
@@ -194,7 +236,7 @@ export const CONNECTED_PACK: DemoPack = {
   prompts: [
     "What did I learn about React Server Components?",
     "Summarize everything I know about authentication.",
-    "Find my notes about the deployment pipeline.",
-    "What are my API design guidelines?",
+    "What customers have the highest churn risk?",
+    "Show me recent orders from enterprise accounts.",
   ],
 } as const;

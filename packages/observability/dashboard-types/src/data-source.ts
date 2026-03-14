@@ -58,6 +58,17 @@ export interface DashboardSystemMetrics {
 }
 
 // ---------------------------------------------------------------------------
+// Data source summary (for data source discovery UX)
+// ---------------------------------------------------------------------------
+
+export interface DataSourceSummary {
+  readonly name: string;
+  readonly protocol: string;
+  readonly status: "approved" | "pending" | "rejected";
+  readonly source: "manifest" | "env" | "mcp";
+}
+
+// ---------------------------------------------------------------------------
 // Data source interface
 // ---------------------------------------------------------------------------
 
@@ -85,4 +96,20 @@ export interface DashboardDataSource {
   readonly getSystemMetrics: () => DashboardSystemMetrics | Promise<DashboardSystemMetrics>;
 
   readonly subscribe: (listener: (event: DashboardEvent) => void) => () => void;
+
+  // Data source discovery (optional — available when discovery is enabled)
+  readonly listDataSources?: () =>
+    | readonly DataSourceSummary[]
+    | Promise<readonly DataSourceSummary[]>;
+
+  readonly approveDataSource?: (
+    name: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  readonly getDataSourceSchema?: (
+    name: string,
+  ) =>
+    | Readonly<Record<string, unknown>>
+    | undefined
+    | Promise<Readonly<Record<string, unknown>> | undefined>;
 }

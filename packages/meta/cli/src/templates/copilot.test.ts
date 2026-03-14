@@ -14,6 +14,7 @@ const STATE: WizardState = {
   preset: "local",
   addons: [],
   demoPack: undefined,
+  dataSources: [],
 };
 
 describe("generateCopilot", () => {

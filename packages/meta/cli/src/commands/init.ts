@@ -21,6 +21,7 @@ import {
   enterDescription,
   enterName,
   selectChannels,
+  selectDataSources,
   selectEngine,
   selectModel,
   selectPreset,
@@ -65,6 +66,7 @@ export async function runInit(flags: InitFlags): Promise<void> {
     selectModel,
     selectEngine,
     selectChannels,
+    selectDataSources,
   ];
 
   let state: WizardState = initialState;

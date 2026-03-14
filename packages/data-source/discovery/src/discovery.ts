@@ -84,9 +84,27 @@ export async function discoverSources(
     }
   }
 
-  // Consent gating
+  // Consent gating — batch decision first, then per-source fallback
+  const deduped = [...seen.values()];
+
+  if (input.consent?.presentBatch !== undefined && deduped.length > 0) {
+    const decision = await input.consent.presentBatch(deduped.map((r) => r.descriptor));
+
+    switch (decision.kind) {
+      case "approve_all":
+        return deduped.map((r) => r.descriptor);
+      case "deny_all":
+        return [];
+      case "select": {
+        const approvedSet = new Set(decision.approved);
+        return deduped.filter((r) => approvedSet.has(r.descriptor.name)).map((r) => r.descriptor);
+      }
+    }
+  }
+
+  // Per-source consent fallback
   const descriptors: DataSourceDescriptor[] = [];
-  for (const result of seen.values()) {
+  for (const result of deduped) {
     if (input.consent !== undefined) {
       const approved = await input.consent.approve(result.descriptor);
       if (!approved) continue;

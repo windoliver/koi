@@ -5,7 +5,11 @@
  * to keep backward compatibility. TUI-specific state types defined here.
  */
 
-import type { DashboardAgentSummary, DashboardEventBatch } from "@koi/dashboard-types";
+import type {
+  DashboardAgentSummary,
+  DashboardEventBatch,
+  DataSourceSummary,
+} from "@koi/dashboard-types";
 
 // Re-export shared types from dashboard-client
 /** TUI-specific error alias for backward compat. */
@@ -30,7 +34,7 @@ export interface SessionState {
 // ─── View Types ──────────────────────────────────────────────────────
 
 /** Which TUI view is currently active. */
-export type TuiView = "agents" | "console" | "palette" | "sessions";
+export type TuiView = "agents" | "console" | "datasources" | "palette" | "sessions";
 
 /** Admin API connection state. */
 export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
@@ -61,6 +65,10 @@ export interface TuiState {
   readonly sessionPickerEntries: readonly SessionPickerEntry[];
   /** Whether the session picker is loading. */
   readonly sessionPickerLoading: boolean;
+  /** Discovered data sources. */
+  readonly dataSources: readonly DataSourceSummary[];
+  /** Whether data sources are loading. */
+  readonly dataSourcesLoading: boolean;
 }
 
 /** Create initial TUI state for a given admin URL. */
@@ -76,6 +84,8 @@ export function createInitialState(adminUrl: string): TuiState {
     lastEventSeq: 0,
     sessionPickerEntries: [],
     sessionPickerLoading: false,
+    dataSources: [],
+    dataSourcesLoading: false,
   };
 }
 
@@ -117,6 +127,14 @@ export type TuiAction =
   | {
       readonly kind: "set_session_picker";
       readonly entries: readonly SessionPickerEntry[];
+      readonly loading: boolean;
+    }
+  | {
+      readonly kind: "set_data_sources";
+      readonly sources: readonly DataSourceSummary[];
+    }
+  | {
+      readonly kind: "set_data_sources_loading";
       readonly loading: boolean;
     };
 
