@@ -21,6 +21,10 @@ export interface KeyboardCallbacks {
   readonly dataSourceDown: () => void;
   readonly dataSourceApprove: () => void;
   readonly dataSourceSchema: () => void;
+  readonly consentApprove: () => void;
+  readonly consentDeny: () => void;
+  readonly consentDetails: () => void;
+  readonly closeConsent: () => void;
 }
 
 /**
@@ -75,6 +79,26 @@ export function createKeyboardHandler(
       }
       if (view === "sourcedetail") {
         callbacks.closeDataSources();
+        return true;
+      }
+      if (view === "consent") {
+        callbacks.closeConsent();
+        return true;
+      }
+    }
+
+    // Consent view — y/n/d keys
+    if (view === "consent") {
+      if (sequence === "y") {
+        callbacks.consentApprove();
+        return true;
+      }
+      if (sequence === "n") {
+        callbacks.consentDeny();
+        return true;
+      }
+      if (sequence === "d") {
+        callbacks.consentDetails();
         return true;
       }
     }

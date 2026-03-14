@@ -58,6 +58,47 @@ export interface DashboardSystemMetrics {
 }
 
 // ---------------------------------------------------------------------------
+// Schema types (for schema probing / detail view)
+// ---------------------------------------------------------------------------
+
+export interface DashboardSchemaColumn {
+  readonly name: string;
+  readonly type: string;
+  readonly nullable: boolean;
+}
+
+export interface DashboardSchemaTable {
+  readonly name: string;
+  readonly schema: string;
+  readonly columns: readonly DashboardSchemaColumn[];
+  readonly foreignKeys?:
+    | readonly {
+        readonly column: string;
+        readonly referencedTable: string;
+        readonly referencedColumn: string;
+      }[]
+    | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Verification + fitness types
+// ---------------------------------------------------------------------------
+
+export interface DashboardVerificationStage {
+  readonly stage: string;
+  readonly passed: boolean;
+  readonly durationMs: number;
+}
+
+export interface DataSourceFitnessSummary {
+  readonly successCount: number;
+  readonly errorCount: number;
+  readonly successRate: number;
+  readonly p95LatencyMs: number | undefined;
+  readonly lastUsedAt: number;
+}
+
+// ---------------------------------------------------------------------------
 // Data source summary (for data source discovery UX)
 // ---------------------------------------------------------------------------
 
@@ -66,6 +107,32 @@ export interface DataSourceSummary {
   readonly protocol: string;
   readonly status: "approved" | "pending" | "rejected";
   readonly source: "manifest" | "env" | "mcp";
+  readonly fitness?: DataSourceFitnessSummary | undefined;
+  readonly verificationProgress?: number | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Data source detail (rich schema + provenance view)
+// ---------------------------------------------------------------------------
+
+export interface DataSourceDetail {
+  readonly name: string;
+  readonly protocol: string;
+  readonly status: "approved" | "pending" | "rejected";
+  readonly source: "manifest" | "env" | "mcp";
+  readonly description?: string | undefined;
+  readonly endpoint?: string | undefined;
+  readonly tables?: readonly DashboardSchemaTable[] | undefined;
+  readonly fitness?: DataSourceFitnessSummary | undefined;
+  readonly trailStrength?: number | undefined;
+  readonly verification?: readonly DashboardVerificationStage[] | undefined;
+  readonly provenance?:
+    | {
+        readonly builder: string;
+        readonly forgedAt: number;
+        readonly verificationPassed: boolean;
+      }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,10 +175,7 @@ export interface DashboardDataSource {
 
   readonly getDataSourceSchema?: (
     name: string,
-  ) =>
-    | Readonly<Record<string, unknown>>
-    | undefined
-    | Promise<Readonly<Record<string, unknown>> | undefined>;
+  ) => DataSourceDetail | undefined | Promise<DataSourceDetail | undefined>;
 
   /** Trigger a server-side re-scan for new data sources (env, MCP). */
   readonly rescanDataSources?: () =>

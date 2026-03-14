@@ -29,8 +29,12 @@ import type {
   DashboardChannelSummary,
   DashboardDataSource,
   DashboardEvent,
+  DashboardSchemaColumn,
+  DashboardSchemaTable,
   DashboardSkillSummary,
   DashboardSystemMetrics,
+  DataSourceDetail,
+  DataSourceFitnessSummary,
   DataSourceSummary,
   GatewayTopology,
   MiddlewareChain,
@@ -83,6 +87,18 @@ export interface BridgeOptions {
   readonly discoveredSources?: readonly DataSourceSummary[] | undefined;
   /** Full data source descriptors — used for schema/detail endpoint responses. */
   readonly dataSourceDescriptors?: readonly DataSourceDescriptor[] | undefined;
+  /** Executor callback for schema probing (SQL/HTTP/GraphQL queries). */
+  readonly dataSourceExecutor?:
+    | ((
+        source: DataSourceDescriptor,
+        query: unknown,
+        credential: string | undefined,
+      ) => Promise<{ readonly ok: boolean; readonly data?: unknown; readonly error?: string }>)
+    | undefined;
+  /** Credential resolver — maps auth.ref to credential string. */
+  readonly dataSourceCredentials?: ReadonlyMap<string, string> | undefined;
+  /** Per-source fitness metrics — keyed by source name. */
+  readonly dataSourceFitness?: ReadonlyMap<string, DataSourceFitnessSummary> | undefined;
   /** Optional agent dispatch implementation (e.g. from AgentHost). */
   readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
   /** Called when a dispatched agent is terminated — disposes the runtime. */
@@ -312,7 +328,11 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     // Data source discovery — always defined so routes return real data
     // let justified: mutable so rescan can add newly discovered sources
     listDataSources(): readonly DataSourceSummary[] {
-      return currentSources;
+      if (options.dataSourceFitness === undefined) return currentSources;
+      return currentSources.map((s) => {
+        const fitness = options.dataSourceFitness?.get(s.name);
+        return fitness !== undefined ? { ...s, fitness } : s;
+      });
     },
     approveDataSource(name: string): Result<void, KoiError> {
       const source = currentSources.find((s) => s.name === name);
@@ -328,33 +348,43 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       }
       return { ok: true, value: undefined };
     },
-    getDataSourceSchema(name: string): Readonly<Record<string, unknown>> | undefined {
+    async getDataSourceSchema(name: string): Promise<DataSourceDetail | undefined> {
       const summary = currentSources.find((s) => s.name === name);
       if (summary === undefined) return undefined;
       const descriptor = currentDescriptors.find((d) => d.name === name);
-      if (descriptor !== undefined) {
-        return {
-          name: descriptor.name,
-          protocol: descriptor.protocol,
-          ...(descriptor.description !== undefined ? { description: descriptor.description } : {}),
-          ...(descriptor.endpoint !== undefined ? { endpoint: descriptor.endpoint } : {}),
-          ...(descriptor.allowedHosts !== undefined
-            ? { allowedHosts: [...descriptor.allowedHosts] }
-            : {}),
-          ...(descriptor.schemaProbed !== undefined
-            ? { schemaProbed: descriptor.schemaProbed }
-            : {}),
-          ...(descriptor.auth !== undefined ? { auth: { kind: descriptor.auth.kind } } : {}),
-          status: summary.status,
-          source: summary.source,
-        };
+      const fitness = options.dataSourceFitness?.get(name);
+
+      // Attempt real schema probing if executor is available
+      let tables: readonly DashboardSchemaTable[] | undefined;
+      if (descriptor !== undefined && options.dataSourceExecutor !== undefined) {
+        const probeQuery = getSchemaProbeQuery(descriptor.protocol);
+        if (probeQuery !== undefined) {
+          const credential =
+            descriptor.auth !== undefined
+              ? options.dataSourceCredentials?.get(descriptor.auth.ref)
+              : undefined;
+          try {
+            const result = await options.dataSourceExecutor(descriptor, probeQuery, credential);
+            if (result.ok && result.data !== undefined) {
+              tables = parseSchemaRows(result.data);
+            }
+          } catch {
+            // Schema probing is non-fatal
+          }
+        }
       }
-      return {
-        name: summary.name,
-        protocol: summary.protocol,
+
+      const detail: DataSourceDetail = {
+        name: descriptor?.name ?? summary.name,
+        protocol: descriptor?.protocol ?? summary.protocol,
         status: summary.status,
         source: summary.source,
+        ...(descriptor?.description !== undefined ? { description: descriptor.description } : {}),
+        ...(descriptor?.endpoint !== undefined ? { endpoint: descriptor.endpoint } : {}),
+        ...(tables !== undefined ? { tables } : {}),
+        ...(fitness !== undefined ? { fitness } : {}),
       };
+      return detail;
     },
     async rescanDataSources(): Promise<readonly DataSourceSummary[]> {
       try {
@@ -729,4 +759,61 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       dispatchedAgents.set(entry.agentId, { entry, state: "running" });
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Schema probing helpers
+// ---------------------------------------------------------------------------
+
+/** Returns a protocol-specific probe query for information_schema, or undefined. */
+function getSchemaProbeQuery(protocol: string): unknown | undefined {
+  if (protocol === "sql" || protocol === "postgres" || protocol === "mysql") {
+    return {
+      protocol: "sql",
+      query:
+        "SELECT table_schema, table_name, column_name, data_type, is_nullable " +
+        "FROM information_schema.columns " +
+        "WHERE table_schema NOT IN ('information_schema', 'pg_catalog') " +
+        "ORDER BY table_schema, table_name, ordinal_position",
+    };
+  }
+  return undefined;
+}
+
+/** Parses information_schema rows into DashboardSchemaTable[]. */
+function parseSchemaRows(data: unknown): readonly DashboardSchemaTable[] {
+  if (typeof data !== "object" || data === null) return [];
+  const obj = data as Readonly<Record<string, unknown>>;
+  const rows = obj.rows;
+  if (!Array.isArray(rows)) return [];
+
+  const tableMap = new Map<string, { readonly schema: string; columns: DashboardSchemaColumn[] }>();
+  for (const row of rows) {
+    if (typeof row !== "object" || row === null) continue;
+    const r = row as Readonly<Record<string, unknown>>;
+    const tableName = String(r.table_name ?? "");
+    const schema = String(r.table_schema ?? "public");
+    const key = `${schema}.${tableName}`;
+    let entry = tableMap.get(key);
+    if (entry === undefined) {
+      entry = { schema, columns: [] };
+      tableMap.set(key, entry);
+    }
+    entry.columns.push({
+      name: String(r.column_name ?? ""),
+      type: String(r.data_type ?? "unknown"),
+      nullable: String(r.is_nullable ?? "YES") === "YES",
+    });
+  }
+
+  const tables: DashboardSchemaTable[] = [];
+  for (const [key, entry] of tableMap) {
+    const dotIdx = key.indexOf(".");
+    tables.push({
+      name: key.slice(dotIdx + 1),
+      schema: entry.schema,
+      columns: entry.columns,
+    });
+  }
+  return tables;
 }

@@ -47,8 +47,13 @@ export type {
   DashboardAgentSummary,
   DashboardChannelSummary,
   DashboardDataSource,
+  DashboardSchemaColumn,
+  DashboardSchemaTable,
   DashboardSkillSummary,
   DashboardSystemMetrics,
+  DashboardVerificationStage,
+  DataSourceDetail,
+  DataSourceFitnessSummary,
   DataSourceSummary,
 } from "./data-source.js";
 // Events

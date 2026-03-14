@@ -1,8 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
-"import { RuntimeViewDataSource, CommandDispatcher, DashboardDataSource, DashboardConfig, DashboardEvent } from '@koi/dashboard-types';
-import { FileSystemBackend, AgentId } from '@koi/core';
+"import { RuntimeViewDataSource, CommandDispatcher, DashboardDataSource, DashboardConfig, DashboardEvent, DataSourceSummary, DataSourceFitnessSummary } from '@koi/dashboard-types';
+import { FileSystemBackend, AgentId, DataSourceDescriptor } from '@koi/core';
 
 /**
  * Harness admin adapter for the Koi dashboard.
@@ -345,6 +345,20 @@ interface BridgeOptions {
     } | undefined;
     /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
     readonly orchestrationCommands?: Pick<CommandDispatcher, "signalWorkflow" | "terminateWorkflow" | "pauseSchedule" | "resumeSchedule" | "deleteSchedule" | "retrySchedulerDeadLetter" | "pauseHarness" | "resumeHarness"> | undefined;
+    /** Discovered data sources to expose via the dashboard API. */
+    readonly discoveredSources?: readonly DataSourceSummary[] | undefined;
+    /** Full data source descriptors — used for schema/detail endpoint responses. */
+    readonly dataSourceDescriptors?: readonly DataSourceDescriptor[] | undefined;
+    /** Executor callback for schema probing (SQL/HTTP/GraphQL queries). */
+    readonly dataSourceExecutor?: ((source: DataSourceDescriptor, query: unknown, credential: string | undefined) => Promise<{
+        readonly ok: boolean;
+        readonly data?: unknown;
+        readonly error?: string;
+    }>) | undefined;
+    /** Credential resolver — maps auth.ref to credential string. */
+    readonly dataSourceCredentials?: ReadonlyMap<string, string> | undefined;
+    /** Per-source fitness metrics — keyed by source name. */
+    readonly dataSourceFitness?: ReadonlyMap<string, DataSourceFitnessSummary> | undefined;
     /** Optional agent dispatch implementation (e.g. from AgentHost). */
     readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
     /** Called when a dispatched agent is terminated — disposes the runtime. */

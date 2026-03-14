@@ -18,6 +18,7 @@ export interface StatusBarData {
 /** View hint for each TUI screen. */
 const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   agents: "↑↓ navigate  Enter select  Ctrl+P commands  q quit",
+  consent: "[y] approve  [n] deny  [d] details  Esc dismiss",
   console: "Type message  Enter send  Esc back  Ctrl+P commands",
   datasources: "↑↓ navigate  [a] approve  [s] schema  Esc back",
   sourcedetail: "Esc back  [a] approve",

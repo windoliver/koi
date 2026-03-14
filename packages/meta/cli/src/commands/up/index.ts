@@ -195,6 +195,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
     | readonly import("@koi/dashboard-types").DataSourceSummary[]
     | undefined;
   let discoveredDescriptors: readonly import("@koi/core").DataSourceDescriptor[] | undefined;
+  let dataSourceExecutorFn:
+    | ((
+        source: import("@koi/core").DataSourceDescriptor,
+        query: unknown,
+        credential: string | undefined,
+      ) => Promise<{ readonly ok: boolean; readonly data?: unknown; readonly error?: string }>)
+    | undefined;
   try {
     const { createDataSourceStack } = await import("@koi/data-source-stack");
     const manifestEntries = (manifest as unknown as Record<string, unknown>).dataSources as
@@ -226,6 +233,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       }));
       discoveredDescriptors = dsStack.discoveredSources;
     }
+    // Capture executor for schema probing in dashboard bridge
+    const { executeDataSourceQuery } = await import("@koi/data-source-stack");
+    dataSourceExecutorFn = executeDataSourceQuery;
   } catch {
     // Data source discovery is non-fatal
   }
@@ -305,6 +315,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       fileSystem: createLocalFileSystem(workspaceRoot),
       discoveredSources: discoveredSourceSummaries,
       dataSourceDescriptors: discoveredDescriptors,
+      ...(dataSourceExecutorFn !== undefined ? { dataSourceExecutor: dataSourceExecutorFn } : {}),
       dispatchAgent: dispatcher.dispatchAgent,
       onTerminateAgent: async (id) => {
         await dispatcher.terminateAgent(id);

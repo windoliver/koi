@@ -179,6 +179,12 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_source_detail_loading":
       return { ...state, sourceDetailLoading: action.loading };
 
+    case "set_pending_consent":
+      return { ...state, pendingConsent: action.sources };
+
+    case "clear_pending_consent":
+      return { ...state, pendingConsent: undefined };
+
     case "apply_event_batch": {
       const { batch } = action;
       let updatedAgents: readonly DashboardAgentSummary[] | null = null;

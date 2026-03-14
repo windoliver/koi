@@ -36,6 +36,7 @@ export interface SessionState {
 /** Which TUI view is currently active. */
 export type TuiView =
   | "agents"
+  | "consent"
   | "console"
   | "datasources"
   | "palette"
@@ -81,6 +82,8 @@ export interface TuiState {
   readonly sourceDetail: Readonly<Record<string, unknown>> | null;
   /** Whether source detail is loading. */
   readonly sourceDetailLoading: boolean;
+  /** Pending consent data sources awaiting user approval. */
+  readonly pendingConsent: readonly DataSourceSummary[] | undefined;
 }
 
 /** Create initial TUI state for a given admin URL. */
@@ -101,6 +104,7 @@ export function createInitialState(adminUrl: string): TuiState {
     selectedDataSourceIndex: 0,
     sourceDetail: null,
     sourceDetailLoading: false,
+    pendingConsent: undefined,
   };
 }
 
@@ -163,7 +167,12 @@ export type TuiAction =
   | {
       readonly kind: "set_source_detail_loading";
       readonly loading: boolean;
-    };
+    }
+  | {
+      readonly kind: "set_pending_consent";
+      readonly sources: readonly DataSourceSummary[];
+    }
+  | { readonly kind: "clear_pending_consent" };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;

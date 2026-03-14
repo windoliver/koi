@@ -233,6 +233,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
               // Debounced refresh on any agent event
               debouncedRefresh.call();
               forwardAgentEventsToConsole(typedBatch);
+              forwardConsentPrompts(typedBatch);
             }
           } catch {
             // Malformed SSE data — skip
@@ -463,6 +464,28 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
   }
 
+  function forwardConsentPrompts(batch: DashboardEventBatch): void {
+    const pendingSources: import("@koi/dashboard-types").DataSourceSummary[] = [];
+    for (const evt of batch.events) {
+      if (isDataSourceEvent(evt) && evt.subKind === "data_source_discovered") {
+        // Check if this source has "pending" status (not yet approved)
+        const existing = store.getState().dataSources.find((s) => s.name === evt.name);
+        if (existing === undefined || existing.status === "pending") {
+          pendingSources.push({
+            name: evt.name,
+            protocol: evt.protocol,
+            status: "pending",
+            source: evt.source,
+          });
+        }
+      }
+    }
+    if (pendingSources.length > 0) {
+      store.dispatch({ kind: "set_pending_consent", sources: pendingSources });
+      store.dispatch({ kind: "set_view", view: "consent" });
+    }
+  }
+
   function formatAgentEvent(evt: AgentDashboardEvent): string | null {
     switch (evt.subKind) {
       case "status_changed":
@@ -618,6 +641,39 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   function closeSessions(): void {
     store.dispatch({ kind: "set_view", view: "agents" });
+  }
+
+  // ─── Consent ────────────────────────────────────────────────────────
+
+  function consentApprove(): void {
+    const pending = store.getState().pendingConsent;
+    if (pending === undefined || pending.length === 0) return;
+    const first = pending[0];
+    if (first === undefined) return;
+    approveDataSource(first.name).catch(() => {});
+    store.dispatch({ kind: "clear_pending_consent" });
+    store.dispatch({ kind: "set_view", view: "agents" });
+  }
+
+  function consentDeny(): void {
+    store.dispatch({ kind: "clear_pending_consent" });
+    store.dispatch({ kind: "set_view", view: "agents" });
+    addLifecycleMessage("Data source denied");
+  }
+
+  function consentDetails(): void {
+    const pending = store.getState().pendingConsent;
+    if (pending === undefined || pending.length === 0) return;
+    const first = pending[0];
+    if (first === undefined) return;
+    viewDataSourceSchema(first.name).catch(() => {});
+  }
+
+  function closeConsent(): void {
+    store.dispatch({ kind: "clear_pending_consent" });
+    const session = store.getState().activeSession;
+    const targetView = session !== null ? "console" : "agents";
+    store.dispatch({ kind: "set_view", view: targetView });
   }
 
   // ─── Data sources ────────────────────────────────────────────────────
@@ -777,6 +833,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         viewDataSourceSchema(source.name).catch(() => {});
       }
     },
+    consentApprove,
+    consentDeny,
+    consentDetails,
+    closeConsent,
   });
 
   // ─── Public API for console input ──────────────────────────────────
@@ -861,6 +921,20 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         },
         onDataSourceViewSchema: (name: string) => {
           viewDataSourceSchema(name).catch(() => {});
+        },
+        onConsentApprove: (name: string) => {
+          approveDataSource(name).catch(() => {});
+          store.dispatch({ kind: "clear_pending_consent" });
+          store.dispatch({ kind: "set_view", view: "agents" });
+        },
+        onConsentDeny: () => {
+          consentDeny();
+        },
+        onConsentDetails: (name: string) => {
+          viewDataSourceSchema(name).catch(() => {});
+        },
+        onConsentDismiss: () => {
+          closeConsent();
         },
       }),
     );

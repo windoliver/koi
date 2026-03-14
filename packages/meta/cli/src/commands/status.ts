@@ -130,7 +130,11 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
       if (dataSources !== undefined && dataSources.length > 0) {
         process.stdout.write("Data Sources:\n");
         for (const ds of dataSources) {
-          process.stdout.write(`  - ${ds.name} (${ds.protocol}) [${ds.status}]\n`);
+          const fitnessLabel =
+            ds.fitness !== undefined
+              ? ` ${String(Math.round(ds.fitness.successRate * 100))}% success, ${String(ds.fitness.successCount + ds.fitness.errorCount)} queries${ds.fitness.p95LatencyMs !== undefined ? `, p95: ${String(ds.fitness.p95LatencyMs)}ms` : ""}`
+              : "";
+          process.stdout.write(`  - ${ds.name} (${ds.protocol}) [${ds.status}]${fitnessLabel}\n`);
         }
         shown = true;
       }
@@ -329,6 +333,12 @@ interface DataSourceInfo {
   readonly name: string;
   readonly protocol: string;
   readonly status: string;
+  readonly fitness?: {
+    readonly successCount: number;
+    readonly errorCount: number;
+    readonly successRate: number;
+    readonly p95LatencyMs: number | undefined;
+  };
 }
 
 async function fetchDataSources(adminUrl: string): Promise<readonly DataSourceInfo[] | undefined> {
@@ -341,6 +351,12 @@ async function fetchDataSources(adminUrl: string): Promise<readonly DataSourceIn
         readonly name?: string;
         readonly protocol?: string;
         readonly status?: string;
+        readonly fitness?: {
+          readonly successCount?: number;
+          readonly errorCount?: number;
+          readonly successRate?: number;
+          readonly p95LatencyMs?: number;
+        };
       }[];
     };
     if (data.ok !== true || data.data === undefined) return undefined;
@@ -348,6 +364,16 @@ async function fetchDataSources(adminUrl: string): Promise<readonly DataSourceIn
       name: typeof ds.name === "string" ? ds.name : "unknown",
       protocol: typeof ds.protocol === "string" ? ds.protocol : "unknown",
       status: typeof ds.status === "string" ? ds.status : "unknown",
+      ...(ds.fitness !== undefined
+        ? {
+            fitness: {
+              successCount: ds.fitness.successCount ?? 0,
+              errorCount: ds.fitness.errorCount ?? 0,
+              successRate: ds.fitness.successRate ?? 0,
+              p95LatencyMs: ds.fitness.p95LatencyMs,
+            },
+          }
+        : {}),
     }));
   } catch {
     return undefined;
