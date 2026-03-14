@@ -333,7 +333,7 @@ describe("ACE lifecycle integration", () => {
 
     // Verify the ADD operation was applied
     const pb = structuredPlaybooks[0];
-    const strSection = pb.sections.find((s) => s.slug === "str");
+    const strSection = pb?.sections.find((s) => s.slug === "str");
     expect(strSection).toBeDefined();
     expect(strSection?.bullets.length).toBeGreaterThan(0);
     expect(strSection?.bullets.some((b) => b.content.includes("Retry"))).toBe(true);

@@ -73,10 +73,10 @@ describe("applyOperations", () => {
 
       expect(section?.bullets).toHaveLength(3);
       const newBullet = section?.bullets[2];
-      expect(newBullet.content).toBe("New strategy bullet");
-      expect(newBullet.helpful).toBe(0);
-      expect(newBullet.harmful).toBe(0);
-      expect(newBullet.id).toMatch(/^\[str-\d{5}\]$/);
+      expect(newBullet?.content).toBe("New strategy bullet");
+      expect(newBullet?.helpful).toBe(0);
+      expect(newBullet?.harmful).toBe(0);
+      expect(newBullet?.id).toMatch(/^\[str-\d{5}\]$/);
     });
 
     test("generates correct ID based on existing bullets", async () => {
@@ -128,9 +128,9 @@ describe("applyOperations", () => {
       // Two removed, one added
       expect(section?.bullets).toHaveLength(1);
       const merged = section?.bullets[0];
-      expect(merged.content).toBe("Merged content");
-      expect(merged.helpful).toBe(5); // 3 + 2
-      expect(merged.harmful).toBe(1); // 1 + 0
+      expect(merged?.content).toBe("Merged content");
+      expect(merged?.helpful).toBe(5); // 3 + 2
+      expect(merged?.harmful).toBe(1); // 1 + 0
     });
 
     test("skips MERGE when bullet IDs not found", async () => {
