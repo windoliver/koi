@@ -135,6 +135,12 @@ interface GovernanceStackConfig {
     readonly governanceBackend?: GovernanceBackendMiddlewareConfig | undefined;
     /** Cost/budget governance. Priority 200. */
     readonly pay?: PayMiddlewareConfig | undefined;
+    /**
+     * Agent depth in the process tree (0 = root copilot).
+     * Auto-injected into pay.agentBudget.agentDepth when pay is configured with agentBudget.
+     * Should match CreateKoiOptions.parentPid.depth + 1 (computed in @koi/starter).
+     */
+    readonly agentDepth?: number | undefined;
     /** Cryptographic mandate binding (OWASP ASI01 defense). Priority 290. */
     readonly intentCapsule?: IntentCapsuleConfig | undefined;
     /** Compliance audit logging. Priority 300. */
