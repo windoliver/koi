@@ -1130,4 +1130,4 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 }
 
 // Re-export for consumers who want to use VALID_ROLES or isAriaRole directly
-export { VALID_ROLES, isAriaRole };
+export { isAriaRole, VALID_ROLES };

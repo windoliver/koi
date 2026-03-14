@@ -323,7 +323,8 @@ describe("createTemporalAdminAdapter", () => {
       expect(result.ok).toBe(true);
       if (result.ok && result.value !== undefined) {
         expect(result.value.timeline).toBeDefined();
-        const timeline = result.value.timeline!;
+        const timeline = result.value.timeline;
+        if (timeline === undefined) return;
         expect(timeline).toHaveLength(4);
 
         expect(timeline[0]).toEqual({
