@@ -1,0 +1,26 @@
+{
+  "threshold": 5,
+  "minTokens": 50,
+  "minLines": 5,
+  "format": ["typescript"],
+  "gitignore": true,
+  "ignore": [
+    "node_modules",
+    "dist",
+    "coverage",
+    ".turbo",
+    "**/*.test.ts",
+    "**/__tests__/**",
+    "**/fixtures/**",
+    "**/*.config.ts",
+    "**/api-surface.test.ts",
+    "scripts/e2e-*.ts",
+    "docs/**",
+    "**/*.md",
+    "**/*.json",
+    "**/*.yaml",
+    "**/*.yml",
+    ".jscpd-report"
+  ],
+  "output": ".jscpd-report"
+}

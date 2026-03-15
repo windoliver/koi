@@ -44,6 +44,12 @@ jobs:
       - name: Check doc sync
         run: bun run check:doc-sync
 
+      - name: Check unused code (knip)
+        run: bun run check:unused
+
+      - name: Check code duplication (jscpd)
+        run: bun run check:duplicates
+
       - name: Build (full — no filter)
         run: bun run build
 
