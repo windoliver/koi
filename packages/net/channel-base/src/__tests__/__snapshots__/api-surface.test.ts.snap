@@ -80,6 +80,8 @@ declare function createReconnector(config: ReconnectorConfig): Reconnector;
 interface HealthStatus {
     readonly healthy: boolean;
     readonly lastEventAt: number;
+    readonly reconnectAttempts: number;
+    readonly lastDisconnect?: DisconnectInfo;
 }
 /**
  * Maps a raw platform event to an InboundMessage, or null to ignore the event.
@@ -100,6 +102,8 @@ interface ReconnectPolicy {
     readonly onReconnectFailed?: (lastError: unknown, info?: DisconnectInfo) => void;
     /** Called on each reconnect attempt (for logging/observability). */
     readonly onReconnecting?: (attempt: number) => void;
+    /** Return false to skip reconnect for this disconnect. Default: always reconnect. */
+    readonly shouldReconnect?: (info: DisconnectInfo) => boolean;
 }
 /**
  * Configuration for createChannelAdapter<E>().
