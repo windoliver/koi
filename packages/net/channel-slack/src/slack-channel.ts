@@ -311,7 +311,11 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
       : undefined;
 
   if (handleEvent !== undefined || handleHttpRequest !== undefined) {
-    return { ...base, handleEvent, handleHttpRequest };
+    return {
+      ...base,
+      ...(handleEvent !== undefined ? { handleEvent } : {}),
+      ...(handleHttpRequest !== undefined ? { handleHttpRequest } : {}),
+    };
   }
   return base as SlackChannelAdapter;
 }
