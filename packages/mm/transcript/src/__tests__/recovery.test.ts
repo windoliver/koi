@@ -81,4 +81,32 @@ describe("JSONL recovery integration", () => {
     }
     await store4.close();
   });
+
+  test("compact with preserveLastN=0 survives restart with only compaction entry", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "koi-recovery-zero-"));
+    tmpDirs.push(dir);
+    const sid = sessionId("compact-zero-recovery");
+
+    // --- Run #1: append 5 entries and compact with preserveLastN=0 ---
+    const store1 = createJsonlTranscript({ baseDir: dir });
+    const entries = Array.from({ length: 5 }, (_, i) =>
+      makeTranscriptEntry({ content: `turn-${i + 1}`, timestamp: 1000 * (i + 1) }),
+    );
+    await store1.append(sid, entries);
+
+    const compactResult = await store1.compact(sid, "Full conversation summary", 0);
+    expect(compactResult.ok).toBe(true);
+    await store1.close();
+
+    // --- Restart: re-open and verify only the compaction entry survived ---
+    const store2 = createJsonlTranscript({ baseDir: dir });
+    const loadResult = await store2.load(sid);
+    expect(loadResult.ok).toBe(true);
+    if (loadResult.ok) {
+      expect(loadResult.value.entries.length).toBe(1);
+      expect(loadResult.value.entries[0]?.role).toBe("compaction");
+      expect(loadResult.value.entries[0]?.content).toBe("Full conversation summary");
+    }
+    await store2.close();
+  });
 });

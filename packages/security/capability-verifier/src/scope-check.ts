@@ -12,8 +12,19 @@ import type { CapabilityToken, CapabilityVerifyResult, ScopeChecker } from "@koi
  *
  * Matching rules:
  * - "*" in allow list matches any tool
- * - Tool name is matched before ':' if resource path is present
- * - deny overrides allow
+ * - Tool name is extracted before ':' if a resource path is present
+ * - deny overrides allow (fail-closed)
+ *
+ * Design note — intentional asymmetry between allow and deny:
+ * - **Allow** matches by `toolName` only (coarse-grained, tool-level).
+ *   Resource-scoped entries in the allow list (e.g., "read_file:/safe/dir")
+ *   are NOT matched — allow grants the entire tool, not specific resources.
+ * - **Deny** matches both `toolName` AND full `toolId` (fine-grained).
+ *   You can deny an entire tool ("write_file") or a specific resource
+ *   ("write_file:/etc/passwd").
+ *
+ * This asymmetry is security-conservative: allow is broad, deny is precise.
+ * For resource-scoped allow rules, use a pluggable ScopeChecker instead.
  */
 export function isToolAllowed(toolId: string, token: CapabilityToken): boolean {
   const { permissions } = token.scope;

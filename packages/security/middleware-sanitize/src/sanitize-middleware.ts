@@ -40,6 +40,12 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
   const sanitizeToolOutput = config.sanitizeToolOutput ?? true;
   const maxDepth = config.jsonWalkMaxDepth ?? DEFAULT_JSON_WALK_MAX_DEPTH;
   const onSanitization = config.onSanitization;
+  const maxContentLength = config.maxContentLength;
+
+  /** Returns true if text exceeds maxContentLength — skip sanitization to prevent ReDoS. */
+  function exceedsLengthGuard(text: string): boolean {
+    return maxContentLength !== undefined && text.length > maxContentLength;
+  }
 
   /** Sanitize all messages in a ModelRequest. Throws on block. */
   function sanitizeRequestMessages(request: ModelRequest): ModelRequest {
@@ -86,7 +92,10 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
       // Call next
       const response = await next(sanitizedRequest);
 
-      // OUTPUT: sanitize response content string
+      // OUTPUT: sanitize response content string (skip if oversized — ReDoS guard)
+      if (exceedsLengthGuard(response.content)) {
+        return response;
+      }
       const outputResult = sanitizeString(
         response.content,
         allRules,

@@ -212,3 +212,48 @@ describe("sanitizeMessage", () => {
     expect(result.message).not.toBe(msg);
   });
 });
+
+describe("sanitizeString — multi-occurrence replacement", () => {
+  test("replaces all occurrences of a pattern in a single string", () => {
+    const result = sanitizeString("badword foo badword bar badword", [STRIP_RULE], "input");
+    expect(result.text).toBe("[redacted] foo [redacted] bar [redacted]");
+    expect(result.blocked).toBe(false);
+    expect(result.events).toHaveLength(1);
+  });
+
+  test("replaces all occurrences across multiple rules", () => {
+    const result = sanitizeString(
+      "badword and suspicious and badword again suspicious",
+      [STRIP_RULE, FLAG_RULE],
+      "input",
+    );
+    expect(result.text).toBe("[redacted] and [flagged] and [redacted] again [flagged]");
+    expect(result.events).toHaveLength(2);
+  });
+
+  test("block action fires on first occurrence without modifying text", () => {
+    const input = "evil stuff and more evil stuff";
+    const result = sanitizeString(input, [BLOCK_RULE], "input");
+    expect(result.blocked).toBe(true);
+    expect(result.text).toBe(input);
+    expect(result.events).toHaveLength(1);
+  });
+
+  test("replaces all control characters, not just the first", () => {
+    const controlCharRule: SanitizeRule = {
+      name: "control-char-strip",
+      pattern: /\0/,
+      action: { kind: "strip", replacement: "" },
+    };
+    const result = sanitizeString("hello\0world\0test", [controlCharRule], "input");
+    expect(result.text).toBe("helloworldtest");
+  });
+
+  test("custom block passthrough emits onSanitization callback", () => {
+    const events: unknown[] = [];
+    const block: ContentBlock = { kind: "custom", type: "x", data: { some: "data" } };
+    sanitizeBlock(block, [STRIP_RULE], "input", (e) => events.push(e));
+    expect(events).toHaveLength(1);
+    expect((events[0] as { rule: { name: string } }).rule.name).toBe("custom-block-passthrough");
+  });
+});

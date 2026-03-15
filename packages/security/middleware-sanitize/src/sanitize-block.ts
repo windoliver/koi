@@ -17,6 +17,18 @@ import type {
   SanitizeRule,
 } from "./types.js";
 
+/**
+ * Sentinel rule emitted via onSanitization when a `custom` content block
+ * passes through without sanitization. Operators can filter on the name
+ * "custom-block-passthrough" to detect unsanitized custom blocks.
+ */
+const CUSTOM_BLOCK_PASSTHROUGH_SENTINEL: SanitizeRule = {
+  name: "custom-block-passthrough",
+  pattern: /(?:)/,
+  action: { kind: "flag", replacement: "", tag: "custom-block-passthrough" },
+  severity: "LOW",
+};
+
 /** Result of sanitizing a single string. */
 export interface SanitizeStringResult {
   readonly text: string;
@@ -71,17 +83,18 @@ export function sanitizeString(
     const original = current;
 
     switch (rule.action.kind) {
-      case "strip": {
-        current = current.replace(rule.pattern, rule.action.replacement);
+      case "strip":
+      case "flag": {
+        // Create a fresh global regex to replace ALL occurrences.
+        // The stored pattern deliberately omits the `g` flag to avoid lastIndex
+        // statefulness — we add it here per-call so the regex is never reused.
+        const globalPattern = new RegExp(rule.pattern.source, `${rule.pattern.flags}g`);
+        current = current.replace(globalPattern, rule.action.replacement);
         break;
       }
       case "block": {
         blocked = true;
         // Still record the event but don't modify text — caller decides behavior
-        break;
-      }
-      case "flag": {
-        current = current.replace(rule.pattern, rule.action.replacement);
         break;
       }
     }
@@ -166,7 +179,16 @@ export function sanitizeBlock(
     }
 
     case "custom": {
-      // Custom blocks contain unknown data — skip to avoid breaking arbitrary structures
+      // Custom blocks contain unknown data — emit warning for observability
+      // so operators know unsanitized content is flowing through.
+      if (onSanitization !== undefined) {
+        onSanitization({
+          rule: CUSTOM_BLOCK_PASSTHROUGH_SENTINEL,
+          original: "",
+          sanitized: "",
+          location,
+        });
+      }
       return { block, blocked: false, events: [] };
     }
   }

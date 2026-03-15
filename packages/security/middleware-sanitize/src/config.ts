@@ -34,6 +34,12 @@ export interface SanitizeMiddlewareConfig {
   readonly sanitizeToolOutput?: boolean | undefined;
   /** Max recursion depth for JSON walking in tool I/O (default: 10). */
   readonly jsonWalkMaxDepth?: number | undefined;
+  /**
+   * Maximum content length (in characters) to sanitize.
+   * Content exceeding this limit is passed through without sanitization
+   * to prevent ReDoS on oversized inputs. Default: undefined (no limit).
+   */
+  readonly maxContentLength?: number | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -117,6 +123,16 @@ export function validateSanitizeConfig(
       config.jsonWalkMaxDepth <= 0
     ) {
       return validationError("jsonWalkMaxDepth must be a positive integer");
+    }
+  }
+
+  if (config.maxContentLength !== undefined) {
+    if (
+      typeof config.maxContentLength !== "number" ||
+      !Number.isFinite(config.maxContentLength) ||
+      config.maxContentLength <= 0
+    ) {
+      return validationError("maxContentLength must be a finite positive number");
     }
   }
 
