@@ -94,6 +94,7 @@ async function activateAutoHarness(
   middleware.push(harnessStack.policyCacheMiddleware);
   log(config, "Stack: auto-harness (policy cache + synthesis loop active)");
   return {
+    store: config.forgeBootstrap.store as import("@koi/core").ForgeStore,
     synthesizeHarness: harnessStack.synthesizeHarness,
     maxSynthesesPerSession: harnessStack.maxSynthesesPerSession,
     policyCacheHandle: harnessStack.policyCacheHandle,
