@@ -341,9 +341,6 @@ export function generateDemoManifestYaml(state: WizardState): string {
 
   additional.push("context:");
   additional.push("  bootstrap: true");
-  additional.push("  sources:");
-  additional.push("    - kind: memory");
-  additional.push("    - kind: tool_schema");
   additional.push("");
 
   const lines = generateManifestCore(state, {

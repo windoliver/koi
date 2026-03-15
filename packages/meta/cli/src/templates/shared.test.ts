@@ -257,13 +257,10 @@ describe("generateDemoManifestYaml", () => {
     expect(yaml).toContain("  pack: connected");
   });
 
-  test("includes context bootstrap and sources", () => {
+  test("includes context bootstrap", () => {
     const yaml = generateDemoManifestYaml(DEMO_STATE);
     expect(yaml).toContain("context:");
     expect(yaml).toContain("  bootstrap: true");
-    expect(yaml).toContain("  sources:");
-    expect(yaml).toContain("    - kind: memory");
-    expect(yaml).toContain("    - kind: tool_schema");
   });
 
   test("includes dataSources with HERB Nexus entries", () => {
