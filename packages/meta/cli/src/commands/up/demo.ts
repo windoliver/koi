@@ -9,12 +9,6 @@ import type { NexusClient } from "@koi/nexus-client";
 import type { createAgentDispatcher, ManifestOverrides } from "../../agent-dispatcher.js";
 import type { ProvisionedAgent } from "./types.js";
 
-/** Minimal manifest shape needed for demo seeding. */
-interface DemoManifestLike {
-  readonly name: string;
-  readonly demo?: { readonly pack?: string | undefined } | undefined;
-}
-
 export interface SeedDemoResult {
   readonly prompts: readonly string[];
   readonly seededBricks: readonly import("@koi/demo-packs").SeededBrickView[];
@@ -108,13 +102,13 @@ export async function seedDemoPackIfNeeded(
  * gets a unique name and description in the runtime.
  */
 export async function buildDemoManifestOverrides(
-  manifest: DemoManifestLike,
+  agentName: string,
+  demoPack: string | undefined,
 ): Promise<ReadonlyMap<string, ManifestOverrides> | undefined> {
-  const packId = manifest.demo?.pack;
-  if (packId === undefined) return undefined;
+  if (demoPack === undefined) return undefined;
 
   const { getPack } = await import("@koi/demo-packs");
-  const pack = getPack(packId);
+  const pack = getPack(demoPack);
   if (pack === undefined) return undefined;
 
   const overrides = new Map<string, ManifestOverrides>();
@@ -122,7 +116,7 @@ export async function buildDemoManifestOverrides(
     if (role.name === "primary") continue;
     const displayName = `${role.name} (${role.type})`;
     overrides.set(displayName, {
-      name: `${manifest.name}-${role.name}`,
+      name: `${agentName}-${role.name}`,
       description: role.description,
     });
   }

@@ -215,9 +215,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const modelName = manifest.model.name;
 
   // 3. PRESET
-  const presetId = await timer.time("preset", () =>
-    Promise.resolve(inferPresetId(manifest as never)),
-  );
+  const presetId = await timer.time("preset", () => inferPresetId(manifestPath));
   const { resolved: preset } = resolveRuntimePreset(presetId);
   const services = preset.services;
 
@@ -579,7 +577,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     });
 
     // Build per-role manifest overrides for demo agents
-    const demoOverrides = await buildDemoManifestOverrides(manifest as never);
+    const demoOverrides = await buildDemoManifestOverrides(manifest.name, demoPack);
 
     const dispatcher = createAgentDispatcher({
       defaultManifestPath: manifestPath,
