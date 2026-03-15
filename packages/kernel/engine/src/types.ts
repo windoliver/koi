@@ -16,6 +16,7 @@ import type {
   ChannelStatus,
   ChildHandle,
   ComponentProvider,
+  DelegationId,
   DeliveryPolicy,
   EngineAdapter,
   EngineEvent,
