@@ -394,5 +394,37 @@ export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<Agen
     delegationId: config.delegationId,
   };
 
-  return runAgentTurnLong(input);
+  // Execute the turn and record the delegation outcome (Phase 4 seam).
+  // The outcome feeds Nexus reputation scoring when it's implemented.
+  let turnResult: AgentTurnResult;
+  try {
+    turnResult = await runAgentTurnLong(input);
+  } catch (err: unknown) {
+    // Record failure outcome before re-throwing
+    if (config.delegationId !== undefined) {
+      try {
+        await delegationActivities.recordDelegationOutcome({
+          delegationId: config.delegationId,
+          outcome: "failed",
+        });
+      } catch {
+        // Best-effort — outcome recording failure doesn't block the workflow
+      }
+    }
+    throw err;
+  }
+
+  // Record success outcome
+  if (config.delegationId !== undefined) {
+    try {
+      await delegationActivities.recordDelegationOutcome({
+        delegationId: config.delegationId,
+        outcome: "completed",
+      });
+    } catch {
+      // Best-effort — outcome recording failure doesn't block the workflow
+    }
+  }
+
+  return turnResult;
 }
