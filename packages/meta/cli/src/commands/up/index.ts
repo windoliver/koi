@@ -447,12 +447,25 @@ export async function runUp(flags: UpFlags): Promise<void> {
   let stopGateway: (() => Promise<void>) | undefined;
   let stopNode: (() => Promise<void>) | undefined;
 
-  if (services.gateway && nexusBaseUrl !== undefined) {
+  if (services.gateway) {
     try {
       const { createGatewayStack } = await import("@koi/gateway-stack");
+      const { createBunTransport } = await import("@koi/gateway");
+      const transport = createBunTransport();
+      const auth = {
+        authenticate: async () => ({
+          ok: true as const,
+          session: { id: "local", agentId: manifest.name },
+        }),
+        validate: async () => true,
+      };
+      const nexusConfig =
+        nexusBaseUrl !== undefined
+          ? { nexusUrl: nexusBaseUrl, apiKey: process.env.NEXUS_API_KEY ?? "" }
+          : undefined;
       const gwStack = createGatewayStack(
-        { nexus: { url: nexusBaseUrl } },
-        { dispatch: async () => ({ ok: true, value: undefined }) },
+        { ...(nexusConfig !== undefined ? { nexus: nexusConfig } : {}) },
+        { transport, auth },
       );
       const DEFAULT_GATEWAY_PORT = 4100;
       await gwStack.start(DEFAULT_GATEWAY_PORT);

@@ -145,17 +145,19 @@ async function runDemoReset(flags: DemoFlags): Promise<void> {
 
   process.stderr.write(`Resetting demo pack "${packId}" for agent "${manifest.name}"...\n`);
 
-  const [memResult, corpusResult, dsResult] = await Promise.all([
+  const [memResult, corpusResult, dsDataResult, dsDescResult] = await Promise.all([
     deleteJson(nexusClient, `/agents/${manifest.name}/memory`),
     deleteJson(nexusClient, `/agents/${manifest.name}/corpus`),
     deleteJson(nexusClient, `/agents/${manifest.name}/datasources`),
+    deleteJson(nexusClient, `/agents/${manifest.name}/workspace/datasources`),
   ]);
 
-  if (!memResult.ok || !corpusResult.ok || !dsResult.ok) {
+  if (!memResult.ok || !corpusResult.ok || !dsDataResult.ok || !dsDescResult.ok) {
     const errors: string[] = [];
     if (!memResult.ok) errors.push(`memory: ${memResult.error.message}`);
     if (!corpusResult.ok) errors.push(`corpus: ${corpusResult.error.message}`);
-    if (!dsResult.ok) errors.push(`datasources: ${dsResult.error.message}`);
+    if (!dsDataResult.ok) errors.push(`datasources: ${dsDataResult.error.message}`);
+    if (!dsDescResult.ok) errors.push(`workspace/datasources: ${dsDescResult.error.message}`);
     process.stderr.write(`  Failed to clear data: ${errors.join("; ")}\n`);
     process.stderr.write("  (Nexus may not be running — start it with `koi up` first)\n\n");
     process.exit(1);

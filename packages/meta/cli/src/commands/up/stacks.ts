@@ -1,6 +1,9 @@
 /**
  * L3 stack activation — dynamically imports and creates stacks
  * based on PresetStacks flags.
+ *
+ * Each stack is dynamically imported only when enabled, keeping
+ * the cold-start minimal for presets that don't use them.
  */
 
 import type { ComponentProvider, KoiMiddleware } from "@koi/core";
@@ -28,14 +31,81 @@ export interface StackActivationConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Per-stack activators (each non-fatal)
+// ---------------------------------------------------------------------------
+
+function log(config: StackActivationConfig, msg: string): void {
+  if (config.verbose) process.stderr.write(`  ${msg}\n`);
+}
+
+async function activateToolStack(
+  config: StackActivationConfig,
+  middleware: KoiMiddleware[],
+): Promise<void> {
+  const { createToolStack } = await import("@koi/tool-stack");
+  const bundle = createToolStack();
+  middleware.push(...bundle.middleware);
+  log(config, `Stack: tool-stack (${String(bundle.middleware.length)} middleware)`);
+}
+
+async function activateRetryStack(
+  config: StackActivationConfig,
+  middleware: KoiMiddleware[],
+): Promise<void> {
+  const { createRetryStack } = await import("@koi/retry-stack");
+  const bundle = createRetryStack({});
+  middleware.push(...bundle.middleware);
+  log(config, `Stack: retry-stack (${String(bundle.middleware.length)} middleware)`);
+}
+
+async function activateAutoHarness(
+  config: StackActivationConfig,
+  middleware: KoiMiddleware[],
+): Promise<void> {
+  if (config.forgeBootstrap === undefined) return;
+  const { createAutoHarnessStack } = await import("@koi/auto-harness");
+  const harnessStack = createAutoHarnessStack({
+    forgeStore: config.forgeBootstrap.store as never,
+    generate: async () => "",
+  });
+  middleware.push(harnessStack.policyCacheMiddleware);
+  log(config, "Stack: auto-harness (policy cache active)");
+}
+
+async function activateGovernance(
+  config: StackActivationConfig,
+  middleware: KoiMiddleware[],
+  providers: ComponentProvider[],
+  disposables: (() => Promise<void> | void)[],
+): Promise<void> {
+  const { createGovernanceStack } = await import("@koi/governance");
+  const bundle = createGovernanceStack({});
+  middleware.push(...bundle.middlewares);
+  providers.push(...bundle.providers);
+  for (const d of bundle.disposables) {
+    disposables.push(() => d[Symbol.dispose]());
+  }
+  log(config, `Stack: governance (${String(bundle.middlewares.length)} middleware)`);
+}
+
+async function activateContextArena(
+  config: StackActivationConfig,
+  middleware: KoiMiddleware[],
+  providers: ComponentProvider[],
+): Promise<void> {
+  const { createContextArena } = await import("@koi/context-arena");
+  const bundle = await createContextArena({});
+  middleware.push(...bundle.middleware);
+  providers.push(...bundle.providers);
+  log(config, `Stack: context-arena (${String(bundle.middleware.length)} middleware)`);
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 /**
  * Activates L3 middleware stacks based on preset flags.
- *
- * Each stack is dynamically imported only when enabled, keeping
- * the cold-start minimal for presets that don't use them.
  */
 export async function activatePresetStacks(
   config: StackActivationConfig,
@@ -44,57 +114,40 @@ export async function activatePresetStacks(
   const providers: ComponentProvider[] = [];
   const disposables: (() => Promise<void> | void)[] = [];
 
-  // Tool stack (audit, limits, dedup, sandbox, selection, variant failover)
+  const tryActivate = async (name: string, fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (config.verbose) process.stderr.write(`  warn: ${name} failed: ${message}\n`);
+    }
+  };
+
   if (config.stacks.toolStack === true) {
-    try {
-      const { createToolStack } = await import("@koi/tool-stack");
-      const toolBundle = createToolStack();
-      middleware.push(...toolBundle.middleware);
-      if (config.verbose) {
-        process.stderr.write(
-          `  Stack: tool-stack (${String(toolBundle.middleware.length)} middleware)\n`,
-        );
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (config.verbose) process.stderr.write(`  warn: tool-stack failed: ${message}\n`);
-    }
+    await tryActivate("tool-stack", () => activateToolStack(config, middleware));
   }
 
-  // Retry stack (fs-rollback, semantic-retry, guided-retry)
   if (config.stacks.retryStack === true) {
-    try {
-      const { createRetryStack } = await import("@koi/retry-stack");
-      const retryBundle = createRetryStack({});
-      middleware.push(...retryBundle.middleware);
-      if (config.verbose) {
-        process.stderr.write(
-          `  Stack: retry-stack (${String(retryBundle.middleware.length)} middleware)\n`,
-        );
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (config.verbose) process.stderr.write(`  warn: retry-stack failed: ${message}\n`);
-    }
+    await tryActivate("retry-stack", () => activateRetryStack(config, middleware));
   }
 
-  // Auto-harness (policy cache + synthesis loop)
-  if (config.stacks.autoHarness === true && config.forgeBootstrap !== undefined) {
-    try {
-      const { createAutoHarnessStack } = await import("@koi/auto-harness");
-      const harnessStack = createAutoHarnessStack({
-        forgeStore: config.forgeBootstrap.store as never,
-        generate: async () => "",
-      });
-      middleware.push(harnessStack.policyCacheMiddleware);
-      if (config.verbose) {
-        process.stderr.write("  Stack: auto-harness (policy cache active)\n");
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (config.verbose) process.stderr.write(`  warn: auto-harness failed: ${message}\n`);
-    }
+  if (config.stacks.autoHarness === true) {
+    await tryActivate("auto-harness", () => activateAutoHarness(config, middleware));
   }
+
+  if (config.stacks.governance === true) {
+    await tryActivate("governance", () =>
+      activateGovernance(config, middleware, providers, disposables),
+    );
+  }
+
+  if (config.stacks.contextArena === true) {
+    await tryActivate("context-arena", () => activateContextArena(config, middleware, providers));
+  }
+
+  // goalStack and qualityGate are reserved for future L3 packages.
+  // When @koi/goal-stack and @koi/quality-gate are implemented,
+  // add activation branches here following the same pattern.
 
   return { middleware, providers, disposables };
 }
