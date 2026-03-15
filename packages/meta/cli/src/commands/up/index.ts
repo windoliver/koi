@@ -471,6 +471,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   await Promise.all(channels.map((ch) => ch.connect()));
 
   // 8b. Gateway + Node (conditional on preset services)
+  const DEFAULT_GATEWAY_PORT = 4100;
   let stopGateway: (() => Promise<void>) | undefined;
   let stopNode: (() => Promise<void>) | undefined;
 
@@ -494,7 +495,6 @@ export async function runUp(flags: UpFlags): Promise<void> {
         { ...(nexusConfig !== undefined ? { nexus: nexusConfig } : {}) },
         { transport, auth },
       );
-      const DEFAULT_GATEWAY_PORT = 4100;
       await gwStack.start(DEFAULT_GATEWAY_PORT);
       stopGateway = () => gwStack.stop();
       output.success(`Gateway started on port ${String(DEFAULT_GATEWAY_PORT)}`);
@@ -507,10 +507,21 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (services.node !== "disabled") {
     try {
       const { createNodeStack } = await import("@koi/node-stack");
-      const nodeStack = createNodeStack({ node: {} }, {});
+      // Map preset node mode ("full" | "thin") and connect to local gateway
+      const gatewayWsUrl = `ws://127.0.0.1:${String(DEFAULT_GATEWAY_PORT)}`;
+      const nodeMode = services.node === "thin" ? "thin" : "full";
+      const nodeStack = createNodeStack(
+        {
+          node: {
+            mode: nodeMode,
+            gateway: { url: gatewayWsUrl },
+          },
+        },
+        {},
+      );
       await nodeStack.start();
       stopNode = () => nodeStack.stop();
-      output.success("Node started");
+      output.success(`Node started (mode=${nodeMode})`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       output.warn(`node failed to start: ${message}`);
