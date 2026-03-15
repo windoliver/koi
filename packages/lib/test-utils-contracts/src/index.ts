@@ -8,12 +8,12 @@
 export { runAgentRegistryContractTests } from "./agent-registry-contract.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
 export { testChannelAdapter } from "./channel-contract.js";
+export type { DelegationContractOptions } from "./delegation-contract.js";
+export { testDelegationComponentContract } from "./delegation-contract.js";
 export type { EngineContractOptions } from "./engine-contract.js";
 export { testEngineAdapter } from "./engine-contract.js";
 export { runHarnessContractTests } from "./harness-contract.js";
 export type { MiddlewareContractOptions } from "./middleware-contract/index.js";
 export { testMiddlewareContract } from "./middleware-contract/index.js";
-export type { DelegationContractOptions } from "./delegation-contract.js";
-export { testDelegationComponentContract } from "./delegation-contract.js";
 export type { ResolverContractOptions } from "./resolver-contract.js";
 export { testResolverContract } from "./resolver-contract.js";

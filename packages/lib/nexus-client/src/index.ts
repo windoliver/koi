@@ -5,6 +5,19 @@
  */
 
 export { batchRead } from "./batch-read.js";
+// delegation API
+export type {
+  DelegationOutcome,
+  NexusChainVerifyResponse,
+  NexusDelegateRequest,
+  NexusDelegateResponse,
+  NexusDelegateScope,
+  NexusDelegationApi,
+  NexusDelegationEntry,
+  NexusDelegationListResponse,
+  NexusNamespaceMode,
+} from "./delegation-api.js";
+export { createNexusDelegationApi } from "./delegation-api.js";
 export { mapHttpError, mapRpcError } from "./errors.js";
 export {
   deleteJson,
@@ -44,19 +57,6 @@ export {
   groupScratchPath,
   SEGMENTS,
 } from "./paths.js";
-// delegation API
-export type {
-  DelegationOutcome,
-  NexusChainVerifyResponse,
-  NexusDelegateRequest,
-  NexusDelegateResponse,
-  NexusDelegateScope,
-  NexusDelegationApi,
-  NexusDelegationEntry,
-  NexusDelegationListResponse,
-  NexusNamespaceMode,
-} from "./delegation-api.js";
-export { createNexusDelegationApi } from "./delegation-api.js";
 export type { NexusRestClient, NexusRestClientConfig } from "./rest-client.js";
 export { createNexusRestClient, mapRestFetchError, mapRestHttpError } from "./rest-client.js";
 export type {
