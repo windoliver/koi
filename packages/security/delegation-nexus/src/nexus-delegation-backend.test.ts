@@ -314,6 +314,135 @@ describe("NexusDelegationBackend.verify", () => {
     // Only one verifyChain call — no N+1 client-side chain walking
     expect(api.verifyChain).toHaveBeenCalledTimes(1);
   });
+
+  test("denies tool not in scope even when chain is valid (scope enforcement)", async () => {
+    const api = createMockApi();
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: AGENT_ID,
+      verifyCacheTtlMs: 0,
+    });
+
+    // Grant with restricted scope — only read_file allowed
+    const grant = await backend.grant(
+      { permissions: { allow: ["read_file"] } },
+      CHILD_ID,
+    );
+
+    // Verify with a denied tool — scope check should fail
+    const result = await backend.verify(grant.id, "execute_command");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("scope_exceeded");
+    }
+  });
+
+  test("allows tool in scope when chain is valid (scope enforcement)", async () => {
+    const api = createMockApi();
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: AGENT_ID,
+      verifyCacheTtlMs: 0,
+    });
+
+    // Grant with read_file allowed
+    const grant = await backend.grant(
+      { permissions: { allow: ["read_file"] } },
+      CHILD_ID,
+    );
+
+    const result = await backend.verify(grant.id, "read_file");
+    expect(result.ok).toBe(true);
+  });
+
+  test("deny list overrides allow in scope enforcement", async () => {
+    const api = createMockApi();
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: AGENT_ID,
+      verifyCacheTtlMs: 0,
+    });
+
+    // Grant with wildcard allow but deny on execute_command
+    const grant = await backend.grant(
+      { permissions: { allow: ["*"], deny: ["execute_command"] } },
+      CHILD_ID,
+    );
+
+    const result = await backend.verify(grant.id, "execute_command");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("scope_exceeded");
+    }
+  });
+
+  test("returns real grant scope in verify result (not stub)", async () => {
+    const api = createMockApi();
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: AGENT_ID,
+      verifyCacheTtlMs: 0,
+    });
+
+    const scope = { permissions: { allow: ["read_file", "write_file"] } };
+    const grant = await backend.grant(scope, CHILD_ID);
+
+    const result = await backend.verify(grant.id, "read_file");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.grant.scope).toEqual(scope);
+      expect(result.grant.delegateeId).toBe(CHILD_ID);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Idempotency key tests (#4 fix)
+// ---------------------------------------------------------------------------
+
+describe("NexusDelegationBackend idempotency", () => {
+  test("without prefix, each grant() gets a unique idempotency key", async () => {
+    const api = createMockApi();
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: AGENT_ID,
+      // No idempotencyPrefix — general API mode
+    });
+
+    await backend.grant({ permissions: {} }, CHILD_ID);
+    await backend.grant({ permissions: {} }, CHILD_ID);
+
+    const calls = (api.createDelegation as ReturnType<typeof mock>).mock.calls;
+    const key1 = (calls[0]?.[0] as { readonly idempotency_key: string } | undefined)
+      ?.idempotency_key;
+    const key2 = (calls[1]?.[0] as { readonly idempotency_key: string } | undefined)
+      ?.idempotency_key;
+
+    expect(key1).toBeDefined();
+    expect(key2).toBeDefined();
+    expect(key1).not.toBe(key2); // Different keys — no collapsing
+  });
+
+  test("with prefix, same delegatee gets deterministic key (Temporal retry-safe)", async () => {
+    const api = createMockApi();
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: AGENT_ID,
+      idempotencyPrefix: "wf-run:",
+    });
+
+    await backend.grant({ permissions: {} }, CHILD_ID);
+    await backend.grant({ permissions: {} }, CHILD_ID);
+
+    const calls = (api.createDelegation as ReturnType<typeof mock>).mock.calls;
+    const key1 = (calls[0]?.[0] as { readonly idempotency_key: string } | undefined)
+      ?.idempotency_key;
+    const key2 = (calls[1]?.[0] as { readonly idempotency_key: string } | undefined)
+      ?.idempotency_key;
+
+    expect(key1).toBe(key2); // Same key — retries collapse
+    expect(key1).toBe(`wf-run:${AGENT_ID}:${CHILD_ID}`);
+  });
 });
 
 // ---------------------------------------------------------------------------

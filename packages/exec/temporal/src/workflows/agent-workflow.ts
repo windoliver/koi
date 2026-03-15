@@ -215,8 +215,11 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
       const childAgentId = result.spawnChild.childAgentId;
       const runId = workflowInfo().workflowId;
 
-      // Delegate via Nexus BEFORE spawning child (durable, crash-recoverable)
-      let delegationId: string | undefined;
+      // Delegate via Nexus BEFORE spawning child (durable, crash-recoverable).
+      // The delegated API key is an attenuated per-child credential, NOT the
+      // parent's bootstrap key. It flows to the child via WorkerWorkflowConfig.
+      let childDelegationId: string | undefined;
+      let childNexusApiKey: string | undefined;
       try {
         const delegationResult = await delegationActivities.delegateViaNexus({
           parentAgentId: config.agentId,
@@ -229,9 +232,10 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
           canSubDelegate: true,
           idempotencyKey: `${config.agentId}:${childAgentId}:${runId}`,
         });
-        delegationId = delegationResult.delegationId;
+        childDelegationId = delegationResult.delegationId;
+        childNexusApiKey = delegationResult.apiKey;
         // Track for cancellation cleanup
-        activeDelegationIds.push(delegationId);
+        activeDelegationIds.push(childDelegationId);
       } catch (err: unknown) {
         // Delegation failure — child spawns without Nexus delegation
         // The in-process DelegationManager still provides local delegation
@@ -248,6 +252,8 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
         parentAgentId: config.agentId,
         stateRefs: result.spawnChild.childConfig.stateRefs,
         initialMessage: result.spawnChild.childConfig.initialMessage,
+        nexusApiKey: childNexusApiKey,
+        delegationId: childDelegationId,
       };
 
       await startChild("workerWorkflow", {
@@ -282,6 +288,8 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
           const drainChildId = drainResult.spawnChild.childAgentId;
           const drainRunId = workflowInfo().workflowId;
 
+          let drainDelegationId: string | undefined;
+          let drainNexusApiKey: string | undefined;
           try {
             const drainDelegation = await delegationActivities.delegateViaNexus({
               parentAgentId: config.agentId,
@@ -294,7 +302,9 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
               canSubDelegate: true,
               idempotencyKey: `${config.agentId}:${drainChildId}:${drainRunId}`,
             });
-            activeDelegationIds.push(drainDelegation.delegationId);
+            drainDelegationId = drainDelegation.delegationId;
+            drainNexusApiKey = drainDelegation.apiKey;
+            activeDelegationIds.push(drainDelegationId);
           } catch (err: unknown) {
             if (isCancellation(err)) throw err;
           }
@@ -305,6 +315,8 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
             parentAgentId: config.agentId,
             stateRefs: drainResult.spawnChild.childConfig.stateRefs,
             initialMessage: drainResult.spawnChild.childConfig.initialMessage,
+            nexusApiKey: drainNexusApiKey,
+            delegationId: drainDelegationId,
           };
 
           await startChild("workerWorkflow", {

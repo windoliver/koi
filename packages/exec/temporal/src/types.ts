@@ -134,6 +134,10 @@ export interface WorkerWorkflowConfig {
   readonly stateRefs: AgentStateRefs;
   /** Initial message from the parent agent (task payload). */
   readonly initialMessage?: IncomingMessage | undefined;
+  /** Per-child delegated Nexus API key — attenuated credential from parent delegation. */
+  readonly nexusApiKey?: string | undefined;
+  /** Delegation ID for this child — used for outcome recording and revocation. */
+  readonly delegationId?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------

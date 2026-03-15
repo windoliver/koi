@@ -2,13 +2,18 @@
  * NexusDelegationProvider — ComponentProvider that attaches Nexus-backed
  * delegation to an agent during assembly.
  *
- * Key design decision (#1-A): The provider injects NEXUS_API_KEY into the
- * agent's ENV component, keeping L1 engine proof-agnostic. The engine never
- * discriminates on proof.kind.
+ * The provider attaches the DELEGATION singleton component only.
+ * Per-child API keys flow through DelegationGrant.proof.token, NOT through
+ * the provider. In the Temporal path, the key flows via WorkerWorkflowConfig.
+ * In the in-process path, spawn-child extracts it from the grant proof.
+ *
+ * The provider does NOT inject NEXUS_API_KEY into the agent's env — that
+ * would leak the bootstrap/admin credential to every agent. Each child
+ * receives its own attenuated key via the delegation grant.
  */
 
-import type { Agent, AgentEnv, ComponentProvider, DelegationComponent } from "@koi/core";
-import { DELEGATION, ENV } from "@koi/core";
+import type { Agent, ComponentProvider, DelegationComponent } from "@koi/core";
+import { DELEGATION } from "@koi/core";
 import type { NexusDelegationApi } from "@koi/nexus-client";
 import type { NexusDelegationBackendConfig } from "./nexus-delegation-backend.js";
 import { createNexusDelegationBackend } from "./nexus-delegation-backend.js";
@@ -20,8 +25,6 @@ import { createNexusDelegationBackend } from "./nexus-delegation-backend.js";
 export interface NexusDelegationProviderConfig {
   /** Nexus delegation API client (shared — single HTTP connection pool). */
   readonly api: NexusDelegationApi;
-  /** Nexus API key for the child agent — injected as NEXUS_API_KEY env var. */
-  readonly nexusApiKey?: string;
   /** Override defaults for the backend. */
   readonly backend?: Partial<Omit<NexusDelegationBackendConfig, "api" | "agentId">>;
   /** When false, attach() returns empty map. Default: true. */
@@ -35,7 +38,7 @@ export interface NexusDelegationProviderConfig {
 export function createNexusDelegationProvider(
   config: NexusDelegationProviderConfig,
 ): ComponentProvider {
-  const { api, nexusApiKey, backend = {}, enabled = true } = config;
+  const { api, backend = {}, enabled = true } = config;
 
   return {
     name: "delegation-nexus",
@@ -54,21 +57,10 @@ export function createNexusDelegationProvider(
         ...backend,
       });
 
-      // Attach DELEGATION singleton component
+      // Attach DELEGATION singleton component only.
+      // Per-child Nexus API keys are NOT injected here — they flow through
+      // the delegation grant's proof.token field per the capability model.
       components.set(DELEGATION as string, delegationBackend);
-
-      // Inject NEXUS_API_KEY into agent env (Decision #1-A)
-      // This keeps L1 engine proof-agnostic — it never inspects proof.kind
-      if (nexusApiKey !== undefined && agent.has(ENV)) {
-        const agentEnv = agent.component<AgentEnv>(ENV);
-        if (agentEnv !== undefined) {
-          const updatedEnv: AgentEnv = {
-            values: { ...agentEnv.values, NEXUS_API_KEY: nexusApiKey },
-            parentEnv: agentEnv.parentEnv,
-          };
-          components.set(ENV as string, updatedEnv);
-        }
-      }
 
       return components;
     },

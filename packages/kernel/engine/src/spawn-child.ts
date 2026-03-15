@@ -172,8 +172,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     });
   }
 
-  // 6. Auto-delegation: grant attenuated scope to child if parent has DELEGATION component
+  // 6. Auto-delegation: grant attenuated scope to child if parent has DELEGATION component.
+  //    When the grant carries a Nexus proof, extract the per-child API key and
+  //    inject it into the child's env. This is the in-process equivalent of the
+  //    Temporal path where WorkerWorkflowConfig.nexusApiKey carries the key.
   let childGrantId: DelegationId | undefined; // let justified: mutable for cleanup on failure
+  let childNexusApiKey: string | undefined; // let justified: set once from proof.token
   const parentHasDelegation = options.parentAgent.has(DELEGATION);
 
   if (parentHasDelegation && options.manifest.delegation?.enabled !== false) {
@@ -189,6 +193,10 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       try {
         const grant = await parentDelegation.grant(childScope, childPid.id);
         childGrantId = grant.id;
+        // Extract per-child Nexus API key from grant proof (L0 type — L1 reads it)
+        if (grant.proof.kind === "nexus") {
+          childNexusApiKey = grant.proof.token;
+        }
       } catch (e: unknown) {
         if (delegationRequired) {
           // Release ledger slot before re-throwing — no leak
@@ -291,5 +299,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     runtime: wrappedRuntime,
     handle,
     childPid,
+    ...(childNexusApiKey !== undefined ? { nexusApiKey: childNexusApiKey } : {}),
+    ...(childGrantId !== undefined ? { delegationId: childGrantId } : {}),
   };
 }

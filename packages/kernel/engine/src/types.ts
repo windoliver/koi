@@ -229,4 +229,14 @@ export interface SpawnChildResult {
   readonly handle: ChildHandle;
   /** The child's process ID (convenience — also available as runtime.agent.pid). */
   readonly childPid: ProcessId;
+  /**
+   * Per-child delegated Nexus API key — attenuated credential from parent delegation.
+   * Present when delegation uses a Nexus backend (proof.kind === "nexus").
+   * Callers spawning external processes (Temporal, sandbox) must pass this key
+   * to the child's env as NEXUS_API_KEY. In-process children inherit the
+   * parent's DELEGATION component and don't need this directly.
+   */
+  readonly nexusApiKey?: string;
+  /** Delegation ID for this child, if auto-delegation was performed. */
+  readonly delegationId?: DelegationId;
 }

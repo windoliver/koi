@@ -615,7 +615,6 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
                   authToken: config.delegationBridge.nexusDelegation.nexusApiKey,
                 }),
               ),
-              nexusApiKey: config.delegationBridge.nexusDelegation.nexusApiKey,
               enabled: true,
             }),
           ]
