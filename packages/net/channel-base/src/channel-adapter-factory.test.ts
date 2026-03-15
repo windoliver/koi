@@ -1016,5 +1016,93 @@ describe("createChannelAdapter", () => {
 
       await adapter.disconnect();
     });
+
+    test("disconnect() during active reconnect loop stops reconnection", async () => {
+      // let justified: tracks connect call count
+      let connectCalls = 0;
+      const onReconnecting = mock((_attempt: number) => {});
+
+      const { adapter, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 10,
+            backoffMultiplier: 2,
+            initialDelayMs: 20,
+            maxBackoffMs: 100,
+            jitter: false,
+          },
+          onReconnecting,
+        },
+        withPlatformDisconnect: true,
+        platformConnectFn: async () => {
+          connectCalls += 1;
+          // First connect succeeds, all subsequent fail
+          if (connectCalls > 1) {
+            throw new Error("connection refused");
+          }
+        },
+      });
+
+      await adapter.connect();
+      triggerPlatformDisconnect({ code: 4008, reason: "Session store failure" });
+
+      // Wait for at least one retry attempt
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const attemptsBefore = onReconnecting.mock.calls.length;
+      expect(attemptsBefore).toBeGreaterThan(0);
+
+      // Explicit disconnect should stop the reconnect loop
+      await adapter.disconnect();
+
+      // Wait and verify no more reconnect attempts fire
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(onReconnecting.mock.calls.length).toBe(attemptsBefore);
+
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(false);
+    });
+
+    test("queued messages drain in FIFO order after reconnect", async () => {
+      const { adapter, triggerPlatformDisconnect, sendLog } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 3,
+            backoffMultiplier: 2,
+            initialDelayMs: 1,
+            maxBackoffMs: 10,
+            jitter: false,
+          },
+        },
+        withPlatformDisconnect: true,
+        withQueue: true,
+      });
+
+      await adapter.connect();
+
+      // Trigger disconnect, then queue messages while reconnecting
+      triggerPlatformDisconnect({ code: 4004, reason: "Session expired" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      await adapter.send({ content: [{ kind: "text", text: "first" }] });
+      await adapter.send({ content: [{ kind: "text", text: "second" }] });
+      await adapter.send({ content: [{ kind: "text", text: "third" }] });
+
+      // Wait for reconnect + drain
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Verify messages arrived in order
+      expect(sendLog.length).toBeGreaterThanOrEqual(3);
+      const texts = sendLog.map((m) => (m.content[0] as { readonly text: string }).text);
+      expect(texts).toContain("first");
+      expect(texts).toContain("second");
+      expect(texts).toContain("third");
+      const firstIdx = texts.indexOf("first");
+      const secondIdx = texts.indexOf("second");
+      const thirdIdx = texts.indexOf("third");
+      expect(firstIdx).toBeLessThan(secondIdx);
+      expect(secondIdx).toBeLessThan(thirdIdx);
+
+      await adapter.disconnect();
+    });
   });
 });

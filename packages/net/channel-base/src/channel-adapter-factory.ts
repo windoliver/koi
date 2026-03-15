@@ -239,6 +239,8 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
   let lastDisconnect: DisconnectInfo | undefined;
   // let requires justification: tracks reconnect attempts for healthCheck enrichment
   let currentReconnectAttempts = 0;
+  // let requires justification: active reconnector instance, must be stoppable from disconnect()
+  let activeReconnector: ReturnType<typeof createReconnector> | undefined;
 
   // handlers is a small list (typically 1–2 entries).
   // O(N) alloc per subscribe/unsubscribe is intentional and appropriate for this size.
@@ -357,6 +359,8 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
         unsubPlatform?.();
         unsubPlatform = undefined;
 
+        // Stop any previous reconnector before creating a new one
+        activeReconnector?.stop();
         const reconnector = createReconnector({
           connect: async () => {
             currentReconnectAttempts = reconnector.attempts();
@@ -401,20 +405,20 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
               });
             }
 
-            // Drain queued messages after reconnect
+            // Drain queued messages sequentially after reconnect (preserves FIFO order)
             if (sendQueue.length > 0) {
               const queued = sendQueue;
               sendQueue = [];
               droppedCount = 0;
-              for (const msg of queued) {
-                void (async (): Promise<void> => {
+              void (async (): Promise<void> => {
+                for (const msg of queued) {
                   try {
                     await platformSend(msg);
                   } catch (e: unknown) {
                     swallowError(e, { package: "channel-base", operation: `drain[${name}]` });
                   }
-                })();
-              }
+                }
+              })();
             }
           },
           onDisconnected: () => {
@@ -422,10 +426,12 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
           },
           onGiveUp: (lastError, lastInfo) => {
             reconnecting = false;
+            activeReconnector = undefined;
             reconnectPolicy.onReconnectFailed?.(lastError, lastInfo);
           },
           ...(reconnectPolicy.retry !== undefined && { retry: reconnectPolicy.retry }),
         });
+        activeReconnector = reconnector;
 
         reconnector.reconnect(info);
       });
@@ -455,6 +461,9 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     // Unsubscribe disconnect listener and stop any active reconnect
     unsubDisconnect?.();
     unsubDisconnect = undefined;
+    // Stop the active reconnector to prevent it from reconnecting after disconnect()
+    activeReconnector?.stop();
+    activeReconnector = undefined;
     reconnecting = false;
     connected = false;
     await platformDisconnect();
