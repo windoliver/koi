@@ -409,13 +409,15 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
               });
             }
 
-            // Drain queued messages sequentially after reconnect (preserves FIFO order)
+            // Drain queued messages sequentially after reconnect (preserves FIFO order).
+            // Check `connected` before each send so disconnect() aborts the drain.
             if (sendQueue.length > 0) {
               const queued = sendQueue;
               sendQueue = [];
               droppedCount = 0;
               void (async (): Promise<void> => {
                 for (const msg of queued) {
+                  if (!connected) break;
                   try {
                     await platformSend(msg);
                   } catch (e: unknown) {

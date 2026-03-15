@@ -1143,5 +1143,77 @@ describe("createChannelAdapter", () => {
       const status = adapter.healthCheck?.();
       expect(status?.healthy).toBe(false);
     });
+
+    test("disconnect() during reconnect drain stops further sends", async () => {
+      // let justified: tracks send count to detect sends after disconnect
+      let sendCount = 0;
+      // let justified: tracks connect call count for delayed reconnect
+      let connectCalls = 0;
+      // let justified: disconnect handler ref set during connect
+      let disconnectHandler: ((info?: DisconnectInfo) => void) | undefined;
+
+      const slowAdapter = createChannelAdapter<MockEvent>({
+        name: "slow-drain-test",
+        capabilities: ALL_CAPS,
+        platformConnect: async () => {
+          connectCalls += 1;
+          // First connect is instant; reconnect is delayed so messages queue
+          if (connectCalls > 1) {
+            await new Promise((resolve) => setTimeout(resolve, 30));
+          }
+        },
+        platformDisconnect: async () => {},
+        platformSend: async () => {
+          sendCount += 1;
+          // Slow send — gives time for disconnect() to fire mid-drain
+          await new Promise((resolve) => setTimeout(resolve, 80));
+        },
+        onPlatformEvent: () => {
+          return () => {};
+        },
+        normalize: normalizeAll,
+        queueWhenDisconnected: true,
+        reconnect: {
+          retry: {
+            maxRetries: 3,
+            backoffMultiplier: 2,
+            initialDelayMs: 1,
+            maxBackoffMs: 10,
+            jitter: false,
+          },
+        },
+        onPlatformDisconnect: (handler: (info?: DisconnectInfo) => void) => {
+          disconnectHandler = handler;
+          return () => {
+            disconnectHandler = undefined;
+          };
+        },
+      });
+
+      await slowAdapter.connect();
+
+      // Trigger disconnect — reconnect takes 30ms, so messages queue during that window
+      disconnectHandler?.({ code: 4004, reason: "Session expired" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      await slowAdapter.send({ content: [{ kind: "text", text: "msg-1" }] });
+      await slowAdapter.send({ content: [{ kind: "text", text: "msg-2" }] });
+      await slowAdapter.send({ content: [{ kind: "text", text: "msg-3" }] });
+
+      // Wait for reconnect (30ms) + drain to start first slow send (80ms each)
+      // Disconnect at ~60ms: reconnect done, first send in progress, 2 remaining
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      await slowAdapter.disconnect();
+      const countAtDisconnect = sendCount;
+
+      // Wait for any would-be remaining drain
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // No additional sends after disconnect
+      expect(sendCount).toBe(countAtDisconnect);
+      // Should not have sent all 3 — drain aborted on disconnect
+      expect(sendCount).toBeLessThan(3);
+    });
   });
 });
