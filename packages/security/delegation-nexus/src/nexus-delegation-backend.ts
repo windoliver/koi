@@ -208,7 +208,6 @@ export function createNexusDelegationBackend(
     // Step 1: Local scope check — fail fast before Nexus round-trip
     const storedGrant = grantStore.get(id);
     if (storedGrant !== undefined) {
-      // Check expiry locally
       if (storedGrant.expiresAt <= Date.now()) {
         const failResult: DelegationVerifyResult = { ok: false, reason: "expired" };
         verifyCache?.set(id, toolId, failResult);
@@ -216,7 +215,6 @@ export function createNexusDelegationBackend(
         return failResult;
       }
 
-      // Check tool against scope locally
       if (!matchToolAgainstScope(toolId, storedGrant.scope)) {
         const failResult: DelegationVerifyResult = { ok: false, reason: "scope_exceeded" };
         verifyCache?.set(id, toolId, failResult);
@@ -244,12 +242,46 @@ export function createNexusDelegationBackend(
       return failResult;
     }
 
-    // Chain valid + scope check passed — return full grant from local store
-    const resultGrant = storedGrant ?? {
+    // Step 3: Resolve scope for tool-level enforcement.
+    // Priority: local grantStore > Nexus chain response > fail-closed.
+    // This ensures cross-node/restart verification still enforces scope
+    // when Nexus returns scope data in the chain response.
+    const resolvedScope: DelegationScope | undefined =
+      storedGrant?.scope ??
+      (chainResult.scope !== undefined
+        ? {
+            permissions: {
+              allow: [...chainResult.scope.allowed_operations],
+              deny: [...chainResult.scope.remove_grants],
+            },
+            ...(chainResult.scope.resource_patterns !== undefined
+              ? { resources: [...chainResult.scope.resource_patterns] }
+              : {}),
+          }
+        : undefined);
+
+    // Fail-closed: if scope is unknown (not in local store AND Nexus didn't
+    // return it), deny the tool call. This prevents privilege escalation on
+    // restart or cross-node verification where scope would otherwise default
+    // to allow-all with scope: { permissions: {} }.
+    if (resolvedScope === undefined) {
+      const failResult: DelegationVerifyResult = { ok: false, reason: "scope_exceeded" };
+      verifyCache?.set(id, toolId, failResult);
+      return failResult;
+    }
+
+    // Enforce scope from Nexus response (cross-node case)
+    if (storedGrant === undefined && !matchToolAgainstScope(toolId, resolvedScope)) {
+      const failResult: DelegationVerifyResult = { ok: false, reason: "scope_exceeded" };
+      verifyCache?.set(id, toolId, failResult);
+      return failResult;
+    }
+
+    const resultGrant: DelegationGrant = storedGrant ?? {
       id,
       issuerId: agentId,
       delegateeId: agentId,
-      scope: { permissions: {} },
+      scope: resolvedScope,
       chainDepth: chainResult.chain_depth,
       maxChainDepth,
       createdAt: 0,

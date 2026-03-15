@@ -49,6 +49,10 @@ function createMockApi(overrides?: Partial<NexusDelegationApi>): NexusDelegation
           delegation_id: "deleg-123",
           valid: true,
           chain_depth: 0,
+          scope: {
+            allowed_operations: ["*"],
+            remove_grants: [],
+          },
         } satisfies NexusChainVerifyResponse,
       }),
     ),
@@ -397,6 +401,107 @@ describe("NexusDelegationBackend.verify", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cross-node scope enforcement (codex finding #2)
+// ---------------------------------------------------------------------------
+
+describe("NexusDelegationBackend cross-node scope", () => {
+  test("uses scope from Nexus chain response when local store is empty", async () => {
+    const api = createMockApi({
+      verifyChain: mock(() =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            delegation_id: "deleg-remote",
+            valid: true,
+            chain_depth: 1,
+            scope: {
+              allowed_operations: ["read_file"],
+              remove_grants: ["execute_command"],
+            },
+          },
+        }),
+      ),
+    });
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: AGENT_ID,
+      verifyCacheTtlMs: 0,
+    });
+
+    // No local grant — simulates cross-node/restart scenario
+    // Allowed tool
+    const ok = await backend.verify(delegationId("deleg-remote"), "read_file");
+    expect(ok.ok).toBe(true);
+
+    // Denied tool
+    const denied = await backend.verify(delegationId("deleg-remote"), "execute_command");
+    expect(denied.ok).toBe(false);
+    if (!denied.ok) {
+      expect(denied.reason).toBe("scope_exceeded");
+    }
+  });
+
+  test("fail-closed when scope is unknown (no local store, no Nexus scope)", async () => {
+    const api = createMockApi({
+      verifyChain: mock(() =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            delegation_id: "deleg-no-scope",
+            valid: true,
+            chain_depth: 0,
+            // No scope field — old Nexus version
+          },
+        }),
+      ),
+    });
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: AGENT_ID,
+      verifyCacheTtlMs: 0,
+    });
+
+    // No local grant AND no scope in Nexus response → fail-closed
+    const result = await backend.verify(delegationId("deleg-no-scope"), "read_file");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("scope_exceeded");
+    }
+  });
+
+  test("returns real scope from Nexus response in grant result", async () => {
+    const api = createMockApi({
+      verifyChain: mock(() =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            delegation_id: "deleg-scoped",
+            valid: true,
+            chain_depth: 0,
+            scope: {
+              allowed_operations: ["read_file", "write_file"],
+              remove_grants: [],
+            },
+          },
+        }),
+      ),
+    });
+    const backend = createNexusDelegationBackend({
+      api,
+      agentId: AGENT_ID,
+      verifyCacheTtlMs: 0,
+    });
+
+    const result = await backend.verify(delegationId("deleg-scoped"), "read_file");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.grant.scope.permissions.allow).toEqual(["read_file", "write_file"]);
+      expect(result.grant.scope.permissions.deny).toEqual([]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Idempotency key tests (#4 fix)
 // ---------------------------------------------------------------------------
 
@@ -546,6 +651,10 @@ describe("Nexus unavailability", () => {
             delegation_id: "deleg-123",
             valid: true,
             chain_depth: 0,
+            scope: {
+              allowed_operations: ["*"],
+              remove_grants: [],
+            },
           } satisfies NexusChainVerifyResponse,
         });
       }),
@@ -556,7 +665,7 @@ describe("Nexus unavailability", () => {
       verifyCacheTtlMs: 60_000,
     });
 
-    // Populate cache while Nexus is up
+    // Populate cache while Nexus is up (scope included in response)
     const result1 = await backend.verify(delegationId("deleg-123"), "read_file");
     expect(result1.ok).toBe(true);
 

@@ -48,6 +48,10 @@ export interface AgentTurnInput {
   readonly stateRefs: AgentStateRefs;
   /** Gateway frame sender endpoint for streaming (Decision 2A). */
   readonly gatewayUrl: string | undefined;
+  /** Per-child delegated Nexus API key — injected as NEXUS_API_KEY env var by the activity. */
+  readonly nexusApiKey?: string | undefined;
+  /** Delegation ID — for tracking and outcome recording. */
+  readonly delegationId?: string | undefined;
 }
 
 /** Result returned by the `runAgentTurn` Activity. */

@@ -380,12 +380,18 @@ export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<Agen
     timestamp: Date.now(),
   };
 
+  // Pass the delegated Nexus API key (attenuated per-child credential) and
+  // delegation ID to the activity. The activity injects NEXUS_API_KEY into
+  // the Koi runtime env so the child can authenticate with Nexus using its
+  // own credential, not the parent's bootstrap key.
   const input: AgentTurnInput = {
     agentId: config.agentId,
     sessionId: config.sessionId,
     message,
     stateRefs: config.stateRefs,
     gatewayUrl: undefined,
+    nexusApiKey: config.nexusApiKey,
+    delegationId: config.delegationId,
   };
 
   return runAgentTurnLong(input);

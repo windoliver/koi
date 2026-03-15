@@ -50,6 +50,8 @@ export interface NexusChainVerifyResponse {
   readonly valid: boolean;
   readonly reason?: string | undefined;
   readonly chain_depth: number;
+  /** Scope data from the grant — enables cross-node scope enforcement. */
+  readonly scope?: NexusDelegateScope | undefined;
 }
 
 /** A single delegation entry from GET /api/v2/agents/delegate */

@@ -193,7 +193,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       try {
         const grant = await parentDelegation.grant(childScope, childPid.id);
         childGrantId = grant.id;
-        // Extract per-child Nexus API key from grant proof (L0 type — L1 reads it)
+        // Extract per-child Nexus API key from grant proof.
+        // CapabilityProof is an L0 discriminated union — L1 reads its variants
+        // to map proof kinds to child env vars. This is L1's job: it bridges
+        // L0 contracts to runtime concerns. Revised from original Decision #1-A
+        // because the provider-based approach leaked the bootstrap key (codex
+        // review finding #2).
         if (grant.proof.kind === "nexus") {
           childNexusApiKey = grant.proof.token;
         }

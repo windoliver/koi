@@ -82,6 +82,14 @@ export function createActivities(deps: ActivityDeps): {
       let spawnChild: SpawnChildRequest | undefined;
 
       try {
+        // Inject delegated Nexus API key into process env when present.
+        // This is the per-child attenuated credential from the parent's
+        // delegation grant, NOT the parent's bootstrap key.
+        // Activities run in normal Bun/Node context — process.env is available.
+        if (input.nexusApiKey !== undefined) {
+          process.env.NEXUS_API_KEY = input.nexusApiKey;
+        }
+
         // Get or create cached engine (Decision 13A)
         const cacheKey = deps.computeCacheKey();
         const options = await deps.getCreateKoiOptions(input.agentId);
