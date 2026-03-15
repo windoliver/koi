@@ -23,7 +23,7 @@ import type { AgentChatBridge } from "../../agui-chat-bridge.js";
 import type { UpFlags } from "../../args.js";
 import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
-import { composeRuntimeMiddleware } from "../../compose-middleware.js";
+import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -40,11 +40,12 @@ import { resolveTemporalOrWarn } from "../../resolve-temporal.js";
 
 import { printBanner } from "./banner.js";
 import { createInteractiveConsent } from "./consent.js";
-import { provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
+import { buildDemoManifestOverrides, provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
 import { runDetach } from "./detach.js";
 import { mapNexusModeToProfile, startNexusStack, stopNexusStack } from "./nexus.js";
 import { runPreflight } from "./preflight.js";
 import { extractDemoPack, inferPresetId } from "./preset.js";
+import { activatePresetStacks } from "./stacks.js";
 import { startTemporalEmbed } from "./temporal.js";
 
 /** Creates a forge view data source from a ForgeStore + optional seeded bricks. */
@@ -214,7 +215,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const modelName = manifest.model.name;
 
   // 3. PRESET
-  const presetId = await timer.time("preset", () => inferPresetId(manifestPath));
+  const presetId = await timer.time("preset", () =>
+    Promise.resolve(inferPresetId(manifest as never)),
+  );
   const { resolved: preset } = resolveRuntimePreset(presetId);
   const services = preset.services;
 
@@ -394,6 +397,16 @@ export async function runUp(flags: UpFlags): Promise<void> {
     // Data source discovery is non-fatal
   }
 
+  // Activate L3 stacks based on preset flags
+  const activatedStacks = await activatePresetStacks({
+    stacks: preset.stacks,
+    forgeBootstrap:
+      forgeBootstrap !== undefined
+        ? { store: forgeBootstrap.store, runtime: forgeBootstrap.runtime }
+        : undefined,
+    verbose: flags.verbose,
+  });
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -402,6 +415,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
     chatBridge,
     dataSourceProvider,
     dataSourceTools,
+    presetMiddleware: activatedStacks.middleware,
+    presetProviders: activatedStacks.providers,
   });
 
   // Late-binding event sink for forge/monitor SSE events
@@ -424,9 +439,43 @@ export async function runUp(flags: UpFlags): Promise<void> {
   output.spinner.stop(undefined);
   output.success("Runtime assembled");
 
-  // 8. Connect channels
+  // 8. Connect channels (parallel)
   const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
-  for (const ch of channels) await ch.connect();
+  await Promise.all(channels.map((ch) => ch.connect()));
+
+  // 8b. Gateway + Node (conditional on preset services)
+  let stopGateway: (() => Promise<void>) | undefined;
+  let stopNode: (() => Promise<void>) | undefined;
+
+  if (services.gateway && nexusBaseUrl !== undefined) {
+    try {
+      const { createGatewayStack } = await import("@koi/gateway-stack");
+      const gwStack = createGatewayStack(
+        { nexus: { url: nexusBaseUrl } },
+        { dispatch: async () => ({ ok: true, value: undefined }) },
+      );
+      const DEFAULT_GATEWAY_PORT = 4100;
+      await gwStack.start(DEFAULT_GATEWAY_PORT);
+      stopGateway = () => gwStack.stop();
+      output.success(`Gateway started on port ${String(DEFAULT_GATEWAY_PORT)}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      output.warn(`gateway failed to start: ${message}`);
+    }
+  }
+
+  if (services.node !== "disabled") {
+    try {
+      const { createNodeStack } = await import("@koi/node-stack");
+      const nodeStack = createNodeStack({ node: {} }, {});
+      await nodeStack.start();
+      stopNode = () => nodeStack.stop();
+      output.success("Node started");
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      output.warn(`node failed to start: ${message}`);
+    }
+  }
 
   // 8b. Demo pack seed (before admin so seeded bricks are available for forge view)
   const demoPack = await extractDemoPack(manifestPath);
@@ -464,25 +513,25 @@ export async function runUp(flags: UpFlags): Promise<void> {
       verbose: flags.verbose,
     });
 
+    const subsystem = collectSubsystemMiddleware({
+      nexus,
+      forge: forgeBootstrap,
+      autonomous,
+    });
+
+    // Build per-role manifest overrides for demo agents
+    const demoOverrides = await buildDemoManifestOverrides(manifest as never);
+
     const dispatcher = createAgentDispatcher({
       defaultManifestPath: manifestPath,
       verbose: flags.verbose,
-      additionalMiddleware: [
-        ...nexus.middlewares,
-        ...(forgeBootstrap?.middlewares ?? []),
-        ...(autonomous?.middleware ?? []),
-      ],
-      additionalProviders: [
-        ...nexus.providers,
-        ...(forgeBootstrap !== undefined
-          ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
-          : []),
-        ...(autonomous?.providers ?? []),
-      ],
+      additionalMiddleware: subsystem.middleware,
+      additionalProviders: subsystem.providers,
       additionalExtensions: extensions,
       ...(forgeBootstrap !== undefined
         ? { forgeStore: forgeBootstrap.store, forgeRuntime: forgeBootstrap.runtime }
         : {}),
+      ...(demoOverrides !== undefined ? { manifestOverrides: demoOverrides } : {}),
       onDashboardEvent: (event) => {
         emitDashboardEvent?.(event as DashboardEvent);
       },
@@ -743,6 +792,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (temporalAdmin !== undefined) await temporalAdmin.dispose();
   if (temporalEmbedHandle !== undefined) await temporalEmbedHandle.dispose();
   await runtime.dispose();
+  for (const dispose of activatedStacks.disposables) await dispose();
+  if (stopNode !== undefined) await stopNode();
+  if (stopGateway !== undefined) await stopGateway();
   if (autonomous !== undefined) await autonomous.dispose();
   forgeBootstrap?.dispose();
   if (sandboxBridge !== undefined) await sandboxBridge.dispose();

@@ -9,11 +9,19 @@ import type { ChannelName, WizardState } from "../wizard/state.js";
 /** File map: relative filepath → file content. */
 export type FileMap = Readonly<Record<string, string>>;
 
+/** Channel-specific environment variable keys — shared across all template generators. */
 const CHANNEL_ENV_KEYS: Readonly<Record<Exclude<ChannelName, "cli">, readonly string[]>> = {
   telegram: ["TELEGRAM_BOT_TOKEN"],
   slack: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
   discord: ["DISCORD_BOT_TOKEN", "DISCORD_APPLICATION_ID"],
-};
+} as const;
+
+/** Maps add-on IDs to their channel package names. */
+const ADDON_CHANNEL_MAP: Readonly<Record<string, string>> = {
+  telegram: "@koi/channel-telegram",
+  slack: "@koi/channel-slack",
+  discord: "@koi/channel-discord",
+} as const;
 
 function getModelEnvKey(model: string): string | undefined {
   const [provider] = model.split(":", 1);
@@ -29,11 +37,22 @@ function getSelectedChannelEnvKeys(channels: readonly ChannelName[]): readonly {
     .map((channel) => ({ channel, envKeys: CHANNEL_ENV_KEYS[channel] }));
 }
 
+// ---------------------------------------------------------------------------
+// Manifest core — shared header + channels for generateManifestYaml / generateDemoManifestYaml
+// ---------------------------------------------------------------------------
+
+interface ManifestCoreOptions {
+  readonly nexusComment: string;
+  readonly includeAddonChannels?: boolean;
+  readonly additionalSections?: readonly string[];
+}
+
 /**
- * Generates a koi.yaml manifest from wizard state.
- * Uses hand-crafted YAML for readability and control over formatting.
+ * Builds the shared manifest header (name, version, description, model, engine, preset),
+ * nexus guidance comment, and channels section. Returns a mutable lines array so callers
+ * can append template-specific sections before joining.
  */
-export function generateManifestYaml(state: WizardState): string {
+function generateManifestCore(state: WizardState, options: ManifestCoreOptions): string[] {
   const lines: string[] = [];
   lines.push(`name: ${state.name}`);
   lines.push("version: 0.1.0");
@@ -44,8 +63,7 @@ export function generateManifestYaml(state: WizardState): string {
   }
   lines.push(`preset: ${state.preset}`);
   lines.push("");
-  lines.push("# Leave nexus.url unset for local embed mode.");
-  lines.push("# Add it only when you want remote/shared Nexus.");
+  lines.push(options.nexusComment);
   lines.push("# nexus:");
   lines.push("#   url: https://nexus.example.com");
   lines.push("");
@@ -58,27 +76,59 @@ export function generateManifestYaml(state: WizardState): string {
     lines.push(`  - name: "@koi/channel-${channel}"`);
   }
 
+  if (options.includeAddonChannels === true) {
+    for (const addon of state.addons) {
+      const channelName = ADDON_CHANNEL_MAP[addon];
+      if (channelName !== undefined) {
+        lines.push(`  - name: "${channelName}"`);
+      }
+    }
+  }
+
+  if (options.additionalSections !== undefined) {
+    for (const section of options.additionalSections) {
+      lines.push(section);
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * Generates a koi.yaml manifest from wizard state.
+ * Uses hand-crafted YAML for readability and control over formatting.
+ */
+export function generateManifestYaml(state: WizardState): string {
+  const additional: string[] = [];
+
   if (state.dataSources.length > 0) {
-    lines.push("");
-    lines.push("dataSources:");
+    additional.push("");
+    additional.push("dataSources:");
     for (const ds of state.dataSources) {
-      lines.push(`  - name: ${ds.name}`);
-      lines.push(`    protocol: ${ds.protocol}`);
+      additional.push(`  - name: ${ds.name}`);
+      additional.push(`    protocol: ${ds.protocol}`);
     }
   }
 
   if (state.template === "copilot") {
-    lines.push("");
-    lines.push("tools:");
-    lines.push("  koi:");
-    lines.push('    - name: "@koi/tool-ask-user"');
-    lines.push('    - name: "@koi/tools-web"');
+    additional.push("");
+    additional.push("tools:");
+    additional.push("  koi:");
+    additional.push('    - name: "@koi/tool-ask-user"');
+    additional.push('    - name: "@koi/tools-web"');
   }
 
-  lines.push("");
-  lines.push("context:");
-  lines.push("  bootstrap: true");
-  lines.push("");
+  additional.push("");
+  additional.push("context:");
+  additional.push("  bootstrap: true");
+  additional.push("");
+
+  const lines = generateManifestCore(state, {
+    nexusComment:
+      "# Leave nexus.url unset for local embed mode.\n# Add it only when you want remote/shared Nexus.",
+    additionalSections: additional,
+  });
+
   return lines.join("\n");
 }
 
@@ -112,10 +162,23 @@ export function generatePackageJson(state: WizardState): string {
   return `${JSON.stringify(pkg, null, 2)}\n`;
 }
 
+// ---------------------------------------------------------------------------
+// Env core — shared header + model key + channel keys for env file generators
+// ---------------------------------------------------------------------------
+
+interface EnvCoreOptions {
+  readonly nexusApiKey?: string;
+  readonly includeAddonKeys?: boolean;
+  readonly additionalSections?: readonly string[];
+}
+
 /**
- * Generates a .env file with the credentials implied by the selected model/channels.
+ * Builds the shared .env header (auto-load comment), model env key, optional
+ * Nexus API key, optional add-on channel keys, and selected channel env keys.
+ * Returns a mutable lines array so callers can append template-specific
+ * sections before joining.
  */
-export function generateEnvFile(state: WizardState): string {
+function generateEnvCore(state: WizardState, options: EnvCoreOptions): string[] {
   const lines: string[] = [];
   lines.push("# Bun auto-loads .env for `bun run` commands.");
   lines.push("");
@@ -127,6 +190,25 @@ export function generateEnvFile(state: WizardState): string {
     lines.push("");
   }
 
+  if (options.nexusApiKey !== undefined) {
+    lines.push("# Demo Nexus API key (auto-generated for local auth mode)");
+    lines.push(`NEXUS_API_KEY=${options.nexusApiKey}`);
+    lines.push("");
+  }
+
+  if (options.includeAddonKeys === true) {
+    for (const addon of state.addons) {
+      const keys = CHANNEL_ENV_KEYS[addon as Exclude<ChannelName, "cli">];
+      if (keys !== undefined) {
+        lines.push(`# ${addon[0]?.toUpperCase() ?? ""}${addon.slice(1)} channel`);
+        for (const key of keys) {
+          lines.push(`${key}=`);
+        }
+        lines.push("");
+      }
+    }
+  }
+
   const selectedChannelEnvKeys = getSelectedChannelEnvKeys(state.channels);
   for (const { channel, envKeys } of selectedChannelEnvKeys) {
     lines.push(`# ${channel[0]?.toUpperCase() ?? ""}${channel.slice(1)} channel`);
@@ -136,16 +218,35 @@ export function generateEnvFile(state: WizardState): string {
     lines.push("");
   }
 
-  if (state.template === "copilot") {
-    lines.push("# Optional: enable web_search via Brave Search");
-    lines.push("# BRAVE_API_KEY=");
-    lines.push("");
+  if (options.additionalSections !== undefined) {
+    for (const section of options.additionalSections) {
+      lines.push(section);
+    }
   }
 
-  lines.push("# Optional: remote/shared Nexus");
-  lines.push("# NEXUS_URL=https://nexus.example.com");
-  lines.push("# NEXUS_API_KEY=");
-  lines.push("");
+  return lines;
+}
+
+/**
+ * Generates a .env file with the credentials implied by the selected model/channels.
+ */
+export function generateEnvFile(state: WizardState): string {
+  const additional: string[] = [];
+
+  if (state.template === "copilot") {
+    additional.push("# Optional: enable web_search via Brave Search");
+    additional.push("# BRAVE_API_KEY=");
+    additional.push("");
+  }
+
+  additional.push("# Optional: remote/shared Nexus");
+  additional.push("# NEXUS_URL=https://nexus.example.com");
+  additional.push("# NEXUS_API_KEY=");
+  additional.push("");
+
+  const lines = generateEnvCore(state, {
+    additionalSections: additional,
+  });
 
   return lines.join("\n");
 }
@@ -194,69 +295,63 @@ export function generateToolGuide(): string {
 
 /**
  * Generates a koi.yaml manifest for the demo preset.
- * Includes autonomous mode and auth-enabled Nexus.
+ * Includes forge, autonomous mode, soul, context sources, data sources,
+ * and auth-enabled Nexus.
  */
 export function generateDemoManifestYaml(state: WizardState): string {
-  const lines: string[] = [];
-  lines.push(`name: ${state.name}`);
-  lines.push("version: 0.1.0");
-  lines.push(`description: ${state.description}`);
-  lines.push(`model: "${state.model}"`);
-  if (state.engine !== undefined && state.engine !== "pi") {
-    lines.push(`engine: ${state.engine}`);
-  }
-  lines.push(`preset: ${state.preset}`);
-  lines.push("");
-  lines.push("# Demo preset: auth-enabled local Nexus (API key auto-generated in .env).");
-  lines.push("# nexus:");
-  lines.push("#   url: https://nexus.example.com");
-  lines.push("");
+  const additional: string[] = [];
 
-  lines.push("channels:");
-  lines.push(`  - name: "@koi/channel-cli"`);
+  additional.push("");
+  additional.push("forge:");
+  additional.push("  enabled: true");
+  additional.push("");
 
-  const nonCliChannels = state.channels.filter((c) => c !== "cli");
-  for (const channel of nonCliChannels) {
-    lines.push(`  - name: "@koi/channel-${channel}"`);
-  }
+  additional.push("autonomous:");
+  additional.push("  enabled: true");
+  additional.push("");
 
-  // Add add-on channels
-  for (const addon of state.addons) {
-    const channelMap: Readonly<Record<string, string>> = {
-      telegram: "@koi/channel-telegram",
-      slack: "@koi/channel-slack",
-      discord: "@koi/channel-discord",
-    };
-    const channelName = channelMap[addon];
-    if (channelName !== undefined) {
-      lines.push(`  - name: "${channelName}"`);
-    }
-  }
+  additional.push('soul: ".koi/SOUL.md"');
+  additional.push("");
 
-  lines.push("");
-  lines.push("autonomous:");
-  lines.push("  enabled: true");
-  lines.push("");
-
-  lines.push("tools:");
-  lines.push("  koi:");
-  lines.push('    - name: "@koi/tool-ask-user"');
-  lines.push('    - name: "@koi/tools-web"');
-  lines.push("");
+  additional.push("tools:");
+  additional.push("  koi:");
+  additional.push('    - name: "@koi/tool-ask-user"');
+  additional.push('    - name: "@koi/tools-web"');
+  additional.push('    - name: "@koi/tool-exec"');
+  additional.push("");
 
   lines.push("forge:");
   lines.push("  enabled: true");
   lines.push("");
 
   if (state.demoPack !== undefined) {
-    lines.push("demo:");
-    lines.push(`  pack: ${state.demoPack}`);
-    lines.push("");
+    additional.push("demo:");
+    additional.push(`  pack: ${state.demoPack}`);
+    additional.push("");
   }
 
-  lines.push("context:");
-  lines.push("  bootstrap: true");
-  lines.push("");
+  additional.push("dataSources:");
+  additional.push("  - name: herb-employees");
+  additional.push("    protocol: nexus");
+  additional.push("  - name: herb-customers");
+  additional.push("    protocol: nexus");
+  additional.push("  - name: herb-products");
+  additional.push("    protocol: nexus");
+  additional.push("");
+
+  additional.push("context:");
+  additional.push("  bootstrap: true");
+  additional.push("  sources:");
+  additional.push("    - kind: memory");
+  additional.push("    - kind: tool_schema");
+  additional.push("");
+
+  const lines = generateManifestCore(state, {
+    nexusComment: "# Demo preset: auth-enabled local Nexus (API key auto-generated in .env).",
+    includeAddonChannels: true,
+    additionalSections: additional,
+  });
+
   return lines.join("\n");
 }
 
@@ -264,52 +359,16 @@ export function generateDemoManifestYaml(state: WizardState): string {
  * Generates a .env file for the demo preset with auto-generated Nexus API key.
  */
 export function generateDemoEnvFile(state: WizardState): string {
-  const lines: string[] = [];
-  lines.push("# Bun auto-loads .env for `bun run` commands.");
-  lines.push("");
+  const additional: string[] = [];
+  additional.push("# Optional: enable web_search via Brave Search");
+  additional.push("# BRAVE_API_KEY=");
+  additional.push("");
 
-  const modelEnvKey = getModelEnvKey(state.model);
-  if (modelEnvKey !== undefined) {
-    lines.push(`# Required for ${state.model}`);
-    lines.push(`${modelEnvKey}=`);
-    lines.push("");
-  }
-
-  // Demo preset: auto-generated Nexus API key for local auth mode
-  const apiKey = generateLocalApiKey();
-  lines.push("# Demo Nexus API key (auto-generated for local auth mode)");
-  lines.push(`NEXUS_API_KEY=${apiKey}`);
-  lines.push("");
-
-  // Add-on channel tokens
-  for (const addon of state.addons) {
-    const addonEnvKeys: Readonly<Record<string, readonly string[]>> = {
-      telegram: ["TELEGRAM_BOT_TOKEN"],
-      slack: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
-      discord: ["DISCORD_BOT_TOKEN", "DISCORD_APPLICATION_ID"],
-    };
-    const keys = addonEnvKeys[addon];
-    if (keys !== undefined) {
-      lines.push(`# ${addon[0]?.toUpperCase() ?? ""}${addon.slice(1)} channel`);
-      for (const key of keys) {
-        lines.push(`${key}=`);
-      }
-      lines.push("");
-    }
-  }
-
-  const selectedChannelEnvKeys = getSelectedChannelEnvKeys(state.channels);
-  for (const { channel, envKeys } of selectedChannelEnvKeys) {
-    lines.push(`# ${channel[0]?.toUpperCase() ?? ""}${channel.slice(1)} channel`);
-    for (const envKey of envKeys) {
-      lines.push(`${envKey}=`);
-    }
-    lines.push("");
-  }
-
-  lines.push("# Optional: enable web_search via Brave Search");
-  lines.push("# BRAVE_API_KEY=");
-  lines.push("");
+  const lines = generateEnvCore(state, {
+    nexusApiKey: generateLocalApiKey(),
+    includeAddonKeys: true,
+    additionalSections: additional,
+  });
 
   return lines.join("\n");
 }

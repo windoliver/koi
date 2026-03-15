@@ -20,7 +20,9 @@ export const DEMO_PRESET: RuntimePreset = {
   defaultChannels: ["@koi/channel-cli"],
   defaultAddons: [],
   demoPack: "connected",
+  stacks: { forge: true, toolStack: true, retryStack: true, autoHarness: true },
   manifestOverrides: {
     autonomous: { enabled: true },
+    forge: { enabled: true },
   },
 } as const;

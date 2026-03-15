@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { WizardState } from "../wizard/state.js";
 import {
+  generateDemoEnvFile,
+  generateDemoManifestYaml,
   generateManifestYaml,
   generatePackageJson,
   generateReadme,
@@ -196,5 +198,102 @@ describe("generateReadme", () => {
     const readme = generateReadme(STATE);
     expect(readme).toContain("Leave `nexus.url` unset for local embed mode.");
     expect(readme).toContain("https://nexus.example.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Demo manifest + env
+// ---------------------------------------------------------------------------
+
+const DEMO_STATE: WizardState = {
+  template: "minimal",
+  name: "herb-demo",
+  description: "HERB enterprise demo agent",
+  model: "anthropic:claude-sonnet-4-5-20250929",
+  engine: undefined,
+  channels: ["cli"],
+  directory: "herb-demo",
+  koiCommand: "koi",
+  preset: "demo",
+  addons: [],
+  demoPack: "connected",
+  dataSources: [],
+};
+
+describe("generateDemoManifestYaml", () => {
+  test("includes preset: demo", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    expect(yaml).toContain("preset: demo");
+  });
+
+  test("includes autonomous: enabled: true", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    expect(yaml).toContain("autonomous:");
+    expect(yaml).toContain("  enabled: true");
+  });
+
+  test("includes forge: enabled: true", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    expect(yaml).toContain("forge:");
+    expect(yaml).toContain("  enabled: true");
+  });
+
+  test("includes soul reference", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    expect(yaml).toContain('soul: ".koi/SOUL.md"');
+  });
+
+  test("includes tools block with tool-exec", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    expect(yaml).toContain("tools:");
+    expect(yaml).toContain("@koi/tool-ask-user");
+    expect(yaml).toContain("@koi/tools-web");
+    expect(yaml).toContain("@koi/tool-exec");
+  });
+
+  test("includes demo pack", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    expect(yaml).toContain("demo:");
+    expect(yaml).toContain("  pack: connected");
+  });
+
+  test("includes context bootstrap and sources", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    expect(yaml).toContain("context:");
+    expect(yaml).toContain("  bootstrap: true");
+    expect(yaml).toContain("  sources:");
+    expect(yaml).toContain("    - kind: memory");
+    expect(yaml).toContain("    - kind: tool_schema");
+  });
+
+  test("includes dataSources with HERB Nexus entries", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    expect(yaml).toContain("dataSources:");
+    expect(yaml).toContain("herb-employees");
+    expect(yaml).toContain("herb-customers");
+    expect(yaml).toContain("herb-products");
+    expect(yaml).toContain("protocol: nexus");
+  });
+});
+
+describe("generateDemoEnvFile", () => {
+  test("includes auto-generated NEXUS_API_KEY", () => {
+    const env = generateDemoEnvFile(DEMO_STATE);
+    expect(env).toContain("NEXUS_API_KEY=koi-demo-");
+  });
+
+  test("includes model env key", () => {
+    const env = generateDemoEnvFile(DEMO_STATE);
+    expect(env).toContain("ANTHROPIC_API_KEY=");
+  });
+
+  test("includes addon channel env keys", () => {
+    const stateWithAddons: WizardState = {
+      ...DEMO_STATE,
+      addons: ["slack"],
+    };
+    const env = generateDemoEnvFile(stateWithAddons);
+    expect(env).toContain("SLACK_BOT_TOKEN=");
+    expect(env).toContain("SLACK_APP_TOKEN=");
   });
 });

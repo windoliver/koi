@@ -50,6 +50,18 @@ export interface PresetServices {
   readonly node: NodeMode;
 }
 
+/** Which L3 middleware stacks `koi up` should activate for this preset. */
+export interface PresetStacks {
+  readonly forge?: boolean;
+  readonly contextArena?: boolean;
+  readonly governance?: boolean;
+  readonly toolStack?: boolean;
+  readonly goalStack?: boolean;
+  readonly retryStack?: boolean;
+  readonly qualityGate?: boolean;
+  readonly autoHarness?: boolean;
+}
+
 /** A complete runtime preset definition. */
 export interface RuntimePreset {
   readonly id: PresetId;
@@ -64,6 +76,8 @@ export interface RuntimePreset {
   readonly defaultAddons: readonly string[];
   /** Demo pack ID to auto-seed (undefined for non-demo presets). */
   readonly demoPack: string | undefined;
+  /** L3 middleware stacks to activate. */
+  readonly stacks: PresetStacks;
   /** Manifest YAML overrides applied by this preset. */
   readonly manifestOverrides: Readonly<Record<string, unknown>>;
 }

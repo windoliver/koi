@@ -20,6 +20,7 @@ export const MESH_PRESET: RuntimePreset = {
   defaultChannels: ["@koi/channel-cli"],
   defaultAddons: [],
   demoPack: undefined,
+  stacks: { governance: true, toolStack: true },
   manifestOverrides: {
     autonomous: { enabled: true },
   },

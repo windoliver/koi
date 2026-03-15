@@ -35,11 +35,47 @@ export interface MiddlewareCompositionInput {
   readonly dataSourceProvider?: ComponentProvider | undefined;
   /** Data source runtime tools (query_datasource, probe_schema). */
   readonly dataSourceTools?: readonly Tool[] | undefined;
+  /** Preset-activated middleware (from activatePresetStacks). */
+  readonly presetMiddleware?: readonly KoiMiddleware[];
+  /** Preset-activated providers (from activatePresetStacks). */
+  readonly presetProviders?: readonly ComponentProvider[];
 }
 
 export interface ComposedMiddleware {
   readonly middleware: readonly KoiMiddleware[];
   readonly providers: readonly ComponentProvider[];
+}
+
+/** Subsystem middleware/provider collection input. */
+export interface SubsystemMiddlewareDeps {
+  readonly nexus: NexusResolvedState;
+  readonly forge: ReturnType<typeof createForgeBootstrap> | undefined;
+  readonly autonomous: AutonomousResult | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Collects middleware and providers from resolved subsystems (nexus, forge,
+ * autonomous). Used by both `composeRuntimeMiddleware` and the dispatcher
+ * to avoid duplicating array construction.
+ */
+export function collectSubsystemMiddleware(deps: SubsystemMiddlewareDeps): ComposedMiddleware {
+  const middleware: readonly KoiMiddleware[] = [
+    ...deps.nexus.middlewares,
+    ...(deps.forge?.middlewares ?? []),
+    ...(deps.autonomous?.middleware ?? []),
+  ];
+
+  const providers: readonly ComponentProvider[] = [
+    ...deps.nexus.providers,
+    ...(deps.forge !== undefined ? [deps.forge.provider, deps.forge.forgeToolsProvider] : []),
+    ...(deps.autonomous?.providers ?? []),
+  ];
+
+  return { middleware, providers };
 }
 
 // ---------------------------------------------------------------------------
@@ -49,16 +85,21 @@ export interface ComposedMiddleware {
 /**
  * Composes the full middleware and provider arrays from all resolved subsystems.
  *
- * Order matters: resolved (manifest) middleware runs first, then extra
- * (arena), then nexus, forge, autonomous, and finally chat bridge.
+ * Order matters: resolved → presetMiddleware → extra → nexus → forge →
+ * autonomous → chatBridge.
  */
 export function composeRuntimeMiddleware(input: MiddlewareCompositionInput): ComposedMiddleware {
+  const subsystem = collectSubsystemMiddleware({
+    nexus: input.nexus,
+    forge: input.forge,
+    autonomous: input.autonomous,
+  });
+
   const middleware: readonly KoiMiddleware[] = [
     ...input.resolved,
+    ...(input.presetMiddleware ?? []),
     ...(input.extra ?? []),
-    ...input.nexus.middlewares,
-    ...(input.forge?.middlewares ?? []),
-    ...(input.autonomous?.middleware ?? []),
+    ...subsystem.middleware,
     ...(input.chatBridge !== undefined ? [input.chatBridge.middleware] : []),
   ];
 
@@ -74,10 +115,9 @@ export function composeRuntimeMiddleware(input: MiddlewareCompositionInput): Com
   const providers: readonly ComponentProvider[] = [
     ...(input.dataSourceProvider !== undefined ? [input.dataSourceProvider] : []),
     ...dsToolProviders,
+    ...(input.presetProviders ?? []),
     ...(input.extraProviders ?? []),
-    ...input.nexus.providers,
-    ...(input.forge !== undefined ? [input.forge.provider, input.forge.forgeToolsProvider] : []),
-    ...(input.autonomous?.providers ?? []),
+    ...subsystem.providers,
   ];
 
   return { middleware, providers };

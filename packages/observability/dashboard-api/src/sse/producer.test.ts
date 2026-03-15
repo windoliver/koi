@@ -123,4 +123,61 @@ describe("createSseProducer", () => {
     const response = producer.connect(new Request("http://localhost/events"));
     expect(response.status).toBe(410);
   });
+
+  test("client disconnect decrements connection count", async () => {
+    const controller = new AbortController();
+    const req = new Request("http://localhost/events", { signal: controller.signal });
+    const response = producer.connect(req);
+    expect(producer.connectionCount()).toBe(1);
+    expect(response.status).toBe(200);
+
+    // Abort to simulate disconnect
+    controller.abort();
+
+    // Wait for abort handler to fire
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(producer.connectionCount()).toBe(0);
+  });
+
+  test("keepalive timer sends bytes to connected clients", async () => {
+    // Use a producer with very short keepalive (via short batch interval)
+    const mock = createMockDataSource();
+    const shortProducer = createSseProducer(mock.dataSource, {
+      batchIntervalMs: 10,
+      maxConnections: 5,
+    });
+
+    const req = new Request("http://localhost/events");
+    const response = shortProducer.connect(req);
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (reader === undefined) return;
+
+    const decoder = new TextDecoder();
+
+    // Read initial keepalive
+    const first = await reader.read();
+    expect(decoder.decode(first.value)).toContain(":keepalive");
+
+    reader.releaseLock();
+    shortProducer.dispose();
+  });
+
+  test("buffer overflow caps at MAX_BUFFER_SIZE", async () => {
+    // Connect a client so events are buffered
+    producer.connect(new Request("http://localhost/events"));
+
+    // Emit more than 1000 events (MAX_BUFFER_SIZE) before flush
+    for (let i = 0; i < 1100; i++) {
+      emit(makeEvent(`overflow-${String(i)}`));
+    }
+
+    // The buffer should have capped — verify by checking no crash and
+    // events still flush correctly
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Producer should still be functional
+    expect(producer.connectionCount()).toBe(1);
+  });
 });

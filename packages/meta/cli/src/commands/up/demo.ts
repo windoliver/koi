@@ -1,11 +1,19 @@
 /**
  * Demo pack seeding and agent provisioning phases.
+ *
+ * Accepts a parsed manifest object instead of re-reading/regex-parsing YAML.
  */
 
 import { readFile } from "node:fs/promises";
 import type { NexusClient } from "@koi/nexus-client";
-import type { createAgentDispatcher } from "../../agent-dispatcher.js";
+import type { createAgentDispatcher, ManifestOverrides } from "../../agent-dispatcher.js";
 import type { ProvisionedAgent } from "./types.js";
+
+/** Minimal manifest shape needed for demo seeding. */
+interface DemoManifestLike {
+  readonly name: string;
+  readonly demo?: { readonly pack?: string | undefined } | undefined;
+}
 
 export interface SeedDemoResult {
   readonly prompts: readonly string[];
@@ -96,8 +104,35 @@ export async function seedDemoPackIfNeeded(
 }
 
 /**
+ * Builds per-role manifest overrides so each dispatched demo agent
+ * gets a unique name and description in the runtime.
+ */
+export async function buildDemoManifestOverrides(
+  manifest: DemoManifestLike,
+): Promise<ReadonlyMap<string, ManifestOverrides> | undefined> {
+  const packId = manifest.demo?.pack;
+  if (packId === undefined) return undefined;
+
+  const { getPack } = await import("@koi/demo-packs");
+  const pack = getPack(packId);
+  if (pack === undefined) return undefined;
+
+  const overrides = new Map<string, ManifestOverrides>();
+  for (const role of pack.agentRoles) {
+    if (role.name === "primary") continue;
+    const displayName = `${role.name} (${role.type})`;
+    overrides.set(displayName, {
+      name: `${manifest.name}-${role.name}`,
+      description: role.description,
+    });
+  }
+  return overrides;
+}
+
+/**
  * Provisions helper agents declared in the demo pack's agentRoles.
  * Skips the "primary" role (already running as the main runtime).
+ * Each dispatched agent gets per-role manifest overrides for unique identity.
  */
 export async function provisionDemoAgents(
   demoPack: string | undefined,
@@ -117,8 +152,10 @@ export async function provisionDemoAgents(
     for (const role of pack.agentRoles) {
       if (role.name === "primary") continue;
 
+      const displayName = `${role.name} (${role.type})`;
+
       const result = await dispatcher.dispatchAgent({
-        name: `${role.name} (${role.type})`,
+        name: displayName,
         manifest: manifestPath,
         message: role.description,
         agentType: role.type,

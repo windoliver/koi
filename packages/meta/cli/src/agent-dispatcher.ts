@@ -30,6 +30,12 @@ export interface DispatchedAgent {
   readonly chatHandler: (req: Request) => Promise<Response>;
 }
 
+/** Manifest field overrides applied after loading, keyed by agent display name. */
+export interface ManifestOverrides {
+  readonly name?: string;
+  readonly description?: string;
+}
+
 export interface AgentDispatcherOptions {
   /** Default manifest path (used when request omits manifest). */
   readonly defaultManifestPath: string;
@@ -47,6 +53,11 @@ export interface AgentDispatcherOptions {
   readonly forgeRuntime?: unknown;
   /** Optional SSE event sink for forge/monitor observability on dispatched agents. */
   readonly onDashboardEvent?: ((event: unknown) => void) | undefined;
+  /**
+   * Per-agent manifest overrides — keyed by display name from DispatchAgentRequest.
+   * Applied after loading the manifest to give dispatched agents unique identities.
+   */
+  readonly manifestOverrides?: ReadonlyMap<string, ManifestOverrides> | undefined;
   /** Injected deps for testing — bypasses dynamic import() to avoid mock.module contamination. */
   readonly _testDeps?: DispatcherDeps;
 }
@@ -206,10 +217,23 @@ export function createAgentDispatcher(options: AgentDispatcherOptions): AgentDis
       const baseManifest = loadResult.value.manifest;
 
       // Override lifecycle when dispatcher specifies agentType (e.g. worker vs copilot)
-      const manifest =
+      const withLifecycle =
         request.agentType !== undefined && request.agentType !== baseManifest.lifecycle
           ? { ...baseManifest, lifecycle: request.agentType }
           : baseManifest;
+
+      // Apply per-agent manifest overrides (name, description) for unique identities
+      const agentOverrides = options.manifestOverrides?.get(request.name);
+      const manifest =
+        agentOverrides !== undefined
+          ? {
+              ...withLifecycle,
+              ...(agentOverrides.name !== undefined ? { name: agentOverrides.name } : {}),
+              ...(agentOverrides.description !== undefined
+                ? { description: agentOverrides.description }
+                : {}),
+            }
+          : withLifecycle;
 
       // 2. Resolve agent (middleware, model, engine)
       const resolved = await deps.resolveAgent({

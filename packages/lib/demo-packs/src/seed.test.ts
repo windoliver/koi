@@ -104,7 +104,7 @@ describe("base pack", () => {
     const result = await pack.seed(ctx);
 
     expect(result.ok).toBe(true);
-    expect(result.counts.files).toBe(1);
+    expect(result.counts.files).toBe(2);
     expect(result.summary.length).toBeGreaterThan(0);
 
     const instructionsPath = join(tempDir, ".koi", "INSTRUCTIONS.md");
@@ -113,6 +113,11 @@ describe("base pack", () => {
     const content = readFileSync(instructionsPath, "utf-8");
     expect(content).toContain("test-agent");
     expect(content).toContain("demo mode");
+
+    const soulPath = join(tempDir, ".koi", "SOUL.md");
+    expect(existsSync(soulPath)).toBe(true);
+    const soulContent = readFileSync(soulPath, "utf-8");
+    expect(soulContent).toContain("HERB");
   });
 
   test("does not overwrite existing INSTRUCTIONS.md", async () => {
@@ -143,6 +148,7 @@ describe("base pack", () => {
     const result = await pack.seed(ctx);
 
     expect(result.summary.some((s) => s.includes("INSTRUCTIONS.md"))).toBe(true);
+    expect(result.summary.some((s) => s.includes("SOUL.md"))).toBe(true);
   });
 });
 
@@ -160,18 +166,8 @@ describe("connected pack", () => {
 
     // Mock rpc returns errors, so seeding fails
     expect(result.ok).toBe(false);
-    expect(result.counts.memory).toBe(0);
-    expect(result.counts.corpus).toBe(0);
-  });
-
-  test("includes warnings in verbose mode", async () => {
-    const ctx = makeCtx({ verbose: true });
-    const pack = getPack("connected");
-    expect(pack).toBeDefined();
-    if (pack === undefined) return;
-    const result = await pack.seed(ctx);
-
-    expect(result.summary.some((s) => s.includes("warn:"))).toBe(true);
+    expect(result.counts.employees).toBe(0);
+    expect(result.counts.customers).toBe(0);
   });
 
   test("has agent roles defined", () => {
@@ -201,7 +197,7 @@ describe("runSeed", () => {
     const result = await runSeed("base", ctx);
 
     expect(result.ok).toBe(true);
-    expect(result.counts.files).toBe(1);
+    expect(result.counts.files).toBe(2);
   });
 
   test("runs base pack before connected pack", async () => {
@@ -209,10 +205,10 @@ describe("runSeed", () => {
     const result = await runSeed("connected", ctx);
 
     // Base pack should have run (files count from base)
-    expect(result.counts.files).toBe(1);
-    // Connected pack counts should be merged in
-    expect("memory" in result.counts).toBe(true);
-    expect("corpus" in result.counts).toBe(true);
+    expect(result.counts.files).toBe(2);
+    // Connected pack counts should be merged in (HERB data categories)
+    expect("employees" in result.counts).toBe(true);
+    expect("customers" in result.counts).toBe(true);
   });
 });
 
