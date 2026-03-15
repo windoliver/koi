@@ -394,13 +394,14 @@ export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<Agen
     delegationId: config.delegationId,
   };
 
-  // Execute the turn and record the delegation outcome (Phase 4 seam).
-  // The outcome feeds Nexus reputation scoring when it's implemented.
+  // Execute the turn, record outcome, and revoke delegation on completion.
+  // Matches the in-process spawn path (spawn-child.ts) which revokes on
+  // child termination. Without this, successful workers leave active Nexus
+  // grants until TTL expiry.
   let turnResult: AgentTurnResult;
   try {
     turnResult = await runAgentTurnLong(input);
   } catch (err: unknown) {
-    // Record failure outcome before re-throwing
     if (config.delegationId !== undefined) {
       try {
         await delegationActivities.recordDelegationOutcome({
@@ -408,13 +409,20 @@ export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<Agen
           outcome: "failed",
         });
       } catch {
-        // Best-effort — outcome recording failure doesn't block the workflow
+        // Best-effort
+      }
+      try {
+        await delegationActivities.revokeDelegation({
+          delegationId: config.delegationId,
+        });
+      } catch {
+        // Best-effort — TTL provides safety net
       }
     }
     throw err;
   }
 
-  // Record success outcome
+  // Record success outcome and revoke delegation
   if (config.delegationId !== undefined) {
     try {
       await delegationActivities.recordDelegationOutcome({
@@ -422,7 +430,14 @@ export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<Agen
         outcome: "completed",
       });
     } catch {
-      // Best-effort — outcome recording failure doesn't block the workflow
+      // Best-effort
+    }
+    try {
+      await delegationActivities.revokeDelegation({
+        delegationId: config.delegationId,
+      });
+    } catch {
+      // Best-effort — TTL provides safety net
     }
   }
 
