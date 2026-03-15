@@ -33,13 +33,18 @@ import type {
   MessageHandler,
   OutboundMessage,
 } from "@koi/core";
+import type { RetryConfig } from "@koi/errors";
 import { swallowError } from "@koi/errors";
+import type { DisconnectInfo } from "./reconnect.js";
+import { createReconnector } from "./reconnect.js";
 import { renderBlocks } from "./render-blocks.js";
 
 /** Health status snapshot returned by the optional healthCheck() method. */
 export interface HealthStatus {
   readonly healthy: boolean;
   readonly lastEventAt: number;
+  readonly reconnectAttempts: number;
+  readonly lastDisconnect?: DisconnectInfo;
 }
 
 /**
@@ -55,6 +60,18 @@ export interface HealthStatus {
 export type MessageNormalizer<E> = (
   event: E,
 ) => InboundMessage | null | Promise<InboundMessage | null>;
+
+/** Policy for automatic reconnection on platform disconnect. */
+export interface ReconnectPolicy {
+  /** Retry configuration. Defaults to DEFAULT_RECONNECT_CONFIG (decorrelated jitter). */
+  readonly retry?: RetryConfig;
+  /** Called when all reconnect attempts are exhausted. */
+  readonly onReconnectFailed?: (lastError: unknown, info?: DisconnectInfo) => void;
+  /** Called on each reconnect attempt (for logging/observability). */
+  readonly onReconnecting?: (attempt: number) => void;
+  /** Return false to skip reconnect for this disconnect. Default: always reconnect. */
+  readonly shouldReconnect?: (info: DisconnectInfo) => boolean;
+}
 
 /**
  * Configuration for createChannelAdapter<E>().
@@ -155,6 +172,19 @@ export interface ChannelAdapterConfig<E> {
    * Defaults to 300_000 (5 minutes). Set to 0 to disable staleness detection.
    */
   readonly healthTimeoutMs?: number;
+
+  /**
+   * When provided, auto-reconnect on platform disconnect with bounded retries.
+   * Requires onPlatformDisconnect to be set to detect connection drops.
+   */
+  readonly reconnect?: ReconnectPolicy;
+
+  /**
+   * Called by the platform when the underlying connection drops unexpectedly.
+   * Returns an unsubscribe function. When reconnect is configured, this triggers
+   * the reconnect loop. When not configured, the adapter stays disconnected.
+   */
+  readonly onPlatformDisconnect?: (handler: (info?: DisconnectInfo) => void) => () => void;
 }
 
 /**
@@ -193,12 +223,24 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
       console.warn(`[channel-base] Normalization error in "${name}":`, error);
     },
     healthTimeoutMs = DEFAULT_HEALTH_TIMEOUT_MS,
+    reconnect: reconnectPolicy,
+    onPlatformDisconnect,
   } = config;
 
   // let requires justification: mutable connection state managed by connect/disconnect lifecycle
   let connected = false;
   // let requires justification: platform unsubscribe handle acquired on connect, released on disconnect
   let unsubPlatform: (() => void) | undefined;
+  // let requires justification: tracks whether a reconnect loop is active for healthCheck
+  let reconnecting = false;
+  // let requires justification: disconnect listener unsubscribe acquired on connect
+  let unsubDisconnect: (() => void) | undefined;
+  // let requires justification: tracks last disconnect info for healthCheck enrichment
+  let lastDisconnect: DisconnectInfo | undefined;
+  // let requires justification: tracks reconnect attempts for healthCheck enrichment
+  let currentReconnectAttempts = 0;
+  // let requires justification: active reconnector instance, must be stoppable from disconnect()
+  let activeReconnector: ReturnType<typeof createReconnector> | undefined;
 
   // handlers is a small list (typically 1–2 entries).
   // O(N) alloc per subscribe/unsubscribe is intentional and appropriate for this size.
@@ -262,12 +304,8 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
       });
   };
 
-  const connect = async (): Promise<void> => {
-    if (connected) {
-      return;
-    }
-
-    // Apply connect timeout if configured (0 = disabled)
+  /** Wraps platformConnect() with connectTimeoutMs. Used by both initial connect and reconnect. */
+  const connectWithTimeout = async (): Promise<void> => {
     if (connectTimeoutMs > 0) {
       // let justified: timer handle must be captured for cleanup after Promise.race
       let timerId: ReturnType<typeof setTimeout> | undefined;
@@ -284,9 +322,126 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     } else {
       await platformConnect();
     }
+  };
+
+  const connect = async (): Promise<void> => {
+    if (connected) {
+      return;
+    }
+
+    await connectWithTimeout();
 
     unsubPlatform = onPlatformEvent(dispatchEvent);
     connected = true;
+    reconnecting = false;
+
+    // Subscribe to platform disconnect events for auto-reconnect
+    if (reconnectPolicy !== undefined && onPlatformDisconnect !== undefined) {
+      unsubDisconnect?.();
+      unsubDisconnect = onPlatformDisconnect((info) => {
+        if (!connected) return;
+        connected = false;
+        lastDisconnect = info;
+
+        // Check shouldReconnect predicate before entering the reconnect loop
+        if (
+          reconnectPolicy.shouldReconnect !== undefined &&
+          !reconnectPolicy.shouldReconnect(info ?? {})
+        ) {
+          reconnectPolicy.onReconnectFailed?.(
+            new Error(`Reconnect skipped: non-retryable disconnect (code=${String(info?.code)})`),
+            info,
+          );
+          // Tear down platform event listener — adapter stays disconnected
+          unsubPlatform?.();
+          unsubPlatform = undefined;
+          return;
+        }
+
+        reconnecting = true;
+        // Tear down the current platform event listener
+        unsubPlatform?.();
+        unsubPlatform = undefined;
+
+        // Stop any previous reconnector before creating a new one
+        activeReconnector?.stop();
+        const reconnector = createReconnector({
+          connect: async () => {
+            currentReconnectAttempts = reconnector.attempts();
+            reconnectPolicy.onReconnecting?.(reconnector.attempts());
+            await connectWithTimeout();
+          },
+          onConnected: () => {
+            // Re-subscribe to platform events after successful reconnect
+            unsubPlatform = onPlatformEvent(dispatchEvent);
+            connected = true;
+            reconnecting = false;
+            currentReconnectAttempts = 0;
+
+            // Re-subscribe to platform disconnect for next drop
+            unsubDisconnect?.();
+            if (onPlatformDisconnect !== undefined) {
+              unsubDisconnect = onPlatformDisconnect((nextInfo) => {
+                if (!connected) return;
+                connected = false;
+                lastDisconnect = nextInfo;
+
+                // Check shouldReconnect on subsequent disconnects too
+                if (
+                  reconnectPolicy.shouldReconnect !== undefined &&
+                  !reconnectPolicy.shouldReconnect(nextInfo ?? {})
+                ) {
+                  reconnectPolicy.onReconnectFailed?.(
+                    new Error(
+                      `Reconnect skipped: non-retryable disconnect (code=${String(nextInfo?.code)})`,
+                    ),
+                    nextInfo,
+                  );
+                  unsubPlatform?.();
+                  unsubPlatform = undefined;
+                  return;
+                }
+
+                reconnecting = true;
+                unsubPlatform?.();
+                unsubPlatform = undefined;
+                reconnector.reconnect(nextInfo);
+              });
+            }
+
+            // Drain queued messages sequentially after reconnect (preserves FIFO order).
+            // Check `connected` before each send so disconnect() aborts the drain.
+            if (sendQueue.length > 0) {
+              const queued = sendQueue;
+              sendQueue = [];
+              droppedCount = 0;
+              void (async (): Promise<void> => {
+                for (const msg of queued) {
+                  if (!connected) break;
+                  try {
+                    await platformSend(msg);
+                  } catch (e: unknown) {
+                    swallowError(e, { package: "channel-base", operation: `drain[${name}]` });
+                  }
+                }
+              })();
+            }
+          },
+          onDisconnected: () => {
+            // Already handled above — this fires on subsequent reconnect triggers
+          },
+          onGiveUp: (lastError, lastInfo) => {
+            reconnecting = false;
+            activeReconnector = undefined;
+            reconnectPolicy.onReconnectFailed?.(lastError, lastInfo);
+          },
+          ...(reconnectPolicy.retry !== undefined && { retry: reconnectPolicy.retry }),
+        });
+        activeReconnector = reconnector;
+
+        reconnector.reconnect(info);
+      });
+    }
 
     // Drain queued messages in order. Errors are logged but do not abort the
     // drain or fail connect() — the platform connected successfully.
@@ -309,6 +464,13 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     // stale events arriving during teardown.
     unsubPlatform?.();
     unsubPlatform = undefined;
+    // Unsubscribe disconnect listener and stop any active reconnect
+    unsubDisconnect?.();
+    unsubDisconnect = undefined;
+    // Stop the active reconnector to prevent it from reconnecting after disconnect()
+    activeReconnector?.stop();
+    activeReconnector = undefined;
+    reconnecting = false;
     connected = false;
     await platformDisconnect();
   };
@@ -353,15 +515,20 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
   };
 
   const healthCheck = (): HealthStatus => {
-    if (!connected) {
-      return { healthy: false, lastEventAt };
+    const base = {
+      lastEventAt,
+      reconnectAttempts: currentReconnectAttempts,
+      ...(lastDisconnect !== undefined ? { lastDisconnect } : {}),
+    };
+    if (!connected || reconnecting) {
+      return { healthy: false, ...base };
     }
     if (healthTimeoutMs === 0) {
       // Staleness detection disabled — connected means healthy
-      return { healthy: true, lastEventAt };
+      return { healthy: true, ...base };
     }
     const stale = lastEventAt > 0 && Date.now() - lastEventAt > healthTimeoutMs;
-    return { healthy: !stale, lastEventAt };
+    return { healthy: !stale, ...base };
   };
 
   // Build the base adapter. sendStatus is conditionally included:

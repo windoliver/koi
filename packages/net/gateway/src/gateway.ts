@@ -10,6 +10,7 @@ import { swallowError } from "@koi/errors";
 import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
+import { CLOSE_CODES } from "./close-codes.js";
 import { createNodeConnectionHandler } from "./node-connection.js";
 import type { NodeFrame } from "./node-handler.js";
 import { peekFrameKind } from "./node-handler.js";
@@ -195,7 +196,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     (connId: string) => {
       const conn = connMap.get(connId);
       if (conn !== undefined) {
-        conn.close(4014, "Replaced by reconnecting node");
+        conn.close(CLOSE_CODES.NODE_REPLACED, "Replaced by reconnecting node");
       }
       // Note: cleanupNode already called by the handler before onEvict
       connMap.delete(connId);
@@ -329,14 +330,14 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
   async function handlePostHandshake(conn: TransportConnection, data: string): Promise<void> {
     const sessionId = sessionByConn.get(conn.id);
     if (sessionId === undefined) {
-      conn.close(4007, "No session");
+      conn.close(CLOSE_CODES.SESSION_NOT_FOUND, "No session");
       cleanup(conn.id);
       return;
     }
 
     const sessionResult = await store.get(sessionId);
     if (!sessionResult.ok) {
-      conn.close(4008, "Session not found");
+      conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session not found");
       cleanup(conn.id);
       return;
     }
@@ -350,7 +351,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
         criticalAt !== undefined &&
         Date.now() - criticalAt > config.backpressureCriticalTimeoutMs
       ) {
-        closeConnection(conn.id, 4009, "Backpressure timeout");
+        closeConnection(conn.id, CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Backpressure timeout");
         return;
       }
       // Drop frame while in critical state
@@ -414,7 +415,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       const setResult = await store.set(currentSession);
       if (!setResult.ok) {
         swallowError(setResult.error, { package: "gateway", operation: "store.set" });
-        closeConnection(conn.id, 4008, "Session store failure");
+        closeConnection(conn.id, CLOSE_CODES.SESSION_STORE_FAILURE, "Session store failure");
       }
     }
   }
@@ -429,7 +430,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
         (sessionId: string) => {
           const connId = connBySession.get(sessionId);
           if (connId !== undefined) {
-            closeConnection(connId, 4004, "Session expired");
+            closeConnection(connId, CLOSE_CODES.SESSION_EXPIRED, "Session expired");
           }
         },
       );
@@ -438,18 +439,22 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
         config.nodeHeartbeatTimeoutMs,
         config.sweepIntervalMs,
         (nodeId: string, connId: string) => {
-          closeConnection(connId, 4013, `Node heartbeat expired: ${nodeId}`);
+          closeConnection(
+            connId,
+            CLOSE_CODES.NODE_HEARTBEAT_EXPIRED,
+            `Node heartbeat expired: ${nodeId}`,
+          );
         },
       );
 
       await deps.transport.listen(port, {
         onOpen(conn: TransportConnection): void {
           if (deps.transport.connections() > config.maxConnections) {
-            conn.close(4005, "Max connections exceeded");
+            conn.close(CLOSE_CODES.MAX_CONNECTIONS, "Max connections exceeded");
             return;
           }
           if (!bp.canAccept()) {
-            conn.close(4006, "Global buffer limit exceeded");
+            conn.close(CLOSE_CODES.BUFFER_LIMIT, "Global buffer limit exceeded");
             return;
           }
 
@@ -459,7 +464,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
           const authTimer = setTimeout(() => {
             if (pendingHandshakes.has(conn.id)) {
               pendingHandshakes.delete(conn.id);
-              conn.close(4001, "Auth timeout");
+              conn.close(CLOSE_CODES.AUTH_TIMEOUT, "Auth timeout");
               cleanup(conn.id);
             }
           }, config.authTimeoutMs);
@@ -508,7 +513,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
                           nextId,
                         ),
                       );
-                      conn.close(4011, "Session expired");
+                      conn.close(CLOSE_CODES.SESSION_EXPIRED_PROCESSING, "Session expired");
                       cleanup(conn.id);
                       return;
                     }
@@ -541,7 +546,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
                   const setResult = await store.set(session);
                   if (!setResult.ok) {
                     swallowError(setResult.error, { package: "gateway", operation: "store.set" });
-                    conn.close(4008, "Session store failure");
+                    conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store failure");
                     cleanup(conn.id);
                     return;
                   }
@@ -564,7 +569,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
             }
 
             // Unknown first message
-            conn.close(4002, "Invalid first message: unrecognized kind");
+            conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Invalid first message: unrecognized kind");
             cleanup(conn.id);
           });
         },
@@ -613,7 +618,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       disconnected.clear();
       // Best-effort graceful close
       for (const conn of connMap.values()) {
-        conn.close(1001, "Server shutting down");
+        conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
       }
       deps.transport.close();
       connMap.clear();
@@ -731,7 +736,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
           },
         };
       }
-      closeConnection(connId, 4012, reason);
+      closeConnection(connId, CLOSE_CODES.ADMIN_CLOSED, reason);
       emitSessionEvent({ kind: "destroyed", sessionId, reason });
       return { ok: true, value: undefined };
     },

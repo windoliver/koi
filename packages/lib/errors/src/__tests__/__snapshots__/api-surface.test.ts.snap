@@ -108,8 +108,16 @@ interface RetryConfig {
     readonly initialDelayMs: number;
     readonly maxBackoffMs: number;
     readonly jitter: boolean;
+    /**
+     * Jitter strategy. "full" uses uniform random in [0, delay]. "decorrelated"
+     * uses AWS-style decorrelated jitter: delay = random_between(base, min(cap, prev * 3)).
+     * Requires prevDelayMs in computeBackoff(). Defaults to "full".
+     */
+    readonly jitterStrategy?: "full" | "decorrelated";
 }
 declare const DEFAULT_RETRY_CONFIG: RetryConfig;
+/** Reconnect-optimized preset with decorrelated jitter for long-lived connections. */
+declare const DEFAULT_RECONNECT_CONFIG: RetryConfig;
 /**
  * Determines whether an error should be retried based on its code.
  */
@@ -121,8 +129,9 @@ declare function isRetryable(error: KoiError): boolean;
  * @param config - Retry configuration
  * @param retryAfterMs - Optional provider-specified retry delay (overrides calculation)
  * @param random - Injectable random function for deterministic jitter testing
+ * @param prevDelayMs - Previous delay in ms (used by decorrelated jitter strategy)
  */
-declare function computeBackoff(attempt: number, config: RetryConfig, retryAfterMs?: number, random?: () => number): number;
+declare function computeBackoff(attempt: number, config: RetryConfig, retryAfterMs?: number, random?: () => number, prevDelayMs?: number): number;
 /**
  * Executes \`fn\` with retry logic. On failure, retries up to \`config.maxRetries\` times
  * with exponential backoff.
@@ -169,6 +178,6 @@ declare class KoiRuntimeError extends Error {
     toKoiError(): KoiError;
 }
 
-export { type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, createCircuitBreaker, extractCode, extractMessage, formatToolError, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, sleep, swallowError, toKoiError, withRetry };
+export { type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_RECONNECT_CONFIG, DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, createCircuitBreaker, extractCode, extractMessage, formatToolError, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, sleep, swallowError, toKoiError, withRetry };
 "
 `;

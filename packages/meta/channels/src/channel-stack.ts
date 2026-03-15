@@ -56,7 +56,7 @@ export async function createChannelStack(config: ChannelStackConfig): Promise<Ch
         results.set(name, check());
       } else {
         // Adapters without healthCheck report unknown status
-        results.set(name, { healthy: true, lastEventAt: 0 });
+        results.set(name, { healthy: true, lastEventAt: 0, reconnectAttempts: 0 });
       }
     }
     return results;

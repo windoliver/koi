@@ -8,6 +8,7 @@
 import type { KoiError, Result } from "@koi/core";
 import { notFound } from "@koi/core";
 import { swallowError } from "@koi/errors";
+import { CLOSE_CODES } from "./close-codes.js";
 import type { AgentStatusEntry, HandshakePayload, NodeFrame } from "./node-handler.js";
 import {
   encodeNodeFrame,
@@ -121,18 +122,18 @@ export function createNodeConnectionHandler(
   function handleFirstMessage(conn: TransportConnection, data: string): void {
     const parseResult = parseNodeFrame(data);
     if (!parseResult.ok) {
-      conn.close(4002, parseResult.error.message);
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, parseResult.error.message);
       return;
     }
 
     const frame = parseResult.value;
     if (frame.kind !== "node:handshake") {
-      conn.close(4002, `Expected node:handshake, got ${frame.kind}`);
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, `Expected node:handshake, got ${frame.kind}`);
       return;
     }
 
     if (frame.nodeId.length === 0) {
-      conn.close(4002, "nodeId must not be empty");
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "nodeId must not be empty");
       return;
     }
 
@@ -145,7 +146,7 @@ export function createNodeConnectionHandler(
 
     const payloadResult = validateHandshakePayload(frame.payload);
     if (!payloadResult.ok) {
-      conn.close(4002, payloadResult.error.message);
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, payloadResult.error.message);
       return;
     }
 
@@ -161,7 +162,7 @@ export function createNodeConnectionHandler(
   function handleMessage(conn: TransportConnection, data: string): void {
     const parseResult = parseNodeFrame(data);
     if (!parseResult.ok) {
-      conn.close(4002, parseResult.error.message);
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, parseResult.error.message);
       cleanupNode(conn.id);
       return;
     }
@@ -172,7 +173,10 @@ export function createNodeConnectionHandler(
       case "node:capabilities": {
         const pending = pendingNodeHandshakes.get(conn.id);
         if (pending === undefined) {
-          conn.close(4002, "Received capabilities without prior handshake");
+          conn.close(
+            CLOSE_CODES.INVALID_HANDSHAKE,
+            "Received capabilities without prior handshake",
+          );
           cleanupNode(conn.id);
           return;
         }
@@ -180,7 +184,7 @@ export function createNodeConnectionHandler(
 
         const capsResult = validateCapabilitiesPayload(frame.payload);
         if (!capsResult.ok) {
-          conn.close(4002, capsResult.error.message);
+          conn.close(CLOSE_CODES.INVALID_HANDSHAKE, capsResult.error.message);
           cleanupNode(conn.id);
           return;
         }
@@ -197,7 +201,7 @@ export function createNodeConnectionHandler(
         });
 
         if (!regResult.ok) {
-          conn.close(4002, regResult.error.message);
+          conn.close(CLOSE_CODES.INVALID_HANDSHAKE, regResult.error.message);
           cleanupNode(conn.id);
           return;
         }
@@ -249,14 +253,14 @@ export function createNodeConnectionHandler(
       case "node:tools_updated": {
         const nodeId = nodeConnMap.get(conn.id);
         if (nodeId === undefined) {
-          conn.close(4002, "Received tools_updated before registration");
+          conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Received tools_updated before registration");
           cleanupNode(conn.id);
           return;
         }
 
         // Reject if node is still in pending handshake state (not yet registered)
         if (pendingNodeHandshakes.has(conn.id)) {
-          conn.close(4002, "Received tools_updated before registration");
+          conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Received tools_updated before registration");
           cleanupNode(conn.id);
           return;
         }

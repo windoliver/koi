@@ -14,6 +14,7 @@ export type {
   ChannelAdapterConfig,
   HealthStatus,
   MessageNormalizer,
+  ReconnectPolicy,
 } from "./channel-adapter-factory.js";
 export { createChannelAdapter } from "./channel-adapter-factory.js";
 export type { ContentBlock } from "./content-block-builders.js";
@@ -24,7 +25,7 @@ export type { FormatErrorOptions } from "./format-error.js";
 export { formatErrorForChannel } from "./format-error.js";
 export type { MediaFallbackConfig } from "./media-fallback.js";
 export { createMediaFallback } from "./media-fallback.js";
-export type { Reconnector, ReconnectorConfig } from "./reconnect.js";
+export type { DisconnectInfo, Reconnector, ReconnectorConfig } from "./reconnect.js";
 export { createReconnector } from "./reconnect.js";
 export { renderBlocks } from "./render-blocks.js";
 export type { RetryQueue, RetryQueueConfig } from "./retry-queue.js";
