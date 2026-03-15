@@ -30,7 +30,7 @@ export const DEFAULT_EMBED_CONFIG: TemporalEmbedConfig = Object.freeze({
   port: 7233,
   uiPort: 8233,
   dbPath: undefined,
-  startupTimeoutMs: 15_000,
+  startupTimeoutMs: 30_000,
   pollIntervalMs: 500,
 });
 
@@ -83,21 +83,29 @@ function removePidFile(): void {
 // Health check
 // ---------------------------------------------------------------------------
 
-/** Temporal dev server exposes HTTP API on gRPC port + 1000 by convention. */
-const TEMPORAL_HTTP_PORT_OFFSET = 1000;
-
-async function isServerReady(port: number, timeoutMs: number): Promise<boolean> {
-  try {
-    const response = await fetch(
-      `http://localhost:${port + TEMPORAL_HTTP_PORT_OFFSET}/api/v1/namespaces`,
-      {
-        signal: AbortSignal.timeout(timeoutMs),
-      },
-    );
-    return response.ok;
-  } catch {
-    return false;
-  }
+/**
+ * Check if Temporal server is ready by probing its gRPC port with a TCP connect.
+ * The HTTP health endpoint is not available in headless mode, and the API
+ * layout changed across Temporal CLI versions. A TCP connect to the gRPC
+ * port is the most reliable cross-version readiness signal.
+ */
+async function isServerReady(port: number, _timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const { connect } = require("node:net") as typeof import("node:net");
+    const socket = connect({ host: "127.0.0.1", port }, () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.setTimeout(2_000);
+    socket.on("error", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.on("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

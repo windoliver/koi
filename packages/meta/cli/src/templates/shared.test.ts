@@ -276,7 +276,7 @@ describe("generateDemoManifestYaml", () => {
 describe("generateDemoEnvFile", () => {
   test("includes auto-generated NEXUS_API_KEY", () => {
     const env = generateDemoEnvFile(DEMO_STATE);
-    expect(env).toContain("NEXUS_API_KEY=koi-demo-");
+    expect(env).toContain("NEXUS_API_KEY=sk-koi-demo-");
   });
 
   test("includes model env key", () => {

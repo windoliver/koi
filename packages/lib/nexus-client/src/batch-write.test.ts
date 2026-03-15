@@ -21,7 +21,7 @@ function createMockWriteClient(failures: ReadonlySet<string> = new Set()): {
           error: { code: "EXTERNAL", message: `write failed: ${path}`, retryable: true },
         };
       }
-      written.set(path, params.data);
+      written.set(path, params.content);
       return { ok: true, value: undefined as unknown as T };
     },
   };
@@ -43,8 +43,8 @@ describe("batchWrite", () => {
       expect(result.value.succeeded).toBe(2);
       expect(result.value.failed).toBe(0);
     }
-    expect(written.get("a.json")).toEqual({ id: "a" });
-    expect(written.get("b.json")).toEqual({ id: "b" });
+    expect(written.get("a.json")).toBe('{"id":"a"}');
+    expect(written.get("b.json")).toBe('{"id":"b"}');
   });
 
   test("tallies individual write failures without aborting", async () => {
@@ -165,6 +165,6 @@ describe("batchWrite", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.method).toBe("write");
-    expect(calls[0]?.params).toEqual({ path: "test.json", data: { key: "value" } });
+    expect(calls[0]?.params).toEqual({ path: "test.json", content: '{"key":"value"}' });
   });
 });

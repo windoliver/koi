@@ -40,7 +40,12 @@ export function createNexusClient(config: NexusClientConfig): NexusClient {
         headers.Authorization = `Bearer ${config.apiKey}`;
       }
 
-      response = await fetchFn(config.baseUrl, {
+      // Nexus serves JSON-RPC at /api/nfs/{method} — strip trailing slash
+      // from baseUrl then append the method-specific path.
+      const base = config.baseUrl.replace(/\/+$/, "");
+      const url = `${base}/api/nfs/${encodeURIComponent(method)}`;
+
+      response = await fetchFn(url, {
         method: "POST",
         headers,
         body: JSON.stringify(body),

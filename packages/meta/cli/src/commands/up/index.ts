@@ -652,6 +652,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
     const server = await timer.time("admin", async () =>
       Bun.serve({
         port: DEFAULT_ADMIN_PORT,
+        // SSE streams for AG-UI chat can take 30-120s for LLM responses.
+        // Default idleTimeout of 10s kills them prematurely.
+        idleTimeout: 255,
         async fetch(req: Request): Promise<Response> {
           const adminResponse = await dashboardResult.handler(req);
           if (adminResponse !== null) return adminResponse;
@@ -760,13 +763,18 @@ export async function runUp(flags: UpFlags): Promise<void> {
   let processing = false;
 
   chatBridge.wireDispatch(async (msg) => {
-    if (processing) throw new Error("Agent is busy processing another request");
+    if (processing) {
+      process.stderr.write("[dispatch] BLOCKED: agent is busy\n");
+      throw new Error("Agent is busy processing another request");
+    }
     processing = true;
     try {
       const text = extractTextFromBlocks(msg.content);
       if (text.trim() === "") return;
       const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
-      const input: EngineInput = { kind: "text", text };
+      // Use "messages" to preserve AG-UI metadata (runId) so the
+      // AG-UI stream middleware can route SSE events to the right writer.
+      const input: EngineInput = { kind: "messages", messages: [msg] };
       const deltas: string[] = [];
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);

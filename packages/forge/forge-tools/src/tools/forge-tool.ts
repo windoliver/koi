@@ -37,8 +37,8 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
           type: "object",
           properties: {
             name: { type: "string" },
-            input: {},
-            expectedOutput: {},
+            input: { type: "object", description: "Test case input object" },
+            expectedOutput: { type: "object", description: "Expected output object" },
             shouldThrow: { type: "boolean" },
           },
           required: ["name", "input"],

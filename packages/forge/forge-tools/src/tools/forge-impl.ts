@@ -41,8 +41,8 @@ const IMPLEMENTATION_INPUT_SCHEMA: Readonly<Record<string, unknown>> = {
         type: "object",
         properties: {
           name: { type: "string" },
-          input: {},
-          expectedOutput: {},
+          input: { type: "object", description: "Test case input object" },
+          expectedOutput: { type: "object", description: "Expected output object" },
           shouldThrow: { type: "boolean" },
         },
         required: ["name", "input"],

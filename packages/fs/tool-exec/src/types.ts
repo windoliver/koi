@@ -35,6 +35,13 @@ export const EXEC_TOOL_DESCRIPTOR: ToolDescriptor = {
       },
       input: {
         description: "Optional JSON input passed to the code as the `input` variable.",
+        anyOf: [
+          { type: "object" },
+          { type: "array" },
+          { type: "string" },
+          { type: "number" },
+          { type: "boolean" },
+        ],
       },
       timeout_ms: {
         type: "number",

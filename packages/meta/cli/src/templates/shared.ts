@@ -374,7 +374,7 @@ export function generateDemoEnvFile(state: WizardState): string {
 function generateLocalApiKey(): string {
   const bytes = new Uint8Array(24);
   crypto.getRandomValues(bytes);
-  return `koi-demo-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  return `sk-koi-demo-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 /**
