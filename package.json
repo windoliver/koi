@@ -1,5 +1,5 @@
 {
-  "name": "koi",
+  "name": "koi-monorepo",
   "description": "Koi monorepo: self-extending agent engine with layered architecture, middleware, and governance",
   "version": "0.0.0",
   "private": true,
