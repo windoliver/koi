@@ -2721,6 +2721,14 @@
         "@koi/crypto-utils": "workspace:*",
       },
     },
+    "packages/security/delegation-nexus": {
+      "name": "@koi/delegation-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/security/doctor": {
       "name": "@koi/doctor",
       "version": "0.0.0",
@@ -3771,6 +3779,8 @@
     "@koi/debug": ["@koi/debug@workspace:packages/observability/debug"],
 
     "@koi/delegation": ["@koi/delegation@workspace:packages/security/delegation"],
+
+    "@koi/delegation-nexus": ["@koi/delegation-nexus@workspace:packages/security/delegation-nexus"],
 
     "@koi/demo-packs": ["@koi/demo-packs@workspace:packages/lib/demo-packs"],
 

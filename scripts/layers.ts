@@ -24,6 +24,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/dashboard-client",
   "@koi/dashboard-types",
   "@koi/delegation",
+  "@koi/delegation-nexus",
   "@koi/edit-match",
   "@koi/errors",
   "@koi/event-delivery",

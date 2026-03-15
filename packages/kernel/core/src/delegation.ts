@@ -10,7 +10,7 @@ import type { PermissionConfig } from "./assembly.js";
 import type { AgentId } from "./ecs.js";
 
 // ---------------------------------------------------------------------------
-// Permission subset check (pure function — side-effect-free data inspector)
+// Permission operations (pure functions — side-effect-free data inspectors)
 // ---------------------------------------------------------------------------
 
 /**
@@ -48,6 +48,45 @@ export function isPermissionSubset(child: PermissionConfig, parent: PermissionCo
   }
 
   return true;
+}
+
+/**
+ * Computes the intersection of parent and child allow lists.
+ *
+ * If parent has wildcard "*", the child's allow list is used as-is.
+ * If child has wildcard "*", the parent's allow list is used as-is.
+ * Otherwise, returns only entries present in both lists.
+ *
+ * Pure function — permitted in L0.
+ */
+export function intersectPermissions(
+  parent: PermissionConfig,
+  child: PermissionConfig,
+): readonly string[] {
+  const parentAllow = parent.allow ?? [];
+  const childAllow = child.allow ?? [];
+
+  if (parentAllow.includes("*")) return childAllow;
+  if (childAllow.includes("*")) return parentAllow;
+
+  const parentSet = new Set(parentAllow);
+  return childAllow.filter((tool) => parentSet.has(tool));
+}
+
+/**
+ * Computes the union of parent and child deny lists.
+ * Deny rules only grow through delegation chains (monotonic).
+ *
+ * Pure function — permitted in L0.
+ */
+export function unionDenyLists(
+  parent: PermissionConfig,
+  child: PermissionConfig,
+): readonly string[] {
+  const parentDeny = parent.deny ?? [];
+  const childDeny = child.deny ?? [];
+
+  return [...new Set([...parentDeny, ...childDeny])];
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +232,19 @@ export interface RevocationRegistry {
 }
 
 // ---------------------------------------------------------------------------
+// Namespace mode (Nexus delegation isolation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Namespace isolation mode for delegated agents.
+ *
+ * - `copy`:   Parent access minus explicit denials (default, safest).
+ * - `clean`:  Only explicitly granted permissions — minimal surface.
+ * - `shared`: Full proxy — same agent identity, no attenuation.
+ */
+export type NamespaceMode = "copy" | "clean" | "shared";
+
+// ---------------------------------------------------------------------------
 // Delegation config (manifest integration)
 // ---------------------------------------------------------------------------
 
@@ -203,6 +255,17 @@ export interface DelegationConfig {
   readonly maxChainDepth: number;
   /** Default grant TTL in milliseconds (default: 3600000 = 1 hour). */
   readonly defaultTtlMs: number;
+  /**
+   * When true, delegation failure during spawn aborts the child.
+   * When false (default), child operates without delegation (graceful degradation).
+   * Use true for security-critical spawns (e.g., forge_agent with untrusted manifests).
+   */
+  readonly required?: boolean;
+  /**
+   * Namespace isolation mode for Nexus-backed delegation.
+   * Defaults to "copy" (parent access minus denials).
+   */
+  readonly namespaceMode?: NamespaceMode;
 }
 
 // ---------------------------------------------------------------------------

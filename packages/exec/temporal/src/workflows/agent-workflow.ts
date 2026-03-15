@@ -11,10 +11,12 @@
 
 import {
   allHandlersFinished,
+  CancellationScope,
   condition,
   continueAsNew,
   defineQuery,
   defineSignal,
+  isCancellation,
   proxyActivities,
   setHandler,
   startChild,
@@ -57,6 +59,41 @@ const pendingCountQuery = defineQuery<number>(PENDING_COUNT_QUERY_NAME);
 interface AgentActivities {
   readonly runAgentTurn: (input: AgentTurnInput) => Promise<AgentTurnResult>;
 }
+
+// Delegation activities (#2-A idempotency, #7-A cancellation handler, #16-A parallel)
+interface DelegationActivities {
+  readonly delegateViaNexus: (input: {
+    readonly parentAgentId: string;
+    readonly childAgentId: string;
+    readonly allowedOperations: readonly string[];
+    readonly removeGrants: readonly string[];
+    readonly resourcePatterns?: readonly string[];
+    readonly namespaceMode: "COPY" | "CLEAN" | "SHARED";
+    readonly maxDepth: number;
+    readonly ttlSeconds: number;
+    readonly canSubDelegate: boolean;
+    readonly idempotencyKey: string;
+  }) => Promise<{
+    readonly delegationId: string;
+    readonly apiKey: string;
+    readonly expiresAt: string;
+  }>;
+  readonly revokeDelegation: (input: { readonly delegationId: string }) => Promise<void>;
+  readonly recordDelegationOutcome: (input: {
+    readonly delegationId: string;
+    readonly outcome: "completed" | "failed" | "timeout";
+  }) => Promise<void>;
+}
+
+const delegationActivities = proxyActivities<DelegationActivities>({
+  startToCloseTimeout: "30 seconds",
+  retry: {
+    maximumAttempts: 5,
+    initialInterval: "500 milliseconds",
+    maximumInterval: "10 seconds",
+    backoffCoefficient: 2,
+  },
+});
 
 const { runAgentTurn } = proxyActivities<AgentActivities>({
   startToCloseTimeout: "5 minutes",
@@ -137,8 +174,13 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
 
   setHandler(pendingCountQuery, (): number => pendingMessages.length);
 
-  // -- Main loop -------------------------------------------------------------
+  // -- Delegation tracking (Decision #7-A: cleanup on cancel/terminate) ------
+  // Mutable array is required — accumulates delegation IDs for cleanup.
+  const activeDelegationIds: string[] = [];
 
+  // -- Main loop (wrapped in CancellationScope for cleanup) ------------------
+
+  try {
   while (!shutdownRequested) {
     // Suspend to disk — zero memory cost while idle.
     // Wakes instantly on signal (not polling).
@@ -167,9 +209,41 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
     stateRefs = result.updatedStateRefs;
 
     // Spawn child workflow if requested (worker agent)
+    // Decision #2-A: delegation before startChild, with idempotency key
+    // Decision #7-A: cancellation handler revokes delegation on workflow cancel
     if (result.spawnChild !== undefined) {
+      const childAgentId = result.spawnChild.childAgentId;
+      const runId = workflowInfo().workflowId;
+
+      // Delegate via Nexus BEFORE spawning child (durable, crash-recoverable)
+      let delegationId: string | undefined;
+      try {
+        const delegationResult = await delegationActivities.delegateViaNexus({
+          parentAgentId: config.agentId,
+          childAgentId,
+          allowedOperations: ["*"],
+          removeGrants: [],
+          namespaceMode: "COPY",
+          maxDepth: 3,
+          ttlSeconds: 3600,
+          canSubDelegate: true,
+          idempotencyKey: `${config.agentId}:${childAgentId}:${runId}`,
+        });
+        delegationId = delegationResult.delegationId;
+        // Track for cancellation cleanup
+        activeDelegationIds.push(delegationId);
+      } catch (err: unknown) {
+        // Delegation failure — child spawns without Nexus delegation
+        // The in-process DelegationManager still provides local delegation
+        if (!isCancellation(err)) {
+          // Swallow non-cancellation errors — graceful degradation
+        } else {
+          throw err;
+        }
+      }
+
       const childConfig: WorkerWorkflowConfig = {
-        agentId: result.spawnChild.childAgentId,
+        agentId: childAgentId,
         sessionId: config.sessionId,
         parentAgentId: config.agentId,
         stateRefs: result.spawnChild.childConfig.stateRefs,
@@ -178,7 +252,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
 
       await startChild("workerWorkflow", {
         args: [childConfig],
-        workflowId: `worker:${result.spawnChild.childAgentId}`,
+        workflowId: `worker:${childAgentId}`,
         parentClosePolicy: "TERMINATE",
       });
     }
@@ -234,6 +308,21 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
         initialMessages: undefined,
       });
     }
+  }
+  } catch (err: unknown) {
+    if (isCancellation(err)) {
+      // Decision #7-A: Revoke all active delegations on workflow cancellation.
+      // TTL provides safety net if this cleanup fails.
+      await CancellationScope.nonCancellable(async () => {
+        const revocations = activeDelegationIds.map((id) =>
+          delegationActivities.revokeDelegation({ delegationId: id }).catch(() => {
+            // Best-effort — TTL will clean up if Nexus is unreachable
+          }),
+        );
+        await Promise.all(revocations);
+      });
+    }
+    throw err;
   }
 }
 

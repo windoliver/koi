@@ -185,11 +185,26 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         { permissions: parentPermissions },
         childPermissions,
       );
+      const delegationRequired = options.manifest.delegation?.required === true;
       try {
         const grant = await parentDelegation.grant(childScope, childPid.id);
         childGrantId = grant.id;
-      } catch (_e: unknown) {
+      } catch (e: unknown) {
+        if (delegationRequired) {
+          // Release ledger slot before re-throwing — no leak
+          const release = options.spawnLedger.release();
+          await release;
+          throw KoiRuntimeError.from(
+            "PERMISSION",
+            `Delegation required but grant failed: ${e instanceof Error ? e.message : String(e)}`,
+            { retryable: false, context: { childId: childPid.id }, cause: e },
+          );
+        }
         // Graceful degradation: child operates without delegation
+        console.error(
+          `[spawn-child] delegation grant failed for child "${childPid.id}", continuing without delegation`,
+          e,
+        );
       }
     }
   }
