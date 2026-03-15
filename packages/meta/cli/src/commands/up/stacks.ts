@@ -17,6 +17,20 @@ export interface ActivatedStacks {
   readonly middleware: readonly KoiMiddleware[];
   readonly providers: readonly ComponentProvider[];
   readonly disposables: readonly (() => Promise<void> | void)[];
+  /**
+   * Auto-harness outputs for forge synthesis wiring.
+   * When present, `synthesizeHarness` should be passed to the forge
+   * middleware stack so failure-driven demand signals trigger the full
+   * synthesis loop. Requires ForgeBootstrapConfig.synthesizeHarness
+   * support (tracked separately).
+   */
+  readonly autoHarness?: {
+    readonly synthesizeHarness: (
+      signal: import("@koi/core").ForgeDemandSignal,
+    ) => Promise<import("@koi/core").BrickArtifact | null>;
+    readonly maxSynthesesPerSession: number;
+    readonly policyCacheHandle: unknown;
+  };
 }
 
 export interface StackActivationConfig {
@@ -61,15 +75,20 @@ async function activateRetryStack(
 async function activateAutoHarness(
   config: StackActivationConfig,
   middleware: KoiMiddleware[],
-): Promise<void> {
-  if (config.forgeBootstrap === undefined) return;
+): Promise<ActivatedStacks["autoHarness"]> {
+  if (config.forgeBootstrap === undefined) return undefined;
   const { createAutoHarnessStack } = await import("@koi/auto-harness");
   const harnessStack = createAutoHarnessStack({
     forgeStore: config.forgeBootstrap.store as never,
     generate: async () => "",
   });
   middleware.push(harnessStack.policyCacheMiddleware);
-  log(config, "Stack: auto-harness (policy cache active)");
+  log(config, "Stack: auto-harness (policy cache + synthesis loop active)");
+  return {
+    synthesizeHarness: harnessStack.synthesizeHarness,
+    maxSynthesesPerSession: harnessStack.maxSynthesesPerSession,
+    policyCacheHandle: harnessStack.policyCacheHandle,
+  };
 }
 
 async function activateGovernance(
@@ -113,6 +132,8 @@ export async function activatePresetStacks(
   const middleware: KoiMiddleware[] = [];
   const providers: ComponentProvider[] = [];
   const disposables: (() => Promise<void> | void)[] = [];
+  // let justified: captured from auto-harness activation for forge wiring
+  let autoHarnessResult: ActivatedStacks["autoHarness"];
 
   const tryActivate = async (name: string, fn: () => Promise<void>): Promise<void> => {
     try {
@@ -132,7 +153,12 @@ export async function activatePresetStacks(
   }
 
   if (config.stacks.autoHarness === true) {
-    await tryActivate("auto-harness", () => activateAutoHarness(config, middleware));
+    try {
+      autoHarnessResult = await activateAutoHarness(config, middleware);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (config.verbose) process.stderr.write(`  warn: auto-harness failed: ${message}\n`);
+    }
   }
 
   if (config.stacks.governance === true) {
@@ -145,9 +171,24 @@ export async function activatePresetStacks(
     await tryActivate("context-arena", () => activateContextArena(config, middleware, providers));
   }
 
-  // goalStack and qualityGate are reserved for future L3 packages.
-  // When @koi/goal-stack and @koi/quality-gate are implemented,
-  // add activation branches here following the same pattern.
+  if (config.stacks.goalStack === true) {
+    await tryActivate("goal-stack", async () => {
+      const { createGoalStack } = await import("@koi/goal-stack");
+      const bundle = createGoalStack({});
+      middleware.push(...bundle.middlewares);
+      providers.push(...bundle.providers);
+      log(config, `Stack: goal-stack (${String(bundle.middlewares.length)} middleware)`);
+    });
+  }
 
-  return { middleware, providers, disposables };
+  if (config.stacks.qualityGate === true) {
+    await tryActivate("quality-gate", async () => {
+      const { createQualityGate } = await import("@koi/quality-gate");
+      const bundle = createQualityGate({});
+      middleware.push(...bundle.middleware);
+      log(config, `Stack: quality-gate (${String(bundle.middleware.length)} middleware)`);
+    });
+  }
+
+  return { middleware, providers, disposables, autoHarness: autoHarnessResult };
 }
