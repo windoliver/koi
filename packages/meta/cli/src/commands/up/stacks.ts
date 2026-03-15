@@ -25,6 +25,7 @@ export interface ActivatedStacks {
    * support (tracked separately).
    */
   readonly autoHarness?: {
+    readonly store: import("@koi/core").ForgeStore;
     readonly synthesizeHarness: (
       signal: import("@koi/core").ForgeDemandSignal,
     ) => Promise<import("@koi/core").BrickArtifact | null>;

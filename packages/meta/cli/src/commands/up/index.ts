@@ -261,6 +261,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
         generate: async () => "",
       });
       autoHarnessOutputs = {
+        store: preForgeStore,
         synthesizeHarness: harnessStack.synthesizeHarness,
         maxSynthesesPerSession: harnessStack.maxSynthesesPerSession,
         policyCacheHandle: harnessStack.policyCacheHandle,

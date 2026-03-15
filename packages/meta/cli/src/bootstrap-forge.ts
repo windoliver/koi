@@ -36,6 +36,8 @@ export interface AutoHarnessOutputs {
   ) => Promise<import("@koi/core").BrickArtifact | null>;
   readonly maxSynthesesPerSession: number;
   readonly policyCacheHandle: unknown;
+  /** Pre-created forge store — forge bootstrap must use this same instance. */
+  readonly store: import("@koi/core").ForgeStore;
 }
 
 export async function bootstrapForgeOrWarn(
@@ -90,6 +92,7 @@ export async function bootstrapForgeOrWarn(
     },
     ...(autoHarness !== undefined
       ? {
+          store: autoHarness.store,
           synthesizeHarness: autoHarness.synthesizeHarness,
           maxSynthesesPerSession: autoHarness.maxSynthesesPerSession,
           policyCacheHandle: autoHarness.policyCacheHandle,
