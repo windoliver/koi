@@ -249,10 +249,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // land in the active forge system.
   let autoHarnessOutputs: import("../../bootstrap-forge.js").AutoHarnessOutputs | undefined;
   let preCreatedHarnessMiddleware: import("@koi/core").KoiMiddleware | undefined;
-  if (
-    preset.stacks.autoHarness === true &&
-    (manifest as Record<string, unknown>).forge !== undefined
-  ) {
+  if (preset.stacks.autoHarness === true && manifest.forge !== undefined) {
     try {
       const { createInMemoryForgeStore } = await import("@koi/forge");
       const { createAutoHarnessStack } = await import("@koi/auto-harness");
@@ -489,7 +486,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       const auth = {
         authenticate: async () => ({
           ok: true as const,
-          session: { id: "local", agentId: manifest.name },
+          sessionId: "local",
+          agentId: manifest.name,
+          metadata: {} as Readonly<Record<string, unknown>>,
         }),
         validate: async () => true,
       };

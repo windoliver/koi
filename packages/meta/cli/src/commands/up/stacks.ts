@@ -51,6 +51,8 @@ export interface StackActivationConfig {
   readonly preCreatedAutoHarness?: {
     readonly policyCacheMiddleware: KoiMiddleware;
   };
+  /** Optional context-arena config. Required when contextArena stack is enabled. */
+  readonly contextArenaConfig?: import("@koi/context-arena").ContextArenaConfig | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +124,12 @@ async function activateContextArena(
   middleware: KoiMiddleware[],
   providers: ComponentProvider[],
 ): Promise<void> {
+  if (config.contextArenaConfig === undefined) {
+    log(config, "Stack: context-arena skipped (no config provided)");
+    return;
+  }
   const { createContextArena } = await import("@koi/context-arena");
-  const bundle = await createContextArena({});
+  const bundle = await createContextArena(config.contextArenaConfig);
   middleware.push(...bundle.middleware);
   providers.push(...bundle.providers);
   log(config, `Stack: context-arena (${String(bundle.middleware.length)} middleware)`);
@@ -206,5 +212,10 @@ export async function activatePresetStacks(
     });
   }
 
-  return { middleware, providers, disposables, autoHarness: autoHarnessResult };
+  return {
+    middleware,
+    providers,
+    disposables,
+    ...(autoHarnessResult !== undefined ? { autoHarness: autoHarnessResult } : {}),
+  };
 }

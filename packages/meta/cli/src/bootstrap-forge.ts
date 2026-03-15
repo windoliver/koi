@@ -35,7 +35,7 @@ export interface AutoHarnessOutputs {
     signal: import("@koi/core").ForgeDemandSignal,
   ) => Promise<import("@koi/core").BrickArtifact | null>;
   readonly maxSynthesesPerSession: number;
-  readonly policyCacheHandle: unknown;
+  readonly policyCacheHandle: import("@koi/middleware-policy-cache").PolicyCacheHandle;
   /** Pre-created forge store — forge bootstrap must use this same instance. */
   readonly store: import("@koi/core").ForgeStore;
 }

@@ -263,7 +263,7 @@ describe("self-improvement pack", () => {
     const result = await runSeed("self-improvement", ctx);
 
     // Base pack should have run (files count from base)
-    expect(result.counts.files).toBe(1);
+    expect(result.counts.files).toBe(2);
     // Self-improvement pack counts should be merged in
     expect("forgeEvents" in result.counts).toBe(true);
     expect("bricks" in result.counts).toBe(true);

@@ -33,15 +33,23 @@ function createNexusState(overrides?: Partial<NexusResolvedState>): NexusResolve
   };
 }
 
-function createForgeBootstrap(): {
+function createForgeBootstrapMock(): {
   readonly middlewares: readonly KoiMiddleware[];
   readonly provider: ComponentProvider;
   readonly forgeToolsProvider: ComponentProvider;
+  readonly runtime: never;
+  readonly store: never;
+  readonly system: never;
+  readonly dispose: () => void;
 } {
   return {
     middlewares: [mockMiddleware("forge-mw")],
     provider: mockProvider("forge-prov"),
     forgeToolsProvider: mockProvider("forge-tools-prov"),
+    runtime: undefined as never,
+    store: undefined as never,
+    system: undefined as never,
+    dispose: () => {},
   };
 }
 
@@ -67,7 +75,7 @@ describe("composeRuntimeMiddleware", () => {
     const composed = composeRuntimeMiddleware({
       resolved: [mockMiddleware("resolved-mw")],
       nexus: createNexusState(),
-      forge: createForgeBootstrap(),
+      forge: createForgeBootstrapMock(),
       autonomous: createAutonomousResult(),
       chatBridge: chatBridge as never,
       extra: [mockMiddleware("extra-mw")],
@@ -94,7 +102,7 @@ describe("composeRuntimeMiddleware", () => {
     const composed = composeRuntimeMiddleware({
       resolved: [],
       nexus: createNexusState(),
-      forge: createForgeBootstrap(),
+      forge: createForgeBootstrapMock(),
       autonomous: createAutonomousResult(),
       chatBridge: undefined,
       dataSourceProvider: mockProvider("ds-prov"),
@@ -152,7 +160,7 @@ describe("collectSubsystemMiddleware", () => {
   test("collects nexus + forge + autonomous middleware and providers", () => {
     const result = collectSubsystemMiddleware({
       nexus: createNexusState(),
-      forge: createForgeBootstrap(),
+      forge: createForgeBootstrapMock(),
       autonomous: createAutonomousResult(),
     });
 

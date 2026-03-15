@@ -2,7 +2,7 @@
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
 "import * as _koi_core from '@koi/core';
-import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ForgeScope, Result, TurnTrace, KoiError, StoreChangeNotifier, SnapshotStore, ComponentProvider, KoiMiddleware, SandboxExecutor as SandboxExecutor$1, SandboxAdapter, SkillComponent, ForgeDemandSignal, BrickArtifact } from '@koi/core';
+import { ForgeStore, SigningBackend, Tool, ToolDescriptor, StoreChangeEvent, BrickKind, BrickComponentMap, ForgeScope, Result, TurnTrace, KoiError, StoreChangeNotifier, SnapshotStore, ForgeDemandSignal, BrickArtifact, ComponentProvider, KoiMiddleware, SandboxExecutor as SandboxExecutor$1, SandboxAdapter, SkillComponent } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, CounterExample, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from '@koi/core';
 import { SandboxExecutor, DependencyConfig, ForgeConfig, ForgePipeline } from '@koi/forge-types';
 export { BrickContentInput, CreateProvenanceOptions, DEFAULT_REVERIFICATION_CONFIG, DependencyConfig, DriftCheckResult, DriftChecker, ForgeAgentInput, ForgeAgentInputWithBricks, ForgeAgentInputWithManifest, ForgeChannelInput, ForgeConfig, ForgeContext, ForgeError, ForgeInput, ForgeInputBase, ForgeMiddlewareInput, ForgePipeline, ForgeResult, ForgeResultMetadata, ForgeSkillInput, ForgeToolInput, ForgeVerifier, FormatConfig, GovernanceResult, ManifestParseResult, ManifestParser, MutationPressureConfig, PromoteChange, PromoteResult, ResolveStageReport, ReverificationConfig, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, ScopePromotionConfig, SelfTestStageReport, StageReport, TestFailure, TrustStageReport, VerificationConfig, VerificationReport, VerificationStage, VerifierResult, computeTtl, createDefaultForgeConfig, delegationError, filterByAgentScope, formatError, governanceError, isStale, isVisibleToAgent, resolveError, sandboxError, selfTestError, staticError, storeError, trustError, typeError, validateForgeConfig } from '@koi/forge-types';
@@ -22,9 +22,10 @@ export { AutoForgeConfig, AutoForgeVerifier, AutoForgeVerifierResult, Crystalliz
 import { DashboardEvent, ForgeDashboardEvent, MonitorDashboardEvent } from '@koi/dashboard-types';
 import { KoiRuntime } from '@koi/engine';
 import { ConfiguredKoiOptions } from '@koi/starter';
+import * as _koi_middleware_policy_cache from '@koi/middleware-policy-cache';
+import { PolicyCacheHandle, PolicyDecision } from '@koi/middleware-policy-cache';
 import { FeedbackLoopHandle } from '@koi/middleware-feedback-loop';
 import { DiscoverySource } from '@koi/agent-discovery';
-import { PolicyCacheHandle, PolicyDecision } from '@koi/middleware-policy-cache';
 
 /**
  * ForgeRuntime factory — creates a live forge runtime backed by a ForgeStore.
@@ -65,13 +66,6 @@ interface ForgeRuntimeInstance {
  */
 declare function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRuntimeInstance;
 
-/**
- * createFullForgeSystem — one-shot composition root for the entire forge subsystem.
- *
- * Composes: runtime + component provider + pipeline + middleware stack.
- * Lives in L3 @koi/forge because it imports from multiple L2 peers.
- */
-
 interface CreateFullForgeSystemConfig {
     readonly store: ForgeStore;
     readonly executor: SandboxExecutor;
@@ -88,6 +82,12 @@ interface CreateFullForgeSystemConfig {
     readonly snapshotStore?: SnapshotStore | undefined;
     /** Optional SSE event sink for self-improvement observability. */
     readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
+    /** Optional auto-harness synthesis callback — routed to auto-forge middleware. */
+    readonly synthesizeHarness?: ((signal: ForgeDemandSignal) => Promise<BrickArtifact | null>) | undefined;
+    /** Maximum harness synthesis attempts per session. Default: 3. */
+    readonly maxSynthesesPerSession?: number | undefined;
+    /** Optional policy-cache handle for promotion wiring. */
+    readonly policyCacheHandle?: _koi_middleware_policy_cache.PolicyCacheHandle | undefined;
 }
 interface FullForgeSystem {
     readonly runtime: ForgeRuntimeInstance;
@@ -327,14 +327,6 @@ interface ForgeToolsProviderConfig {
  */
 declare function createForgeToolsProvider(config: ForgeToolsProviderConfig): ComponentProvider;
 
-/**
- * Shared forge bootstrap factory — single entry point for both CLI and starter.
- *
- * Creates the full forge system with graceful degradation: if forge
- * initialization fails, the agent starts without self-improvement
- * capabilities rather than crashing.
- */
-
 /** Configuration for forge bootstrap. */
 interface ForgeBootstrapConfig {
     /** Override forge config. Defaults to createDefaultForgeConfig(). */
@@ -359,6 +351,12 @@ interface ForgeBootstrapConfig {
     readonly clock?: (() => number) | undefined;
     /** Resolve the current engine session ID. Resets forge counter on change. */
     readonly resolveSessionId?: (() => string) | undefined;
+    /** Optional auto-harness synthesis callback — routed to auto-forge middleware. */
+    readonly synthesizeHarness?: ((signal: _koi_core.ForgeDemandSignal) => Promise<_koi_core.BrickArtifact | null>) | undefined;
+    /** Maximum harness synthesis attempts per session. Default: 3. */
+    readonly maxSynthesesPerSession?: number | undefined;
+    /** Optional policy-cache handle for promotion wiring. */
+    readonly policyCacheHandle?: _koi_middleware_policy_cache.PolicyCacheHandle | undefined;
 }
 /** Successful forge bootstrap result — everything needed for createKoi(). */
 interface ForgeBootstrapResult {
