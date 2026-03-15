@@ -246,8 +246,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
   let currentSessionId = `up:${manifest.name}:0`;
   let sessionCounter = 0;
 
-  // Pre-create auto-harness when preset enables it and forge is enabled
+  // Pre-create auto-harness when preset enables it and forge is enabled.
+  // The same store is shared with forge bootstrap so synthesized bricks
+  // land in the active forge system.
   let autoHarnessOutputs: import("../../bootstrap-forge.js").AutoHarnessOutputs | undefined;
+  let preCreatedHarnessMiddleware: import("@koi/core").KoiMiddleware | undefined;
   if (
     preset.stacks.autoHarness === true &&
     (manifest as Record<string, unknown>).forge !== undefined
@@ -260,6 +263,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
         forgeStore: preForgeStore,
         generate: async () => "",
       });
+      preCreatedHarnessMiddleware = harnessStack.policyCacheMiddleware;
       autoHarnessOutputs = {
         store: preForgeStore,
         synthesizeHarness: harnessStack.synthesizeHarness,
@@ -433,6 +437,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
         ? { store: forgeBootstrap.store, runtime: forgeBootstrap.runtime }
         : undefined,
     verbose: flags.verbose,
+    ...(preCreatedHarnessMiddleware !== undefined
+      ? { preCreatedAutoHarness: { policyCacheMiddleware: preCreatedHarnessMiddleware } }
+      : {}),
   });
 
   const composed = composeRuntimeMiddleware({

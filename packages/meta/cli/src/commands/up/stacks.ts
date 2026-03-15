@@ -43,6 +43,14 @@ export interface StackActivationConfig {
       }
     | undefined;
   readonly verbose?: boolean;
+  /**
+   * When auto-harness was pre-created (e.g. for forge wiring), pass its
+   * policyCacheMiddleware here so activatePresetStacks skips creating a
+   * duplicate stack and injects the existing middleware instead.
+   */
+  readonly preCreatedAutoHarness?: {
+    readonly policyCacheMiddleware: KoiMiddleware;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -154,11 +162,17 @@ export async function activatePresetStacks(
   }
 
   if (config.stacks.autoHarness === true) {
-    try {
-      autoHarnessResult = await activateAutoHarness(config, middleware);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (config.verbose) process.stderr.write(`  warn: auto-harness failed: ${message}\n`);
+    if (config.preCreatedAutoHarness !== undefined) {
+      // Use the pre-created instance (already wired into forge bootstrap)
+      middleware.push(config.preCreatedAutoHarness.policyCacheMiddleware);
+      log(config, "Stack: auto-harness (pre-created, policy cache active)");
+    } else {
+      try {
+        autoHarnessResult = await activateAutoHarness(config, middleware);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (config.verbose) process.stderr.write(`  warn: auto-harness failed: ${message}\n`);
+      }
     }
   }
 
