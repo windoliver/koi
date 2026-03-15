@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
-import type { AgentId, DelegationId } from "@koi/core";
+import type { AgentId } from "@koi/core";
 import { delegationId } from "@koi/core";
 import type {
   NexusChainVerifyResponse,
@@ -39,9 +39,7 @@ function createMockApi(overrides?: Partial<NexusDelegationApi>): NexusDelegation
         } satisfies NexusDelegateResponse,
       }),
     ),
-    revokeDelegation: mock(() =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    ),
+    revokeDelegation: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
     verifyChain: mock(() =>
       Promise.resolve({
         ok: true as const,
@@ -65,9 +63,7 @@ function createMockApi(overrides?: Partial<NexusDelegationApi>): NexusDelegation
         } satisfies NexusDelegationListResponse,
       }),
     ),
-    recordOutcome: mock(() =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    ),
+    recordOutcome: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
     ...overrides,
   };
 }
@@ -131,9 +127,9 @@ describe("NexusDelegationBackend.grant", () => {
     });
     const backend = createNexusDelegationBackend({ api, agentId: AGENT_ID });
 
-    await expect(
-      backend.grant({ permissions: {} }, CHILD_ID),
-    ).rejects.toThrow("Nexus delegation grant failed: Forbidden");
+    await expect(backend.grant({ permissions: {} }, CHILD_ID)).rejects.toThrow(
+      "Nexus delegation grant failed: Forbidden",
+    );
   });
 });
 
@@ -177,9 +173,9 @@ describe("NexusDelegationBackend.revoke", () => {
     });
     const backend = createNexusDelegationBackend({ api, agentId: AGENT_ID });
 
-    await expect(
-      backend.revoke(delegationId("deleg-123")),
-    ).rejects.toThrow("Nexus delegation revoke failed: Server error");
+    await expect(backend.revoke(delegationId("deleg-123"))).rejects.toThrow(
+      "Nexus delegation revoke failed: Server error",
+    );
   });
 
   test("invalidates verify cache on revoke", async () => {
@@ -328,10 +324,7 @@ describe("NexusDelegationBackend.verify", () => {
     });
 
     // Grant with restricted scope — only read_file allowed
-    const grant = await backend.grant(
-      { permissions: { allow: ["read_file"] } },
-      CHILD_ID,
-    );
+    const grant = await backend.grant({ permissions: { allow: ["read_file"] } }, CHILD_ID);
 
     // Verify with a denied tool — scope check should fail
     const result = await backend.verify(grant.id, "execute_command");
@@ -350,10 +343,7 @@ describe("NexusDelegationBackend.verify", () => {
     });
 
     // Grant with read_file allowed
-    const grant = await backend.grant(
-      { permissions: { allow: ["read_file"] } },
-      CHILD_ID,
-    );
+    const grant = await backend.grant({ permissions: { allow: ["read_file"] } }, CHILD_ID);
 
     const result = await backend.verify(grant.id, "read_file");
     expect(result.ok).toBe(true);
@@ -567,7 +557,7 @@ describe("NexusDelegationBackend.list", () => {
   test("paginates through multiple pages", async () => {
     let callCount = 0;
     const api = createMockApi({
-      listDelegations: mock((cursor?: string) => {
+      listDelegations: mock((_cursor?: string) => {
         callCount++;
         if (callCount === 1) {
           return Promise.resolve({
@@ -709,8 +699,8 @@ describe("Nexus unavailability", () => {
     });
     const backend = createNexusDelegationBackend({ api, agentId: AGENT_ID });
 
-    await expect(
-      backend.grant({ permissions: {} }, CHILD_ID),
-    ).rejects.toThrow("Connection refused");
+    await expect(backend.grant({ permissions: {} }, CHILD_ID)).rejects.toThrow(
+      "Connection refused",
+    );
   });
 });

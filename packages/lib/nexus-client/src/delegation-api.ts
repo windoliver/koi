@@ -85,9 +85,7 @@ export interface NexusDelegationApi {
   ) => Promise<Result<NexusDelegateResponse, KoiError>>;
 
   /** Revoke a delegation. Nexus handles cascading internally. */
-  readonly revokeDelegation: (
-    delegationId: DelegationId,
-  ) => Promise<Result<void, KoiError>>;
+  readonly revokeDelegation: (delegationId: DelegationId) => Promise<Result<void, KoiError>>;
 
   /** Verify delegation chain integrity. Server-side — single call, no N+1. */
   readonly verifyChain: (
@@ -118,18 +116,11 @@ export function createNexusDelegationApi(client: NexusRestClient): NexusDelegati
       client.request<void>("DELETE", `${DELEGATE_BASE}/${delegationId}`),
 
     verifyChain: (delegationId) =>
-      client.request<NexusChainVerifyResponse>(
-        "GET",
-        `${DELEGATE_BASE}/${delegationId}/chain`,
-      ),
+      client.request<NexusChainVerifyResponse>("GET", `${DELEGATE_BASE}/${delegationId}/chain`),
 
     listDelegations: (cursor) => {
-      const query =
-        cursor !== undefined ? `?cursor=${encodeURIComponent(cursor)}` : "";
-      return client.request<NexusDelegationListResponse>(
-        "GET",
-        `${DELEGATE_BASE}${query}`,
-      );
+      const query = cursor !== undefined ? `?cursor=${encodeURIComponent(cursor)}` : "";
+      return client.request<NexusDelegationListResponse>("GET", `${DELEGATE_BASE}${query}`);
     },
 
     recordOutcome: (delegationId, outcome) =>

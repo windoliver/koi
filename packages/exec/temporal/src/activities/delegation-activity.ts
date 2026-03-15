@@ -11,8 +11,7 @@
  * Activities run in normal Bun/Node.js context (NOT deterministic sandbox).
  */
 
-import type { AgentId, DelegationId, KoiError, Result } from "@koi/core";
-import { delegationId } from "@koi/core";
+import type { AgentId, KoiError, Result } from "@koi/core";
 import { ApplicationFailure } from "@temporalio/activity";
 import { mapKoiErrorToApplicationFailure } from "../temporal-errors.js";
 
@@ -136,10 +135,7 @@ export function createDelegationActivities(deps: DelegationActivityDeps): {
      * Nexus handles cascading revocation server-side.
      */
     async revokeDelegation(input: RevokeDelegationInput): Promise<void> {
-      const result = await deps.nexusFetch(
-        "DELETE",
-        `${DELEGATE_BASE}/${input.delegationId}`,
-      );
+      const result = await deps.nexusFetch("DELETE", `${DELEGATE_BASE}/${input.delegationId}`);
 
       // NOT_FOUND is idempotent — already revoked
       if (!result.ok && result.error.code !== "NOT_FOUND") {

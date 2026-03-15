@@ -44,7 +44,6 @@ import {
   defaultScopeChecker,
 } from "@koi/delegation";
 import { createNexusDelegationProvider } from "@koi/delegation-nexus";
-import { createNexusDelegationApi, createNexusRestClient } from "@koi/nexus-client";
 import type {
   ExecApprovalRequest,
   ExecApprovalsConfig,
@@ -64,6 +63,7 @@ import { createPayMiddleware } from "@koi/middleware-pay";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPIIMiddleware } from "@koi/middleware-pii";
 import { createSanitizeMiddleware } from "@koi/middleware-sanitize";
+import { createNexusDelegationApi, createNexusRestClient } from "@koi/nexus-client";
 import { createNexusOnGrant, createNexusOnRevoke } from "@koi/permissions-nexus";
 import { createRedactor } from "@koi/redaction";
 import type { AnomalySignalLike } from "@koi/security-analyzer";

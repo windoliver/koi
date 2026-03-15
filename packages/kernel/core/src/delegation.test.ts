@@ -65,15 +65,17 @@ describe("intersectPermissions", () => {
   });
 
   test("parent wildcard uses child allow list", () => {
-    expect(
-      intersectPermissions({ allow: ["*"] }, { allow: ["read_file", "write_file"] }),
-    ).toEqual(["read_file", "write_file"]);
+    expect(intersectPermissions({ allow: ["*"] }, { allow: ["read_file", "write_file"] })).toEqual([
+      "read_file",
+      "write_file",
+    ]);
   });
 
   test("child wildcard uses parent allow list", () => {
-    expect(
-      intersectPermissions({ allow: ["read_file", "write_file"] }, { allow: ["*"] }),
-    ).toEqual(["read_file", "write_file"]);
+    expect(intersectPermissions({ allow: ["read_file", "write_file"] }, { allow: ["*"] })).toEqual([
+      "read_file",
+      "write_file",
+    ]);
   });
 
   test("both wildcards returns child (which is wildcard)", () => {
@@ -81,9 +83,7 @@ describe("intersectPermissions", () => {
   });
 
   test("intersection of disjoint sets returns empty", () => {
-    expect(
-      intersectPermissions({ allow: ["read_file"] }, { allow: ["write_file"] }),
-    ).toEqual([]);
+    expect(intersectPermissions({ allow: ["read_file"] }, { allow: ["write_file"] })).toEqual([]);
   });
 
   test("intersection of overlapping sets returns common elements", () => {
@@ -96,12 +96,10 @@ describe("intersectPermissions", () => {
   });
 
   test("preserves order from child allow list", () => {
-    expect(
-      intersectPermissions(
-        { allow: ["a", "b", "c"] },
-        { allow: ["c", "a"] },
-      ),
-    ).toEqual(["c", "a"]);
+    expect(intersectPermissions({ allow: ["a", "b", "c"] }, { allow: ["c", "a"] })).toEqual([
+      "c",
+      "a",
+    ]);
   });
 });
 

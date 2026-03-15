@@ -103,10 +103,7 @@ export function testDelegationComponentContract(options: DelegationContractOptio
 
   test("verify() returns ok:true for a valid, active grant", async () => {
     const component = await createComponent();
-    const grant = await component.grant(
-      { permissions: { allow: ["read_file"] } },
-      delegateeId,
-    );
+    const grant = await component.grant({ permissions: { allow: ["read_file"] } }, delegateeId);
 
     const result = await component.verify(grant.id, "read_file");
     expect(result.ok).toBe(true);

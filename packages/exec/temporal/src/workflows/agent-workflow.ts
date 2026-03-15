@@ -181,166 +181,166 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
   // -- Main loop (wrapped in CancellationScope for cleanup) ------------------
 
   try {
-  while (!shutdownRequested) {
-    // Suspend to disk — zero memory cost while idle.
-    // Wakes instantly on signal (not polling).
-    await condition(() => pendingMessages.length > 0 || shutdownRequested);
+    while (!shutdownRequested) {
+      // Suspend to disk — zero memory cost while idle.
+      // Wakes instantly on signal (not polling).
+      await condition(() => pendingMessages.length > 0 || shutdownRequested);
 
-    if (shutdownRequested) break;
+      if (shutdownRequested) break;
 
-    // Process the next pending message
-    const msg = pendingMessages.shift();
-    if (msg === undefined) continue;
+      // Process the next pending message
+      const msg = pendingMessages.shift();
+      if (msg === undefined) continue;
 
-    // Execute agent turn via Activity (non-deterministic → Activity)
-    const turnInput: AgentTurnInput = {
-      agentId: config.agentId,
-      sessionId: config.sessionId,
-      message: msg,
-      stateRefs,
-      gatewayUrl: undefined, // Injected by Activity context at runtime
-    };
-
-    processingTurn = true;
-    const result: AgentTurnResult = await runAgentTurn(turnInput);
-    processingTurn = false;
-
-    // Update lightweight state refs (Decision 16A)
-    stateRefs = result.updatedStateRefs;
-
-    // Spawn child workflow if requested (worker agent)
-    // Decision #2-A: delegation before startChild, with idempotency key
-    // Decision #7-A: cancellation handler revokes delegation on workflow cancel
-    if (result.spawnChild !== undefined) {
-      const childAgentId = result.spawnChild.childAgentId;
-      const runId = workflowInfo().workflowId;
-
-      // Delegate via Nexus BEFORE spawning child (durable, crash-recoverable).
-      // The delegated API key is an attenuated per-child credential, NOT the
-      // parent's bootstrap key. It flows to the child via WorkerWorkflowConfig.
-      let childDelegationId: string | undefined;
-      let childNexusApiKey: string | undefined;
-      try {
-        const delegationResult = await delegationActivities.delegateViaNexus({
-          parentAgentId: config.agentId,
-          childAgentId,
-          allowedOperations: ["*"],
-          removeGrants: [],
-          namespaceMode: "COPY",
-          maxDepth: 3,
-          ttlSeconds: 3600,
-          canSubDelegate: true,
-          idempotencyKey: `${config.agentId}:${childAgentId}:${runId}`,
-        });
-        childDelegationId = delegationResult.delegationId;
-        childNexusApiKey = delegationResult.apiKey;
-        // Track for cancellation cleanup
-        activeDelegationIds.push(childDelegationId);
-      } catch (err: unknown) {
-        // Delegation failure — child spawns without Nexus delegation
-        // The in-process DelegationManager still provides local delegation
-        if (!isCancellation(err)) {
-          // Swallow non-cancellation errors — graceful degradation
-        } else {
-          throw err;
-        }
-      }
-
-      const childConfig: WorkerWorkflowConfig = {
-        agentId: childAgentId,
+      // Execute agent turn via Activity (non-deterministic → Activity)
+      const turnInput: AgentTurnInput = {
+        agentId: config.agentId,
         sessionId: config.sessionId,
-        parentAgentId: config.agentId,
-        stateRefs: result.spawnChild.childConfig.stateRefs,
-        initialMessage: result.spawnChild.childConfig.initialMessage,
-        nexusApiKey: childNexusApiKey,
-        delegationId: childDelegationId,
+        message: msg,
+        stateRefs,
+        gatewayUrl: undefined, // Injected by Activity context at runtime
       };
 
-      await startChild("workerWorkflow", {
-        args: [childConfig],
-        workflowId: `worker:${childAgentId}`,
-        parentClosePolicy: "TERMINATE",
-      });
-    }
+      processingTurn = true;
+      const result: AgentTurnResult = await runAgentTurn(turnInput);
+      processingTurn = false;
 
-    // -- Continue-As-New check (Decision 7B) ---------------------------------
-    // Use server-recommended threshold, not hardcoded event count.
-    if (workflowInfo().continueAsNewSuggested) {
-      // Drain all pending messages before CAN
-      while (pendingMessages.length > 0) {
-        const remaining = pendingMessages.shift();
-        if (remaining === undefined) break;
+      // Update lightweight state refs (Decision 16A)
+      stateRefs = result.updatedStateRefs;
 
-        const drainInput: AgentTurnInput = {
-          agentId: config.agentId,
+      // Spawn child workflow if requested (worker agent)
+      // Decision #2-A: delegation before startChild, with idempotency key
+      // Decision #7-A: cancellation handler revokes delegation on workflow cancel
+      if (result.spawnChild !== undefined) {
+        const childAgentId = result.spawnChild.childAgentId;
+        const runId = workflowInfo().workflowId;
+
+        // Delegate via Nexus BEFORE spawning child (durable, crash-recoverable).
+        // The delegated API key is an attenuated per-child credential, NOT the
+        // parent's bootstrap key. It flows to the child via WorkerWorkflowConfig.
+        let childDelegationId: string | undefined;
+        let childNexusApiKey: string | undefined;
+        try {
+          const delegationResult = await delegationActivities.delegateViaNexus({
+            parentAgentId: config.agentId,
+            childAgentId,
+            allowedOperations: ["*"],
+            removeGrants: [],
+            namespaceMode: "COPY",
+            maxDepth: 3,
+            ttlSeconds: 3600,
+            canSubDelegate: true,
+            idempotencyKey: `${config.agentId}:${childAgentId}:${runId}`,
+          });
+          childDelegationId = delegationResult.delegationId;
+          childNexusApiKey = delegationResult.apiKey;
+          // Track for cancellation cleanup
+          activeDelegationIds.push(childDelegationId);
+        } catch (err: unknown) {
+          // Delegation failure — child spawns without Nexus delegation
+          // The in-process DelegationManager still provides local delegation
+          if (!isCancellation(err)) {
+            // Swallow non-cancellation errors — graceful degradation
+          } else {
+            throw err;
+          }
+        }
+
+        const childConfig: WorkerWorkflowConfig = {
+          agentId: childAgentId,
           sessionId: config.sessionId,
-          message: remaining,
-          stateRefs,
-          gatewayUrl: undefined,
+          parentAgentId: config.agentId,
+          stateRefs: result.spawnChild.childConfig.stateRefs,
+          initialMessage: result.spawnChild.childConfig.initialMessage,
+          nexusApiKey: childNexusApiKey,
+          delegationId: childDelegationId,
         };
 
-        const drainResult: AgentTurnResult = await runAgentTurn(drainInput);
-
-        stateRefs = drainResult.updatedStateRefs;
-
-        // Spawn child workflow if requested (same delegation flow as main loop)
-        if (drainResult.spawnChild !== undefined) {
-          const drainChildId = drainResult.spawnChild.childAgentId;
-          const drainRunId = workflowInfo().workflowId;
-
-          let drainDelegationId: string | undefined;
-          let drainNexusApiKey: string | undefined;
-          try {
-            const drainDelegation = await delegationActivities.delegateViaNexus({
-              parentAgentId: config.agentId,
-              childAgentId: drainChildId,
-              allowedOperations: ["*"],
-              removeGrants: [],
-              namespaceMode: "COPY",
-              maxDepth: 3,
-              ttlSeconds: 3600,
-              canSubDelegate: true,
-              idempotencyKey: `${config.agentId}:${drainChildId}:${drainRunId}`,
-            });
-            drainDelegationId = drainDelegation.delegationId;
-            drainNexusApiKey = drainDelegation.apiKey;
-            activeDelegationIds.push(drainDelegationId);
-          } catch (err: unknown) {
-            if (isCancellation(err)) throw err;
-          }
-
-          const childConfig: WorkerWorkflowConfig = {
-            agentId: drainChildId,
-            sessionId: config.sessionId,
-            parentAgentId: config.agentId,
-            stateRefs: drainResult.spawnChild.childConfig.stateRefs,
-            initialMessage: drainResult.spawnChild.childConfig.initialMessage,
-            nexusApiKey: drainNexusApiKey,
-            delegationId: drainDelegationId,
-          };
-
-          await startChild("workerWorkflow", {
-            args: [childConfig],
-            workflowId: `worker:${drainChildId}`,
-            parentClosePolicy: "TERMINATE",
-          });
-        }
+        await startChild("workerWorkflow", {
+          args: [childConfig],
+          workflowId: `worker:${childAgentId}`,
+          parentClosePolicy: "TERMINATE",
+        });
       }
 
-      // Wait for all in-flight signal/update handlers to complete
-      await condition(allHandlersFinished);
+      // -- Continue-As-New check (Decision 7B) ---------------------------------
+      // Use server-recommended threshold, not hardcoded event count.
+      if (workflowInfo().continueAsNewSuggested) {
+        // Drain all pending messages before CAN
+        while (pendingMessages.length > 0) {
+          const remaining = pendingMessages.shift();
+          if (remaining === undefined) break;
 
-      // Continue-As-New with updated state refs (<1KB payload).
-      // Clear initialMessage/initialMessages to prevent replay —
-      // those were already processed in the current execution.
-      await continueAsNew<typeof agentWorkflow>({
-        ...config,
-        stateRefs,
-        initialMessage: undefined,
-        initialMessages: undefined,
-      });
+          const drainInput: AgentTurnInput = {
+            agentId: config.agentId,
+            sessionId: config.sessionId,
+            message: remaining,
+            stateRefs,
+            gatewayUrl: undefined,
+          };
+
+          const drainResult: AgentTurnResult = await runAgentTurn(drainInput);
+
+          stateRefs = drainResult.updatedStateRefs;
+
+          // Spawn child workflow if requested (same delegation flow as main loop)
+          if (drainResult.spawnChild !== undefined) {
+            const drainChildId = drainResult.spawnChild.childAgentId;
+            const drainRunId = workflowInfo().workflowId;
+
+            let drainDelegationId: string | undefined;
+            let drainNexusApiKey: string | undefined;
+            try {
+              const drainDelegation = await delegationActivities.delegateViaNexus({
+                parentAgentId: config.agentId,
+                childAgentId: drainChildId,
+                allowedOperations: ["*"],
+                removeGrants: [],
+                namespaceMode: "COPY",
+                maxDepth: 3,
+                ttlSeconds: 3600,
+                canSubDelegate: true,
+                idempotencyKey: `${config.agentId}:${drainChildId}:${drainRunId}`,
+              });
+              drainDelegationId = drainDelegation.delegationId;
+              drainNexusApiKey = drainDelegation.apiKey;
+              activeDelegationIds.push(drainDelegationId);
+            } catch (err: unknown) {
+              if (isCancellation(err)) throw err;
+            }
+
+            const childConfig: WorkerWorkflowConfig = {
+              agentId: drainChildId,
+              sessionId: config.sessionId,
+              parentAgentId: config.agentId,
+              stateRefs: drainResult.spawnChild.childConfig.stateRefs,
+              initialMessage: drainResult.spawnChild.childConfig.initialMessage,
+              nexusApiKey: drainNexusApiKey,
+              delegationId: drainDelegationId,
+            };
+
+            await startChild("workerWorkflow", {
+              args: [childConfig],
+              workflowId: `worker:${drainChildId}`,
+              parentClosePolicy: "TERMINATE",
+            });
+          }
+        }
+
+        // Wait for all in-flight signal/update handlers to complete
+        await condition(allHandlersFinished);
+
+        // Continue-As-New with updated state refs (<1KB payload).
+        // Clear initialMessage/initialMessages to prevent replay —
+        // those were already processed in the current execution.
+        await continueAsNew<typeof agentWorkflow>({
+          ...config,
+          stateRefs,
+          initialMessage: undefined,
+          initialMessages: undefined,
+        });
+      }
     }
-  }
   } catch (err: unknown) {
     if (isCancellation(err)) {
       // Decision #7-A: Revoke all active delegations on workflow cancellation.
