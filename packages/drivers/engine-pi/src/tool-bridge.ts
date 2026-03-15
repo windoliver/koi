@@ -34,14 +34,70 @@ export function sanitizeToolName(name: string): string {
 }
 
 /**
+ * Recursively ensure every property in a JSON Schema has a `type` field.
+ * The Anthropic API rejects schemas with typeless properties (e.g., `{}`).
+ * Properties without a `type` get `type: "object"` as a safe default.
+ */
+function sanitizeSchema(schema: JsonObject): JsonObject {
+  if (typeof schema !== "object" || schema === null) return schema;
+
+  const result = { ...schema };
+
+  // If this is a property-level object with no type, add one
+  if (
+    result.properties === undefined &&
+    result.type === undefined &&
+    result.description !== undefined
+  ) {
+    result.type = "object";
+  }
+
+  // If this is just `{}` (empty schema), make it a valid object schema
+  if (Object.keys(result).length === 0) {
+    return { type: "object" };
+  }
+
+  // Recurse into properties
+  if (result.properties !== undefined && typeof result.properties === "object") {
+    const props = result.properties as Record<string, JsonObject>;
+    const sanitized: Record<string, JsonObject> = {};
+    for (const [key, value] of Object.entries(props)) {
+      if (typeof value === "object" && value !== null) {
+        const prop = value as Record<string, unknown>;
+        // Ensure every property has a type
+        if (prop.type === undefined) {
+          sanitized[key] = { type: "object", ...prop } as JsonObject;
+        } else {
+          sanitized[key] = sanitizeSchema(value);
+        }
+      } else if (typeof value === "string") {
+        // Raw string value instead of schema object (e.g., origin: "primordial")
+        sanitized[key] = { type: "string" } as JsonObject;
+      } else {
+        sanitized[key] = value;
+      }
+    }
+    result.properties = sanitized;
+  }
+
+  // Recurse into items
+  if (result.items !== undefined && typeof result.items === "object") {
+    result.items = sanitizeSchema(result.items as JsonObject);
+  }
+
+  return result;
+}
+
+/**
  * Convert a Koi ToolDescriptor's JSON Schema to a TypeBox TSchema.
- * At runtime, TypeBox TSchema IS JSON Schema — this is a documented identity cast
- * at the boundary between Koi's JsonObject schema and pi's TypeBox schema.
+ * Sanitizes the schema to ensure Anthropic API compatibility (all
+ * properties must have `type` fields per JSON Schema draft 2020-12).
  * @see https://github.com/sinclairzx81/typebox#json-schema
  */
 function jsonSchemaToTSchema(schema: JsonObject): TSchema {
+  const sanitized = sanitizeSchema(schema);
   // Boundary cast: JsonObject ⊂ JSON Schema ≡ TSchema at runtime
-  return schema as unknown as TSchema;
+  return sanitized as unknown as TSchema;
 }
 
 /**

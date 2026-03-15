@@ -206,7 +206,10 @@ export async function activatePresetStacks(
   if (config.stacks.qualityGate === true) {
     await tryActivate("quality-gate", async () => {
       const { createQualityGate } = await import("@koi/quality-gate");
-      const bundle = createQualityGate({});
+      // Use "light" preset — no per-session model call budget.
+      // The "standard" preset (default) limits to 6 calls which breaks
+      // multi-turn demos and forge sessions.
+      const bundle = createQualityGate({ preset: "light" });
       middleware.push(...bundle.middleware);
       log(config, `Stack: quality-gate (${String(bundle.middleware.length)} middleware)`);
     });

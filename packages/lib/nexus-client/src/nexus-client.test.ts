@@ -47,7 +47,7 @@ describe("createNexusClient", () => {
 
     await client.rpc("test.method", { foo: "bar" });
 
-    expect(capturedUrl).toBe("http://localhost:2026");
+    expect(capturedUrl).toBe("http://localhost:2026/api/nfs/test.method");
     expect(capturedInit?.method).toBe("POST");
     expect(capturedInit?.headers).toEqual({
       "Content-Type": "application/json",

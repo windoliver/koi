@@ -43,9 +43,12 @@ export async function batchWrite(
     const batch = entries.slice(i, i + concurrency);
     const batchResults = await Promise.all(
       batch.map(async (entry) => {
+        // Nexus write expects `content` (string), not `data` (object).
+        // Serialize objects to JSON; pass strings as-is.
+        const content = typeof entry.data === "string" ? entry.data : JSON.stringify(entry.data);
         const result = await client.rpc<void>("write", {
           path: entry.path,
-          data: entry.data,
+          content,
         });
         return result;
       }),

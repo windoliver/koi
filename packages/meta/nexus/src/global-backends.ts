@@ -95,24 +95,28 @@ export async function createGlobalBackends(
   const nameServiceOverrides =
     typeof overrides.nameService === "object" ? overrides.nameService : {};
 
-  const [registry, nameService] = await Promise.all([
-    registryDisabled
-      ? undefined
-      : createNexusRegistry({
-          baseUrl,
-          apiKey,
-          ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
-          ...registryOverrides,
-        }),
-    nameServiceDisabled
-      ? undefined
-      : createNexusNameService({
-          baseUrl,
-          apiKey,
-          ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
-          ...nameServiceOverrides,
-        }),
-  ]);
+  // Async backends — each wrapped so one failure doesn't block the other
+  const registryPromise = registryDisabled
+    ? Promise.resolve(undefined)
+    : createNexusRegistry({
+        baseUrl,
+        apiKey,
+        ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
+        ...registryOverrides,
+      }).catch(() => undefined);
+
+  // Name service may not exist in Nexus yet (ANS is an optional brick).
+  // Catch and skip so the rest of the stack (file I/O, demo seeding) works.
+  const nameServicePromise = nameServiceDisabled
+    ? Promise.resolve(undefined)
+    : createNexusNameService({
+        baseUrl,
+        apiKey,
+        ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
+        ...nameServiceOverrides,
+      }).catch(() => undefined);
+
+  const [registry, nameService] = await Promise.all([registryPromise, nameServicePromise]);
 
   return {
     registry,
