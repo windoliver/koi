@@ -240,11 +240,38 @@ export async function runUp(flags: UpFlags): Promise<void> {
     `Preset: ${presetId} (tui=${String(services.tui)}, temporal=${services.temporal}, gateway=${String(services.gateway)})`,
   );
 
-  // 5. FORGE
+  // 5. FORGE + AUTO-HARNESS
+  // Auto-harness needs forgeStore at construction, so we pre-create the store
+  // and pass harness outputs into forge bootstrap for full synthesis wiring.
   let currentSessionId = `up:${manifest.name}:0`;
   let sessionCounter = 0;
+
+  // Pre-create auto-harness when preset enables it and forge is enabled
+  let autoHarnessOutputs: import("../../bootstrap-forge.js").AutoHarnessOutputs | undefined;
+  if (
+    preset.stacks.autoHarness === true &&
+    (manifest as Record<string, unknown>).forge !== undefined
+  ) {
+    try {
+      const { createInMemoryForgeStore } = await import("@koi/forge");
+      const { createAutoHarnessStack } = await import("@koi/auto-harness");
+      const preForgeStore = createInMemoryForgeStore();
+      const harnessStack = createAutoHarnessStack({
+        forgeStore: preForgeStore,
+        generate: async () => "",
+      });
+      autoHarnessOutputs = {
+        synthesizeHarness: harnessStack.synthesizeHarness,
+        maxSynthesesPerSession: harnessStack.maxSynthesesPerSession,
+        policyCacheHandle: harnessStack.policyCacheHandle,
+      };
+    } catch {
+      // Auto-harness is non-fatal
+    }
+  }
+
   const forgeResult = await timer.time("forge", () =>
-    bootstrapForgeOrWarn(manifest, () => currentSessionId, flags.verbose),
+    bootstrapForgeOrWarn(manifest, () => currentSessionId, flags.verbose, autoHarnessOutputs),
   );
   const forgeBootstrap = forgeResult?.bootstrap;
   const sandboxBridge = forgeResult?.sandboxBridge;

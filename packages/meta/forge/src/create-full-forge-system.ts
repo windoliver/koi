@@ -6,7 +6,9 @@
  */
 
 import type {
+  BrickArtifact,
   ComponentProvider,
+  ForgeDemandSignal,
   ForgeScope,
   ForgeStore,
   KoiError,
@@ -51,6 +53,14 @@ export interface CreateFullForgeSystemConfig {
   readonly snapshotStore?: SnapshotStore | undefined;
   /** Optional SSE event sink for self-improvement observability. */
   readonly onDashboardEvent?: ((event: DashboardEvent) => void) | undefined;
+  /** Optional auto-harness synthesis callback — routed to auto-forge middleware. */
+  readonly synthesizeHarness?:
+    | ((signal: ForgeDemandSignal) => Promise<BrickArtifact | null>)
+    | undefined;
+  /** Maximum harness synthesis attempts per session. Default: 3. */
+  readonly maxSynthesesPerSession?: number | undefined;
+  /** Optional policy-cache handle for promotion wiring. */
+  readonly policyCacheHandle?: unknown | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +129,15 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
     notifier,
     snapshotStore: config.snapshotStore,
     onDashboardEvent: config.onDashboardEvent,
+    ...(config.synthesizeHarness !== undefined
+      ? { synthesizeHarness: config.synthesizeHarness }
+      : {}),
+    ...(config.maxSynthesesPerSession !== undefined
+      ? { maxSynthesesPerSession: config.maxSynthesesPerSession }
+      : {}),
+    ...(config.policyCacheHandle !== undefined
+      ? { policyCacheHandle: config.policyCacheHandle }
+      : {}),
   });
 
   return {
