@@ -119,8 +119,20 @@ export async function nexusUp(
     configPath = findNexusConfig(cwd) ?? join(cwd, "nexus.yaml");
   }
 
+  // Clear NEXUS_API_KEY from the environment before starting Docker.
+  // The nexus.yaml api_key uses nx_admin_* format which the database auth
+  // provider rejects (requires sk-* prefix). By clearing it, the container
+  // entrypoint auto-generates a proper sk-* admin key.
+  const savedApiKey = process.env.NEXUS_API_KEY;
+  delete process.env.NEXUS_API_KEY;
+
   // Run nexus up (blocks until healthy)
   const upResult = await runNexusCommand(["up"], cwd, verbose, "nexus up");
+
+  // Restore the original env var (may be needed by other code)
+  if (savedApiKey !== undefined) {
+    process.env.NEXUS_API_KEY = savedApiKey;
+  }
   if (!upResult.ok) return upResult;
 
   // Read actual port + API key from nexus.yaml
@@ -129,7 +141,18 @@ export async function nexusUp(
   const config = readNexusConfig(configPath);
   const baseUrl = `http://${host}:${String(config.port)}`;
 
-  return { ok: true, value: { baseUrl, apiKey: config.apiKey, autoInitialized } };
+  // When using database auth, the nx_admin_* key from nexus.yaml doesn't work
+  // because the database auth provider requires sk-* prefix. Extract the actual
+  // sk-* admin key that the container entrypoint auto-generates from docker logs.
+  let apiKey = config.apiKey;
+  if (apiKey !== undefined && !apiKey.startsWith("sk-")) {
+    const containerKey = await extractContainerApiKey(cwd, verbose);
+    if (containerKey !== undefined) {
+      apiKey = containerKey;
+    }
+  }
+
+  return { ok: true, value: { baseUrl, apiKey, autoInitialized } };
 }
 
 /**
@@ -181,6 +204,34 @@ function findNexusConfig(cwd: string): string | undefined {
   for (const name of CONFIG_NAMES) {
     const candidate = join(cwd, name);
     if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Attempts to extract the actual admin API key from the Nexus docker container.
+ * The database auth provider requires sk-* prefix keys, but nexus.yaml stores
+ * nx_admin_* keys. When NEXUS_API_KEY is cleared before `nexus up`, the
+ * container entrypoint auto-generates an sk-* key visible in docker logs.
+ */
+async function extractContainerApiKey(cwd: string, verbose: boolean): Promise<string | undefined> {
+  try {
+    const { execSync } = await import("node:child_process");
+    // Extract the admin key from docker compose logs (the entrypoint prints it)
+    const composeFile = join(cwd, "nexus-stack.yml");
+    const cmd = `docker compose -f "${composeFile}" logs nexus 2>&1`;
+    const output = execSync(cmd, { cwd, encoding: "utf-8", timeout: 10000 });
+    // The entrypoint prints: "  API Key: <ANSI_COLOR>sk-...<ANSI_RESET>"
+    // Strip ANSI escape codes and extract the key
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequence
+    const stripped = output.replace(/\x1b\[[^m]*m/g, "");
+    const match = /API Key:\s*(sk-\S+)/m.exec(stripped);
+    if (match?.[1] !== undefined) {
+      if (verbose) process.stderr.write("Nexus: extracted sk-* admin key from container logs\n");
+      return match[1];
+    }
+  } catch {
+    // Non-fatal — fall back to nexus.yaml key
   }
   return undefined;
 }
