@@ -320,9 +320,9 @@ export function generateDemoManifestYaml(state: WizardState): string {
   additional.push('    - name: "@koi/tool-exec"');
   additional.push("");
 
-  lines.push("forge:");
-  lines.push("  enabled: true");
-  lines.push("");
+  additional.push("forge:");
+  additional.push("  enabled: true");
+  additional.push("");
 
   if (state.demoPack !== undefined) {
     additional.push("demo:");
