@@ -95,7 +95,7 @@ export async function createGlobalBackends(
   const nameServiceOverrides =
     typeof overrides.nameService === "object" ? overrides.nameService : {};
 
-  // Async backends — each wrapped so one failure doesn't block the other
+  // Registry is critical — let failures propagate so misconfigurations are visible.
   const registryPromise = registryDisabled
     ? Promise.resolve(undefined)
     : createNexusRegistry({
@@ -103,10 +103,11 @@ export async function createGlobalBackends(
         apiKey,
         ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
         ...registryOverrides,
-      }).catch(() => undefined);
+      });
 
-  // Name service may not exist in Nexus yet (ANS is an optional brick).
-  // Catch and skip so the rest of the stack (file I/O, demo seeding) works.
+  // Name service (ANS) is optional — the Nexus server may not have the ANS brick
+  // installed yet (returns 404 on /api/ans/name.list). Catch only NOT_FOUND errors
+  // so auth/network issues still surface.
   const nameServicePromise = nameServiceDisabled
     ? Promise.resolve(undefined)
     : createNexusNameService({
@@ -114,7 +115,13 @@ export async function createGlobalBackends(
         apiKey,
         ...(fetchFn !== undefined ? { fetch: fetchFn } : {}),
         ...nameServiceOverrides,
-      }).catch(() => undefined);
+      }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("404") || message.includes("NOT_FOUND")) {
+          return undefined;
+        }
+        throw err;
+      });
 
   const [registry, nameService] = await Promise.all([registryPromise, nameServicePromise]);
 

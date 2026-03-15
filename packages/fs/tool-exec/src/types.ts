@@ -34,8 +34,14 @@ export const EXEC_TOOL_DESCRIPTOR: ToolDescriptor = {
         description: "The code to execute in the sandbox.",
       },
       input: {
-        type: "object",
         description: "Optional JSON input passed to the code as the `input` variable.",
+        anyOf: [
+          { type: "object" },
+          { type: "array" },
+          { type: "string" },
+          { type: "number" },
+          { type: "boolean" },
+        ],
       },
       timeout_ms: {
         type: "number",
