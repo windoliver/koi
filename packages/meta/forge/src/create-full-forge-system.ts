@@ -60,7 +60,9 @@ export interface CreateFullForgeSystemConfig {
   /** Maximum harness synthesis attempts per session. Default: 3. */
   readonly maxSynthesesPerSession?: number | undefined;
   /** Optional policy-cache handle for promotion wiring. */
-  readonly policyCacheHandle?: unknown | undefined;
+  readonly policyCacheHandle?:
+    | import("@koi/middleware-policy-cache").PolicyCacheHandle
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
