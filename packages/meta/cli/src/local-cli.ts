@@ -22,7 +22,7 @@ function isKoiRepoRoot(dir: string): boolean {
     const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
       readonly name?: unknown;
     };
-    return pkg.name === "koi";
+    return pkg.name === "koi" || pkg.name === "koi-monorepo";
   } catch {
     return false;
   }

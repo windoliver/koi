@@ -17,9 +17,10 @@
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> &middot;
+  <a href="#presets">Presets</a> &middot;
   <a href="#what-makes-koi-different">Why Koi</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
-  <a href="#manifest">Manifest</a> &middot;
+  <a href="#cli">CLI</a> &middot;
   <a href="docs/user-guide.md">Docs</a> &middot;
   <a href="#contributing">Contributing</a>
 </p>
@@ -30,41 +31,64 @@
 
 ## Quickstart
 
-> **Pre-release**: Koi is not yet published to npm. The target experience is below — see [Development](#development) for building from source.
+> **Pre-release**: Koi is not yet published to npm. Build from source — see [Development](#development).
 
 ```bash
-bun add koi
-koi init my-agent
+git clone https://github.com/windoliver/koi.git
+cd koi
+bun install
+bun run build:cli
+```
+
+Create and run an agent:
+
+```bash
+bun run koi -- init my-agent      # interactive wizard (pick a preset)
 cd my-agent
-koi up
+bun run up                        # starts runtime + admin panel + TUI
 ```
 
-`koi up` boots the full stack in one command — Nexus, agents, channels, admin panel, and TUI:
+The wizard asks you to pick a **preset** (local, demo, or mesh), a model, and optional channels. It generates a `koi.yaml` manifest, `.env` file, and everything needed to run.
 
-```
-Starting Koi default preset...
-  ✓ Nexus ready at http://localhost:4200 (embed)
-  ✓ Primary agent "my-agent" ready (pi, claude-haiku-4.5)
-  ✓ Channel "cli" connected
-  ✓ Admin API ready at http://localhost:3100/admin/api
-  ✓ Browser admin at http://localhost:3100/admin
+### What `koi up` starts
 
-Try:
-  "What can you do?"
-```
+`koi up` is the primary entry point. It orchestrates everything in one command:
 
-The YAML file **is** the agent:
+- Agent runtime on your configured model
+- Admin panel at `http://localhost:3100/admin`
+- Embedded Nexus (data layer) in local mode
+- TUI operator console (demo/mesh presets)
+- Health endpoint at `http://localhost:9100/health`
+- Demo data seeding (demo preset: 530 employees, 120 customers, 30 products)
+
+### The manifest is the agent
 
 ```yaml
 # koi.yaml
 name: my-agent
 version: 0.1.0
-model: "anthropic:claude-haiku-4-5-20251001"
+description: My first Koi agent
+model: "anthropic:claude-sonnet-4-5-20250514"
+preset: demo
+
 channels:
   - name: "@koi/channel-cli"
+
 tools:
-  - name: "@koi/tools-web"
-  - name: "@koi/tool-ask-user"
+  koi:
+    - name: "@koi/tool-ask-user"
+    - name: "@koi/tools-web"
+    - name: "@koi/tool-exec"
+
+forge:
+  enabled: true
+
+autonomous:
+  enabled: true
+
+demo:
+  pack: connected
+
 context:
   bootstrap: true
 ```
@@ -81,6 +105,26 @@ tools:
 middleware:
   - "@koi/middleware-pay": { budget: { daily: 0.50 } }
 ```
+
+## Presets
+
+The `koi init` wizard lets you pick a preset that controls how much infrastructure `koi up` starts:
+
+| Preset | What you get | Best for |
+|--------|-------------|----------|
+| **local** | CLI agent + Nexus (no auth). Minimal. | Learning, quick tests |
+| **demo** | Full experience: TUI, admin panel, forge, autonomous mode, demo data (HERB enterprise dataset), auto-provisioned helper agents | First-time demo, showing Koi's capabilities |
+| **mesh** | Everything in demo + gateway + multi-agent node + governance | Multi-agent orchestration |
+
+### Demo preset details
+
+The demo preset auto-seeds a fictional enterprise (HERB) into Nexus with:
+- 530 employees, 120 customers, 30 products, 20 Q&A pairs
+- Pre-computed forge brick views for the dashboard
+- A `research-helper` agent alongside your primary agent
+- Soul personality file at `.koi/SOUL.md`
+
+Start chatting immediately — try "What did I learn?" or "Show me data."
 
 ## What Makes Koi Different
 
@@ -165,7 +209,6 @@ L0u 44 utility pkgs   Pure functions — errors, validation, hashing, manifests.
 L1  @koi/engine       Kernel runtime. Guards, lifecycle, middleware composition.
 L2  @koi/*            Feature packages. Each depends on L0/L0u only. Never on L1 or peers.
 L3  Meta-packages     Convenience bundles (e.g., @koi/starter = L0 + L1 + selected L2).
-L4  koi               Single installable package (planned — not yet published).
 ```
 
 ### 7 Contracts
@@ -275,32 +318,45 @@ context:
 | Command | Description |
 |---------|-------------|
 | `koi up` | Start full stack — runtime, admin, TUI (recommended) |
-| `koi init [dir]` | Scaffold a new agent project |
-| `koi start [manifest]` | Start agent interactively (REPL) |
+| `koi init [dir]` | Scaffold a new agent project (interactive wizard) |
+| `koi start [manifest]` | Start agent interactively (CLI only, no admin/TUI) |
 | `koi serve [manifest]` | Run agent headless (for services) |
 | `koi admin [manifest]` | Run standalone admin panel |
+| `koi demo <init\|list\|reset>` | Manage demo data |
 | `koi deploy [manifest]` | Install as OS service (launchd/systemd) |
 | `koi status [manifest]` | Check service status |
 | `koi stop [manifest]` | Stop the service |
 | `koi logs [manifest]` | View service logs |
 | `koi doctor [manifest]` | Diagnose service health |
+| `koi replay` | Replay agent state at a specific turn |
 | `koi tui` | Interactive terminal console |
 
 ### `koi init`
 
-Scaffolds a new agent project with interactive wizard or `--yes` for defaults.
+Interactive wizard that scaffolds a new agent project. Asks for preset, template, name, model, channels, and data sources.
 
 ```bash
-koi init my-agent --template minimal --model anthropic:claude-haiku-4-5-20251001
+koi init my-agent                                    # interactive wizard
+koi init my-agent --preset demo --with telegram      # skip wizard steps
 ```
 
 ### `koi up`
 
-Boots the full stack in one command — Nexus, primary agent, provisioned agents, channels, admin panel, and TUI. This is the recommended way to run Koi.
+The primary command. Boots the full stack in one command — Nexus, primary agent, provisioned agents, channels, admin panel, and TUI.
 
 ```bash
-koi up                          # uses ./koi.yaml with default preset
-koi up --preset full            # full preset with all channels
+koi up                    # uses ./koi.yaml
+koi up --detach           # run in background
+```
+
+### `koi start`
+
+Lighter alternative — CLI channel only, no admin panel or TUI. Good for quick testing.
+
+```bash
+koi start                     # uses ./koi.yaml
+koi start --admin             # add admin panel
+koi start --admin --verbose   # with debug logging
 ```
 
 ### `koi serve`
@@ -351,29 +407,30 @@ bun run build:cli
 
 ### Running with `koi up`
 
-The repo does not place a plain `koi` binary on your shell `PATH`. Use the built CLI through Bun:
+The repo does not place a `koi` binary on your shell `PATH`. Use `bun run koi --`:
 
 ```bash
-bun run koi -- init my-agent
+bun run koi -- init my-agent   # scaffold inside (or outside) the repo
 cd my-agent
-bun run koi -- up              # full stack: Nexus + agent + admin + TUI
+bun run up                     # starts everything
 ```
 
-Or run individual commands:
+Inside the generated agent directory, `bun run` scripts are available:
 
 ```bash
-bun run dry-run                # validate manifest without starting
-bun run start:admin            # start with admin panel
-bun run tui                    # interactive terminal console
+bun run up            # koi up — runtime + admin + TUI
+bun run dry-run       # validate manifest without starting
+bun run start:admin   # koi start --admin
+bun run tui           # attach TUI to running admin API
+bun run doctor        # diagnose health
 ```
 
-First-timer notes:
+### Prerequisites
 
-- If `bun install` fails in `lefthook install` because `core.hooksPath` is already set locally, run `lefthook install --force`
-- Local Nexus embed mode is the default when no URL is set, but it currently expects `uv run nexus` to be available
-- To switch from local Nexus to remote/shared Nexus, keep the same manifest and provide only `--nexus-url`, `NEXUS_URL`, or `nexus.url`
-
-For the progressive first-run path, see [`docs/user-guide.md`](docs/user-guide.md).
+- Bun 1.3.x
+- One model provider key (e.g., `ANTHROPIC_API_KEY`)
+- If `bun install` fails at `lefthook install` because `core.hooksPath` is already set, run `lefthook install --force`
+- Local Nexus embed mode is the default when no URL is set
 
 ### Toolchain
 
