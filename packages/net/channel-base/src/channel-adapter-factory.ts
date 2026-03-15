@@ -304,12 +304,8 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
       });
   };
 
-  const connect = async (): Promise<void> => {
-    if (connected) {
-      return;
-    }
-
-    // Apply connect timeout if configured (0 = disabled)
+  /** Wraps platformConnect() with connectTimeoutMs. Used by both initial connect and reconnect. */
+  const connectWithTimeout = async (): Promise<void> => {
     if (connectTimeoutMs > 0) {
       // let justified: timer handle must be captured for cleanup after Promise.race
       let timerId: ReturnType<typeof setTimeout> | undefined;
@@ -326,6 +322,14 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     } else {
       await platformConnect();
     }
+  };
+
+  const connect = async (): Promise<void> => {
+    if (connected) {
+      return;
+    }
+
+    await connectWithTimeout();
 
     unsubPlatform = onPlatformEvent(dispatchEvent);
     connected = true;
@@ -365,7 +369,7 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
           connect: async () => {
             currentReconnectAttempts = reconnector.attempts();
             reconnectPolicy.onReconnecting?.(reconnector.attempts());
-            await platformConnect();
+            await connectWithTimeout();
           },
           onConnected: () => {
             // Re-subscribe to platform events after successful reconnect

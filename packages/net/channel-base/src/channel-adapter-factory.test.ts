@@ -1104,5 +1104,44 @@ describe("createChannelAdapter", () => {
 
       await adapter.disconnect();
     });
+
+    test("reconnect honors connectTimeoutMs when platformConnect hangs", async () => {
+      // let justified: tracks connect call count
+      let connectCalls = 0;
+      const onReconnectFailed = mock((_e: unknown, _info?: DisconnectInfo) => {});
+
+      const { adapter, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 1,
+            backoffMultiplier: 2,
+            initialDelayMs: 1,
+            maxBackoffMs: 10,
+            jitter: false,
+          },
+          onReconnectFailed,
+        },
+        withPlatformDisconnect: true,
+        connectTimeoutMs: 30,
+        platformConnectFn: async () => {
+          connectCalls += 1;
+          if (connectCalls > 1) {
+            // Hang forever — simulate a transport that never resolves
+            await new Promise(() => {});
+          }
+        },
+      });
+
+      await adapter.connect();
+      triggerPlatformDisconnect({ code: 4004, reason: "Session expired" });
+
+      // Wait for timeout + backoff + second timeout + give-up
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Should have given up due to timeout, not hung forever
+      expect(onReconnectFailed).toHaveBeenCalledTimes(1);
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(false);
+    });
   });
 });
