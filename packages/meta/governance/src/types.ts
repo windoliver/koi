@@ -194,6 +194,15 @@ export interface GovernanceStackConfig {
         readonly manager: DelegationManager;
         readonly permissionBackend?: PermissionBackend;
         readonly nexusBackend?: NexusPermissionBackend;
+        /**
+         * When provided, uses NexusDelegationProvider instead of in-memory DelegationProvider.
+         * The Nexus backend provides durable, cross-node delegation via Nexus REST API.
+         * Requires `nexusUrl` and optionally `nexusApiKey`.
+         */
+        readonly nexusDelegation?: {
+          readonly nexusUrl: string;
+          readonly nexusApiKey?: string;
+        };
       }
     | undefined;
 

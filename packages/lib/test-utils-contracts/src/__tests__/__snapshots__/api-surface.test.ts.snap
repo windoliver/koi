@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils-contracts API surface . has stable type surface 1`] = `
-"import { AgentRegistry, ChannelAdapter, EngineAdapter, EngineInput, HarnessId, TaskBoardSnapshot, Result, KoiError, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware } from '@koi/core';
+"import { AgentRegistry, ChannelAdapter, DelegationComponent, AgentId, EngineAdapter, EngineInput, HarnessId, TaskBoardSnapshot, Result, KoiError, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware } from '@koi/core';
 import { KoiMiddleware as KoiMiddleware$1, SessionContext, TurnContext } from '@koi/core/middleware';
 import { Resolver } from '@koi/core/resolver';
 
@@ -58,6 +58,34 @@ interface ChannelContractOptions {
  * the adapter satisfies all L0 contract invariants.
  */
 declare function testChannelAdapter(options: ChannelContractOptions): void;
+
+/**
+ * DelegationComponent contract test suite.
+ *
+ * Validates that any DelegationComponent implementation satisfies the L0 contract.
+ * Both in-memory (@koi/delegation) and Nexus-backed (@koi/delegation-nexus)
+ * implementations should pass this suite.
+ */
+
+interface DelegationContractOptions {
+    /** Factory that creates a fresh DelegationComponent for each test. */
+    readonly createComponent: () => DelegationComponent | Promise<DelegationComponent>;
+    /** Agent ID to use as the issuer/delegator. */
+    readonly issuerId: AgentId;
+    /** Agent ID to use as the delegatee/receiver. */
+    readonly delegateeId: AgentId;
+}
+/**
+ * Runs the DelegationComponent contract test suite.
+ *
+ * Call this inside a \`describe()\` block. It registers tests that verify
+ * the component satisfies all L0 contract invariants:
+ * - grant() returns a valid DelegationGrant
+ * - revoke() removes a grant
+ * - verify() checks grant validity
+ * - list() returns active grants
+ */
+declare function testDelegationComponentContract(options: DelegationContractOptions): void;
 
 /**
  * Engine adapter contract test suite.
@@ -162,6 +190,6 @@ interface ResolverContractOptions<TMeta, TFull> {
  */
 declare function testResolverContract<TMeta, TFull>(options: ResolverContractOptions<TMeta, TFull>): void;
 
-export { type ChannelContractOptions, type EngineContractOptions, type MiddlewareContractOptions, type ResolverContractOptions, runAgentRegistryContractTests, runHarnessContractTests, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract };
+export { type ChannelContractOptions, type DelegationContractOptions, type EngineContractOptions, type MiddlewareContractOptions, type ResolverContractOptions, runAgentRegistryContractTests, runHarnessContractTests, testChannelAdapter, testDelegationComponentContract, testEngineAdapter, testMiddlewareContract, testResolverContract };
 "
 `;

@@ -287,11 +287,18 @@ export type {
   DelegationManagerConfig,
   DelegationScope,
   DelegationVerifyResult,
+  NamespaceMode,
   RevocationRegistry,
   ScopeChecker,
 } from "./delegation.js";
 // delegation — runtime values
-export { DEFAULT_CIRCUIT_BREAKER_CONFIG, delegationId, isPermissionSubset } from "./delegation.js";
+export {
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  delegationId,
+  intersectPermissions,
+  isPermissionSubset,
+  unionDenyLists,
+} from "./delegation.js";
 // delivery — delivery policy for spawned child agents
 export type {
   DeferredDeliveryPolicy,

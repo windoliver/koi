@@ -1293,6 +1293,7 @@
         "@koi/capability-verifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/delegation": "workspace:*",
+        "@koi/delegation-nexus": "workspace:*",
         "@koi/exec-approvals": "workspace:*",
         "@koi/filesystem": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
@@ -1304,6 +1305,7 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-pii": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
         "@koi/preset-resolver": "workspace:*",
         "@koi/redaction": "workspace:*",
@@ -1314,7 +1316,6 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -2721,6 +2722,14 @@
         "@koi/crypto-utils": "workspace:*",
       },
     },
+    "packages/security/delegation-nexus": {
+      "name": "@koi/delegation-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/security/doctor": {
       "name": "@koi/doctor",
       "version": "0.0.0",
@@ -3771,6 +3780,8 @@
     "@koi/debug": ["@koi/debug@workspace:packages/observability/debug"],
 
     "@koi/delegation": ["@koi/delegation@workspace:packages/security/delegation"],
+
+    "@koi/delegation-nexus": ["@koi/delegation-nexus@workspace:packages/security/delegation-nexus"],
 
     "@koi/demo-packs": ["@koi/demo-packs@workspace:packages/lib/demo-packs"],
 

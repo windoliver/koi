@@ -81,6 +81,15 @@ export function createActivities(deps: ActivityDeps): {
       // Only the last spawn request per turn is honoured (single-child model).
       let spawnChild: SpawnChildRequest | undefined;
 
+      // Save and restore NEXUS_API_KEY around the activity to prevent
+      // credential leakage between activities on the same worker process.
+      const previousNexusKey = process.env.NEXUS_API_KEY;
+      if (input.nexusApiKey !== undefined) {
+        process.env.NEXUS_API_KEY = input.nexusApiKey;
+      } else {
+        delete process.env.NEXUS_API_KEY;
+      }
+
       try {
         // Get or create cached engine (Decision 13A)
         const cacheKey = deps.computeCacheKey();
@@ -170,6 +179,14 @@ export function createActivities(deps: ActivityDeps): {
           nonRetryable: payload.nonRetryable,
           details: [...payload.details],
         });
+      } finally {
+        // Restore previous NEXUS_API_KEY to prevent credential leakage
+        // between activities on the same worker process.
+        if (previousNexusKey !== undefined) {
+          process.env.NEXUS_API_KEY = previousNexusKey;
+        } else {
+          delete process.env.NEXUS_API_KEY;
+        }
       }
     },
   };

@@ -172,8 +172,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     });
   }
 
-  // 6. Auto-delegation: grant attenuated scope to child if parent has DELEGATION component
+  // 6. Auto-delegation: grant attenuated scope to child if parent has DELEGATION component.
+  //    When the grant carries a Nexus proof, extract the per-child API key and
+  //    inject it into the child's env. This is the in-process equivalent of the
+  //    Temporal path where WorkerWorkflowConfig.nexusApiKey carries the key.
   let childGrantId: DelegationId | undefined; // let justified: mutable for cleanup on failure
+  let childNexusApiKey: string | undefined; // let justified: set once from proof.token
   const parentHasDelegation = options.parentAgent.has(DELEGATION);
 
   if (parentHasDelegation && options.manifest.delegation?.enabled !== false) {
@@ -185,11 +189,35 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         { permissions: parentPermissions },
         childPermissions,
       );
+      const delegationRequired = options.manifest.delegation?.required === true;
       try {
         const grant = await parentDelegation.grant(childScope, childPid.id);
         childGrantId = grant.id;
-      } catch (_e: unknown) {
+        // Extract per-child Nexus API key from grant proof.
+        // CapabilityProof is an L0 discriminated union — L1 reads its variants
+        // to map proof kinds to child env vars. This is L1's job: it bridges
+        // L0 contracts to runtime concerns. Revised from original Decision #1-A
+        // because the provider-based approach leaked the bootstrap key (codex
+        // review finding #2).
+        if (grant.proof.kind === "nexus") {
+          childNexusApiKey = grant.proof.token;
+        }
+      } catch (e: unknown) {
+        if (delegationRequired) {
+          // Release ledger slot before re-throwing — no leak
+          const release = options.spawnLedger.release();
+          await release;
+          throw KoiRuntimeError.from(
+            "PERMISSION",
+            `Delegation required but grant failed: ${e instanceof Error ? e.message : String(e)}`,
+            { retryable: false, context: { childId: childPid.id }, cause: e },
+          );
+        }
         // Graceful degradation: child operates without delegation
+        console.error(
+          `[spawn-child] delegation grant failed for child "${childPid.id}", continuing without delegation`,
+          e,
+        );
       }
     }
   }
@@ -276,5 +304,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     runtime: wrappedRuntime,
     handle,
     childPid,
+    ...(childNexusApiKey !== undefined ? { nexusApiKey: childNexusApiKey } : {}),
+    ...(childGrantId !== undefined ? { delegationId: childGrantId } : {}),
   };
 }

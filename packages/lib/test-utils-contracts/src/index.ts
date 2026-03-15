@@ -8,6 +8,8 @@
 export { runAgentRegistryContractTests } from "./agent-registry-contract.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
 export { testChannelAdapter } from "./channel-contract.js";
+export type { DelegationContractOptions } from "./delegation-contract.js";
+export { testDelegationComponentContract } from "./delegation-contract.js";
 export type { EngineContractOptions } from "./engine-contract.js";
 export { testEngineAdapter } from "./engine-contract.js";
 export { runHarnessContractTests } from "./harness-contract.js";
