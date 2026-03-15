@@ -16,6 +16,8 @@
     "@koi/capability-verifier": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/delegation": "workspace:*",
+    "@koi/delegation-nexus": "workspace:*",
+    "@koi/nexus-client": "workspace:*",
     "@koi/exec-approvals": "workspace:*",
     "@koi/filesystem": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
@@ -38,7 +40,6 @@
   "devDependencies": {
     "@koi/engine": "workspace:*",
     "@koi/engine-pi": "workspace:*",
-    "@koi/nexus-client": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

@@ -1293,6 +1293,7 @@
         "@koi/capability-verifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/delegation": "workspace:*",
+        "@koi/delegation-nexus": "workspace:*",
         "@koi/exec-approvals": "workspace:*",
         "@koi/filesystem": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
@@ -1304,6 +1305,7 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-pii": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
         "@koi/preset-resolver": "workspace:*",
         "@koi/redaction": "workspace:*",
@@ -1314,7 +1316,6 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },

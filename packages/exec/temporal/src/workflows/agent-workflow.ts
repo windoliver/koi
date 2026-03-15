@@ -277,10 +277,30 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
 
         stateRefs = drainResult.updatedStateRefs;
 
-        // Spawn child workflow if requested (same as normal turn processing)
+        // Spawn child workflow if requested (same delegation flow as main loop)
         if (drainResult.spawnChild !== undefined) {
+          const drainChildId = drainResult.spawnChild.childAgentId;
+          const drainRunId = workflowInfo().workflowId;
+
+          try {
+            const drainDelegation = await delegationActivities.delegateViaNexus({
+              parentAgentId: config.agentId,
+              childAgentId: drainChildId,
+              allowedOperations: ["*"],
+              removeGrants: [],
+              namespaceMode: "COPY",
+              maxDepth: 3,
+              ttlSeconds: 3600,
+              canSubDelegate: true,
+              idempotencyKey: `${config.agentId}:${drainChildId}:${drainRunId}`,
+            });
+            activeDelegationIds.push(drainDelegation.delegationId);
+          } catch (err: unknown) {
+            if (isCancellation(err)) throw err;
+          }
+
           const childConfig: WorkerWorkflowConfig = {
-            agentId: drainResult.spawnChild.childAgentId,
+            agentId: drainChildId,
             sessionId: config.sessionId,
             parentAgentId: config.agentId,
             stateRefs: drainResult.spawnChild.childConfig.stateRefs,
@@ -289,7 +309,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
 
           await startChild("workerWorkflow", {
             args: [childConfig],
-            workflowId: `worker:${drainResult.spawnChild.childAgentId}`,
+            workflowId: `worker:${drainChildId}`,
             parentClosePolicy: "TERMINATE",
           });
         }

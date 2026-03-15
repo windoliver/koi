@@ -43,6 +43,8 @@ import {
   createDelegationProvider,
   defaultScopeChecker,
 } from "@koi/delegation";
+import { createNexusDelegationProvider } from "@koi/delegation-nexus";
+import { createNexusDelegationApi, createNexusRestClient } from "@koi/nexus-client";
 import type {
   ExecApprovalRequest,
   ExecApprovalsConfig,
@@ -599,18 +601,33 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
       ? wireGovernanceScope(resolved.scope, resolved.backends, resolved.enforcer)
       : [];
 
-  // Wire delegation provider when delegationBridge is configured
+  // Wire delegation provider when delegationBridge is configured.
+  // Decision #1-A: nexusDelegation → NexusDelegationProvider (Nexus backend),
+  //                absent → createDelegationProvider (in-memory backend).
   const delegationProviders =
     config.delegationBridge !== undefined
-      ? [
-          createDelegationProvider({
-            manager: config.delegationBridge.manager,
-            enabled: true,
-            ...(config.delegationBridge.permissionBackend !== undefined
-              ? { permissionBackend: config.delegationBridge.permissionBackend }
-              : {}),
-          }),
-        ]
+      ? config.delegationBridge.nexusDelegation !== undefined
+        ? [
+            createNexusDelegationProvider({
+              api: createNexusDelegationApi(
+                createNexusRestClient({
+                  baseUrl: config.delegationBridge.nexusDelegation.nexusUrl,
+                  authToken: config.delegationBridge.nexusDelegation.nexusApiKey,
+                }),
+              ),
+              nexusApiKey: config.delegationBridge.nexusDelegation.nexusApiKey,
+              enabled: true,
+            }),
+          ]
+        : [
+            createDelegationProvider({
+              manager: config.delegationBridge.manager,
+              enabled: true,
+              ...(config.delegationBridge.permissionBackend !== undefined
+                ? { permissionBackend: config.delegationBridge.permissionBackend }
+                : {}),
+            }),
+          ]
       : [];
 
   const capabilityRequestProviders =

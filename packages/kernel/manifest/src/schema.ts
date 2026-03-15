@@ -103,6 +103,15 @@ interface RawDegeneracyConfig {
   readonly failoverEnabled: boolean;
 }
 
+/** Delegation config as output by Zod after defaults are applied. */
+interface RawDelegation {
+  readonly enabled: boolean;
+  readonly maxChainDepth: number;
+  readonly defaultTtlMs: number;
+  readonly required?: boolean | undefined;
+  readonly namespaceMode?: "copy" | "clean" | "shared" | undefined;
+}
+
 /** The raw parsed YAML structure before transformation. */
 export interface RawManifest {
   readonly name: string;
@@ -117,6 +126,7 @@ export interface RawManifest {
   readonly middleware?: readonly Record<string, unknown>[] | undefined;
   readonly skills?: readonly RawSkillConfig[] | undefined;
   readonly permissions?: RawPermissions | undefined;
+  readonly delegation?: RawDelegation | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
   readonly engine?: string | NamedConfig | undefined;
   readonly schedule?: string | undefined;
@@ -404,6 +414,17 @@ const deliveryPolicySchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("on_demand") }),
 ]);
 
+// ── Delegation schema ──
+
+/** Delegation subsystem configuration. */
+const delegationSchema = z.object({
+  enabled: z.boolean(),
+  maxChainDepth: z.number().int().min(0).default(3),
+  defaultTtlMs: z.number().int().positive().default(3_600_000),
+  required: z.boolean().optional(),
+  namespaceMode: z.enum(["copy", "clean", "shared"]).optional(),
+});
+
 // ── Nexus schema ──
 
 /** Nexus backend connection config in the manifest. */
@@ -490,6 +511,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     middleware: z.array(middlewareConfigSchema).optional(),
     skills: z.array(skillConfigSchema).optional(),
     permissions: permissionsSchema.optional(),
+    delegation: delegationSchema.optional(),
     metadata: jsonObjectSchema.optional(),
     // Extension fields — typed schemas instead of z.unknown()
     engine: engineSchema.optional(),
