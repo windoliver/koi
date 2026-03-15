@@ -151,6 +151,13 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
   // let justified: rescan adds newly discovered descriptors for schema detail
   let currentDescriptors: readonly DataSourceDescriptor[] = options.dataSourceDescriptors ?? [];
 
+  // Schema cache: name → { detail, expiresAt }  (60s TTL)
+  const SCHEMA_CACHE_TTL_MS = 60_000;
+  const schemaCache = new Map<
+    string,
+    { readonly detail: DataSourceDetail; readonly expiresAt: number }
+  >();
+
   // Mutable agent state — tracks lifecycle transitions
   // let justified: state changes on terminate, read by list/get/terminate
   let agentState: ProcessState = "running";
@@ -313,8 +320,7 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     },
 
     getSystemMetrics(): DashboardSystemMetrics {
-      const heapUsed = process.memoryUsage().heapUsed;
-      const heapTotal = process.memoryUsage().heapTotal;
+      const { heapUsed, heapTotal } = process.memoryUsage();
 
       return {
         uptimeMs: Date.now() - startedAt,
@@ -396,6 +402,10 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       return { ok: true, value: undefined };
     },
     async getDataSourceSchema(name: string): Promise<DataSourceDetail | undefined> {
+      // Check cache first
+      const cached = schemaCache.get(name);
+      if (cached !== undefined && cached.expiresAt > Date.now()) return cached.detail;
+
       const summary = currentSources.find((s) => s.name === name);
       if (summary === undefined) return undefined;
       const descriptor = currentDescriptors.find((d) => d.name === name);
@@ -431,6 +441,8 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
         ...(tables !== undefined ? { tables } : {}),
         ...(fitness !== undefined ? { fitness } : {}),
       };
+
+      schemaCache.set(name, { detail, expiresAt: Date.now() + SCHEMA_CACHE_TTL_MS });
       return detail;
     },
     rescanDataSources(): readonly DataSourceSummary[] {

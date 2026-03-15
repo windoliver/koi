@@ -29,10 +29,22 @@ export interface ForgeBootstrapResult {
  * Returns undefined when forge is not enabled in the manifest.
  * Logs a warning and uses a fallback executor when the sandbox is unavailable.
  */
+/** Optional auto-harness outputs to inject into forge middleware. */
+export interface AutoHarnessOutputs {
+  readonly synthesizeHarness: (
+    signal: import("@koi/core").ForgeDemandSignal,
+  ) => Promise<import("@koi/core").BrickArtifact | null>;
+  readonly maxSynthesesPerSession: number;
+  readonly policyCacheHandle: import("@koi/middleware-policy-cache").PolicyCacheHandle;
+  /** Pre-created forge store — forge bootstrap must use this same instance. */
+  readonly store: import("@koi/core").ForgeStore;
+}
+
 export async function bootstrapForgeOrWarn(
   manifest: { readonly forge?: unknown },
   resolveSessionId: () => string,
   verbose?: boolean,
+  autoHarness?: AutoHarnessOutputs | undefined,
 ): Promise<ForgeBootstrapResult | undefined> {
   if (!isForgeEnabled(manifest)) return undefined;
 
@@ -78,6 +90,14 @@ export async function bootstrapForgeOrWarn(
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
     },
+    ...(autoHarness !== undefined
+      ? {
+          store: autoHarness.store,
+          synthesizeHarness: autoHarness.synthesizeHarness,
+          maxSynthesesPerSession: autoHarness.maxSynthesesPerSession,
+          policyCacheHandle: autoHarness.policyCacheHandle,
+        }
+      : {}),
   });
 
   if (verbose) {

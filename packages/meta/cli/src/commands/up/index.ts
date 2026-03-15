@@ -23,7 +23,7 @@ import type { AgentChatBridge } from "../../agui-chat-bridge.js";
 import type { UpFlags } from "../../args.js";
 import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
-import { composeRuntimeMiddleware } from "../../compose-middleware.js";
+import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -40,11 +40,12 @@ import { resolveTemporalOrWarn } from "../../resolve-temporal.js";
 
 import { printBanner } from "./banner.js";
 import { createInteractiveConsent } from "./consent.js";
-import { provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
+import { buildDemoManifestOverrides, provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
 import { runDetach } from "./detach.js";
 import { mapNexusModeToProfile, startNexusStack, stopNexusStack } from "./nexus.js";
 import { runPreflight } from "./preflight.js";
 import { extractDemoPack, inferPresetId } from "./preset.js";
+import { activatePresetStacks } from "./stacks.js";
 import { startTemporalEmbed } from "./temporal.js";
 
 /** Creates a forge view data source from a ForgeStore + optional seeded bricks. */
@@ -237,11 +238,40 @@ export async function runUp(flags: UpFlags): Promise<void> {
     `Preset: ${presetId} (tui=${String(services.tui)}, temporal=${services.temporal}, gateway=${String(services.gateway)})`,
   );
 
-  // 5. FORGE
+  // 5. FORGE + AUTO-HARNESS
+  // Auto-harness needs forgeStore at construction, so we pre-create the store
+  // and pass harness outputs into forge bootstrap for full synthesis wiring.
   let currentSessionId = `up:${manifest.name}:0`;
   let sessionCounter = 0;
+
+  // Pre-create auto-harness when preset enables it and forge is enabled.
+  // The same store is shared with forge bootstrap so synthesized bricks
+  // land in the active forge system.
+  let autoHarnessOutputs: import("../../bootstrap-forge.js").AutoHarnessOutputs | undefined;
+  let preCreatedHarnessMiddleware: import("@koi/core").KoiMiddleware | undefined;
+  if (preset.stacks.autoHarness === true && manifest.forge !== undefined) {
+    try {
+      const { createInMemoryForgeStore } = await import("@koi/forge");
+      const { createAutoHarnessStack } = await import("@koi/auto-harness");
+      const preForgeStore = createInMemoryForgeStore();
+      const harnessStack = createAutoHarnessStack({
+        forgeStore: preForgeStore,
+        generate: async () => "",
+      });
+      preCreatedHarnessMiddleware = harnessStack.policyCacheMiddleware;
+      autoHarnessOutputs = {
+        store: preForgeStore,
+        synthesizeHarness: harnessStack.synthesizeHarness,
+        maxSynthesesPerSession: harnessStack.maxSynthesesPerSession,
+        policyCacheHandle: harnessStack.policyCacheHandle,
+      };
+    } catch {
+      // Auto-harness is non-fatal
+    }
+  }
+
   const forgeResult = await timer.time("forge", () =>
-    bootstrapForgeOrWarn(manifest, () => currentSessionId, flags.verbose),
+    bootstrapForgeOrWarn(manifest, () => currentSessionId, flags.verbose, autoHarnessOutputs),
   );
   const forgeBootstrap = forgeResult?.bootstrap;
   const sandboxBridge = forgeResult?.sandboxBridge;
@@ -394,6 +424,19 @@ export async function runUp(flags: UpFlags): Promise<void> {
     // Data source discovery is non-fatal
   }
 
+  // Activate L3 stacks based on preset flags
+  const activatedStacks = await activatePresetStacks({
+    stacks: preset.stacks,
+    forgeBootstrap:
+      forgeBootstrap !== undefined
+        ? { store: forgeBootstrap.store, runtime: forgeBootstrap.runtime }
+        : undefined,
+    verbose: flags.verbose,
+    ...(preCreatedHarnessMiddleware !== undefined
+      ? { preCreatedAutoHarness: { policyCacheMiddleware: preCreatedHarnessMiddleware } }
+      : {}),
+  });
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -402,6 +445,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
     chatBridge,
     dataSourceProvider,
     dataSourceTools,
+    presetMiddleware: activatedStacks.middleware,
+    presetProviders: activatedStacks.providers,
   });
 
   // Late-binding event sink for forge/monitor SSE events
@@ -424,9 +469,69 @@ export async function runUp(flags: UpFlags): Promise<void> {
   output.spinner.stop(undefined);
   output.success("Runtime assembled");
 
-  // 8. Connect channels
+  // 8. Connect channels (parallel)
   const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
-  for (const ch of channels) await ch.connect();
+  await Promise.all(channels.map((ch) => ch.connect()));
+
+  // 8b. Gateway + Node (conditional on preset services)
+  const DEFAULT_GATEWAY_PORT = 4100;
+  let stopGateway: (() => Promise<void>) | undefined;
+  let stopNode: (() => Promise<void>) | undefined;
+
+  if (services.gateway) {
+    try {
+      const { createGatewayStack } = await import("@koi/gateway-stack");
+      const { createBunTransport } = await import("@koi/gateway");
+      const transport = createBunTransport();
+      const auth = {
+        authenticate: async () => ({
+          ok: true as const,
+          sessionId: "local",
+          agentId: manifest.name,
+          metadata: {} as Readonly<Record<string, unknown>>,
+        }),
+        validate: async () => true,
+      };
+      const nexusConfig =
+        nexusBaseUrl !== undefined
+          ? { nexusUrl: nexusBaseUrl, apiKey: process.env.NEXUS_API_KEY ?? "" }
+          : undefined;
+      const gwStack = createGatewayStack(
+        { ...(nexusConfig !== undefined ? { nexus: nexusConfig } : {}) },
+        { transport, auth },
+      );
+      await gwStack.start(DEFAULT_GATEWAY_PORT);
+      stopGateway = () => gwStack.stop();
+      output.success(`Gateway started on port ${String(DEFAULT_GATEWAY_PORT)}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      output.warn(`gateway failed to start: ${message}`);
+    }
+  }
+
+  if (services.node !== "disabled") {
+    try {
+      const { createNodeStack } = await import("@koi/node-stack");
+      // Map preset node mode ("full" | "thin") and connect to local gateway
+      const gatewayWsUrl = `ws://127.0.0.1:${String(DEFAULT_GATEWAY_PORT)}`;
+      const nodeMode = services.node === "thin" ? "thin" : "full";
+      const nodeStack = createNodeStack(
+        {
+          node: {
+            mode: nodeMode,
+            gateway: { url: gatewayWsUrl },
+          },
+        },
+        {},
+      );
+      await nodeStack.start();
+      stopNode = () => nodeStack.stop();
+      output.success(`Node started (mode=${nodeMode})`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      output.warn(`node failed to start: ${message}`);
+    }
+  }
 
   // 8b. Demo pack seed (before admin so seeded bricks are available for forge view)
   const demoPack = await extractDemoPack(manifestPath);
@@ -464,25 +569,25 @@ export async function runUp(flags: UpFlags): Promise<void> {
       verbose: flags.verbose,
     });
 
+    const subsystem = collectSubsystemMiddleware({
+      nexus,
+      forge: forgeBootstrap,
+      autonomous,
+    });
+
+    // Build per-role manifest overrides for demo agents
+    const demoOverrides = await buildDemoManifestOverrides(manifest.name, demoPack);
+
     const dispatcher = createAgentDispatcher({
       defaultManifestPath: manifestPath,
       verbose: flags.verbose,
-      additionalMiddleware: [
-        ...nexus.middlewares,
-        ...(forgeBootstrap?.middlewares ?? []),
-        ...(autonomous?.middleware ?? []),
-      ],
-      additionalProviders: [
-        ...nexus.providers,
-        ...(forgeBootstrap !== undefined
-          ? [forgeBootstrap.provider, forgeBootstrap.forgeToolsProvider]
-          : []),
-        ...(autonomous?.providers ?? []),
-      ],
+      additionalMiddleware: subsystem.middleware,
+      additionalProviders: subsystem.providers,
       additionalExtensions: extensions,
       ...(forgeBootstrap !== undefined
         ? { forgeStore: forgeBootstrap.store, forgeRuntime: forgeBootstrap.runtime }
         : {}),
+      ...(demoOverrides !== undefined ? { manifestOverrides: demoOverrides } : {}),
       onDashboardEvent: (event) => {
         emitDashboardEvent?.(event as DashboardEvent);
       },
@@ -743,6 +848,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (temporalAdmin !== undefined) await temporalAdmin.dispose();
   if (temporalEmbedHandle !== undefined) await temporalEmbedHandle.dispose();
   await runtime.dispose();
+  for (const dispose of activatedStacks.disposables) await dispose();
+  if (stopNode !== undefined) await stopNode();
+  if (stopGateway !== undefined) await stopGateway();
   if (autonomous !== undefined) await autonomous.dispose();
   forgeBootstrap?.dispose();
   if (sandboxBridge !== undefined) await sandboxBridge.dispose();

@@ -54,6 +54,16 @@ export interface ForgeBootstrapConfig {
   readonly clock?: (() => number) | undefined;
   /** Resolve the current engine session ID. Resets forge counter on change. */
   readonly resolveSessionId?: (() => string) | undefined;
+  /** Optional auto-harness synthesis callback — routed to auto-forge middleware. */
+  readonly synthesizeHarness?:
+    | ((
+        signal: import("@koi/core").ForgeDemandSignal,
+      ) => Promise<import("@koi/core").BrickArtifact | null>)
+    | undefined;
+  /** Maximum harness synthesis attempts per session. Default: 3. */
+  readonly maxSynthesesPerSession?: number | undefined;
+  /** Optional policy-cache handle for promotion wiring. */
+  readonly policyCacheHandle?: import("@koi/middleware-policy-cache").PolicyCacheHandle | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +123,15 @@ export function createForgeBootstrap(
       onError: config.onError,
       clock: config.clock,
       snapshotStore: config.snapshotStore,
+      ...(config.synthesizeHarness !== undefined
+        ? { synthesizeHarness: config.synthesizeHarness }
+        : {}),
+      ...(config.maxSynthesesPerSession !== undefined
+        ? { maxSynthesesPerSession: config.maxSynthesesPerSession }
+        : {}),
+      ...(config.policyCacheHandle !== undefined
+        ? { policyCacheHandle: config.policyCacheHandle }
+        : {}),
     });
 
     // Cast provider to its full instance type for dispose access.

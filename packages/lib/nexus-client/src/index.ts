@@ -5,6 +5,8 @@
  */
 
 export { batchRead } from "./batch-read.js";
+export type { BatchWriteEntry, BatchWriteResult } from "./batch-write.js";
+export { batchWrite } from "./batch-write.js";
 // delegation API
 export type {
   DelegationOutcome,

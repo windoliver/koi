@@ -8,9 +8,9 @@
  */
 
 import { dirname, resolve } from "node:path";
-import { loadManifest } from "@koi/manifest";
-import { EXIT_CONFIG } from "@koi/shutdown";
 import type { DemoFlags } from "../args.js";
+import { createNexusClientFromEnv } from "../create-nexus-client-from-env.js";
+import { loadManifestOrExit } from "../load-manifest-or-exit.js";
 
 export async function runDemo(flags: DemoFlags): Promise<void> {
   switch (flags.subcommand) {
@@ -62,22 +62,11 @@ async function runDemoInit(flags: DemoFlags): Promise<void> {
   }
 
   const manifestPath = flags.manifest ?? "koi.yaml";
-  const loadResult = await loadManifest(manifestPath);
-  if (!loadResult.ok) {
-    process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
-    process.exit(EXIT_CONFIG);
-  }
-
-  const { manifest } = loadResult.value;
+  const { manifest } = await loadManifestOrExit(manifestPath);
   const workspaceRoot = resolve(dirname(manifestPath));
 
-  const { createNexusClient } = await import("@koi/nexus-client");
   const nexusUrl = resolveNexusUrl(manifest);
-  const apiKey = process.env.NEXUS_API_KEY;
-  const nexusClient = createNexusClient({
-    baseUrl: nexusUrl,
-    ...(apiKey !== undefined ? { apiKey } : {}),
-  });
+  const nexusClient = createNexusClientFromEnv(nexusUrl);
 
   process.stderr.write(`Seeding demo: ${pack.name}...\n`);
 
@@ -147,32 +136,28 @@ async function runDemoReset(flags: DemoFlags): Promise<void> {
   }
 
   const manifestPath = flags.manifest ?? "koi.yaml";
-  const loadResult = await loadManifest(manifestPath);
-  if (!loadResult.ok) {
-    process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
-    process.exit(EXIT_CONFIG);
-  }
-
-  const { manifest } = loadResult.value;
+  const { manifest } = await loadManifestOrExit(manifestPath);
   const workspaceRoot = resolve(dirname(manifestPath));
 
-  const { createNexusClient, deleteJson } = await import("@koi/nexus-client");
+  const { deleteJson } = await import("@koi/nexus-client");
   const nexusUrl = resolveNexusUrl(manifest);
-  const apiKey = process.env.NEXUS_API_KEY;
-  const nexusClient = createNexusClient({
-    baseUrl: nexusUrl,
-    ...(apiKey !== undefined ? { apiKey } : {}),
-  });
+  const nexusClient = createNexusClientFromEnv(nexusUrl);
 
   process.stderr.write(`Resetting demo pack "${packId}" for agent "${manifest.name}"...\n`);
 
-  const memResult = await deleteJson(nexusClient, `/agents/${manifest.name}/memory`);
-  const corpusResult = await deleteJson(nexusClient, `/agents/${manifest.name}/corpus`);
+  const [memResult, corpusResult, dsDataResult, dsDescResult] = await Promise.all([
+    deleteJson(nexusClient, `/agents/${manifest.name}/memory`),
+    deleteJson(nexusClient, `/agents/${manifest.name}/corpus`),
+    deleteJson(nexusClient, `/agents/${manifest.name}/datasources`),
+    deleteJson(nexusClient, `/agents/${manifest.name}/workspace/datasources`),
+  ]);
 
-  if (!memResult.ok || !corpusResult.ok) {
+  if (!memResult.ok || !corpusResult.ok || !dsDataResult.ok || !dsDescResult.ok) {
     const errors: string[] = [];
     if (!memResult.ok) errors.push(`memory: ${memResult.error.message}`);
     if (!corpusResult.ok) errors.push(`corpus: ${corpusResult.error.message}`);
+    if (!dsDataResult.ok) errors.push(`datasources: ${dsDataResult.error.message}`);
+    if (!dsDescResult.ok) errors.push(`workspace/datasources: ${dsDescResult.error.message}`);
     process.stderr.write(`  Failed to clear data: ${errors.join("; ")}\n`);
     process.stderr.write("  (Nexus may not be running — start it with `koi up` first)\n\n");
     process.exit(1);

@@ -6,8 +6,10 @@ import { readFile } from "node:fs/promises";
 import type { PresetId } from "@koi/runtime-presets";
 
 /**
- * Infers the runtime preset from manifest YAML.
- * Reads `preset:` field if present, falls back to heuristics.
+ * Infers the runtime preset from raw manifest YAML.
+ *
+ * Reads the raw file because `preset` and `demo` are extension fields
+ * that the manifest parser strips from the parsed object.
  */
 export async function inferPresetId(manifestPath: string): Promise<PresetId> {
   try {

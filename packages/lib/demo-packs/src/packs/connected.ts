@@ -1,140 +1,36 @@
 /**
- * Connected demo pack — seeds search corpus, memory entities, and audit trail.
- * Designed to demonstrate memory + search capabilities on first run.
+ * Connected demo pack — seeds HERB enterprise data into Nexus.
+ *
+ * Demonstrates memory, search, data source discovery, and multi-agent
+ * provisioning. All data is Nexus-first — no standalone SQLite.
+ *
+ * HERB data volumes:
+ * - 530 employees (5 departments)
+ * - 120 customers (3 tiers, 4 regions)
+ * - 30 products (3 categories)
+ * - 20 Q&A pairs
  */
 
-import { writeJson } from "@koi/nexus-client";
+import type { BatchWriteEntry } from "@koi/nexus-client";
+import { batchWrite } from "@koi/nexus-client";
+import { HERB_CUSTOMERS, HERB_EMPLOYEES, HERB_PRODUCTS, HERB_QA_PAIRS } from "../data/index.js";
 import type { DemoPack, SeedContext, SeedResult } from "../types.js";
 
 // ---------------------------------------------------------------------------
-// Seed data
+// Helpers
 // ---------------------------------------------------------------------------
 
-const MEMORY_ENTRIES: readonly {
-  readonly key: string;
-  readonly value: Readonly<Record<string, unknown>>;
-}[] = [
-  {
-    key: "user/profile",
-    value: {
-      name: "Demo User",
-      role: "Developer",
-      interests: ["TypeScript", "AI agents", "distributed systems"],
-      timezone: "UTC",
-    },
-  },
-  {
-    key: "user/preferences",
-    value: {
-      responseStyle: "concise",
-      codeStyle: "functional",
-      language: "TypeScript",
-    },
-  },
-  {
-    key: "learning/react-server-components",
-    value: {
-      topic: "React Server Components",
-      notes:
-        "Server Components run on the server and never ship to the client. They can directly access databases, filesystems, and backend services. Client Components handle interactivity.",
-      source: "Next.js documentation",
-      date: "2025-03-01",
-    },
-  },
-  {
-    key: "learning/authentication-patterns",
-    value: {
-      topic: "Authentication Patterns",
-      notes:
-        "JWT for stateless auth, session tokens for stateful. PKCE flow for SPAs. Refresh tokens stored httpOnly. OAuth2 for third-party integration.",
-      source: "Auth0 best practices",
-      date: "2025-02-15",
-    },
-  },
-  {
-    key: "project/deployment-pipeline",
-    value: {
-      topic: "Deployment Pipeline",
-      notes:
-        "CI/CD runs on GitHub Actions. Staging deploys on PR merge. Production requires manual approval. Canary deploys to 5% first.",
-      source: "Team documentation",
-      date: "2025-01-20",
-    },
-  },
-  {
-    key: "project/api-design",
-    value: {
-      topic: "API Design Guidelines",
-      notes:
-        "REST for CRUD, WebSocket for real-time. Always version APIs (/v1/). Use JSON:API envelope. Rate limit at 100 req/min per key.",
-      source: "Architecture decision record #42",
-      date: "2025-02-28",
-    },
-  },
-  {
-    key: "tool/database-optimization",
-    value: {
-      topic: "Database Optimization",
-      notes:
-        "Index columns used in WHERE and JOIN. Avoid SELECT *. Use EXPLAIN ANALYZE. Connection pooling with PgBouncer. Partition large tables by date.",
-      source: "PostgreSQL performance tuning session",
-      date: "2025-03-05",
-    },
-  },
-  {
-    key: "insight/testing-strategy",
-    value: {
-      topic: "Testing Strategy",
-      notes:
-        "Unit tests for pure functions. Integration tests for API endpoints. E2E for critical flows only. Mock external services, never databases.",
-      source: "Team retrospective",
-      date: "2025-02-10",
-    },
-  },
-];
-
-const CORPUS_DOCS: readonly {
-  readonly key: string;
-  readonly content: string;
-}[] = [
-  {
-    key: "docs/architecture",
-    content:
-      "The system uses a layered architecture: L0 defines contracts, L1 is the runtime kernel, L2 packages are features, L3 are convenience bundles. Each layer can only import from layers below it.",
-  },
-  {
-    key: "docs/deployment",
-    content:
-      "Deployments use a blue-green strategy. The CI pipeline builds, tests, and packages the application. Staging deploys automatically on merge to main. Production requires a manual approval gate.",
-  },
-  {
-    key: "docs/security",
-    content:
-      "All API endpoints require authentication. Tokens are rotated every 24 hours. Secrets are stored in Vault, never in environment variables. Rate limiting prevents abuse at 100 requests per minute.",
-  },
-];
-
-const DATA_SOURCE_SEEDS: readonly {
-  readonly name: string;
-  readonly protocol: string;
-  readonly description: string;
-  readonly tables?: readonly string[];
-  readonly sampleQueries?: readonly string[];
-}[] = [
-  {
-    name: "customers-db",
-    protocol: "sqlite",
-    description: "Demo customer database",
-    tables: ["customers", "orders", "subscriptions"],
-    sampleQueries: ["SELECT * FROM customers LIMIT 10"],
-  },
-  {
-    name: "analytics-api",
-    protocol: "http",
-    description: "Demo analytics REST endpoint",
-    sampleQueries: ["GET /api/v1/metrics/churn"],
-  },
-];
+/** Build Nexus write entries for a category of HERB data. */
+function buildEntries<T extends { readonly id: string }>(
+  items: readonly T[],
+  agentName: string,
+  category: string,
+): readonly BatchWriteEntry[] {
+  return items.map((item) => ({
+    path: `/agents/${agentName}/datasources/herb-${category}/${item.id}`,
+    data: item,
+  }));
+}
 
 // ---------------------------------------------------------------------------
 // Seeder
@@ -144,72 +40,121 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
   const counts: Record<string, number> = {};
   const summary: string[] = [];
 
-  // 1. Seed memory entries via Nexus (parallel)
-  const memoryResults = await Promise.all(
-    MEMORY_ENTRIES.map((entry) =>
-      writeJson(ctx.nexusClient, `/agents/${ctx.agentName}/memory/${entry.key}`, entry.value).then(
-        (result) => {
-          if (!result.ok && ctx.verbose) {
-            summary.push(`  warn: failed to seed memory ${entry.key}: ${result.error.message}`);
-          }
-          return result;
-        },
-      ),
-    ),
-  );
-  const memoryCount = memoryResults.filter((r) => r.ok).length;
-  counts.memory = memoryCount;
-  summary.push(`Memory: ${String(memoryCount)} entities ready`);
+  // Build all write entries across categories
+  const employeeEntries = buildEntries(HERB_EMPLOYEES, ctx.agentName, "employees");
+  const customerEntries = buildEntries(HERB_CUSTOMERS, ctx.agentName, "customers");
+  const productEntries = buildEntries(HERB_PRODUCTS, ctx.agentName, "products");
+  const qaEntries: readonly BatchWriteEntry[] = HERB_QA_PAIRS.map((qa) => ({
+    path: `/agents/${ctx.agentName}/corpus/herb/${qa.id}`,
+    data: { question: qa.question, answer: qa.answer, category: qa.category },
+  }));
 
-  // 2. Seed corpus documents via Nexus (parallel)
-  const corpusResults = await Promise.all(
-    CORPUS_DOCS.map((doc) =>
-      writeJson(ctx.nexusClient, `/agents/${ctx.agentName}/corpus/${doc.key}`, {
-        content: doc.content,
-        indexedAt: Date.now(),
-      }).then((result) => {
-        if (!result.ok && ctx.verbose) {
-          summary.push(`  warn: failed to seed corpus ${doc.key}: ${result.error.message}`);
-        }
-        return result;
-      }),
-    ),
-  );
-  const corpusCount = corpusResults.filter((r) => r.ok).length;
-  counts.corpus = corpusCount;
-  summary.push(`Corpus: ${String(corpusCount)} documents ready`);
+  // Seed memory entries (department summaries + org metadata)
+  const memoryEntries: readonly BatchWriteEntry[] = [
+    {
+      path: `/agents/${ctx.agentName}/memory/herb/org-overview`,
+      data: {
+        company: "HERB",
+        totalEmployees: HERB_EMPLOYEES.length,
+        totalCustomers: HERB_CUSTOMERS.length,
+        totalProducts: HERB_PRODUCTS.length,
+        departments: ["Engineering", "Sales", "Marketing", "Support", "Operations"],
+      },
+    },
+    {
+      path: `/agents/${ctx.agentName}/memory/herb/customer-tiers`,
+      data: {
+        enterprise: HERB_CUSTOMERS.filter((c) => c.tier === "enterprise").length,
+        business: HERB_CUSTOMERS.filter((c) => c.tier === "business").length,
+        starter: HERB_CUSTOMERS.filter((c) => c.tier === "starter").length,
+      },
+    },
+    {
+      path: `/agents/${ctx.agentName}/memory/herb/product-categories`,
+      data: {
+        platform: HERB_PRODUCTS.filter((p) => p.category === "platform").length,
+        addon: HERB_PRODUCTS.filter((p) => p.category === "add-on").length,
+        service: HERB_PRODUCTS.filter((p) => p.category === "service").length,
+      },
+    },
+  ];
 
-  // 3. Seed data source descriptors for discovery demo (parallel)
-  const dataSourceResults = await Promise.all(
-    DATA_SOURCE_SEEDS.map((ds) =>
-      writeJson(
-        ctx.nexusClient,
-        `/agents/${ctx.agentName}/workspace/datasources/${ds.name}`,
-        ds,
-      ).then((result) => {
-        if (!result.ok && ctx.verbose) {
-          summary.push(`  warn: failed to seed datasource ${ds.name}: ${result.error.message}`);
-        }
-        return result;
-      }),
-    ),
-  );
-  const dataSourceCount = dataSourceResults.filter((r) => r.ok).length;
-  counts.dataSources = dataSourceCount;
-  summary.push(`Data Sources: ${String(dataSourceCount)} descriptors ready`);
+  // Seed data source descriptors for discovery
+  const dsEntries: readonly BatchWriteEntry[] = [
+    {
+      path: `/agents/${ctx.agentName}/workspace/datasources/herb-employees`,
+      data: {
+        name: "herb-employees",
+        protocol: "nexus",
+        description: "HERB employee directory (530 employees, 5 departments)",
+      },
+    },
+    {
+      path: `/agents/${ctx.agentName}/workspace/datasources/herb-customers`,
+      data: {
+        name: "herb-customers",
+        protocol: "nexus",
+        description: "HERB customer database (120 customers, 4 regions, 3 tiers)",
+      },
+    },
+    {
+      path: `/agents/${ctx.agentName}/workspace/datasources/herb-products`,
+      data: {
+        name: "herb-products",
+        protocol: "nexus",
+        description: "HERB product catalog (30 products, 3 categories)",
+      },
+    },
+  ];
+
+  // Parallel batch writes across all categories
+  const [empResult, custResult, prodResult, qaResult, memResult, dsResult] = await Promise.all([
+    batchWrite(ctx.nexusClient, employeeEntries),
+    batchWrite(ctx.nexusClient, customerEntries),
+    batchWrite(ctx.nexusClient, productEntries),
+    batchWrite(ctx.nexusClient, qaEntries),
+    batchWrite(ctx.nexusClient, memoryEntries),
+    batchWrite(ctx.nexusClient, dsEntries),
+  ]);
+
+  // Tally results
+  const empCount = empResult.ok ? empResult.value.succeeded : 0;
+  const custCount = custResult.ok ? custResult.value.succeeded : 0;
+  const prodCount = prodResult.ok ? prodResult.value.succeeded : 0;
+  const qaCount = qaResult.ok ? qaResult.value.succeeded : 0;
+  const memCount = memResult.ok ? memResult.value.succeeded : 0;
+  const dsCount = dsResult.ok ? dsResult.value.succeeded : 0;
+
+  counts.employees = empCount;
+  counts.customers = custCount;
+  counts.products = prodCount;
+  counts.corpus = qaCount;
+  counts.memory = memCount;
+  counts.dataSources = dsCount;
+
+  summary.push(`Employees: ${String(empCount)}/${String(HERB_EMPLOYEES.length)} seeded`);
+  summary.push(`Customers: ${String(custCount)}/${String(HERB_CUSTOMERS.length)} seeded`);
+  summary.push(`Products: ${String(prodCount)}/${String(HERB_PRODUCTS.length)} seeded`);
+  summary.push(`Corpus: ${String(qaCount)} Q&A pairs ready`);
+  summary.push(`Memory: ${String(memCount)} entities ready`);
+  summary.push(`Data Sources: ${String(dsCount)} descriptors ready`);
 
   const allSeeded =
-    memoryCount === MEMORY_ENTRIES.length &&
-    corpusCount === CORPUS_DOCS.length &&
-    dataSourceCount === DATA_SOURCE_SEEDS.length;
+    empCount === HERB_EMPLOYEES.length &&
+    custCount === HERB_CUSTOMERS.length &&
+    prodCount === HERB_PRODUCTS.length &&
+    qaCount === HERB_QA_PAIRS.length &&
+    memCount === memoryEntries.length &&
+    dsCount === dsEntries.length;
 
   return { ok: allSeeded, counts, summary };
 }
 
 export const CONNECTED_PACK: DemoPack = {
   id: "connected",
-  name: "Connected",
-  description: "Search corpus, memory entities, and knowledge base for demo exploration",
+  name: "Connected (HERB Enterprise)",
+  description:
+    "HERB enterprise data: 530 employees, 120 customers, 30 products, 20 Q&A pairs — all Nexus-backed",
   requires: [],
   agentRoles: [
     {
@@ -217,30 +162,30 @@ export const CONNECTED_PACK: DemoPack = {
       type: "copilot",
       lifecycle: "copilot",
       reuse: true,
-      description: "Primary demo agent with seeded memory and search",
+      description: "HERB business assistant — employee lookup, customer analytics, product catalog",
     },
     {
-      name: "research-helper",
+      name: "analytics-helper",
       type: "copilot",
       lifecycle: "copilot",
       reuse: true,
       description:
-        "Research assistant — searches the knowledge base and summarizes findings on behalf of the primary agent",
+        "Analytics specialist — runs deep queries on customer churn risk, revenue segmentation, and employee distribution",
     },
     {
-      name: "note-worker",
+      name: "data-worker",
       type: "worker",
       lifecycle: "worker",
       reuse: false,
       description:
-        "Background worker that indexes new documents and updates memory entries when the primary agent learns something new",
+        "Background worker that enriches customer records and computes derived metrics when primary requests analysis",
     },
   ],
   seed: seedConnected,
   prompts: [
-    "What did I learn about React Server Components?",
-    "Summarize everything I know about authentication.",
-    "What customers have the highest churn risk?",
-    "Show me recent orders from enterprise accounts.",
+    "How many employees does HERB have in Engineering?",
+    "Which enterprise customers have the highest churn risk?",
+    "Show me all products in the platform category with pricing.",
+    "What is HERB's policy on remote work?",
   ],
 } as const;

@@ -20,6 +20,8 @@ import { encodeSseKeepalive, encodeSseMessageWithId } from "./encoder.js";
 interface SseConnection {
   readonly writer: WritableStreamDefaultWriter<Uint8Array>;
   readonly signal: AbortSignal;
+  // let justified: mutable counter tracking pending writes for slow-client detection
+  pendingWrites: number;
 }
 
 export interface SseProducer {
@@ -67,14 +69,28 @@ export function createSseProducer(
     buffer.push(event);
   });
 
-  // Write encoded bytes to all connected clients, pruning disconnected ones.
+  /** Max pending writes before disconnecting a slow client. */
+  const MAX_PENDING_WRITES = 3;
+
+  // Write encoded bytes to all connected clients, pruning disconnected/slow ones.
   const broadcastToAll = (encoded: Uint8Array): void => {
     const alive: SseConnection[] = [];
     for (const conn of connections) {
       if (conn.signal.aborted) continue;
-      conn.writer.write(encoded).catch(() => {
-        // Client disconnected — swallow write error
-      });
+      // Disconnect slow clients — EventSource auto-reconnects with Last-Event-ID
+      if (conn.pendingWrites > MAX_PENDING_WRITES) {
+        conn.writer.close().catch(() => {});
+        continue;
+      }
+      conn.pendingWrites += 1;
+      conn.writer
+        .write(encoded)
+        .then(() => {
+          conn.pendingWrites -= 1;
+        })
+        .catch(() => {
+          // Client disconnected — swallow write error
+        });
       alive.push(conn);
     }
     connections = alive;
@@ -148,7 +164,7 @@ export function createSseProducer(
       // Client disconnected before first write — swallow
     });
 
-    const conn: SseConnection = { writer, signal };
+    const conn: SseConnection = { writer, signal, pendingWrites: 0 };
     connections = [...connections, conn];
 
     // Auto-cleanup on client disconnect
