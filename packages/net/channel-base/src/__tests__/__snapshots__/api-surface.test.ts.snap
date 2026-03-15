@@ -6,6 +6,50 @@ export { ContentBlock } from '@koi/core';
 import { RetryConfig } from '@koi/errors';
 
 /**
+ * Reconnection manager for channel adapters.
+ *
+ * Manages automatic reconnection with exponential backoff using
+ * computeBackoff() from @koi/errors. Resets the attempt counter
+ * on successful connection. Supports decorrelated jitter via
+ * DEFAULT_RECONNECT_CONFIG and infinite retries via maxRetries: Infinity.
+ */
+
+/** Structured disconnect reason surfaced to callbacks. */
+interface DisconnectInfo {
+    readonly code?: number;
+    readonly reason?: string;
+}
+interface ReconnectorConfig {
+    /** Establishes the platform connection. Throws on failure. */
+    readonly connect: () => Promise<void>;
+    /** Called after a successful (re)connection. */
+    readonly onConnected: () => void;
+    /** Called when the connection drops before a reconnection attempt. */
+    readonly onDisconnected: (info?: DisconnectInfo) => void;
+    /** Called when all retry attempts are exhausted. */
+    readonly onGiveUp: (lastError: unknown, info?: DisconnectInfo) => void;
+    /** Retry configuration. Defaults to DEFAULT_RECONNECT_CONFIG. */
+    readonly retry?: RetryConfig;
+}
+interface Reconnector {
+    /** Starts the reconnection loop. Resolves after first successful connect. */
+    readonly start: () => Promise<void>;
+    /** Stops the reconnection loop and prevents further attempts. */
+    readonly stop: () => void;
+    /** Returns true if currently connected. */
+    readonly isConnected: () => boolean;
+    /** Triggers a reconnection attempt (e.g., on connection drop). */
+    readonly reconnect: (info?: DisconnectInfo) => void;
+    /** Returns the current retry attempt count. */
+    readonly attempts: () => number;
+}
+/**
+ * Creates a reconnection manager that wraps a connect() function
+ * with exponential backoff retry logic.
+ */
+declare function createReconnector(config: ReconnectorConfig): Reconnector;
+
+/**
  * Generic channel adapter factory.
  *
  * createChannelAdapter<E>() accepts platform-specific callbacks and returns a
@@ -48,6 +92,15 @@ interface HealthStatus {
  * logger to trace "why didn't the agent respond?" in production.
  */
 type MessageNormalizer<E> = (event: E) => InboundMessage | null | Promise<InboundMessage | null>;
+/** Policy for automatic reconnection on platform disconnect. */
+interface ReconnectPolicy {
+    /** Retry configuration. Defaults to DEFAULT_RECONNECT_CONFIG (decorrelated jitter). */
+    readonly retry?: RetryConfig;
+    /** Called when all reconnect attempts are exhausted. */
+    readonly onReconnectFailed?: (lastError: unknown, info?: DisconnectInfo) => void;
+    /** Called on each reconnect attempt (for logging/observability). */
+    readonly onReconnecting?: (attempt: number) => void;
+}
 /**
  * Configuration for createChannelAdapter<E>().
  *
@@ -134,6 +187,17 @@ interface ChannelAdapterConfig<E> {
      * Defaults to 300_000 (5 minutes). Set to 0 to disable staleness detection.
      */
     readonly healthTimeoutMs?: number;
+    /**
+     * When provided, auto-reconnect on platform disconnect with bounded retries.
+     * Requires onPlatformDisconnect to be set to detect connection drops.
+     */
+    readonly reconnect?: ReconnectPolicy;
+    /**
+     * Called by the platform when the underlying connection drops unexpectedly.
+     * Returns an unsubscribe function. When reconnect is configured, this triggers
+     * the reconnect loop. When not configured, the adapter stays disconnected.
+     */
+    readonly onPlatformDisconnect?: (handler: (info?: DisconnectInfo) => void) => () => void;
 }
 declare function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): ChannelAdapter;
 
@@ -225,42 +289,6 @@ interface MediaFallbackConfig {
 declare function createMediaFallback(config: MediaFallbackConfig): (message: OutboundMessage) => Promise<void>;
 
 /**
- * Reconnection manager for channel adapters.
- *
- * Manages automatic reconnection with exponential backoff using
- * computeBackoff() from @koi/errors. Resets the attempt counter
- * on successful connection.
- */
-
-interface ReconnectorConfig {
-    /** Establishes the platform connection. Throws on failure. */
-    readonly connect: () => Promise<void>;
-    /** Called after a successful (re)connection. */
-    readonly onConnected: () => void;
-    /** Called when the connection drops before a reconnection attempt. */
-    readonly onDisconnected: () => void;
-    /** Called when all retry attempts are exhausted. */
-    readonly onGiveUp: (lastError: unknown) => void;
-    /** Retry configuration. Defaults to DEFAULT_RETRY_CONFIG. */
-    readonly retry?: RetryConfig;
-}
-interface Reconnector {
-    /** Starts the reconnection loop. Resolves after first successful connect. */
-    readonly start: () => Promise<void>;
-    /** Stops the reconnection loop and prevents further attempts. */
-    readonly stop: () => void;
-    /** Returns true if currently connected. */
-    readonly isConnected: () => boolean;
-    /** Triggers a reconnection attempt (e.g., on connection drop). */
-    readonly reconnect: () => void;
-}
-/**
- * Creates a reconnection manager that wraps a connect() function
- * with exponential backoff retry logic.
- */
-declare function createReconnector(config: ReconnectorConfig): Reconnector;
-
-/**
  * Capability-aware ContentBlock renderer.
  *
  * Downgrades unsupported block types to TextBlock fallbacks based on the
@@ -348,6 +376,6 @@ interface WalkCallbacks {
  */
 declare function walkContentBlocks(blocks: readonly ContentBlock[], callbacks: WalkCallbacks): void;
 
-export { type ChannelAdapterConfig, type Debouncer, type DebouncerConfig, type FormatErrorOptions, type HealthStatus, type MediaFallbackConfig, type MessageNormalizer, type Reconnector, type ReconnectorConfig, type RetryQueue, type RetryQueueConfig, type WalkCallbacks, button, createChannelAdapter, createDebouncer, createMediaFallback, createReconnector, createRetryQueue, custom, file, formatErrorForChannel, image, renderBlocks, splitText, text, walkContentBlocks };
+export { type ChannelAdapterConfig, type Debouncer, type DebouncerConfig, type DisconnectInfo, type FormatErrorOptions, type HealthStatus, type MediaFallbackConfig, type MessageNormalizer, type ReconnectPolicy, type Reconnector, type ReconnectorConfig, type RetryQueue, type RetryQueueConfig, type WalkCallbacks, button, createChannelAdapter, createDebouncer, createMediaFallback, createReconnector, createRetryQueue, custom, file, formatErrorForChannel, image, renderBlocks, splitText, text, walkContentBlocks };
 "
 `;

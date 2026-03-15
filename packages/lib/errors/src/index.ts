@@ -30,6 +30,7 @@ export {
 export { mapFsError, mapParseError } from "./fs-errors.js";
 export {
   computeBackoff,
+  DEFAULT_RECONNECT_CONFIG,
   DEFAULT_RETRY_CONFIG,
   isRetryable,
   type RetryConfig,

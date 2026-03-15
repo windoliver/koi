@@ -7,6 +7,22 @@ export { AuthResult, BackpressureState, ChannelBinding, ConnectClient, ConnectFr
 import { AdvertisedTool, CapacityReport, Result, KoiError } from '@koi/core';
 export { AdvertisedTool, CapacityReport } from '@koi/core';
 
+/**
+ * Centralized WebSocket close-code map for the Koi gateway.
+ *
+ * Maps each close code to a human-readable label and a retryable flag.
+ * Clients use isRetryableClose() to decide whether to attempt reconnection.
+ */
+interface CloseCodeEntry {
+    readonly label: string;
+    readonly retryable: boolean;
+}
+declare const CLOSE_CODE_MAP: ReadonlyMap<number, CloseCodeEntry>;
+/** Returns whether a close code indicates a retryable disconnect. Unknown codes default to retryable. */
+declare function isRetryableClose(code: number): boolean;
+/** Returns a human-readable label for a close code. */
+declare function closeCodeLabel(code: number): string;
+
 declare function createInMemorySessionStore(): _koi_gateway_types.SessionStore;
 
 /**
@@ -421,6 +437,6 @@ declare function matchAffinity(toolName: string, compiled: readonly CompiledAffi
 declare function resolveTargetNode(toolName: string, sourceNodeId: string, registry: NodeRegistry, compiledAffinities: readonly CompiledAffinity[]): RouteResult;
 declare function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps): ToolRouter;
 
-export { type AcceptResult, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusBatchPayload, type AgentStatusEntry, type BackpressureMonitor, type BunTransport, type CapabilitiesPayload, type CompiledAffinity, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayDeps, type GatewayScheduler, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type NodeConnectionHandler, type NodeFrame, type NodeFrameKind, type ResolvedRoute, type RouteResult, type SchedulerDispatcher, type SequenceTracker, type SessionEvent, type SweepError, type ToolRouter, type ToolRouterDeps, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, compileAffinities, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createNodeConnectionHandler, createScheduler, createSequenceTracker, createToolRouter, encodeFrame, encodeNodeFrame, handleHandshake, matchAffinity, negotiateProtocol, parseConnectFrame, parseFrame, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateAgentStatusBatch, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
+export { type AcceptResult, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusBatchPayload, type AgentStatusEntry, type BackpressureMonitor, type BunTransport, CLOSE_CODE_MAP, type CapabilitiesPayload, type CloseCodeEntry, type CompiledAffinity, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayDeps, type GatewayScheduler, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type NodeConnectionHandler, type NodeFrame, type NodeFrameKind, type ResolvedRoute, type RouteResult, type SchedulerDispatcher, type SequenceTracker, type SessionEvent, type SweepError, type ToolRouter, type ToolRouterDeps, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, closeCodeLabel, compileAffinities, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createNodeConnectionHandler, createScheduler, createSequenceTracker, createToolRouter, encodeFrame, encodeNodeFrame, handleHandshake, isRetryableClose, matchAffinity, negotiateProtocol, parseConnectFrame, parseFrame, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateAgentStatusBatch, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
 "
 `;

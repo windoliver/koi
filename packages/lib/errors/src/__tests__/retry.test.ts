@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { KoiError } from "@koi/core";
 import { isKoiError } from "../error-utils.js";
-import { computeBackoff, DEFAULT_RETRY_CONFIG, isRetryable, withRetry } from "../retry.js";
+import {
+  computeBackoff,
+  DEFAULT_RECONNECT_CONFIG,
+  DEFAULT_RETRY_CONFIG,
+  isRetryable,
+  withRetry,
+} from "../retry.js";
 
 function makeError(code: KoiError["code"], retryable = false, retryAfterMs?: number): KoiError {
   return {
@@ -76,6 +82,42 @@ describe("computeBackoff", () => {
     expect(computeBackoff(0, config)).toBe(1_000);
     expect(computeBackoff(1, config)).toBe(3_000);
     expect(computeBackoff(2, config)).toBe(9_000);
+  });
+
+  test("decorrelated jitter uses prevDelayMs to compute upper bound", () => {
+    const config = {
+      ...DEFAULT_RETRY_CONFIG,
+      jitter: true,
+      jitterStrategy: "decorrelated" as const,
+      initialDelayMs: 100,
+      maxBackoffMs: 30_000,
+    };
+    const fixedRandom = () => 1; // max end of range
+    // prevDelayMs = 500 → upper = min(30_000, max(100, 500*3)) = 1500
+    // delay = floor(100 + 1 * (1500 - 100)) = 1500
+    const delay = computeBackoff(0, config, undefined, fixedRandom, 500);
+    expect(delay).toBe(1_500);
+  });
+
+  test("decorrelated jitter stays in [base, cap] range", () => {
+    const config = {
+      ...DEFAULT_RETRY_CONFIG,
+      jitter: true,
+      jitterStrategy: "decorrelated" as const,
+      initialDelayMs: 100,
+      maxBackoffMs: 5_000,
+    };
+    for (let i = 0; i < 50; i++) {
+      const delay = computeBackoff(0, config, undefined, undefined, 10_000);
+      expect(delay).toBeGreaterThanOrEqual(100);
+      expect(delay).toBeLessThanOrEqual(5_000);
+    }
+  });
+
+  test("DEFAULT_RECONNECT_CONFIG uses decorrelated jitter strategy", () => {
+    expect(DEFAULT_RECONNECT_CONFIG.jitterStrategy).toBe("decorrelated");
+    expect(DEFAULT_RECONNECT_CONFIG.jitter).toBe(true);
+    expect(DEFAULT_RECONNECT_CONFIG.maxRetries).toBe(10);
   });
 });
 

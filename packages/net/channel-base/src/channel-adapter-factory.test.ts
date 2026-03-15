@@ -6,7 +6,7 @@
  * optionality, dispatch semantics, lifecycle idempotency, and rendering.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type {
   ChannelCapabilities,
   ChannelStatus,
@@ -18,8 +18,10 @@ import {
   createChannelAdapter,
   type HealthStatus,
   type MessageNormalizer,
+  type ReconnectPolicy,
 } from "./channel-adapter-factory.js";
 import { text } from "./content-block-builders.js";
+import type { DisconnectInfo } from "./reconnect.js";
 
 type MockEvent = { readonly text: string; readonly userId: string };
 
@@ -65,6 +67,7 @@ interface TestSetup {
   readonly errorLog: { readonly err: unknown; readonly message: InboundMessage }[];
   readonly ignoredLog: MockEvent[];
   readonly normErrorLog: { readonly error: unknown; readonly rawEvent: MockEvent }[];
+  readonly triggerPlatformDisconnect: (info?: DisconnectInfo) => void;
 }
 
 function buildTest(
@@ -77,9 +80,13 @@ function buildTest(
     readonly maxQueueSize?: number;
     readonly connectDelayMs?: number;
     readonly healthTimeoutMs?: number;
+    readonly reconnect?: ReconnectPolicy;
+    readonly withPlatformDisconnect?: boolean;
+    readonly platformConnectFn?: () => Promise<void>;
   },
 ): TestSetup {
   let platformEventHandler: ((e: MockEvent) => void) | undefined;
+  let disconnectHandler: ((info?: DisconnectInfo) => void) | undefined;
   const sendLog: OutboundMessage[] = [];
   const statusLog: ChannelStatus[] = [];
   const errorLog: { err: unknown; message: InboundMessage }[] = [];
@@ -89,11 +96,13 @@ function buildTest(
   const config: ChannelAdapterConfig<MockEvent> = {
     name: "test",
     capabilities: opts?.caps ?? ALL_CAPS,
-    platformConnect: async () => {
-      if (opts?.connectDelayMs !== undefined) {
-        await new Promise((resolve) => setTimeout(resolve, opts.connectDelayMs));
-      }
-    },
+    platformConnect:
+      opts?.platformConnectFn ??
+      (async () => {
+        if (opts?.connectDelayMs !== undefined) {
+          await new Promise((resolve) => setTimeout(resolve, opts.connectDelayMs));
+        }
+      }),
     platformDisconnect: async () => {},
     platformSend: async (msg) => {
       sendLog.push(msg);
@@ -123,12 +132,24 @@ function buildTest(
     ...(opts?.connectTimeoutMs !== undefined && { connectTimeoutMs: opts.connectTimeoutMs }),
     ...(opts?.maxQueueSize !== undefined && { maxQueueSize: opts.maxQueueSize }),
     ...(opts?.healthTimeoutMs !== undefined && { healthTimeoutMs: opts.healthTimeoutMs }),
+    ...(opts?.reconnect !== undefined && { reconnect: opts.reconnect }),
+    ...(opts?.withPlatformDisconnect === true && {
+      onPlatformDisconnect: (handler: (info?: DisconnectInfo) => void) => {
+        disconnectHandler = handler;
+        return () => {
+          disconnectHandler = undefined;
+        };
+      },
+    }),
   };
 
   return {
     adapter: createChannelAdapter(config) as TestSetup["adapter"],
     fire: (event) => {
       platformEventHandler?.(event);
+    },
+    triggerPlatformDisconnect: (info) => {
+      disconnectHandler?.(info);
     },
     sendLog,
     statusLog,
@@ -677,6 +698,323 @@ describe("createChannelAdapter", () => {
 
       const status = adapter.healthCheck?.();
       expect(status?.healthy).toBe(false);
+    });
+  });
+
+  describe("auto-reconnect", () => {
+    test("auto-reconnects on platform disconnect when reconnect config provided", async () => {
+      const { adapter, fire, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 3,
+            backoffMultiplier: 2,
+            initialDelayMs: 1,
+            maxBackoffMs: 10,
+            jitter: false,
+          },
+        },
+        withPlatformDisconnect: true,
+        healthTimeoutMs: 60_000,
+      });
+
+      const received: InboundMessage[] = [];
+      adapter.onMessage(async (msg) => {
+        received.push(msg);
+      });
+
+      await adapter.connect();
+      fire({ text: "before", userId: "u1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(received).toHaveLength(1);
+
+      // Simulate platform disconnect
+      triggerPlatformDisconnect({ code: 4004, reason: "Session expired" });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // After reconnect, adapter should be healthy again and receive events
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(true);
+
+      fire({ text: "after-reconnect", userId: "u1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(received).toHaveLength(2);
+
+      await adapter.disconnect();
+    });
+
+    test("reconnect exhausted — adapter stays disconnected, onReconnectFailed fires", async () => {
+      // let justified: tracks connect call count to control failure
+      let connectCalls = 0;
+      const onReconnectFailed = mock((_e: unknown, _info?: DisconnectInfo) => {});
+
+      const { adapter, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 1,
+            backoffMultiplier: 2,
+            initialDelayMs: 1,
+            maxBackoffMs: 10,
+            jitter: false,
+          },
+          onReconnectFailed,
+        },
+        withPlatformDisconnect: true,
+        platformConnectFn: async () => {
+          connectCalls += 1;
+          // First connect succeeds, all subsequent fail
+          if (connectCalls > 1) {
+            throw new Error("connection refused");
+          }
+        },
+      });
+
+      await adapter.connect();
+
+      triggerPlatformDisconnect({ code: 4008, reason: "Session store failure" });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(onReconnectFailed).toHaveBeenCalledTimes(1);
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(false);
+    });
+
+    test("explicit disconnect() does not trigger auto-reconnect", async () => {
+      const onReconnectFailed = mock((_e: unknown) => {});
+
+      const { adapter } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 3,
+            backoffMultiplier: 2,
+            initialDelayMs: 1,
+            maxBackoffMs: 10,
+            jitter: false,
+          },
+          onReconnectFailed,
+        },
+        withPlatformDisconnect: true,
+      });
+
+      await adapter.connect();
+      await adapter.disconnect();
+
+      // Wait to see if any reconnection fires
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(onReconnectFailed).not.toHaveBeenCalled();
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(false);
+    });
+
+    test("shouldReconnect returns false → skips reconnect, fires onReconnectFailed", async () => {
+      const onReconnectFailed = mock((_e: unknown, _info?: DisconnectInfo) => {});
+
+      const { adapter, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 3,
+            backoffMultiplier: 2,
+            initialDelayMs: 1,
+            maxBackoffMs: 10,
+            jitter: false,
+          },
+          onReconnectFailed,
+          shouldReconnect: (_info) => false,
+        },
+        withPlatformDisconnect: true,
+      });
+
+      await adapter.connect();
+      triggerPlatformDisconnect({ code: 4003, reason: "Auth failed" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(onReconnectFailed).toHaveBeenCalledTimes(1);
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(false);
+    });
+
+    test("shouldReconnect returns true → reconnects normally", async () => {
+      const { adapter, fire, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 3,
+            backoffMultiplier: 2,
+            initialDelayMs: 1,
+            maxBackoffMs: 10,
+            jitter: false,
+          },
+          shouldReconnect: (_info) => true,
+        },
+        withPlatformDisconnect: true,
+        healthTimeoutMs: 60_000,
+      });
+
+      const received: InboundMessage[] = [];
+      adapter.onMessage(async (msg) => {
+        received.push(msg);
+      });
+
+      await adapter.connect();
+      triggerPlatformDisconnect({ code: 4004, reason: "Session expired" });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(true);
+
+      fire({ text: "after-reconnect", userId: "u1" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(received).toHaveLength(1);
+
+      await adapter.disconnect();
+    });
+
+    test("all four non-retryable codes (4003, 4010, 4012, 4014) skip reconnect", async () => {
+      const nonRetryableCodes = [4003, 4010, 4012, 4014];
+
+      for (const code of nonRetryableCodes) {
+        const onReconnectFailed = mock((_e: unknown, _info?: DisconnectInfo) => {});
+
+        const { adapter, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+          reconnect: {
+            retry: {
+              maxRetries: 3,
+              backoffMultiplier: 2,
+              initialDelayMs: 1,
+              maxBackoffMs: 10,
+              jitter: false,
+            },
+            onReconnectFailed,
+            shouldReconnect: (info) => {
+              // Simulate isRetryableClose logic for these specific codes
+              const nonRetryable = new Set([4003, 4010, 4012, 4014]);
+              return info.code === undefined || !nonRetryable.has(info.code);
+            },
+          },
+          withPlatformDisconnect: true,
+        });
+
+        await adapter.connect();
+        triggerPlatformDisconnect({ code, reason: `Code ${code}` });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(onReconnectFailed).toHaveBeenCalledTimes(1);
+        await adapter.disconnect();
+      }
+    });
+
+    test("healthCheck surfaces reconnectAttempts and lastDisconnect info", async () => {
+      // let justified: tracks connect call count to control failure
+      let connectCalls = 0;
+
+      const { adapter, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 5,
+            backoffMultiplier: 2,
+            initialDelayMs: 10,
+            maxBackoffMs: 100,
+            jitter: false,
+          },
+        },
+        withPlatformDisconnect: true,
+        healthTimeoutMs: 60_000,
+        platformConnectFn: async () => {
+          connectCalls += 1;
+          if (connectCalls > 1 && connectCalls <= 3) {
+            throw new Error("still failing");
+          }
+        },
+      });
+
+      await adapter.connect();
+      triggerPlatformDisconnect({ code: 4008, reason: "Session store failure" });
+      // Wait for at least one retry attempt
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      const status = adapter.healthCheck?.();
+      expect(status?.lastDisconnect).toEqual({ code: 4008, reason: "Session store failure" });
+
+      // Wait for reconnect to succeed
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await adapter.disconnect();
+    });
+
+    test("reconnectAttempts resets to 0 after successful reconnect", async () => {
+      // let justified: tracks connect call count
+      let connectCalls = 0;
+
+      const { adapter, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 5,
+            backoffMultiplier: 2,
+            initialDelayMs: 5,
+            maxBackoffMs: 50,
+            jitter: false,
+          },
+        },
+        withPlatformDisconnect: true,
+        healthTimeoutMs: 60_000,
+        platformConnectFn: async () => {
+          connectCalls += 1;
+          if (connectCalls === 2) {
+            throw new Error("temporary failure");
+          }
+        },
+      });
+
+      await adapter.connect();
+      triggerPlatformDisconnect({ code: 4009, reason: "Backpressure timeout" });
+
+      // Wait for reconnect to eventually succeed
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(true);
+      expect(status?.reconnectAttempts).toBe(0);
+
+      await adapter.disconnect();
+    });
+
+    test("healthCheck reports unhealthy during reconnect attempts", async () => {
+      // let justified: tracks connect call count
+      let connectCalls = 0;
+
+      const { adapter, triggerPlatformDisconnect } = buildTest(normalizeAll, {
+        reconnect: {
+          retry: {
+            maxRetries: 5,
+            backoffMultiplier: 2,
+            initialDelayMs: 50,
+            maxBackoffMs: 200,
+            jitter: false,
+          },
+        },
+        withPlatformDisconnect: true,
+        healthTimeoutMs: 60_000,
+        platformConnectFn: async () => {
+          connectCalls += 1;
+          if (connectCalls > 1 && connectCalls <= 3) {
+            throw new Error("still failing");
+          }
+        },
+      });
+
+      await adapter.connect();
+
+      // Trigger disconnect — reconnect loop will take time
+      triggerPlatformDisconnect();
+      // Check health during active reconnect
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const status = adapter.healthCheck?.();
+      expect(status?.healthy).toBe(false);
+
+      // Wait for reconnect to succeed
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const statusAfter = adapter.healthCheck?.();
+      expect(statusAfter?.healthy).toBe(true);
+
+      await adapter.disconnect();
     });
   });
 });

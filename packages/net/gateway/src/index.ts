@@ -18,6 +18,9 @@ export { handleHandshake, startHeartbeatSweep } from "./auth.js";
 // backpressure
 export type { BackpressureMonitor } from "./backpressure.js";
 export { createBackpressureMonitor } from "./backpressure.js";
+// close codes
+export type { CloseCodeEntry } from "./close-codes.js";
+export { CLOSE_CODE_MAP, CLOSE_CODES, closeCodeLabel, isRetryableClose } from "./close-codes.js";
 // gateway
 export type { Gateway, GatewayDeps, SessionEvent } from "./gateway.js";
 export { createGateway } from "./gateway.js";

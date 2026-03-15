@@ -2,6 +2,7 @@
  * Authentication: handshake + periodic heartbeat re-validation.
  */
 
+import { CLOSE_CODES } from "./close-codes.js";
 import {
   createAckFrame,
   createErrorFrame,
@@ -64,7 +65,7 @@ export function handleHandshake(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      conn.close(4001, "Auth timeout");
+      conn.close(CLOSE_CODES.AUTH_TIMEOUT, "Auth timeout");
       reject(new Error("Auth handshake timed out"));
     }, timeoutMs);
 
@@ -77,7 +78,7 @@ export function handleHandshake(
       const parseResult = parseConnectFrame(data);
       if (!parseResult.ok) {
         conn.send(createErrorFrame(0, parseResult.error.code, parseResult.error.message));
-        conn.close(4002, "Invalid connect frame");
+        conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Invalid connect frame");
         reject(new Error(`Invalid connect frame: ${parseResult.error.message}`));
         return;
       }
@@ -93,7 +94,7 @@ export function handleHandshake(
       );
       if (!versionResult.ok) {
         conn.send(createErrorFrame(0, "PROTOCOL_MISMATCH", versionResult.error.message));
-        conn.close(4010, "Protocol version mismatch");
+        conn.close(CLOSE_CODES.PROTOCOL_MISMATCH, "Protocol version mismatch");
         reject(new Error(`Protocol mismatch: ${versionResult.error.message}`));
         return;
       }
@@ -105,7 +106,7 @@ export function handleHandshake(
         .then((result) => {
           if (!result.ok) {
             conn.send(createErrorFrame(0, result.code, result.message));
-            conn.close(4003, result.code);
+            conn.close(CLOSE_CODES.AUTH_FAILED, result.code);
             reject(new Error(`Auth failed: ${result.code}`));
             return;
           }
@@ -132,7 +133,7 @@ export function handleHandshake(
         })
         .catch((err: unknown) => {
           conn.send(createErrorFrame(0, "INTERNAL", "Authentication service error"));
-          conn.close(4003, "INTERNAL");
+          conn.close(CLOSE_CODES.AUTH_FAILED, "INTERNAL");
           reject(new Error("Auth service error", { cause: err }));
         });
     });

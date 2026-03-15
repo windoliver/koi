@@ -14,6 +14,12 @@ export interface RetryConfig {
   readonly initialDelayMs: number;
   readonly maxBackoffMs: number;
   readonly jitter: boolean;
+  /**
+   * Jitter strategy. "full" uses uniform random in [0, delay]. "decorrelated"
+   * uses AWS-style decorrelated jitter: delay = random_between(base, min(cap, prev * 3)).
+   * Requires prevDelayMs in computeBackoff(). Defaults to "full".
+   */
+  readonly jitterStrategy?: "full" | "decorrelated";
 }
 
 export const DEFAULT_RETRY_CONFIG: RetryConfig = {
@@ -22,6 +28,16 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
   initialDelayMs: 1_000,
   maxBackoffMs: 30_000,
   jitter: true,
+} as const;
+
+/** Reconnect-optimized preset with decorrelated jitter for long-lived connections. */
+export const DEFAULT_RECONNECT_CONFIG: RetryConfig = {
+  maxRetries: 10,
+  backoffMultiplier: 2,
+  initialDelayMs: 1_000,
+  maxBackoffMs: 30_000,
+  jitter: true,
+  jitterStrategy: "decorrelated",
 } as const;
 
 /** Error codes that should trigger a retry. */
@@ -56,15 +72,24 @@ export function isRetryable(error: KoiError): boolean {
  * @param config - Retry configuration
  * @param retryAfterMs - Optional provider-specified retry delay (overrides calculation)
  * @param random - Injectable random function for deterministic jitter testing
+ * @param prevDelayMs - Previous delay in ms (used by decorrelated jitter strategy)
  */
 export function computeBackoff(
   attempt: number,
   config: RetryConfig,
   retryAfterMs?: number,
   random: () => number = Math.random,
+  prevDelayMs?: number,
 ): number {
   if (retryAfterMs !== undefined && retryAfterMs > 0) {
     return Math.min(retryAfterMs, config.maxBackoffMs);
+  }
+
+  if (config.jitter && config.jitterStrategy === "decorrelated") {
+    // Decorrelated jitter: delay = random_between(base, min(cap, max(base, prev * 3)))
+    const prev = prevDelayMs ?? 0;
+    const upper = Math.min(config.maxBackoffMs, Math.max(config.initialDelayMs, prev * 3));
+    return Math.floor(config.initialDelayMs + random() * (upper - config.initialDelayMs));
   }
 
   const exponentialDelay = config.initialDelayMs * config.backoffMultiplier ** attempt;
