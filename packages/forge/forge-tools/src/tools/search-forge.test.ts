@@ -461,6 +461,85 @@ describe("search_forge — retriever path", () => {
     }
   });
 
+  test("post-filters by createdBy after retriever", async () => {
+    const myTool = createTestToolArtifact({
+      id: brickId("mine"),
+      name: "mine",
+      scope: "global",
+      provenance: {
+        ...createTestToolArtifact().provenance,
+        metadata: {
+          ...createTestToolArtifact().provenance.metadata,
+          agentId: "author-a",
+        },
+      },
+    });
+    const otherTool = createTestToolArtifact({
+      id: brickId("other"),
+      name: "other",
+      scope: "global",
+      provenance: {
+        ...createTestToolArtifact().provenance,
+        metadata: {
+          ...createTestToolArtifact().provenance.metadata,
+          agentId: "author-b",
+        },
+      },
+    });
+    const store = mockStore([myTool, otherTool]);
+    const retriever = mockRetriever([
+      { id: "mine" as string, score: 0.9, content: "mine", metadata: {}, source: "nexus" },
+      { id: "other" as string, score: 0.8, content: "other", metadata: {}, source: "nexus" },
+    ]);
+    (store.load as ReturnType<typeof mock>).mockImplementation(async (id: BrickId) => {
+      if (id === brickId("mine")) return { ok: true, value: myTool };
+      if (id === brickId("other")) return { ok: true, value: otherTool };
+      return { ok: false, error: { code: "NOT_FOUND", message: "not found", retryable: false } };
+    });
+    const pipeline = mockPipeline();
+    const deps = makeDeps({ store, retriever, pipeline });
+
+    const result = await executeSearch(deps, { query: "tools", createdBy: "author-a" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(1);
+      expect(result.value[0]?.name).toBe("mine");
+    }
+  });
+
+  test("tags use AND-subset matching on retriever path", async () => {
+    const both = createTestToolArtifact({
+      id: brickId("both"),
+      name: "both-tags",
+      tags: ["chart", "data"],
+    });
+    const oneOnly = createTestToolArtifact({
+      id: brickId("one"),
+      name: "one-tag",
+      tags: ["chart"],
+    });
+    const store = mockStore([both, oneOnly]);
+    const retriever = mockRetriever([
+      { id: "both" as string, score: 0.9, content: "both", metadata: {}, source: "nexus" },
+      { id: "one" as string, score: 0.8, content: "one", metadata: {}, source: "nexus" },
+    ]);
+    (store.load as ReturnType<typeof mock>).mockImplementation(async (id: BrickId) => {
+      if (id === brickId("both")) return { ok: true, value: both };
+      if (id === brickId("one")) return { ok: true, value: oneOnly };
+      return { ok: false, error: { code: "NOT_FOUND", message: "not found", retryable: false } };
+    });
+    const pipeline = mockPipeline();
+    const deps = makeDeps({ store, retriever, pipeline });
+
+    // Requires BOTH tags — "one-tag" (only has "chart") should be filtered out
+    const result = await executeSearch(deps, { query: "visualize", tags: ["chart", "data"] });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(1);
+      expect(result.value[0]?.name).toBe("both-tags");
+    }
+  });
+
   test("text field works as legacy fallback to query", async () => {
     const tool = createTestToolArtifact({ id: brickId("t1"), name: "legacy-tool" });
     const store = mockStore([tool]);

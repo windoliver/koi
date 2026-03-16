@@ -154,30 +154,41 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
     const indexer = config.indexer;
     const onError = config.onError;
 
+    /** Report a non-fatal indexing error via onError or console.debug fallback. */
+    const reportError = (context: string, error: unknown): void => {
+      if (onError !== undefined) {
+        onError(error);
+      } else {
+        console.debug(`[forge] ${context}:`, error);
+      }
+    };
+
     notifier.subscribe((event) => {
       if (event.kind === "saved" || event.kind === "updated") {
         void config.store
           .load(event.brickId)
-          .then((loadResult) => {
+          .then(async (loadResult) => {
             if (!loadResult.ok) return;
             const doc = mapBrickToIndexDoc(loadResult.value);
-            return indexer.index([doc]);
+            const indexResult = await indexer.index([doc]);
+            if (!indexResult.ok) {
+              reportError("indexing subscriber index failed", indexResult.error);
+            }
           })
           .catch((e: unknown) => {
-            if (onError !== undefined) {
-              onError(e);
-            } else {
-              console.debug("[forge] indexing subscriber failed:", e);
-            }
+            reportError("indexing subscriber failed", e);
           });
       } else if (event.kind === "removed" || event.kind === "quarantined") {
-        void indexer.remove([event.brickId]).catch((e: unknown) => {
-          if (onError !== undefined) {
-            onError(e);
-          } else {
-            console.debug("[forge] indexing subscriber remove failed:", e);
-          }
-        });
+        void indexer
+          .remove([event.brickId])
+          .then((removeResult) => {
+            if (!removeResult.ok) {
+              reportError("indexing subscriber remove failed", removeResult.error);
+            }
+          })
+          .catch((e: unknown) => {
+            reportError("indexing subscriber remove failed", e);
+          });
       }
     });
 
@@ -185,20 +196,18 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
     // Duplicate index() calls are idempotent upserts by document ID.
     void config.store
       .search({})
-      .then((searchResult) => {
+      .then(async (searchResult) => {
         if (!searchResult.ok) return;
         const docs = searchResult.value.map(mapBrickToIndexDoc);
         if (docs.length > 0) {
-          return indexer.index(docs);
+          const indexResult = await indexer.index(docs);
+          if (!indexResult.ok) {
+            reportError("indexing backfill failed", indexResult.error);
+          }
         }
-        return undefined;
       })
       .catch((e: unknown) => {
-        if (onError !== undefined) {
-          onError(e);
-        } else {
-          console.debug("[forge] indexing backfill failed:", e);
-        }
+        reportError("indexing backfill failed", e);
       });
   }
 

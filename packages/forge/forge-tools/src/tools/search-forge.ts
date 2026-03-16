@@ -7,9 +7,10 @@
  */
 
 import type { BrickArtifact, BrickId, Result, Tool } from "@koi/core";
+import { DEFAULT_BRICK_FITNESS } from "@koi/core";
 import type { ForgeError, ForgeQuery } from "@koi/forge-types";
 import { filterByAgentScope, staticError } from "@koi/forge-types";
-import { sortBricks } from "@koi/validation";
+import { computeBrickFitness, sortBricks } from "@koi/validation";
 import { z } from "zod";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { createForgeTool } from "./shared.js";
@@ -183,20 +184,21 @@ async function retrieverSearch(
       (b): b is BrickArtifact => b !== undefined,
     );
 
-    // Post-filter by metadata
+    // Post-filter by metadata (kind, scope, lifecycle, tags, createdBy — matches store semantics)
     bricks = postFilterByMetadata(bricks, raw);
 
     // Agent scope filtering
     bricks = filterByAgentScope(bricks, deps.context.agentId, deps.context.zoneId);
 
-    // Fitness score filtering
+    // Canonical fitness filtering — uses the same composite score as sortBricks
+    // (successRate^exponent × recencyDecay × usageNorm × latencyFactor),
+    // not raw success ratio, to stay consistent with the store path.
     if (raw.minFitnessScore !== undefined) {
       const min = Math.max(0, Math.min(1, raw.minFitnessScore));
+      const nowMs = Date.now();
       bricks = bricks.filter((b) => {
-        if (b.fitness === undefined) return false;
-        const total = b.fitness.successCount + b.fitness.errorCount;
-        if (total === 0) return false;
-        return b.fitness.successCount / total >= min;
+        const score = computeBrickFitness(b.fitness ?? DEFAULT_BRICK_FITNESS, nowMs);
+        return score >= min;
       });
     }
 
@@ -258,9 +260,13 @@ async function storeSearch(
 // ---------------------------------------------------------------------------
 
 /**
- * Filters bricks by metadata fields (kind, scope, lifecycle, tags)
+ * Filters bricks by metadata fields (kind, scope, lifecycle, tags, createdBy)
  * after retriever returns results. The retriever doesn't understand
  * forge-specific metadata, so we filter client-side.
+ *
+ * Semantics match the store path (query-match.ts):
+ * - Tags use AND-subset: brick must contain ALL query tags
+ * - createdBy matches provenance.metadata.agentId
  */
 function postFilterByMetadata(
   bricks: readonly BrickArtifact[],
@@ -277,9 +283,14 @@ function postFilterByMetadata(
   if (raw.lifecycle !== undefined) {
     filtered = filtered.filter((b) => b.lifecycle === raw.lifecycle);
   }
+  // AND-subset: brick must contain ALL requested tags (matches query-match.ts)
   if (raw.tags !== undefined && raw.tags.length > 0) {
-    const requiredTags = new Set(raw.tags);
-    filtered = filtered.filter((b) => b.tags.some((t) => requiredTags.has(t)));
+    const requiredTags = raw.tags;
+    filtered = filtered.filter((b) => requiredTags.every((t) => b.tags.includes(t)));
+  }
+  // createdBy matches provenance.metadata.agentId (matches query-match.ts)
+  if (raw.createdBy !== undefined) {
+    filtered = filtered.filter((b) => b.provenance.metadata.agentId === raw.createdBy);
   }
 
   return filtered;
