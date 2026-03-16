@@ -38,7 +38,7 @@ async function loadPresetInfos(): Promise<readonly PresetInfo[]> {
       description: preset.description,
       nexusMode: preset.nexusMode,
       demoPack: preset.demoPack,
-      services: preset.services as Readonly<Record<string, unknown>>,
+      services: preset.services as unknown as Readonly<Record<string, unknown>>,
       stacks: preset.stacks as Readonly<Record<string, boolean | undefined>>,
       ...(pack !== undefined
         ? {
