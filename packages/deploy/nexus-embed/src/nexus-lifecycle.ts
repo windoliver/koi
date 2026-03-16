@@ -13,7 +13,7 @@
  * - `nexusDown()` stops the stack via `nexus down`
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { checkBinaryAvailable, resolveNexusBinary } from "./binary-resolver.js";
@@ -29,6 +29,12 @@ export interface NexusLifecycleOptions {
   readonly cwd?: string | undefined;
   /** Emit verbose diagnostics to stderr. Default: false. */
   readonly verbose?: boolean | undefined;
+}
+
+/** Extended options for `nexusInit()`. */
+export interface NexusInitOptions extends NexusLifecycleOptions {
+  /** Override the HTTP port in nexus.yaml (patched after scaffolding). */
+  readonly port?: number | undefined;
 }
 
 /** Result of a successful `nexus up`. */
@@ -60,7 +66,7 @@ const PRESET_MAP: Readonly<Record<string, string>> = {
  */
 export async function nexusInit(
   koiPreset: string,
-  options?: NexusLifecycleOptions | undefined,
+  options?: NexusInitOptions | undefined,
 ): Promise<Result<void, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
@@ -69,9 +75,18 @@ export async function nexusInit(
   if (!binaryCheck.ok) return binaryCheck;
 
   const nexusPreset = PRESET_MAP[koiPreset] ?? "local";
-  const args = ["init", "--preset", nexusPreset, "--force"];
+  const args: string[] = ["init", "--preset", nexusPreset, "--force"];
 
-  return runNexusCommand(args, cwd, verbose, "nexus init");
+  const result = await runNexusCommand(args, cwd, verbose, "nexus init");
+  if (!result.ok) return result;
+
+  // Nexus init does not accept a --port flag. If a custom port was requested,
+  // patch the generated nexus.yaml to override the default ports.http value.
+  if (options?.port !== undefined) {
+    patchNexusPort(cwd, options.port, verbose);
+  }
+
+  return result;
 }
 
 /**
@@ -94,6 +109,14 @@ export async function nexusUp(
     readonly koiPreset?: string | undefined;
     /** Host override. Default: "127.0.0.1". */
     readonly host?: string | undefined;
+    /** Build images from source (passes --build and --compose-file to `nexus up`). Requires `sourceDir` pointing to the nexus repo root. */
+    readonly build?: boolean | undefined;
+    /** Path to the nexus repo root for --build (derives compose file as `<sourceDir>/docker-compose.yml`). */
+    readonly sourceDir?: string | undefined;
+    /** Port conflict resolution strategy (passes --port-strategy to `nexus up`). Default: "auto". */
+    readonly portStrategy?: "auto" | "prompt" | "fail" | undefined;
+    /** Override the HTTP port (passed to `nexus init` during auto-init). */
+    readonly port?: number | undefined;
   },
 ): Promise<Result<NexusUpResult, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
@@ -113,7 +136,7 @@ export async function nexusUp(
         `Nexus: nexus.yaml not found, running nexus init --preset ${koiPreset}\n`,
       );
     }
-    const initResult = await nexusInit(koiPreset, { cwd, verbose });
+    const initResult = await nexusInit(koiPreset, { cwd, verbose, port: options?.port });
     if (!initResult.ok) return initResult;
     autoInitialized = true;
     configPath = findNexusConfig(cwd) ?? join(cwd, "nexus.yaml");
@@ -127,7 +150,13 @@ export async function nexusUp(
   delete process.env.NEXUS_API_KEY;
 
   // Run nexus up (blocks until healthy)
-  const upResult = await runNexusCommand(["up"], cwd, verbose, "nexus up");
+  const upArgs: string[] = ["up"];
+  if (options?.sourceDir !== undefined) {
+    upArgs.push("--compose-file", join(options.sourceDir, "docker-compose.yml"));
+  }
+  if (options?.build === true) upArgs.push("--build");
+  if (options?.portStrategy !== undefined) upArgs.push("--port-strategy", options.portStrategy);
+  const upResult = await runNexusCommand(upArgs, cwd, verbose, "nexus up");
 
   // Restore the original env var (may be needed by other code)
   if (savedApiKey !== undefined) {
@@ -159,7 +188,10 @@ export async function nexusUp(
  * Stops the Nexus stack via `nexus down`.
  */
 export async function nexusDown(
-  options?: NexusLifecycleOptions | undefined,
+  options?: NexusLifecycleOptions & {
+    /** Also remove volumes (passes --volumes to `nexus down`). Default: false. */
+    readonly volumes?: boolean | undefined;
+  },
 ): Promise<Result<void, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
@@ -167,7 +199,10 @@ export async function nexusDown(
   const binaryCheck = await ensureBinary();
   if (!binaryCheck.ok) return binaryCheck;
 
-  return runNexusCommand(["down"], cwd, verbose, "nexus down");
+  const args: string[] = ["down"];
+  if (options?.volumes === true) args.push("--volumes");
+
+  return runNexusCommand(args, cwd, verbose, "nexus down");
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +269,29 @@ async function extractContainerApiKey(cwd: string, verbose: boolean): Promise<st
     // Non-fatal — fall back to nexus.yaml key
   }
   return undefined;
+}
+
+/**
+ * Patches the HTTP port in nexus.yaml after scaffolding.
+ * `nexus init` does not accept a --port flag, so we patch the YAML directly.
+ */
+function patchNexusPort(cwd: string, port: number, verbose: boolean): void {
+  const configPath = findNexusConfig(cwd);
+  if (configPath === undefined) return;
+
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    // Replace `  http: <number>` under the `ports:` section
+    const patched = raw.replace(/^(\s+http:\s*)\d+/m, `$1${String(port)}`);
+    if (patched !== raw) {
+      writeFileSync(configPath, patched, "utf-8");
+      if (verbose) {
+        process.stderr.write(`Nexus: patched ports.http to ${String(port)} in ${configPath}\n`);
+      }
+    }
+  } catch {
+    // Non-fatal — port will use the default
+  }
 }
 
 /** Values extracted from nexus.yaml after startup. */

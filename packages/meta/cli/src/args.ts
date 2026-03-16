@@ -116,6 +116,9 @@ export interface UpFlags extends BaseFlags {
   readonly web: boolean;
   readonly timing: boolean;
   readonly nexusUrl: string | undefined;
+  readonly nexusBuild: boolean;
+  readonly nexusSource: string | undefined;
+  readonly nexusPort: number | undefined;
   readonly temporalUrl: string | undefined;
   readonly logFormat: "text" | "json";
 }
@@ -449,6 +452,9 @@ export function parseUpFlags(rest: readonly string[]): UpFlags {
       web: { type: "boolean", default: false },
       timing: { type: "boolean", default: false },
       "nexus-url": { type: "string" },
+      "nexus-build": { type: "boolean", default: false },
+      "nexus-source": { type: "string" },
+      "nexus-port": { type: "string" },
       "temporal-url": { type: "string" },
       "log-format": { type: "string" },
     },
@@ -457,6 +463,7 @@ export function parseUpFlags(rest: readonly string[]): UpFlags {
   });
 
   const positionalManifest = positionals[0] as string | undefined;
+  const nexusPortStr = values["nexus-port"] as string | undefined;
 
   return {
     command: "up" as const,
@@ -467,6 +474,9 @@ export function parseUpFlags(rest: readonly string[]): UpFlags {
     web: (values.web as boolean | undefined) ?? false,
     timing: (values.timing as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
+    nexusBuild: (values["nexus-build"] as boolean | undefined) ?? false,
+    nexusSource: values["nexus-source"] as string | undefined,
+    nexusPort: nexusPortStr !== undefined ? Number.parseInt(nexusPortStr, 10) : undefined,
     temporalUrl: values["temporal-url"] as string | undefined,
     logFormat: resolveLogFormat(values["log-format"] as string | undefined),
   };

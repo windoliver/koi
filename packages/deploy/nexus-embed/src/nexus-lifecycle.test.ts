@@ -52,6 +52,25 @@ describe("nexusInit", () => {
     expect(PRESET_MAP.demo).toBe("demo");
     expect(PRESET_MAP.mesh).toBe("shared");
   });
+
+  test("accepts port option without error", async () => {
+    const saved = process.env.NEXUS_COMMAND;
+    process.env.NEXUS_COMMAND = "/nonexistent/nexus-fake-binary";
+    try {
+      // Port option should be accepted even though binary is unavailable
+      const result = await nexusInit("demo", { cwd: tempDir, port: 3000 });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("NOT_FOUND");
+      }
+    } finally {
+      if (saved !== undefined) {
+        process.env.NEXUS_COMMAND = saved;
+      } else {
+        delete process.env.NEXUS_COMMAND;
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -103,6 +122,30 @@ describe("nexusUp", () => {
     const port = 3000;
     const baseUrl = `http://127.0.0.1:${String(port)}`;
     expect(baseUrl).toBe("http://127.0.0.1:3000");
+  });
+
+  test("accepts build and portStrategy options without error", async () => {
+    const saved = process.env.NEXUS_COMMAND;
+    process.env.NEXUS_COMMAND = "/nonexistent/nexus-fake-binary";
+    try {
+      const result = await nexusUp({
+        cwd: tempDir,
+        koiPreset: "demo",
+        build: true,
+        portStrategy: "fail",
+        port: 4000,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("NOT_FOUND");
+      }
+    } finally {
+      if (saved !== undefined) {
+        process.env.NEXUS_COMMAND = saved;
+      } else {
+        delete process.env.NEXUS_COMMAND;
+      }
+    }
   });
 });
 
