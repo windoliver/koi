@@ -36,6 +36,9 @@ export const DEFAULT_DISCLOSURE_THRESHOLD = 50;
 /** Default LRU cache capacity for promoted descriptors. */
 const DEFAULT_CACHE_CAPACITY = 100;
 
+/** Name of the companion tool that promotes summary-level tools to full descriptors. */
+const PROMOTE_TOOL_NAME = "promote_tools";
+
 export interface ToolDisclosureConfig {
   /** ForgeStore for loading full tool descriptors on promotion. */
   readonly store: ForgeStore;
@@ -209,6 +212,9 @@ export function createToolDisclosureMiddleware(
   // let justified: mutable snapshot of promoted names for change detection
   let lastPromotedSnapshot: ReadonlySet<string> = new Set();
 
+  // let justified: mutable flag tracking whether disclosure activated on last model call
+  let disclosureActive = false;
+
   // Index of all tool descriptors by name (rebuilt when input ref changes)
   // let justified: mutable map rebuilt on input change
   let descriptorIndex = new Map<string, ToolDescriptor>();
@@ -248,8 +254,10 @@ export function createToolDisclosureMiddleware(
     // Summary-level tools have a minimal inputSchema placeholder so they remain valid descriptors.
     const result: ToolDescriptor[] = [];
     for (const tool of tools) {
-      if (promotedNames.has(tool.name)) {
-        // Use cached descriptor (may have been loaded from store)
+      if (promotedNames.has(tool.name) || tool.name === PROMOTE_TOOL_NAME) {
+        // Use cached descriptor (may have been loaded from store).
+        // promote_tools is always kept at full descriptor level so the model
+        // can call it to escape summary mode.
         const cached = cache.get(tool.name);
         result.push(cached ?? tool);
       } else {
@@ -282,22 +290,25 @@ export function createToolDisclosureMiddleware(
       next: ModelHandler,
     ): Promise<ModelResponse> {
       if (request.tools === undefined || request.tools.length <= threshold) {
+        disclosureActive = false;
         return next(request);
       }
 
+      disclosureActive = true;
       const disclosedTools = buildDisclosedTools(request.tools);
       return next({ ...request, tools: disclosedTools });
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
-      // Only inject description when disclosure is active
+      // Only advertise promote_tools when disclosure is actually active.
+      // When below threshold (or before any model call), returning undefined
+      // prevents the model from trying to call a nonexistent tool.
+      if (!disclosureActive) return undefined;
+
       const promoted = cache.promotedNames();
-      if (promoted.size === 0 && threshold >= 9999) {
-        return undefined;
-      }
       return {
         label: "tool-disclosure",
-        description: `${promoted.size} tools promoted to full descriptor. Use promote_tools to load full schemas for tools you want to call.`,
+        description: `${promoted.size} tools promoted to full descriptor. Use ${PROMOTE_TOOL_NAME} to load full schemas for tools you want to call.`,
       };
     },
 
@@ -329,7 +340,7 @@ export interface PromoteToolsConfig {
  */
 export function createPromoteToolDescriptor(): ToolDescriptor {
   return {
-    name: "promote_tools",
+    name: PROMOTE_TOOL_NAME,
     description:
       "Load full tool schemas for the named tools. Call this before using a tool whose inputSchema is empty (summary-level). Returns the list of successfully promoted tool names.",
     inputSchema: {

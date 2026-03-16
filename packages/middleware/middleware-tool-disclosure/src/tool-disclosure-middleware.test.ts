@@ -22,6 +22,7 @@ import type {
 import { runId, sessionId, turnId } from "@koi/core";
 import type { ToolDisclosureMiddleware } from "./tool-disclosure-middleware.js";
 import {
+  createPromoteToolDescriptor,
   createToolDisclosureMiddleware,
   DEFAULT_DISCLOSURE_THRESHOLD,
 } from "./tool-disclosure-middleware.js";
@@ -543,13 +544,98 @@ describe("memoization", () => {
 // ---------------------------------------------------------------------------
 
 describe("describeCapabilities", () => {
-  test("returns capability fragment with promoted count", () => {
+  test("returns undefined when disclosure has not activated", () => {
     const store = createMockStore();
-    const mw = createToolDisclosureMiddleware({ store, threshold: 5 });
+    const mw = createToolDisclosureMiddleware({ store, threshold: 50 });
     const ctx = mockTurnContext();
 
-    const fragment = requireDefined(mw.describeCapabilities(ctx), "fragment");
+    // No wrapModelCall yet — disclosure inactive
+    expect(mw.describeCapabilities(ctx)).toBeUndefined();
+  });
+
+  test("returns undefined when tool count is below threshold", async () => {
+    const store = createMockStore();
+    const mw = createToolDisclosureMiddleware({ store, threshold: 50 });
+    const tools = descriptors(10);
+    const capture = captureTools();
+
+    await callWrapModelCall(mw, mockTurnContext(), { messages: [], tools }, capture.handler);
+
+    // Below threshold — disclosure inactive
+    expect(mw.describeCapabilities(mockTurnContext())).toBeUndefined();
+  });
+
+  test("returns fragment when tool count is above threshold", async () => {
+    const store = createMockStore();
+    const mw = createToolDisclosureMiddleware({ store, threshold: 5 });
+    const tools = descriptors(10);
+    const capture = captureTools();
+
+    await callWrapModelCall(mw, mockTurnContext(), { messages: [], tools }, capture.handler);
+
+    const fragment = requireDefined(mw.describeCapabilities(mockTurnContext()), "fragment");
     expect(fragment.label).toBe("tool-disclosure");
     expect(fragment.description).toContain("0 tools promoted");
+    expect(fragment.description).toContain("promote_tools");
+  });
+
+  test("transitions from active to inactive when tools drop below threshold", async () => {
+    const store = createMockStore();
+    const mw = createToolDisclosureMiddleware({ store, threshold: 50 });
+
+    // First call: above threshold → disclosure active
+    const capture1 = captureTools();
+    await callWrapModelCall(
+      mw,
+      mockTurnContext(),
+      { messages: [], tools: descriptors(51) },
+      capture1.handler,
+    );
+    expect(mw.describeCapabilities(mockTurnContext())).toBeDefined();
+
+    // Second call: below threshold → disclosure inactive
+    const capture2 = captureTools();
+    await callWrapModelCall(
+      mw,
+      mockTurnContext(),
+      { messages: [], tools: descriptors(5) },
+      capture2.handler,
+    );
+    expect(mw.describeCapabilities(mockTurnContext())).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// promote_tools schema preservation
+// ---------------------------------------------------------------------------
+
+describe("promote_tools schema preservation", () => {
+  test("promote_tools retains full schema when disclosure is active", async () => {
+    const store = createMockStore();
+    const mw = createToolDisclosureMiddleware({ store, threshold: 5 });
+
+    const promoteDescriptor = createPromoteToolDescriptor();
+    const tools: readonly ToolDescriptor[] = [...descriptors(10), promoteDescriptor];
+    const capture = captureTools();
+
+    await callWrapModelCall(mw, mockTurnContext(), { messages: [], tools }, capture.handler);
+
+    const result = requireDefined(capture.captured(), "tools");
+    expect(result.length).toBe(11);
+
+    // promote_tools must have its full schema preserved
+    const promoteTool = requireDefined(
+      result.find((t) => t.name === "promote_tools"),
+      "promote_tools",
+    );
+    expect(isFullLevel(promoteTool)).toBe(true);
+    expect(promoteTool.inputSchema).toHaveProperty("properties");
+
+    // Other unpromoted tools should be summary-level
+    const regularTool = requireDefined(
+      result.find((t) => t.name === "tool-0"),
+      "tool-0",
+    );
+    expect(isSummaryLevel(regularTool)).toBe(true);
   });
 });
