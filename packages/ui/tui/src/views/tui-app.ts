@@ -24,10 +24,18 @@ import type {
   DashboardEventBatch,
   DataSourceDashboardEvent,
 } from "@koi/dashboard-types";
-import { isAgentEvent, isDataSourceEvent, isPtyOutputEvent } from "@koi/dashboard-types";
+import {
+  isAgentEvent,
+  isDataSourceEvent,
+  isLogEvent,
+  isPtyOutputEvent,
+} from "@koi/dashboard-types";
+import type { OperationResult, PhaseCallbacks, SetupWizardState } from "@koi/setup-core";
+import { KNOWN_CHANNELS, KNOWN_MODELS } from "@koi/setup-core";
 import { type CliRenderer, createCliRenderer, SyntaxStyle } from "@opentui/core";
 import { createRoot, type Root } from "@opentui/react";
 import { createElement } from "react";
+import { cycleLogLevel } from "../state/service-reducer.js";
 import { createStore, type TuiStore } from "../state/store.js";
 import {
   createInitialState,
@@ -68,6 +76,14 @@ export interface TuiAppConfig {
   readonly splitPaneScrollback?: number | undefined;
   /** Presets to display in welcome mode. Passed in to avoid L2-to-L2 import. */
   readonly presets?: readonly import("../state/types.js").PresetInfo[] | undefined;
+  /** In-process startup callback — replaces detached subprocess. */
+  readonly onStartStack?:
+    | ((state: SetupWizardState, callbacks: PhaseCallbacks) => Promise<OperationResult<void>>)
+    | undefined;
+  /** Override known models for the model step. */
+  readonly models?: readonly string[] | undefined;
+  /** Callback for service management commands from TUI. */
+  readonly onServiceCommand?: ((command: string) => Promise<void>) | undefined;
 }
 
 /** Handle returned from createTuiApp for lifecycle management. */
@@ -99,6 +115,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     initialSessionId,
     onPresetSelected,
     presets: configPresets,
+    onStartStack,
+    onServiceCommand,
   } = config;
 
   // ─── State ──────────────────────────────────────────────────────────
@@ -174,6 +192,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     cancelActiveStream,
     stop,
     addLifecycleMessage,
+    onServiceCommand,
   };
 
   // ─── Agent console wiring ──────────────────────────────────────────
@@ -324,6 +343,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     for (const evt of batch.events) {
       if (isPtyOutputEvent(evt)) {
         store.dispatch({ kind: "append_pty_data", agentId: evt.agentId, data: evt.data });
+        continue;
+      }
+      if (isLogEvent(evt)) {
+        store.dispatch({
+          kind: "append_log",
+          entry: {
+            level: evt.level,
+            source: evt.source,
+            message: evt.message,
+            timestamp: evt.timestamp,
+          },
+        });
         continue;
       }
       if (isDataSourceEvent(evt)) {
@@ -539,10 +570,14 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     closeDataSources: () => {
       const currentView = store.getState().view;
-      store.dispatch({
-        kind: "set_view",
-        view: currentView === "sourcedetail" ? "datasources" : "agents",
-      });
+      if (currentView === "sourcedetail") {
+        store.dispatch({ kind: "set_view", view: "datasources" });
+      } else if (store.getState().selectedPresetId !== null) {
+        // In wizard flow: datasources back → channels
+        store.dispatch({ kind: "set_view", view: "channels" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "agents" });
+      }
     },
     dataSourceUp: () => {
       store.dispatch({
@@ -563,6 +598,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     dataSourceSchema: () => {
       const source = store.getState().dataSources[store.getState().selectedDataSourceIndex];
       if (source !== undefined) viewDataSourceSchema(source.name, dsDeps).catch(() => {});
+    },
+    dataSourcesContinue: () => {
+      // In wizard flow: datasources → addons
+      if (store.getState().selectedPresetId !== null) {
+        store.dispatch({ kind: "set_view", view: "addons" });
+      }
     },
     consentApprove,
     consentDeny,
@@ -624,7 +665,68 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       }
     },
     addonsBack: () => {
+      const presetId = store.getState().selectedPresetId;
+      store.dispatch({ kind: "set_view", view: presetId === "local" ? "datasources" : "channels" });
+    },
+    modelSelect: () => {
+      const models = config.models ?? [...KNOWN_MODELS];
+      const idx = store.getState().modelFocusedIndex;
+      const model = models[idx];
+      if (model !== undefined) {
+        store.dispatch({ kind: "set_selected_model", model });
+      }
+      store.dispatch({ kind: "set_view", view: "engine" });
+    },
+    modelBack: () => {
       store.dispatch({ kind: "set_view", view: "nameinput" });
+    },
+    engineConfirm: () => {
+      store.dispatch({ kind: "set_view", view: "channels" });
+    },
+    engineSkip: () => {
+      store.dispatch({ kind: "set_selected_engine", engine: undefined });
+      store.dispatch({ kind: "set_view", view: "channels" });
+    },
+    engineBack: () => {
+      store.dispatch({ kind: "set_view", view: "model" });
+    },
+    channelsConfirm: () => {
+      // For local preset, show data source discovery step; demo/mesh get sources from Nexus
+      const presetId = store.getState().selectedPresetId;
+      if (presetId === "local") {
+        store.dispatch({ kind: "set_view", view: "datasources" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "addons" });
+      }
+    },
+    channelsToggle: () => {
+      const idx = store.getState().channelFocusedIndex;
+      const channel = KNOWN_CHANNELS[idx];
+      if (channel !== undefined) {
+        store.dispatch({ kind: "toggle_channel", channel });
+      }
+    },
+    channelsBack: () => {
+      store.dispatch({ kind: "set_view", view: "engine" });
+    },
+    serviceStop: () => {
+      onServiceCommand?.("stop").catch(() => {});
+    },
+    serviceDoctor: () => {
+      onServiceCommand?.("doctor").catch(() => {});
+    },
+    serviceLogs: () => {
+      store.dispatch({ kind: "set_view", view: "logs" });
+    },
+    serviceBack: () => {
+      store.dispatch({ kind: "set_view", view: "agents" });
+    },
+    logsCycleLevel: () => {
+      const current = store.getState().logLevel;
+      store.dispatch({ kind: "set_log_level", level: cycleLogLevel(current) });
+    },
+    logsBack: () => {
+      store.dispatch({ kind: "set_view", view: "service" });
     },
   });
 
@@ -657,13 +759,113 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   }
 
   function handleNameConfirm(): void {
-    // After name input, go to add-on picker
-    store.dispatch({ kind: "set_view", view: "addons" });
+    // After name input, go to model selection
+    // Full wizard flow: preset → name → model → engine → channels → dataSources → addons
+    store.dispatch({ kind: "set_view", view: "model" });
   }
 
   function handleAddonsConfirm(): void {
     const presetId = store.getState().selectedPresetId;
     const agentName = store.getState().agentNameInput;
+    const state = store.getState();
+
+    if (presetId !== null && onStartStack !== undefined) {
+      // Build SetupWizardState from TUI state, including discovered data sources
+      const approvedSources = state.dataSources
+        .filter((s) => s.status === "approved")
+        .map((s) => ({ name: s.name, protocol: s.protocol }));
+      const wizardState: SetupWizardState = {
+        preset: presetId,
+        name: agentName,
+        description: "A Koi agent",
+        model: state.selectedModel,
+        engine: state.selectedEngine,
+        channels: [...state.selectedChannels],
+        addons: [...state.selectedAddons],
+        dataSources: approvedSources,
+        demoPack: presetId === "demo" ? "connected" : undefined,
+      };
+
+      store.dispatch({ kind: "set_view", view: "progress" });
+      store.dispatch({ kind: "set_setup_running", running: true });
+
+      const callbacks: PhaseCallbacks = {
+        onPhaseStart: (phaseId, label) => {
+          store.dispatch({
+            kind: "append_phase_progress",
+            progress: { phaseId, label, status: "running" },
+          });
+        },
+        onPhaseProgress: (phaseId, message) => {
+          // Update the last progress entry with the message
+          const phases = store.getState().phaseProgress;
+          const updated = phases.map((p) => (p.phaseId === phaseId ? { ...p, message } : p));
+          // Re-set via clear + re-append to avoid mutation
+          store.dispatch({ kind: "clear_phase_progress" });
+          store.dispatch({ kind: "set_setup_running", running: true });
+          for (const p of updated) {
+            store.dispatch({ kind: "append_phase_progress", progress: p });
+          }
+        },
+        onPhaseDone: (phaseId) => {
+          const phases = store.getState().phaseProgress;
+          const updated = phases.map((p) =>
+            p.phaseId === phaseId ? { ...p, status: "done" as const } : p,
+          );
+          store.dispatch({ kind: "clear_phase_progress" });
+          store.dispatch({ kind: "set_setup_running", running: true });
+          for (const p of updated) {
+            store.dispatch({ kind: "append_phase_progress", progress: p });
+          }
+        },
+        onPhaseFailed: (phaseId, error) => {
+          const phases = store.getState().phaseProgress;
+          const updated = phases.map((p) =>
+            p.phaseId === phaseId ? { ...p, status: "failed" as const, error } : p,
+          );
+          store.dispatch({ kind: "clear_phase_progress" });
+          for (const p of updated) {
+            store.dispatch({ kind: "append_phase_progress", progress: p });
+          }
+          store.dispatch({ kind: "set_setup_running", running: false });
+        },
+      };
+
+      onStartStack(wizardState, callbacks)
+        .then((result) => {
+          store.dispatch({ kind: "set_setup_running", running: false });
+          if (result.ok) {
+            transitionToBoardroom().catch(() => {});
+          } else {
+            // Surface the error as a failed phase in the progress view
+            store.dispatch({
+              kind: "append_phase_progress",
+              progress: {
+                phaseId: result.error.phase ?? "unknown",
+                label: result.error.phase ?? "Setup",
+                status: "failed",
+                error: result.error.message,
+              },
+            });
+          }
+        })
+        .catch((err: unknown) => {
+          // Unexpected error (scaffold failure, import failure, etc.)
+          store.dispatch({ kind: "set_setup_running", running: false });
+          const message = err instanceof Error ? err.message : String(err);
+          store.dispatch({
+            kind: "append_phase_progress",
+            progress: {
+              phaseId: "setup",
+              label: "Setup",
+              status: "failed",
+              error: message,
+            },
+          });
+        });
+      return;
+    }
+
     if (presetId !== null && onPresetSelected !== undefined) {
       onPresetSelected(presetId, agentName).catch(() => {});
     }

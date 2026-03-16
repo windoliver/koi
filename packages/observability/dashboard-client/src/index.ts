@@ -45,6 +45,9 @@ export { consumeSSEStream, SSEParser } from "./client/sse-stream.js";
 export type { DebouncedFn } from "./debounce.js";
 export { createDebounce } from "./debounce.js";
 
+// PTY decode utility
+export { decodePtyChunks } from "./pty-decode.js";
+
 // Session loading
 export { buildSessionPath, loadSavedSession } from "./session-loader.js";
 // Types

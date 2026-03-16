@@ -66,6 +66,7 @@ export type {
   ForgeDashboardEvent,
   GatewayDashboardEvent,
   HarnessDashboardEvent,
+  LogDashboardEvent,
   MonitorDashboardEvent,
   NexusDashboardEvent,
   PtyOutputDashboardEvent,
@@ -83,6 +84,7 @@ export {
   isForgeEvent,
   isGatewayEvent,
   isHarnessEvent,
+  isLogEvent,
   isMonitorEvent,
   isNexusEvent,
   isPtyOutputEvent,
@@ -93,7 +95,14 @@ export {
   isTemporalEvent,
 } from "./events.js";
 // REST types
-export type { ApiError, ApiResult } from "./rest-types.js";
+export type {
+  ApiError,
+  ApiResult,
+  DemoPackSummary,
+  DetailedStatusResponse,
+  PortStatus,
+  SubsystemStatus,
+} from "./rest-types.js";
 // Routes
 export type { AdminRoutes, HttpMethod, RouteDefinition } from "./routes.js";
 export { ADMIN_ROUTES, interpolatePath } from "./routes.js";

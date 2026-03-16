@@ -14,6 +14,8 @@ import type {
   DashboardSkillSummary,
   DashboardSystemMetrics,
   DataSourceSummary,
+  DemoPackSummary,
+  DetailedStatusResponse,
   ProcessTreeSnapshot,
 } from "@koi/dashboard-types";
 import { ADMIN_ROUTES, interpolatePath } from "@koi/dashboard-types";
@@ -89,6 +91,20 @@ export interface AdminClient {
   readonly eventsUrl: () => string;
   /** Build the AG-UI chat URL for a specific agent. */
   readonly agentChatUrl: (agentId: string) => string;
+  /** Initiate graceful shutdown. Requires X-Confirm header. */
+  readonly shutdown: () => Promise<ClientResult<null>>;
+  /** Get detailed subsystem status. */
+  readonly detailedStatus: () => Promise<ClientResult<DetailedStatusResponse>>;
+  /** Initialize a demo pack. */
+  readonly demoInit: (packId: string) => Promise<ClientResult<null>>;
+  /** Reset a demo pack. */
+  readonly demoReset: (packId: string) => Promise<ClientResult<null>>;
+  /** List available demo packs. */
+  readonly demoPacks: () => Promise<ClientResult<readonly DemoPackSummary[]>>;
+  /** Trigger deployment. Requires X-Confirm header. */
+  readonly deploy: () => Promise<ClientResult<null>>;
+  /** Undo deployment. Requires X-Confirm header. */
+  readonly undeploy: () => Promise<ClientResult<null>>;
 }
 
 /**
@@ -117,6 +133,7 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
     path: string,
     params?: Readonly<Record<string, string>>,
     body?: unknown,
+    extraHeaders?: Readonly<Record<string, string>>,
   ): Promise<ClientResult<T>> {
     const controller = new AbortController();
     const timer = setTimeout(() => {
@@ -126,7 +143,7 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
     try {
       const response = await fetch(url(path, params), {
         method,
-        headers: headers(),
+        headers: { ...headers(), ...extraHeaders },
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });
@@ -237,6 +254,30 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
     eventsUrl: () => url(ADMIN_ROUTES.events.path),
 
     agentChatUrl: (agentId) => url(ADMIN_ROUTES.agentChat.path, { id: agentId }),
+
+    shutdown: () =>
+      request<null>("POST", ADMIN_ROUTES.shutdown.path, undefined, undefined, {
+        "X-Confirm": "true",
+      }),
+
+    detailedStatus: () => request<DetailedStatusResponse>("GET", ADMIN_ROUTES.detailedStatus.path),
+
+    demoInit: (packId) => request<null>("POST", ADMIN_ROUTES.demoInit.path, undefined, { packId }),
+
+    demoReset: (packId) =>
+      request<null>("POST", ADMIN_ROUTES.demoReset.path, undefined, { packId }),
+
+    demoPacks: () => request<readonly DemoPackSummary[]>("GET", ADMIN_ROUTES.demoPacks.path),
+
+    deploy: () =>
+      request<null>("POST", ADMIN_ROUTES.deploy.path, undefined, undefined, {
+        "X-Confirm": "true",
+      }),
+
+    undeploy: () =>
+      request<null>("DELETE", ADMIN_ROUTES.deploy.path, undefined, undefined, {
+        "X-Confirm": "true",
+      }),
   };
 }
 

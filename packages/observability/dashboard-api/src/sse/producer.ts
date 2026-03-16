@@ -22,6 +22,7 @@ interface SseConnection {
   readonly signal: AbortSignal;
   // let justified: mutable counter tracking pending writes for slow-client detection
   pendingWrites: number;
+  readonly logLevel?: "debug" | "info" | "warn" | "error" | undefined;
 }
 
 export interface SseProducer {
@@ -39,6 +40,21 @@ export interface SseProducer {
 
 const KEEPALIVE_INTERVAL_MS = 15_000;
 const MAX_BUFFER_SIZE = 1_000;
+
+const LOG_LEVEL_HIERARCHY: Readonly<Record<string, number>> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+
+function isLogLevel(value: string | null): value is "debug" | "info" | "warn" | "error" {
+  return value !== null && value in LOG_LEVEL_HIERARCHY;
+}
+
+function shouldIncludeLog(eventLevel: string, filterLevel: string): boolean {
+  return (LOG_LEVEL_HIERARCHY[eventLevel] ?? 0) >= (LOG_LEVEL_HIERARCHY[filterLevel] ?? 0);
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -96,6 +112,60 @@ export function createSseProducer(
     connections = alive;
   };
 
+  /** Filter a batch for a connection with a log level filter — removes log events below threshold. */
+  const filterBatchForConnection = (
+    batch: DashboardEventBatch,
+    conn: SseConnection,
+  ): DashboardEventBatch => {
+    const filterLevel = conn.logLevel;
+    if (filterLevel === undefined) return batch;
+    const filtered = batch.events.filter((event) => {
+      if (event.kind !== "log") return true;
+      return shouldIncludeLog(event.level, filterLevel);
+    });
+    return { events: filtered, seq: batch.seq, timestamp: batch.timestamp };
+  };
+
+  // Write per-connection filtered batches (used when any connection has a log level filter).
+  const broadcastFiltered = (batch: DashboardEventBatch, batchSeq: number): void => {
+    const alive: SseConnection[] = [];
+    // Cache encoded unfiltered batch for connections without a log level filter
+    let unfilteredEncoded: Uint8Array | undefined;
+    for (const conn of connections) {
+      if (conn.signal.aborted) continue;
+      if (conn.pendingWrites > MAX_PENDING_WRITES) {
+        conn.writer.close().catch(() => {});
+        continue;
+      }
+      const connBatch = filterBatchForConnection(batch, conn);
+      // Skip sending empty batches after filtering
+      if (connBatch.events.length === 0) {
+        alive.push(conn);
+        continue;
+      }
+      let encoded: Uint8Array;
+      if (conn.logLevel === undefined) {
+        if (unfilteredEncoded === undefined) {
+          unfilteredEncoded = encodeSseMessageWithId(batch, String(batchSeq));
+        }
+        encoded = unfilteredEncoded;
+      } else {
+        encoded = encodeSseMessageWithId(connBatch, String(batchSeq));
+      }
+      conn.pendingWrites += 1;
+      conn.writer
+        .write(encoded)
+        .then(() => {
+          conn.pendingWrites -= 1;
+        })
+        .catch(() => {
+          // Client disconnected — swallow write error
+        });
+      alive.push(conn);
+    }
+    connections = alive;
+  };
+
   // Flush buffered events to all connected clients
   const flush = (): void => {
     if (buffer.length === 0) return;
@@ -113,7 +183,13 @@ export function createSseProducer(
     };
     buffer = [];
 
-    broadcastToAll(encodeSseMessageWithId(batch, String(seq)));
+    // When any connection has a log level filter, send per-connection filtered batches
+    const hasLogFilter = connections.some((c) => c.logLevel !== undefined);
+    if (!hasLogFilter) {
+      broadcastToAll(encodeSseMessageWithId(batch, String(seq)));
+    } else {
+      broadcastFiltered(batch, seq);
+    }
   };
 
   // Batch flush timer
@@ -158,13 +234,18 @@ export function createSseProducer(
     const writer = writable.getWriter();
     const signal = req.signal;
 
+    // Parse log level filter from query params
+    const reqUrl = new URL(req.url);
+    const logLevelParam = reqUrl.searchParams.get("logLevel");
+    const logLevel = isLogLevel(logLevelParam) ? logLevelParam : undefined;
+
     // Write an initial keepalive to unblock fetch() — without this,
     // clients block until the first batch flush or keepalive timer fires.
     writer.write(encodeSseKeepalive()).catch(() => {
       // Client disconnected before first write — swallow
     });
 
-    const conn: SseConnection = { writer, signal, pendingWrites: 0 };
+    const conn: SseConnection = { writer, signal, pendingWrites: 0, logLevel };
     connections = [...connections, conn];
 
     // Auto-cleanup on client disconnect

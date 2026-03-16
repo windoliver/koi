@@ -12,6 +12,7 @@ import type {
   ForgeDashboardEvent,
   MonitorDashboardEvent,
 } from "@koi/dashboard-types";
+import type { PhaseProgress } from "@koi/setup-core";
 
 // Re-export shared types from dashboard-client
 /** TUI-specific error alias for backward compat. */
@@ -39,13 +40,20 @@ export interface SessionState {
 export type TuiView =
   | "addons"
   | "agents"
+  | "channels"
   | "consent"
   | "console"
   | "datasources"
+  | "doctor"
+  | "engine"
   | "forge"
+  | "logs"
+  | "model"
   | "nameinput"
   | "palette"
   | "presetdetail"
+  | "progress"
+  | "service"
   | "sessions"
   | "sourcedetail"
   | "splitpanes"
@@ -86,6 +94,42 @@ export interface PresetInfo {
   readonly agentRoles?: readonly { readonly role: string; readonly description: string }[];
   readonly prompts?: readonly string[];
 }
+
+/** Log level for filtering. */
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+/** A structured log entry. */
+export interface LogEntry {
+  readonly level: LogLevel;
+  readonly source: string;
+  readonly message: string;
+  readonly timestamp: number;
+}
+
+/** Service subsystem status for the service view. */
+export interface ServiceStatusState {
+  readonly status: string;
+  readonly uptimeMs: number;
+  readonly subsystems: Readonly<
+    Record<string, { readonly status: string; readonly latencyMs?: number | undefined }>
+  >;
+  readonly ports: readonly {
+    readonly port: number;
+    readonly service: string;
+    readonly status: string;
+  }[];
+}
+
+/** A single doctor diagnostic check result. */
+export interface DoctorCheck {
+  readonly id: string;
+  readonly label: string;
+  readonly status: "pass" | "fail" | "warn" | "running";
+  readonly detail?: string | undefined;
+}
+
+/** Maximum log entries kept in buffer. */
+export const MAX_LOG_BUFFER = 500;
 
 /** Complete TUI application state. Immutable — new object on every update. */
 export interface TuiState {
@@ -138,6 +182,28 @@ export interface TuiState {
   readonly selectedAddons: ReadonlySet<string>;
   /** Focused add-on index in the picker. */
   readonly addonFocusedIndex: number;
+  /** Selected model during setup. */
+  readonly selectedModel: string;
+  /** Focused model index during model selection. */
+  readonly modelFocusedIndex: number;
+  /** Selected engine during setup. */
+  readonly selectedEngine: string | undefined;
+  /** Selected channels during setup. */
+  readonly selectedChannels: readonly string[];
+  /** Focused channel index during channel selection. */
+  readonly channelFocusedIndex: number;
+  /** Phase progress entries for the progress view. */
+  readonly phaseProgress: readonly PhaseProgress[];
+  /** Whether setup is currently running. */
+  readonly setupRunning: boolean;
+  /** Structured log buffer. */
+  readonly logBuffer: readonly LogEntry[];
+  /** Current log level filter. */
+  readonly logLevel: LogLevel;
+  /** Service subsystem status. */
+  readonly serviceStatus: ServiceStatusState | null;
+  /** Doctor diagnostic check results. */
+  readonly doctorChecks: readonly DoctorCheck[];
   /** Per-agent PTY output buffers (base64 chunks). */
   readonly ptyBuffers: Readonly<Record<string, readonly string[]>>;
   /** Per-agent sessions for split-pane mode. */
@@ -180,6 +246,17 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     agentNameInput: "",
     selectedAddons: new Set<string>(),
     addonFocusedIndex: 0,
+    selectedModel: "anthropic:claude-sonnet-4-5-20250929",
+    modelFocusedIndex: 0,
+    selectedEngine: undefined,
+    selectedChannels: ["cli"],
+    channelFocusedIndex: 0,
+    phaseProgress: [],
+    setupRunning: false,
+    logBuffer: [],
+    logLevel: "info",
+    serviceStatus: null,
+    doctorChecks: [],
     ptyBuffers: {},
     splitSessions: {},
     focusedPaneIndex: 0,
@@ -301,7 +378,23 @@ export type TuiAction =
   | {
       readonly kind: "set_focused_pane";
       readonly index: number;
-    };
+    }
+  | { readonly kind: "set_selected_model"; readonly model: string }
+  | { readonly kind: "set_model_focused_index"; readonly index: number }
+  | { readonly kind: "set_selected_engine"; readonly engine: string | undefined }
+  | { readonly kind: "set_selected_channels"; readonly channels: readonly string[] }
+  | { readonly kind: "set_channel_focused_index"; readonly index: number }
+  | { readonly kind: "toggle_channel"; readonly channel: string }
+  | { readonly kind: "append_phase_progress"; readonly progress: PhaseProgress }
+  | { readonly kind: "set_setup_running"; readonly running: boolean }
+  | { readonly kind: "clear_phase_progress" }
+  | { readonly kind: "append_log"; readonly entry: LogEntry }
+  | { readonly kind: "set_log_level"; readonly level: LogLevel }
+  | { readonly kind: "clear_logs" }
+  | { readonly kind: "set_service_status"; readonly status: ServiceStatusState | null }
+  | { readonly kind: "set_doctor_checks"; readonly checks: readonly DoctorCheck[] }
+  | { readonly kind: "append_doctor_check"; readonly check: DoctorCheck }
+  | { readonly kind: "clear_doctor_checks" };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;
