@@ -172,16 +172,88 @@ describe("ContextHubExecutor.search", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("EXTERNAL");
+    expect(result.error.message).toContain("Registry unavailable");
     expect(result.error.retryable).toBe(true);
   });
 
-  test("returns SCHEMA_MISMATCH for invalid registry JSON", async () => {
+  test("returns VALIDATION for invalid registry JSON schema", async () => {
     const executor = createExecutor({ registryBody: { invalid: true } });
     const result = await executor.search("stripe");
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.message).toContain("schema mismatch");
+  });
+
+  test("rebuilds search index when registry refreshes after TTL expiry", async () => {
+    const REGISTRY_V1 = {
+      ...FIXTURE_REGISTRY,
+      version: "1.0.0",
+    };
+    const REGISTRY_V2 = {
+      ...FIXTURE_REGISTRY,
+      version: "2.0.0",
+      docs: [
+        ...FIXTURE_REGISTRY.docs,
+        {
+          id: "twilio/sms",
+          name: "Twilio SMS API",
+          description: "Send SMS messages with Twilio",
+          source: "official",
+          tags: ["sms", "messaging"],
+          languages: [
+            {
+              language: "javascript",
+              versions: [
+                {
+                  version: "1.0.0",
+                  path: "twilio/sms/javascript/DOC.md",
+                  size: 2000,
+                  lastUpdated: "2026-02-01",
+                },
+              ],
+              recommendedVersion: "1.0.0",
+            },
+          ],
+        },
+      ],
+    };
+
+    let currentRegistry = REGISTRY_V1;
+    const fetchFn: FetchFn = async (input, _init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("registry.json")) {
+        return new Response(JSON.stringify(currentRegistry), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("doc content", { status: 200 });
+    };
+
+    const executor = createContextHubExecutor({
+      fetchFn,
+      baseUrl: "https://cdn.test.example/v1",
+      cacheTtlMs: 50, // 50ms TTL for fast test
+    });
+
+    // First search — twilio not in V1 registry
+    const r1 = await executor.search("twilio");
+    expect(r1.ok).toBe(true);
+    if (r1.ok) expect(r1.value).toEqual([]);
+
+    // Wait for registry TTL to expire, then switch to V2
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    currentRegistry = REGISTRY_V2;
+
+    // Second search — should rebuild index from V2 and find twilio
+    const r2 = await executor.search("twilio");
+    expect(r2.ok).toBe(true);
+    if (r2.ok) {
+      expect(r2.value.length).toBeGreaterThan(0);
+      expect(r2.value[0]?.id).toBe("twilio/sms");
+    }
   });
 
   test("returns TIMEOUT when fetch aborts", async () => {
@@ -242,11 +314,12 @@ describe("ContextHubExecutor.get", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("NOT_FOUND");
+    expect(result.error.message).toContain("Multiple languages");
     expect(result.error.message).toContain("javascript");
     expect(result.error.message).toContain("python");
   });
 
-  test("returns LANG_NOT_FOUND for nonexistent language", async () => {
+  test("returns NOT_FOUND for nonexistent language", async () => {
     const executor = createExecutor();
     const result = await executor.get("stripe/payments", "ruby");
 
@@ -257,7 +330,7 @@ describe("ContextHubExecutor.get", () => {
     expect(result.error.message).toContain("Available");
   });
 
-  test("returns DOC_NOT_FOUND for nonexistent doc id", async () => {
+  test("returns NOT_FOUND for nonexistent doc id", async () => {
     const executor = createExecutor();
     const result = await executor.get("nonexistent/doc");
 
@@ -266,7 +339,7 @@ describe("ContextHubExecutor.get", () => {
     expect(result.error.code).toBe("NOT_FOUND");
   });
 
-  test("returns DOC_NOT_FOUND when CDN returns 404", async () => {
+  test("returns NOT_FOUND when CDN returns 404", async () => {
     const executor = createExecutor({ docStatus: 404 });
     const result = await executor.get("openai/chat");
 
@@ -315,5 +388,6 @@ describe("ContextHubExecutor.get", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("EXTERNAL");
+    expect(result.error.message).toContain("Registry unavailable");
   });
 });

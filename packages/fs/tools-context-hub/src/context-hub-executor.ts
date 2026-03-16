@@ -351,9 +351,12 @@ export function createContextHubExecutor(
 
   const docCache = createCache<string>(maxCacheEntries, cacheTtlMs);
 
-  // Registry + search index: loaded lazily, cached in closure
+  // Registry + search index: loaded lazily, cached in closure.
+  // registryVersion tracks the registry that searchIndexCache was built from;
+  // when the registry refreshes (TTL expiry) the index is rebuilt.
   let registryCache: { readonly registry: Registry; readonly expiresAt: number } | undefined;
   let searchIndexCache: SearchIndex | undefined;
+  let searchIndexRegistryVersion: string | undefined;
 
   // -------------------------------------------------------------------------
   // Internal: fetch with timeout
@@ -400,7 +403,7 @@ export function createContextHubExecutor(
         ok: false,
         error: {
           code: "EXTERNAL",
-          message: `Registry returned HTTP ${response.status}`,
+          message: `Registry unavailable: HTTP ${response.status}`,
           retryable: response.status >= 500,
         },
       };
@@ -413,8 +416,8 @@ export function createContextHubExecutor(
       return {
         ok: false,
         error: {
-          code: "VALIDATION",
-          message: "Registry response is not valid JSON",
+          code: "EXTERNAL",
+          message: "Registry unavailable: response is not valid JSON",
           retryable: false,
         },
       };
@@ -456,9 +459,11 @@ export function createContextHubExecutor(
 
     const registry = registryResult.value;
 
-    // Lazy build search index
-    if (searchIndexCache === undefined) {
+    // Rebuild search index when registry changes (TTL refresh) or on first load
+    const registryFingerprint = `${registry.version}:${String(registry.docs.length)}`;
+    if (searchIndexCache === undefined || searchIndexRegistryVersion !== registryFingerprint) {
       searchIndexCache = buildIndex(registry);
+      searchIndexRegistryVersion = registryFingerprint;
     }
 
     const limit = maxResults ?? DEFAULT_MAX_SEARCH_RESULTS;
@@ -548,11 +553,10 @@ export function createContextHubExecutor(
 
     const response = fetchResult.value;
     if (!response.ok) {
-      const code = response.status === 404 ? "NOT_FOUND" : "EXTERNAL";
       return {
         ok: false,
         error: {
-          code,
+          code: response.status === 404 ? "NOT_FOUND" : "EXTERNAL",
           message: `Doc fetch returned HTTP ${response.status} for "${id}"`,
           retryable: response.status >= 500,
         },
