@@ -30,8 +30,7 @@
     "reactflow": "11.11.4",
     "@tanstack/react-virtual": "3.13.21",
     "react-markdown": "10.1.0",
-    "zustand": "5.0.5",
-    "ghostty-web": "0.4.0"
+    "zustand": "5.0.5"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "6.6.3",

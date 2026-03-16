@@ -68,7 +68,7 @@ export {
 } from "./lib/first-run.js";
 // Lib — terminal emulation
 export type { TerminalConfig, TerminalInstance } from "./lib/ghostty-wasm.js";
-export { createTerminal, isWasmAvailable } from "./lib/ghostty-wasm.js";
+export { createTerminal } from "./lib/ghostty-wasm.js";
 // State
 export type { StateListener, TuiStore } from "./state/store.js";
 export { createStore, reduce } from "./state/store.js";

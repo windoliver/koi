@@ -14,7 +14,6 @@ import {
   isHarnessEvent,
   isMonitorEvent,
   isNexusEvent,
-  isPtyOutputEvent,
   isSchedulerEvent,
   isTaskBoardEvent,
   isTemporalEvent,
@@ -24,7 +23,6 @@ import { useAgentsStore } from "../stores/agents-store.js";
 import { useChatStore } from "../stores/chat-store.js";
 import { useForgeStore } from "../stores/forge-store.js";
 import { useOrchestrationStore } from "../stores/orchestration-store.js";
-import { useTerminalStore } from "../stores/terminal-store.js";
 import { useTreeStore } from "../stores/tree-store.js";
 
 /** Dispatch an agent domain event to the agents store (and chat store for lifecycle). */
@@ -151,12 +149,6 @@ function dispatchMonitorEvent(event: DashboardEvent): void {
   useForgeStore.getState().applyMonitorEvent(event);
 }
 
-/** Dispatch a pty_output event to the terminal store for rendering. */
-function dispatchPtyOutputEvent(event: DashboardEvent): void {
-  if (!isPtyOutputEvent(event)) return;
-  useTerminalStore.getState().appendPtyData(event.agentId, event.data);
-}
-
 // ---------------------------------------------------------------------------
 // Dispatch table (Decision 7A)
 // ---------------------------------------------------------------------------
@@ -171,7 +163,6 @@ const DISPATCHERS: Partial<Record<DashboardEvent["kind"], (e: DashboardEvent) =>
   harness: dispatchHarnessEvent,
   forge: dispatchForgeEvent,
   monitor: dispatchMonitorEvent,
-  pty_output: dispatchPtyOutputEvent,
 };
 
 /**
