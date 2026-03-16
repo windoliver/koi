@@ -72,7 +72,10 @@ async function loadWasm(): Promise<boolean> {
     const wasmPath = new URL("./ghostty_vt.wasm", import.meta.url);
     const wasmBytes = await Bun.file(wasmPath.pathname).arrayBuffer();
     const module = await WebAssembly.compile(wasmBytes);
-    wasmInstance = await WebAssembly.instantiate(module, {});
+    // The WASM module requires an env.log import for debug logging
+    wasmInstance = await WebAssembly.instantiate(module, {
+      env: { log: () => {} },
+    });
     return true;
   } catch {
     return false;
@@ -90,27 +93,25 @@ function createWasmTerminal(exports: GhosttyExports, config: TerminalConfig): Te
   const cols = config.cols ?? DEFAULT_COLS;
   const rows = config.rows ?? DEFAULT_ROWS;
   const maxScrollback = config.maxScrollback ?? DEFAULT_MAX_SCROLLBACK;
-  const view = new DataView(exports.memory.buffer);
+  // Always create fresh DataView — WASM memory can grow and detach old views
+  const dv = (): DataView => new DataView(exports.memory.buffer);
   let destroyed = false;
 
   // Allocate terminal
   const termOutPtr = exports.ghostty_wasm_alloc_opaque();
-  // Write options struct: cols(u16) + rows(u16) + padding(4) + max_scrollback(usize=4 in wasm32)
   const optsPtr = exports.ghostty_wasm_alloc_u8_array(16);
-  const optsView = new DataView(exports.memory.buffer);
-  optsView.setUint16(optsPtr, cols, true);
-  optsView.setUint16(optsPtr + 2, rows, true);
-  optsView.setUint32(optsPtr + 8, maxScrollback, true);
+  dv().setUint16(optsPtr, cols, true);
+  dv().setUint16(optsPtr + 2, rows, true);
+  dv().setUint32(optsPtr + 8, maxScrollback, true);
 
   const result = exports.ghostty_terminal_new(0, termOutPtr, optsPtr);
   exports.ghostty_wasm_free_u8_array(optsPtr, 16);
 
   if (result !== 0) {
     exports.ghostty_wasm_free_opaque(termOutPtr);
-    // Fall through to plain text
     throw new Error("ghostty_terminal_new failed");
   }
-  const terminal = view.getUint32(termOutPtr, true);
+  const terminal = dv().getUint32(termOutPtr, true);
   exports.ghostty_wasm_free_opaque(termOutPtr);
 
   const write = (data: Uint8Array): void => {
