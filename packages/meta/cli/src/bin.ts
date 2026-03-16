@@ -160,11 +160,11 @@ if (matched !== undefined) {
       directory: flags.directory,
       url: undefined,
       authToken: undefined,
-      refresh: undefined,
+      refresh: 5,
       agent: undefined,
       session: undefined,
       mode: "welcome",
-    } as unknown as Parameters<typeof runTui>[0]);
+    });
   }
 } else {
   process.stderr.write(`Unknown command: ${flags.command}\n`);

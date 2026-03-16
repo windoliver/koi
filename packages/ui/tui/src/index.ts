@@ -57,6 +57,15 @@ export { AgentSplitPane } from "./components/agent-split-pane.js";
 // Components
 export type { PanelChromeProps } from "./components/panel-chrome.js";
 export { PanelChrome } from "./components/panel-chrome.js";
+// Lib — first-run tooltips
+export type { TooltipId, TuiPersistentState } from "./lib/first-run.js";
+export {
+  dismissTooltip,
+  loadTuiState,
+  recordSessionStart,
+  saveTuiState,
+  shouldShowTooltip,
+} from "./lib/first-run.js";
 // Lib — terminal emulation
 export type { TerminalConfig, TerminalInstance } from "./lib/ghostty-wasm.js";
 export { createTerminal, isWasmAvailable } from "./lib/ghostty-wasm.js";
@@ -82,6 +91,9 @@ export {
   COLORS,
   connectionStatusConfig,
 } from "./theme.js";
+// Views — add-on picker
+export type { AddonOption, AddonPickerViewProps } from "./views/addon-picker-view.js";
+export { AddonPickerView, AVAILABLE_ADDONS } from "./views/addon-picker-view.js";
 // Views — OpenTUI components
 export type { AgentListViewProps } from "./views/agent-list-view.js";
 export { AgentListView } from "./views/agent-list-view.js";

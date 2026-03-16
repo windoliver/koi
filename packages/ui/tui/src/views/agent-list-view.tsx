@@ -8,6 +8,7 @@
 import type { DashboardAgentSummary } from "@koi/dashboard-types";
 import type { SelectOption } from "@opentui/core";
 import { useMemo } from "react";
+import { PanelChrome } from "../components/panel-chrome.js";
 import { COLORS } from "../theme.js";
 
 /** Props for the agent list view. */
@@ -38,33 +39,29 @@ export function AgentListView(props: AgentListViewProps): React.ReactNode {
   const options = useMemo(() => agentsToOptions(props.agents), [props.agents]);
 
   return (
-    <box flexGrow={1} flexDirection="column">
-      <box height={1} flexDirection="row">
-        <text fg={COLORS.cyan}><b>{" Agents"}</b></text>
-        <text fg={COLORS.dim}>{` (${String(props.agents.length)})`}</text>
-      </box>
-
-      {props.agents.length > 0 ? (
-        <select
-          options={options as SelectOption[]}
-          focused={props.focused}
-          showDescription={true}
-          wrapSelection={true}
-          flexGrow={1}
-          selectedBackgroundColor={COLORS.blue}
-          selectedTextColor={COLORS.white}
-          descriptionColor={COLORS.dim}
-          onSelect={(index: number, option: SelectOption | null) => {
-            if (option?.value !== undefined) {
-              props.onSelect(option.value as string);
-            }
-          }}
-        />
-      ) : (
-        <box flexGrow={1} justifyContent="center" alignItems="center">
-          <text fg={COLORS.dim}>{"No agents found. Press Ctrl+R to refresh."}</text>
-        </box>
-      )}
-    </box>
+    <PanelChrome
+      title="Agents"
+      count={props.agents.length}
+      focused={props.focused}
+      isEmpty={props.agents.length === 0}
+      emptyMessage="No agents running."
+      emptyHint="Press Ctrl+P → /dispatch to spawn one, or run koi up --preset demo."
+    >
+      <select
+        options={options as SelectOption[]}
+        focused={props.focused}
+        showDescription={true}
+        wrapSelection={true}
+        flexGrow={1}
+        selectedBackgroundColor={COLORS.blue}
+        selectedTextColor={COLORS.white}
+        descriptionColor={COLORS.dim}
+        onSelect={(index: number, option: SelectOption | null) => {
+          if (option?.value !== undefined) {
+            props.onSelect(option.value as string);
+          }
+        }}
+      />
+    </PanelChrome>
   );
 }

@@ -24,7 +24,7 @@ import type {
   DashboardEventBatch,
   DataSourceDashboardEvent,
 } from "@koi/dashboard-types";
-import { isAgentEvent, isDataSourceEvent } from "@koi/dashboard-types";
+import { isAgentEvent, isDataSourceEvent, isPtyOutputEvent } from "@koi/dashboard-types";
 import { type CliRenderer, createCliRenderer, SyntaxStyle } from "@opentui/core";
 import { createRoot, type Root } from "@opentui/react";
 import { createElement } from "react";
@@ -66,6 +66,8 @@ export interface TuiAppConfig {
   readonly onPresetSelected?: ((presetId: string, agentName: string) => Promise<void>) | undefined;
   /** Scrollback lines for split-pane terminals (default: 500). */
   readonly splitPaneScrollback?: number | undefined;
+  /** Presets to display in welcome mode. Passed in to avoid L2-to-L2 import. */
+  readonly presets?: readonly import("../state/types.js").PresetInfo[] | undefined;
 }
 
 /** Handle returned from createTuiApp for lifecycle management. */
@@ -96,6 +98,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     initialAgentId,
     initialSessionId,
     onPresetSelected,
+    presets: configPresets,
   } = config;
 
   // ─── State ──────────────────────────────────────────────────────────
@@ -319,6 +322,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   function forwardAgentEventsToConsole(batch: DashboardEventBatch): void {
     const session = store.getState().activeSession;
     for (const evt of batch.events) {
+      if (isPtyOutputEvent(evt)) {
+        store.dispatch({ kind: "append_pty_data", agentId: evt.agentId, data: evt.data });
+        continue;
+      }
       if (isDataSourceEvent(evt)) {
         const desc = formatDataSourceEvent(evt);
         if (desc !== null) {
@@ -614,6 +621,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     reactRoot = createRoot(tuiRenderer);
 
     if (mode === "welcome") {
+      if (configPresets !== undefined && configPresets.length > 0) {
+        store.dispatch({ kind: "set_presets", presets: configPresets });
+      }
       renderTui();
       return;
     }

@@ -11,6 +11,7 @@ import type {
   DashboardVerificationStage,
   DataSourceFitnessSummary,
 } from "@koi/dashboard-types";
+import { PanelChrome } from "../components/panel-chrome.js";
 import { COLORS } from "../theme.js";
 
 export interface SourceDetailData {
@@ -52,36 +53,18 @@ function renderFitnessBar(rate: number): string {
   return "\u2588".repeat(filled) + "\u2591".repeat(empty) + ` ${String(Math.round(rate * 100))}%`;
 }
 
-export function SourceDetailView(props: SourceDetailViewProps): React.ReactNode {
-  const { data, loading } = props;
-
-  if (loading) {
-    return (
-      <box flexGrow={1} justifyContent="center" alignItems="center">
-        <text fg={COLORS.dim}>{"Loading source detail..."}</text>
-      </box>
-    );
-  }
-
-  if (data === null) {
-    return (
-      <box flexGrow={1} justifyContent="center" alignItems="center">
-        <text fg={COLORS.dim}>{"No source selected."}</text>
-      </box>
-    );
-  }
-
+/** Inner detail content — rendered only when data is non-null. */
+function SourceDetailContent(props: {
+  readonly data: SourceDetailData;
+  readonly onApprove?: ((name: string) => void) | undefined;
+  readonly onViewSchema?: ((name: string) => void) | undefined;
+}): React.ReactNode {
+  const { data } = props;
   const statusColor =
     data.status === "approved" ? COLORS.green : data.status === "pending" ? COLORS.yellow : COLORS.red;
 
   return (
-    <box flexGrow={1} flexDirection="column" paddingLeft={1}>
-      <box height={1}>
-        <text fg={COLORS.cyan}>
-          <b>{` Source: ${data.name}`}</b>
-        </text>
-      </box>
-
+    <box flexDirection="column" paddingLeft={1}>
       <box flexDirection="column" marginTop={1}>
         <text>{`Protocol:     ${data.protocol}`}</text>
         <text>
@@ -186,5 +169,29 @@ export function SourceDetailView(props: SourceDetailViewProps): React.ReactNode 
         <text fg={COLORS.dim}>{"[Esc] Back"}</text>
       </box>
     </box>
+  );
+}
+
+export function SourceDetailView(props: SourceDetailViewProps): React.ReactNode {
+  const { data, loading } = props;
+
+  return (
+    <PanelChrome
+      title={data !== null ? `Source: ${data.name}` : "Source Detail"}
+      focused={props.focused}
+      loading={loading}
+      loadingMessage="Loading source detail..."
+      isEmpty={data === null}
+      emptyMessage="No source selected."
+      emptyHint="Select a data source to view its schema and fitness metrics."
+    >
+      {data !== null ? (
+        <SourceDetailContent
+          data={data}
+          onApprove={props.onApprove}
+          onViewSchema={props.onViewSchema}
+        />
+      ) : null}
+    </PanelChrome>
   );
 }

@@ -127,6 +127,8 @@ export interface TuiState {
   readonly selectedPresetIndex: number;
   /** Active preset detail being viewed. */
   readonly activePresetDetail: PresetInfo | null;
+  /** Per-agent PTY output buffers (base64 chunks). */
+  readonly ptyBuffers: Readonly<Record<string, readonly string[]>>;
 }
 
 /** App mode: welcome (no admin API) or boardroom (connected). */
@@ -159,6 +161,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     presets: [],
     selectedPresetIndex: 0,
     activePresetDetail: null,
+    ptyBuffers: {},
   };
 }
 
@@ -245,7 +248,13 @@ export type TuiAction =
   | {
       readonly kind: "set_active_preset_detail";
       readonly detail: PresetInfo | null;
-    };
+    }
+  | {
+      readonly kind: "append_pty_data";
+      readonly agentId: string;
+      readonly data: string;
+    }
+  | { readonly kind: "clear_pty_buffer"; readonly agentId: string };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;

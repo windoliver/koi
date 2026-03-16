@@ -358,6 +358,20 @@ export type MonitorDashboardEvent = {
 };
 
 // ---------------------------------------------------------------------------
+// PTY output events (raw terminal bytes from agent subprocesses)
+// ---------------------------------------------------------------------------
+
+/** PTY output event — raw terminal bytes from an agent subprocess. */
+export interface PtyOutputDashboardEvent {
+  readonly kind: "pty_output";
+  readonly subKind: "pty_data";
+  readonly agentId: string;
+  /** Base64-encoded PTY bytes (batched at ~50-100ms intervals by dashboard-api). */
+  readonly data: string;
+  readonly timestamp: number;
+}
+
+// ---------------------------------------------------------------------------
 // Union + batch envelope
 // ---------------------------------------------------------------------------
 
@@ -374,7 +388,8 @@ export type DashboardEvent =
   | HarnessDashboardEvent
   | DataSourceDashboardEvent
   | ForgeDashboardEvent
-  | MonitorDashboardEvent;
+  | MonitorDashboardEvent
+  | PtyOutputDashboardEvent;
 
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 export interface DashboardEventBatch {
@@ -401,6 +416,7 @@ const VALID_KINDS_ARRAY = [
   "datasource",
   "forge",
   "monitor",
+  "pty_output",
 ] as const;
 
 const VALID_KINDS = new Set<string>(VALID_KINDS_ARRAY);
@@ -451,3 +467,5 @@ export const isForgeEvent: (event: DashboardEvent) => event is ForgeDashboardEve
   createKindGuard("forge");
 export const isMonitorEvent: (event: DashboardEvent) => event is MonitorDashboardEvent =
   createKindGuard("monitor");
+export const isPtyOutputEvent: (event: DashboardEvent) => event is PtyOutputDashboardEvent =
+  createKindGuard("pty_output");

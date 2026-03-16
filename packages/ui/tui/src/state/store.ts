@@ -14,6 +14,7 @@ import { MAX_SESSION_MESSAGES, type TuiAction, type TuiState, type ZoomLevel } f
 const MAX_FORGE_EVENTS = 200;
 const MAX_MONITOR_EVENTS = 50;
 const MAX_FORGE_SPARKLINE_POINTS = 50;
+const MAX_PTY_CHUNKS = 1000;
 
 /** Listener callback for state changes. */
 export type StateListener = (state: TuiState) => void;
@@ -280,6 +281,20 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
 
     case "set_active_preset_detail":
       return { ...state, activePresetDetail: action.detail };
+
+    case "append_pty_data": {
+      const prev = state.ptyBuffers[action.agentId] ?? [];
+      const updated = [...prev, action.data].slice(-MAX_PTY_CHUNKS);
+      return {
+        ...state,
+        ptyBuffers: { ...state.ptyBuffers, [action.agentId]: updated },
+      };
+    }
+
+    case "clear_pty_buffer": {
+      const { [action.agentId]: _, ...rest } = state.ptyBuffers;
+      return { ...state, ptyBuffers: rest };
+    }
   }
 }
 

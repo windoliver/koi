@@ -203,6 +203,24 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const loadResult = await timer.time("manifest", () => loadManifest(manifestPath));
   if (!loadResult.ok) {
     output.spinner.stop();
+
+    // Missing manifest + interactive TTY: fall back to welcome mode TUI
+    if (loadResult.error.code === "NOT_FOUND" && process.stdin.isTTY === true) {
+      output.info("No koi.yaml found — launching welcome screen");
+      const { runTui } = await import("../tui.js");
+      await runTui({
+        command: "tui",
+        directory: flags.directory,
+        url: undefined,
+        authToken: undefined,
+        refresh: 5,
+        agent: undefined,
+        session: undefined,
+        mode: "welcome",
+      });
+      return;
+    }
+
     output.error(
       `Failed to load manifest: ${loadResult.error.message}`,
       "run `koi doctor --repair` to auto-fix common issues",
