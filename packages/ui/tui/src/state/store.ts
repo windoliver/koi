@@ -630,6 +630,12 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_system_metrics":
       return { ...state, systemView: { ...state.systemView, metrics: action.metrics } };
 
+    case "toggle_agent_list_mode":
+      return { ...state, agentListMode: state.agentListMode === "flat" ? "tree" : "flat" };
+
+    case "set_mailbox_target":
+      return { ...state, mailboxTargetAgentId: action.agentId };
+
     case "select_forge_brick": {
       const brickCount = Object.keys(state.forgeBricks).length;
       return {

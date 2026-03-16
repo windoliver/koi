@@ -254,16 +254,19 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
       break;
     }
     case "mailbox": {
-      const sess5 = store.getState().activeSession;
-      if (sess5 !== null) {
+      const targetId =
+        store.getState().mailboxTargetAgentId ?? store.getState().activeSession?.agentId;
+      if (targetId !== undefined && targetId !== null) {
         store.dispatch({ kind: "set_mailbox_loading", loading: true });
         client
-          .listMailbox(sess5.agentId)
+          .listMailbox(targetId)
           .then((r) => {
             if (r.ok) store.dispatch({ kind: "set_mailbox_messages", messages: r.value });
           })
           .catch(() => {});
       }
+      // Clear the override after use
+      store.dispatch({ kind: "set_mailbox_target", agentId: null });
       break;
     }
     case "scratchpad":

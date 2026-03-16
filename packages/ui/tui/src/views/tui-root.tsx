@@ -276,7 +276,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
 
         {/* Boardroom views */}
         {(view === "agents" || (isPalette && backgroundView === "agents")) && (
-          <AgentListView agents={agents} onSelect={props.onAgentSelect} focused={view === "agents"} zoomLevel={state.zoomLevel} />
+          <AgentListView agents={agents} onSelect={props.onAgentSelect} focused={view === "agents"} zoomLevel={state.zoomLevel} listMode={state.agentListMode} />
         )}
 
         {(view === "console" || (isPalette && backgroundView === "console")) && (

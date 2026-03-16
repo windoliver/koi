@@ -65,7 +65,14 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "mailbox", label: "/mailbox", description: "Show agent message inbox" },
   { id: "scratchpad", label: "/scratchpad", description: "Browse shared scratchpad entries" },
   { id: "files", label: "/files", description: "Browse Nexus file system", shortcut: "Ctrl+F" },
-  { id: "tree", label: "/tree", description: "Toggle agent list tree view" },
+  { id: "tree", label: "/tree", description: "Toggle flat list ↔ hierarchy tree view" },
+  { id: "approve", label: "/approve", description: "Approve selected governance item", requiredCapability: "governance" },
+  { id: "deny", label: "/deny", description: "Deny selected governance item", requiredCapability: "governance" },
+  { id: "workflow-signal", label: "/workflow signal", description: "Signal selected Temporal workflow", requiredCapability: "temporal" },
+  { id: "workflow-terminate", label: "/workflow terminate", description: "Terminate selected Temporal workflow", requiredCapability: "temporal" },
+  { id: "schedule-pause", label: "/schedule pause", description: "Pause a cron schedule", requiredCapability: "scheduler" },
+  { id: "schedule-resume", label: "/schedule resume", description: "Resume a paused schedule", requiredCapability: "scheduler" },
+  { id: "dlq-retry", label: "/dlq retry", description: "Retry first dead letter entry", requiredCapability: "scheduler" },
   { id: "quit", label: "/quit", description: "Exit TUI", shortcut: "q" },
 ] as const;
 

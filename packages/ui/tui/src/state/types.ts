@@ -168,11 +168,16 @@ export interface PresetInfo {
   readonly prompts?: readonly string[];
 }
 
+/** Agent list display mode — flat list or hierarchy tree. */
+export type AgentListMode = "flat" | "tree";
+
 /** Complete TUI application state. Immutable — new object on every update. */
 export interface TuiState {
   readonly view: TuiView;
   readonly agents: readonly DashboardAgentSummary[];
   readonly selectedAgentIndex: number;
+  /** Agent list display mode — toggled by /tree. */
+  readonly agentListMode: AgentListMode;
   readonly activeSession: SessionState | null;
   readonly connectionStatus: ConnectionStatus;
   readonly error: import("@koi/dashboard-client").DashboardClientError | null;
@@ -246,6 +251,8 @@ export interface TuiState {
   readonly handoffView: HandoffViewState;
   readonly scratchpadView: ScratchpadViewState;
   readonly mailboxView: MailboxViewState;
+  /** Override agent ID for mailbox — set by /mailbox <agentId>. */
+  readonly mailboxTargetAgentId: string | null;
   readonly nexusBrowser: NexusBrowserState;
   /** Server capabilities — which subsystems are available. */
   readonly capabilities: TuiCapabilities | null;
@@ -260,6 +267,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     view: mode === "welcome" ? "welcome" : "agents",
     agents: [],
     selectedAgentIndex: 0,
+    agentListMode: "flat" as AgentListMode,
     activeSession: null,
     connectionStatus: "disconnected",
     error: null,
@@ -307,6 +315,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     handoffView: createInitialHandoffView(),
     scratchpadView: createInitialScratchpadView(),
     mailboxView: createInitialMailboxView(),
+    mailboxTargetAgentId: null,
     nexusBrowser: createInitialNexusBrowser(),
     capabilities: null,
   };
@@ -499,6 +508,8 @@ export type TuiAction =
   | { readonly kind: "set_system_metrics"; readonly metrics: DashboardSystemMetrics }
   | { readonly kind: "scroll_domain_view"; readonly domain: string; readonly offset: number }
   | { readonly kind: "select_forge_brick"; readonly index: number }
+  | { readonly kind: "toggle_agent_list_mode" }
+  | { readonly kind: "set_mailbox_target"; readonly agentId: string | null }
   // ─── Delegation actions ──────────────────────────────────────────
   | {
       readonly kind: "set_delegations";
