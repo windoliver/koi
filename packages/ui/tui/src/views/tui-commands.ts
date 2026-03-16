@@ -24,6 +24,7 @@ export interface CommandDeps {
   readonly cancelActiveStream: () => void;
   readonly stop: () => Promise<void>;
   readonly addLifecycleMessage: (event: string) => void;
+  readonly onServiceCommand?: ((command: string) => Promise<void>) | undefined;
 }
 
 /** Dispatch a command by ID — returns true if recognized. */
@@ -259,6 +260,83 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
 
     case "quit":
       deps.stop().catch(() => {});
+      return true;
+
+    case "stop":
+      deps.client
+        .shutdown()
+        .then((r) => {
+          deps.addLifecycleMessage(
+            r.ok ? "Shutdown initiated" : `Shutdown failed: ${r.error.kind}`,
+          );
+        })
+        .catch(() => {});
+      return true;
+
+    case "status":
+      deps.client
+        .detailedStatus()
+        .then((r) => {
+          if (r.ok) {
+            deps.store.dispatch({ kind: "set_service_status", status: r.value });
+            deps.store.dispatch({ kind: "set_view", view: "service" });
+          } else {
+            deps.addLifecycleMessage(`Status failed: ${r.error.kind}`);
+          }
+        })
+        .catch(() => {});
+      return true;
+
+    case "doctor":
+      deps.store.dispatch({ kind: "clear_doctor_checks" });
+      deps.store.dispatch({ kind: "set_view", view: "doctor" });
+      deps.onServiceCommand?.("doctor").catch(() => {});
+      return true;
+
+    case "demo-init":
+      deps.onServiceCommand?.("demo-init").catch(() => {});
+      return true;
+
+    case "demo-reset":
+      deps.onServiceCommand?.("demo-reset").catch(() => {});
+      return true;
+
+    case "deploy":
+      deps.client
+        .deploy()
+        .then((r) => {
+          deps.addLifecycleMessage(r.ok ? "Deploy initiated" : `Deploy failed: ${r.error.kind}`);
+        })
+        .catch(() => {});
+      return true;
+
+    case "undeploy":
+      deps.client
+        .undeploy()
+        .then((r) => {
+          deps.addLifecycleMessage(
+            r.ok ? "Undeploy initiated" : `Undeploy failed: ${r.error.kind}`,
+          );
+        })
+        .catch(() => {});
+      return true;
+
+    case "demo-list":
+      deps.client
+        .demoPacks()
+        .then((r) => {
+          if (r.ok) {
+            const lines = r.value.map((p) => `  ${p.id}: ${p.description}`);
+            deps.addLifecycleMessage(
+              lines.length > 0
+                ? `Available demo packs:\n${lines.join("\n")}`
+                : "No demo packs available",
+            );
+          } else {
+            deps.addLifecycleMessage(`Failed to list demo packs: ${r.error.kind}`);
+          }
+        })
+        .catch(() => {});
       return true;
 
     default:

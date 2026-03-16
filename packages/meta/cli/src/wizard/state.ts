@@ -1,23 +1,23 @@
 /**
  * Wizard state — immutable data flowing through the step pipeline.
  * Each step returns a new WizardState with updated fields.
+ *
+ * Shared constants imported from @koi/setup-core; CLI-specific types defined here.
  */
+
+import { KNOWN_CHANNELS, KNOWN_MODELS, KNOWN_PRESETS } from "@koi/setup-core";
 
 export const TEMPLATES = ["minimal", "copilot"] as const;
 export type TemplateName = (typeof TEMPLATES)[number];
 
-export const MODELS = [
-  "anthropic:claude-sonnet-4-5-20250929",
-  "openai:gpt-4o",
-  "openrouter:anthropic/claude-sonnet-4.6",
-] as const;
+export const MODELS: typeof KNOWN_MODELS = KNOWN_MODELS;
 
 export type EngineName = string;
 
-export const CHANNELS = ["cli", "telegram", "slack", "discord"] as const;
+export const CHANNELS: typeof KNOWN_CHANNELS = KNOWN_CHANNELS;
 export type ChannelName = (typeof CHANNELS)[number];
 
-export const PRESETS = ["local", "demo", "mesh"] as const;
+export const PRESETS: typeof KNOWN_PRESETS = KNOWN_PRESETS;
 export type PresetName = (typeof PRESETS)[number];
 
 export interface WizardState {

@@ -983,6 +983,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/setup-core": {
+      "name": "@koi/setup-core",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/shutdown": {
       "name": "@koi/shutdown",
       "version": "0.0.0",
@@ -1203,6 +1210,7 @@
         "@koi/runtime-presets": "workspace:*",
         "@koi/sandbox": "workspace:*",
         "@koi/sandbox-ipc": "workspace:*",
+        "@koi/setup-core": "workspace:*",
         "@koi/shutdown": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/soul": "workspace:*",
@@ -2948,6 +2956,7 @@
         "@koi/core": "workspace:*",
         "@koi/dashboard-client": "workspace:*",
         "@koi/dashboard-types": "workspace:*",
+        "@koi/setup-core": "workspace:*",
         "@opentui/core": "0.1.87",
         "@opentui/react": "0.1.87",
         "react": "19.1.0",
@@ -4110,6 +4119,8 @@
     "@koi/session-state": ["@koi/session-state@workspace:packages/lib/session-state"],
 
     "@koi/session-store": ["@koi/session-store@workspace:packages/mm/session-store"],
+
+    "@koi/setup-core": ["@koi/setup-core@workspace:packages/lib/setup-core"],
 
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 

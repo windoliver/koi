@@ -9,7 +9,12 @@ import type {
   DashboardEventBatch,
   DataSourceDashboardEvent,
 } from "@koi/dashboard-types";
-import { isAgentEvent, isDataSourceEvent, isPtyOutputEvent } from "@koi/dashboard-types";
+import {
+  isAgentEvent,
+  isDataSourceEvent,
+  isLogEvent,
+  isPtyOutputEvent,
+} from "@koi/dashboard-types";
 import type { TuiStore } from "../state/store.js";
 import type { TuiState, TuiView } from "../state/types.js";
 
@@ -679,6 +684,18 @@ export function forwardAgentEventsToConsole(
   for (const evt of batch.events) {
     if (isPtyOutputEvent(evt)) {
       deps.store.dispatch({ kind: "append_pty_data", agentId: evt.agentId, data: evt.data });
+      continue;
+    }
+    if (isLogEvent(evt)) {
+      deps.store.dispatch({
+        kind: "append_log",
+        entry: {
+          level: evt.level,
+          source: evt.source,
+          message: evt.message,
+          timestamp: evt.timestamp,
+        },
+      });
       continue;
     }
     if (isDataSourceEvent(evt)) {

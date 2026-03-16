@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
-"import { RuntimeViewDataSource, CommandDispatcher, DashboardDataSource, DashboardConfig, DashboardEvent, DataSourceSummary, DataSourceFitnessSummary } from '@koi/dashboard-types';
+"import { RuntimeViewDataSource, CommandDispatcher, DetailedStatusResponse, DemoPackSummary, DashboardDataSource, DashboardConfig, DashboardEvent, DataSourceSummary, DataSourceFitnessSummary } from '@koi/dashboard-types';
 import { FileSystemBackend, AgentId, DataSourceDescriptor } from '@koi/core';
 
 /**
@@ -284,6 +284,23 @@ type EditablePathMatcher = (path: string) => boolean;
 declare function createDefaultEditablePaths(): EditablePathMatcher;
 
 /**
+ * Service management route handlers — shutdown, status, demo, deploy.
+ *
+ * Each handler follows the thin-adapter pattern: validate -> delegate -> respond.
+ */
+
+/** Callbacks for service management operations — injected by the host. */
+interface ServiceManagementCallbacks {
+    readonly shutdown: () => Promise<void>;
+    readonly detailedStatus: () => Promise<DetailedStatusResponse>;
+    readonly demoInit: (packId: string) => Promise<void>;
+    readonly demoReset: (packId: string) => Promise<void>;
+    readonly demoPacks: () => Promise<readonly DemoPackSummary[]>;
+    readonly deploy: () => Promise<void>;
+    readonly undeploy: () => Promise<void>;
+}
+
+/**
  * createDashboardHandler — main factory for the dashboard HTTP handler.
  *
  * Returns a composable handler that returns \`Response | null\`.
@@ -302,6 +319,8 @@ interface DashboardHandlerOptions {
     readonly editablePaths?: EditablePathMatcher;
     /** AG-UI chat handler for POST /agents/:id/chat. When absent, returns 501. */
     readonly agentChatHandler?: AgentChatHandler;
+    /** Service management callbacks for shutdown, status, demo, deploy. When absent, returns 501. */
+    readonly serviceManagement?: ServiceManagementCallbacks;
 }
 interface DashboardHandlerResult {
     readonly handler: (req: Request) => Promise<Response | null>;
@@ -436,6 +455,6 @@ interface StaticServeResult {
 }
 declare function createStaticServe(assetsDir: string): StaticServeResult;
 
-export { type AdminPanelBridgeResult, type AgentChatHandler, type BridgeOptions, type DashboardHandlerOptions, type DashboardHandlerResult, type EditablePathMatcher, type HarnessAdminAdapter, type HarnessAdminClientLike, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SchedulerAdminAdapter, type SchedulerAdminClientLike, type SseProducer, type StaticServeResult, type TaskBoardAdminAdapter, type TaskBoardAdminClientLike, type TemporalAdminAdapter, type TemporalAdminAdapterOptions, type TemporalAdminClientLike, type TemporalWorkflowExecutionLike, createAdminPanelBridge, createDashboardHandler, createDefaultEditablePaths, createHarnessAdminAdapter, createRouter, createSchedulerAdminAdapter, createSseProducer, createStaticServe, createTaskBoardAdminAdapter, createTemporalAdminAdapter, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse, mapResultToResponse, validateRequiredParam };
+export { type AdminPanelBridgeResult, type AgentChatHandler, type BridgeOptions, type DashboardHandlerOptions, type DashboardHandlerResult, type EditablePathMatcher, type HarnessAdminAdapter, type HarnessAdminClientLike, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SchedulerAdminAdapter, type SchedulerAdminClientLike, type ServiceManagementCallbacks, type SseProducer, type StaticServeResult, type TaskBoardAdminAdapter, type TaskBoardAdminClientLike, type TemporalAdminAdapter, type TemporalAdminAdapterOptions, type TemporalAdminClientLike, type TemporalWorkflowExecutionLike, createAdminPanelBridge, createDashboardHandler, createDefaultEditablePaths, createHarnessAdminAdapter, createRouter, createSchedulerAdminAdapter, createSseProducer, createStaticServe, createTaskBoardAdminAdapter, createTemporalAdminAdapter, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse, mapResultToResponse, validateRequiredParam };
 "
 `;

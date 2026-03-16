@@ -75,6 +75,14 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "dlq-retry", label: "/dlq retry", description: "Retry first dead letter entry", requiredCapability: "scheduler" },
   { id: "harness-pause", label: "/harness pause", description: "Pause the harness", requiredCapability: "harness" },
   { id: "harness-resume", label: "/harness resume", description: "Resume the harness", requiredCapability: "harness" },
+  { id: "stop", label: "/stop", description: "Graceful shutdown of Koi runtime" },
+  { id: "status", label: "/status", description: "Show detailed subsystem status" },
+  { id: "doctor", label: "/doctor", description: "Run diagnostic checks" },
+  { id: "demo-init", label: "/demo init", description: "Initialize a demo pack" },
+  { id: "demo-list", label: "/demo list", description: "List available demo packs" },
+  { id: "demo-reset", label: "/demo reset", description: "Reset a demo pack" },
+  { id: "deploy", label: "/deploy", description: "Deploy agent to cloud" },
+  { id: "undeploy", label: "/undeploy", description: "Remove cloud deployment" },
   { id: "quit", label: "/quit", description: "Exit TUI", shortcut: "q" },
 ] as const;
 

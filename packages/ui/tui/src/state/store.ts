@@ -36,13 +36,15 @@ import {
   reduceTemporal,
   removeGovernanceApproval,
 } from "./domain-reducers.js";
+import { reduceService } from "./service-reducer.js";
 import type { TuiBrickSummary } from "./types.js";
 import { MAX_SESSION_MESSAGES, type TuiAction, type TuiState, type ZoomLevel } from "./types.js";
+import { reduceWizard } from "./wizard-reducer.js";
 
 const MAX_FORGE_EVENTS = 200;
 const MAX_MONITOR_EVENTS = 50;
 const MAX_FORGE_SPARKLINE_POINTS = 50;
-const MAX_PTY_CHUNKS = 1000;
+const MAX_PTY_CHUNKS = 200;
 
 /** Listener callback for state changes. */
 export type StateListener = (state: TuiState) => void;
@@ -59,6 +61,14 @@ export interface TuiStore {
  * Never mutates the input state.
  */
 export function reduce(state: TuiState, action: TuiAction): TuiState {
+  // Delegate to wizard reducer first
+  const wizardResult = reduceWizard(state, action);
+  if (wizardResult !== undefined) return { ...state, ...wizardResult };
+
+  // Delegate to service reducer
+  const serviceResult = reduceService(state, action);
+  if (serviceResult !== undefined) return { ...state, ...serviceResult };
+
   switch (action.kind) {
     case "set_view":
       return { ...state, view: action.view };
@@ -344,38 +354,6 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       const nextZoom = ZOOM_CYCLE[nextIdx];
       return nextZoom !== undefined ? { ...state, zoomLevel: nextZoom } : state;
     }
-
-    case "set_presets":
-      return { ...state, presets: action.presets };
-
-    case "select_preset":
-      return {
-        ...state,
-        selectedPresetIndex: Math.max(0, Math.min(action.index, state.presets.length - 1)),
-      };
-
-    case "set_active_preset_detail":
-      return { ...state, activePresetDetail: action.detail };
-
-    case "set_selected_preset_id":
-      return { ...state, selectedPresetId: action.presetId };
-
-    case "set_agent_name_input":
-      return { ...state, agentNameInput: action.name };
-
-    case "toggle_addon": {
-      const current = state.selectedAddons;
-      const next = new Set(current);
-      if (next.has(action.addonId)) {
-        next.delete(action.addonId);
-      } else {
-        next.add(action.addonId);
-      }
-      return { ...state, selectedAddons: next };
-    }
-
-    case "set_addon_focused_index":
-      return { ...state, addonFocusedIndex: Math.max(0, action.index) };
 
     case "append_pty_data": {
       const prev = state.ptyBuffers[action.agentId] ?? [];
@@ -807,6 +785,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
           return state;
       }
     }
+
+    default:
+      return state;
   }
 }
 

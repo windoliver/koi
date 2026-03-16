@@ -8,6 +8,7 @@
 import { basename } from "node:path";
 import * as p from "@clack/prompts";
 import { PROVIDER_ENV_KEYS } from "@koi/model-router";
+import { isValidName } from "@koi/setup-core";
 import type { InitFlags } from "../args.js";
 import {
   CHANNELS,
@@ -23,13 +24,9 @@ import {
 
 type StepResult = WizardState | null;
 
-/** Validates an agent name: lowercase, alphanumeric, hyphens, dots, underscores. */
-const VALID_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const SUPPORTED_MODEL_PROVIDERS = Object.keys(PROVIDER_ENV_KEYS);
 
-export function isValidName(name: string): boolean {
-  return name.length > 0 && name.length <= 214 && VALID_NAME_RE.test(name);
-}
+export { isValidName } from "@koi/setup-core";
 
 export function isValidModel(name: string): boolean {
   const colonIndex = name.indexOf(":");
