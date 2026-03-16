@@ -2,6 +2,7 @@
 
 import type { SelectOption } from "@opentui/core";
 import { useMemo } from "react";
+import { PanelChrome } from "../components/panel-chrome.js";
 import type { SessionPickerEntry } from "../state/types.js";
 import { COLORS } from "../theme.js";
 
@@ -14,6 +15,7 @@ export interface SessionPickerViewProps {
   readonly onCancel: () => void;
   readonly focused: boolean;
   readonly loading: boolean;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 function formatTimeAgo(timestamp: number): string {
@@ -36,40 +38,33 @@ function sessionsToOptions(sessions: readonly SessionPickerEntry[]): readonly Se
 export function SessionPickerView(props: SessionPickerViewProps): React.ReactNode {
   const options = useMemo(() => sessionsToOptions(props.sessions), [props.sessions]);
 
-  const empty = (msg: string): React.ReactNode => (
-    <box flexGrow={1} justifyContent="center" alignItems="center">
-      <text fg={COLORS.dim}>{msg}</text>
-    </box>
-  );
-
   return (
-    <box flexGrow={1} flexDirection="column">
-      <box height={1} flexDirection="row">
-        <text fg={COLORS.cyan}><b>{" Sessions"}</b></text>
-        <text fg={COLORS.dim}>{` (${String(props.sessions.length)})`}</text>
-      </box>
-
-      {props.loading ? (
-        empty("Loading sessions...")
-      ) : props.sessions.length > 0 ? (
-        <select
-          options={options as SelectOption[]}
-          focused={props.focused}
-          showDescription={true}
-          wrapSelection={true}
-          flexGrow={1}
-          selectedBackgroundColor={COLORS.blue}
-          selectedTextColor={COLORS.white}
-          descriptionColor={COLORS.dim}
-          onSelect={(_index: number, option: SelectOption | null) => {
-            if (option?.value !== undefined) {
-              props.onSelect(option.value as string);
-            }
-          }}
-        />
-      ) : (
-        empty("No saved sessions")
-      )}
-    </box>
+    <PanelChrome
+      title="Sessions"
+      count={props.sessions.length}
+      focused={props.focused}
+      zoomLevel={props.zoomLevel}
+      loading={props.loading}
+      loadingMessage="Loading sessions..."
+      isEmpty={props.sessions.length === 0}
+      emptyMessage="No saved sessions."
+      emptyHint="Sessions are saved automatically. Start a conversation to see history here."
+    >
+      <select
+        options={options as SelectOption[]}
+        focused={props.focused}
+        showDescription={true}
+        wrapSelection={true}
+        flexGrow={1}
+        selectedBackgroundColor={COLORS.blue}
+        selectedTextColor={COLORS.white}
+        descriptionColor={COLORS.dim}
+        onSelect={(_index: number, option: SelectOption | null) => {
+          if (option?.value !== undefined) {
+            props.onSelect(option.value as string);
+          }
+        }}
+      />
+    </PanelChrome>
   );
 }

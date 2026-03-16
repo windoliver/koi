@@ -37,14 +37,22 @@ export interface SessionState {
 
 /** Which TUI view is currently active. */
 export type TuiView =
+  | "addons"
   | "agents"
   | "consent"
   | "console"
   | "datasources"
   | "forge"
+  | "nameinput"
   | "palette"
+  | "presetdetail"
   | "sessions"
-  | "sourcedetail";
+  | "sourcedetail"
+  | "splitpanes"
+  | "welcome";
+
+/** Panel zoom level — cycles with +/Esc. */
+export type ZoomLevel = "normal" | "half" | "full";
 
 /** Admin API connection state. */
 export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
@@ -65,6 +73,18 @@ export interface TuiBrickSummary {
   readonly name: string;
   readonly status: string;
   readonly fitness: number;
+}
+
+/** Preset info for the welcome screen. */
+export interface PresetInfo {
+  readonly id: string;
+  readonly description: string;
+  readonly nexusMode: string;
+  readonly demoPack: string | undefined;
+  readonly services: Readonly<Record<string, unknown>>;
+  readonly stacks: Readonly<Record<string, boolean | undefined>>;
+  readonly agentRoles?: readonly { readonly role: string; readonly description: string }[];
+  readonly prompts?: readonly string[];
 }
 
 /** Complete TUI application state. Immutable — new object on every update. */
@@ -102,12 +122,37 @@ export interface TuiState {
   readonly forgeBricks: Readonly<Record<string, TuiBrickSummary>>;
   /** Forge sparkline data by brick ID. */
   readonly forgeSparklines: Readonly<Record<string, readonly number[]>>;
+  /** Current zoom level for focused panel. */
+  readonly zoomLevel: ZoomLevel;
+  /** Available presets for the welcome screen. */
+  readonly presets: readonly PresetInfo[];
+  /** Selected preset index (welcome screen). */
+  readonly selectedPresetIndex: number;
+  /** Active preset detail being viewed. */
+  readonly activePresetDetail: PresetInfo | null;
+  /** Selected preset ID (after choosing from welcome screen). */
+  readonly selectedPresetId: string | null;
+  /** Agent name input by user during setup. */
+  readonly agentNameInput: string;
+  /** Selected add-on IDs during setup. */
+  readonly selectedAddons: ReadonlySet<string>;
+  /** Focused add-on index in the picker. */
+  readonly addonFocusedIndex: number;
+  /** Per-agent PTY output buffers (base64 chunks). */
+  readonly ptyBuffers: Readonly<Record<string, readonly string[]>>;
+  /** Per-agent sessions for split-pane mode. */
+  readonly splitSessions: Readonly<Record<string, SessionState>>;
+  /** Index of focused pane in split view. */
+  readonly focusedPaneIndex: number;
 }
 
-/** Create initial TUI state for a given admin URL. */
-export function createInitialState(adminUrl: string): TuiState {
+/** App mode: welcome (no admin API) or boardroom (connected). */
+export type TuiMode = "welcome" | "boardroom";
+
+/** Create initial TUI state for a given admin URL and mode. */
+export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"): TuiState {
   return {
-    view: "agents",
+    view: mode === "welcome" ? "welcome" : "agents",
     agents: [],
     selectedAgentIndex: 0,
     activeSession: null,
@@ -127,6 +172,17 @@ export function createInitialState(adminUrl: string): TuiState {
     monitorEvents: [],
     forgeBricks: {},
     forgeSparklines: {},
+    zoomLevel: "normal",
+    presets: [],
+    selectedPresetIndex: 0,
+    activePresetDetail: null,
+    selectedPresetId: null,
+    agentNameInput: "",
+    selectedAddons: new Set<string>(),
+    addonFocusedIndex: 0,
+    ptyBuffers: {},
+    splitSessions: {},
+    focusedPaneIndex: 0,
   };
 }
 
@@ -202,6 +258,49 @@ export type TuiAction =
   | {
       readonly kind: "apply_monitor_event";
       readonly event: MonitorDashboardEvent;
+    }
+  | { readonly kind: "set_zoom_level"; readonly level: ZoomLevel }
+  | { readonly kind: "cycle_zoom" }
+  | {
+      readonly kind: "set_presets";
+      readonly presets: readonly PresetInfo[];
+    }
+  | { readonly kind: "select_preset"; readonly index: number }
+  | {
+      readonly kind: "set_active_preset_detail";
+      readonly detail: PresetInfo | null;
+    }
+  | { readonly kind: "set_selected_preset_id"; readonly presetId: string }
+  | { readonly kind: "set_agent_name_input"; readonly name: string }
+  | { readonly kind: "toggle_addon"; readonly addonId: string }
+  | { readonly kind: "set_addon_focused_index"; readonly index: number }
+  | {
+      readonly kind: "append_pty_data";
+      readonly agentId: string;
+      readonly data: string;
+    }
+  | { readonly kind: "clear_pty_buffer"; readonly agentId: string }
+  | {
+      readonly kind: "set_split_session";
+      readonly agentId: string;
+      readonly session: SessionState;
+    }
+  | {
+      readonly kind: "remove_split_session";
+      readonly agentId: string;
+    }
+  | {
+      readonly kind: "append_split_tokens";
+      readonly agentId: string;
+      readonly text: string;
+    }
+  | {
+      readonly kind: "flush_split_tokens";
+      readonly agentId: string;
+    }
+  | {
+      readonly kind: "set_focused_pane";
+      readonly index: number;
     };
 
 /** Maximum messages kept in session memory (sliding window). */

@@ -11,6 +11,8 @@ import type {
   DashboardVerificationStage,
   DataSourceFitnessSummary,
 } from "@koi/dashboard-types";
+import type { SyntaxStyle } from "@opentui/core";
+import { PanelChrome } from "../components/panel-chrome.js";
 import { COLORS } from "../theme.js";
 
 export interface SourceDetailData {
@@ -43,6 +45,8 @@ export interface SourceDetailViewProps {
   readonly onViewSchema?: ((name: string) => void) | undefined;
   readonly onBack: () => void;
   readonly focused: boolean;
+  readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 /** Render a text-based fitness bar: e.g. "████████░░ 85%" */
@@ -52,36 +56,26 @@ function renderFitnessBar(rate: number): string {
   return "\u2588".repeat(filled) + "\u2591".repeat(empty) + ` ${String(Math.round(rate * 100))}%`;
 }
 
-export function SourceDetailView(props: SourceDetailViewProps): React.ReactNode {
-  const { data, loading } = props;
+/** Build a SQL-style column definition string for an entire table. */
+function formatTableColumns(table: DashboardSchemaTable): string {
+  return table.columns
+    .map((col) => `  ${col.name} ${col.type}${col.nullable ? "" : " NOT NULL"}`)
+    .join("\n");
+}
 
-  if (loading) {
-    return (
-      <box flexGrow={1} justifyContent="center" alignItems="center">
-        <text fg={COLORS.dim}>{"Loading source detail..."}</text>
-      </box>
-    );
-  }
-
-  if (data === null) {
-    return (
-      <box flexGrow={1} justifyContent="center" alignItems="center">
-        <text fg={COLORS.dim}>{"No source selected."}</text>
-      </box>
-    );
-  }
-
+/** Inner detail content — rendered only when data is non-null. */
+function SourceDetailContent(props: {
+  readonly data: SourceDetailData;
+  readonly onApprove?: ((name: string) => void) | undefined;
+  readonly onViewSchema?: ((name: string) => void) | undefined;
+  readonly syntaxStyle?: SyntaxStyle | undefined;
+}): React.ReactNode {
+  const { data } = props;
   const statusColor =
     data.status === "approved" ? COLORS.green : data.status === "pending" ? COLORS.yellow : COLORS.red;
 
   return (
-    <box flexGrow={1} flexDirection="column" paddingLeft={1}>
-      <box height={1}>
-        <text fg={COLORS.cyan}>
-          <b>{` Source: ${data.name}`}</b>
-        </text>
-      </box>
-
+    <box flexDirection="column" paddingLeft={1}>
       <box flexDirection="column" marginTop={1}>
         <text>{`Protocol:     ${data.protocol}`}</text>
         <text>
@@ -98,7 +92,7 @@ export function SourceDetailView(props: SourceDetailViewProps): React.ReactNode 
         <text>{`Schema:       ${data.schemaProbed === true || (data.tables !== undefined && data.tables.length > 0) ? "probed" : "not probed"}`}</text>
       </box>
 
-      {/* Schema tables */}
+      {/* Schema tables — rendered with <code> for SQL syntax highlighting when available */}
       {data.tables !== undefined && data.tables.length > 0 ? (
         <box flexDirection="column" marginTop={1}>
           <text fg={COLORS.cyan}>
@@ -109,11 +103,19 @@ export function SourceDetailView(props: SourceDetailViewProps): React.ReactNode 
               <text fg={COLORS.white}>
                 <b>{`${table.schema}.${table.name}`}</b>
               </text>
-              {table.columns.map((col) => (
-                <text key={col.name} fg={COLORS.dim}>
-                  {`  ${col.name} ${col.type}${col.nullable ? "" : " NOT NULL"}`}
-                </text>
-              ))}
+              {props.syntaxStyle !== undefined ? (
+                <code
+                  filetype="sql"
+                  syntaxStyle={props.syntaxStyle}
+                  content={formatTableColumns(table)}
+                />
+              ) : (
+                table.columns.map((col) => (
+                  <text key={col.name} fg={COLORS.dim}>
+                    {`  ${col.name} ${col.type}${col.nullable ? "" : " NOT NULL"}`}
+                  </text>
+                ))
+              )}
               {table.foreignKeys !== undefined
                 ? table.foreignKeys.map((fk) => (
                     <text key={`fk-${fk.column}`} fg={COLORS.yellow}>
@@ -186,5 +188,31 @@ export function SourceDetailView(props: SourceDetailViewProps): React.ReactNode 
         <text fg={COLORS.dim}>{"[Esc] Back"}</text>
       </box>
     </box>
+  );
+}
+
+export function SourceDetailView(props: SourceDetailViewProps): React.ReactNode {
+  const { data, loading } = props;
+
+  return (
+    <PanelChrome
+      title={data !== null ? `Source: ${data.name}` : "Source Detail"}
+      focused={props.focused}
+      zoomLevel={props.zoomLevel}
+      loading={loading}
+      loadingMessage="Loading source detail..."
+      isEmpty={data === null}
+      emptyMessage="No source selected."
+      emptyHint="Select a data source to view its schema and fitness metrics."
+    >
+      {data !== null ? (
+        <SourceDetailContent
+          data={data}
+          onApprove={props.onApprove}
+          onViewSchema={props.onViewSchema}
+          syntaxStyle={props.syntaxStyle}
+        />
+      ) : null}
+    </PanelChrome>
   );
 }

@@ -51,7 +51,7 @@ describe("AgentListView", () => {
 
     await settle(renderOnce);
     const frame = captureCharFrame();
-    expect(frame).toContain("No agents found");
+    expect(frame).toContain("No agents running.");
   });
 
   test("displays agent names in list", async () => {

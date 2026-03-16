@@ -5,6 +5,7 @@
  * monitor anomalies, and policy promotion stats.
  */
 
+import { PanelChrome } from "../components/panel-chrome.js";
 import { sparkline } from "../lib/sparkline.js";
 import type { TuiState } from "../state/types.js";
 import { COLORS } from "../theme.js";
@@ -12,6 +13,7 @@ import { COLORS } from "../theme.js";
 export interface ForgeViewProps {
   readonly state: TuiState;
   readonly focused: boolean;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 export function ForgeView(props: ForgeViewProps): React.ReactNode {
@@ -42,12 +44,15 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
       : "—";
 
   return (
-    <box flexGrow={1} flexDirection="column">
-      <box height={1} flexDirection="row">
-        <text fg={COLORS.cyan}><b>{" Forge"}</b></text>
-        <text fg={COLORS.dim}>{` (${String(brickEntries.length)} bricks)`}</text>
-      </box>
-
+    <PanelChrome
+      title="Forge"
+      count={brickEntries.length}
+      focused={props.focused}
+      zoomLevel={props.zoomLevel}
+      isEmpty={brickEntries.length === 0}
+      emptyMessage="No bricks forged yet."
+      emptyHint="The forge creates reusable tools from agent behavior. Try the self-improvement demo pack."
+    >
       {/* Summary counters */}
       <box height={1} flexDirection="row">
         <text fg={COLORS.dim}>
@@ -56,29 +61,23 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
       </box>
 
       {/* Brick table */}
-      {brickEntries.length === 0 ? (
+      <box flexDirection="column">
         <box height={1}>
-          <text fg={COLORS.dim}>{" No bricks forged yet."}</text>
+          <text fg={COLORS.dim}>{" Name                 Status       Fitness"}</text>
         </box>
-      ) : (
-        <box flexDirection="column">
-          <box height={1}>
-            <text fg={COLORS.dim}>{" Name                 Status       Fitness"}</text>
-          </box>
-          {brickEntries.map(([brickId, brick]) => {
-            const fitnessData = forgeSparklines[brickId] ?? [];
-            const fitnessLabel = brick.fitness > 0 ? `${(brick.fitness * 100).toFixed(0)}%` : " —";
-            const sparklineStr = fitnessData.length > 0 ? ` ${sparkline(fitnessData)}` : "";
-            return (
-              <box key={brickId} height={1} flexDirection="row">
-                <text>
-                  {` ${brick.name.padEnd(20).slice(0, 20)} ${brick.status.padEnd(12)} ${fitnessLabel}${sparklineStr}`}
-                </text>
-              </box>
-            );
-          })}
-        </box>
-      )}
-    </box>
+        {brickEntries.map(([brickId, brick]) => {
+          const fitnessData = forgeSparklines[brickId] ?? [];
+          const fitnessLabel = brick.fitness > 0 ? `${(brick.fitness * 100).toFixed(0)}%` : " —";
+          const sparklineStr = fitnessData.length > 0 ? ` ${sparkline(fitnessData)}` : "";
+          return (
+            <box key={brickId} height={1} flexDirection="row">
+              <text>
+                {` ${brick.name.padEnd(20).slice(0, 20)} ${brick.status.padEnd(12)} ${fitnessLabel}${sparklineStr}`}
+              </text>
+            </box>
+          );
+        })}
+      </box>
+    </PanelChrome>
   );
 }

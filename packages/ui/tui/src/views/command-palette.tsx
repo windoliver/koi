@@ -43,6 +43,7 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
     description: "Open agent in browser admin panel",
     shortcut: "Ctrl+O",
   },
+  { id: "split-panes", label: "/split", description: "Toggle agent split-pane terminal view" },
   { id: "quit", label: "/quit", description: "Exit TUI", shortcut: "q" },
 ] as const;
 

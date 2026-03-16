@@ -333,7 +333,16 @@ type MonitorDashboardEvent = {
     readonly detail: Readonly<Record<string, unknown>>;
     readonly timestamp: number;
 };
-type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent | DataSourceDashboardEvent | ForgeDashboardEvent | MonitorDashboardEvent;
+/** PTY output event — raw terminal bytes from an agent subprocess. */
+interface PtyOutputDashboardEvent {
+    readonly kind: "pty_output";
+    readonly subKind: "pty_data";
+    readonly agentId: string;
+    /** Base64-encoded PTY bytes (batched at ~50-100ms intervals by dashboard-api). */
+    readonly data: string;
+    readonly timestamp: number;
+}
+type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent | DataSourceDashboardEvent | ForgeDashboardEvent | MonitorDashboardEvent | PtyOutputDashboardEvent;
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 interface DashboardEventBatch {
     readonly events: readonly DashboardEvent[];
@@ -355,6 +364,7 @@ declare const isHarnessEvent: (event: DashboardEvent) => event is HarnessDashboa
 declare const isDataSourceEvent: (event: DashboardEvent) => event is DataSourceDashboardEvent;
 declare const isForgeEvent: (event: DashboardEvent) => event is ForgeDashboardEvent;
 declare const isMonitorEvent: (event: DashboardEvent) => event is MonitorDashboardEvent;
+declare const isPtyOutputEvent: (event: DashboardEvent) => event is PtyOutputDashboardEvent;
 
 /**
  * DashboardDataSource — adapter interface for dashboard data access.
@@ -1017,6 +1027,26 @@ declare const ADMIN_ROUTES: {
         readonly method: "GET";
         readonly path: "/view/forge/events";
     };
+    readonly listDataSources: {
+        readonly method: "GET";
+        readonly path: "/data-sources";
+    };
+    readonly approveDataSource: {
+        readonly method: "POST";
+        readonly path: "/data-sources/:name/approve";
+    };
+    readonly rejectDataSource: {
+        readonly method: "POST";
+        readonly path: "/data-sources/:name/reject";
+    };
+    readonly getDataSourceSchema: {
+        readonly method: "GET";
+        readonly path: "/data-sources/:name/schema";
+    };
+    readonly rescanDataSources: {
+        readonly method: "POST";
+        readonly path: "/data-sources/rescan";
+    };
     readonly agentChat: {
         readonly method: "POST";
         readonly path: "/agents/:id/chat";
@@ -1057,6 +1087,6 @@ type AdminRoutes = typeof ADMIN_ROUTES;
  */
 declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
 
-export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isMonitorEvent, isNexusEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type PtyOutputDashboardEvent, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isMonitorEvent, isNexusEvent, isPtyOutputEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
 "
 `;

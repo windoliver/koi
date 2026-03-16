@@ -9,6 +9,7 @@
 
 import type { DataSourceSummary } from "@koi/dashboard-types";
 import { useMemo } from "react";
+import { PanelChrome } from "../components/panel-chrome.js";
 import { COLORS } from "../theme.js";
 
 export interface DataSourcesViewProps {
@@ -18,6 +19,7 @@ export interface DataSourcesViewProps {
   readonly onApprove?: ((name: string) => void) | undefined;
   readonly onViewSchema?: ((name: string) => void) | undefined;
   readonly focused: boolean;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 function statusColor(status: string): string {
@@ -90,70 +92,63 @@ export function DataSourcesView(props: DataSourcesViewProps): React.ReactNode {
   const selected = sources[selectedIndex];
 
   return (
-    <box flexGrow={1} flexDirection="column">
-      <box height={1} flexDirection="row">
-        <text fg={COLORS.cyan}>
-          <b>{" Data Sources"}</b>
-        </text>
-        <text fg={COLORS.dim}>{` (${String(sources.length)})`}</text>
-      </box>
+    <PanelChrome
+      title="Data Sources"
+      count={sources.length}
+      focused={props.focused}
+      zoomLevel={props.zoomLevel}
+      loading={loading}
+      loadingMessage="Loading data sources..."
+      isEmpty={sources.length === 0}
+      emptyMessage="No data sources discovered."
+      emptyHint="Data sources are detected from your environment. Run /sources rescan or use the connected demo pack."
+    >
+      <box flexDirection="column" paddingLeft={1}>
+        {rows.map((row, i) => (
+          <box key={row.label} height={1} flexDirection="row">
+            <text fg={i === selectedIndex ? COLORS.cyan : COLORS.dim}>
+              {i === selectedIndex ? "> " : "  "}
+            </text>
+            <text fg={row.color}>{`${row.icon} `}</text>
+            <text {...(i === selectedIndex ? { fg: COLORS.white } : {})}>{row.label}</text>
+            <text fg={COLORS.dim}>{`  ${row.detail}`}</text>
+            {row.fitnessLabel !== "" ? (
+              <text fg={COLORS.green}>{row.fitnessLabel}</text>
+            ) : null}
+            {row.verifyLabel !== "" ? (
+              <text fg={COLORS.yellow}>{row.verifyLabel}</text>
+            ) : null}
+          </box>
+        ))}
 
-      {loading ? (
-        <box flexGrow={1} justifyContent="center" alignItems="center">
-          <text fg={COLORS.dim}>{"Loading data sources..."}</text>
-        </box>
-      ) : sources.length > 0 ? (
-        <box flexDirection="column" paddingLeft={1}>
-          {rows.map((row, i) => (
-            <box key={row.label} height={1} flexDirection="row">
-              <text fg={i === selectedIndex ? COLORS.cyan : COLORS.dim}>
-                {i === selectedIndex ? "> " : "  "}
-              </text>
-              <text fg={row.color}>{`${row.icon} `}</text>
-              <text {...(i === selectedIndex ? { fg: COLORS.white } : {})}>{row.label}</text>
-              <text fg={COLORS.dim}>{`  ${row.detail}`}</text>
-              {row.fitnessLabel !== "" ? (
-                <text fg={COLORS.green}>{row.fitnessLabel}</text>
-              ) : null}
-              {row.verifyLabel !== "" ? (
-                <text fg={COLORS.yellow}>{row.verifyLabel}</text>
-              ) : null}
-            </box>
-          ))}
-
-          {/* Detail panel for selected source */}
-          {selected !== undefined ? (
-            <box flexDirection="column" marginTop={1} paddingLeft={1}>
-              <text fg={COLORS.dim}>{"─── Detail ───"}</text>
-              <text>{`Name:     ${selected.name}`}</text>
-              <text>{`Protocol: ${selected.protocol}`}</text>
-              <text>{`Status:   ${selected.status}`}</text>
-              <text>{`Source:   ${selected.source}`}</text>
-              {selected.fitness !== undefined ? (
-                <box flexDirection="column">
-                  <text>{`Success:  ${String(Math.round(selected.fitness.successRate * 100))}% (${String(selected.fitness.successCount + selected.fitness.errorCount)} queries)`}</text>
-                  {selected.fitness.p95LatencyMs !== undefined ? (
-                    <text>{`P95:      ${String(selected.fitness.p95LatencyMs)}ms`}</text>
-                  ) : null}
-                </box>
-              ) : null}
-              <box height={1} marginTop={1} flexDirection="row">
-                {selected.status === "pending" && onApprove !== undefined ? (
-                  <text fg={COLORS.cyan}>{"[a] Approve  "}</text>
+        {/* Detail panel for selected source */}
+        {selected !== undefined ? (
+          <box flexDirection="column" marginTop={1} paddingLeft={1}>
+            <text fg={COLORS.dim}>{"─── Detail ───"}</text>
+            <text>{`Name:     ${selected.name}`}</text>
+            <text>{`Protocol: ${selected.protocol}`}</text>
+            <text>{`Status:   ${selected.status}`}</text>
+            <text>{`Source:   ${selected.source}`}</text>
+            {selected.fitness !== undefined ? (
+              <box flexDirection="column">
+                <text>{`Success:  ${String(Math.round(selected.fitness.successRate * 100))}% (${String(selected.fitness.successCount + selected.fitness.errorCount)} queries)`}</text>
+                {selected.fitness.p95LatencyMs !== undefined ? (
+                  <text>{`P95:      ${String(selected.fitness.p95LatencyMs)}ms`}</text>
                 ) : null}
-                {onViewSchema !== undefined ? (
-                  <text fg={COLORS.cyan}>{"[s] Schema  "}</text>
-                ) : null}
-                <text fg={COLORS.dim}>{"[Esc] Back"}</text>
               </box>
+            ) : null}
+            <box height={1} marginTop={1} flexDirection="row">
+              {selected.status === "pending" && onApprove !== undefined ? (
+                <text fg={COLORS.cyan}>{"[a] Approve  "}</text>
+              ) : null}
+              {onViewSchema !== undefined ? (
+                <text fg={COLORS.cyan}>{"[s] Schema  "}</text>
+              ) : null}
+              <text fg={COLORS.dim}>{"[Esc] Back"}</text>
             </box>
-          ) : null}
-        </box>
-      ) : (
-        <box flexGrow={1} justifyContent="center" alignItems="center">
-          <text fg={COLORS.dim}>{"No data sources discovered."}</text>
-        </box>
-      )}
-    </box>
+          </box>
+        ) : null}
+      </box>
+    </PanelChrome>
   );
 }

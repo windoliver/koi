@@ -104,6 +104,8 @@ export interface TuiFlags extends BaseFlags {
   readonly agent: string | undefined;
   /** Resume a specific session (requires --agent). */
   readonly session: string | undefined;
+  /** Launch mode: "welcome" for first-run preset picker, undefined for normal boardroom. */
+  readonly mode: "welcome" | undefined;
 }
 
 export interface DoctorFlags extends BaseFlags {
@@ -451,6 +453,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     refresh: refreshStr !== undefined ? Number.parseInt(refreshStr, 10) : 5,
     agent: values.agent as string | undefined,
     session: values.session as string | undefined,
+    mode: undefined,
   };
 }
 

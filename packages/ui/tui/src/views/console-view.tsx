@@ -7,8 +7,9 @@
 
 import { type SyntaxStyle, type TextareaRenderable } from "@opentui/core";
 import { useCallback, useRef, useState } from "react";
-import { COLORS } from "../theme.js";
+import { PanelChrome } from "../components/panel-chrome.js";
 import type { SessionState } from "../state/types.js";
+import { COLORS } from "../theme.js";
 import { MessageRow } from "./message-row.js";
 
 /** Props for the console view. */
@@ -18,6 +19,7 @@ export interface ConsoleViewProps {
   readonly onSubmit: (text: string) => void;
   readonly focused: boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 /** Console view with scrollable message list and text input. */
@@ -39,7 +41,14 @@ export function ConsoleView(props: ConsoleViewProps): React.ReactNode {
   const hasPending = props.pendingText.length > 0;
 
   return (
-    <box flexGrow={1} flexDirection="column">
+    <PanelChrome
+      title="Console"
+      focused={props.focused}
+      zoomLevel={props.zoomLevel}
+      isEmpty={props.session === null}
+      emptyMessage="Select an agent from the Agents panel to start a conversation."
+      emptyHint="Use ↑↓ to navigate, Enter to select."
+    >
       {/* Message history */}
       <scrollbox
         flexGrow={1}
@@ -89,6 +98,6 @@ export function ConsoleView(props: ConsoleViewProps): React.ReactNode {
         }}
         onSubmit={handleSubmit}
       />
-    </box>
+    </PanelChrome>
   );
 }

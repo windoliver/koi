@@ -51,31 +51,52 @@ export {
   startChatStream,
   TUI_SESSION_PREFIX,
 } from "@koi/dashboard-client";
-
+// Components — split pane
+export type { AgentPaneData, AgentSplitPaneProps } from "./components/agent-split-pane.js";
+export { AgentSplitPane } from "./components/agent-split-pane.js";
+// Components
+export type { PanelChromeProps } from "./components/panel-chrome.js";
+export { PanelChrome } from "./components/panel-chrome.js";
+// Lib — first-run tooltips
+export type { TooltipId, TuiPersistentState } from "./lib/first-run.js";
+export {
+  dismissTooltip,
+  loadTuiState,
+  recordSessionStart,
+  saveTuiState,
+  shouldShowTooltip,
+} from "./lib/first-run.js";
+// Lib — terminal emulation
+export type { TerminalConfig, TerminalInstance } from "./lib/ghostty-wasm.js";
+export { createTerminal } from "./lib/ghostty-wasm.js";
 // State
 export type { StateListener, TuiStore } from "./state/store.js";
 export { createStore, reduce } from "./state/store.js";
 export type {
   ConnectionStatus,
+  PresetInfo,
   SessionPickerEntry,
   SessionState,
   TuiAction,
   TuiError,
+  TuiMode,
   TuiState,
   TuiView,
+  ZoomLevel,
 } from "./state/types.js";
 export { createInitialState, MAX_SESSION_MESSAGES } from "./state/types.js";
-
 // Theme
 export {
   agentStateColor,
   COLORS,
   connectionStatusConfig,
 } from "./theme.js";
+// Views — add-on picker
+export type { AddonOption, AddonPickerViewProps } from "./views/addon-picker-view.js";
+export { AddonPickerView, AVAILABLE_ADDONS } from "./views/addon-picker-view.js";
 // Views — OpenTUI components
 export type { AgentListViewProps } from "./views/agent-list-view.js";
 export { AgentListView } from "./views/agent-list-view.js";
-// Views — command definitions
 export type { PaletteCallbacks, PaletteCommand } from "./views/command-palette.js";
 export { commandsToSelectItems, DEFAULT_COMMANDS } from "./views/command-palette.js";
 export type { CommandPaletteViewProps } from "./views/command-palette-view.js";
@@ -99,6 +120,18 @@ export { useDerivedState, useStoreState } from "./views/store-bridge.js";
 // App
 export type { TuiAppConfig, TuiAppHandle } from "./views/tui-app.js";
 export { createTuiApp } from "./views/tui-app.js";
+// Views — extracted modules
+export type { CommandDeps } from "./views/tui-commands.js";
+export { dispatchCommand, handleSlashCommand } from "./views/tui-commands.js";
+export type { DataSourceDeps } from "./views/tui-data-sources.js";
+export {
+  approveDataSource,
+  forwardConsentPrompts,
+  openDataSources,
+  rejectDataSource,
+  rescanDataSources,
+  viewDataSourceSchema,
+} from "./views/tui-data-sources.js";
 // Views — keyboard
 export type { KeyboardCallbacks } from "./views/tui-keyboard.js";
 export { createKeyboardHandler } from "./views/tui-keyboard.js";

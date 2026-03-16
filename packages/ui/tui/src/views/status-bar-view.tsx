@@ -1,56 +1,120 @@
 /**
- * Status bar OpenTUI component — renders connection status, agent info, and hints.
+ * Status bar v2 — two-line header with panel indicators and context hints.
  *
- * Uses Box + Text intrinsics from @opentui/react.
- * Derives display data from TuiState prop.
+ * Line 1: Mode indicator + view tabs + agent count + cost/token summary
+ * Line 2: Context-sensitive keyboard hints for the focused panel
  */
 
 import { useMemo } from "react";
 import { COLORS, connectionStatusConfig } from "../theme.js";
-import type { TuiState, TuiView } from "../state/types.js";
+import type { TuiState, TuiView, ZoomLevel } from "../state/types.js";
 
 /** View-specific keyboard hints. */
 const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
-  agents: "↑↓ navigate  Enter select  Ctrl+G forge  Ctrl+P commands  q quit",
-  consent: "[y] approve  [n] deny  [d] details  Esc dismiss",
-  console: "Type message  Enter send  Esc back  Ctrl+P commands",
-  datasources: "↑↓ navigate  [a] approve  [s] schema  Esc back",
-  forge: "Esc back  Ctrl+G close  Ctrl+P commands",
-  sourcedetail: "Esc back  [a] approve",
-  palette: "↑↓ navigate  Enter select  Esc close",
-  sessions: "↑↓ navigate  Enter select  Esc back",
+  addons: "j/k:navigate  Space:toggle  Enter:confirm  s:skip  Esc:back",
+  agents: "↑↓:navigate  Enter:select  Ctrl+G:forge  Ctrl+P:commands  q:quit",
+  consent: "[y] approve  [n] deny  [d] details  Esc:dismiss",
+  console: "Type message  Enter:send  Esc:back  Ctrl+P:commands",
+  datasources: "↑↓:navigate  [a] approve  [s] schema  Esc:back",
+  forge: "Esc:back  Ctrl+G:close  Ctrl+P:commands",
+  nameinput: "Enter:confirm  Esc:back",
+  presetdetail: "Enter:select  Esc:back  q:quit",
+  sourcedetail: "Esc:back  [a] approve",
+  splitpanes: "Tab:focus-next  Enter:zoom  Esc:back  +:cycle-zoom",
+  palette: "↑↓:navigate  Enter:select  Esc:close",
+  sessions: "↑↓:navigate  Enter:select  Esc:back",
+  welcome: "j/k:navigate  Enter:select  ?:details  q:quit",
 } as const;
 
-/** Props for the StatusBarView component. */
+const ZOOM_LABELS: Readonly<Record<ZoomLevel, string>> = {
+  normal: "NORMAL",
+  half: "HALF",
+  full: "FULL",
+} as const;
+
+/** View display names for the tab bar. */
+const VIEW_LABELS: Readonly<Partial<Record<TuiView, string>>> = {
+  agents: "Agents",
+  console: "Console",
+  forge: "Forge",
+  datasources: "Sources",
+  sessions: "Sessions",
+} as const;
+
 export interface StatusBarViewProps {
   readonly state: TuiState;
 }
 
-/** Status bar — single-line header across the top of every view. */
+/** Status bar v2 — two-line header across the top of every view. */
 export function StatusBarView(props: StatusBarViewProps): React.ReactNode {
+  const { state } = props;
   const conn = useMemo(
-    () => connectionStatusConfig(props.state.connectionStatus),
-    [props.state.connectionStatus],
+    () => connectionStatusConfig(state.connectionStatus),
+    [state.connectionStatus],
   );
-  const agentCount = props.state.agents.length;
-  const agentName = useMemo(() => {
-    const session = props.state.activeSession;
-    if (session === null) return "no agent";
-    const agent = props.state.agents.find((a) => a.agentId === session.agentId);
-    return agent !== undefined ? agent.name : session.agentId;
-  }, [props.state.activeSession, props.state.agents]);
-  const hint = VIEW_HINTS[props.state.view];
+  const agentCount = state.agents.length;
+  const zoomLabel = ZOOM_LABELS[state.zoomLevel];
+  const hint = VIEW_HINTS[state.view];
+  const isWelcome = state.view === "welcome" || state.view === "presetdetail";
 
   return (
-    <box height={1} flexDirection="row" backgroundColor={COLORS.bg}>
-      <text fg={COLORS.cyan}><b>{" KOI "}</b></text>
-      <text fg={conn.color}>{` ${conn.indicator}`}</text>
-      <text fg={COLORS.dim}>{" │ "}</text>
-      <text fg={COLORS.white}>{`${String(agentCount)} agents`}</text>
-      <text fg={COLORS.dim}>{" │ "}</text>
-      <text fg={COLORS.cyan}>{agentName}</text>
-      <text fg={COLORS.dim}>{" │ "}</text>
-      <text fg={COLORS.dim}>{hint}</text>
+    <box height={2} flexDirection="column" backgroundColor={COLORS.bg}>
+      {/* Line 1: tabs + status
+       *
+       * Note: <tab-select> was evaluated here but intentionally skipped.
+       * The view tabs are display-only indicators — view switching is driven
+       * by keyboard shortcuts and the command palette, not by clicking tabs.
+       * Using <tab-select> would introduce unwanted interactive focus
+       * management and key handling that conflicts with the existing
+       * keyboard-driven navigation model.
+       */}
+      <box height={1} flexDirection="row">
+        <text fg={COLORS.cyan}><b>{` [${zoomLabel}] `}</b></text>
+        {!isWelcome && (
+          <>
+            {Object.entries(VIEW_LABELS).map(([viewKey, label]) => {
+              const isActive = state.view === viewKey ||
+                (state.view === "palette" && (
+                  (viewKey === "console" && state.activeSession !== null) ||
+                  (viewKey === "agents" && state.activeSession === null)
+                ));
+              return (
+                <text key={viewKey} fg={isActive ? COLORS.white : COLORS.dim}>
+                  {` ${label as string} `}
+                  {isActive ? "·" : " "}
+                </text>
+              );
+            })}
+            <box flexGrow={1} />
+            <text fg={conn.color}>{` ${conn.indicator}`}</text>
+            <text fg={COLORS.dim}>{" │ "}</text>
+            <text fg={COLORS.white}>{`${String(agentCount)} agents`}</text>
+            {state.activeSession !== null && (() => {
+              const session = state.activeSession;
+              if (session === null) return null;
+              const agent = state.agents.find((a) => a.agentId === session.agentId);
+              const name = agent !== undefined ? agent.name : session.agentId;
+              return (
+                <>
+                  <text fg={COLORS.dim}>{" │ "}</text>
+                  <text fg={COLORS.cyan}>{name}</text>
+                </>
+              );
+            })()}
+            <text>{" "}</text>
+          </>
+        )}
+        {isWelcome && (
+          <>
+            <text fg={COLORS.cyan}>{" Koi Setup"}</text>
+            <box flexGrow={1} />
+          </>
+        )}
+      </box>
+      {/* Line 2: context-sensitive hints */}
+      <box height={1} flexDirection="row">
+        <text fg={COLORS.dim}>{` ${hint}`}</text>
+      </box>
     </box>
   );
 }

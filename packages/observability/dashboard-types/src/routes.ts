@@ -59,6 +59,13 @@ export const ADMIN_ROUTES = {
   forgeStats: { method: "GET", path: "/view/forge/stats" },
   forgeEvents: { method: "GET", path: "/view/forge/events" },
 
+  // ─── Data Sources ───────────────────────────────────────────────
+  listDataSources: { method: "GET", path: "/data-sources" },
+  approveDataSource: { method: "POST", path: "/data-sources/:name/approve" },
+  rejectDataSource: { method: "POST", path: "/data-sources/:name/reject" },
+  getDataSourceSchema: { method: "GET", path: "/data-sources/:name/schema" },
+  rescanDataSources: { method: "POST", path: "/data-sources/rescan" },
+
   // ─── AG-UI Chat ─────────────────────────────────────────────────
   agentChat: { method: "POST", path: "/agents/:id/chat" },
 
