@@ -9,7 +9,7 @@ import type { ChatMessage } from "@koi/dashboard-client";
 import type { DashboardAgentSummary, ForgeDashboardEvent } from "@koi/dashboard-types";
 import { isAgentEvent, isForgeEvent, isMonitorEvent } from "@koi/dashboard-types";
 import type { TuiBrickSummary } from "./types.js";
-import { MAX_SESSION_MESSAGES, type TuiAction, type TuiState } from "./types.js";
+import { MAX_SESSION_MESSAGES, type TuiAction, type TuiState, type ZoomLevel } from "./types.js";
 
 const MAX_FORGE_EVENTS = 200;
 const MAX_MONITOR_EVENTS = 50;
@@ -257,6 +257,29 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
           combined.length > MAX_MONITOR_EVENTS ? combined.slice(-MAX_MONITOR_EVENTS) : combined,
       };
     }
+
+    case "set_zoom_level":
+      return { ...state, zoomLevel: action.level };
+
+    case "cycle_zoom": {
+      const ZOOM_CYCLE: readonly ZoomLevel[] = ["normal", "half", "full"];
+      const currentIdx = ZOOM_CYCLE.indexOf(state.zoomLevel);
+      const nextIdx = (currentIdx + 1) % ZOOM_CYCLE.length;
+      const nextZoom = ZOOM_CYCLE[nextIdx];
+      return nextZoom !== undefined ? { ...state, zoomLevel: nextZoom } : state;
+    }
+
+    case "set_presets":
+      return { ...state, presets: action.presets };
+
+    case "select_preset":
+      return {
+        ...state,
+        selectedPresetIndex: Math.max(0, Math.min(action.index, state.presets.length - 1)),
+      };
+
+    case "set_active_preset_detail":
+      return { ...state, activePresetDetail: action.detail };
   }
 }
 

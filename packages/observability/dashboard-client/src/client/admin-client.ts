@@ -13,6 +13,7 @@ import type {
   DashboardChannelSummary,
   DashboardSkillSummary,
   DashboardSystemMetrics,
+  DataSourceSummary,
   ProcessTreeSnapshot,
 } from "@koi/dashboard-types";
 import { ADMIN_ROUTES, interpolatePath } from "@koi/dashboard-types";
@@ -72,6 +73,18 @@ export interface AdminClient {
   readonly fsList: (path: string) => Promise<ClientResult<readonly FsEntry[]>>;
   readonly fsRead: (path: string) => Promise<ClientResult<string>>;
   readonly fsWrite: (path: string, content: string) => Promise<ClientResult<null>>;
+  /** List all discovered data sources. */
+  readonly listDataSources: () => Promise<ClientResult<readonly DataSourceSummary[]>>;
+  /** Approve a pending data source by name. */
+  readonly approveDataSource: (name: string) => Promise<ClientResult<null>>;
+  /** Reject a pending data source by name. */
+  readonly rejectDataSource: (name: string) => Promise<ClientResult<null>>;
+  /** Fetch schema for a data source. */
+  readonly getDataSourceSchema: (
+    name: string,
+  ) => Promise<ClientResult<Readonly<Record<string, unknown>>>>;
+  /** Trigger a server-side rescan for new data sources. */
+  readonly rescanDataSources: () => Promise<ClientResult<readonly DataSourceSummary[]>>;
   /** Build the SSE events URL for reconnecting stream. */
   readonly eventsUrl: () => string;
   /** Build the AG-UI chat URL for a specific agent. */
@@ -204,6 +217,22 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
 
     fsWrite: (fsPath, content) =>
       request<null>("PUT", ADMIN_ROUTES.fsWrite.path, undefined, { path: fsPath, content }),
+
+    listDataSources: () =>
+      request<readonly DataSourceSummary[]>("GET", ADMIN_ROUTES.listDataSources.path),
+
+    approveDataSource: (name) =>
+      request<null>("POST", ADMIN_ROUTES.approveDataSource.path, { name }),
+
+    rejectDataSource: (name) => request<null>("POST", ADMIN_ROUTES.rejectDataSource.path, { name }),
+
+    getDataSourceSchema: (name) =>
+      request<Readonly<Record<string, unknown>>>("GET", ADMIN_ROUTES.getDataSourceSchema.path, {
+        name,
+      }),
+
+    rescanDataSources: () =>
+      request<readonly DataSourceSummary[]>("POST", ADMIN_ROUTES.rescanDataSources.path),
 
     eventsUrl: () => url(ADMIN_ROUTES.events.path),
 

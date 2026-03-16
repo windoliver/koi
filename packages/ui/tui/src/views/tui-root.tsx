@@ -1,13 +1,14 @@
 /**
  * TUI root component — top-level React component composing all views.
  *
- * Renders status bar, switches between agent list, console, and session views,
- * overlays command palette, and delegates keyboard shortcuts to the app handler.
+ * Renders status bar, switches between views (including welcome mode),
+ * overlays command palette, and delegates keyboard shortcuts.
  */
 
 import type { KeyEvent, SyntaxStyle } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import type { TuiStore } from "../state/store.js";
+import type { PresetInfo } from "../state/types.js";
 import { COLORS } from "../theme.js";
 import { AgentListView } from "./agent-list-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
@@ -28,50 +29,42 @@ export interface TuiRootProps {
   readonly onPaletteSelect: (commandId: string) => void;
   readonly onAgentSelect: (agentId: string) => void;
   readonly onPaletteCancel: () => void;
-  /** Global keyboard shortcut handler — returns true if consumed. */
   readonly onKeyInput: (sequence: string) => boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
-  /** Session picker callbacks. */
   readonly onSessionSelect?: ((sessionId: string) => void) | undefined;
   readonly onSessionCancel?: (() => void) | undefined;
-  /** Data source callbacks. */
   readonly onDataSourceApprove?: ((name: string) => void) | undefined;
   readonly onDataSourceViewSchema?: ((name: string) => void) | undefined;
-  /** Consent callbacks. */
   readonly onConsentApprove?: ((name: string) => void) | undefined;
   readonly onConsentDeny?: ((name: string) => void) | undefined;
   readonly onConsentDetails?: ((name: string) => void) | undefined;
   readonly onConsentDismiss?: (() => void) | undefined;
+  readonly onPresetSelect?: ((presetId: string) => void) | undefined;
+  readonly onPresetDetails?: ((presetId: string) => void) | undefined;
+  readonly onPresetBack?: (() => void) | undefined;
 }
 
 /**
  * Map a KeyEvent from OpenTUI to the raw byte sequence expected
- * by the keyboard handler. Only maps known global shortcuts.
+ * by the keyboard handler.
  */
 function mapKeyEventToSequence(key: KeyEvent): string | null {
   if (key.ctrl) {
     switch (key.name) {
-      case "p":
-        return "\x10"; // Ctrl+P
-      case "r":
-        return "\x12"; // Ctrl+R
-      case "o":
-        return "\x0F"; // Ctrl+O
-      case "g":
-        return "\x07"; // Ctrl+G
+      case "p": return "\x10";
+      case "r": return "\x12";
+      case "o": return "\x0F";
+      case "g": return "\x07";
     }
   }
   if (key.name === "Escape") return "\x1b";
   if (key.name === "ArrowUp") return "\x1b[A";
   if (key.name === "ArrowDown") return "\x1b[B";
-  if (key.name === "q" && !key.ctrl && !key.meta && !key.shift) return "q";
-  if (key.name === "a" && !key.ctrl && !key.meta && !key.shift) return "a";
-  if (key.name === "s" && !key.ctrl && !key.meta && !key.shift) return "s";
-  if (key.name === "j" && !key.ctrl && !key.meta && !key.shift) return "j";
-  if (key.name === "k" && !key.ctrl && !key.meta && !key.shift) return "k";
-  if (key.name === "y" && !key.ctrl && !key.meta && !key.shift) return "y";
-  if (key.name === "n" && !key.ctrl && !key.meta && !key.shift) return "n";
-  if (key.name === "d" && !key.ctrl && !key.meta && !key.shift) return "d";
+  // Single-char keys for view-specific shortcuts
+  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "+", "?"];
+  if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
+    return key.name;
+  }
   return null;
 }
 
@@ -79,7 +72,6 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
 export function TuiRoot(props: TuiRootProps): React.ReactNode {
   const state = useStoreState(props.store);
 
-  // Delegate all keyboard shortcuts to the app-level handler
   useKeyboard((key: KeyEvent) => {
     const seq = mapKeyEventToSequence(key);
     if (seq !== null) {
@@ -99,13 +91,91 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
       <StatusBarView state={state} />
 
       <box flexGrow={1}>
-        {/* Main content area — show agents, console, or sessions */}
+        {/* Welcome mode */}
+        {view === "welcome" && (
+          <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingTop={1}>
+            <text fg={COLORS.cyan}><b>{"  Welcome to Koi"}</b></text>
+            <text fg={COLORS.white}>
+              {"  Koi is a self-extending agent engine. Select a preset to get started."}
+            </text>
+            <box marginTop={1} flexDirection="column" paddingLeft={2}>
+              {state.presets.length > 0 ? (
+                state.presets.map((preset: PresetInfo, i: number) => (
+                  <box key={preset.id} height={1} flexDirection="row">
+                    <text fg={i === state.selectedPresetIndex ? COLORS.cyan : COLORS.dim}>
+                      {i === state.selectedPresetIndex ? " > " : "   "}
+                    </text>
+                    <text fg={i === state.selectedPresetIndex ? COLORS.white : COLORS.dim}>
+                      {preset.id.padEnd(14)}
+                    </text>
+                    <text fg={COLORS.dim}>{preset.description}</text>
+                  </box>
+                ))
+              ) : (
+                <text fg={COLORS.dim}>{"  Loading presets..."}</text>
+              )}
+            </box>
+            <box marginTop={2} paddingLeft={2} flexDirection="column">
+              <text fg={COLORS.dim}><b>{"  Concepts:"}</b></text>
+              <text fg={COLORS.dim}>{"  Manifest   — YAML file defining an agent"}</text>
+              <text fg={COLORS.dim}>{"  Channel    — I/O interface to users (CLI, Slack, Discord)"}</text>
+              <text fg={COLORS.dim}>{"  Middleware  — Intercepts model/tool calls (retry, audit)"}</text>
+              <text fg={COLORS.dim}>{"  Engine     — Swappable agent loop"}</text>
+              <text fg={COLORS.dim}>{"  Forge      — Self-improvement: agent behavior → tools"}</text>
+              <text fg={COLORS.dim}>{"  Nexus      — Shared backend for data and coordination"}</text>
+            </box>
+            <box marginTop={1} paddingLeft={2}>
+              <text fg={COLORS.dim}>{"  j/k:navigate  Enter:select  ?:details  q:quit"}</text>
+            </box>
+          </box>
+        )}
+
+        {/* Preset detail view */}
+        {view === "presetdetail" && state.activePresetDetail !== null && (
+          <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingTop={1}>
+            <text fg={COLORS.cyan}><b>{`  ${state.activePresetDetail.id}`}</b></text>
+            <box marginTop={1} paddingLeft={2} flexDirection="column">
+              <text>{`Nexus: ${state.activePresetDetail.nexusMode}`}</text>
+              {state.activePresetDetail.demoPack !== undefined && (
+                <text>{`Demo pack: ${state.activePresetDetail.demoPack}`}</text>
+              )}
+              {state.activePresetDetail.agentRoles !== undefined && state.activePresetDetail.agentRoles.length > 0 && (
+                <box flexDirection="column" marginTop={1}>
+                  <text fg={COLORS.cyan}><b>{"Agent roles:"}</b></text>
+                  {state.activePresetDetail.agentRoles.map((role) => (
+                    <text key={role.role} fg={COLORS.dim}>{`  ${role.role} — ${role.description}`}</text>
+                  ))}
+                </box>
+              )}
+              {Object.entries(state.activePresetDetail.stacks).filter(([, v]) => v === true).length > 0 && (
+                <box marginTop={1} flexDirection="column">
+                  <text fg={COLORS.cyan}><b>{"Stacks:"}</b></text>
+                  <text fg={COLORS.dim}>
+                    {"  " + Object.entries(state.activePresetDetail.stacks)
+                      .filter(([, v]) => v === true)
+                      .map(([k]) => k)
+                      .join(", ")}
+                  </text>
+                </box>
+              )}
+              {state.activePresetDetail.prompts !== undefined && state.activePresetDetail.prompts.length > 0 && (
+                <box marginTop={1} flexDirection="column">
+                  <text fg={COLORS.cyan}><b>{"Sample prompts:"}</b></text>
+                  {state.activePresetDetail.prompts.map((p, i) => (
+                    <text key={i} fg={COLORS.dim}><i>{`  "${p}"`}</i></text>
+                  ))}
+                </box>
+              )}
+            </box>
+            <box marginTop={1} paddingLeft={2}>
+              <text fg={COLORS.dim}>{"  Enter:select  Esc:back  q:quit"}</text>
+            </box>
+          </box>
+        )}
+
+        {/* Boardroom views */}
         {(view === "agents" || (isPalette && backgroundView === "agents")) && (
-          <AgentListView
-            agents={agents}
-            onSelect={props.onAgentSelect}
-            focused={view === "agents"}
-          />
+          <AgentListView agents={agents} onSelect={props.onAgentSelect} focused={view === "agents"} />
         )}
 
         {(view === "console" || (isPalette && backgroundView === "console")) && (
@@ -135,9 +205,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             loading={state.sourceDetailLoading}
             onApprove={props.onDataSourceApprove}
             onViewSchema={props.onDataSourceViewSchema}
-            onBack={() => {
-              props.store.dispatch({ kind: "set_view", view: "datasources" });
-            }}
+            onBack={() => { props.store.dispatch({ kind: "set_view", view: "datasources" }); }}
             focused={true}
           />
         )}

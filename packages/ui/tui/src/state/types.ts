@@ -43,8 +43,13 @@ export type TuiView =
   | "datasources"
   | "forge"
   | "palette"
+  | "presetdetail"
   | "sessions"
-  | "sourcedetail";
+  | "sourcedetail"
+  | "welcome";
+
+/** Panel zoom level — cycles with +/Esc. */
+export type ZoomLevel = "normal" | "half" | "full";
 
 /** Admin API connection state. */
 export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
@@ -65,6 +70,18 @@ export interface TuiBrickSummary {
   readonly name: string;
   readonly status: string;
   readonly fitness: number;
+}
+
+/** Preset info for the welcome screen. */
+export interface PresetInfo {
+  readonly id: string;
+  readonly description: string;
+  readonly nexusMode: string;
+  readonly demoPack: string | undefined;
+  readonly services: Readonly<Record<string, unknown>>;
+  readonly stacks: Readonly<Record<string, boolean | undefined>>;
+  readonly agentRoles?: readonly { readonly role: string; readonly description: string }[];
+  readonly prompts?: readonly string[];
 }
 
 /** Complete TUI application state. Immutable — new object on every update. */
@@ -102,12 +119,23 @@ export interface TuiState {
   readonly forgeBricks: Readonly<Record<string, TuiBrickSummary>>;
   /** Forge sparkline data by brick ID. */
   readonly forgeSparklines: Readonly<Record<string, readonly number[]>>;
+  /** Current zoom level for focused panel. */
+  readonly zoomLevel: ZoomLevel;
+  /** Available presets for the welcome screen. */
+  readonly presets: readonly PresetInfo[];
+  /** Selected preset index (welcome screen). */
+  readonly selectedPresetIndex: number;
+  /** Active preset detail being viewed. */
+  readonly activePresetDetail: PresetInfo | null;
 }
 
-/** Create initial TUI state for a given admin URL. */
-export function createInitialState(adminUrl: string): TuiState {
+/** App mode: welcome (no admin API) or boardroom (connected). */
+export type TuiMode = "welcome" | "boardroom";
+
+/** Create initial TUI state for a given admin URL and mode. */
+export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"): TuiState {
   return {
-    view: "agents",
+    view: mode === "welcome" ? "welcome" : "agents",
     agents: [],
     selectedAgentIndex: 0,
     activeSession: null,
@@ -127,6 +155,10 @@ export function createInitialState(adminUrl: string): TuiState {
     monitorEvents: [],
     forgeBricks: {},
     forgeSparklines: {},
+    zoomLevel: "normal",
+    presets: [],
+    selectedPresetIndex: 0,
+    activePresetDetail: null,
   };
 }
 
@@ -202,6 +234,17 @@ export type TuiAction =
   | {
       readonly kind: "apply_monitor_event";
       readonly event: MonitorDashboardEvent;
+    }
+  | { readonly kind: "set_zoom_level"; readonly level: ZoomLevel }
+  | { readonly kind: "cycle_zoom" }
+  | {
+      readonly kind: "set_presets";
+      readonly presets: readonly PresetInfo[];
+    }
+  | { readonly kind: "select_preset"; readonly index: number }
+  | {
+      readonly kind: "set_active_preset_detail";
+      readonly detail: PresetInfo | null;
     };
 
 /** Maximum messages kept in session memory (sliding window). */

@@ -41,7 +41,7 @@ describe("composeStatusBarText", () => {
     expect(text).toContain("connected");
     expect(text).toContain("3 agents");
     expect(text).toContain("my-agent");
-    expect(text).toContain("Enter send");
+    expect(text).toContain("Enter:send");
   });
 
   test("shows 'no agent' when agentName is undefined", () => {
@@ -62,6 +62,6 @@ describe("composeStatusBarText", () => {
       view: "palette",
       agentCount: 1,
     });
-    expect(text).toContain("Esc close");
+    expect(text).toContain("Esc:close");
   });
 });

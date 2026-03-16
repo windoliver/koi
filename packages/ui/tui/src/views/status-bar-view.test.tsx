@@ -24,7 +24,7 @@ describe("StatusBarView", () => {
 
     await renderOnce();
     const frame = captureCharFrame();
-    expect(frame).toContain("KOI");
+    expect(frame).toContain("NORMAL");
   });
 
   test("shows agent count", async () => {

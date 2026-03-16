@@ -145,8 +145,29 @@ const matched = COMMANDS.find((cmd) => cmd.match(flags));
 
 if (matched !== undefined) {
   await matched.run(flags);
+} else if (flags.command === undefined || flags.command === null) {
+  // No subcommand: check for koi.yaml, launch TUI accordingly
+  const { existsSync } = await import("node:fs");
+  if (existsSync("koi.yaml")) {
+    // Manifest exists — run `koi up` flow
+    const { runUp } = await import("./commands/up.js");
+    await runUp(flags as Parameters<typeof runUp>[0]);
+  } else {
+    // No manifest — launch TUI in welcome mode
+    const { runTui } = await import("./commands/tui.js");
+    await runTui({
+      command: "tui",
+      directory: flags.directory,
+      url: undefined,
+      authToken: undefined,
+      refresh: undefined,
+      agent: undefined,
+      session: undefined,
+      mode: "welcome",
+    } as unknown as Parameters<typeof runTui>[0]);
+  }
 } else {
-  process.stderr.write(`Unknown command: ${flags.command ?? "(none)"}\n`);
+  process.stderr.write(`Unknown command: ${flags.command}\n`);
   process.stderr.write("Usage:\n");
   for (const cmd of COMMANDS) {
     process.stderr.write(`  ${cmd.description}\n`);

@@ -1,9 +1,9 @@
 /**
  * Keyboard handler — global keyboard shortcuts for the TUI.
  *
- * Extracted from tui-app to keep the orchestrator lean.
  * Registers shortcuts: Ctrl+P (palette), Ctrl+R (refresh),
- * Ctrl+O (browser), Ctrl+G (forge), q (quit), Esc (back/close).
+ * Ctrl+O (browser), Ctrl+G (forge), q (quit), Esc (back/close),
+ * + (cycle zoom), j/k (navigate in welcome/datasources).
  */
 
 import type { TuiStore } from "../state/store.js";
@@ -42,8 +42,8 @@ export function createKeyboardHandler(
   return (sequence: string): boolean => {
     const view = store.getState().view;
 
-    // Ctrl+P — toggle command palette
-    if (sequence === "\x10") {
+    // Ctrl+P — toggle command palette (not in welcome mode)
+    if (sequence === "\x10" && view !== "welcome" && view !== "presetdetail") {
       callbacks.togglePalette();
       return true;
     }
@@ -66,6 +66,49 @@ export function createKeyboardHandler(
       return true;
     }
 
+    // + — cycle zoom level
+    if (sequence === "+") {
+      store.dispatch({ kind: "cycle_zoom" });
+      return true;
+    }
+
+    // Welcome mode — j/k navigation, Enter (via onSelect), ? for details, q to quit
+    if (view === "welcome") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        store.dispatch({
+          kind: "select_preset",
+          index: store.getState().selectedPresetIndex + 1,
+        });
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        store.dispatch({
+          kind: "select_preset",
+          index: store.getState().selectedPresetIndex - 1,
+        });
+        return true;
+      }
+      if (sequence === "q") {
+        callbacks.stop();
+        return true;
+      }
+      return false;
+    }
+
+    // Preset detail view — Esc to go back, q to quit
+    if (view === "presetdetail") {
+      if (sequence === "\x1b") {
+        store.dispatch({ kind: "set_active_preset_detail", detail: null });
+        store.dispatch({ kind: "set_view", view: "welcome" });
+        return true;
+      }
+      if (sequence === "q") {
+        callbacks.stop();
+        return true;
+      }
+      return false;
+    }
+
     // Escape — context-dependent back/close
     if (sequence === "\x1b") {
       if (view === "palette") {
@@ -80,11 +123,7 @@ export function createKeyboardHandler(
         callbacks.closeSessions();
         return true;
       }
-      if (view === "datasources") {
-        callbacks.closeDataSources();
-        return true;
-      }
-      if (view === "sourcedetail") {
+      if (view === "datasources" || view === "sourcedetail") {
         callbacks.closeDataSources();
         return true;
       }
