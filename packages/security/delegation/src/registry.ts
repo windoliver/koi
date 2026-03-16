@@ -1,7 +1,7 @@
 /**
  * In-memory revocation registry and grant index for cascade lookups.
  *
- * The registry stores revoked delegation IDs with optional TTL cleanup.
+ * The registry stores revoked delegation IDs permanently (no eviction).
  * The grant index maintains parent→children mappings for efficient cascading.
  */
 
@@ -26,34 +26,19 @@ export interface InMemoryRegistry extends RevocationRegistry {
  * evicted. Previously, revocations and grants shared a single Map with LRU
  * eviction, which allowed previously-revoked IDs to silently become valid
  * again when the map exceeded `maxEntries`.
- *
- * `cleanupIntervalMs` is retained for API compatibility but is currently
- * a no-op since revocations are never evicted.
  */
-export function createInMemoryRegistry(config?: {
+export function createInMemoryRegistry(_config?: {
+  /** @deprecated No longer used — revocations are permanent and never evicted. */
   readonly cleanupIntervalMs?: number;
 }): InMemoryRegistry {
   // Revoked IDs are stored in a Set that never evicts — revocations are permanent.
   const revoked = new Set<DelegationId>();
-
-  // Lazy timer — retained for dispose() API compatibility
-  let timer: ReturnType<typeof setInterval> | undefined;
-  const cleanupIntervalMs = config?.cleanupIntervalMs ?? 60_000;
-
-  function ensureTimer(): void {
-    if (timer === undefined) {
-      timer = setInterval(() => {
-        // no-op — revocations are never evicted
-      }, cleanupIntervalMs);
-    }
-  }
 
   function isRevoked(id: DelegationId): boolean {
     return revoked.has(id);
   }
 
   function revoke(id: DelegationId, _cascade: boolean): void {
-    ensureTimer();
     revoked.add(id);
   }
 
@@ -62,10 +47,8 @@ export function createInMemoryRegistry(config?: {
   }
 
   function dispose(): void {
-    if (timer !== undefined) {
-      clearInterval(timer);
-      timer = undefined;
-    }
+    // No-op — retained for API compatibility. Previously stopped a cleanup
+    // interval that is no longer needed since revocations are permanent.
   }
 
   return { isRevoked, revoke, revokedIds, dispose };

@@ -283,6 +283,13 @@ interface MediaFallbackConfig {
     readonly mediaMaxMb?: number;
     /** Custom fallback message template. Receives the original block kind. Default: "[Media failed to send: {kind}]" */
     readonly formatWarning?: (block: ContentBlock) => string;
+    /**
+     * Optional size checker for media blocks. Returns true if the block exceeds
+     * the given limit. Channel adapters inject their own logic here since
+     * L0 ContentBlock does not carry a size field.
+     * Default: always returns false (size unknown).
+     */
+    readonly isOversized?: (block: ContentBlock, maxMb: number) => boolean;
 }
 /**
  * Creates a send function with media fallback.

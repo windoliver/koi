@@ -225,6 +225,27 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
   // Grant lifecycle
   // ---------------------------------------------------------------------------
 
+  /**
+   * Store a grant, emit the event, and fire the onGrant hook.
+   * Rolls back store + index on hook failure.
+   */
+  async function storeGrantAndNotify(grantResult: DelegationGrant): Promise<void> {
+    grantStore.set(grantResult.id, grantResult);
+    grantIndex.addGrant(grantResult);
+
+    emit({ kind: "delegation:granted", grant: grantResult });
+
+    if (onGrantHook !== undefined) {
+      try {
+        await onGrantHook(grantResult);
+      } catch (hookError: unknown) {
+        grantStore.delete(grantResult.id);
+        grantIndex.removeGrant(grantResult);
+        throw new Error("onGrant hook failed — grant rolled back", { cause: hookError });
+      }
+    }
+  }
+
   async function grant(
     issuerId: AgentId,
     delegateeId: AgentId,
@@ -246,21 +267,7 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
 
     if (!result.ok) return result;
 
-    grantStore.set(result.value.id, result.value);
-    grantIndex.addGrant(result.value);
-
-    emit({ kind: "delegation:granted", grant: result.value });
-
-    // Fire onGrant hook — roll back on failure
-    if (onGrantHook !== undefined) {
-      try {
-        await onGrantHook(result.value);
-      } catch (hookError: unknown) {
-        grantStore.delete(result.value.id);
-        grantIndex.removeGrant(result.value);
-        throw new Error("onGrant hook failed — grant rolled back", { cause: hookError });
-      }
-    }
+    await storeGrantAndNotify(result.value);
 
     return result;
   }
@@ -296,21 +303,7 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
 
     if (!result.ok) return result;
 
-    grantStore.set(result.value.id, result.value);
-    grantIndex.addGrant(result.value);
-
-    emit({ kind: "delegation:granted", grant: result.value });
-
-    // Fire onGrant hook — roll back on failure
-    if (onGrantHook !== undefined) {
-      try {
-        await onGrantHook(result.value);
-      } catch (hookError: unknown) {
-        grantStore.delete(result.value.id);
-        grantIndex.removeGrant(result.value);
-        throw new Error("onGrant hook failed — grant rolled back", { cause: hookError });
-      }
-    }
+    await storeGrantAndNotify(result.value);
 
     return result;
   }

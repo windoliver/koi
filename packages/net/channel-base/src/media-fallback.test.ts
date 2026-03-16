@@ -181,6 +181,82 @@ describe("createMediaFallback", () => {
     });
   });
 
+  describe("isOversized callback", () => {
+    test("oversized blocks are replaced with size warning", async () => {
+      const send = mock(async (_msg: OutboundMessage) => {});
+      const wrapped = createMediaFallback({
+        send,
+        mediaMaxMb: 10,
+        isOversized: (block) => block.kind === "image",
+      });
+
+      await wrapped(mediaMsg());
+      expect(send).toHaveBeenCalledTimes(1);
+      const sentMsg = (send.mock.calls[0] as readonly [OutboundMessage])[0];
+      // Text block unchanged
+      expect(sentMsg.content[0]).toEqual({ kind: "text", text: "Check this:" });
+      // Image replaced with size warning
+      expect(sentMsg.content[1]).toEqual({
+        kind: "text",
+        text: "[File too large (>10MB): photo]",
+      });
+      // File not oversized — unchanged
+      expect(sentMsg.content[2]).toMatchObject({ kind: "file", name: "doc.pdf" });
+    });
+
+    test("non-oversized blocks pass through normally", async () => {
+      const send = mock(async (_msg: OutboundMessage) => {});
+      const wrapped = createMediaFallback({
+        send,
+        mediaMaxMb: 100,
+        isOversized: () => false,
+      });
+
+      await wrapped(mediaMsg());
+      expect(send).toHaveBeenCalledTimes(1);
+      const sentMsg = (send.mock.calls[0] as readonly [OutboundMessage])[0];
+      expect(sentMsg.content).toHaveLength(3);
+      expect(sentMsg.content[1]?.kind).toBe("image");
+      expect(sentMsg.content[2]?.kind).toBe("file");
+    });
+
+    test("mixed oversized and normal blocks — only oversized replaced", async () => {
+      const send = mock(async (_msg: OutboundMessage) => {});
+      const wrapped = createMediaFallback({
+        send,
+        mediaMaxMb: 5,
+        isOversized: (block) => block.kind === "file",
+      });
+
+      await wrapped(mediaMsg());
+      expect(send).toHaveBeenCalledTimes(1);
+      const sentMsg = (send.mock.calls[0] as readonly [OutboundMessage])[0];
+      // Text unchanged
+      expect(sentMsg.content[0]).toEqual({ kind: "text", text: "Check this:" });
+      // Image passes through (not oversized)
+      expect(sentMsg.content[1]?.kind).toBe("image");
+      // File replaced with warning
+      expect(sentMsg.content[2]).toEqual({
+        kind: "text",
+        text: "[File too large (>5MB): doc.pdf]",
+      });
+    });
+
+    test("no isOversized callback — default stub preserves existing behavior", async () => {
+      const send = mock(async (_msg: OutboundMessage) => {});
+      const wrapped = createMediaFallback({
+        send,
+        mediaMaxMb: 1, // Very low limit, but no checker provided
+      });
+
+      await wrapped(mediaMsg());
+      // Should pass through normally since default isOversized returns false
+      expect(send).toHaveBeenCalledTimes(1);
+      const sentMsg = (send.mock.calls[0] as readonly [OutboundMessage])[0];
+      expect(sentMsg.content[1]?.kind).toBe("image");
+    });
+  });
+
   test("preserves threadId and metadata in fallback message", async () => {
     // let justified: track call count
     let callCount = 0;
