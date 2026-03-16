@@ -7,18 +7,29 @@
 
 import { PanelChrome } from "../components/panel-chrome.js";
 import { sparkline } from "../lib/sparkline.js";
-import type { TuiState } from "../state/types.js";
+import type { ForgeDashboardEvent, MonitorDashboardEvent } from "@koi/dashboard-types";
+import type { TuiBrickSummary } from "../state/types.js";
 import { COLORS } from "../theme.js";
 
+/** Typed forge view state slice (avoids passing full TuiState). */
+export interface ForgeViewState {
+  readonly forgeBricks: Readonly<Record<string, TuiBrickSummary>>;
+  readonly forgeSparklines: Readonly<Record<string, readonly number[]>>;
+  readonly forgeEvents: readonly ForgeDashboardEvent[];
+  readonly monitorEvents: readonly MonitorDashboardEvent[];
+  readonly forgeSelectedBrickIndex: number;
+}
+
 export interface ForgeViewProps {
-  readonly state: TuiState;
+  readonly state: ForgeViewState;
   readonly focused: boolean;
   readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 export function ForgeView(props: ForgeViewProps): React.ReactNode {
-  const { forgeBricks, forgeSparklines, forgeEvents, monitorEvents } = props.state;
+  const { forgeBricks, forgeSparklines, forgeEvents, monitorEvents, forgeSelectedBrickIndex } = props.state;
   const brickEntries = Object.entries(forgeBricks);
+  const selectedIdx = forgeSelectedBrickIndex;
 
   // Count promotions
   let promotedCount = 0;
@@ -65,14 +76,16 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
         <box height={1}>
           <text fg={COLORS.dim}>{" Name                 Status       Fitness"}</text>
         </box>
-        {brickEntries.map(([brickId, brick]) => {
+        {brickEntries.map(([brickId, brick], i) => {
           const fitnessData = forgeSparklines[brickId] ?? [];
           const fitnessLabel = brick.fitness > 0 ? `${(brick.fitness * 100).toFixed(0)}%` : " —";
           const sparklineStr = fitnessData.length > 0 ? ` ${sparkline(fitnessData)}` : "";
+          const isSelected = i === selectedIdx;
           return (
             <box key={brickId} height={1} flexDirection="row">
-              <text>
-                {` ${brick.name.padEnd(20).slice(0, 20)} ${brick.status.padEnd(12)} ${fitnessLabel}${sparklineStr}`}
+              <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
+                {isSelected ? " >" : "  "}
+                {`${brick.name.padEnd(20).slice(0, 20)} ${brick.status.padEnd(12)} ${fitnessLabel}${sparklineStr}`}
               </text>
             </box>
           );

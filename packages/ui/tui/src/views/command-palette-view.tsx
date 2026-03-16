@@ -7,15 +7,9 @@
 
 import type { SelectOption } from "@opentui/core";
 import { useCallback, useMemo, useState } from "react";
+import type { TuiCapabilities } from "../state/domain-types.js";
 import { COLORS } from "../theme.js";
-import { DEFAULT_COMMANDS } from "./command-palette.js";
-
-/** Precomputed select options from default commands. */
-const COMMAND_OPTIONS: readonly SelectOption[] = DEFAULT_COMMANDS.map((cmd) => ({
-  name: cmd.label,
-  description: cmd.shortcut !== undefined ? `${cmd.description}  (${cmd.shortcut})` : cmd.description,
-  value: cmd.id,
-}));
+import { DEFAULT_COMMANDS, filterCommandsByCapabilities } from "./command-palette.js";
 
 /** Case-insensitive substring match against name and description. */
 function matchesFilter(option: SelectOption, query: string): boolean {
@@ -31,16 +25,27 @@ export interface CommandPaletteViewProps {
   readonly onSelect: (commandId: string) => void;
   readonly onCancel: () => void;
   readonly focused: boolean;
+  readonly capabilities?: TuiCapabilities | null | undefined;
 }
 
 /** Command palette — overlay select with filtering. */
 export function CommandPaletteView(props: CommandPaletteViewProps): React.ReactNode {
   const [filter, setFilter] = useState("");
 
+  const commandOptions = useMemo((): readonly SelectOption[] => {
+    const caps = props.capabilities ?? null;
+    const filtered = filterCommandsByCapabilities(DEFAULT_COMMANDS, caps);
+    return filtered.map((cmd) => ({
+      name: cmd.label,
+      description: cmd.shortcut !== undefined ? `${cmd.description}  (${cmd.shortcut})` : cmd.description,
+      value: cmd.id,
+    }));
+  }, [props.capabilities]);
+
   const filteredOptions = useMemo((): readonly SelectOption[] => {
-    if (filter === "") return COMMAND_OPTIONS;
-    return COMMAND_OPTIONS.filter((opt) => matchesFilter(opt, filter));
-  }, [filter]);
+    if (filter === "") return commandOptions;
+    return commandOptions.filter((opt) => matchesFilter(opt, filter));
+  }, [filter, commandOptions]);
 
   const handleInput = useCallback((value: string) => { setFilter(value); }, []);
 

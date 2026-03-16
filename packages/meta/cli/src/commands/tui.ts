@@ -16,8 +16,12 @@
  *   koi tui --refresh 10
  */
 
+import type { OperationResult, PhaseCallbacks, SetupWizardState } from "@koi/setup-core";
+import { KNOWN_MODELS } from "@koi/setup-core";
 import type { PresetInfo } from "@koi/tui";
 import type { TuiFlags } from "../args.js";
+import type { RuntimeHandle } from "./up/boot-runtime.js";
+import type { StartStackContext } from "./up/start-stack.js";
 
 const DEFAULT_ADMIN_URL = "http://localhost:3100/admin/api";
 
@@ -82,6 +86,46 @@ async function scaffoldManifest(presetId: string, agentName: string): Promise<vo
   await Bun.write(manifestPath, yaml);
 }
 
+/**
+ * Scaffolds a koi.yaml from the full wizard state, including model, engine,
+ * channels, and addons — not just preset and name.
+ */
+async function scaffoldManifestFromWizard(wizardState: SetupWizardState): Promise<void> {
+  const { resolve } = await import("node:path");
+  const { DEFAULT_STATE } = await import("../wizard/state.js");
+  const { generateManifestYaml, generateDemoManifestYaml } = await import("../templates/shared.js");
+
+  const presetId = wizardState.preset;
+  // SetupWizardState.channels is readonly string[]; WizardState.channels
+  // requires ChannelName[]. The TUI wizard only offers known channel names,
+  // so the cast is safe.
+  const channels =
+    wizardState.channels.length > 0
+      ? (wizardState.channels as typeof DEFAULT_STATE.channels)
+      : DEFAULT_STATE.channels;
+  const state = {
+    ...DEFAULT_STATE,
+    name: wizardState.name,
+    model: wizardState.model,
+    engine: wizardState.engine,
+    channels,
+    addons: [...wizardState.addons],
+    preset: presetId as typeof DEFAULT_STATE.preset,
+    template: (presetId === "demo" || presetId === "mesh"
+      ? "copilot"
+      : "minimal") as typeof DEFAULT_STATE.template,
+    ...(wizardState.demoPack !== undefined ? { demoPack: wizardState.demoPack } : {}),
+  };
+
+  const yaml =
+    presetId === "demo" || presetId === "mesh"
+      ? generateDemoManifestYaml(state)
+      : generateManifestYaml(state);
+
+  const manifestPath = resolve("koi.yaml");
+  await Bun.write(manifestPath, yaml);
+}
+
 export async function runTui(flags: TuiFlags): Promise<void> {
   const adminUrl = flags.url ?? DEFAULT_ADMIN_URL;
   const refreshMs = flags.refresh * 1000;
@@ -93,6 +137,10 @@ export async function runTui(flags: TuiFlags): Promise<void> {
   // In welcome mode, load presets and wire the selection callback
   const presets = isWelcome ? await loadPresetInfos() : undefined;
 
+  // Captured from startStack context for lifecycle management
+  // let justified: set by onStartStack, read by shutdown handler
+  let runtimeHandle: RuntimeHandle | undefined;
+
   const app = createTuiApp({
     adminUrl,
     refreshIntervalMs: refreshMs,
@@ -103,13 +151,35 @@ export async function runTui(flags: TuiFlags): Promise<void> {
     ...(flags.session !== undefined ? { initialSessionId: flags.session } : {}),
     ...(isWelcome
       ? {
+          models: [...KNOWN_MODELS],
+          onStartStack: async (
+            wizardState: SetupWizardState,
+            callbacks: PhaseCallbacks,
+          ): Promise<OperationResult<void>> => {
+            // 1. Scaffold koi.yaml from full wizard state
+            await scaffoldManifestFromWizard(wizardState);
+
+            // 2. Run all phases in-process: validate manifest, preflight,
+            //    resolve agent, then boot runtime via bootRuntime()
+            const { resolve } = await import("node:path");
+            const { startStack } = await import("./up/start-stack.js");
+            const ctx: StartStackContext = {
+              wizardState,
+              manifestPath: resolve("koi.yaml"),
+              workspaceRoot: process.cwd(),
+              verbose: false,
+              adminPort: 3100,
+              adminUrl,
+            };
+            const result = await startStack(ctx, callbacks);
+            // Capture the runtime handle for lifecycle cleanup on shutdown
+            runtimeHandle = ctx.runtimeHandle;
+            return result;
+          },
           onPresetSelected: async (presetId: string, agentName: string): Promise<void> => {
-            // 1. Scaffold koi.yaml with the selected preset
+            // Fallback: scaffold and spawn detached
             await scaffoldManifest(presetId, agentName);
 
-            // 2. Spawn `koi up` as a detached background process.
-            //    We can't call runUp() in-process because it creates its own
-            //    TUI and renderer, which conflicts with our welcome TUI.
             const { spawn } = await import("node:child_process");
             const bunPath = process.argv[0] ?? "bun";
             const cliEntry = new URL("../bin.ts", import.meta.url).pathname;
@@ -120,7 +190,6 @@ export async function runTui(flags: TuiFlags): Promise<void> {
             });
             child.unref();
 
-            // 3. Wait for admin API to become healthy (poll every 500ms, up to 30s)
             const maxAttempts = 60;
             for (let attempt = 0; attempt < maxAttempts; attempt++) {
               try {
@@ -134,16 +203,148 @@ export async function runTui(flags: TuiFlags): Promise<void> {
               await new Promise((r) => setTimeout(r, 500));
             }
 
-            // 4. Transition the TUI from welcome to boardroom
             await app.transitionToBoardroom();
+          },
+          onServiceCommand: async (command: string): Promise<void> => {
+            const { createAdminClient } = await import("@koi/tui");
+            const client = createAdminClient({ baseUrl: adminUrl });
+            switch (command) {
+              case "stop":
+                await client.shutdown();
+                break;
+              case "doctor": {
+                const dispatch = (check: {
+                  readonly id: string;
+                  readonly label: string;
+                  readonly status: "pass" | "fail" | "warn" | "running";
+                  readonly detail?: string;
+                }): void => {
+                  app.store.dispatch({ kind: "append_doctor_check", check });
+                };
+
+                dispatch({ id: "manifest", label: "Manifest", status: "running" });
+                try {
+                  const { loadManifest } = await import("@koi/manifest");
+                  const loadResult = await loadManifest("koi.yaml");
+                  if (!loadResult.ok) {
+                    dispatch({
+                      id: "manifest",
+                      label: "Manifest",
+                      status: "fail",
+                      detail: loadResult.error.message,
+                    });
+                    break;
+                  }
+                  // Replace running with pass
+                  app.store.dispatch({
+                    kind: "set_doctor_checks",
+                    checks: [
+                      {
+                        id: "manifest",
+                        label: "Manifest",
+                        status: "pass",
+                        detail: loadResult.value.manifest.name,
+                      },
+                    ],
+                  });
+
+                  dispatch({ id: "admin", label: "Admin API", status: "running" });
+                  const healthResult = await client.checkHealth();
+                  // Rebuild checks array
+                  const checks: {
+                    readonly id: string;
+                    readonly label: string;
+                    readonly status: "pass" | "fail" | "warn" | "running";
+                    readonly detail?: string;
+                  }[] = [
+                    {
+                      id: "manifest",
+                      label: "Manifest",
+                      status: "pass" as const,
+                      detail: loadResult.value.manifest.name,
+                    },
+                    healthResult.ok
+                      ? {
+                          id: "admin",
+                          label: "Admin API",
+                          status: "pass" as const,
+                          detail: healthResult.value.status,
+                        }
+                      : {
+                          id: "admin",
+                          label: "Admin API",
+                          status: "fail" as const,
+                          detail: healthResult.error.kind,
+                        },
+                  ];
+
+                  const statusResult = await client.detailedStatus();
+                  if (statusResult.ok) {
+                    for (const [name, sub] of Object.entries(statusResult.value.subsystems)) {
+                      const latency =
+                        sub.latencyMs !== undefined ? ` (${String(sub.latencyMs)}ms)` : "";
+                      checks.push({
+                        id: `sub-${name}`,
+                        label: name,
+                        status:
+                          sub.status === "ready"
+                            ? ("pass" as const)
+                            : sub.status === "degraded"
+                              ? ("warn" as const)
+                              : ("fail" as const),
+                        detail: `${sub.status}${latency}`,
+                      });
+                    }
+                  }
+
+                  app.store.dispatch({ kind: "set_doctor_checks", checks });
+                } catch (err: unknown) {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  app.store.dispatch({
+                    kind: "set_doctor_checks",
+                    checks: [{ id: "error", label: "Doctor", status: "fail", detail: msg }],
+                  });
+                }
+                break;
+              }
+              case "demo-init": {
+                const packs = await client.demoPacks();
+                if (packs.ok && packs.value.length > 0) {
+                  const first = packs.value[0];
+                  if (first !== undefined) {
+                    await client.demoInit(first.id);
+                  }
+                }
+                break;
+              }
+              case "demo-reset": {
+                const packs = await client.demoPacks();
+                if (packs.ok && packs.value.length > 0) {
+                  const first = packs.value[0];
+                  if (first !== undefined) {
+                    await client.demoReset(first.id);
+                  }
+                }
+                break;
+              }
+              case "deploy":
+                await client.deploy();
+                break;
+              case "undeploy":
+                await client.undeploy();
+                break;
+            }
           },
         }
       : {}),
   });
 
-  // Graceful shutdown on signals
+  // Graceful shutdown on signals — dispose in-process runtime if started
   const shutdown = async (): Promise<void> => {
     await app.stop();
+    if (runtimeHandle !== undefined) {
+      await runtimeHandle.dispose();
+    }
     process.exit(0);
   };
 

@@ -44,6 +44,9 @@ function makeCallbacks(): KeyboardCallbacks & {
     dataSourceSchema: () => {
       mutableCalls.push("dataSourceSchema");
     },
+    dataSourcesContinue: () => {
+      mutableCalls.push("dataSourcesContinue");
+    },
     consentApprove: () => {
       mutableCalls.push("consentApprove");
     },
@@ -88,6 +91,126 @@ function makeCallbacks(): KeyboardCallbacks & {
     },
     addonsBack: () => {
       mutableCalls.push("addonsBack");
+    },
+    toggleCost: () => {
+      mutableCalls.push("toggleCost");
+    },
+    toggleNexus: () => {
+      mutableCalls.push("toggleNexus");
+    },
+    navigateBack: () => {
+      mutableCalls.push("navigateBack");
+    },
+    domainScrollUp: () => {
+      mutableCalls.push("domainScrollUp");
+    },
+    domainScrollDown: () => {
+      mutableCalls.push("domainScrollDown");
+    },
+    temporalSelectNext: () => {
+      mutableCalls.push("temporalSelectNext");
+    },
+    temporalSelectPrev: () => {
+      mutableCalls.push("temporalSelectPrev");
+    },
+    temporalDetail: () => {
+      mutableCalls.push("temporalDetail");
+    },
+    temporalSignal: () => {
+      mutableCalls.push("temporalSignal");
+    },
+    temporalTerminate: () => {
+      mutableCalls.push("temporalTerminate");
+    },
+    schedulerRetryDlq: () => {
+      mutableCalls.push("schedulerRetryDlq");
+    },
+    harnessPauseResume: () => {
+      mutableCalls.push("harnessPauseResume");
+    },
+    governanceSelectNext: () => {
+      mutableCalls.push("governanceSelectNext");
+    },
+    governanceSelectPrev: () => {
+      mutableCalls.push("governanceSelectPrev");
+    },
+    governanceApprove: () => {
+      mutableCalls.push("governanceApprove");
+    },
+    governanceDeny: () => {
+      mutableCalls.push("governanceDeny");
+    },
+    forgeSelectNext: () => {
+      mutableCalls.push("forgeSelectNext");
+    },
+    forgeSelectPrev: () => {
+      mutableCalls.push("forgeSelectPrev");
+    },
+    forgePromote: () => {
+      mutableCalls.push("forgePromote");
+    },
+    forgeDemote: () => {
+      mutableCalls.push("forgeDemote");
+    },
+    forgeQuarantine: () => {
+      mutableCalls.push("forgeQuarantine");
+    },
+    nexusBrowserSelectNext: () => {
+      mutableCalls.push("nexusBrowserSelectNext");
+    },
+    nexusBrowserSelectPrev: () => {
+      mutableCalls.push("nexusBrowserSelectPrev");
+    },
+    nexusBrowserOpen: () => {
+      mutableCalls.push("nexusBrowserOpen");
+    },
+    nexusBrowserBack: () => {
+      mutableCalls.push("nexusBrowserBack");
+    },
+    scratchpadOpen: () => {
+      mutableCalls.push("scratchpadOpen");
+    },
+    modelSelect: () => {
+      mutableCalls.push("modelSelect");
+    },
+    modelBack: () => {
+      mutableCalls.push("modelBack");
+    },
+    engineConfirm: () => {
+      mutableCalls.push("engineConfirm");
+    },
+    engineSkip: () => {
+      mutableCalls.push("engineSkip");
+    },
+    engineBack: () => {
+      mutableCalls.push("engineBack");
+    },
+    channelsConfirm: () => {
+      mutableCalls.push("channelsConfirm");
+    },
+    channelsToggle: () => {
+      mutableCalls.push("channelsToggle");
+    },
+    channelsBack: () => {
+      mutableCalls.push("channelsBack");
+    },
+    serviceStop: () => {
+      mutableCalls.push("serviceStop");
+    },
+    serviceDoctor: () => {
+      mutableCalls.push("serviceDoctor");
+    },
+    serviceLogs: () => {
+      mutableCalls.push("serviceLogs");
+    },
+    serviceBack: () => {
+      mutableCalls.push("serviceBack");
+    },
+    logsCycleLevel: () => {
+      mutableCalls.push("logsCycleLevel");
+    },
+    logsBack: () => {
+      mutableCalls.push("logsBack");
     },
   };
 }

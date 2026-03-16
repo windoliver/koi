@@ -12,6 +12,8 @@ export interface PaletteCommand {
   readonly description: string;
   /** Keyboard shortcut hint (e.g., "Ctrl+R"). */
   readonly shortcut?: string;
+  /** Required server capability — command hidden when absent. */
+  readonly requiredCapability?: string;
 }
 
 /** Callbacks for palette interactions. */
@@ -44,8 +46,57 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
     shortcut: "Ctrl+O",
   },
   { id: "split-panes", label: "/split", description: "Toggle agent split-pane terminal view" },
+  { id: "skills", label: "/skills", description: "Show installed skills" },
+  { id: "channels", label: "/channels", description: "Show channel connections" },
+  { id: "system", label: "/system", description: "Show system metrics and events" },
+  { id: "nexus", label: "/nexus", description: "Show Nexus file/namespace events", shortcut: "Ctrl+F" },
+  { id: "gateway", label: "/gateway", description: "Show gateway topology", requiredCapability: "gateway" },
+  { id: "middleware", label: "/middleware", description: "Show middleware chain for active agent" },
+  { id: "temporal", label: "/temporal", description: "Show Temporal workflows", requiredCapability: "temporal" },
+  { id: "scheduler", label: "/scheduler", description: "Show scheduler tasks and schedules", requiredCapability: "scheduler" },
+  { id: "taskboard", label: "/taskboard", description: "Show task board DAG", requiredCapability: "taskboard" },
+  { id: "harness", label: "/harness", description: "Show harness status", requiredCapability: "harness" },
+  { id: "cost", label: "/cost", description: "Show cost and token usage" },
+  { id: "processtree", label: "/proctree", description: "Show agent process tree" },
+  { id: "agentprocfs", label: "/procfs", description: "Show agent runtime state (procfs)" },
+  { id: "governance", label: "/governance", description: "Show governance approvals and violations", requiredCapability: "governance" },
+  { id: "delegation", label: "/delegation", description: "Show delegation chain for active agent" },
+  { id: "handoffs", label: "/handoffs", description: "Show handoff envelopes for active agent" },
+  { id: "mailbox", label: "/mailbox", description: "Show agent message inbox" },
+  { id: "scratchpad", label: "/scratchpad", description: "Browse shared scratchpad entries" },
+  { id: "files", label: "/files", description: "Browse Nexus file system", shortcut: "Ctrl+F" },
+  { id: "tree", label: "/tree", description: "Toggle flat list ↔ hierarchy tree view" },
+  { id: "approve", label: "/approve", description: "Approve selected governance item", requiredCapability: "governance" },
+  { id: "deny", label: "/deny", description: "Deny selected governance item", requiredCapability: "governance" },
+  { id: "workflow-signal", label: "/workflow signal", description: "Signal selected Temporal workflow", requiredCapability: "temporal" },
+  { id: "workflow-terminate", label: "/workflow terminate", description: "Terminate selected Temporal workflow", requiredCapability: "temporal" },
+  { id: "schedule-pause", label: "/schedule pause", description: "Pause a cron schedule", requiredCapability: "scheduler" },
+  { id: "schedule-resume", label: "/schedule resume", description: "Resume a paused schedule", requiredCapability: "scheduler" },
+  { id: "dlq-retry", label: "/dlq retry", description: "Retry first dead letter entry", requiredCapability: "scheduler" },
+  { id: "harness-pause", label: "/harness pause", description: "Pause the harness", requiredCapability: "harness" },
+  { id: "harness-resume", label: "/harness resume", description: "Resume the harness", requiredCapability: "harness" },
+  { id: "stop", label: "/stop", description: "Graceful shutdown of Koi runtime" },
+  { id: "status", label: "/status", description: "Show detailed subsystem status" },
+  { id: "doctor", label: "/doctor", description: "Run diagnostic checks" },
+  { id: "demo-init", label: "/demo init", description: "Initialize a demo pack" },
+  { id: "demo-list", label: "/demo list", description: "List available demo packs" },
+  { id: "demo-reset", label: "/demo reset", description: "Reset a demo pack" },
+  { id: "deploy", label: "/deploy", description: "Deploy agent to cloud" },
+  { id: "undeploy", label: "/undeploy", description: "Remove cloud deployment" },
   { id: "quit", label: "/quit", description: "Exit TUI", shortcut: "q" },
 ] as const;
+
+/** Filter commands by server capabilities. */
+export function filterCommandsByCapabilities(
+  commands: readonly PaletteCommand[],
+  capabilities: import("../state/domain-types.js").TuiCapabilities | null,
+): readonly PaletteCommand[] {
+  return commands.filter((cmd) => {
+    if (cmd.requiredCapability === undefined) return true;
+    if (capabilities === null) return false;
+    return (capabilities as unknown as Readonly<Record<string, boolean>>)[cmd.requiredCapability] === true;
+  });
+}
 
 /** Convert palette commands to select items for OpenTUI Select/DialogSelect. */
 export function commandsToSelectItems(

@@ -59,6 +59,50 @@ export const ADMIN_ROUTES = {
   forgeStats: { method: "GET", path: "/view/forge/stats" },
   forgeEvents: { method: "GET", path: "/view/forge/events" },
 
+  // ─── Temporal Orchestration ────────────────────────────────────
+  temporalHealth: { method: "GET", path: "/view/temporal/health" },
+  temporalWorkflows: { method: "GET", path: "/view/temporal/workflows" },
+  temporalWorkflow: { method: "GET", path: "/view/temporal/workflows/:id" },
+  temporalSignal: { method: "POST", path: "/cmd/temporal/workflows/:id/signal" },
+  temporalTerminate: { method: "POST", path: "/cmd/temporal/workflows/:id/terminate" },
+
+  // ─── Scheduler Orchestration ──────────────────────────────────
+  schedulerTasks: { method: "GET", path: "/view/scheduler/tasks" },
+  schedulerStats: { method: "GET", path: "/view/scheduler/stats" },
+  schedulerSchedules: { method: "GET", path: "/view/scheduler/schedules" },
+  schedulerDlq: { method: "GET", path: "/view/scheduler/dlq" },
+  schedulerPause: { method: "POST", path: "/cmd/scheduler/schedules/:id/pause" },
+  schedulerResume: { method: "POST", path: "/cmd/scheduler/schedules/:id/resume" },
+  schedulerDeleteSchedule: { method: "DELETE", path: "/cmd/scheduler/schedules/:id" },
+
+  // ─── TaskBoard Orchestration ──────────────────────────────────
+  taskBoardSnapshot: { method: "GET", path: "/view/taskboard/snapshot" },
+
+  // ─── Harness Orchestration ────────────────────────────────────
+  harnessStatus: { method: "GET", path: "/view/harness/status" },
+  harnessCheckpoints: { method: "GET", path: "/view/harness/checkpoints" },
+  harnessPause: { method: "POST", path: "/cmd/harness/pause" },
+  harnessResume: { method: "POST", path: "/cmd/harness/resume" },
+
+  // ─── Delegation ─────────────────────────────────────────────────
+  listDelegations: { method: "GET", path: "/view/delegations/:agentId" },
+
+  // ─── Handoffs ───────────────────────────────────────────────────
+  listHandoffs: { method: "GET", path: "/view/handoffs/:agentId" },
+
+  // ─── Scratchpad ─────────────────────────────────────────────────
+  listScratchpad: { method: "GET", path: "/view/scratchpad/list" },
+  readScratchpad: { method: "GET", path: "/view/scratchpad/file" },
+
+  // ─── Governance Queue ───────────────────────────────────────────
+  governanceQueue: { method: "GET", path: "/view/governance/queue" },
+  reviewGovernance: { method: "POST", path: "/cmd/governance/:id/review" },
+
+  // ─── Forge Brick Lifecycle ──────────────────────────────────────
+  promoteBrick: { method: "POST", path: "/cmd/forge/bricks/:id/promote" },
+  demoteBrick: { method: "POST", path: "/cmd/forge/bricks/:id/demote" },
+  quarantineBrick: { method: "POST", path: "/cmd/forge/bricks/:id/quarantine" },
+
   // ─── Data Sources ───────────────────────────────────────────────
   listDataSources: { method: "GET", path: "/data-sources" },
   approveDataSource: { method: "POST", path: "/data-sources/:name/approve" },
@@ -78,6 +122,15 @@ export const ADMIN_ROUTES = {
   fsWrite: { method: "PUT", path: "/fs/file" },
   fsSearch: { method: "GET", path: "/fs/search" },
   fsDelete: { method: "DELETE", path: "/fs/file" },
+
+  // ─── Service Management ────────────────────────────────────────────
+  shutdown: { method: "POST", path: "/cmd/shutdown" },
+  detailedStatus: { method: "GET", path: "/status/detailed" },
+  demoInit: { method: "POST", path: "/cmd/demo/init" },
+  demoReset: { method: "POST", path: "/cmd/demo/reset" },
+  demoPacks: { method: "GET", path: "/demo/packs" },
+  deploy: { method: "POST", path: "/cmd/deploy" },
+  undeploy: { method: "DELETE", path: "/cmd/deploy" },
 } as const;
 
 /** Type of the ADMIN_ROUTES object. */

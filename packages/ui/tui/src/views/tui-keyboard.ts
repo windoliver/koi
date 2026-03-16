@@ -21,11 +21,38 @@ export interface KeyboardCallbacks {
   readonly dataSourceDown: () => void;
   readonly dataSourceApprove: () => void;
   readonly dataSourceSchema: () => void;
+  readonly dataSourcesContinue: () => void;
   readonly consentApprove: () => void;
   readonly consentDeny: () => void;
   readonly consentDetails: () => void;
   readonly closeConsent: () => void;
   readonly toggleForge: () => void;
+  readonly toggleCost: () => void;
+  readonly toggleNexus: () => void;
+  readonly navigateBack: () => void;
+  readonly domainScrollUp: () => void;
+  readonly domainScrollDown: () => void;
+  readonly temporalSelectNext: () => void;
+  readonly temporalSelectPrev: () => void;
+  readonly temporalDetail: () => void;
+  readonly temporalSignal: () => void;
+  readonly temporalTerminate: () => void;
+  readonly schedulerRetryDlq: () => void;
+  readonly harnessPauseResume: () => void;
+  readonly governanceSelectNext: () => void;
+  readonly governanceSelectPrev: () => void;
+  readonly governanceApprove: () => void;
+  readonly governanceDeny: () => void;
+  readonly forgeSelectNext: () => void;
+  readonly forgeSelectPrev: () => void;
+  readonly forgePromote: () => void;
+  readonly forgeDemote: () => void;
+  readonly forgeQuarantine: () => void;
+  readonly nexusBrowserSelectNext: () => void;
+  readonly nexusBrowserSelectPrev: () => void;
+  readonly nexusBrowserOpen: () => void;
+  readonly nexusBrowserBack: () => void;
+  readonly scratchpadOpen: () => void;
   readonly presetSelect: () => void;
   readonly presetDetails: () => void;
   readonly presetBack: () => void;
@@ -36,6 +63,20 @@ export interface KeyboardCallbacks {
   readonly addonsSkip: () => void;
   readonly addonsToggle: () => void;
   readonly addonsBack: () => void;
+  readonly modelSelect: () => void;
+  readonly modelBack: () => void;
+  readonly engineConfirm: () => void;
+  readonly engineSkip: () => void;
+  readonly engineBack: () => void;
+  readonly channelsConfirm: () => void;
+  readonly channelsToggle: () => void;
+  readonly channelsBack: () => void;
+  readonly serviceStop: () => void;
+  readonly serviceDoctor: () => void;
+  readonly serviceLogs: () => void;
+  readonly serviceBack: () => void;
+  readonly logsCycleLevel: () => void;
+  readonly logsBack: () => void;
 }
 
 /**
@@ -73,6 +114,12 @@ export function createKeyboardHandler(
     // Ctrl+G — toggle forge view
     if (sequence === "\x07") {
       callbacks.toggleForge();
+      return true;
+    }
+
+    // Ctrl+F — toggle nexus files view
+    if (sequence === "\x06") {
+      callbacks.toggleNexus();
       return true;
     }
 
@@ -204,6 +251,267 @@ export function createKeyboardHandler(
       return false;
     }
 
+    // Model step — j/k navigate, Enter confirm, Esc back
+    if (view === "model") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        store.dispatch({
+          kind: "set_model_focused_index",
+          index: store.getState().modelFocusedIndex + 1,
+        });
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        store.dispatch({
+          kind: "set_model_focused_index",
+          index: store.getState().modelFocusedIndex - 1,
+        });
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.modelSelect();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.modelBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Engine step — Enter confirm, s skip, Esc back
+    if (view === "engine") {
+      if (sequence === "\r") {
+        callbacks.engineConfirm();
+        return true;
+      }
+      if (sequence === "s") {
+        callbacks.engineSkip();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.engineBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Channels step — j/k, Space toggle, Enter confirm, Esc back
+    if (view === "channels") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        store.dispatch({
+          kind: "set_channel_focused_index",
+          index: store.getState().channelFocusedIndex + 1,
+        });
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        store.dispatch({
+          kind: "set_channel_focused_index",
+          index: store.getState().channelFocusedIndex - 1,
+        });
+        return true;
+      }
+      if (sequence === " ") {
+        callbacks.channelsToggle();
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.channelsConfirm();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.channelsBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Progress view — read-only, no keyboard actions
+    if (view === "progress") {
+      return false;
+    }
+
+    // Service view — s=stop, d=doctor, l=logs, Esc=back
+    if (view === "service") {
+      if (sequence === "s") {
+        callbacks.serviceStop();
+        return true;
+      }
+      if (sequence === "d") {
+        callbacks.serviceDoctor();
+        return true;
+      }
+      if (sequence === "l") {
+        callbacks.serviceLogs();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.serviceBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Doctor view — Esc=back
+    if (view === "doctor") {
+      if (sequence === "\x1b") {
+        callbacks.serviceBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Logs view — l=cycle level, Esc=back
+    if (view === "logs") {
+      if (sequence === "l") {
+        callbacks.logsCycleLevel();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.logsBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Temporal view — j/k navigate workflows, Enter detail, s signal, t terminate
+    if (view === "temporal") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.temporalSelectNext();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.temporalSelectPrev();
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.temporalDetail();
+        return true;
+      }
+      if (sequence === "s") {
+        callbacks.temporalSignal();
+        return true;
+      }
+      if (sequence === "t") {
+        callbacks.temporalTerminate();
+        return true;
+      }
+    }
+
+    // Scheduler view — r retry DLQ
+    if (view === "scheduler") {
+      if (sequence === "r") {
+        callbacks.schedulerRetryDlq();
+        return true;
+      }
+    }
+
+    // Harness view — p pause/resume toggle
+    if (view === "harness") {
+      if (sequence === "p") {
+        callbacks.harnessPauseResume();
+        return true;
+      }
+    }
+
+    // Governance view — j/k navigate, a approve, d deny
+    if (view === "governance") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.governanceSelectNext();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.governanceSelectPrev();
+        return true;
+      }
+      if (sequence === "a") {
+        callbacks.governanceApprove();
+        return true;
+      }
+      if (sequence === "d") {
+        callbacks.governanceDeny();
+        return true;
+      }
+    }
+
+    // Forge view — j/k navigate bricks, p promote, d demote, q quarantine
+    if (view === "forge") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.forgeSelectNext();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.forgeSelectPrev();
+        return true;
+      }
+      if (sequence === "p") {
+        callbacks.forgePromote();
+        return true;
+      }
+      if (sequence === "d") {
+        callbacks.forgeDemote();
+        return true;
+      }
+      if (sequence === "q") {
+        callbacks.forgeQuarantine();
+        return true;
+      }
+    }
+
+    // Nexus file browser — j/k navigate, Enter open, Esc/Backspace back
+    if (view === "files") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.nexusBrowserSelectNext();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.nexusBrowserSelectPrev();
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.nexusBrowserOpen();
+        return true;
+      }
+    }
+
+    // Scratchpad view — Enter to read selected entry
+    if (view === "scratchpad") {
+      if (sequence === "\r") {
+        callbacks.scratchpadOpen();
+        return true;
+      }
+    }
+
+    // Other domain views with j/k scroll support
+    const SCROLLABLE_VIEWS = new Set([
+      "skills",
+      "channels",
+      "system",
+      "nexus",
+      "gateway",
+      "scheduler",
+      "taskboard",
+      "harness",
+      "middleware",
+      "processtree",
+      "agentprocfs",
+      "cost",
+      "delegation",
+      "handoffs",
+      "mailbox",
+      "scratchpad",
+    ]);
+    if (SCROLLABLE_VIEWS.has(view)) {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.domainScrollDown();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.domainScrollUp();
+        return true;
+      }
+    }
+
     // Escape — context-dependent back/close
     if (sequence === "\x1b") {
       if (view === "palette") {
@@ -228,6 +536,14 @@ export function createKeyboardHandler(
       }
       if (view === "forge") {
         callbacks.toggleForge();
+        return true;
+      }
+      if (view === "files") {
+        callbacks.nexusBrowserBack();
+        return true;
+      }
+      if (SCROLLABLE_VIEWS.has(view) || view === "temporal" || view === "governance") {
+        callbacks.navigateBack();
         return true;
       }
     }
@@ -264,6 +580,10 @@ export function createKeyboardHandler(
       }
       if (sequence === "s") {
         callbacks.dataSourceSchema();
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.dataSourcesContinue();
         return true;
       }
     }

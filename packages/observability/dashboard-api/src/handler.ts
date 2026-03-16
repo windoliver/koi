@@ -21,10 +21,14 @@ import { createRouter, errorResponse } from "./router.js";
 import { handleGetAgent, handleListAgents, handleTerminateAgent } from "./routes/agents.js";
 import { handleChannels } from "./routes/channels.js";
 import {
+  handleDemoteBrick,
   handleDispatchAgent,
   handleListMailbox,
+  handlePromoteBrick,
+  handleQuarantineBrick,
   handleResumeAgent,
   handleRetryDeadLetter,
+  handleReviewGovernance,
   handleSuspendAgent,
   handleTerminateAgentCmd,
 } from "./routes/commands.js";
@@ -67,6 +71,16 @@ import {
   handleTemporalWorkflows,
   handleTerminateWorkflow,
 } from "./routes/orchestration.js";
+import type { ServiceManagementCallbacks } from "./routes/service-management.js";
+import {
+  handleDemoInit,
+  handleDemoPacks,
+  handleDemoReset,
+  handleDeploy,
+  handleDetailedStatus,
+  handleShutdown,
+  handleUndeploy,
+} from "./routes/service-management.js";
 import { handleSkills } from "./routes/skills.js";
 import {
   handleAgentProcfs,
@@ -74,8 +88,13 @@ import {
   handleForgeEvents,
   handleForgeStats,
   handleGatewayTopology,
+  handleListDelegations,
+  handleListGovernanceQueue,
+  handleListHandoffs,
+  handleListScratchpad,
   handleMiddlewareChain,
   handleProcessTree,
+  handleReadScratchpad,
 } from "./routes/views.js";
 import { createSseProducer } from "./sse/producer.js";
 import { createStaticServe } from "./static-serve.js";
@@ -96,6 +115,8 @@ export interface DashboardHandlerOptions {
   readonly editablePaths?: EditablePathMatcher;
   /** AG-UI chat handler for POST /agents/:id/chat. When absent, returns 501. */
   readonly agentChatHandler?: AgentChatHandler;
+  /** Service management callbacks for shutdown, status, demo, deploy. When absent, returns 501. */
+  readonly serviceManagement?: ServiceManagementCallbacks;
 }
 
 export interface DashboardHandlerResult {
@@ -115,7 +136,8 @@ export function createDashboardHandler(
   const options: DashboardHandlerOptions =
     "listAgents" in dataSourceOrOptions ? { dataSource: dataSourceOrOptions } : dataSourceOrOptions;
 
-  const { dataSource, fileSystem, runtimeViews, commands, agentChatHandler } = options;
+  const { dataSource, fileSystem, runtimeViews, commands, agentChatHandler, serviceManagement } =
+    options;
   const editablePaths =
     options.editablePaths ?? (fileSystem !== undefined ? createDefaultEditablePaths() : undefined);
 
@@ -460,6 +482,95 @@ export function createDashboardHandler(
         method: "POST",
         pattern: "/cmd/harness/resume",
         handler: (req, params) => handleResumeHarness(req, params, commands),
+      },
+      // Governance review
+      {
+        method: "POST",
+        pattern: "/cmd/governance/:id/review",
+        handler: (req, params) => handleReviewGovernance(req, params, commands),
+      },
+      // Forge brick lifecycle
+      {
+        method: "POST",
+        pattern: "/cmd/forge/bricks/:id/promote",
+        handler: (req, params) => handlePromoteBrick(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/forge/bricks/:id/demote",
+        handler: (req, params) => handleDemoteBrick(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/forge/bricks/:id/quarantine",
+        handler: (req, params) => handleQuarantineBrick(req, params, commands),
+      },
+      // Delegation, handoff, scratchpad, governance views (read-only through commands)
+      {
+        method: "GET",
+        pattern: "/view/delegations/:agentId",
+        handler: (req, params) => handleListDelegations(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/handoffs/:agentId",
+        handler: (req, params) => handleListHandoffs(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scratchpad/list",
+        handler: (req, params) => handleListScratchpad(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scratchpad/file",
+        handler: (req, params) => handleReadScratchpad(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/governance/queue",
+        handler: (req, params) => handleListGovernanceQueue(req, params, commands),
+      },
+    );
+  }
+
+  // Service management routes (when ServiceManagementCallbacks is provided)
+  if (serviceManagement !== undefined) {
+    routes.push(
+      {
+        method: "POST",
+        pattern: "/cmd/shutdown",
+        handler: (req, params) => handleShutdown(req, params, serviceManagement),
+      },
+      {
+        method: "GET",
+        pattern: "/status/detailed",
+        handler: (req, params) => handleDetailedStatus(req, params, serviceManagement),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/demo/init",
+        handler: (req, params) => handleDemoInit(req, params, serviceManagement),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/demo/reset",
+        handler: (req, params) => handleDemoReset(req, params, serviceManagement),
+      },
+      {
+        method: "GET",
+        pattern: "/demo/packs",
+        handler: (req, params) => handleDemoPacks(req, params, serviceManagement),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/deploy",
+        handler: (req, params) => handleDeploy(req, params, serviceManagement),
+      },
+      {
+        method: "DELETE",
+        pattern: "/cmd/deploy",
+        handler: (req, params) => handleUndeploy(req, params, serviceManagement),
       },
     );
   }

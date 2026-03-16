@@ -372,6 +372,20 @@ export interface PtyOutputDashboardEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Log events (structured log streaming)
+// ---------------------------------------------------------------------------
+
+/** Log event — structured log line from the runtime. */
+export interface LogDashboardEvent {
+  readonly kind: "log";
+  readonly subKind: "log_line";
+  readonly level: "debug" | "info" | "warn" | "error";
+  readonly source: string;
+  readonly message: string;
+  readonly timestamp: number;
+}
+
+// ---------------------------------------------------------------------------
 // Union + batch envelope
 // ---------------------------------------------------------------------------
 
@@ -389,7 +403,8 @@ export type DashboardEvent =
   | DataSourceDashboardEvent
   | ForgeDashboardEvent
   | MonitorDashboardEvent
-  | PtyOutputDashboardEvent;
+  | PtyOutputDashboardEvent
+  | LogDashboardEvent;
 
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 export interface DashboardEventBatch {
@@ -417,6 +432,7 @@ const VALID_KINDS_ARRAY = [
   "forge",
   "monitor",
   "pty_output",
+  "log",
 ] as const;
 
 const VALID_KINDS = new Set<string>(VALID_KINDS_ARRAY);
@@ -469,3 +485,5 @@ export const isMonitorEvent: (event: DashboardEvent) => event is MonitorDashboar
   createKindGuard("monitor");
 export const isPtyOutputEvent: (event: DashboardEvent) => event is PtyOutputDashboardEvent =
   createKindGuard("pty_output");
+export const isLogEvent: (event: DashboardEvent) => event is LogDashboardEvent =
+  createKindGuard("log");

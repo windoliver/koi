@@ -1,12 +1,16 @@
 /**
  * Command routes — imperative operations (not file-backed).
  *
- * POST /cmd/agents/dispatch       — dispatch new agent
- * POST /cmd/agents/:id/suspend    — suspend agent
- * POST /cmd/agents/:id/resume     — resume agent
- * POST /cmd/agents/:id/terminate  — terminate agent
- * POST /cmd/events/dlq/:id/retry  — retry dead letter
- * POST /cmd/mailbox/:agentId/list — list agent mailbox
+ * POST /cmd/agents/dispatch              — dispatch new agent
+ * POST /cmd/agents/:id/suspend           — suspend agent
+ * POST /cmd/agents/:id/resume            — resume agent
+ * POST /cmd/agents/:id/terminate         — terminate agent
+ * POST /cmd/events/dlq/:id/retry         — retry dead letter
+ * POST /cmd/mailbox/:agentId/list        — list agent mailbox
+ * POST /cmd/governance/:id/review        — approve/reject governance item
+ * POST /cmd/forge/bricks/:id/promote     — promote brick
+ * POST /cmd/forge/bricks/:id/demote      — demote brick
+ * POST /cmd/forge/bricks/:id/quarantine  — quarantine brick
  */
 
 import { agentId } from "@koi/core";
@@ -164,4 +168,89 @@ export async function handleListMailbox(
     );
   }
   return jsonResponse(result.value);
+}
+
+export async function handleReviewGovernance(
+  req: Request,
+  params: RouteParams,
+  commands: CommandDispatcher,
+): Promise<Response> {
+  const id = params.id;
+  if (id === undefined) {
+    return errorResponse("VALIDATION", "Missing governance item ID", 400);
+  }
+  if (commands.reviewGovernance === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Governance review not supported", 501);
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return errorResponse("VALIDATION", "Invalid JSON body", 400);
+  }
+
+  if (typeof body !== "object" || body === null) {
+    return errorResponse("VALIDATION", "Request body must be an object", 400);
+  }
+
+  const { decision, reason } = body as Record<string, unknown>;
+  if (decision !== "approved" && decision !== "rejected") {
+    return errorResponse("VALIDATION", "decision must be 'approved' or 'rejected'", 400);
+  }
+
+  const result = await commands.reviewGovernance(
+    id,
+    decision,
+    typeof reason === "string" ? reason : undefined,
+  );
+  return handleCommandResult(result);
+}
+
+export async function handlePromoteBrick(
+  _req: Request,
+  params: RouteParams,
+  commands: CommandDispatcher,
+): Promise<Response> {
+  const id = params.id;
+  if (id === undefined) {
+    return errorResponse("VALIDATION", "Missing brick ID", 400);
+  }
+  if (commands.promoteBrick === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Brick promotion not supported", 501);
+  }
+  const result = await commands.promoteBrick(id);
+  return handleCommandResult(result);
+}
+
+export async function handleDemoteBrick(
+  _req: Request,
+  params: RouteParams,
+  commands: CommandDispatcher,
+): Promise<Response> {
+  const id = params.id;
+  if (id === undefined) {
+    return errorResponse("VALIDATION", "Missing brick ID", 400);
+  }
+  if (commands.demoteBrick === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Brick demotion not supported", 501);
+  }
+  const result = await commands.demoteBrick(id);
+  return handleCommandResult(result);
+}
+
+export async function handleQuarantineBrick(
+  _req: Request,
+  params: RouteParams,
+  commands: CommandDispatcher,
+): Promise<Response> {
+  const id = params.id;
+  if (id === undefined) {
+    return errorResponse("VALIDATION", "Missing brick ID", 400);
+  }
+  if (commands.quarantineBrick === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Brick quarantine not supported", 501);
+  }
+  const result = await commands.quarantineBrick(id);
+  return handleCommandResult(result);
 }
