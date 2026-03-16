@@ -308,7 +308,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (nexusBaseUrl === undefined && preset.nexusMode === "embed-auth") {
     output.spinner.start("Starting Nexus...");
     const nexusResult = await timer.time("nexus-up", () =>
-      startNexusStack(workspaceRoot, presetId, flags.verbose, flags.nexusSource),
+      startNexusStack(workspaceRoot, presetId, flags.verbose, {
+        build: flags.nexusBuild || undefined,
+        sourceDir: flags.nexusSource,
+        port: flags.nexusPort,
+      }),
     );
     if (nexusResult !== undefined) {
       nexusBaseUrl = nexusResult.baseUrl;

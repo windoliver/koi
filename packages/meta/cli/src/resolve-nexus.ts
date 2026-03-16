@@ -29,18 +29,16 @@ export interface NexusResolution {
 // ---------------------------------------------------------------------------
 
 /**
- * Validates `--nexus-build` / `--nexus-source` flag combination and runs
- * `uv sync` in the source directory when `--nexus-build` is set.
+ * Runs `uv sync` in the Nexus source directory when both `--nexus-build`
+ * and `--nexus-source` are set.
+ *
+ * When `--nexus-build` is used without `--nexus-source`, the flag is still
+ * forwarded to Docker Compose via `startNexusStack()` — no `uv sync` needed.
  *
  * Call this before Nexus startup in `up`, `start`, and `serve`.
  */
 export function runNexusBuildIfNeeded(nexusBuild: boolean, nexusSource: string | undefined): void {
-  if (!nexusBuild) return;
-
-  if (nexusSource === undefined) {
-    process.stderr.write("error: --nexus-build requires --nexus-source <path>\n");
-    process.exit(1);
-  }
+  if (!nexusBuild || nexusSource === undefined) return;
 
   process.stderr.write(`Running uv sync in ${nexusSource}...\n`);
   const result = spawnSync("uv", ["sync"], {

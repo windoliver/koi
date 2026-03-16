@@ -4,6 +4,15 @@
 
 import type { NexusMode } from "@koi/runtime-presets";
 
+export interface NexusStartOptions {
+  /** Build images from source instead of pulling pre-built. Requires `sourceDir`. */
+  readonly build?: boolean | undefined;
+  /** Path to the nexus repo root (derives docker-compose.yml for --build). */
+  readonly sourceDir?: string | undefined;
+  /** Override the Nexus HTTP port. */
+  readonly port?: number | undefined;
+}
+
 export interface NexusStartResult {
   readonly baseUrl: string;
   readonly apiKey: string | undefined;
@@ -17,11 +26,18 @@ export async function startNexusStack(
   workspaceRoot: string,
   koiPreset: string,
   verbose: boolean,
-  sourceDir?: string | undefined,
+  nexusOptions?: NexusStartOptions | undefined,
 ): Promise<NexusStartResult | undefined> {
   try {
     const { nexusUp } = await import("@koi/nexus-embed");
-    const result = await nexusUp({ cwd: workspaceRoot, koiPreset, verbose, sourceDir });
+    const result = await nexusUp({
+      cwd: workspaceRoot,
+      koiPreset,
+      verbose,
+      build: nexusOptions?.build,
+      sourceDir: nexusOptions?.sourceDir,
+      port: nexusOptions?.port,
+    });
     if (!result.ok) {
       process.stderr.write(`warn: nexus up failed: ${result.error.message}\n`);
       return undefined;
