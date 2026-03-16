@@ -519,6 +519,148 @@ describe("createConversationMiddleware", () => {
     });
   });
 
+  describe("store write errors", () => {
+    test("appendAndCheckpoint error propagates from onSessionEnd", async () => {
+      const store: ThreadStore = {
+        listMessages() {
+          return { ok: true, value: [] };
+        },
+        appendAndCheckpoint() {
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL",
+              message: "disk full",
+              retryable: false,
+            },
+          };
+        },
+        loadThread() {
+          return { ok: true, value: undefined };
+        },
+        close() {},
+      };
+
+      const mw = createConversationMiddleware({ store });
+      const sessionCtx = createMockSessionContext({
+        metadata: { threadId: "t1" },
+      });
+      await mw.onSessionStart?.(sessionCtx);
+
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(
+        createMockTurnContext({ session: sessionCtx }),
+        { messages: [userInbound("hello")] },
+        spy.handler,
+      );
+
+      await expect(mw.onSessionEnd?.(sessionCtx)).rejects.toThrow("Failed to persist conversation");
+    });
+
+    test("appendAndCheckpoint error includes thread ID and cause", async () => {
+      const store: ThreadStore = {
+        listMessages() {
+          return { ok: true, value: [] };
+        },
+        appendAndCheckpoint() {
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL",
+              message: "disk full",
+              retryable: false,
+            },
+          };
+        },
+        loadThread() {
+          return { ok: true, value: undefined };
+        },
+        close() {},
+      };
+
+      const mw = createConversationMiddleware({ store });
+      const sessionCtx = createMockSessionContext({
+        metadata: { threadId: "t1" },
+      });
+      await mw.onSessionStart?.(sessionCtx);
+
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(
+        createMockTurnContext({ session: sessionCtx }),
+        { messages: [userInbound("hello")] },
+        spy.handler,
+      );
+
+      try {
+        await mw.onSessionEnd?.(sessionCtx);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(Error);
+        const err = e as Error;
+        expect(err.message).toContain("t1");
+        expect(err.cause).toBeDefined();
+      }
+    });
+
+    test("pendingWrites cleaned up after write failure — subsequent writes succeed", async () => {
+      // let justified: track call count to fail first, succeed second
+      let callCount = 0;
+      const store: ThreadStore = {
+        listMessages() {
+          return { ok: true, value: [] };
+        },
+        appendAndCheckpoint() {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              ok: false,
+              error: {
+                code: "INTERNAL",
+                message: "disk full",
+                retryable: false,
+              },
+            };
+          }
+          return { ok: true, value: undefined };
+        },
+        loadThread() {
+          return { ok: true, value: undefined };
+        },
+        close() {},
+      };
+
+      const mw = createConversationMiddleware({ store });
+
+      // First session — write fails
+      const ctx1 = createMockSessionContext({ metadata: { threadId: "t1" } });
+      await mw.onSessionStart?.(ctx1);
+      const spy1 = createSpyModelHandler();
+      await mw.wrapModelCall?.(
+        createMockTurnContext({ session: ctx1 }),
+        { messages: [userInbound("hello")] },
+        spy1.handler,
+      );
+      try {
+        await mw.onSessionEnd?.(ctx1);
+      } catch {
+        // Expected
+      }
+
+      // Second session — write should succeed (not blocked by first failure)
+      const ctx2 = createMockSessionContext({ metadata: { threadId: "t1" } });
+      await mw.onSessionStart?.(ctx2);
+      const spy2 = createSpyModelHandler();
+      await mw.wrapModelCall?.(
+        createMockTurnContext({ session: ctx2 }),
+        { messages: [userInbound("world")] },
+        spy2.handler,
+      );
+      // Should not throw — pendingWrites was cleaned up by .finally()
+      await mw.onSessionEnd?.(ctx2);
+      expect(callCount).toBe(2);
+    });
+  });
+
   describe("no history — passthrough", () => {
     test("wrapModelCall passes request unchanged when no history", async () => {
       const store = createMockThreadStore();

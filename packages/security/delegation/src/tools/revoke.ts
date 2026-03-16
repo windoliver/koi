@@ -55,6 +55,10 @@ export function createDelegationRevokeTool(
     },
     origin: "primordial",
     policy,
+    // Authorization boundary: this tool trusts that tool-level access is enforced
+    // by ToolPolicy and KoiMiddleware before execution reaches this handler.
+    // Fine-grained resource-level authorization (e.g., "can this specific caller
+    // revoke this specific grant?") is not enforced here — see issue #990 follow-up.
     execute: async (args: JsonObject): Promise<unknown> => {
       const input = validateRevokeInput(args);
       const revokedIds = await manager.revoke(delegationId(input.grantId), input.cascade);

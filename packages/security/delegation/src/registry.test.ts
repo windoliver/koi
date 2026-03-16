@@ -59,11 +59,13 @@ describe("createInMemoryRegistry", () => {
     expect(registry.isRevoked("d" as DelegationId)).toBe(true);
   });
 
-  test("dispose stops cleanup interval", () => {
-    const registry = createInMemoryRegistry({
-      cleanupIntervalMs: 100,
-    });
-    // Should not throw
+  test("dispose is safe to call (no-op, retained for API compatibility)", () => {
+    const registry = createInMemoryRegistry();
+    dispose = registry.dispose;
+
+    // Should not throw — dispose is a no-op since revocations are permanent
+    registry.dispose();
+    // Double-dispose is safe
     registry.dispose();
   });
 });

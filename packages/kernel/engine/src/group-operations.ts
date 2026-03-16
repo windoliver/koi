@@ -107,9 +107,19 @@ export async function signalGroup(
     }
   });
 
-  const deadline = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`signalGroup timeout after ${deadlineMs}ms`)), deadlineMs),
-  );
+  // Best-effort fan-out: allSettled results are intentionally discarded.
+  // Individual operation failures are not propagated — group signaling is
+  // a "signal and forget" operation where partial delivery is acceptable.
+  // let justified: timer ID must be captured inside the Promise constructor and cleared externally
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`signalGroup timeout after ${deadlineMs}ms`)),
+      deadlineMs,
+    );
+  });
 
-  await Promise.race([Promise.allSettled(ops), deadline]);
+  await Promise.race([Promise.allSettled(ops), deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }

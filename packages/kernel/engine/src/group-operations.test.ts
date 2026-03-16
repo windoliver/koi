@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { ProcessState, RegistryEntry } from "@koi/core";
 import { AGENT_SIGNALS, agentGroupId, agentId } from "@koi/core";
 import type { InMemoryRegistry } from "@koi/engine-reconcile";
@@ -173,6 +173,40 @@ describe("signalGroup", () => {
     await expect(
       signalGroup(slowRegistry, GROUP_A, AGENT_SIGNALS.STOP, { deadlineMs: 10 }),
     ).rejects.toThrow("signalGroup timeout");
+  });
+
+  test("timer is cleared after successful signalGroup (no timer leak)", async () => {
+    registry.register(entry("a1", "running", 0, GROUP_A));
+
+    const clearTimeoutSpy = spyOn(globalThis, "clearTimeout");
+
+    await signalGroup(registry, GROUP_A, AGENT_SIGNALS.STOP);
+
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
+  });
+
+  test("partial operation failures are silently tolerated (best-effort)", async () => {
+    // signalGroup uses Promise.allSettled — individual failures don't cause rejection.
+    // This documents the intentional best-effort semantics.
+    const failingRegistry = {
+      ...registry,
+      list: () => [entry("a1", "running", 0, GROUP_A), entry("a2", "running", 0, GROUP_A)],
+      transition: async (id: ReturnType<typeof agentId>, ...rest: readonly unknown[]) => {
+        if (id === agentId("a1")) {
+          throw new Error("simulated failure for a1");
+        }
+        return registry.transition(
+          id,
+          rest[0] as string,
+          rest[1] as number,
+          rest[2] as { readonly kind: string },
+        );
+      },
+    } as unknown as InMemoryRegistry;
+
+    // Should not throw — partial failures are swallowed by allSettled
+    await signalGroup(failingRegistry, GROUP_A, AGENT_SIGNALS.STOP, { deadlineMs: 5000 });
   });
 
   test("uses ChildHandle when provided", async () => {

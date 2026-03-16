@@ -15,6 +15,13 @@ export interface MediaFallbackConfig {
   readonly mediaMaxMb?: number;
   /** Custom fallback message template. Receives the original block kind. Default: "[Media failed to send: {kind}]" */
   readonly formatWarning?: (block: ContentBlock) => string;
+  /**
+   * Optional size checker for media blocks. Returns true if the block exceeds
+   * the given limit. Channel adapters inject their own logic here since
+   * L0 ContentBlock does not carry a size field.
+   * Default: always returns false (size unknown).
+   */
+  readonly isOversized?: (block: ContentBlock, maxMb: number) => boolean;
 }
 
 /** Default warning message for failed media. */
@@ -53,6 +60,7 @@ export function createMediaFallback(
   config: MediaFallbackConfig,
 ): (message: OutboundMessage) => Promise<void> {
   const { send, mediaMaxMb, formatWarning = defaultWarning } = config;
+  const checkOversized = config.isOversized ?? defaultIsOversized;
 
   return async (message: OutboundMessage): Promise<void> => {
     const hasMedia = message.content.some(isMediaBlock);
@@ -65,12 +73,12 @@ export function createMediaFallback(
     // Check media size limits if configured
     if (mediaMaxMb !== undefined) {
       const hasOversized = message.content.some(
-        (b) => isMediaBlock(b) && isOversized(b, mediaMaxMb),
+        (b) => isMediaBlock(b) && checkOversized(b, mediaMaxMb),
       );
       if (hasOversized) {
         const fallbackBlocks = message.content.map(
           (b): ContentBlock =>
-            isMediaBlock(b) && isOversized(b, mediaMaxMb)
+            isMediaBlock(b) && checkOversized(b, mediaMaxMb)
               ? warningBlock(`[File too large (>${mediaMaxMb}MB): ${getName(b)}]`)
               : b,
         );
@@ -93,16 +101,12 @@ export function createMediaFallback(
 }
 
 /**
- * Checks if a block exceeds the size limit.
+ * Default size checker — always returns false (size unknown).
  *
- * FileBlock does not have a standard `size` field in @koi/core, so this
- * is a best-effort check via metadata or custom properties. Returns false
- * when size information is unavailable.
+ * L0 ContentBlock does not carry a `size` field, so the shared utility
+ * cannot determine actual sizes. Channel adapters inject a custom
+ * `isOversized` callback via MediaFallbackConfig to provide real checks.
  */
-function isOversized(_block: ContentBlock, _maxMb: number): boolean {
-  // ContentBlock in @koi/core does not carry a `size` field.
-  // Concrete channel adapters that know their block shapes can override
-  // this via the formatWarning callback. For now, always returns false
-  // so the normal send path is attempted.
+function defaultIsOversized(_block: ContentBlock, _maxMb: number): boolean {
   return false;
 }

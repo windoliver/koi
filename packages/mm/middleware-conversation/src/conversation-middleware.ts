@@ -26,6 +26,53 @@ import { CONVERSATION_DEFAULTS } from "./config.js";
 import { mapThreadMessageToInbound } from "./map-thread-to-inbound.js";
 import { pruneHistory } from "./prune-history.js";
 
+// ---------------------------------------------------------------------------
+// Internal session state
+// ---------------------------------------------------------------------------
+
+/**
+ * Internal mutable session state — not shared outside middleware.
+ * Fields are intentionally non-readonly: this type describes internal
+ * accumulator state that is mutated within the middleware closure and
+ * replaced atomically via createInitialState() on session boundaries.
+ */
+type SessionState = {
+  // Set once in onSessionStart, read-only during session
+  loadedHistory: readonly InboundMessage[] | undefined;
+  loadedTokenEstimates: readonly number[] | undefined;
+  loadedRawMessages: readonly ThreadMessage[];
+  resolvedThreadId: string | undefined;
+  historyCount: number;
+  sessionRef: SessionContext | undefined;
+  /** Pre-computed history slice respecting token budget — avoids repeated budget walk. */
+  precomputedHistory: readonly InboundMessage[];
+  // Mutated during session
+  messageCounter: number;
+  /** Mutable accumulator — push() used intentionally on internal state. */
+  newTurnMessages: ThreadMessage[];
+  /** Mutable accumulator — add() used intentionally on internal state. */
+  capturedKeys: Set<string>;
+};
+
+function createInitialState(): SessionState {
+  return {
+    loadedHistory: undefined,
+    loadedTokenEstimates: undefined,
+    loadedRawMessages: [],
+    resolvedThreadId: undefined,
+    historyCount: 0,
+    sessionRef: undefined,
+    precomputedHistory: [],
+    messageCounter: 0,
+    newTurnMessages: [],
+    capturedKeys: new Set(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Middleware factory
+// ---------------------------------------------------------------------------
+
 /**
  * Create a conversation middleware that loads/persists thread history.
  *
@@ -38,56 +85,56 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
   const maxMessages = config.maxMessages ?? CONVERSATION_DEFAULTS.maxMessages;
   const estimate = config.estimateTokens ?? defaultEstimateTokens;
 
-  // Per-thread write mutex: serializes writes per threadId
+  // Per-thread write mutex: serializes writes per threadId (persists across sessions)
   const pendingWrites = new Map<string, Promise<void>>();
 
-  // --- Session-scoped state (reset on each onSessionEnd) ---
-  // let justified: tracks loaded history for the current session
-  let loadedHistory: readonly InboundMessage[] | undefined;
-  // let justified: pre-computed per-message token estimates
-  let loadedTokenEstimates: readonly number[] | undefined;
-  // let justified: resolved thread ID for the current session
-  let resolvedThreadId: string | undefined;
-  // let justified: count of loaded history messages for describeCapabilities
-  let historyCount = 0;
-  // let justified: accumulates new messages during the session for persistence
-  let newTurnMessages: readonly ThreadMessage[] = [];
-  // let justified: session context reference for building ThreadMessageIds
-  let sessionRef: SessionContext | undefined;
-  // let justified: monotonic counter for generating unique message IDs within session
-  let messageCounter = 0;
-  // let justified: raw ThreadMessages loaded from store, reused in onSessionEnd for pruning
-  let loadedRawMessages: readonly ThreadMessage[] = [];
-  // let justified: tracks captured message identities to prevent duplicates across calls
-  let capturedKeys = new Set<string>();
+  // Session state — replaced atomically on session boundaries
+  // let justified: single mutable reference, replaced via createInitialState()
+  let state = createInitialState();
 
   /** Derive role from senderId: agent → assistant, system:* → system, tool:* → tool, else user. */
   function deriveRole(msg: InboundMessage): ThreadMessageRole {
-    if (sessionRef !== undefined && msg.senderId === sessionRef.agentId) return "assistant";
+    if (state.sessionRef !== undefined && msg.senderId === state.sessionRef.agentId)
+      return "assistant";
     if (msg.senderId.startsWith("system")) return "system";
     if (msg.senderId.startsWith("tool")) return "tool";
     return "user";
   }
 
   /**
-   * Inject loaded history into a model request, respecting the token budget.
-   * Always includes at least the newest message even if it exceeds the budget.
+   * Inject pre-computed history into a model request.
+   * History slice is computed once in onSessionStart — no repeated budget walk.
    */
   function injectHistory(request: ModelRequest): ModelRequest {
-    if (loadedHistory === undefined || loadedHistory.length === 0) {
+    if (state.precomputedHistory.length === 0) {
       return request;
     }
 
-    const estimates = loadedTokenEstimates ?? [];
+    return {
+      ...request,
+      messages: [...state.precomputedHistory, ...request.messages],
+    };
+  }
+
+  /**
+   * Pre-compute the history slice that fits within the token budget.
+   * Always includes at least the newest message even if it exceeds the budget.
+   */
+  function computeHistorySlice(): readonly InboundMessage[] {
+    if (state.loadedHistory === undefined || state.loadedHistory.length === 0) {
+      return [];
+    }
+
+    const estimates = state.loadedTokenEstimates ?? [];
     // let justified: tracks remaining token budget during backwards walk
     let budget = maxHistoryTokens;
     // let justified: start index of selected history slice
-    let startIndex = loadedHistory.length;
+    let startIndex = state.loadedHistory.length;
 
     // Walk backwards (newest first), accumulate until budget exhausted
-    for (let i = loadedHistory.length - 1; i >= 0; i--) {
+    for (let i = state.loadedHistory.length - 1; i >= 0; i--) {
       const est = estimates[i] ?? 0;
-      if (budget - est < 0 && startIndex < loadedHistory.length) {
+      if (budget - est < 0 && startIndex < state.loadedHistory.length) {
         // Budget exceeded and we already have at least one message
         break;
       }
@@ -95,11 +142,7 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       startIndex = i;
     }
 
-    const selectedHistory = loadedHistory.slice(startIndex);
-    return {
-      ...request,
-      messages: [...selectedHistory, ...request.messages],
-    };
+    return state.loadedHistory.slice(startIndex);
   }
 
   /**
@@ -116,9 +159,9 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       .map((b) => b.text)
       .join("");
 
-    messageCounter += 1;
+    state.messageCounter += 1;
     return {
-      id: threadMessageId(`${sessionId}-${messageCounter}-${role}`),
+      id: threadMessageId(`${sessionId}-${state.messageCounter}-${role}`),
       role,
       content: text,
       createdAt: msg.timestamp,
@@ -129,9 +172,9 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
    * Build a ThreadMessage from a ModelResponse (assistant turn).
    */
   function mapResponseToThread(response: ModelResponse, sessionId: string): ThreadMessage {
-    messageCounter += 1;
+    state.messageCounter += 1;
     return {
-      id: threadMessageId(`${sessionId}-${messageCounter}-assistant`),
+      id: threadMessageId(`${sessionId}-${state.messageCounter}-assistant`),
       role: "assistant",
       content: response.content,
       createdAt: Date.now(),
@@ -150,18 +193,15 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
 
   /**
    * Record new user messages from a model request (excluding history).
+   * Uses mutable accumulators — internal state not shared outside middleware.
    */
   function captureNewUserMessages(request: ModelRequest, sessionId: string): void {
-    const fresh = request.messages.filter(
-      (m) => !isFromHistory(m) && !capturedKeys.has(`${m.timestamp}:${m.senderId}`),
-    );
-
-    if (fresh.length > 0) {
-      const mapped = fresh.map((m) => {
-        capturedKeys = new Set([...capturedKeys, `${m.timestamp}:${m.senderId}`]);
-        return mapInboundToThread(m, deriveRole(m), sessionId);
-      });
-      newTurnMessages = [...newTurnMessages, ...mapped];
+    for (const m of request.messages) {
+      if (isFromHistory(m)) continue;
+      const key = `${m.timestamp}:${m.senderId}`;
+      if (state.capturedKeys.has(key)) continue;
+      state.capturedKeys.add(key);
+      state.newTurnMessages.push(mapInboundToThread(m, deriveRole(m), sessionId));
     }
   }
 
@@ -171,26 +211,18 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
     phase: "resolve",
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
-      // Reset session state
-      loadedHistory = undefined;
-      loadedTokenEstimates = undefined;
-      historyCount = 0;
-      newTurnMessages = [];
-      messageCounter = 0;
-      sessionRef = ctx;
-      loadedRawMessages = [];
-      capturedKeys = new Set();
+      state = createInitialState();
+      state.sessionRef = ctx;
 
       const rawThreadId = ctx.metadata.threadId;
       const metadataThreadId = typeof rawThreadId === "string" ? rawThreadId : undefined;
       const tid = config.resolveThreadId?.(ctx) ?? metadataThreadId ?? ctx.channelId;
 
       if (tid === undefined) {
-        resolvedThreadId = undefined;
         return;
       }
 
-      resolvedThreadId = tid;
+      state.resolvedThreadId = tid;
       const result = await store.listMessages(threadId(tid), maxMessages);
 
       if (!result.ok) {
@@ -199,14 +231,17 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       }
 
       const messages = result.value;
-      loadedRawMessages = messages;
+      state.loadedRawMessages = messages;
       if (messages.length === 0) {
         return;
       }
 
-      loadedHistory = messages.map((m) => mapThreadMessageToInbound(m, ctx.agentId, ctx.userId));
-      loadedTokenEstimates = messages.map((m) => estimate(m.content));
-      historyCount = messages.length;
+      state.loadedHistory = messages.map((m) =>
+        mapThreadMessageToInbound(m, ctx.agentId, ctx.userId),
+      );
+      state.loadedTokenEstimates = messages.map((m) => estimate(m.content));
+      state.historyCount = messages.length;
+      state.precomputedHistory = computeHistorySlice();
     },
 
     async wrapModelCall(
@@ -214,7 +249,7 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      const sid = sessionRef?.sessionId ?? "";
+      const sid = state.sessionRef?.sessionId ?? "";
 
       // Capture new user messages before injection
       captureNewUserMessages(request, sid);
@@ -222,9 +257,8 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       const enriched = injectHistory(request);
       const response = await next(enriched);
 
-      // Capture assistant response
-      const assistantMsg = mapResponseToThread(response, sid);
-      newTurnMessages = [...newTurnMessages, assistantMsg];
+      // Internal mutable accumulator — not shared outside middleware
+      state.newTurnMessages.push(mapResponseToThread(response, sid));
 
       return response;
     },
@@ -234,7 +268,7 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      const sid = sessionRef?.sessionId ?? "";
+      const sid = state.sessionRef?.sessionId ?? "";
 
       // Capture new user messages before injection
       captureNewUserMessages(request, sid);
@@ -243,31 +277,26 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
 
       for await (const chunk of next(enriched)) {
         if (chunk.kind === "done") {
-          const assistantMsg = mapResponseToThread(chunk.response, sid);
-          newTurnMessages = [...newTurnMessages, assistantMsg];
+          // Internal mutable accumulator — not shared outside middleware
+          state.newTurnMessages.push(mapResponseToThread(chunk.response, sid));
         }
         yield chunk;
       }
     },
 
     async onSessionEnd(_ctx: SessionContext): Promise<void> {
-      if (resolvedThreadId === undefined) {
+      if (state.resolvedThreadId === undefined) {
+        state = createInitialState();
         return;
       }
 
-      if (newTurnMessages.length === 0) {
-        // Nothing to persist — reset state
-        loadedHistory = undefined;
-        loadedTokenEstimates = undefined;
-        resolvedThreadId = undefined;
-        historyCount = 0;
-        sessionRef = undefined;
-        loadedRawMessages = [];
+      if (state.newTurnMessages.length === 0) {
+        state = createInitialState();
         return;
       }
 
       // Reuse messages cached from onSessionStart (avoids redundant I/O)
-      const allMessages = [...loadedRawMessages, ...newTurnMessages];
+      const allMessages = [...state.loadedRawMessages, ...state.newTurnMessages];
       const pruned = pruneHistory(allMessages, {
         maxMessages,
         compact: config.compact,
@@ -275,16 +304,17 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
 
       const snapshot = {
         kind: "message" as const,
-        threadId: threadId(resolvedThreadId),
-        agentId: agentId(sessionRef?.agentId ?? "unknown"),
-        sessionId: sessionRef?.sessionId,
+        threadId: threadId(state.resolvedThreadId),
+        agentId: agentId(state.sessionRef?.agentId ?? "unknown"),
+        sessionId: state.sessionRef?.sessionId,
         messages: pruned,
-        turnIndex: newTurnMessages.length,
+        turnIndex: state.newTurnMessages.length,
         createdAt: Date.now(),
       };
 
-      const tid = resolvedThreadId;
-      const messagesToPersist = newTurnMessages;
+      const tid = state.resolvedThreadId;
+      // Snapshot mutable array before async write
+      const messagesToPersist = [...state.newTurnMessages];
 
       // Serialize writes per-thread via promise chain mutex
       const prev = pendingWrites.get(tid) ?? Promise.resolve();
@@ -311,24 +341,16 @@ export function createConversationMiddleware(config: ConversationConfig): KoiMid
       pendingWrites.set(tid, write);
       await write;
 
-      // Reset session state
-      loadedHistory = undefined;
-      loadedTokenEstimates = undefined;
-      resolvedThreadId = undefined;
-      historyCount = 0;
-      newTurnMessages = [];
-      sessionRef = undefined;
-      messageCounter = 0;
-      loadedRawMessages = [];
+      state = createInitialState();
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
-      if (historyCount === 0) {
+      if (state.historyCount === 0) {
         return undefined;
       }
       return {
         label: "conversation",
-        description: `${historyCount} turns loaded for thread ${resolvedThreadId}`,
+        description: `${state.historyCount} turns loaded for thread ${state.resolvedThreadId}`,
       };
     },
   };
