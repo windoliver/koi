@@ -100,43 +100,8 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   const { resolved: preset } = resolveRuntimePreset(presetId);
 
   // ------------------------------------------------------------------
-  // 3. Forge bootstrap (non-fatal)
+  // 3. Resolve Nexus + autonomous (before forge, so search backends are available)
   // ------------------------------------------------------------------
-  progress("forge", "Bootstrapping forge");
-  const currentSessionId = `up:${manifest.name}:0`;
-
-  const forgeResult = await bootstrapForgeOrWarn(
-    manifest,
-    () => currentSessionId,
-    verbose,
-    undefined,
-  );
-  const forgeBootstrap = forgeResult?.bootstrap;
-  const sandboxBridge = forgeResult?.sandboxBridge;
-
-  // ------------------------------------------------------------------
-  // 4. AG-UI chat bridge
-  // ------------------------------------------------------------------
-  const { createAgentChatBridge } = await import("../../agui-chat-bridge.js");
-  const chatBridge: AgentChatBridge = createAgentChatBridge();
-
-  // ------------------------------------------------------------------
-  // 5. Resolve agent + subsystems
-  // ------------------------------------------------------------------
-  progress("resolve", "Resolving agent");
-  const resolved = await resolveAgent({
-    manifestPath,
-    manifest,
-    ...(forgeBootstrap !== undefined ? { forgeStore: forgeBootstrap.store } : {}),
-  });
-  if (!resolved.ok) {
-    // Clean up forge on failure
-    if (sandboxBridge !== undefined) await sandboxBridge.dispose();
-    throw new Error(`Agent resolution failed: ${resolved.error.message}`);
-  }
-
-  const adapter = resolved.value.engine ?? createPiAdapter({ model: modelName });
-
   const nexusBaseUrl = manifest.nexus?.url ?? process.env.NEXUS_URL;
   const embedProfile = mapNexusModeToProfile(preset.nexusMode);
 
@@ -147,7 +112,47 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   ]);
 
   // ------------------------------------------------------------------
-  // 6. Activate preset stacks + compose middleware
+  // 4. Forge bootstrap (non-fatal)
+  // ------------------------------------------------------------------
+  progress("forge", "Bootstrapping forge");
+  const currentSessionId = `up:${manifest.name}:0`;
+
+  const forgeResult = await bootstrapForgeOrWarn(
+    manifest,
+    () => currentSessionId,
+    verbose,
+    undefined,
+    nexus.search,
+  );
+  const forgeBootstrap = forgeResult?.bootstrap;
+  const sandboxBridge = forgeResult?.sandboxBridge;
+
+  // ------------------------------------------------------------------
+  // 5. AG-UI chat bridge
+  // ------------------------------------------------------------------
+  const { createAgentChatBridge } = await import("../../agui-chat-bridge.js");
+  const chatBridge: AgentChatBridge = createAgentChatBridge();
+
+  // ------------------------------------------------------------------
+  // 6. Resolve agent
+  // ------------------------------------------------------------------
+  progress("resolve", "Resolving agent");
+  const resolved = await resolveAgent({
+    manifestPath,
+    manifest,
+    ...(forgeBootstrap !== undefined ? { forgeStore: forgeBootstrap.store } : {}),
+  });
+  if (!resolved.ok) {
+    if (sandboxBridge !== undefined) await sandboxBridge.dispose();
+    if (autonomous !== undefined) await autonomous.dispose();
+    if (nexus.dispose !== undefined) await nexus.dispose();
+    throw new Error(`Agent resolution failed: ${resolved.error.message}`);
+  }
+
+  const adapter = resolved.value.engine ?? createPiAdapter({ model: modelName });
+
+  // ------------------------------------------------------------------
+  // 7. Activate preset stacks + compose middleware
   // ------------------------------------------------------------------
   progress("stacks", "Activating preset stacks");
   const activatedStacks = await activatePresetStacks({
@@ -176,7 +181,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   let emitDashboardEvent: ((event: DashboardEvent) => void) | undefined;
 
   // ------------------------------------------------------------------
-  // 7. Assemble runtime
+  // 8. Assemble runtime
   // ------------------------------------------------------------------
   progress("assemble", "Assembling runtime");
   const { runtime, dispose: forgeSystemDispose } = await createForgeConfiguredKoi({
@@ -192,14 +197,14 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   });
 
   // ------------------------------------------------------------------
-  // 8. Connect channels
+  // 9. Connect channels
   // ------------------------------------------------------------------
   progress("channels", "Connecting channels");
   const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
   await Promise.all(channels.map((ch) => ch.connect()));
 
   // ------------------------------------------------------------------
-  // 9. Demo seed
+  // 10. Demo seed
   // ------------------------------------------------------------------
   progress("demo", "Seeding demo data");
   const demoPack = await extractDemoPack(manifestPath);
@@ -220,7 +225,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   await seedDemoPackIfNeeded(demoPack, workspaceRoot, manifest.name, demoNexusClient, verbose);
 
   // ------------------------------------------------------------------
-  // 10. Admin panel
+  // 11. Admin panel
   // ------------------------------------------------------------------
   progress("admin", `Starting admin panel on port ${String(adminPort)}`);
   const channelNames = channels.map((ch) => ch.name);
@@ -296,12 +301,12 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   });
 
   // ------------------------------------------------------------------
-  // 11. Provision demo agents
+  // 12. Provision demo agents
   // ------------------------------------------------------------------
   await provisionDemoAgents(demoPack, manifestPath, dispatcher, verbose);
 
   // ------------------------------------------------------------------
-  // 12. Wire chat dispatch
+  // 13. Wire chat dispatch
   // ------------------------------------------------------------------
   const persistAgentId = adminBridge.agentId ?? manifest.name;
 
