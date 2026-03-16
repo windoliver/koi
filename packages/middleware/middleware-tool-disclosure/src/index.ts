@@ -6,6 +6,8 @@
  * demand via the promote_tools companion tool.
  */
 
+export type { ToolDisclosureBundle } from "./disclosure-bundle.js";
+export { createToolDisclosureBundle } from "./disclosure-bundle.js";
 export type {
   PromoteToolsConfig,
   ToolDisclosureConfig,
