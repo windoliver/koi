@@ -85,6 +85,12 @@ interface SanitizeMiddlewareConfig {
     readonly sanitizeToolOutput?: boolean | undefined;
     /** Max recursion depth for JSON walking in tool I/O (default: 10). */
     readonly jsonWalkMaxDepth?: number | undefined;
+    /**
+     * Maximum content length (in characters) to sanitize.
+     * Content exceeding this limit is passed through without sanitization
+     * to prevent ReDoS on oversized inputs. Default: undefined (no limit).
+     */
+    readonly maxContentLength?: number | undefined;
 }
 declare function validateSanitizeConfig(config: unknown): Result<SanitizeMiddlewareConfig, KoiError>;
 
@@ -170,7 +176,7 @@ interface WalkJsonResult {
  * Returns a new immutable structure — the original is never mutated.
  * Arrays and objects are reconstructed only if a string leaf changes.
  */
-declare function walkJsonStrings(value: unknown, rules: readonly SanitizeRule[], location: SanitizationLocation, onSanitization?: (event: SanitizationEvent) => void, maxDepth?: number): WalkJsonResult;
+declare function walkJsonStrings(value: unknown, rules: readonly SanitizeRule[], location: SanitizationLocation, onSanitization?: (event: SanitizationEvent) => void, maxDepth?: number, maxContentLength?: number): WalkJsonResult;
 
 /**
  * Sanitize middleware factory — content sanitization for model inputs,
