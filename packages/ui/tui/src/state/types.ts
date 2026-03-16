@@ -203,6 +203,8 @@ export interface TuiState {
   readonly forgeBricks: Readonly<Record<string, TuiBrickSummary>>;
   /** Forge sparkline data by brick ID. */
   readonly forgeSparklines: Readonly<Record<string, readonly number[]>>;
+  /** Selected forge brick index for keyboard navigation. */
+  readonly forgeSelectedBrickIndex: number;
   /** Current zoom level for focused panel. */
   readonly zoomLevel: ZoomLevel;
   /** Available presets for the welcome screen. */
@@ -275,6 +277,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     monitorEvents: [],
     forgeBricks: {},
     forgeSparklines: {},
+    forgeSelectedBrickIndex: 0,
     zoomLevel: "normal",
     presets: [],
     selectedPresetIndex: 0,
@@ -495,6 +498,7 @@ export type TuiAction =
   | { readonly kind: "set_channels_list"; readonly channels: readonly DashboardChannelSummary[] }
   | { readonly kind: "set_system_metrics"; readonly metrics: DashboardSystemMetrics }
   | { readonly kind: "scroll_domain_view"; readonly domain: string; readonly offset: number }
+  | { readonly kind: "select_forge_brick"; readonly index: number }
   // ─── Delegation actions ──────────────────────────────────────────
   | {
       readonly kind: "set_delegations";

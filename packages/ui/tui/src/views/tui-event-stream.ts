@@ -508,23 +508,39 @@ export interface NewViewCallbacks {
   readonly scratchpadOpen: () => void;
 }
 
+/** Get the brick ID at the current forge selection index. */
+function selectedBrickId(store: TuiStore): string | undefined {
+  const keys = Object.keys(store.getState().forgeBricks);
+  return keys[store.getState().forgeSelectedBrickIndex];
+}
+
 /** Create pre-bound callbacks for forge/nexus/scratchpad keyboard actions. */
 export function createNewViewCallbacks(deps: DomainActionDeps): NewViewCallbacks {
   const { store } = deps;
   return {
-    forgeSelectNext: () => {},
-    forgeSelectPrev: () => {},
+    forgeSelectNext: () => {
+      store.dispatch({
+        kind: "select_forge_brick",
+        index: store.getState().forgeSelectedBrickIndex + 1,
+      });
+    },
+    forgeSelectPrev: () => {
+      store.dispatch({
+        kind: "select_forge_brick",
+        index: store.getState().forgeSelectedBrickIndex - 1,
+      });
+    },
     forgePromote: () => {
-      const e = Object.keys(store.getState().forgeBricks);
-      if (e[0] !== undefined) forgePromoteBrick(deps, e[0]);
+      const id = selectedBrickId(store);
+      if (id !== undefined) forgePromoteBrick(deps, id);
     },
     forgeDemote: () => {
-      const e = Object.keys(store.getState().forgeBricks);
-      if (e[0] !== undefined) forgeDemoteBrick(deps, e[0]);
+      const id = selectedBrickId(store);
+      if (id !== undefined) forgeDemoteBrick(deps, id);
     },
     forgeQuarantine: () => {
-      const e = Object.keys(store.getState().forgeBricks);
-      if (e[0] !== undefined) forgeQuarantineBrick(deps, e[0]);
+      const id = selectedBrickId(store);
+      if (id !== undefined) forgeQuarantineBrick(deps, id);
     },
     nexusBrowserSelectNext: () => {
       store.dispatch({

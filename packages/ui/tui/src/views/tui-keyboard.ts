@@ -314,7 +314,10 @@ export function createKeyboardHandler(
         callbacks.forgeDemote();
         return true;
       }
-      // 'q' for quarantine — override quit only in forge view
+      if (sequence === "q") {
+        callbacks.forgeQuarantine();
+        return true;
+      }
     }
 
     // Nexus file browser — j/k navigate, Enter open, Esc/Backspace back

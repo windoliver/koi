@@ -630,6 +630,14 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_system_metrics":
       return { ...state, systemView: { ...state.systemView, metrics: action.metrics } };
 
+    case "select_forge_brick": {
+      const brickCount = Object.keys(state.forgeBricks).length;
+      return {
+        ...state,
+        forgeSelectedBrickIndex: Math.max(0, Math.min(action.index, brickCount - 1)),
+      };
+    }
+
     // ─── Delegation actions ────────────────────────────────────────────
     case "set_delegations":
       return {

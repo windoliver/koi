@@ -27,7 +27,7 @@ const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   datasources: "↑↓:navigate  [a] approve  [s] schema  Esc:back",
   delegation: "j/k:scroll  Esc:back  Ctrl+P:commands",
   files: "j/k:navigate  Enter:open  Esc:back  Ctrl+P:commands",
-  forge: "j/k:navigate  [p] promote  [d] demote  Esc:back  Ctrl+G:close",
+  forge: "j/k:navigate  [p] promote  [d] demote  [q] quarantine  Esc:back",
   gateway: "j/k:scroll  Esc:back  Ctrl+P:commands",
   governance: "j/k:navigate  [a] approve  [d] deny  Esc:back",
   handoffs: "j/k:scroll  Esc:back  Ctrl+P:commands",

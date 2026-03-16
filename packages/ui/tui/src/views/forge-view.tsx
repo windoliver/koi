@@ -17,7 +17,7 @@ export interface ForgeViewState {
   readonly forgeSparklines: Readonly<Record<string, readonly number[]>>;
   readonly forgeEvents: readonly ForgeDashboardEvent[];
   readonly monitorEvents: readonly MonitorDashboardEvent[];
-  readonly selectedBrickIndex?: number;
+  readonly forgeSelectedBrickIndex: number;
 }
 
 export interface ForgeViewProps {
@@ -27,9 +27,9 @@ export interface ForgeViewProps {
 }
 
 export function ForgeView(props: ForgeViewProps): React.ReactNode {
-  const { forgeBricks, forgeSparklines, forgeEvents, monitorEvents, selectedBrickIndex } = props.state;
+  const { forgeBricks, forgeSparklines, forgeEvents, monitorEvents, forgeSelectedBrickIndex } = props.state;
   const brickEntries = Object.entries(forgeBricks);
-  const selectedIdx = selectedBrickIndex ?? -1;
+  const selectedIdx = forgeSelectedBrickIndex;
 
   // Count promotions
   let promotedCount = 0;
