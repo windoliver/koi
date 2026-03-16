@@ -181,6 +181,8 @@ export interface NexusStackConfig extends NexusConnectionConfig {
   readonly optIn?: OptInOverrides | undefined;
   /** Nexus embed profile (e.g. "lite", "full"). Only used when baseUrl is omitted (embed mode). */
   readonly embedProfile?: string | undefined;
+  /** Nexus source directory for `uv run --directory <sourceDir> nexus`. Only used in embed mode. */
+  readonly sourceDir?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------

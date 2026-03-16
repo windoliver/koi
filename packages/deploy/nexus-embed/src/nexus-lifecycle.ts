@@ -29,6 +29,8 @@ export interface NexusLifecycleOptions {
   readonly cwd?: string | undefined;
   /** Emit verbose diagnostics to stderr. Default: false. */
   readonly verbose?: boolean | undefined;
+  /** Nexus source directory for `uv run --directory <sourceDir> nexus`. */
+  readonly sourceDir?: string | undefined;
 }
 
 /** Extended options for `nexusInit()`. */
@@ -70,14 +72,15 @@ export async function nexusInit(
 ): Promise<Result<void, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
+  const sourceDir = options?.sourceDir;
 
-  const binaryCheck = await ensureBinary();
+  const binaryCheck = await ensureBinary(sourceDir);
   if (!binaryCheck.ok) return binaryCheck;
 
   const nexusPreset = PRESET_MAP[koiPreset] ?? "local";
   const args: string[] = ["init", "--preset", nexusPreset, "--force"];
 
-  const result = await runNexusCommand(args, cwd, verbose, "nexus init");
+  const result = await runNexusCommand(args, cwd, verbose, "nexus init", sourceDir);
   if (!result.ok) return result;
 
   // Nexus init does not accept a --port flag. If a custom port was requested,
@@ -122,8 +125,9 @@ export async function nexusUp(
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
   const host = options?.host ?? DEFAULT_HOST;
+  const sourceDir = options?.sourceDir;
 
-  const binaryCheck = await ensureBinary();
+  const binaryCheck = await ensureBinary(sourceDir);
   if (!binaryCheck.ok) return binaryCheck;
 
   // Auto-init if no config file exists (nexus.yaml or nexus.yml)
@@ -136,7 +140,7 @@ export async function nexusUp(
         `Nexus: nexus.yaml not found, running nexus init --preset ${koiPreset}\n`,
       );
     }
-    const initResult = await nexusInit(koiPreset, { cwd, verbose, port: options?.port });
+    const initResult = await nexusInit(koiPreset, { cwd, verbose, sourceDir, port: options?.port });
     if (!initResult.ok) return initResult;
     autoInitialized = true;
     configPath = findNexusConfig(cwd) ?? join(cwd, "nexus.yaml");
@@ -156,7 +160,7 @@ export async function nexusUp(
   }
   if (options?.build === true) upArgs.push("--build");
   if (options?.portStrategy !== undefined) upArgs.push("--port-strategy", options.portStrategy);
-  const upResult = await runNexusCommand(upArgs, cwd, verbose, "nexus up");
+  const upResult = await runNexusCommand(upArgs, cwd, verbose, "nexus up", sourceDir);
 
   // Restore the original env var (may be needed by other code)
   if (savedApiKey !== undefined) {
@@ -195,14 +199,15 @@ export async function nexusDown(
 ): Promise<Result<void, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
+  const sourceDir = options?.sourceDir;
 
-  const binaryCheck = await ensureBinary();
+  const binaryCheck = await ensureBinary(sourceDir);
   if (!binaryCheck.ok) return binaryCheck;
 
   const args: string[] = ["down"];
   if (options?.volumes === true) args.push("--volumes");
 
-  return runNexusCommand(args, cwd, verbose, "nexus down");
+  return runNexusCommand(args, cwd, verbose, "nexus down", sourceDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -210,8 +215,8 @@ export async function nexusDown(
 // ---------------------------------------------------------------------------
 
 /** Checks that the nexus binary is available on PATH. */
-async function ensureBinary(): Promise<Result<void, KoiError>> {
-  const binaryParts = resolveNexusBinary();
+async function ensureBinary(sourceDir?: string | undefined): Promise<Result<void, KoiError>> {
+  const binaryParts = resolveNexusBinary(sourceDir);
   const available = await checkBinaryAvailable(binaryParts);
   if (!available) {
     const binaryName = binaryParts[0] ?? "nexus";
@@ -348,8 +353,9 @@ async function runNexusCommand(
   cwd: string,
   verbose: boolean,
   label: string,
+  sourceDir?: string | undefined,
 ): Promise<Result<void, KoiError>> {
-  const binaryParts = resolveNexusBinary();
+  const binaryParts = resolveNexusBinary(sourceDir);
   const cmd = [...binaryParts, ...args];
 
   if (verbose) {

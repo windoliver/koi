@@ -80,7 +80,7 @@ export async function ensureNexusRunning(
   }
 
   // 3. Resolve binary
-  const binaryParts = resolveNexusBinary();
+  const binaryParts = resolveNexusBinary(config?.sourceDir);
   const available = await checkBinaryAvailable(binaryParts);
   if (!available) {
     const binaryName = binaryParts[0] ?? "nexus";

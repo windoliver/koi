@@ -7,10 +7,13 @@
  */
 
 /** Resolve the command to run Nexus. Returns array of command parts. */
-export function resolveNexusBinary(): readonly string[] {
+export function resolveNexusBinary(sourceDir?: string | undefined): readonly string[] {
   const override = process.env.NEXUS_COMMAND;
   if (override && override.trim().length > 0) {
     return override.trim().split(/\s+/);
+  }
+  if (sourceDir !== undefined) {
+    return ["uv", "run", "--directory", sourceDir, "nexus"];
   }
   return ["uv", "run", "nexus"];
 }

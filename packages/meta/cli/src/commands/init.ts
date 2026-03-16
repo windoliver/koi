@@ -113,9 +113,9 @@ export async function runInit(flags: InitFlags): Promise<void> {
   p.outro(`Agent "${state.name}" created in ${targetDir}`);
 
   if (state.preset === "demo" || state.preset === "mesh") {
-    process.stderr.write(`\nNext steps:\n  ${cdHint}koi up\n\n`);
+    process.stderr.write(`\nNext steps:\n  ${cdHint}bun run up\n\n`);
   } else {
-    process.stderr.write(`\nNext steps:\n  ${cdHint}koi up\n\n`);
+    process.stderr.write(`\nNext steps:\n  ${cdHint}bun run up\n\n`);
   }
 }
 

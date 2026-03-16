@@ -34,7 +34,7 @@ import { renderEvent } from "../../render-event.js";
 import { formatResolutionError, resolveAgent } from "../../resolve-agent.js";
 import { resolveAutonomousOrWarn } from "../../resolve-autonomous.js";
 import { mergeBootstrapContext } from "../../resolve-bootstrap.js";
-import { resolveNexusOrWarn } from "../../resolve-nexus.js";
+import { resolveNexusOrWarn, runNexusBuildIfNeeded } from "../../resolve-nexus.js";
 import { resolveOrchestrationFromAgent } from "../../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../../resolve-temporal.js";
 
@@ -188,6 +188,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
     await runDetach(manifestPath);
   }
 
+  // Validate --nexus-build / --nexus-source and run uv sync if needed
+  runNexusBuildIfNeeded(flags.nexusBuild, flags.nexusSource);
+
   const output = createCliOutput({ verbose: flags.verbose, logFormat: flags.logFormat });
   const timer = createTimer(flags.timing);
 
@@ -339,7 +342,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
   output.spinner.start("Resolving subsystems...");
   const [nexus, autonomous, temporalAdmin] = await timer.time("subsystems", () =>
     Promise.all([
-      resolveNexusOrWarn(nexusBaseUrl, manifest.nexus?.url, flags.verbose, embedProfile),
+      resolveNexusOrWarn(
+        nexusBaseUrl,
+        manifest.nexus?.url,
+        flags.verbose,
+        embedProfile,
+        flags.nexusSource,
+      ),
       resolveAutonomousOrWarn(manifest, flags.verbose),
       temporalUrl !== undefined
         ? resolveTemporalOrWarn(temporalUrl, flags.verbose)
