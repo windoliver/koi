@@ -249,6 +249,14 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
       runDlqRetry(deps);
       return true;
 
+    case "harness-pause":
+      runHarnessAction("pause", deps);
+      return true;
+
+    case "harness-resume":
+      runHarnessAction("resume", deps);
+      return true;
+
     case "quit":
       deps.stop().catch(() => {});
       return true;
@@ -313,6 +321,18 @@ export function handleSlashCommand(text: string, deps: CommandDeps): void {
   }
   if (cmd === "dlq" && arg === "retry") {
     dispatchCommand("dlq-retry", deps);
+    return;
+  }
+  if (cmd === "harness" && arg !== undefined) {
+    if (arg === "pause") {
+      dispatchCommand("harness-pause", deps);
+      return;
+    }
+    if (arg === "resume") {
+      dispatchCommand("harness-resume", deps);
+      return;
+    }
+    deps.addLifecycleMessage(`Unknown harness subcommand: ${arg}. Use pause or resume.`);
     return;
   }
 
@@ -433,6 +453,16 @@ function runDlqRetry(deps: CommandDeps): void {
     .then((r) => {
       if (r.ok) deps.addLifecycleMessage(`Retried dead letter ${dl.entryId}`);
       else deps.addLifecycleMessage(`Retry failed: ${r.error.kind}`);
+    })
+    .catch(() => {});
+}
+
+function runHarnessAction(action: "pause" | "resume", deps: CommandDeps): void {
+  const fn = action === "pause" ? deps.client.pauseHarness : deps.client.resumeHarness;
+  fn()
+    .then((r) => {
+      if (r.ok) deps.addLifecycleMessage(`Harness ${action}d`);
+      else deps.addLifecycleMessage(`Harness ${action} failed: ${r.error.kind}`);
     })
     .catch(() => {});
 }

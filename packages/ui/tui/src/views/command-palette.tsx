@@ -50,7 +50,7 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "channels", label: "/channels", description: "Show channel connections" },
   { id: "system", label: "/system", description: "Show system metrics and events" },
   { id: "nexus", label: "/nexus", description: "Show Nexus file/namespace events", shortcut: "Ctrl+F" },
-  { id: "gateway", label: "/gateway", description: "Show gateway topology" },
+  { id: "gateway", label: "/gateway", description: "Show gateway topology", requiredCapability: "gateway" },
   { id: "middleware", label: "/middleware", description: "Show middleware chain for active agent" },
   { id: "temporal", label: "/temporal", description: "Show Temporal workflows", requiredCapability: "temporal" },
   { id: "scheduler", label: "/scheduler", description: "Show scheduler tasks and schedules", requiredCapability: "scheduler" },
@@ -73,6 +73,8 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "schedule-pause", label: "/schedule pause", description: "Pause a cron schedule", requiredCapability: "scheduler" },
   { id: "schedule-resume", label: "/schedule resume", description: "Resume a paused schedule", requiredCapability: "scheduler" },
   { id: "dlq-retry", label: "/dlq retry", description: "Retry first dead letter entry", requiredCapability: "scheduler" },
+  { id: "harness-pause", label: "/harness pause", description: "Pause the harness", requiredCapability: "harness" },
+  { id: "harness-resume", label: "/harness resume", description: "Resume the harness", requiredCapability: "harness" },
   { id: "quit", label: "/quit", description: "Exit TUI", shortcut: "q" },
 ] as const;
 
