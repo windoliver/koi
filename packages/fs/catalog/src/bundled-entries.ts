@@ -375,6 +375,13 @@ const TOOL_ENTRIES: readonly CatalogEntry[] = [
     description: "Web scraping and content extraction tools",
     tags: ["tool", "web", "scraping", "content"],
   },
+  {
+    name: "bundled:@koi/tools-context-hub",
+    kind: "tool",
+    source: "bundled",
+    description: "Search and fetch curated API docs from Context Hub",
+    tags: ["tool", "context-hub", "api-docs", "documentation"],
+  },
 ] as const satisfies readonly CatalogEntry[];
 
 // ---------------------------------------------------------------------------

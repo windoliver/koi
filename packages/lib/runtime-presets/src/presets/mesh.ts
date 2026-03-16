@@ -27,6 +27,7 @@ export const MESH_PRESET: RuntimePreset = {
     goalStack: true,
     qualityGate: true,
     contextArena: true,
+    contextHub: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },

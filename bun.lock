@@ -630,6 +630,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/fs/tools-context-hub": {
+      "name": "@koi/tools-context-hub",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/fs/tools-github": {
       "name": "@koi/tools-github",
       "version": "0.0.0",
@@ -1218,6 +1228,7 @@
         "@koi/soul": "workspace:*",
         "@koi/temporal": "workspace:*",
         "@koi/tool-stack": "workspace:*",
+        "@koi/tools-context-hub": "workspace:*",
         "@koi/tui": "workspace:*",
       },
     },
@@ -1416,6 +1427,7 @@
         "@koi/tool-ask-user": "workspace:*",
         "@koi/tool-exec": "workspace:*",
         "@koi/tool-stack": "workspace:*",
+        "@koi/tools-context-hub": "workspace:*",
         "@koi/tools-github": "workspace:*",
         "@koi/tools-web": "workspace:*",
         "@koi/transcript": "workspace:*",
@@ -4174,6 +4186,8 @@
     "@koi/tool-squash": ["@koi/tool-squash@workspace:packages/mm/tool-squash"],
 
     "@koi/tool-stack": ["@koi/tool-stack@workspace:packages/meta/tool-stack"],
+
+    "@koi/tools-context-hub": ["@koi/tools-context-hub@workspace:packages/fs/tools-context-hub"],
 
     "@koi/tools-github": ["@koi/tools-github@workspace:packages/fs/tools-github"],
 

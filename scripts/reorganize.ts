@@ -122,6 +122,7 @@ const SUBSYSTEM_MAP: Readonly<Record<string, string>> = {
   "tool-browser": "fs",
   "tool-ask-user": "fs",
   "tool-ask-guide": "fs",
+  "tools-context-hub": "fs",
   "tools-github": "fs",
   "tools-web": "fs",
   skills: "fs",

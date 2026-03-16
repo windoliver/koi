@@ -60,6 +60,7 @@ export interface PresetStacks {
   readonly retryStack?: boolean;
   readonly qualityGate?: boolean;
   readonly autoHarness?: boolean;
+  readonly contextHub?: boolean;
 }
 
 /** A complete runtime preset definition. */

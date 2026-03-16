@@ -119,6 +119,19 @@ async function activateGovernance(
   log(config, `Stack: governance (${String(bundle.middlewares.length)} middleware)`);
 }
 
+async function activateContextHub(
+  config: StackActivationConfig,
+  providers: ComponentProvider[],
+): Promise<void> {
+  const { createContextHubExecutor, createContextHubProvider } = await import(
+    "@koi/tools-context-hub"
+  );
+  const executor = createContextHubExecutor();
+  const provider = createContextHubProvider({ executor });
+  providers.push(provider);
+  log(config, "Stack: context-hub (chub_search + chub_get tools)");
+}
+
 async function activateContextArena(
   config: StackActivationConfig,
   middleware: KoiMiddleware[],
@@ -187,6 +200,10 @@ export async function activatePresetStacks(
     await tryActivate("governance", () =>
       activateGovernance(config, middleware, providers, disposables),
     );
+  }
+
+  if (config.stacks.contextHub === true) {
+    await tryActivate("context-hub", () => activateContextHub(config, providers));
   }
 
   if (config.stacks.contextArena === true) {
