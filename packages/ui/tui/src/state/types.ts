@@ -129,6 +129,10 @@ export interface TuiState {
   readonly activePresetDetail: PresetInfo | null;
   /** Per-agent PTY output buffers (base64 chunks). */
   readonly ptyBuffers: Readonly<Record<string, readonly string[]>>;
+  /** Per-agent sessions for split-pane mode. */
+  readonly splitSessions: Readonly<Record<string, SessionState>>;
+  /** Index of focused pane in split view. */
+  readonly focusedPaneIndex: number;
 }
 
 /** App mode: welcome (no admin API) or boardroom (connected). */
@@ -162,6 +166,8 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     selectedPresetIndex: 0,
     activePresetDetail: null,
     ptyBuffers: {},
+    splitSessions: {},
+    focusedPaneIndex: 0,
   };
 }
 
@@ -254,7 +260,29 @@ export type TuiAction =
       readonly agentId: string;
       readonly data: string;
     }
-  | { readonly kind: "clear_pty_buffer"; readonly agentId: string };
+  | { readonly kind: "clear_pty_buffer"; readonly agentId: string }
+  | {
+      readonly kind: "set_split_session";
+      readonly agentId: string;
+      readonly session: SessionState;
+    }
+  | {
+      readonly kind: "remove_split_session";
+      readonly agentId: string;
+    }
+  | {
+      readonly kind: "append_split_tokens";
+      readonly agentId: string;
+      readonly text: string;
+    }
+  | {
+      readonly kind: "flush_split_tokens";
+      readonly agentId: string;
+    }
+  | {
+      readonly kind: "set_focused_pane";
+      readonly index: number;
+    };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;

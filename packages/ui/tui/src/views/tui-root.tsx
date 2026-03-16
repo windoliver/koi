@@ -207,6 +207,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onViewSchema={props.onDataSourceViewSchema}
             onBack={() => { props.store.dispatch({ kind: "set_view", view: "datasources" }); }}
             focused={true}
+            syntaxStyle={props.syntaxStyle}
           />
         )}
 

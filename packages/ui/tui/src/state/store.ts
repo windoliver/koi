@@ -295,6 +295,67 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       const { [action.agentId]: _, ...rest } = state.ptyBuffers;
       return { ...state, ptyBuffers: rest };
     }
+
+    case "set_split_session":
+      return {
+        ...state,
+        splitSessions: {
+          ...state.splitSessions,
+          [action.agentId]: action.session,
+        },
+      };
+
+    case "remove_split_session": {
+      const { [action.agentId]: _, ...rest } = state.splitSessions;
+      return { ...state, splitSessions: rest };
+    }
+
+    case "append_split_tokens": {
+      const session = state.splitSessions[action.agentId];
+      if (session === undefined) return state;
+      return {
+        ...state,
+        splitSessions: {
+          ...state.splitSessions,
+          [action.agentId]: {
+            ...session,
+            pendingText: session.pendingText + action.text,
+          },
+        },
+      };
+    }
+
+    case "flush_split_tokens": {
+      const session = state.splitSessions[action.agentId];
+      if (session === undefined) return state;
+      if (session.pendingText === "") return state;
+      const flushedMessage: ChatMessage = {
+        kind: "assistant" as const,
+        text: session.pendingText,
+        timestamp: Date.now(),
+      };
+      const messages = [...session.messages, flushedMessage].slice(-MAX_SESSION_MESSAGES);
+      return {
+        ...state,
+        splitSessions: {
+          ...state.splitSessions,
+          [action.agentId]: {
+            ...session,
+            pendingText: "",
+            messages,
+          },
+        },
+      };
+    }
+
+    case "set_focused_pane": {
+      const paneCount = Object.keys(state.splitSessions).length;
+      const maxIndex = Math.max(0, paneCount - 1);
+      return {
+        ...state,
+        focusedPaneIndex: Math.max(0, Math.min(action.index, maxIndex)),
+      };
+    }
   }
 }
 
