@@ -221,6 +221,8 @@ describe("createKindGuard covers all valid kinds", () => {
     "datasource",
     "forge",
     "monitor",
+    "pty_output",
+    "log",
   ] as const;
 
   test.each([...ALL_KINDS])("isDashboardEvent accepts kind '%s'", (kind) => {

@@ -75,6 +75,7 @@
     "@koi/goal-stack": "workspace:*",
     "@koi/governance": "workspace:*",
     "@koi/harness-scheduler": "workspace:*",
+    "@koi/setup-core": "workspace:*",
     "@koi/tui": "workspace:*",
     "@koi/middleware-policy-cache": "workspace:*",
     "@koi/node-stack": "workspace:*",

@@ -16,6 +16,8 @@
  *   koi tui --refresh 10
  */
 
+import type { OperationResult, PhaseCallbacks, SetupWizardState } from "@koi/setup-core";
+import { KNOWN_MODELS } from "@koi/setup-core";
 import type { PresetInfo } from "@koi/tui";
 import type { TuiFlags } from "../args.js";
 
@@ -103,13 +105,34 @@ export async function runTui(flags: TuiFlags): Promise<void> {
     ...(flags.session !== undefined ? { initialSessionId: flags.session } : {}),
     ...(isWelcome
       ? {
+          models: [...KNOWN_MODELS],
+          onStartStack: async (
+            wizardState: SetupWizardState,
+            callbacks: PhaseCallbacks,
+          ): Promise<OperationResult<void>> => {
+            // 1. Scaffold koi.yaml with the wizard state
+            await scaffoldManifest(wizardState.preset, wizardState.name);
+
+            // 2. Import and run start-stack in-process
+            const { resolve } = await import("node:path");
+            const { startStack } = await import("./up/start-stack.js");
+            const result = await startStack(
+              {
+                wizardState,
+                manifestPath: resolve("koi.yaml"),
+                workspaceRoot: process.cwd(),
+                verbose: false,
+                adminPort: 3100,
+              },
+              callbacks,
+            );
+
+            return result;
+          },
           onPresetSelected: async (presetId: string, agentName: string): Promise<void> => {
-            // 1. Scaffold koi.yaml with the selected preset
+            // Fallback: scaffold and spawn detached
             await scaffoldManifest(presetId, agentName);
 
-            // 2. Spawn `koi up` as a detached background process.
-            //    We can't call runUp() in-process because it creates its own
-            //    TUI and renderer, which conflicts with our welcome TUI.
             const { spawn } = await import("node:child_process");
             const bunPath = process.argv[0] ?? "bun";
             const cliEntry = new URL("../bin.ts", import.meta.url).pathname;
@@ -120,7 +143,6 @@ export async function runTui(flags: TuiFlags): Promise<void> {
             });
             child.unref();
 
-            // 3. Wait for admin API to become healthy (poll every 500ms, up to 30s)
             const maxAttempts = 60;
             for (let attempt = 0; attempt < maxAttempts; attempt++) {
               try {
@@ -134,8 +156,19 @@ export async function runTui(flags: TuiFlags): Promise<void> {
               await new Promise((r) => setTimeout(r, 500));
             }
 
-            // 4. Transition the TUI from welcome to boardroom
             await app.transitionToBoardroom();
+          },
+          onServiceCommand: async (command: string): Promise<void> => {
+            const { createAdminClient } = await import("@koi/tui");
+            const client = createAdminClient({ baseUrl: adminUrl });
+            switch (command) {
+              case "stop":
+                await client.shutdown();
+                break;
+              case "doctor":
+                // Doctor runs preflight checks
+                break;
+            }
           },
         }
       : {}),

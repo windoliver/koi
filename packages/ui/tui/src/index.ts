@@ -70,11 +70,15 @@ export {
 export type { TerminalConfig, TerminalInstance } from "./lib/ghostty-wasm.js";
 export { createTerminal } from "./lib/ghostty-wasm.js";
 // State
+export { cycleLogLevel, reduceService } from "./state/service-reducer.js";
 export type { StateListener, TuiStore } from "./state/store.js";
 export { createStore, reduce } from "./state/store.js";
 export type {
   ConnectionStatus,
+  LogEntry,
+  LogLevel,
   PresetInfo,
+  ServiceStatusState,
   SessionPickerEntry,
   SessionState,
   TuiAction,
@@ -84,7 +88,8 @@ export type {
   TuiView,
   ZoomLevel,
 } from "./state/types.js";
-export { createInitialState, MAX_SESSION_MESSAGES } from "./state/types.js";
+export { createInitialState, MAX_LOG_BUFFER, MAX_SESSION_MESSAGES } from "./state/types.js";
+export { reduceWizard } from "./state/wizard-reducer.js";
 // Theme
 export {
   agentStateColor,
@@ -97,14 +102,27 @@ export { AddonPickerView, AVAILABLE_ADDONS } from "./views/addon-picker-view.js"
 // Views — OpenTUI components
 export type { AgentListViewProps } from "./views/agent-list-view.js";
 export { AgentListView } from "./views/agent-list-view.js";
+// Views — new step/service views
+export type { ChannelsStepViewProps } from "./views/channels-step-view.js";
+export { ChannelsStepView } from "./views/channels-step-view.js";
 export type { PaletteCallbacks, PaletteCommand } from "./views/command-palette.js";
 export { commandsToSelectItems, DEFAULT_COMMANDS } from "./views/command-palette.js";
 export type { CommandPaletteViewProps } from "./views/command-palette-view.js";
 export { CommandPaletteView } from "./views/command-palette-view.js";
 export type { ConsoleViewProps } from "./views/console-view.js";
 export { ConsoleView } from "./views/console-view.js";
+export type { EngineStepViewProps } from "./views/engine-step-view.js";
+export { EngineStepView } from "./views/engine-step-view.js";
+export type { LogViewProps } from "./views/log-view.js";
+export { LogView } from "./views/log-view.js";
 export type { MessageRowProps } from "./views/message-row.js";
 export { MessageRow } from "./views/message-row.js";
+export type { ModelStepViewProps } from "./views/model-step-view.js";
+export { ModelStepView } from "./views/model-step-view.js";
+export type { ProgressViewProps } from "./views/progress-view.js";
+export { ProgressView } from "./views/progress-view.js";
+export type { ServiceViewProps } from "./views/service-view.js";
+export { ServiceView } from "./views/service-view.js";
 export type { SessionPickerViewProps } from "./views/session-picker-view.js";
 export { SessionPickerView } from "./views/session-picker-view.js";
 // Views — status bar

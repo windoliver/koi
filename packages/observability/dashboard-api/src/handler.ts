@@ -67,6 +67,16 @@ import {
   handleTemporalWorkflows,
   handleTerminateWorkflow,
 } from "./routes/orchestration.js";
+import type { ServiceManagementCallbacks } from "./routes/service-management.js";
+import {
+  handleDemoInit,
+  handleDemoPacks,
+  handleDemoReset,
+  handleDeploy,
+  handleDetailedStatus,
+  handleShutdown,
+  handleUndeploy,
+} from "./routes/service-management.js";
 import { handleSkills } from "./routes/skills.js";
 import {
   handleAgentProcfs,
@@ -96,6 +106,8 @@ export interface DashboardHandlerOptions {
   readonly editablePaths?: EditablePathMatcher;
   /** AG-UI chat handler for POST /agents/:id/chat. When absent, returns 501. */
   readonly agentChatHandler?: AgentChatHandler;
+  /** Service management callbacks for shutdown, status, demo, deploy. When absent, returns 501. */
+  readonly serviceManagement?: ServiceManagementCallbacks;
 }
 
 export interface DashboardHandlerResult {
@@ -115,7 +127,8 @@ export function createDashboardHandler(
   const options: DashboardHandlerOptions =
     "listAgents" in dataSourceOrOptions ? { dataSource: dataSourceOrOptions } : dataSourceOrOptions;
 
-  const { dataSource, fileSystem, runtimeViews, commands, agentChatHandler } = options;
+  const { dataSource, fileSystem, runtimeViews, commands, agentChatHandler, serviceManagement } =
+    options;
   const editablePaths =
     options.editablePaths ?? (fileSystem !== undefined ? createDefaultEditablePaths() : undefined);
 
@@ -460,6 +473,47 @@ export function createDashboardHandler(
         method: "POST",
         pattern: "/cmd/harness/resume",
         handler: (req, params) => handleResumeHarness(req, params, commands),
+      },
+    );
+  }
+
+  // Service management routes (when ServiceManagementCallbacks is provided)
+  if (serviceManagement !== undefined) {
+    routes.push(
+      {
+        method: "POST",
+        pattern: "/cmd/shutdown",
+        handler: (req, params) => handleShutdown(req, params, serviceManagement),
+      },
+      {
+        method: "GET",
+        pattern: "/status/detailed",
+        handler: (req, params) => handleDetailedStatus(req, params, serviceManagement),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/demo/init",
+        handler: (req, params) => handleDemoInit(req, params, serviceManagement),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/demo/reset",
+        handler: (req, params) => handleDemoReset(req, params, serviceManagement),
+      },
+      {
+        method: "GET",
+        pattern: "/demo/packs",
+        handler: (req, params) => handleDemoPacks(req, params, serviceManagement),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/deploy",
+        handler: (req, params) => handleDeploy(req, params, serviceManagement),
+      },
+      {
+        method: "DELETE",
+        pattern: "/cmd/deploy",
+        handler: (req, params) => handleUndeploy(req, params, serviceManagement),
       },
     );
   }

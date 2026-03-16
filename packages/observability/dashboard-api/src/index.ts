@@ -53,6 +53,7 @@ export {
 } from "./router.js";
 export type { EditablePathMatcher } from "./routes/filesystem.js";
 export { createDefaultEditablePaths } from "./routes/filesystem.js";
+export type { ServiceManagementCallbacks } from "./routes/service-management.js";
 export { encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId } from "./sse/encoder.js";
 export type { SseProducer } from "./sse/producer.js";
 export { createSseProducer } from "./sse/producer.js";

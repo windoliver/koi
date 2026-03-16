@@ -78,6 +78,15 @@ export const ADMIN_ROUTES = {
   fsWrite: { method: "PUT", path: "/fs/file" },
   fsSearch: { method: "GET", path: "/fs/search" },
   fsDelete: { method: "DELETE", path: "/fs/file" },
+
+  // ─── Service Management ────────────────────────────────────────────
+  shutdown: { method: "POST", path: "/cmd/shutdown" },
+  detailedStatus: { method: "GET", path: "/status/detailed" },
+  demoInit: { method: "POST", path: "/cmd/demo/init" },
+  demoReset: { method: "POST", path: "/cmd/demo/reset" },
+  demoPacks: { method: "GET", path: "/demo/packs" },
+  deploy: { method: "POST", path: "/cmd/deploy" },
+  undeploy: { method: "DELETE", path: "/cmd/deploy" },
 } as const;
 
 /** Type of the ADMIN_ROUTES object. */

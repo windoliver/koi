@@ -89,6 +89,48 @@ function makeCallbacks(): KeyboardCallbacks & {
     addonsBack: () => {
       mutableCalls.push("addonsBack");
     },
+    modelSelect: () => {
+      mutableCalls.push("modelSelect");
+    },
+    modelBack: () => {
+      mutableCalls.push("modelBack");
+    },
+    engineConfirm: () => {
+      mutableCalls.push("engineConfirm");
+    },
+    engineSkip: () => {
+      mutableCalls.push("engineSkip");
+    },
+    engineBack: () => {
+      mutableCalls.push("engineBack");
+    },
+    channelsConfirm: () => {
+      mutableCalls.push("channelsConfirm");
+    },
+    channelsToggle: () => {
+      mutableCalls.push("channelsToggle");
+    },
+    channelsBack: () => {
+      mutableCalls.push("channelsBack");
+    },
+    serviceStop: () => {
+      mutableCalls.push("serviceStop");
+    },
+    serviceDoctor: () => {
+      mutableCalls.push("serviceDoctor");
+    },
+    serviceLogs: () => {
+      mutableCalls.push("serviceLogs");
+    },
+    serviceBack: () => {
+      mutableCalls.push("serviceBack");
+    },
+    logsCycleLevel: () => {
+      mutableCalls.push("logsCycleLevel");
+    },
+    logsBack: () => {
+      mutableCalls.push("logsBack");
+    },
   };
 }
 

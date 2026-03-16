@@ -36,6 +36,20 @@ export interface KeyboardCallbacks {
   readonly addonsSkip: () => void;
   readonly addonsToggle: () => void;
   readonly addonsBack: () => void;
+  readonly modelSelect: () => void;
+  readonly modelBack: () => void;
+  readonly engineConfirm: () => void;
+  readonly engineSkip: () => void;
+  readonly engineBack: () => void;
+  readonly channelsConfirm: () => void;
+  readonly channelsToggle: () => void;
+  readonly channelsBack: () => void;
+  readonly serviceStop: () => void;
+  readonly serviceDoctor: () => void;
+  readonly serviceLogs: () => void;
+  readonly serviceBack: () => void;
+  readonly logsCycleLevel: () => void;
+  readonly logsBack: () => void;
 }
 
 /**
@@ -199,6 +213,105 @@ export function createKeyboardHandler(
       }
       if (sequence === "\x1b") {
         callbacks.addonsBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Model step — j/k navigate, Enter confirm, Esc back
+    if (view === "model") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        // Navigation handled by component local state — dispatch not needed
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.modelSelect();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.modelBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Engine step — Enter confirm, s skip, Esc back
+    if (view === "engine") {
+      if (sequence === "\r") {
+        callbacks.engineConfirm();
+        return true;
+      }
+      if (sequence === "s") {
+        callbacks.engineSkip();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.engineBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Channels step — j/k, Space toggle, Enter confirm, Esc back
+    if (view === "channels") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        return true;
+      }
+      if (sequence === " ") {
+        callbacks.channelsToggle();
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.channelsConfirm();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.channelsBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Progress view — read-only, no keyboard actions
+    if (view === "progress") {
+      return false;
+    }
+
+    // Service view — s=stop, d=doctor, l=logs, Esc=back
+    if (view === "service") {
+      if (sequence === "s") {
+        callbacks.serviceStop();
+        return true;
+      }
+      if (sequence === "d") {
+        callbacks.serviceDoctor();
+        return true;
+      }
+      if (sequence === "l") {
+        callbacks.serviceLogs();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.serviceBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Logs view — l=cycle level, Esc=back
+    if (view === "logs") {
+      if (sequence === "l") {
+        callbacks.logsCycleLevel();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.logsBack();
         return true;
       }
       return false;
