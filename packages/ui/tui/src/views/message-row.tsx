@@ -57,11 +57,25 @@ export function MessageRow(props: MessageRowProps): React.ReactNode {
         <box flexDirection="row">
           <text fg={COLORS.dim}>{"⚙ "}</text>
           <text fg={COLORS.cyan}>{msg.name}</text>
-          <text fg={COLORS.dim}>{`(${truncate(msg.args, MAX_INLINE_LENGTH)})`}</text>
         </box>
-        {msg.result !== undefined && (
+        {msg.args !== "" && props.syntaxStyle !== undefined ? (
+          <code
+            filetype="json"
+            syntaxStyle={props.syntaxStyle}
+            content={truncate(msg.args, MAX_INLINE_LENGTH)}
+          />
+        ) : msg.args !== "" ? (
+          <text fg={COLORS.dim}>{`(${truncate(msg.args, MAX_INLINE_LENGTH)})`}</text>
+        ) : null}
+        {msg.result !== undefined && props.syntaxStyle !== undefined ? (
+          <code
+            filetype="json"
+            syntaxStyle={props.syntaxStyle}
+            content={truncate(msg.result, MAX_INLINE_LENGTH)}
+          />
+        ) : msg.result !== undefined ? (
           <text fg={COLORS.dim}>{`  → ${truncate(msg.result, MAX_INLINE_LENGTH)}`}</text>
-        )}
+        ) : null}
       </box>
     );
   }

@@ -56,7 +56,15 @@ export function StatusBarView(props: StatusBarViewProps): React.ReactNode {
 
   return (
     <box height={2} flexDirection="column" backgroundColor={COLORS.bg}>
-      {/* Line 1: tabs + status */}
+      {/* Line 1: tabs + status
+       *
+       * Note: <tab-select> was evaluated here but intentionally skipped.
+       * The view tabs are display-only indicators — view switching is driven
+       * by keyboard shortcuts and the command palette, not by clicking tabs.
+       * Using <tab-select> would introduce unwanted interactive focus
+       * management and key handling that conflicts with the existing
+       * keyboard-driven navigation model.
+       */}
       <box height={1} flexDirection="row">
         <text fg={COLORS.cyan}><b>{` [${zoomLabel}] `}</b></text>
         {!isWelcome && (
