@@ -1,11 +1,11 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/gateway-canvas API surface . has stable type surface 1`] = `
-"import { Result, KoiError } from '@koi/core';
+"export { computeStringHash as computeContentHash } from '@koi/hash';
+import { Result, KoiError } from '@koi/core';
 import * as _koi_gateway_types from '@koi/gateway-types';
 import { SurfaceStore } from '@koi/gateway-types';
 export { SurfaceEntry, SurfaceStore, SurfaceStoreConfig } from '@koi/gateway-types';
-export { computeStringHash as computeContentHash } from '@koi/hash';
 
 /**
  * SSE (Server-Sent Events) subscriber registry for canvas surfaces.
