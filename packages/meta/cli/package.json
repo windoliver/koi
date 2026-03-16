@@ -66,6 +66,7 @@
     "@koi/shutdown": "workspace:*",
     "@koi/sandbox": "workspace:*",
     "@koi/sandbox-ipc": "workspace:*",
+    "@koi/search-provider": "workspace:*",
     "@koi/snapshot-chain-store": "workspace:*",
     "@koi/auto-harness": "workspace:*",
     "@koi/autonomous": "workspace:*",

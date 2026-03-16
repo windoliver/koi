@@ -6,6 +6,7 @@
 import type { SandboxExecutor } from "@koi/core";
 import type { createForgeBootstrap } from "@koi/forge";
 import type { SandboxBridge } from "@koi/sandbox-ipc";
+import type { Indexer, Retriever } from "@koi/search-provider";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +46,7 @@ export async function bootstrapForgeOrWarn(
   resolveSessionId: () => string,
   verbose?: boolean,
   autoHarness?: AutoHarnessOutputs | undefined,
+  search?: { readonly retriever: Retriever; readonly indexer: Indexer } | undefined,
 ): Promise<ForgeBootstrapResult | undefined> {
   if (!isForgeEnabled(manifest)) return undefined;
 
@@ -98,6 +100,7 @@ export async function bootstrapForgeOrWarn(
           policyCacheHandle: autoHarness.policyCacheHandle,
         }
       : {}),
+    ...(search !== undefined ? { retriever: search.retriever, indexer: search.indexer } : {}),
   });
 
   if (verbose) {

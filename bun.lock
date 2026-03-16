@@ -1212,6 +1212,7 @@
         "@koi/runtime-presets": "workspace:*",
         "@koi/sandbox": "workspace:*",
         "@koi/sandbox-ipc": "workspace:*",
+        "@koi/search-provider": "workspace:*",
         "@koi/setup-core": "workspace:*",
         "@koi/shutdown": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
