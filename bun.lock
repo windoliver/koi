@@ -256,6 +256,7 @@
         "@koi/git-utils": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/search-provider": "workspace:*",
         "@koi/validation": "workspace:*",
         "yaml": "2.8.2",
         "zod": "4.3.6",
@@ -269,6 +270,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/search-provider": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -1278,6 +1280,7 @@
         "@koi/middleware-feedback-loop": "workspace:*",
         "@koi/middleware-policy-cache": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/search-provider": "workspace:*",
         "@koi/starter": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",

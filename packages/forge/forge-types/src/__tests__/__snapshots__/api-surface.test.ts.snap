@@ -3,6 +3,7 @@
 exports[`@koi/forge-types API surface . has stable type surface 1`] = `
 "import { SandboxExecutor, Result, GovernanceController, ForgeStore, DataClassification, ContentMarker, ForgeProvenance, SigningBackend, BrickKind, ForgeScope, ToolPolicy, TrustTransitionCaller, BrickRequires, TestCase, StoreChangeNotifier, EngineAdapter, KoiError, ExternalAgentDescriptor, BrickArtifact, BrickDriftContext, BrickId, ToolDescriptor, ToolOrigin, BrickLifecycle, TrailConfig } from '@koi/core';
 export { AgentArtifact, BrickArtifact, BrickArtifactBase, BrickKind, BrickLifecycle, BrickRequires, CompositeArtifact, ForgeQuery, ForgeScope, ImplementationArtifact, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SkillArtifact, TestCase, ToolArtifact } from '@koi/core';
+import { Retriever } from '@koi/search-provider';
 
 /**
  * TTL-based re-verification — checks whether bricks are stale and
@@ -384,6 +385,10 @@ interface ForgeDeps {
     readonly discoverAgent?: (name: string) => Promise<Result<ExternalAgentDescriptor, KoiError>>;
     /** Spawns an external coding agent to produce implementation code. Injected by L3 consumer. */
     readonly spawnCodingAgent?: (agent: ExternalAgentDescriptor, prompt: string, options: DelegateOptions) => Promise<Result<string, KoiError>>;
+    /** Optional hybrid retriever for semantic brick discovery (BM25+vector via Nexus Search). */
+    readonly retriever?: Retriever | undefined;
+    /** Optional error callback for non-fatal failures (notification errors, indexing errors). */
+    readonly onError?: ((error: unknown) => void) | undefined;
 }
 
 /** Builder returns a BrickArtifact body without provenance. */

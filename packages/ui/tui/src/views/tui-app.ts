@@ -1,12 +1,4 @@
-/**
- * TUI application — wires views, store, clients, and OpenTUI together.
- *
- * Uses OpenTUI's CliRenderer with React reconciler for declarative UI.
- * Supports two modes: "welcome" (no admin API) and "boardroom" (connected).
- *
- * Command dispatch extracted to tui-commands.ts.
- * Data source operations extracted to tui-data-sources.ts.
- */
+/** TUI application — wires views, store, clients, and OpenTUI together. */
 
 import {
   type AdminClient,
@@ -16,20 +8,9 @@ import {
   createDebounce,
   createReconnectingStream,
   parseSessionRecord,
-  type ReconnectHandle,
   startChatStream,
 } from "@koi/dashboard-client";
-import type {
-  AgentDashboardEvent,
-  DashboardEventBatch,
-  DataSourceDashboardEvent,
-} from "@koi/dashboard-types";
-import {
-  isAgentEvent,
-  isDataSourceEvent,
-  isLogEvent,
-  isPtyOutputEvent,
-} from "@koi/dashboard-types";
+import type { DashboardEventBatch } from "@koi/dashboard-types";
 import type { OperationResult, PhaseCallbacks, SetupWizardState } from "@koi/setup-core";
 import { KNOWN_CHANNELS, KNOWN_MODELS } from "@koi/setup-core";
 import { type CliRenderer, createCliRenderer, SyntaxStyle } from "@opentui/core";
@@ -46,35 +27,51 @@ import {
 import { createAguiEventHandler } from "./agui-event-handler.js";
 import { type CommandDeps, dispatchCommand, handleSlashCommand } from "./tui-commands.js";
 import {
+  type ConsentDeps,
+  closeConsent as closeConsentHelper,
+  consentApprove as consentApproveHelper,
+  consentDeny as consentDenyHelper,
+  consentDetails as consentDetailsHelper,
+} from "./tui-consent.js";
+import {
   approveDataSource,
   type DataSourceDeps,
   forwardConsentPrompts,
   openDataSources,
-  rejectDataSource,
   rescanDataSources,
   viewDataSourceSchema,
 } from "./tui-data-sources.js";
+import {
+  checkConsentPrompts as checkConsentPromptsHelper,
+  createEventStream,
+  createNewViewCallbacks,
+  type DomainActionDeps,
+  type EventStreamHandle,
+  fetchDataForView as fetchDataForViewFn,
+  forwardAgentEventsToConsole as forwardAgentEventsHelper,
+  getDomainScrollOffset,
+  governanceApprove as govApproveFn,
+  governanceDeny as govDenyFn,
+  harnessPauseResume as harnessPrFn,
+  schedulerRetryDlq as schedRetryFn,
+  temporalDetail as tempDetailFn,
+  temporalSignal as tempSignalFn,
+  temporalTerminate as tempTermFn,
+  viewToDomainKey,
+} from "./tui-event-stream.js";
 import { createKeyboardHandler } from "./tui-keyboard.js";
 import { TuiRoot } from "./tui-root.js";
 import { fetchRecentAgentActivity, persistCurrentSession, restoreSession } from "./tui-session.js";
 
-/** Configuration for the TUI application. */
 export interface TuiAppConfig {
   readonly adminUrl: string;
   readonly authToken?: string;
-  /** App mode: "welcome" (no admin API) or "boardroom" (connected). */
   readonly mode?: TuiMode | undefined;
-  /** Refresh interval for agent list in ms (default: 30000 — SSE is primary). */
   readonly refreshIntervalMs?: number;
-  /** Auto-attach to this agent on launch. */
   readonly initialAgentId?: string;
-  /** Resume a specific session (requires initialAgentId). */
   readonly initialSessionId?: string;
-  /** Callback when a preset is selected in welcome mode. */
   readonly onPresetSelected?: ((presetId: string, agentName: string) => Promise<void>) | undefined;
-  /** Scrollback lines for split-pane terminals (default: 500). */
   readonly splitPaneScrollback?: number | undefined;
-  /** Presets to display in welcome mode. Passed in to avoid L2-to-L2 import. */
   readonly presets?: readonly import("../state/types.js").PresetInfo[] | undefined;
   /** In-process startup callback — replaces detached subprocess. */
   readonly onStartStack?:
@@ -86,7 +83,6 @@ export interface TuiAppConfig {
   readonly onServiceCommand?: ((command: string) => Promise<void>) | undefined;
 }
 
-/** Handle returned from createTuiApp for lifecycle management. */
 export interface TuiAppHandle {
   readonly start: () => Promise<void>;
   readonly stop: () => Promise<void>;
@@ -95,16 +91,8 @@ export interface TuiAppHandle {
   readonly handlePaletteSelect: (commandId: string) => void;
   readonly handleAgentSelect: (agentId: string) => void;
   readonly handleKeyInput: (sequence: string) => boolean;
-  /** Transition from welcome mode to boardroom mode. */
   readonly transitionToBoardroom: () => Promise<void>;
 }
-
-/**
- * Create and wire the complete TUI application.
- *
- * In "welcome" mode: renders preset picker, skips admin API connection.
- * In "boardroom" mode: full agent console with SSE streaming.
- */
 export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   const {
     adminUrl,
@@ -119,22 +107,17 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     onServiceCommand,
   } = config;
 
-  // ─── State ──────────────────────────────────────────────────────────
   const store = createStore(createInitialState(adminUrl, mode));
 
-  // ─── Admin client ───────────────────────────────────────────────────
   const clientConfig =
     authToken !== undefined ? { baseUrl: adminUrl, authToken } : { baseUrl: adminUrl };
   const client: AdminClient = createAdminClient(clientConfig);
 
-  // ─── Active stream handles ──────────────────────────────────────────
   let activeChatStream: AguiStreamHandle | null = null;
-  let sseStream: ReconnectHandle | null = null;
   let tuiRenderer: CliRenderer | null = null;
   const syntaxStyle = SyntaxStyle.create();
   const aguiHandler = createAguiEventHandler(store);
 
-  // ─── Debounced operations ───────────────────────────────────────────
   const debouncedRefresh = createDebounce(() => {
     refreshAgents().catch(() => {});
   }, 300);
@@ -145,8 +128,14 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let reactRoot: Root | null = null;
+  let lastView: import("../state/types.js").TuiView = mode === "welcome" ? "welcome" : "agents";
 
-  // ─── Shared helpers ─────────────────────────────────────────────────
+  const fetchDeps = { store, client };
+  store.subscribe((s) => {
+    if (s.view === lastView) return;
+    lastView = s.view;
+    fetchDataForViewFn(s.view, fetchDeps);
+  });
 
   function addLifecycleMessage(event: string): void {
     store.dispatch({
@@ -173,8 +162,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
   }
 
-  // ─── Dependency bundles for extracted modules ───────────────────────
-
   const dsDeps: DataSourceDeps = { store, client, addLifecycleMessage };
 
   const cmdDeps: CommandDeps = {
@@ -194,8 +181,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     addLifecycleMessage,
     onServiceCommand,
   };
-
-  // ─── Agent console wiring ──────────────────────────────────────────
 
   function openAgentConsole(agentId: string): void {
     cancelActiveStream();
@@ -272,121 +257,40 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     );
   }
 
-  // ─── SSE event stream ─────────────────────────────────────────────
+  const eventStream: EventStreamHandle = createEventStream({
+    store,
+    eventsUrl: client.eventsUrl(),
+    ...(authToken !== undefined ? { authToken } : {}),
+    createReconnectingStream,
+    onBatch: (typedBatch) => {
+      store.dispatch({ kind: "apply_event_batch", batch: typedBatch });
+      debouncedRefresh.call();
+      forwardAgentEventsToConsole(typedBatch);
+      checkConsentPrompts(typedBatch);
+    },
+  });
 
   function startEventStream(): void {
-    if (sseStream !== null) return;
-    const eventsUrl = client.eventsUrl();
-    const hdrs: Record<string, string> = {};
-    if (authToken !== undefined) {
-      hdrs.Authorization = `Bearer ${authToken}`;
-    }
-
-    sseStream = createReconnectingStream(
-      async (lastEventId) => {
-        const fetchHeaders: Record<string, string> = { ...hdrs };
-        if (lastEventId !== undefined) {
-          fetchHeaders["Last-Event-ID"] = lastEventId;
-        }
-        return fetch(eventsUrl, { headers: fetchHeaders });
-      },
-      {
-        onEvent: (event) => {
-          try {
-            const batch: unknown = JSON.parse(event.data);
-            if (
-              typeof batch === "object" &&
-              batch !== null &&
-              "events" in batch &&
-              "seq" in batch &&
-              "timestamp" in batch
-            ) {
-              const typedBatch = batch as DashboardEventBatch;
-              store.dispatch({ kind: "apply_event_batch", batch: typedBatch });
-              debouncedRefresh.call();
-              forwardAgentEventsToConsole(typedBatch);
-              checkConsentPrompts(typedBatch);
-            }
-          } catch {
-            // Malformed SSE data — skip
-          }
-        },
-        onStatus: (status) => {
-          switch (status.kind) {
-            case "connected":
-              store.dispatch({ kind: "set_connection_status", status: "connected" });
-              break;
-            case "reconnecting":
-              store.dispatch({ kind: "set_connection_status", status: "reconnecting" });
-              break;
-            case "failed":
-              store.dispatch({ kind: "set_connection_status", status: "disconnected" });
-              break;
-          }
-        },
-      },
-      { maxAttempts: 10, initialDelayMs: 500, maxDelayMs: 10_000 },
-    );
+    eventStream.start();
   }
-
   function stopEventStream(): void {
-    if (sseStream !== null) {
-      sseStream.stop();
-      sseStream = null;
-    }
+    eventStream.stop();
   }
 
-  // ─── Event forwarding ──────────────────────────────────────────────
+  const eventForwardDeps = {
+    store,
+    addLifecycleMessage,
+    openDataSources: () => openDataSources(dsDeps),
+    forwardConsentPrompts: (hasDiscovery: boolean) => forwardConsentPrompts(hasDiscovery, dsDeps),
+  };
 
   function forwardAgentEventsToConsole(batch: DashboardEventBatch): void {
-    const session = store.getState().activeSession;
-    for (const evt of batch.events) {
-      if (isPtyOutputEvent(evt)) {
-        store.dispatch({ kind: "append_pty_data", agentId: evt.agentId, data: evt.data });
-        continue;
-      }
-      if (isLogEvent(evt)) {
-        store.dispatch({
-          kind: "append_log",
-          entry: {
-            level: evt.level,
-            source: evt.source,
-            message: evt.message,
-            timestamp: evt.timestamp,
-          },
-        });
-        continue;
-      }
-      if (isDataSourceEvent(evt)) {
-        const desc = formatDataSourceEvent(evt);
-        if (desc !== null) {
-          addLifecycleMessage(desc);
-          if (evt.subKind === "data_source_discovered") {
-            openDataSources(dsDeps).catch(() => {});
-          }
-        }
-        continue;
-      }
-      if (session === null) continue;
-      if (!isAgentEvent(evt)) continue;
-      if (evt.agentId !== session.agentId) continue;
-      const desc = formatAgentEvent(evt);
-      if (desc !== null) addLifecycleMessage(desc);
-    }
+    forwardAgentEventsHelper(batch, eventForwardDeps);
   }
 
   function checkConsentPrompts(batch: DashboardEventBatch): void {
-    let hasDiscovery = false;
-    for (const evt of batch.events) {
-      if (isDataSourceEvent(evt) && evt.subKind === "data_source_discovered") {
-        hasDiscovery = true;
-        break;
-      }
-    }
-    forwardConsentPrompts(hasDiscovery, dsDeps);
+    checkConsentPromptsHelper(batch, eventForwardDeps);
   }
-
-  // ─── Palette ───────────────────────────────────────────────────────
 
   function togglePalette(): void {
     if (store.getState().view === "palette") {
@@ -402,8 +306,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const targetView: TuiView = session !== null ? "console" : "agents";
     store.dispatch({ kind: "set_view", view: targetView });
   }
-
-  // ─── Session picker (N+1 fix: parallel fetches) ───────────────────
 
   async function openSessionPicker(): Promise<void> {
     store.dispatch({ kind: "set_session_picker", entries: [], loading: true });
@@ -460,45 +362,19 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       .catch(() => addLifecycleMessage(`Failed to restore session ${sessionId}`));
   }
 
-  // ─── Consent ────────────────────────────────────────────────────────
-
+  const cDeps: ConsentDeps = { store, dsDeps, addLifecycleMessage };
   function consentApprove(): void {
-    const pending = store.getState().pendingConsent;
-    if (pending === undefined || pending.length === 0) return;
-    const first = pending[0];
-    if (first === undefined) return;
-    approveDataSource(first.name, dsDeps).catch(() => {});
-    store.dispatch({ kind: "clear_pending_consent" });
-    store.dispatch({ kind: "set_view", view: "agents" });
+    consentApproveHelper(cDeps);
   }
-
   function consentDeny(): void {
-    const pending = store.getState().pendingConsent;
-    if (pending !== undefined) {
-      for (const s of pending) {
-        rejectDataSource(s.name, dsDeps).catch(() => {});
-      }
-    }
-    store.dispatch({ kind: "clear_pending_consent" });
-    store.dispatch({ kind: "set_view", view: "agents" });
-    addLifecycleMessage("Data source denied");
+    consentDenyHelper(cDeps);
   }
-
   function consentDetails(): void {
-    const pending = store.getState().pendingConsent;
-    if (pending === undefined || pending.length === 0) return;
-    const first = pending[0];
-    if (first === undefined) return;
-    viewDataSourceSchema(first.name, dsDeps).catch(() => {});
+    consentDetailsHelper(cDeps);
   }
-
   function closeConsent(): void {
-    store.dispatch({ kind: "clear_pending_consent" });
-    const session = store.getState().activeSession;
-    store.dispatch({ kind: "set_view", view: session !== null ? "console" : "agents" });
+    closeConsentHelper(cDeps);
   }
-
-  // ─── Agent logs ──────────────────────────────────────────────────
 
   async function showAgentLogs(): Promise<void> {
     const session = store.getState().activeSession;
@@ -548,7 +424,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       });
   }
 
-  // ─── Keyboard handler ─────────────────────────────────────────────
+  const domainDeps: DomainActionDeps = { store, client, addLifecycleMessage };
+  const nvCb = createNewViewCallbacks(domainDeps);
+
+  function scrollDomain(d: number): void {
+    const dk = viewToDomainKey(store.getState().view);
+    if (dk !== null)
+      store.dispatch({
+        kind: "scroll_domain_view",
+        domain: dk,
+        offset: getDomainScrollOffset(store.getState(), dk) + d,
+      });
+  }
 
   const keyboardHandler = createKeyboardHandler(store, {
     togglePalette,
@@ -610,9 +497,87 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     consentDetails,
     closeConsent,
     toggleForge: () => {
-      const currentView = store.getState().view;
-      store.dispatch({ kind: "set_view", view: currentView === "forge" ? "agents" : "forge" });
+      store.dispatch({
+        kind: "set_view",
+        view: store.getState().view === "forge" ? "agents" : "forge",
+      });
     },
+    toggleCost: () => {
+      store.dispatch({
+        kind: "set_view",
+        view: store.getState().view === "cost" ? "agents" : "cost",
+      });
+    },
+    toggleNexus: () => {
+      store.dispatch({
+        kind: "set_view",
+        view: store.getState().view === "files" ? "agents" : "files",
+      });
+    },
+    navigateBack: () => {
+      // Finding 2 fix: from temporal detail, go back to list (not exit view)
+      if (
+        store.getState().view === "temporal" &&
+        store.getState().temporalView.workflowDetail !== null
+      ) {
+        store.dispatch({ kind: "set_temporal_workflow_detail", detail: null });
+        return;
+      }
+      const session = store.getState().activeSession;
+      store.dispatch({ kind: "set_view", view: session !== null ? "console" : "agents" });
+    },
+    domainScrollUp: () => {
+      scrollDomain(-1);
+    },
+    domainScrollDown: () => {
+      scrollDomain(1);
+    },
+    temporalSelectNext: () => {
+      store.dispatch({
+        kind: "select_temporal_workflow",
+        index: store.getState().temporalView.selectedWorkflowIndex + 1,
+      });
+    },
+    temporalSelectPrev: () => {
+      store.dispatch({
+        kind: "select_temporal_workflow",
+        index: store.getState().temporalView.selectedWorkflowIndex - 1,
+      });
+    },
+    temporalDetail: () => {
+      tempDetailFn(domainDeps);
+    },
+    temporalSignal: () => {
+      tempSignalFn(domainDeps);
+    },
+    temporalTerminate: () => {
+      tempTermFn(domainDeps);
+    },
+    schedulerRetryDlq: () => {
+      schedRetryFn(domainDeps);
+    },
+    harnessPauseResume: () => {
+      harnessPrFn(domainDeps);
+    },
+    governanceSelectNext: () => {
+      store.dispatch({
+        kind: "select_governance_item",
+        index: store.getState().governanceView.selectedIndex + 1,
+      });
+    },
+    governanceSelectPrev: () => {
+      store.dispatch({
+        kind: "select_governance_item",
+        index: store.getState().governanceView.selectedIndex - 1,
+      });
+    },
+    governanceApprove: () => {
+      govApproveFn(domainDeps);
+    },
+    governanceDeny: () => {
+      govDenyFn(domainDeps);
+    },
+    ...nvCb,
     presetSelect: () => {
       const presets = store.getState().presets;
       const idx = store.getState().selectedPresetIndex;
@@ -638,10 +603,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "welcome" });
     },
     toggleSplitPanes: () => {
-      const currentView = store.getState().view;
       store.dispatch({
         kind: "set_view",
-        view: currentView === "splitpanes" ? "agents" : "splitpanes",
+        view: store.getState().view === "splitpanes" ? "agents" : "splitpanes",
       });
     },
     nameConfirm: () => {
@@ -658,11 +622,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     addonsToggle: () => {
       const ADDON_IDS = ["telegram", "slack", "discord", "temporal", "mcp", "browser", "voice"];
-      const focusedIdx = store.getState().addonFocusedIndex;
-      const addonId = ADDON_IDS[focusedIdx % ADDON_IDS.length];
-      if (addonId !== undefined) {
-        store.dispatch({ kind: "toggle_addon", addonId });
-      }
+      const addonId = ADDON_IDS[store.getState().addonFocusedIndex % ADDON_IDS.length];
+      if (addonId !== undefined) store.dispatch({ kind: "toggle_addon", addonId });
     },
     addonsBack: () => {
       const presetId = store.getState().selectedPresetId;
@@ -730,8 +691,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
   });
 
-  // ─── Public API ───────────────────────────────────────────────────
-
   function handleConsoleInput(text: string): void {
     if (text.startsWith("/")) {
       handleSlashCommand(text, cmdDeps);
@@ -748,8 +707,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   function handleAgentSelect(agentId: string): void {
     openAgentConsole(agentId);
   }
-
-  // ─── Welcome mode handlers ────────────────────────────────────────
 
   function handlePresetSelect(presetId: string): void {
     // Don't call onPresetSelected yet — go to name input first
@@ -883,8 +840,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
   }
 
-  // ─── Lifecycle ────────────────────────────────────────────────────
-
   async function start(): Promise<void> {
     // Start OpenTUI rendering first (enters raw mode, takes over terminal)
     tuiRenderer = await createCliRenderer({
@@ -907,6 +862,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const healthResult = await client.checkHealth();
     if (healthResult.ok) {
       store.dispatch({ kind: "set_connection_status", status: "connected" });
+      if (healthResult.value.capabilities !== undefined) {
+        store.dispatch({ kind: "set_capabilities", capabilities: healthResult.value.capabilities });
+      }
     } else {
       store.dispatch({ kind: "set_connection_status", status: "disconnected" });
       store.dispatch({ kind: "set_error", error: healthResult.error });
@@ -940,6 +898,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const healthResult = await client.checkHealth();
     if (healthResult.ok) {
       store.dispatch({ kind: "set_connection_status", status: "connected" });
+      if (healthResult.value.capabilities !== undefined) {
+        store.dispatch({ kind: "set_capabilities", capabilities: healthResult.value.capabilities });
+      }
     } else {
       store.dispatch({ kind: "set_connection_status", status: "disconnected" });
       store.dispatch({ kind: "set_error", error: healthResult.error });
@@ -1028,34 +989,4 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     handleKeyInput: keyboardHandler,
     transitionToBoardroom,
   };
-}
-
-// ─── Event formatters ──────────────────────────────────────────────────
-
-function formatAgentEvent(evt: AgentDashboardEvent): string | null {
-  switch (evt.subKind) {
-    case "status_changed":
-      return `Agent state: ${evt.from} → ${evt.to}`;
-    case "dispatched":
-      return `Agent dispatched: ${evt.name}`;
-    case "terminated":
-      return `Agent terminated${evt.reason !== undefined ? `: ${evt.reason}` : ""}`;
-    case "metrics_updated":
-      return `Turns: ${String(evt.turns)}, tokens: ${String(evt.tokenCount)}`;
-    default:
-      return null;
-  }
-}
-
-function formatDataSourceEvent(evt: DataSourceDashboardEvent): string | null {
-  switch (evt.subKind) {
-    case "data_source_discovered":
-      return `Data source discovered: ${evt.name} (${evt.protocol}) from ${evt.source}`;
-    case "connector_forged":
-      return `Connector forged for: ${evt.name} (${evt.protocol})`;
-    case "connector_health_update":
-      return `Connector ${evt.name}: ${evt.healthy ? "healthy" : "unhealthy"}`;
-    default:
-      return null;
-  }
 }

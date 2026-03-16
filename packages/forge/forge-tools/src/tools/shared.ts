@@ -590,7 +590,11 @@ export async function runForgePipeline(
     void Promise.resolve(
       deps.notifier.notify({ kind: "saved", brickId: id, scope: deps.config.defaultScope }),
     ).catch((e: unknown) => {
-      console.debug("[forge] notifier.notify failed:", e);
+      if (deps.onError !== undefined) {
+        deps.onError(e);
+      } else {
+        console.debug("[forge] notifier.notify failed:", e);
+      }
     });
   }
 

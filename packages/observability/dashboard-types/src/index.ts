@@ -33,8 +33,13 @@ export { parseAguiEvent } from "./agui.js";
 export type {
   AgentMessage,
   CommandDispatcher,
+  DelegationSummary,
   DispatchAgentRequest,
   DispatchAgentResponse,
+  GovernancePendingItem,
+  HandoffSummary,
+  ScratchpadEntryDetail,
+  ScratchpadEntrySummary,
 } from "./commands.js";
 // Config
 export type { DashboardConfig } from "./config.js";

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { commandsToSelectItems, DEFAULT_COMMANDS } from "./command-palette.js";
+import type { TuiCapabilities } from "../state/domain-types.js";
+import {
+  commandsToSelectItems,
+  DEFAULT_COMMANDS,
+  filterCommandsByCapabilities,
+} from "./command-palette.js";
 
 describe("DEFAULT_COMMANDS", () => {
   test("has all expected commands", () => {
@@ -50,5 +55,70 @@ describe("commandsToSelectItems", () => {
       { id: "test", label: "/test", description: "A test command" },
     ]);
     expect(items[0]?.description).toBe("A test command");
+  });
+});
+
+describe("filterCommandsByCapabilities", () => {
+  const ALL_CAPS: TuiCapabilities = {
+    temporal: true,
+    scheduler: true,
+    taskboard: true,
+    harness: true,
+    forge: true,
+    gateway: true,
+    nexus: true,
+    governance: true,
+  };
+
+  const NO_CAPS: TuiCapabilities = {
+    temporal: false,
+    scheduler: false,
+    taskboard: false,
+    harness: false,
+    forge: false,
+    gateway: false,
+    nexus: false,
+    governance: false,
+  };
+
+  test("returns all commands when all capabilities present", () => {
+    const filtered = filterCommandsByCapabilities(DEFAULT_COMMANDS, ALL_CAPS);
+    expect(filtered.length).toBe(DEFAULT_COMMANDS.length);
+  });
+
+  test("hides commands requiring missing capabilities", () => {
+    const filtered = filterCommandsByCapabilities(DEFAULT_COMMANDS, NO_CAPS);
+    const ids = filtered.map((c) => c.id);
+    expect(ids).not.toContain("temporal");
+    expect(ids).not.toContain("scheduler");
+    expect(ids).not.toContain("taskboard");
+    expect(ids).not.toContain("harness");
+    expect(ids).not.toContain("governance");
+  });
+
+  test("keeps commands without requiredCapability", () => {
+    const filtered = filterCommandsByCapabilities(DEFAULT_COMMANDS, NO_CAPS);
+    const ids = filtered.map((c) => c.id);
+    expect(ids).toContain("refresh");
+    expect(ids).toContain("agents");
+    expect(ids).toContain("quit");
+    expect(ids).toContain("skills");
+  });
+
+  test("hides all capability-gated commands when capabilities null", () => {
+    const filtered = filterCommandsByCapabilities(DEFAULT_COMMANDS, null);
+    const ids = filtered.map((c) => c.id);
+    expect(ids).not.toContain("temporal");
+    expect(ids).not.toContain("governance");
+    // Non-gated commands still present
+    expect(ids).toContain("refresh");
+  });
+
+  test("filters selectively based on individual capabilities", () => {
+    const partial: TuiCapabilities = { ...NO_CAPS, temporal: true };
+    const filtered = filterCommandsByCapabilities(DEFAULT_COMMANDS, partial);
+    const ids = filtered.map((c) => c.id);
+    expect(ids).toContain("temporal");
+    expect(ids).not.toContain("scheduler");
   });
 });

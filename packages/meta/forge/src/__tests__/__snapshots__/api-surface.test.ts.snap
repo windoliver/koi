@@ -25,6 +25,7 @@ import { ConfiguredKoiOptions } from '@koi/starter';
 import * as _koi_middleware_policy_cache from '@koi/middleware-policy-cache';
 import { PolicyCacheHandle, PolicyDecision } from '@koi/middleware-policy-cache';
 import { FeedbackLoopHandle } from '@koi/middleware-feedback-loop';
+import { Indexer, Retriever } from '@koi/search-provider';
 import { DiscoverySource } from '@koi/agent-discovery';
 
 /**
@@ -88,6 +89,8 @@ interface CreateFullForgeSystemConfig {
     readonly maxSynthesesPerSession?: number | undefined;
     /** Optional policy-cache handle for promotion wiring. */
     readonly policyCacheHandle?: _koi_middleware_policy_cache.PolicyCacheHandle | undefined;
+    /** Optional indexer for keeping the search index in sync with the forge store. */
+    readonly indexer?: Indexer | undefined;
 }
 interface FullForgeSystem {
     readonly runtime: ForgeRuntimeInstance;
@@ -320,6 +323,10 @@ interface ForgeToolsProviderConfig {
     readonly pipeline?: ForgePipeline | undefined;
     /** Resolve the current engine session ID. Resets forge counter on change. */
     readonly resolveSessionId?: (() => string) | undefined;
+    /** Optional hybrid retriever for semantic brick discovery (BM25+vector via Nexus Search). */
+    readonly retriever?: Retriever | undefined;
+    /** Optional error callback for non-fatal failures (notification errors, indexing errors). */
+    readonly onError?: ((error: unknown) => void) | undefined;
 }
 /**
  * Build a ComponentProvider that lazily creates the 5 default forge tools
@@ -357,6 +364,10 @@ interface ForgeBootstrapConfig {
     readonly maxSynthesesPerSession?: number | undefined;
     /** Optional policy-cache handle for promotion wiring. */
     readonly policyCacheHandle?: _koi_middleware_policy_cache.PolicyCacheHandle | undefined;
+    /** Optional hybrid retriever for semantic brick discovery. */
+    readonly retriever?: Retriever | undefined;
+    /** Optional indexer for keeping the search index in sync with the forge store. */
+    readonly indexer?: Indexer | undefined;
 }
 /** Successful forge bootstrap result — everything needed for createKoi(). */
 interface ForgeBootstrapResult {

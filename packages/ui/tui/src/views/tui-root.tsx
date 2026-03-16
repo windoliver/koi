@@ -16,23 +16,42 @@ import { AddonPickerView, AVAILABLE_ADDONS } from "./addon-picker-view.js";
 import { decodePtyChunks } from "@koi/dashboard-client";
 import { KNOWN_CHANNELS, KNOWN_MODELS } from "@koi/setup-core";
 import { AgentListView } from "./agent-list-view.js";
+import { AgentProcfsView } from "./agent-procfs-view.js";
 import { ChannelsStepView } from "./channels-step-view.js";
+import { ChannelsView } from "./channels-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { ConsentView } from "./consent-view.js";
 import { ConsoleView } from "./console-view.js";
+import { CostView } from "./cost-view.js";
 import { DataSourcesView } from "./data-sources-view.js";
+import { DelegationView } from "./delegation-view.js";
 import { DoctorView } from "./doctor-view.js";
 import { EngineStepView } from "./engine-step-view.js";
 import { ForgeView } from "./forge-view.js";
+import { GatewayView } from "./gateway-view.js";
+import { GovernanceView } from "./governance-view.js";
+import { HandoffView } from "./handoff-view.js";
+import { HarnessView } from "./harness-view.js";
 import { LogView } from "./log-view.js";
+import { MailboxView } from "./mailbox-view.js";
+import { MiddlewareView } from "./middleware-view.js";
 import { ModelStepView } from "./model-step-view.js";
+import { NexusBrowserView } from "./nexus-browser-view.js";
+import { NexusView } from "./nexus-view.js";
+import { ProcessTreeView } from "./process-tree-view.js";
 import { ProgressView } from "./progress-view.js";
+import { ScratchpadView } from "./scratchpad-view.js";
+import { SchedulerView } from "./scheduler-view.js";
 import { ServiceView } from "./service-view.js";
 import { SessionPickerView } from "./session-picker-view.js";
+import { SkillsView } from "./skills-view.js";
 import type { SourceDetailData } from "./source-detail-view.js";
 import { SourceDetailView } from "./source-detail-view.js";
 import { StatusBarView } from "./status-bar-view.js";
 import { useStoreState } from "./store-bridge.js";
+import { SystemView } from "./system-view.js";
+import { TaskBoardView } from "./taskboard-view.js";
+import { TemporalView } from "./temporal-view.js";
 
 /** Props for the root TUI component. */
 export interface TuiRootProps {
@@ -67,6 +86,7 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
       case "r": return "\x12";
       case "o": return "\x0F";
       case "g": return "\x07";
+      case "f": return "\x06";
     }
   }
   if (key.name === "Escape") return "\x1b";
@@ -75,7 +95,7 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
   if (key.name === "ArrowUp") return "\x1b[A";
   if (key.name === "ArrowDown") return "\x1b[B";
   // Single-char keys for view-specific shortcuts
-  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "l", "+", "?", " "];
+  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "l", "+", "?", " ", "r"];
   if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
     return key.name;
   }
@@ -249,7 +269,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
 
         {/* Boardroom views */}
         {(view === "agents" || (isPalette && backgroundView === "agents")) && (
-          <AgentListView agents={agents} onSelect={props.onAgentSelect} focused={view === "agents"} zoomLevel={state.zoomLevel} />
+          <AgentListView agents={agents} onSelect={props.onAgentSelect} focused={view === "agents"} zoomLevel={state.zoomLevel} listMode={state.agentListMode} />
         )}
 
         {(view === "console" || (isPalette && backgroundView === "console")) && (
@@ -330,8 +350,8 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           <EngineStepView selectedEngine={state.selectedEngine} />
         )}
 
-        {/* Channel selection step */}
-        {view === "channels" && (
+        {/* Channel selection step (wizard flow) */}
+        {view === "channels" && state.selectedPresetId !== null && (
           <ChannelsStepView
             channels={[...KNOWN_CHANNELS]}
             selected={[...state.selectedChannels]}
@@ -377,12 +397,72 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           />
         )}
 
+        {/* Domain views */}
+        {view === "skills" && (
+          <SkillsView skillsView={state.skillsView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "channels" && state.selectedPresetId === null && (
+          <ChannelsView channelsView={state.channelsView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "system" && (
+          <SystemView systemView={state.systemView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "nexus" && (
+          <NexusView nexusView={state.nexusView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "gateway" && (
+          <GatewayView gatewayView={state.gatewayView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "temporal" && (
+          <TemporalView temporalView={state.temporalView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "scheduler" && (
+          <SchedulerView schedulerView={state.schedulerView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "taskboard" && (
+          <TaskBoardView taskBoardView={state.taskBoardView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "harness" && (
+          <HarnessView harnessView={state.harnessView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "governance" && (
+          <GovernanceView governanceView={state.governanceView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "cost" && (
+          <CostView costView={state.costView} agents={state.agents} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "middleware" && (
+          <MiddlewareView middlewareView={state.middlewareView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "processtree" && (
+          <ProcessTreeView processTreeView={state.processTreeView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "agentprocfs" && (
+          <AgentProcfsView agentProcfsView={state.agentProcfsView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "delegation" && (
+          <DelegationView delegationView={state.delegationView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "handoffs" && (
+          <HandoffView handoffView={state.handoffView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "scratchpad" && (
+          <ScratchpadView scratchpadView={state.scratchpadView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "mailbox" && (
+          <MailboxView mailboxView={state.mailboxView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "files" && (
+          <NexusBrowserView nexusBrowser={state.nexusBrowser} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+
         {/* Command palette overlay */}
         <CommandPaletteView
           visible={isPalette}
           onSelect={props.onPaletteSelect}
           onCancel={props.onPaletteCancel}
           focused={isPalette}
+          capabilities={state.capabilities}
         />
       </box>
     </box>

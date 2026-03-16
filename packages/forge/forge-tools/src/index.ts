@@ -46,6 +46,9 @@ export { createForgeResolver } from "./forge-resolver.js";
 export type { SkillMdInput } from "./generate-skill-md.js";
 export { generateSkillMd } from "./generate-skill-md.js";
 
+// index document mapping — BrickArtifact → IndexDocument for search indexing
+export { mapBrickToIndexDoc } from "./map-brick-to-index-doc.js";
+
 // in-memory store
 export { createInMemoryForgeStore } from "./memory-store.js";
 
