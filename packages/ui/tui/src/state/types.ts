@@ -136,6 +136,8 @@ export interface TuiState {
   readonly agentNameInput: string;
   /** Selected add-on IDs during setup. */
   readonly selectedAddons: ReadonlySet<string>;
+  /** Focused add-on index in the picker. */
+  readonly addonFocusedIndex: number;
   /** Per-agent PTY output buffers (base64 chunks). */
   readonly ptyBuffers: Readonly<Record<string, readonly string[]>>;
   /** Per-agent sessions for split-pane mode. */
@@ -177,6 +179,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     selectedPresetId: null,
     agentNameInput: "",
     selectedAddons: new Set<string>(),
+    addonFocusedIndex: 0,
     ptyBuffers: {},
     splitSessions: {},
     focusedPaneIndex: 0,
@@ -270,6 +273,7 @@ export type TuiAction =
   | { readonly kind: "set_selected_preset_id"; readonly presetId: string }
   | { readonly kind: "set_agent_name_input"; readonly name: string }
   | { readonly kind: "toggle_addon"; readonly addonId: string }
+  | { readonly kind: "set_addon_focused_index"; readonly index: number }
   | {
       readonly kind: "append_pty_data";
       readonly agentId: string;

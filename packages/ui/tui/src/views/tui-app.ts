@@ -616,7 +616,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       handleAddonsSkip();
     },
     addonsToggle: () => {
-      // Toggle focused addon - not implemented yet (needs addon focus state)
+      const ADDON_IDS = ["telegram", "slack", "discord", "temporal", "mcp", "browser", "voice"];
+      const focusedIdx = store.getState().addonFocusedIndex;
+      const addonId = ADDON_IDS[focusedIdx % ADDON_IDS.length];
+      if (addonId !== undefined) {
+        store.dispatch({ kind: "toggle_addon", addonId });
+      }
     },
     addonsBack: () => {
       store.dispatch({ kind: "set_view", view: "nameinput" });

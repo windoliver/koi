@@ -246,7 +246,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           <AddonPickerView
             addons={AVAILABLE_ADDONS}
             selected={state.selectedAddons}
-            focusedIndex={0}
+            focusedIndex={state.addonFocusedIndex}
             onToggle={(id) => { props.store.dispatch({ kind: "toggle_addon", addonId: id }); }}
             onConfirm={() => { /* handled by keyboard */ }}
             onSkip={() => { /* handled by keyboard */ }}

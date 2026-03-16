@@ -171,6 +171,20 @@ export function createKeyboardHandler(
 
     // Add-on picker — j/k navigate, Space toggle, Enter confirm, s skip, Esc back
     if (view === "addons") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        store.dispatch({
+          kind: "set_addon_focused_index",
+          index: store.getState().addonFocusedIndex + 1,
+        });
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        store.dispatch({
+          kind: "set_addon_focused_index",
+          index: store.getState().addonFocusedIndex - 1,
+        });
+        return true;
+      }
       if (sequence === "\r") {
         callbacks.addonsConfirm();
         return true;

@@ -299,6 +299,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, selectedAddons: next };
     }
 
+    case "set_addon_focused_index":
+      return { ...state, addonFocusedIndex: Math.max(0, action.index) };
+
     case "append_pty_data": {
       const prev = state.ptyBuffers[action.agentId] ?? [];
       const updated = [...prev, action.data].slice(-MAX_PTY_CHUNKS);
@@ -366,7 +369,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "set_focused_pane": {
-      const paneCount = Object.keys(state.splitSessions).length;
+      // Clamp to agents.length — split panes are built from the agent list,
+      // not splitSessions (which are only populated for interactive chat sessions)
+      const paneCount = Math.max(state.agents.length, Object.keys(state.splitSessions).length);
       const maxIndex = Math.max(0, paneCount - 1);
       return {
         ...state,
