@@ -294,21 +294,27 @@ export function harnessPauseResume(deps: DomainActionDeps): void {
     .catch(() => {});
 }
 
+/**
+ * Governance approve — local-only for now.
+ * TODO: Wire to backend governance API route when @koi/governance-backend exposes
+ * approve/deny endpoints. Currently removes the item from local queue and logs.
+ */
 export function governanceApprove(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
   if (item !== undefined) {
     deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
-    deps.addLifecycleMessage(`Approved: ${item.action} on ${item.resource}`);
+    deps.addLifecycleMessage(`Approved (local): ${item.action} on ${item.resource}`);
   }
 }
 
+/** Governance deny — local-only. See governanceApprove TODO. */
 export function governanceDeny(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
   if (item !== undefined) {
     deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
-    deps.addLifecycleMessage(`Denied: ${item.action} on ${item.resource}`);
+    deps.addLifecycleMessage(`Denied (local): ${item.action} on ${item.resource}`);
   }
 }
 

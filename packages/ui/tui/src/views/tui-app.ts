@@ -59,7 +59,6 @@ import { createKeyboardHandler } from "./tui-keyboard.js";
 import { TuiRoot } from "./tui-root.js";
 import { fetchRecentAgentActivity, persistCurrentSession, restoreSession } from "./tui-session.js";
 
-/** Configuration for the TUI application. */
 export interface TuiAppConfig {
   readonly adminUrl: string;
   readonly authToken?: string;
@@ -72,7 +71,6 @@ export interface TuiAppConfig {
   readonly presets?: readonly import("../state/types.js").PresetInfo[] | undefined;
 }
 
-/** Handle returned from createTuiApp for lifecycle management. */
 export interface TuiAppHandle {
   readonly start: () => Promise<void>;
   readonly stop: () => Promise<void>;
@@ -81,16 +79,8 @@ export interface TuiAppHandle {
   readonly handlePaletteSelect: (commandId: string) => void;
   readonly handleAgentSelect: (agentId: string) => void;
   readonly handleKeyInput: (sequence: string) => boolean;
-  /** Transition from welcome mode to boardroom mode. */
   readonly transitionToBoardroom: () => Promise<void>;
 }
-
-/**
- * Create and wire the complete TUI application.
- *
- * In "welcome" mode: renders preset picker, skips admin API connection.
- * In "boardroom" mode: full agent console with SSE streaming.
- */
 export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   const {
     adminUrl,
@@ -493,6 +483,14 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: currentView === "nexus" ? "agents" : "nexus" });
     },
     navigateBack: () => {
+      // Finding 2 fix: from temporal detail, go back to list (not exit view)
+      if (
+        store.getState().view === "temporal" &&
+        store.getState().temporalView.workflowDetail !== null
+      ) {
+        store.dispatch({ kind: "set_temporal_workflow_detail", detail: null });
+        return;
+      }
       const session = store.getState().activeSession;
       store.dispatch({ kind: "set_view", view: session !== null ? "console" : "agents" });
     },
@@ -501,6 +499,14 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     domainScrollDown: () => {
       scrollDomain(1);
+    },
+    temporalSelectNext: () => {
+      const tw = store.getState().temporalView;
+      store.dispatch({ kind: "select_temporal_workflow", index: tw.selectedWorkflowIndex + 1 });
+    },
+    temporalSelectPrev: () => {
+      const tw = store.getState().temporalView;
+      store.dispatch({ kind: "select_temporal_workflow", index: tw.selectedWorkflowIndex - 1 });
     },
     temporalDetail: () => {
       tempDetailFn(domainDeps);
@@ -516,6 +522,14 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     harnessPauseResume: () => {
       harnessPrFn(domainDeps);
+    },
+    governanceSelectNext: () => {
+      const gv = store.getState().governanceView;
+      store.dispatch({ kind: "select_governance_item", index: gv.selectedIndex + 1 });
+    },
+    governanceSelectPrev: () => {
+      const gv = store.getState().governanceView;
+      store.dispatch({ kind: "select_governance_item", index: gv.selectedIndex - 1 });
     },
     governanceApprove: () => {
       govApproveFn(domainDeps);

@@ -31,11 +31,15 @@ export interface KeyboardCallbacks {
   readonly navigateBack: () => void;
   readonly domainScrollUp: () => void;
   readonly domainScrollDown: () => void;
+  readonly temporalSelectNext: () => void;
+  readonly temporalSelectPrev: () => void;
   readonly temporalDetail: () => void;
   readonly temporalSignal: () => void;
   readonly temporalTerminate: () => void;
   readonly schedulerRetryDlq: () => void;
   readonly harnessPauseResume: () => void;
+  readonly governanceSelectNext: () => void;
+  readonly governanceSelectPrev: () => void;
   readonly governanceApprove: () => void;
   readonly governanceDeny: () => void;
   readonly presetSelect: () => void;
@@ -222,36 +226,16 @@ export function createKeyboardHandler(
       return false;
     }
 
-    // Domain views with j/k scroll support
-    const SCROLLABLE_VIEWS = new Set([
-      "skills",
-      "channels",
-      "system",
-      "nexus",
-      "gateway",
-      "temporal",
-      "scheduler",
-      "taskboard",
-      "harness",
-      "middleware",
-      "processtree",
-      "agentprocfs",
-      "cost",
-      "governance",
-    ]);
-    if (SCROLLABLE_VIEWS.has(view)) {
+    // Temporal view — j/k navigate workflows, Enter detail, s signal, t terminate
+    if (view === "temporal") {
       if (sequence === "j" || sequence === "\x1b[B") {
-        callbacks.domainScrollDown();
+        callbacks.temporalSelectNext();
         return true;
       }
       if (sequence === "k" || sequence === "\x1b[A") {
-        callbacks.domainScrollUp();
+        callbacks.temporalSelectPrev();
         return true;
       }
-    }
-
-    // Temporal view — Enter detail, s signal, t terminate
-    if (view === "temporal") {
       if (sequence === "\r") {
         callbacks.temporalDetail();
         return true;
@@ -282,14 +266,48 @@ export function createKeyboardHandler(
       }
     }
 
-    // Governance view — a approve, d deny
+    // Governance view — j/k navigate, a approve, d deny
     if (view === "governance") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.governanceSelectNext();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.governanceSelectPrev();
+        return true;
+      }
       if (sequence === "a") {
         callbacks.governanceApprove();
         return true;
       }
       if (sequence === "d") {
         callbacks.governanceDeny();
+        return true;
+      }
+    }
+
+    // Other domain views with j/k scroll support
+    const SCROLLABLE_VIEWS = new Set([
+      "skills",
+      "channels",
+      "system",
+      "nexus",
+      "gateway",
+      "scheduler",
+      "taskboard",
+      "harness",
+      "middleware",
+      "processtree",
+      "agentprocfs",
+      "cost",
+    ]);
+    if (SCROLLABLE_VIEWS.has(view)) {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.domainScrollDown();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.domainScrollUp();
         return true;
       }
     }
@@ -320,7 +338,7 @@ export function createKeyboardHandler(
         callbacks.toggleForge();
         return true;
       }
-      if (SCROLLABLE_VIEWS.has(view)) {
+      if (SCROLLABLE_VIEWS.has(view) || view === "temporal" || view === "governance") {
         callbacks.navigateBack();
         return true;
       }
