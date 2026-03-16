@@ -228,6 +228,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
     if (sandboxBridge !== undefined) {
       await sandboxBridge.dispose();
     }
+    if (autonomous !== undefined) {
+      await autonomous.dispose();
+    }
     if (nexus.dispose !== undefined) {
       await nexus.dispose();
     }

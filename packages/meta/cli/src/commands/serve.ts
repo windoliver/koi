@@ -142,6 +142,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     if (sandboxBridge !== undefined) {
       await sandboxBridge.dispose();
     }
+    if (autonomous !== undefined) {
+      await autonomous.dispose();
+    }
     if (nexus.dispose !== undefined) {
       await nexus.dispose();
     }
