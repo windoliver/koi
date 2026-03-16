@@ -353,7 +353,8 @@ describe("slack channel e2e lifecycle", () => {
         ts: "1234567890.000001",
       },
     });
-    const response = await handleHttpRequest?.(createSignedSlackRequest(body));
+    if (handleHttpRequest === undefined) throw new Error("handleHttpRequest missing");
+    const response = await handleHttpRequest(createSignedSlackRequest(body));
     expect(response.status).toBe(200);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -395,7 +396,8 @@ describe("slack channel e2e lifecycle", () => {
         ts: "1234567890.000001",
       },
     });
-    const response = await handleHttpRequest?.(createSignedSlackRequest(body));
+    if (handleHttpRequest === undefined) throw new Error("handleHttpRequest missing");
+    const response = await handleHttpRequest(createSignedSlackRequest(body));
     expect(response.status).toBe(200);
 
     await new Promise((resolve) => setTimeout(resolve, 50));

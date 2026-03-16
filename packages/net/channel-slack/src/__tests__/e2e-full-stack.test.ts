@@ -665,7 +665,8 @@ describeE2E("e2e: channel-slack + createKoi + createPiAdapter full stack", () =>
         },
         body,
       });
-      const response = await handleHttpRequest?.(request);
+      if (handleHttpRequest === undefined) throw new Error("handleHttpRequest missing");
+      const response = await handleHttpRequest(request);
       expect(response.status).toBe(200);
       await new Promise((resolve) => setTimeout(resolve, 100));
 
