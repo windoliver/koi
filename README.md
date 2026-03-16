@@ -317,7 +317,7 @@ context:
 
 | Command | Description |
 |---------|-------------|
-| `koi up` | Start full stack — runtime, admin, TUI (recommended) |
+| `koi up` | Start full stack — Nexus, runtime, admin, TUI (recommended) |
 | `koi init [dir]` | Scaffold a new agent project (interactive wizard) |
 | `koi start [manifest]` | Start agent interactively (CLI only, no admin/TUI) |
 | `koi serve [manifest]` | Run agent headless (for services) |
@@ -333,20 +333,30 @@ context:
 
 ### `koi init`
 
-Interactive wizard that scaffolds a new agent project. Asks for preset, template, name, model, channels, and data sources.
+Interactive wizard that scaffolds a new agent project. Asks for preset, template, name, model, channels, and data sources. The preset determines the infrastructure profile — demo data is seeded later by `koi up`.
 
 ```bash
 koi init my-agent                                    # interactive wizard
 koi init my-agent --preset demo --with telegram      # skip wizard steps
+koi init my-agent --preset local                     # lightweight local (no Docker, no auth)
+koi init my-agent --preset mesh                      # multi-agent orchestration topology
+koi init my-agent --yes                              # accept all defaults non-interactively
 ```
+
+Under the hood, `koi init` also runs `nexus init` to scaffold `nexus.yaml` (Docker Compose config). The Nexus preset maps from the Koi preset: `local` → embedded SQLite, `demo` → Docker with auth, `mesh` → Docker shared/multi-tenant.
 
 ### `koi up`
 
 The primary command. Boots the full stack in one command — Nexus, primary agent, provisioned agents, channels, admin panel, and TUI.
 
 ```bash
-koi up                    # uses ./koi.yaml
-koi up --detach           # run in background
+koi up                                          # uses ./koi.yaml
+koi up --nexus-url https://nexus.example.com    # connect to remote Nexus (skip local)
+koi up --nexus-build --nexus-source ~/nexus      # build Nexus from source
+koi up --nexus-port 3000                        # run Nexus on a custom HTTP port
+koi up --temporal-url grpc://temporal:7233      # connect to remote Temporal
+koi up --detach                                 # run in background
+koi up --verbose --timing                       # debug output + phase timings
 ```
 
 ### `koi start`
@@ -358,6 +368,13 @@ koi start                     # uses ./koi.yaml
 koi start --admin             # add admin panel
 koi start --admin --verbose   # with debug logging
 ```
+
+**Nexus resolution** (priority order): `--nexus-url` flag > `NEXUS_URL` env var > `nexus.url` in koi.yaml > auto-start local embed.
+When any URL is provided, no local Nexus is started.
+
+**`--nexus-build --nexus-source <dir>`** rebuilds the Nexus Docker image from source instead of pulling from GHCR. Point `--nexus-source` to the nexus repo root (uses `<dir>/docker-compose.yml` which has the `build:` directive).
+
+**Port handling**: Nexus auto-resolves port conflicts by default (`--port-strategy=auto`). If port 2026 is taken, it picks the next free port and persists it to `nexus.yaml`. Use `--nexus-port` only when you want a specific port.
 
 ### `koi serve`
 
@@ -431,6 +448,9 @@ bun run doctor        # diagnose health
 - One model provider key (e.g., `ANTHROPIC_API_KEY`)
 - If `bun install` fails at `lefthook install` because `core.hooksPath` is already set, run `lefthook install --force`
 - Local Nexus embed mode is the default when no URL is set
+- To build Nexus from source: `bun run koi -- up --nexus-build --nexus-source ~/nexus`
+- To use a custom port for Nexus: `bun run koi -- up --nexus-port 3000` (port conflicts auto-resolve by default)
+- To connect to remote Nexus: `--nexus-url`, `NEXUS_URL` env var, or `nexus.url` in koi.yaml
 
 ### Toolchain
 
