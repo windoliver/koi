@@ -21,6 +21,7 @@ import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import { createInMemoryForgeStore } from "@koi/forge-tools";
 import type { ForgeConfig, SandboxExecutor } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
+import type { Indexer, Retriever } from "@koi/search-provider";
 import { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 import type { FullForgeSystem } from "./create-full-forge-system.js";
 import { createFullForgeSystem } from "./create-full-forge-system.js";
@@ -64,6 +65,10 @@ export interface ForgeBootstrapConfig {
   readonly maxSynthesesPerSession?: number | undefined;
   /** Optional policy-cache handle for promotion wiring. */
   readonly policyCacheHandle?: import("@koi/middleware-policy-cache").PolicyCacheHandle | undefined;
+  /** Optional hybrid retriever for semantic brick discovery. */
+  readonly retriever?: Retriever | undefined;
+  /** Optional indexer for keeping the search index in sync with the forge store. */
+  readonly indexer?: Indexer | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +137,7 @@ export function createForgeBootstrap(
       ...(config.policyCacheHandle !== undefined
         ? { policyCacheHandle: config.policyCacheHandle }
         : {}),
+      ...(config.indexer !== undefined ? { indexer: config.indexer } : {}),
     });
 
     // Cast provider to its full instance type for dispose access.
@@ -149,6 +155,8 @@ export function createForgeBootstrap(
       ...(config.resolveSessionId !== undefined
         ? { resolveSessionId: config.resolveSessionId }
         : {}),
+      ...(config.retriever !== undefined ? { retriever: config.retriever } : {}),
+      ...(config.onError !== undefined ? { onError: config.onError } : {}),
     });
 
     return {

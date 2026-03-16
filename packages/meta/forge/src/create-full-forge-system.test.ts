@@ -2,11 +2,14 @@
  * Unit tests for createFullForgeSystem factory.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { KoiError, Result, TurnTrace } from "@koi/core";
+import { brickId } from "@koi/core";
 import { createInMemoryForgeStore } from "@koi/forge-tools";
 import type { SandboxExecutor } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
+import type { IndexDocument, Indexer } from "@koi/search-provider";
+import { createTestToolArtifact } from "@koi/test-utils";
 import { createFullForgeSystem } from "./create-full-forge-system.js";
 
 // ---------------------------------------------------------------------------
@@ -117,5 +120,95 @@ describe("createFullForgeSystem", () => {
     });
 
     expect(system.middlewares).toHaveLength(7);
+  });
+
+  test("system with indexer creates without error", () => {
+    const store = createInMemoryForgeStore();
+    const indexer: Indexer = {
+      index: mock(async () => ({ ok: true as const, value: undefined })),
+      remove: mock(async () => ({ ok: true as const, value: undefined })),
+    };
+    const system = createFullForgeSystem({
+      store,
+      executor: mockExecutor(),
+      scope: "agent",
+      forgeConfig: createDefaultForgeConfig(),
+      readTraces: emptyTraces,
+      resolveBrickId: noopResolveBrickId,
+      indexer,
+    });
+
+    expect(system.runtime).toBeDefined();
+    expect(system.middlewares).toHaveLength(7);
+  });
+
+  test("'saved' event triggers indexer.index()", async () => {
+    const store = createInMemoryForgeStore();
+    const indexed: IndexDocument[][] = [];
+    const indexer: Indexer = {
+      index: mock(async (docs: readonly IndexDocument[]) => {
+        indexed.push([...docs]);
+        return { ok: true as const, value: undefined };
+      }),
+      remove: mock(async () => ({ ok: true as const, value: undefined })),
+    };
+    const system = createFullForgeSystem({
+      store,
+      executor: mockExecutor(),
+      scope: "agent",
+      forgeConfig: createDefaultForgeConfig(),
+      readTraces: emptyTraces,
+      resolveBrickId: noopResolveBrickId,
+      indexer,
+    });
+
+    // Save a brick to the store, then notify
+    const brick = createTestToolArtifact({ id: brickId("idx-1"), name: "indexed-tool" });
+    await store.save(brick);
+    await system.notifier.notify({ kind: "saved", brickId: brickId("idx-1"), scope: "agent" });
+
+    // Allow async subscriber to process
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The indexer.index should have been called (backfill + subscriber)
+    expect(indexer.index).toHaveBeenCalled();
+    // At least one call should contain the brick we saved
+    const allDocs = indexed.flat();
+    expect(allDocs.some((d) => d.id === brickId("idx-1"))).toBe(true);
+  });
+
+  test("'removed' event triggers indexer.remove()", async () => {
+    const store = createInMemoryForgeStore();
+    const removed: string[][] = [];
+    const indexer: Indexer = {
+      index: mock(async () => ({ ok: true as const, value: undefined })),
+      remove: mock(async (ids: readonly string[]) => {
+        removed.push([...ids]);
+        return { ok: true as const, value: undefined };
+      }),
+    };
+    const system = createFullForgeSystem({
+      store,
+      executor: mockExecutor(),
+      scope: "agent",
+      forgeConfig: createDefaultForgeConfig(),
+      readTraces: emptyTraces,
+      resolveBrickId: noopResolveBrickId,
+      indexer,
+    });
+
+    // Notify a removal event
+    await system.notifier.notify({
+      kind: "removed",
+      brickId: brickId("rm-1"),
+      scope: "agent",
+    });
+
+    // Allow async subscriber to process
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(indexer.remove).toHaveBeenCalled();
+    const allRemoved = removed.flat();
+    expect(allRemoved.includes(brickId("rm-1"))).toBe(true);
   });
 });

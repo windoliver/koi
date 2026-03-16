@@ -28,6 +28,7 @@ import type {
   ToolOrigin,
   ToolPolicy,
 } from "@koi/core";
+import type { Retriever } from "@koi/search-provider";
 
 // Re-export L0 types that other forge modules import from this file
 export type { BrickKind, BrickLifecycle, BrickRequires, ForgeScope };
@@ -328,6 +329,10 @@ export interface ForgeDeps {
     prompt: string,
     options: DelegateOptions,
   ) => Promise<Result<string, KoiError>>;
+  /** Optional hybrid retriever for semantic brick discovery (BM25+vector via Nexus Search). */
+  readonly retriever?: Retriever | undefined;
+  /** Optional error callback for non-fatal failures (notification errors, indexing errors). */
+  readonly onError?: ((error: unknown) => void) | undefined;
 }
 
 import type { ForgeConfig } from "./config.js";

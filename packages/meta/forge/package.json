@@ -29,6 +29,7 @@
     "@koi/forge-policy": "workspace:*",
     "@koi/forge-tools": "workspace:*",
     "@koi/forge-types": "workspace:*",
+    "@koi/search-provider": "workspace:*",
     "@koi/middleware-ace": "workspace:*",
     "@koi/middleware-feedback-loop": "workspace:*",
     "@koi/middleware-policy-cache": "workspace:*",

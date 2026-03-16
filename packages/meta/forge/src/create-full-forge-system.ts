@@ -24,9 +24,14 @@ import type { DashboardEvent } from "@koi/dashboard-types";
 import type { ForgeDemandHandle } from "@koi/forge-demand";
 import type { ExaptationHandle } from "@koi/forge-exaptation";
 import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
-import { createForgeComponentProvider, createMemoryStoreChangeNotifier } from "@koi/forge-tools";
+import {
+  createForgeComponentProvider,
+  createMemoryStoreChangeNotifier,
+  mapBrickToIndexDoc,
+} from "@koi/forge-tools";
 import type { ForgeConfig, ForgePipeline, SandboxExecutor } from "@koi/forge-types";
 import type { FeedbackLoopHandle } from "@koi/middleware-feedback-loop";
+import type { Indexer } from "@koi/search-provider";
 import type { ForgeMiddlewareStackResult } from "./create-forge-middleware-stack.js";
 import { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
 import { createForgePipeline } from "./create-forge-stack.js";
@@ -61,6 +66,8 @@ export interface CreateFullForgeSystemConfig {
   readonly maxSynthesesPerSession?: number | undefined;
   /** Optional policy-cache handle for promotion wiring. */
   readonly policyCacheHandle?: import("@koi/middleware-policy-cache").PolicyCacheHandle | undefined;
+  /** Optional indexer for keeping the search index in sync with the forge store. */
+  readonly indexer?: Indexer | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +146,68 @@ export function createFullForgeSystem(config: CreateFullForgeSystemConfig): Full
       ? { policyCacheHandle: config.policyCacheHandle }
       : {}),
   });
+
+  // 5. Indexing subscriber — keeps search index in sync with store mutations
+  if (config.indexer !== undefined) {
+    const indexer = config.indexer;
+    const onError = config.onError;
+
+    /** Report a non-fatal indexing error via onError or console.debug fallback. */
+    const reportError = (context: string, error: unknown): void => {
+      if (onError !== undefined) {
+        onError(error);
+      } else {
+        console.debug(`[forge] ${context}:`, error);
+      }
+    };
+
+    notifier.subscribe((event) => {
+      if (event.kind === "saved" || event.kind === "updated") {
+        void config.store
+          .load(event.brickId)
+          .then(async (loadResult) => {
+            if (!loadResult.ok) return;
+            const doc = mapBrickToIndexDoc(loadResult.value);
+            const indexResult = await indexer.index([doc]);
+            if (!indexResult.ok) {
+              reportError("indexing subscriber index failed", indexResult.error);
+            }
+          })
+          .catch((e: unknown) => {
+            reportError("indexing subscriber failed", e);
+          });
+      } else if (event.kind === "removed" || event.kind === "quarantined") {
+        void indexer
+          .remove([event.brickId])
+          .then((removeResult) => {
+            if (!removeResult.ok) {
+              reportError("indexing subscriber remove failed", removeResult.error);
+            }
+          })
+          .catch((e: unknown) => {
+            reportError("indexing subscriber remove failed", e);
+          });
+      }
+    });
+
+    // Async background backfill — index all existing bricks (fire-and-forget).
+    // Duplicate index() calls are idempotent upserts by document ID.
+    void config.store
+      .search({})
+      .then(async (searchResult) => {
+        if (!searchResult.ok) return;
+        const docs = searchResult.value.map(mapBrickToIndexDoc);
+        if (docs.length > 0) {
+          const indexResult = await indexer.index(docs);
+          if (!indexResult.ok) {
+            reportError("indexing backfill failed", indexResult.error);
+          }
+        }
+      })
+      .catch((e: unknown) => {
+        reportError("indexing backfill failed", e);
+      });
+  }
 
   return {
     runtime,
