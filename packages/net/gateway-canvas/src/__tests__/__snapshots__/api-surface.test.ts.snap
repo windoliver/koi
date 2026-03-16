@@ -57,8 +57,6 @@ declare function formatSseEvent(event: SseEvent): Uint8Array;
 declare function createCanvasSseManager(configOverrides?: Partial<CanvasSseConfig>): CanvasSseManager;
 
 type SurfaceStoreConfig = _koi_gateway_types.SurfaceStoreConfig;
-/** Compute SHA-256 hex digest of content using Bun native crypto. */
-declare function computeContentHash(content: string): string;
 declare function createInMemorySurfaceStore(configOverrides?: Partial<SurfaceStoreConfig>): _koi_gateway_types.SurfaceStore;
 
 /**
@@ -120,6 +118,6 @@ interface CanvasWiring {
 }
 declare function createCanvas(config: CanvasConfig, authenticator?: CanvasAuthenticator): CanvasWiring;
 
-export { type CanvasAuthResult, type CanvasAuthenticator, type CanvasConfig, type CanvasRouteConfig, type CanvasServer, type CanvasSseConfig, type CanvasSseManager, type CanvasWiring, type SseEvent, type SseSubscriber, computeContentHash, createCanvas, createCanvasServer, createCanvasSseManager, createInMemorySurfaceStore, formatSseEvent };
+export { type CanvasAuthResult, type CanvasAuthenticator, type CanvasConfig, type CanvasRouteConfig, type CanvasServer, type CanvasSseConfig, type CanvasSseManager, type CanvasWiring, type SseEvent, type SseSubscriber, createCanvas, createCanvasServer, createCanvasSseManager, createInMemorySurfaceStore, formatSseEvent };
 "
 `;

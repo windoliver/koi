@@ -9,7 +9,7 @@ export {
   computePipelineBrickId,
   isBrickId,
 } from "./brick-id.js";
-export { computeContentHash } from "./content-hash.js";
+export { computeContentHash, computeStringHash } from "./content-hash.js";
 export { fnv1a } from "./fnv1a.js";
 export { createHmacSigner } from "./hmac-signing.js";
 export { generateUlid } from "./ulid.js";

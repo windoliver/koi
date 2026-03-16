@@ -109,10 +109,10 @@ export function createEmailChannel(config: EmailChannelConfig): EmailChannelAdap
 
     platformConnect: async () => {
       if (activeImap === null) {
-        activeImap = createImapClient(config);
+        activeImap = await createImapClient(config);
       }
       if (activeTransporter === null) {
-        activeTransporter = createNodemailerTransporter(config);
+        activeTransporter = await createNodemailerTransporter(config);
       }
 
       await activeImap.connect();
@@ -223,8 +223,8 @@ export function createEmailChannel(config: EmailChannelConfig): EmailChannelAdap
 // Client constructors (production only)
 // ---------------------------------------------------------------------------
 
-function createImapClient(config: EmailChannelConfig): ImapClientLike {
-  const { ImapFlow } = require("imapflow") as {
+async function createImapClient(config: EmailChannelConfig): Promise<ImapClientLike> {
+  const { ImapFlow } = (await import("imapflow")) as unknown as {
     readonly ImapFlow: new (opts: Record<string, unknown>) => ImapClientLike;
   };
   return new ImapFlow({
@@ -235,8 +235,8 @@ function createImapClient(config: EmailChannelConfig): ImapClientLike {
   });
 }
 
-function createNodemailerTransporter(config: EmailChannelConfig): TransporterLike {
-  const nodemailer = require("nodemailer") as {
+async function createNodemailerTransporter(config: EmailChannelConfig): Promise<TransporterLike> {
+  const nodemailer = (await import("nodemailer")) as unknown as {
     readonly createTransport: (opts: Record<string, unknown>) => TransporterLike;
   };
   return nodemailer.createTransport({
@@ -249,7 +249,7 @@ function createNodemailerTransporter(config: EmailChannelConfig): TransporterLik
 
 async function parseEmail(source: Buffer): Promise<ParsedEmail | null> {
   try {
-    const { simpleParser } = require("mailparser") as {
+    const { simpleParser } = (await import("mailparser")) as unknown as {
       readonly simpleParser: (source: Buffer) => Promise<ParsedEmail>;
     };
     return await simpleParser(source);

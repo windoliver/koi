@@ -53,6 +53,17 @@ declare function isBrickId(value: string): value is BrickId;
  * @returns 64-character lowercase hex digest.
  */
 declare function computeContentHash(data: unknown): string;
+/**
+ * Compute a SHA-256 hex digest of a raw string.
+ *
+ * Unlike {@link computeContentHash}, this does NOT do deterministic
+ * serialization — the string is hashed as-is. Use this for content
+ * that is already in its canonical string form (e.g., surface content).
+ *
+ * @param content - The raw string to hash.
+ * @returns 64-character lowercase hex digest.
+ */
+declare function computeStringHash(content: string): string;
 
 /**
  * FNV-1a 32-bit hash — shared utility for L1 and L2 packages.
@@ -84,6 +95,6 @@ declare function createHmacSigner(secretKey: Uint8Array): SigningBackend;
 /** Generate a ULID — 26-char, time-sortable, crypto-random unique ID. */
 declare function generateUlid(): string;
 
-export { computeBrickId, computeCompositeBrickId, computeContentHash, computePipelineBrickId, createHmacSigner, fnv1a, generateUlid, isBrickId };
+export { computeBrickId, computeCompositeBrickId, computeContentHash, computePipelineBrickId, computeStringHash, createHmacSigner, fnv1a, generateUlid, isBrickId };
 "
 `;

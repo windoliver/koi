@@ -207,6 +207,55 @@ describe("wrapModelStream — output scanning", () => {
     const combined = textChunks.map((c) => (c as { delta: string }).delta).join("");
     expect(combined).toBe("user@example.com");
   });
+
+  test("block strategy downgrades to redact in streaming mode", async () => {
+    const mw = createPIIMiddleware({
+      strategy: "block",
+      scope: { input: false, output: true },
+    });
+    const ctx = createMockTurnContext();
+
+    async function* mockStream(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "Email: user@" };
+      yield { kind: "text_delta", delta: "example.com here" };
+      yield { kind: "done", response: createResponse("Email: user@example.com here") };
+    }
+
+    // Should NOT throw — block is downgraded to redact for streaming
+    const chunks: ModelChunk[] = [];
+    // biome-ignore lint/style/noNonNullAssertion: hook is guaranteed to exist on created middleware
+    for await (const chunk of mw.wrapModelStream!(ctx, createRequest("hi"), () => mockStream())) {
+      chunks.push(chunk);
+    }
+
+    const textChunks = chunks.filter((c) => c.kind === "text_delta");
+    const combined = textChunks.map((c) => (c as { delta: string }).delta).join("");
+    expect(combined).toContain("[REDACTED_EMAIL]");
+    expect(combined).not.toContain("user@example.com");
+  });
+
+  test("block strategy calls onDetection during streaming redact", async () => {
+    const onDetection = mock((_matches: readonly unknown[], _location: string) => {});
+    const mw = createPIIMiddleware({
+      strategy: "block",
+      scope: { input: false, output: true },
+      onDetection,
+    });
+    const ctx = createMockTurnContext();
+
+    async function* mockStream(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "Secret: user@test.com is leaked" };
+      yield { kind: "done", response: createResponse("Secret: user@test.com is leaked") };
+    }
+
+    const chunks: ModelChunk[] = [];
+    // biome-ignore lint/style/noNonNullAssertion: hook is guaranteed to exist on created middleware
+    for await (const chunk of mw.wrapModelStream!(ctx, createRequest("hi"), () => mockStream())) {
+      chunks.push(chunk);
+    }
+
+    expect(onDetection).toHaveBeenCalled();
+  });
 });
 
 describe("hash strategy", () => {

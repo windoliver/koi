@@ -8,6 +8,7 @@
 import type { KoiError, Result } from "@koi/core";
 import { conflict, notFound } from "@koi/core";
 import type { SurfaceEntry, SurfaceStore, SurfaceStoreConfig } from "@koi/gateway-types";
+import { computeStringHash } from "@koi/hash";
 import type { NexusClient } from "@koi/nexus-client";
 import { deleteJson, gatewaySurfacePath, readJson } from "@koi/nexus-client";
 import type { DegradationConfig, GatewayNexusConfig } from "./config.js";
@@ -16,16 +17,6 @@ import type { DegradationState } from "./degradation.js";
 import { createDegradationState, recordFailure, recordSuccess } from "./degradation.js";
 import type { WriteQueue } from "./write-queue.js";
 import { createWriteQueue } from "./write-queue.js";
-
-// ---------------------------------------------------------------------------
-// Content hashing (uses Bun native crypto)
-// ---------------------------------------------------------------------------
-
-function computeContentHash(content: string): string {
-  const hasher = new Bun.CryptoHasher("sha256");
-  hasher.update(content);
-  return hasher.digest("hex");
-}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -144,7 +135,7 @@ export function createNexusSurfaceStore(
       const entry: SurfaceEntry = {
         surfaceId: id,
         content,
-        contentHash: computeContentHash(content),
+        contentHash: computeStringHash(content),
         createdAt: now,
         updatedAt: now,
         lastAccessedAt: now,
@@ -189,10 +180,13 @@ export function createNexusSurfaceStore(
         };
       }
       const now = Date.now();
+      // Skip re-hashing when content is unchanged (identity optimization)
+      const contentHash =
+        content === existing.content ? existing.contentHash : computeStringHash(content);
       const updated: SurfaceEntry = {
         ...existing,
         content,
-        contentHash: computeContentHash(content),
+        contentHash,
         updatedAt: now,
         lastAccessedAt: now,
       };

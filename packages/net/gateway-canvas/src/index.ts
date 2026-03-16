@@ -33,4 +33,4 @@ export type {
   SurfaceStore,
   SurfaceStoreConfig,
 } from "./canvas-store.js";
-export { computeContentHash, createInMemorySurfaceStore } from "./canvas-store.js";
+export { createInMemorySurfaceStore } from "./canvas-store.js";
