@@ -28,8 +28,13 @@ const BOT_FRAMEWORK_JWKS_URL = "https://login.botframework.com/v1/.well-known/ke
  * key rotation handling.
  *
  * @param appId - The Azure AD application ID (used as the expected `aud` claim)
+ * @param tenantId - Optional Azure AD tenant ID for single-tenant deployments.
+ *   When provided, the JWT's `tid` claim must match exactly.
  */
-export function createBotFrameworkAuthenticator(appId: string): BotFrameworkAuthenticator {
+export function createBotFrameworkAuthenticator(
+  appId: string,
+  tenantId?: string,
+): BotFrameworkAuthenticator {
   const jwks = createRemoteJWKSet(new URL(BOT_FRAMEWORK_JWKS_URL));
 
   const verify = async (request: Request): Promise<BotFrameworkAuthResult> => {
@@ -59,6 +64,14 @@ export function createBotFrameworkAuthenticator(appId: string): BotFrameworkAuth
       // Validate issuer starts with https:// (Bot Framework issuers)
       if (typeof payload.iss !== "string" || !payload.iss.startsWith("https://")) {
         return { ok: false, reason: "invalid_token" };
+      }
+
+      // Enforce tenant isolation when tenantId is configured
+      if (tenantId !== undefined) {
+        const tokenTenantId = payload.tid;
+        if (tokenTenantId !== tenantId) {
+          return { ok: false, reason: "tenant_mismatch" };
+        }
       }
 
       return { ok: true };

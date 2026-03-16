@@ -52,9 +52,13 @@ const SLACK_CAPABILITIES: ChannelCapabilities = {
 
 /** ChannelAdapter extended with Slack-specific methods. */
 export interface SlackChannelAdapter extends ChannelAdapter {
-  /** Handles a raw Slack event payload (for HTTP mode or socket mode forwarding). */
+  /**
+   * Handles a pre-verified Slack event payload.
+   * Only available in socket mode (where the Slack SDK handles verification).
+   * In HTTP mode this is deliberately NOT exposed — use handleHttpRequest instead.
+   */
   readonly handleEvent?: (payload: unknown) => void;
-  /** Handles a raw Slack HTTP request with signature verification. */
+  /** Handles a raw Slack HTTP request with signature verification (HTTP mode only). */
   readonly handleHttpRequest?: (request: Request) => Promise<Response>;
 }
 
@@ -250,74 +254,63 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
       : {}),
   });
 
-  // Build extended adapter with HTTP event handling
-  const handleEvent =
-    config.deployment.mode === "http"
-      ? (payload: unknown): void => {
-          if (eventHandler !== undefined && typeof payload === "object" && payload !== null) {
-            const p = payload as Record<string, unknown>;
-            const eventType = p.type as string | undefined;
-            if (eventType === "event_callback") {
-              const inner = p.event as Record<string, unknown>;
-              const innerType = inner?.type as string | undefined;
-              if (innerType === "app_mention") {
-                eventHandler({
-                  kind: "app_mention",
-                  event: inner as unknown as import("./normalize.js").SlackAppMentionEvent,
-                });
-              } else if (innerType === "message") {
-                eventHandler({
-                  kind: "message",
-                  event: inner as unknown as import("./normalize.js").SlackMessageEvent,
-                });
-              }
-            }
-          }
+  // Dispatch a parsed Slack event payload through the event handler.
+  // Internal helper — not exposed in HTTP mode to prevent unsigned access.
+  const dispatchEvent = (payload: unknown): void => {
+    if (eventHandler !== undefined && typeof payload === "object" && payload !== null) {
+      const p = payload as Record<string, unknown>;
+      const eventType = p.type as string | undefined;
+      if (eventType === "event_callback") {
+        const inner = p.event as Record<string, unknown>;
+        const innerType = inner?.type as string | undefined;
+        if (innerType === "app_mention") {
+          eventHandler({
+            kind: "app_mention",
+            event: inner as unknown as import("./normalize.js").SlackAppMentionEvent,
+          });
+        } else if (innerType === "message") {
+          eventHandler({
+            kind: "message",
+            event: inner as unknown as import("./normalize.js").SlackMessageEvent,
+          });
         }
-      : undefined;
+      }
+    }
+  };
 
-  // Build HTTP request handler with signature verification (HTTP mode only)
-  const httpSigningSecret =
-    config.deployment.mode === "http" ? config.deployment.signingSecret : undefined;
-  const handleHttpRequest =
-    httpSigningSecret !== undefined
-      ? async (request: Request): Promise<Response> => {
-          const result = await verifySlackRequest(httpSigningSecret, request);
-          if (!result.ok) {
-            return new Response("Unauthorized", { status: 401 });
-          }
+  if (config.deployment.mode === "http") {
+    // HTTP mode: only expose handleHttpRequest (signature-verified).
+    // handleEvent is deliberately NOT exposed to prevent unsigned access.
+    const { signingSecret } = config.deployment;
+    const handleHttpRequest = async (request: Request): Promise<Response> => {
+      const result = await verifySlackRequest(signingSecret, request);
+      if (!result.ok) {
+        return new Response("Unauthorized", { status: 401 });
+      }
 
-          // Parse the verified body and dispatch via existing handleEvent logic
-          const parsed: unknown = JSON.parse(result.body);
-          if (typeof parsed === "object" && parsed !== null) {
-            const payload = parsed as Record<string, unknown>;
+      const parsed: unknown = JSON.parse(result.body);
+      if (typeof parsed === "object" && parsed !== null) {
+        const payload = parsed as Record<string, unknown>;
 
-            // Slack URL verification challenge
-            if (payload.type === "url_verification" && typeof payload.challenge === "string") {
-              return new Response(payload.challenge, {
-                status: 200,
-                headers: { "Content-Type": "text/plain" },
-              });
-            }
-
-            // Dispatch the event through the existing handleEvent path
-            if (handleEvent !== undefined) {
-              handleEvent(payload);
-            }
-          }
-
-          return new Response("OK", { status: 200 });
+        // Slack URL verification challenge
+        if (payload.type === "url_verification" && typeof payload.challenge === "string") {
+          return new Response(payload.challenge, {
+            status: 200,
+            headers: { "Content-Type": "text/plain" },
+          });
         }
-      : undefined;
 
-  if (handleEvent !== undefined || handleHttpRequest !== undefined) {
-    return {
-      ...base,
-      ...(handleEvent !== undefined ? { handleEvent } : {}),
-      ...(handleHttpRequest !== undefined ? { handleHttpRequest } : {}),
+        dispatchEvent(payload);
+      }
+
+      return new Response("OK", { status: 200 });
     };
+
+    return { ...base, handleHttpRequest };
   }
-  return base as SlackChannelAdapter;
+
+  // Socket mode: expose handleEvent for SDK-verified forwarding (no HTTP handler)
+  return { ...base, handleEvent: dispatchEvent } satisfies SlackChannelAdapter;
 }
 
 // ---------------------------------------------------------------------------

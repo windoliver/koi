@@ -94,8 +94,9 @@ export function createTeamsChannel(config: TeamsChannelConfig): TeamsChannelAdap
         return;
       }
 
-      // Create authenticator once so JWKS is cached across requests
-      const authenticator = createBotFrameworkAuthenticator(appId);
+      // Create authenticator once so JWKS is cached across requests.
+      // Pass tenantId to enforce single-tenant isolation when configured.
+      const authenticator = createBotFrameworkAuthenticator(appId, config.tenantId);
 
       server = Bun.serve({
         port,

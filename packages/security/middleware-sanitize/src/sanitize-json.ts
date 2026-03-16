@@ -27,8 +27,9 @@ export function walkJsonStrings(
   location: SanitizationLocation,
   onSanitization?: (event: SanitizationEvent) => void,
   maxDepth: number = DEFAULT_MAX_DEPTH,
+  maxContentLength?: number,
 ): WalkJsonResult {
-  return walk(value, rules, location, onSanitization, maxDepth, 0);
+  return walk(value, rules, location, onSanitization, maxDepth, 0, maxContentLength);
 }
 
 function walk(
@@ -38,14 +39,18 @@ function walk(
   onSanitization: ((event: SanitizationEvent) => void) | undefined,
   maxDepth: number,
   depth: number,
+  maxContentLength?: number,
 ): WalkJsonResult {
   // Depth limit reached — return as-is
   if (depth > maxDepth) {
     return { value, blocked: false, events: [] };
   }
 
-  // String leaf — apply rules
+  // String leaf — apply rules (skip if oversized — ReDoS guard)
   if (typeof value === "string") {
+    if (maxContentLength !== undefined && value.length > maxContentLength) {
+      return { value, blocked: false, events: [] };
+    }
     const result = sanitizeString(value, rules, location, undefined, onSanitization);
     return { value: result.text, blocked: result.blocked, events: result.events };
   }
@@ -64,7 +69,15 @@ function walk(
     let anyChanged = false;
 
     const newArr = value.map((item: unknown) => {
-      const result = walk(item, rules, location, onSanitization, maxDepth, depth + 1);
+      const result = walk(
+        item,
+        rules,
+        location,
+        onSanitization,
+        maxDepth,
+        depth + 1,
+        maxContentLength,
+      );
       if (result.blocked) {
         anyBlocked = true;
       }
@@ -92,7 +105,15 @@ function walk(
   const entries: Array<readonly [string, unknown]> = [];
 
   for (const key of keys) {
-    const result = walk(obj[key], rules, location, onSanitization, maxDepth, depth + 1);
+    const result = walk(
+      obj[key],
+      rules,
+      location,
+      onSanitization,
+      maxDepth,
+      depth + 1,
+      maxContentLength,
+    );
     if (result.blocked) {
       anyBlocked = true;
     }

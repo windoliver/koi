@@ -52,6 +52,14 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
     // let justified: tracks whether any message was modified
     let anyChanged = false;
     const sanitizedMessages = request.messages.map((msg) => {
+      // ReDoS guard: skip sanitization for oversized messages
+      if (maxContentLength !== undefined) {
+        const totalLength = msg.content.reduce((sum, block) => {
+          if (block.kind === "text") return sum + block.text.length;
+          return sum;
+        }, 0);
+        if (totalLength > maxContentLength) return msg;
+      }
       const result = sanitizeMessage(msg, allRules, "input", onSanitization);
       if (result.blocked) {
         throw KoiRuntimeError.from("VALIDATION", "Content blocked by sanitization rule", {
@@ -168,19 +176,22 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
               onSanitization?.(event);
             }
 
-            // Sanitize the final ModelResponse content
-            const sanitizedContent = sanitizeString(
-              chunk.response.content,
-              allRules,
-              "output",
-              "text",
-              onSanitization,
-            );
-            // Block action downgraded — we already yielded partial content
-            const sanitizedResponse: ModelResponse =
-              sanitizedContent.events.length > 0
-                ? { ...chunk.response, content: sanitizedContent.text }
-                : chunk.response;
+            // Sanitize the final ModelResponse content (skip if oversized — ReDoS guard)
+            let sanitizedResponse: ModelResponse = chunk.response;
+            if (!exceedsLengthGuard(chunk.response.content)) {
+              const sanitizedContent = sanitizeString(
+                chunk.response.content,
+                allRules,
+                "output",
+                "text",
+                onSanitization,
+              );
+              // Block action downgraded — we already yielded partial content
+              sanitizedResponse =
+                sanitizedContent.events.length > 0
+                  ? { ...chunk.response, content: sanitizedContent.text }
+                  : chunk.response;
+            }
 
             yield { kind: "done", response: sanitizedResponse };
             break;
@@ -200,7 +211,7 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
     ): Promise<ToolResponse> {
       // INPUT: sanitize tool input
       const sanitizedRequest = sanitizeToolInput
-        ? sanitizeToolInputFn(request, allRules, maxDepth, onSanitization)
+        ? sanitizeToolInputFn(request, allRules, maxDepth, onSanitization, maxContentLength)
         : request;
 
       // Call next
@@ -217,6 +228,7 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
         "tool-output",
         onSanitization,
         maxDepth,
+        maxContentLength,
       );
 
       if (outputResult.blocked) {
@@ -242,8 +254,16 @@ function sanitizeToolInputFn(
   rules: readonly SanitizeRule[],
   maxDepth: number,
   onSanitization: ((event: SanitizationEvent) => void) | undefined,
+  maxContentLength: number | undefined,
 ): ToolRequest {
-  const inputResult = walkJsonStrings(request.input, rules, "tool-input", onSanitization, maxDepth);
+  const inputResult = walkJsonStrings(
+    request.input,
+    rules,
+    "tool-input",
+    onSanitization,
+    maxDepth,
+    maxContentLength,
+  );
 
   if (inputResult.blocked) {
     throw KoiRuntimeError.from(
