@@ -48,6 +48,7 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "status", label: "/status", description: "Show detailed subsystem status" },
   { id: "doctor", label: "/doctor", description: "Run diagnostic checks" },
   { id: "demo-init", label: "/demo init", description: "Initialize a demo pack" },
+  { id: "demo-list", label: "/demo list", description: "List available demo packs" },
   { id: "demo-reset", label: "/demo reset", description: "Reset a demo pack" },
   { id: "deploy", label: "/deploy", description: "Deploy agent to cloud" },
   { id: "undeploy", label: "/undeploy", description: "Remove cloud deployment" },

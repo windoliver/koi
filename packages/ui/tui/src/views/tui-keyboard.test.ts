@@ -44,6 +44,9 @@ function makeCallbacks(): KeyboardCallbacks & {
     dataSourceSchema: () => {
       mutableCalls.push("dataSourceSchema");
     },
+    dataSourcesContinue: () => {
+      mutableCalls.push("dataSourcesContinue");
+    },
     consentApprove: () => {
       mutableCalls.push("consentApprove");
     },

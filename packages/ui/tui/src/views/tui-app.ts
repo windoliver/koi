@@ -570,10 +570,14 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     closeDataSources: () => {
       const currentView = store.getState().view;
-      store.dispatch({
-        kind: "set_view",
-        view: currentView === "sourcedetail" ? "datasources" : "agents",
-      });
+      if (currentView === "sourcedetail") {
+        store.dispatch({ kind: "set_view", view: "datasources" });
+      } else if (store.getState().selectedPresetId !== null) {
+        // In wizard flow: datasources back → channels
+        store.dispatch({ kind: "set_view", view: "channels" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "agents" });
+      }
     },
     dataSourceUp: () => {
       store.dispatch({
@@ -594,6 +598,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     dataSourceSchema: () => {
       const source = store.getState().dataSources[store.getState().selectedDataSourceIndex];
       if (source !== undefined) viewDataSourceSchema(source.name, dsDeps).catch(() => {});
+    },
+    dataSourcesContinue: () => {
+      // In wizard flow: datasources → addons
+      if (store.getState().selectedPresetId !== null) {
+        store.dispatch({ kind: "set_view", view: "addons" });
+      }
     },
     consentApprove,
     consentDeny,
@@ -655,7 +665,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       }
     },
     addonsBack: () => {
-      store.dispatch({ kind: "set_view", view: "channels" });
+      const presetId = store.getState().selectedPresetId;
+      store.dispatch({ kind: "set_view", view: presetId === "local" ? "datasources" : "channels" });
     },
     modelSelect: () => {
       const models = config.models ?? [...KNOWN_MODELS];
@@ -680,7 +691,13 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "model" });
     },
     channelsConfirm: () => {
-      store.dispatch({ kind: "set_view", view: "addons" });
+      // For local preset, show data source discovery step; demo/mesh get sources from Nexus
+      const presetId = store.getState().selectedPresetId;
+      if (presetId === "local") {
+        store.dispatch({ kind: "set_view", view: "datasources" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "addons" });
+      }
     },
     channelsToggle: () => {
       const idx = store.getState().channelFocusedIndex;
@@ -743,6 +760,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   function handleNameConfirm(): void {
     // After name input, go to model selection
+    // Full wizard flow: preset → name → model → engine → channels → dataSources → addons
     store.dispatch({ kind: "set_view", view: "model" });
   }
 
@@ -752,7 +770,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const state = store.getState();
 
     if (presetId !== null && onStartStack !== undefined) {
-      // Build SetupWizardState from TUI state
+      // Build SetupWizardState from TUI state, including discovered data sources
+      const approvedSources = state.dataSources
+        .filter((s) => s.status === "approved")
+        .map((s) => ({ name: s.name, protocol: s.protocol }));
       const wizardState: SetupWizardState = {
         preset: presetId,
         name: agentName,
@@ -761,7 +782,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         engine: state.selectedEngine,
         channels: [...state.selectedChannels],
         addons: [...state.selectedAddons],
-        dataSources: [],
+        dataSources: approvedSources,
         demoPack: presetId === "demo" ? "connected" : undefined,
       };
 

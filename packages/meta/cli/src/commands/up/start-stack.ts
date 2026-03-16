@@ -1,8 +1,12 @@
 /**
- * Start-stack — runs `koi up` in-process with progress callbacks.
+ * Start-stack — runs koi startup in-process with progress callbacks.
  *
- * Delegates to the full runUp() orchestrator, mapping its phases
- * to PhaseCallbacks for the TUI progress view.
+ * Phases 1-4 perform real validation (manifest, preset, preflight, agent resolve).
+ * Phase 5 boots the runtime via `koi up --detach` and polls health.
+ *
+ * The detached process is necessary because `runUp()` blocks on the REPL loop
+ * and owns the terminal. The TUI is already rendering, so we run the runtime
+ * in a separate process and wait for its admin API to become healthy.
  */
 
 import type {
@@ -20,10 +24,11 @@ export interface StartStackContext {
   readonly workspaceRoot: string;
   readonly verbose: boolean;
   readonly adminPort: number;
+  readonly adminUrl: string;
 }
 
 /**
- * Create phase definitions that call the real koi up orchestrator.
+ * Create phase definitions that call real orchestrator components.
  */
 function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
   return [
@@ -93,23 +98,43 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       },
     },
     {
-      id: "channels",
-      label: "Connecting channels",
+      id: "runtime",
+      label: "Starting runtime",
       execute: async (ctx, onProgress) => {
-        const channelList = ctx.wizardState.channels.join(", ");
-        onProgress(`Channels: ${channelList}`);
-        // Channel connections are established when the full runtime starts.
-        // In the TUI welcome flow, the admin API starts separately.
-      },
-    },
-    {
-      id: "admin",
-      label: "Starting admin panel",
-      execute: async (ctx, onProgress) => {
-        onProgress(`Port ${String(ctx.adminPort)}`);
-        // The admin panel is started by runUp() when the full runtime boots.
-        // After startStack completes, the caller spawns `koi up` to start
-        // the actual services, then transitions to boardroom.
+        onProgress("Booting runtime process");
+        // runUp() is a blocking function that owns the terminal (REPL + channels).
+        // Since the TUI is already rendering, we start the runtime as a detached
+        // process and poll its admin API for health.
+        const { spawn } = await import("node:child_process");
+        const bunPath = process.argv[0] ?? "bun";
+        const cliEntry = new URL("../../bin.ts", import.meta.url).pathname;
+        const child = spawn(bunPath, [cliEntry, "up", "--detach"], {
+          detached: true,
+          stdio: "ignore",
+          cwd: ctx.workspaceRoot,
+        });
+        child.unref();
+
+        // Poll admin API for health
+        onProgress("Waiting for admin API...");
+        const maxAttempts = 60;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          try {
+            const res = await fetch(`${ctx.adminUrl}/health`, {
+              signal: AbortSignal.timeout(2000),
+            });
+            if (res.ok) {
+              onProgress("Admin API healthy");
+              return;
+            }
+          } catch {
+            // Not ready yet
+          }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        throw new Error(
+          "Admin API did not become healthy within 30 seconds. Run `koi doctor` for diagnostics.",
+        );
       },
     },
   ];
@@ -118,9 +143,8 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
 /**
  * Start the Koi stack with phase progress callbacks.
  *
- * Runs real preflight checks and agent resolution before the full
- * startup. The caller is responsible for actually starting the runtime
- * (via `koi up` subprocess or direct `runUp()` call) after this returns.
+ * Runs real validation (manifest, preflight, agent resolve) then boots
+ * the runtime process and waits for admin API health.
  */
 export async function startStack(
   context: StartStackContext,

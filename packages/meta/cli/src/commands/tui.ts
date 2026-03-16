@@ -153,65 +153,21 @@ export async function runTui(flags: TuiFlags): Promise<void> {
             // 1. Scaffold koi.yaml from full wizard state
             await scaffoldManifestFromWizard(wizardState);
 
-            // 2. Run validation phases (manifest, preflight, resolve)
+            // 2. Run all phases in-process: validate manifest, preflight,
+            //    resolve agent, then boot runtime and wait for admin health
             const { resolve } = await import("node:path");
             const { startStack } = await import("./up/start-stack.js");
-            const result = await startStack(
+            return startStack(
               {
                 wizardState,
                 manifestPath: resolve("koi.yaml"),
                 workspaceRoot: process.cwd(),
                 verbose: false,
                 adminPort: 3100,
+                adminUrl,
               },
               callbacks,
             );
-
-            if (!result.ok) return result;
-
-            // 3. Start the actual runtime as a detached process
-            callbacks.onPhaseStart("runtime", "Starting runtime");
-            const { spawn } = await import("node:child_process");
-            const bunPath = process.argv[0] ?? "bun";
-            const cliEntry = new URL("../bin.ts", import.meta.url).pathname;
-            const child = spawn(bunPath, [cliEntry, "up", "--detach"], {
-              detached: true,
-              stdio: "ignore",
-              cwd: process.cwd(),
-            });
-            child.unref();
-
-            // 4. Wait for admin API health
-            callbacks.onPhaseProgress("runtime", "Waiting for admin API...");
-            const maxAttempts = 60;
-            for (let attempt = 0; attempt < maxAttempts; attempt++) {
-              try {
-                const res = await fetch(`${adminUrl}/health`, {
-                  signal: AbortSignal.timeout(2000),
-                });
-                if (res.ok) {
-                  callbacks.onPhaseDone("runtime");
-                  return { ok: true, value: undefined };
-                }
-              } catch {
-                // Not ready yet
-              }
-              await new Promise((r) => setTimeout(r, 500));
-            }
-
-            callbacks.onPhaseFailed(
-              "runtime",
-              "Admin API did not become healthy within 30 seconds",
-            );
-            return {
-              ok: false,
-              error: {
-                code: "TIMEOUT",
-                message: "Admin API did not become healthy within 30 seconds",
-                phase: "runtime",
-                fix: "Check logs with `koi logs` or run `koi doctor`",
-              },
-            };
           },
           onPresetSelected: async (presetId: string, agentName: string): Promise<void> => {
             // Fallback: scaffold and spawn detached
@@ -250,19 +206,42 @@ export async function runTui(flags: TuiFlags): Promise<void> {
                 await client.shutdown();
                 break;
               case "doctor": {
-                // Run preflight checks and report results
-                const { loadManifest } = await import("@koi/manifest");
-                const loadResult = await loadManifest("koi.yaml");
-                if (!loadResult.ok) break;
-                const { createCliOutput } = await import("@koi/cli-render");
-                const output = createCliOutput({ verbose: false });
-                const { runPreflight } = await import("./up/preflight.js");
-                await runPreflight({
-                  manifest: loadResult.value.manifest,
-                  env: process.env,
-                  temporalRequired: false,
-                  output,
-                });
+                // Run preflight checks and report results via lifecycle messages
+                const addMsg = (msg: string): void => {
+                  app.store.dispatch({
+                    kind: "add_message",
+                    message: { kind: "lifecycle", event: msg, timestamp: Date.now() },
+                  });
+                };
+                addMsg("Running diagnostics...");
+                try {
+                  const { loadManifest } = await import("@koi/manifest");
+                  const loadResult = await loadManifest("koi.yaml");
+                  if (!loadResult.ok) {
+                    addMsg(`Doctor: No koi.yaml found — ${loadResult.error.message}`);
+                    break;
+                  }
+                  addMsg(`Doctor: Manifest loaded (${loadResult.value.manifest.name})`);
+                  const healthResult = await client.checkHealth();
+                  addMsg(
+                    healthResult.ok
+                      ? `Doctor: Admin API healthy (${healthResult.value.status})`
+                      : `Doctor: Admin API unreachable (${healthResult.error.kind})`,
+                  );
+                  const statusResult = await client.detailedStatus();
+                  if (statusResult.ok) {
+                    const subs = statusResult.value.subsystems;
+                    for (const [name, sub] of Object.entries(subs)) {
+                      const latency =
+                        sub.latencyMs !== undefined ? ` (${String(sub.latencyMs)}ms)` : "";
+                      addMsg(`Doctor: ${name} — ${sub.status}${latency}`);
+                    }
+                  }
+                  addMsg("Doctor: Diagnostics complete");
+                } catch (err: unknown) {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  addMsg(`Doctor: Failed — ${msg}`);
+                }
                 break;
               }
               case "demo-init": {

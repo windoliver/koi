@@ -21,6 +21,7 @@ export interface KeyboardCallbacks {
   readonly dataSourceDown: () => void;
   readonly dataSourceApprove: () => void;
   readonly dataSourceSchema: () => void;
+  readonly dataSourcesContinue: () => void;
   readonly consentApprove: () => void;
   readonly consentDeny: () => void;
   readonly consentDetails: () => void;
@@ -392,6 +393,10 @@ export function createKeyboardHandler(
       }
       if (sequence === "s") {
         callbacks.dataSourceSchema();
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.dataSourcesContinue();
         return true;
       }
     }
