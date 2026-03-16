@@ -42,6 +42,16 @@ export interface KeyboardCallbacks {
   readonly governanceSelectPrev: () => void;
   readonly governanceApprove: () => void;
   readonly governanceDeny: () => void;
+  readonly forgeSelectNext: () => void;
+  readonly forgeSelectPrev: () => void;
+  readonly forgePromote: () => void;
+  readonly forgeDemote: () => void;
+  readonly forgeQuarantine: () => void;
+  readonly nexusBrowserSelectNext: () => void;
+  readonly nexusBrowserSelectPrev: () => void;
+  readonly nexusBrowserOpen: () => void;
+  readonly nexusBrowserBack: () => void;
+  readonly scratchpadOpen: () => void;
   readonly presetSelect: () => void;
   readonly presetDetails: () => void;
   readonly presetBack: () => void;
@@ -286,6 +296,51 @@ export function createKeyboardHandler(
       }
     }
 
+    // Forge view — j/k navigate bricks, p promote, d demote, q quarantine
+    if (view === "forge") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.forgeSelectNext();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.forgeSelectPrev();
+        return true;
+      }
+      if (sequence === "p") {
+        callbacks.forgePromote();
+        return true;
+      }
+      if (sequence === "d") {
+        callbacks.forgeDemote();
+        return true;
+      }
+      // 'q' for quarantine — override quit only in forge view
+    }
+
+    // Nexus file browser — j/k navigate, Enter open, Esc/Backspace back
+    if (view === "files") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.nexusBrowserSelectNext();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.nexusBrowserSelectPrev();
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.nexusBrowserOpen();
+        return true;
+      }
+    }
+
+    // Scratchpad view — Enter to read selected entry
+    if (view === "scratchpad") {
+      if (sequence === "\r") {
+        callbacks.scratchpadOpen();
+        return true;
+      }
+    }
+
     // Other domain views with j/k scroll support
     const SCROLLABLE_VIEWS = new Set([
       "skills",
@@ -300,6 +355,10 @@ export function createKeyboardHandler(
       "processtree",
       "agentprocfs",
       "cost",
+      "delegation",
+      "handoffs",
+      "mailbox",
+      "scratchpad",
     ]);
     if (SCROLLABLE_VIEWS.has(view)) {
       if (sequence === "j" || sequence === "\x1b[B") {
@@ -336,6 +395,10 @@ export function createKeyboardHandler(
       }
       if (view === "forge") {
         callbacks.toggleForge();
+        return true;
+      }
+      if (view === "files") {
+        callbacks.nexusBrowserBack();
         return true;
       }
       if (SCROLLABLE_VIEWS.has(view) || view === "temporal" || view === "governance") {

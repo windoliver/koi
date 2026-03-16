@@ -193,6 +193,26 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
       deps.store.dispatch({ kind: "set_view", view: "governance" });
       return true;
 
+    case "delegation":
+      deps.store.dispatch({ kind: "set_view", view: "delegation" });
+      return true;
+
+    case "handoffs":
+      deps.store.dispatch({ kind: "set_view", view: "handoffs" });
+      return true;
+
+    case "mailbox":
+      deps.store.dispatch({ kind: "set_view", view: "mailbox" });
+      return true;
+
+    case "scratchpad":
+      deps.store.dispatch({ kind: "set_view", view: "scratchpad" });
+      return true;
+
+    case "files":
+      deps.store.dispatch({ kind: "set_view", view: "files" });
+      return true;
+
     case "tree":
       deps.store.dispatch({ kind: "set_view", view: "processtree" });
       return true;

@@ -17,6 +17,7 @@ export interface ForgeViewState {
   readonly forgeSparklines: Readonly<Record<string, readonly number[]>>;
   readonly forgeEvents: readonly ForgeDashboardEvent[];
   readonly monitorEvents: readonly MonitorDashboardEvent[];
+  readonly selectedBrickIndex?: number;
 }
 
 export interface ForgeViewProps {
@@ -26,8 +27,9 @@ export interface ForgeViewProps {
 }
 
 export function ForgeView(props: ForgeViewProps): React.ReactNode {
-  const { forgeBricks, forgeSparklines, forgeEvents, monitorEvents } = props.state;
+  const { forgeBricks, forgeSparklines, forgeEvents, monitorEvents, selectedBrickIndex } = props.state;
   const brickEntries = Object.entries(forgeBricks);
+  const selectedIdx = selectedBrickIndex ?? -1;
 
   // Count promotions
   let promotedCount = 0;
@@ -74,14 +76,16 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
         <box height={1}>
           <text fg={COLORS.dim}>{" Name                 Status       Fitness"}</text>
         </box>
-        {brickEntries.map(([brickId, brick]) => {
+        {brickEntries.map(([brickId, brick], i) => {
           const fitnessData = forgeSparklines[brickId] ?? [];
           const fitnessLabel = brick.fitness > 0 ? `${(brick.fitness * 100).toFixed(0)}%` : " —";
           const sparklineStr = fitnessData.length > 0 ? ` ${sparkline(fitnessData)}` : "";
+          const isSelected = i === selectedIdx;
           return (
             <box key={brickId} height={1} flexDirection="row">
-              <text>
-                {` ${brick.name.padEnd(20).slice(0, 20)} ${brick.status.padEnd(12)} ${fitnessLabel}${sparklineStr}`}
+              <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
+                {isSelected ? " >" : "  "}
+                {`${brick.name.padEnd(20).slice(0, 20)} ${brick.status.padEnd(12)} ${fitnessLabel}${sparklineStr}`}
               </text>
             </box>
           );

@@ -6,6 +6,7 @@
  */
 
 import type {
+  AgentMessage,
   AgentProcfs,
   ApiResult,
   CheckpointEntry,
@@ -16,15 +17,20 @@ import type {
   DashboardSkillSummary,
   DashboardSystemMetrics,
   DataSourceSummary,
+  DelegationSummary,
   ForgeBrickView,
   ForgeStats,
   GatewayTopology,
+  GovernancePendingItem,
+  HandoffSummary,
   HarnessStatus,
   MiddlewareChain,
   ProcessTreeSnapshot,
   SchedulerDeadLetterEntry,
   SchedulerStats,
   SchedulerTaskSummary,
+  ScratchpadEntryDetail,
+  ScratchpadEntrySummary,
   TaskBoardSnapshot,
   TemporalHealth,
   WorkflowDetail,
@@ -164,6 +170,40 @@ export interface AdminClient {
   readonly pauseHarness: () => Promise<ClientResult<null>>;
   /** Resume the harness. */
   readonly resumeHarness: () => Promise<ClientResult<null>>;
+  // ─── Delegation ────────────────────────────────────────────────
+  /** List delegation grants for an agent. */
+  readonly listDelegations: (
+    agentId: string,
+  ) => Promise<ClientResult<readonly DelegationSummary[]>>;
+  // ─── Handoffs ─────────────────────────────────────────────────
+  /** List handoff envelopes for an agent. */
+  readonly listHandoffs: (agentId: string) => Promise<ClientResult<readonly HandoffSummary[]>>;
+  // ─── Scratchpad ───────────────────────────────────────────────
+  /** List scratchpad entries, optionally filtered by group. */
+  readonly listScratchpad: (
+    groupId?: string,
+  ) => Promise<ClientResult<readonly ScratchpadEntrySummary[]>>;
+  /** Read a single scratchpad entry by path. */
+  readonly readScratchpad: (path: string) => Promise<ClientResult<ScratchpadEntryDetail>>;
+  // ─── Mailbox ──────────────────────────────────────────────────
+  /** List mailbox messages for an agent. */
+  readonly listMailbox: (agentId: string) => Promise<ClientResult<readonly AgentMessage[]>>;
+  // ─── Governance ───────────────────────────────────────────────
+  /** List the governance pending queue. */
+  readonly listGovernanceQueue: () => Promise<ClientResult<readonly GovernancePendingItem[]>>;
+  /** Approve or reject a governance item. */
+  readonly reviewGovernance: (
+    id: string,
+    decision: "approved" | "rejected",
+    reason?: string,
+  ) => Promise<ClientResult<null>>;
+  // ─── Forge Brick Lifecycle ────────────────────────────────────
+  /** Promote a brick. */
+  readonly promoteBrick: (brickId: string) => Promise<ClientResult<null>>;
+  /** Demote a brick. */
+  readonly demoteBrick: (brickId: string) => Promise<ClientResult<null>>;
+  /** Quarantine a brick. */
+  readonly quarantineBrick: (brickId: string) => Promise<ClientResult<null>>;
   /** Build the SSE events URL for reconnecting stream. */
   readonly eventsUrl: () => string;
   /** Build the AG-UI chat URL for a specific agent. */
@@ -391,6 +431,51 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
     pauseHarness: () => request<null>("POST", ADMIN_ROUTES.harnessPause.path),
 
     resumeHarness: () => request<null>("POST", ADMIN_ROUTES.harnessResume.path),
+
+    // ─── Delegation ─────────────────────────────────────────────
+    listDelegations: (aid) =>
+      request<readonly DelegationSummary[]>("GET", ADMIN_ROUTES.listDelegations.path, {
+        agentId: aid,
+      }),
+
+    // ─── Handoffs ───────────────────────────────────────────────
+    listHandoffs: (aid) =>
+      request<readonly HandoffSummary[]>("GET", ADMIN_ROUTES.listHandoffs.path, { agentId: aid }),
+
+    // ─── Scratchpad ─────────────────────────────────────────────
+    listScratchpad: (groupId) => {
+      const qp = groupId !== undefined ? `?groupId=${encodeURIComponent(groupId)}` : "";
+      return request<readonly ScratchpadEntrySummary[]>(
+        "GET",
+        `${ADMIN_ROUTES.listScratchpad.path}${qp}`,
+      );
+    },
+
+    readScratchpad: (path) =>
+      request<ScratchpadEntryDetail>(
+        "GET",
+        `${ADMIN_ROUTES.readScratchpad.path}?path=${encodeURIComponent(path)}`,
+      ),
+
+    // ─── Mailbox ────────────────────────────────────────────────
+    listMailbox: (aid) =>
+      request<readonly AgentMessage[]>("POST", ADMIN_ROUTES.listMailbox.path, { agentId: aid }),
+
+    // ─── Governance ─────────────────────────────────────────────
+    listGovernanceQueue: () =>
+      request<readonly GovernancePendingItem[]>("GET", ADMIN_ROUTES.governanceQueue.path),
+
+    reviewGovernance: (id, decision, reason) =>
+      request<null>("POST", ADMIN_ROUTES.reviewGovernance.path, { id }, { decision, reason }),
+
+    // ─── Forge Brick Lifecycle ──────────────────────────────────
+    promoteBrick: (brickId) =>
+      request<null>("POST", ADMIN_ROUTES.promoteBrick.path, { id: brickId }),
+
+    demoteBrick: (brickId) => request<null>("POST", ADMIN_ROUTES.demoteBrick.path, { id: brickId }),
+
+    quarantineBrick: (brickId) =>
+      request<null>("POST", ADMIN_ROUTES.quarantineBrick.path, { id: brickId }),
 
     eventsUrl: () => url(ADMIN_ROUTES.events.path),
 

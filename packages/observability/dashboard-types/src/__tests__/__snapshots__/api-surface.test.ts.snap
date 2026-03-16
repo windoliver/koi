@@ -50,6 +50,52 @@ interface CommandDispatcher {
     readonly retrySchedulerDeadLetter?: (id: string) => Promise<Result<void, KoiError>>;
     readonly pauseHarness?: () => Promise<Result<void, KoiError>>;
     readonly resumeHarness?: () => Promise<Result<void, KoiError>>;
+    readonly listDelegations?: (agentId: AgentId) => Result<readonly DelegationSummary[], KoiError> | Promise<Result<readonly DelegationSummary[], KoiError>>;
+    readonly listHandoffs?: (agentId: AgentId) => Result<readonly HandoffSummary[], KoiError> | Promise<Result<readonly HandoffSummary[], KoiError>>;
+    readonly listScratchpad?: (groupId?: string) => Result<readonly ScratchpadEntrySummary[], KoiError> | Promise<Result<readonly ScratchpadEntrySummary[], KoiError>>;
+    readonly readScratchpad?: (path: string) => Result<ScratchpadEntryDetail, KoiError> | Promise<Result<ScratchpadEntryDetail, KoiError>>;
+    readonly reviewGovernance?: (id: string, decision: "approved" | "rejected", reason?: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly listGovernanceQueue?: () => Result<readonly GovernancePendingItem[], KoiError> | Promise<Result<readonly GovernancePendingItem[], KoiError>>;
+    readonly promoteBrick?: (brickId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly demoteBrick?: (brickId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly quarantineBrick?: (brickId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+}
+interface DelegationSummary {
+    readonly id: string;
+    readonly issuerId: string;
+    readonly delegateeId: string;
+    readonly scope: string;
+    readonly expiresAt: number | null;
+    readonly chainDepth: number;
+}
+interface HandoffSummary {
+    readonly id: string;
+    readonly from: string;
+    readonly to: string;
+    readonly status: string;
+    readonly phase: {
+        readonly completed: number;
+        readonly next: string;
+    };
+    readonly createdAt: number;
+}
+interface ScratchpadEntrySummary {
+    readonly path: string;
+    readonly authorId: string;
+    readonly groupId: string;
+    readonly sizeBytes: number;
+    readonly updatedAt: number;
+}
+interface ScratchpadEntryDetail extends ScratchpadEntrySummary {
+    readonly content: string;
+    readonly generation: number;
+}
+interface GovernancePendingItem {
+    readonly id: string;
+    readonly agentId: string;
+    readonly requestKind: string;
+    readonly payload: Readonly<Record<string, unknown>>;
+    readonly timestamp: number;
 }
 
 /**
@@ -1095,6 +1141,42 @@ declare const ADMIN_ROUTES: {
         readonly method: "POST";
         readonly path: "/cmd/harness/resume";
     };
+    readonly listDelegations: {
+        readonly method: "GET";
+        readonly path: "/view/delegations/:agentId";
+    };
+    readonly listHandoffs: {
+        readonly method: "GET";
+        readonly path: "/view/handoffs/:agentId";
+    };
+    readonly listScratchpad: {
+        readonly method: "GET";
+        readonly path: "/view/scratchpad/list";
+    };
+    readonly readScratchpad: {
+        readonly method: "GET";
+        readonly path: "/view/scratchpad/file";
+    };
+    readonly governanceQueue: {
+        readonly method: "GET";
+        readonly path: "/view/governance/queue";
+    };
+    readonly reviewGovernance: {
+        readonly method: "POST";
+        readonly path: "/cmd/governance/:id/review";
+    };
+    readonly promoteBrick: {
+        readonly method: "POST";
+        readonly path: "/cmd/forge/bricks/:id/promote";
+    };
+    readonly demoteBrick: {
+        readonly method: "POST";
+        readonly path: "/cmd/forge/bricks/:id/demote";
+    };
+    readonly quarantineBrick: {
+        readonly method: "POST";
+        readonly path: "/cmd/forge/bricks/:id/quarantine";
+    };
     readonly listDataSources: {
         readonly method: "GET";
         readonly path: "/data-sources";
@@ -1155,6 +1237,6 @@ type AdminRoutes = typeof ADMIN_ROUTES;
  */
 declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
 
-export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type PtyOutputDashboardEvent, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isMonitorEvent, isNexusEvent, isPtyOutputEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DelegationSummary, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type GovernancePendingItem, type HandoffSummary, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type ProcessTreeNode, type ProcessTreeSnapshot, type PtyOutputDashboardEvent, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type ScratchpadEntryDetail, type ScratchpadEntrySummary, type SkillDashboardEvent, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isMonitorEvent, isNexusEvent, isPtyOutputEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
 "
 `;

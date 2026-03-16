@@ -44,7 +44,7 @@ export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
             const time = new Date(item.timestamp).toLocaleTimeString();
             return (
               <box key={item.id} height={1}>
-                <text fg={isSelected ? COLORS.cyan : undefined}>
+                <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
                   {isSelected ? " >" : "  "}
                   {`${item.agentId.padEnd(12).slice(0, 12)} ${item.action.padEnd(16).slice(0, 16)} ${item.resource.padEnd(20).slice(0, 20)} ${time}`}
                 </text>

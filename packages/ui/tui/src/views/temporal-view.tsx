@@ -93,7 +93,7 @@ export function TemporalView(props: TemporalViewProps): React.ReactNode {
             const time = new Date(wf.startTime).toLocaleTimeString();
             return (
               <box key={wf.workflowId} height={1}>
-                <text fg={isSelected ? COLORS.cyan : undefined}>
+                <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
                   {isSelected ? " >" : "  "}
                 </text>
                 <text>

@@ -41,6 +41,7 @@ import {
 import {
   checkConsentPrompts as checkConsentPromptsHelper,
   createEventStream,
+  createNewViewCallbacks,
   type DomainActionDeps,
   type EventStreamHandle,
   fetchDataForView as fetchDataForViewFn,
@@ -245,7 +246,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   const eventStream: EventStreamHandle = createEventStream({
     store,
     eventsUrl: client.eventsUrl(),
-    authToken,
+    ...(authToken !== undefined ? { authToken } : {}),
     createReconnectingStream,
     onBatch: (typedBatch) => {
       store.dispatch({ kind: "apply_event_batch", batch: typedBatch });
@@ -410,6 +411,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   }
 
   const domainDeps: DomainActionDeps = { store, client, addLifecycleMessage };
+  const nvCb = createNewViewCallbacks(domainDeps);
 
   function scrollDomain(d: number): void {
     const dk = viewToDomainKey(store.getState().view);
@@ -440,10 +442,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "agents" });
     },
     closeDataSources: () => {
-      const currentView = store.getState().view;
       store.dispatch({
         kind: "set_view",
-        view: currentView === "sourcedetail" ? "datasources" : "agents",
+        view: store.getState().view === "sourcedetail" ? "datasources" : "agents",
       });
     },
     dataSourceUp: () => {
@@ -471,16 +472,22 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     consentDetails,
     closeConsent,
     toggleForge: () => {
-      const currentView = store.getState().view;
-      store.dispatch({ kind: "set_view", view: currentView === "forge" ? "agents" : "forge" });
+      store.dispatch({
+        kind: "set_view",
+        view: store.getState().view === "forge" ? "agents" : "forge",
+      });
     },
     toggleCost: () => {
-      const currentView = store.getState().view;
-      store.dispatch({ kind: "set_view", view: currentView === "cost" ? "agents" : "cost" });
+      store.dispatch({
+        kind: "set_view",
+        view: store.getState().view === "cost" ? "agents" : "cost",
+      });
     },
     toggleNexus: () => {
-      const currentView = store.getState().view;
-      store.dispatch({ kind: "set_view", view: currentView === "nexus" ? "agents" : "nexus" });
+      store.dispatch({
+        kind: "set_view",
+        view: store.getState().view === "files" ? "agents" : "files",
+      });
     },
     navigateBack: () => {
       // Finding 2 fix: from temporal detail, go back to list (not exit view)
@@ -501,12 +508,16 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       scrollDomain(1);
     },
     temporalSelectNext: () => {
-      const tw = store.getState().temporalView;
-      store.dispatch({ kind: "select_temporal_workflow", index: tw.selectedWorkflowIndex + 1 });
+      store.dispatch({
+        kind: "select_temporal_workflow",
+        index: store.getState().temporalView.selectedWorkflowIndex + 1,
+      });
     },
     temporalSelectPrev: () => {
-      const tw = store.getState().temporalView;
-      store.dispatch({ kind: "select_temporal_workflow", index: tw.selectedWorkflowIndex - 1 });
+      store.dispatch({
+        kind: "select_temporal_workflow",
+        index: store.getState().temporalView.selectedWorkflowIndex - 1,
+      });
     },
     temporalDetail: () => {
       tempDetailFn(domainDeps);
@@ -524,12 +535,16 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       harnessPrFn(domainDeps);
     },
     governanceSelectNext: () => {
-      const gv = store.getState().governanceView;
-      store.dispatch({ kind: "select_governance_item", index: gv.selectedIndex + 1 });
+      store.dispatch({
+        kind: "select_governance_item",
+        index: store.getState().governanceView.selectedIndex + 1,
+      });
     },
     governanceSelectPrev: () => {
-      const gv = store.getState().governanceView;
-      store.dispatch({ kind: "select_governance_item", index: gv.selectedIndex - 1 });
+      store.dispatch({
+        kind: "select_governance_item",
+        index: store.getState().governanceView.selectedIndex - 1,
+      });
     },
     governanceApprove: () => {
       govApproveFn(domainDeps);
@@ -537,6 +552,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     governanceDeny: () => {
       govDenyFn(domainDeps);
     },
+    ...nvCb,
     presetSelect: () => {
       const presets = store.getState().presets;
       const idx = store.getState().selectedPresetIndex;
@@ -562,10 +578,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "welcome" });
     },
     toggleSplitPanes: () => {
-      const currentView = store.getState().view;
       store.dispatch({
         kind: "set_view",
-        view: currentView === "splitpanes" ? "agents" : "splitpanes",
+        view: store.getState().view === "splitpanes" ? "agents" : "splitpanes",
       });
     },
     nameConfirm: () => {
@@ -582,11 +597,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     addonsToggle: () => {
       const ADDON_IDS = ["telegram", "slack", "discord", "temporal", "mcp", "browser", "voice"];
-      const focusedIdx = store.getState().addonFocusedIndex;
-      const addonId = ADDON_IDS[focusedIdx % ADDON_IDS.length];
-      if (addonId !== undefined) {
-        store.dispatch({ kind: "toggle_addon", addonId });
-      }
+      const addonId = ADDON_IDS[store.getState().addonFocusedIndex % ADDON_IDS.length];
+      if (addonId !== undefined) store.dispatch({ kind: "toggle_addon", addonId });
     },
     addonsBack: () => {
       store.dispatch({ kind: "set_view", view: "nameinput" });

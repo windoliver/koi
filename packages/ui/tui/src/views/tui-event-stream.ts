@@ -30,6 +30,10 @@ export function viewToDomainKey(view: TuiView): string | null {
     processtree: "processtree",
     agentprocfs: "agentprocfs",
     cost: "cost",
+    delegation: "delegation",
+    handoffs: "handoffs",
+    mailbox: "mailbox",
+    scratchpad: "scratchpad",
   };
   return map[view] ?? null;
 }
@@ -65,6 +69,14 @@ export function getDomainScrollOffset(state: TuiState, domain: string): number {
       return state.agentProcfsView.scrollOffset;
     case "cost":
       return state.costView.scrollOffset;
+    case "delegation":
+      return state.delegationView.scrollOffset;
+    case "handoffs":
+      return state.handoffView.scrollOffset;
+    case "mailbox":
+      return state.mailboxView.scrollOffset;
+    case "scratchpad":
+      return state.scratchpadView.scrollOffset;
     default:
       return 0;
   }
@@ -215,6 +227,90 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
       }
       break;
     }
+    case "delegation": {
+      const sess3 = store.getState().activeSession;
+      if (sess3 !== null) {
+        store.dispatch({ kind: "set_delegation_loading", loading: true });
+        client
+          .listDelegations(sess3.agentId)
+          .then((r) => {
+            if (r.ok) store.dispatch({ kind: "set_delegations", delegations: r.value });
+          })
+          .catch(() => {});
+      }
+      break;
+    }
+    case "handoffs": {
+      const sess4 = store.getState().activeSession;
+      if (sess4 !== null) {
+        store.dispatch({ kind: "set_handoff_loading", loading: true });
+        client
+          .listHandoffs(sess4.agentId)
+          .then((r) => {
+            if (r.ok) store.dispatch({ kind: "set_handoffs", handoffs: r.value });
+          })
+          .catch(() => {});
+      }
+      break;
+    }
+    case "mailbox": {
+      const sess5 = store.getState().activeSession;
+      if (sess5 !== null) {
+        store.dispatch({ kind: "set_mailbox_loading", loading: true });
+        client
+          .listMailbox(sess5.agentId)
+          .then((r) => {
+            if (r.ok) store.dispatch({ kind: "set_mailbox_messages", messages: r.value });
+          })
+          .catch(() => {});
+      }
+      break;
+    }
+    case "scratchpad":
+      store.dispatch({ kind: "set_scratchpad_loading", loading: true });
+      client
+        .listScratchpad()
+        .then((r) => {
+          if (r.ok) store.dispatch({ kind: "set_scratchpad_entries", entries: r.value });
+        })
+        .catch(() => {});
+      break;
+    case "files":
+      store.dispatch({ kind: "set_nexus_browser_loading", loading: true });
+      client
+        .fsList(store.getState().nexusBrowser.path)
+        .then((r) => {
+          if (r.ok)
+            store.dispatch({
+              kind: "set_nexus_browser_entries",
+              entries: r.value,
+              path: store.getState().nexusBrowser.path,
+            });
+        })
+        .catch(() => {});
+      break;
+    case "governance":
+      client
+        .listGovernanceQueue()
+        .then((r) => {
+          if (r.ok) {
+            // Merge queue items into governance view as pending approvals
+            for (const item of r.value) {
+              store.dispatch({
+                kind: "add_governance_approval",
+                approval: {
+                  id: item.id,
+                  agentId: item.agentId,
+                  action: item.requestKind,
+                  resource: JSON.stringify(item.payload).slice(0, 40),
+                  timestamp: item.timestamp,
+                },
+              });
+            }
+          }
+        })
+        .catch(() => {});
+      break;
   }
 }
 
@@ -294,28 +390,178 @@ export function harnessPauseResume(deps: DomainActionDeps): void {
     .catch(() => {});
 }
 
-/**
- * Governance approve — local-only for now.
- * TODO: Wire to backend governance API route when @koi/governance-backend exposes
- * approve/deny endpoints. Currently removes the item from local queue and logs.
- */
+/** Governance approve — calls reviewGovernance API. */
 export function governanceApprove(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
   if (item !== undefined) {
     deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
-    deps.addLifecycleMessage(`Approved (local): ${item.action} on ${item.resource}`);
+    deps.client
+      .reviewGovernance(item.id, "approved")
+      .then((r) => {
+        if (r.ok) deps.addLifecycleMessage(`Approved: ${item.action} on ${item.resource}`);
+        else deps.addLifecycleMessage(`Approve failed: ${r.error.kind}`);
+      })
+      .catch(() => {});
   }
 }
 
-/** Governance deny — local-only. See governanceApprove TODO. */
+/** Governance deny — calls reviewGovernance API. */
 export function governanceDeny(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
   if (item !== undefined) {
     deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
-    deps.addLifecycleMessage(`Denied (local): ${item.action} on ${item.resource}`);
+    deps.client
+      .reviewGovernance(item.id, "rejected")
+      .then((r) => {
+        if (r.ok) deps.addLifecycleMessage(`Denied: ${item.action} on ${item.resource}`);
+        else deps.addLifecycleMessage(`Deny failed: ${r.error.kind}`);
+      })
+      .catch(() => {});
   }
+}
+
+/** Promote the selected forge brick via API. */
+export function forgePromoteBrick(deps: DomainActionDeps, brickId: string): void {
+  deps.client
+    .promoteBrick(brickId)
+    .then((r) => {
+      if (r.ok) deps.addLifecycleMessage(`Promoted brick: ${brickId}`);
+      else deps.addLifecycleMessage(`Promote failed: ${r.error.kind}`);
+    })
+    .catch(() => {});
+}
+
+/** Demote the selected forge brick via API. */
+export function forgeDemoteBrick(deps: DomainActionDeps, brickId: string): void {
+  deps.client
+    .demoteBrick(brickId)
+    .then((r) => {
+      if (r.ok) deps.addLifecycleMessage(`Demoted brick: ${brickId}`);
+      else deps.addLifecycleMessage(`Demote failed: ${r.error.kind}`);
+    })
+    .catch(() => {});
+}
+
+/** Quarantine the selected forge brick via API. */
+export function forgeQuarantineBrick(deps: DomainActionDeps, brickId: string): void {
+  deps.client
+    .quarantineBrick(brickId)
+    .then((r) => {
+      if (r.ok) deps.addLifecycleMessage(`Quarantined brick: ${brickId}`);
+      else deps.addLifecycleMessage(`Quarantine failed: ${r.error.kind}`);
+    })
+    .catch(() => {});
+}
+
+/** Open a nexus directory or read a file. */
+export function nexusBrowserNavigate(
+  deps: DomainActionDeps,
+  path: string,
+  isDirectory: boolean,
+): void {
+  if (isDirectory) {
+    deps.store.dispatch({ kind: "set_nexus_browser_loading", loading: true });
+    deps.store.dispatch({ kind: "set_nexus_browser_content", content: null });
+    deps.client
+      .fsList(path)
+      .then((r) => {
+        if (r.ok)
+          deps.store.dispatch({ kind: "set_nexus_browser_entries", entries: r.value, path });
+      })
+      .catch(() => {});
+  } else {
+    deps.store.dispatch({ kind: "set_nexus_browser_loading", loading: true });
+    deps.client
+      .fsRead(path)
+      .then((r) => {
+        if (r.ok) deps.store.dispatch({ kind: "set_nexus_browser_content", content: r.value });
+      })
+      .catch(() => {});
+  }
+}
+
+/** Read scratchpad entry content. */
+export function scratchpadReadEntry(deps: DomainActionDeps, path: string): void {
+  deps.store.dispatch({ kind: "set_scratchpad_loading", loading: true });
+  deps.client
+    .readScratchpad(path)
+    .then((r) => {
+      if (r.ok) deps.store.dispatch({ kind: "set_scratchpad_detail", detail: r.value });
+      else deps.addLifecycleMessage(`Read failed: ${r.error.kind}`);
+    })
+    .catch(() => {});
+}
+
+/** Pre-bound keyboard callbacks for new views (forge/nexus/scratchpad). */
+export interface NewViewCallbacks {
+  readonly forgeSelectNext: () => void;
+  readonly forgeSelectPrev: () => void;
+  readonly forgePromote: () => void;
+  readonly forgeDemote: () => void;
+  readonly forgeQuarantine: () => void;
+  readonly nexusBrowserSelectNext: () => void;
+  readonly nexusBrowserSelectPrev: () => void;
+  readonly nexusBrowserOpen: () => void;
+  readonly nexusBrowserBack: () => void;
+  readonly scratchpadOpen: () => void;
+}
+
+/** Create pre-bound callbacks for forge/nexus/scratchpad keyboard actions. */
+export function createNewViewCallbacks(deps: DomainActionDeps): NewViewCallbacks {
+  const { store } = deps;
+  return {
+    forgeSelectNext: () => {},
+    forgeSelectPrev: () => {},
+    forgePromote: () => {
+      const e = Object.keys(store.getState().forgeBricks);
+      if (e[0] !== undefined) forgePromoteBrick(deps, e[0]);
+    },
+    forgeDemote: () => {
+      const e = Object.keys(store.getState().forgeBricks);
+      if (e[0] !== undefined) forgeDemoteBrick(deps, e[0]);
+    },
+    forgeQuarantine: () => {
+      const e = Object.keys(store.getState().forgeBricks);
+      if (e[0] !== undefined) forgeQuarantineBrick(deps, e[0]);
+    },
+    nexusBrowserSelectNext: () => {
+      store.dispatch({
+        kind: "select_nexus_browser_entry",
+        index: store.getState().nexusBrowser.selectedIndex + 1,
+      });
+    },
+    nexusBrowserSelectPrev: () => {
+      store.dispatch({
+        kind: "select_nexus_browser_entry",
+        index: store.getState().nexusBrowser.selectedIndex - 1,
+      });
+    },
+    nexusBrowserOpen: () => {
+      const nb = store.getState().nexusBrowser;
+      const e = nb.entries[nb.selectedIndex];
+      if (e !== undefined) nexusBrowserNavigate(deps, e.path, e.isDirectory);
+    },
+    nexusBrowserBack: () => {
+      const nb = store.getState().nexusBrowser;
+      if (nb.fileContent !== null) {
+        store.dispatch({ kind: "set_nexus_browser_content", content: null });
+      } else if (nb.path !== "/") {
+        nexusBrowserNavigate(deps, nb.path.split("/").slice(0, -1).join("/") || "/", true);
+      } else {
+        store.dispatch({
+          kind: "set_view",
+          view: store.getState().activeSession !== null ? "console" : "agents",
+        });
+      }
+    },
+    scratchpadOpen: () => {
+      const sv = store.getState().scratchpadView;
+      const e = sv.entries[sv.scrollOffset];
+      if (e !== undefined) scratchpadReadEntry(deps, e.path);
+    },
+  };
 }
 
 // ─── SSE event stream handle ──────────────────────────────────────────

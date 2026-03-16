@@ -7,6 +7,7 @@
  */
 
 import type {
+  AgentMessage,
   AgentProcfs,
   ChannelDashboardEvent,
   CheckpointEntry,
@@ -14,8 +15,10 @@ import type {
   DashboardChannelSummary,
   DashboardSkillSummary,
   DashboardSystemMetrics,
+  DelegationSummary,
   GatewayDashboardEvent,
   GatewayTopology,
+  HandoffSummary,
   HarnessDashboardEvent,
   HarnessStatus,
   MiddlewareChain,
@@ -24,6 +27,8 @@ import type {
   SchedulerDashboardEvent,
   SchedulerStats,
   SchedulerTaskSummary,
+  ScratchpadEntryDetail,
+  ScratchpadEntrySummary,
   SkillDashboardEvent,
   SystemDashboardEvent,
   TaskBoardSnapshot,
@@ -173,6 +178,45 @@ export interface AgentProcfsViewState {
   readonly loading: boolean;
 }
 
+/** Delegation view — delegation grants table. */
+export interface DelegationViewState {
+  readonly delegations: readonly DelegationSummary[];
+  readonly scrollOffset: number;
+  readonly loading: boolean;
+}
+
+/** Handoff view — handoff envelopes table. */
+export interface HandoffViewState {
+  readonly handoffs: readonly HandoffSummary[];
+  readonly scrollOffset: number;
+  readonly loading: boolean;
+}
+
+/** Scratchpad view — group-scoped shared memory browser. */
+export interface ScratchpadViewState {
+  readonly entries: readonly ScratchpadEntrySummary[];
+  readonly selectedEntry: ScratchpadEntryDetail | null;
+  readonly scrollOffset: number;
+  readonly loading: boolean;
+  readonly currentPath: string | null;
+}
+
+/** Mailbox view — agent message inbox. */
+export interface MailboxViewState {
+  readonly messages: readonly AgentMessage[];
+  readonly scrollOffset: number;
+  readonly loading: boolean;
+}
+
+/** Nexus file browser — directory listing + content preview. */
+export interface NexusBrowserState {
+  readonly entries: readonly import("@koi/dashboard-client").FsEntry[];
+  readonly path: string;
+  readonly selectedIndex: number;
+  readonly fileContent: string | null;
+  readonly loading: boolean;
+}
+
 // ─── Capabilities ─────────────────────────────────────────────────────
 
 /** Server capabilities — which subsystems are available. */
@@ -264,4 +308,24 @@ export function createInitialProcessTreeView(): ProcessTreeViewState {
 
 export function createInitialAgentProcfsView(): AgentProcfsViewState {
   return { procfs: null, scrollOffset: 0, loading: false };
+}
+
+export function createInitialDelegationView(): DelegationViewState {
+  return { delegations: [], scrollOffset: 0, loading: false };
+}
+
+export function createInitialHandoffView(): HandoffViewState {
+  return { handoffs: [], scrollOffset: 0, loading: false };
+}
+
+export function createInitialScratchpadView(): ScratchpadViewState {
+  return { entries: [], selectedEntry: null, scrollOffset: 0, loading: false, currentPath: null };
+}
+
+export function createInitialMailboxView(): MailboxViewState {
+  return { messages: [], scrollOffset: 0, loading: false };
+}
+
+export function createInitialNexusBrowser(): NexusBrowserState {
+  return { entries: [], path: "/", selectedIndex: 0, fileContent: null, loading: false };
 }

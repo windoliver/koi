@@ -630,6 +630,78 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_system_metrics":
       return { ...state, systemView: { ...state.systemView, metrics: action.metrics } };
 
+    // ─── Delegation actions ────────────────────────────────────────────
+    case "set_delegations":
+      return {
+        ...state,
+        delegationView: {
+          ...state.delegationView,
+          delegations: action.delegations,
+          loading: false,
+        },
+      };
+    case "set_delegation_loading":
+      return { ...state, delegationView: { ...state.delegationView, loading: action.loading } };
+
+    // ─── Handoff actions ─────────────────────────────────────────────
+    case "set_handoffs":
+      return {
+        ...state,
+        handoffView: { ...state.handoffView, handoffs: action.handoffs, loading: false },
+      };
+    case "set_handoff_loading":
+      return { ...state, handoffView: { ...state.handoffView, loading: action.loading } };
+
+    // ─── Scratchpad actions ──────────────────────────────────────────
+    case "set_scratchpad_entries":
+      return {
+        ...state,
+        scratchpadView: { ...state.scratchpadView, entries: action.entries, loading: false },
+      };
+    case "set_scratchpad_detail":
+      return {
+        ...state,
+        scratchpadView: { ...state.scratchpadView, selectedEntry: action.detail, loading: false },
+      };
+    case "set_scratchpad_loading":
+      return { ...state, scratchpadView: { ...state.scratchpadView, loading: action.loading } };
+
+    // ─── Mailbox actions ─────────────────────────────────────────────
+    case "set_mailbox_messages":
+      return {
+        ...state,
+        mailboxView: { ...state.mailboxView, messages: action.messages, loading: false },
+      };
+    case "set_mailbox_loading":
+      return { ...state, mailboxView: { ...state.mailboxView, loading: action.loading } };
+
+    // ─── Nexus browser actions ───────────────────────────────────────
+    case "set_nexus_browser_entries":
+      return {
+        ...state,
+        nexusBrowser: {
+          ...state.nexusBrowser,
+          entries: action.entries,
+          path: action.path,
+          loading: false,
+        },
+      };
+    case "set_nexus_browser_content":
+      return {
+        ...state,
+        nexusBrowser: { ...state.nexusBrowser, fileContent: action.content, loading: false },
+      };
+    case "set_nexus_browser_loading":
+      return { ...state, nexusBrowser: { ...state.nexusBrowser, loading: action.loading } };
+    case "select_nexus_browser_entry":
+      return {
+        ...state,
+        nexusBrowser: {
+          ...state.nexusBrowser,
+          selectedIndex: Math.max(0, Math.min(action.index, state.nexusBrowser.entries.length - 1)),
+        },
+      };
+
     case "scroll_domain_view": {
       const { domain, offset } = action;
       switch (domain) {
@@ -697,6 +769,26 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
           };
         case "cost":
           return { ...state, costView: { ...state.costView, scrollOffset: Math.max(0, offset) } };
+        case "delegation":
+          return {
+            ...state,
+            delegationView: { ...state.delegationView, scrollOffset: Math.max(0, offset) },
+          };
+        case "handoffs":
+          return {
+            ...state,
+            handoffView: { ...state.handoffView, scrollOffset: Math.max(0, offset) },
+          };
+        case "scratchpad":
+          return {
+            ...state,
+            scratchpadView: { ...state.scratchpadView, scrollOffset: Math.max(0, offset) },
+          };
+        case "mailbox":
+          return {
+            ...state,
+            mailboxView: { ...state.mailboxView, scrollOffset: Math.max(0, offset) },
+          };
         default:
           return state;
       }

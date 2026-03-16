@@ -84,6 +84,25 @@ export const ADMIN_ROUTES = {
   harnessPause: { method: "POST", path: "/cmd/harness/pause" },
   harnessResume: { method: "POST", path: "/cmd/harness/resume" },
 
+  // ─── Delegation ─────────────────────────────────────────────────
+  listDelegations: { method: "GET", path: "/view/delegations/:agentId" },
+
+  // ─── Handoffs ───────────────────────────────────────────────────
+  listHandoffs: { method: "GET", path: "/view/handoffs/:agentId" },
+
+  // ─── Scratchpad ─────────────────────────────────────────────────
+  listScratchpad: { method: "GET", path: "/view/scratchpad/list" },
+  readScratchpad: { method: "GET", path: "/view/scratchpad/file" },
+
+  // ─── Governance Queue ───────────────────────────────────────────
+  governanceQueue: { method: "GET", path: "/view/governance/queue" },
+  reviewGovernance: { method: "POST", path: "/cmd/governance/:id/review" },
+
+  // ─── Forge Brick Lifecycle ──────────────────────────────────────
+  promoteBrick: { method: "POST", path: "/cmd/forge/bricks/:id/promote" },
+  demoteBrick: { method: "POST", path: "/cmd/forge/bricks/:id/demote" },
+  quarantineBrick: { method: "POST", path: "/cmd/forge/bricks/:id/quarantine" },
+
   // ─── Data Sources ───────────────────────────────────────────────
   listDataSources: { method: "GET", path: "/data-sources" },
   approveDataSource: { method: "POST", path: "/data-sources/:name/approve" },

@@ -60,6 +60,11 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "processtree", label: "/proctree", description: "Show agent process tree" },
   { id: "agentprocfs", label: "/procfs", description: "Show agent runtime state (procfs)" },
   { id: "governance", label: "/governance", description: "Show governance approvals and violations", requiredCapability: "governance" },
+  { id: "delegation", label: "/delegation", description: "Show delegation chain for active agent" },
+  { id: "handoffs", label: "/handoffs", description: "Show handoff envelopes for active agent" },
+  { id: "mailbox", label: "/mailbox", description: "Show agent message inbox" },
+  { id: "scratchpad", label: "/scratchpad", description: "Browse shared scratchpad entries" },
+  { id: "files", label: "/files", description: "Browse Nexus file system", shortcut: "Ctrl+F" },
   { id: "tree", label: "/tree", description: "Toggle agent list tree view" },
   { id: "quit", label: "/quit", description: "Exit TUI", shortcut: "q" },
 ] as const;

@@ -21,10 +21,14 @@ import { createRouter, errorResponse } from "./router.js";
 import { handleGetAgent, handleListAgents, handleTerminateAgent } from "./routes/agents.js";
 import { handleChannels } from "./routes/channels.js";
 import {
+  handleDemoteBrick,
   handleDispatchAgent,
   handleListMailbox,
+  handlePromoteBrick,
+  handleQuarantineBrick,
   handleResumeAgent,
   handleRetryDeadLetter,
+  handleReviewGovernance,
   handleSuspendAgent,
   handleTerminateAgentCmd,
 } from "./routes/commands.js";
@@ -74,8 +78,13 @@ import {
   handleForgeEvents,
   handleForgeStats,
   handleGatewayTopology,
+  handleListDelegations,
+  handleListGovernanceQueue,
+  handleListHandoffs,
+  handleListScratchpad,
   handleMiddlewareChain,
   handleProcessTree,
+  handleReadScratchpad,
 } from "./routes/views.js";
 import { createSseProducer } from "./sse/producer.js";
 import { createStaticServe } from "./static-serve.js";
@@ -460,6 +469,54 @@ export function createDashboardHandler(
         method: "POST",
         pattern: "/cmd/harness/resume",
         handler: (req, params) => handleResumeHarness(req, params, commands),
+      },
+      // Governance review
+      {
+        method: "POST",
+        pattern: "/cmd/governance/:id/review",
+        handler: (req, params) => handleReviewGovernance(req, params, commands),
+      },
+      // Forge brick lifecycle
+      {
+        method: "POST",
+        pattern: "/cmd/forge/bricks/:id/promote",
+        handler: (req, params) => handlePromoteBrick(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/forge/bricks/:id/demote",
+        handler: (req, params) => handleDemoteBrick(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/forge/bricks/:id/quarantine",
+        handler: (req, params) => handleQuarantineBrick(req, params, commands),
+      },
+      // Delegation, handoff, scratchpad, governance views (read-only through commands)
+      {
+        method: "GET",
+        pattern: "/view/delegations/:agentId",
+        handler: (req, params) => handleListDelegations(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/handoffs/:agentId",
+        handler: (req, params) => handleListHandoffs(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scratchpad/list",
+        handler: (req, params) => handleListScratchpad(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/scratchpad/file",
+        handler: (req, params) => handleReadScratchpad(req, params, commands),
+      },
+      {
+        method: "GET",
+        pattern: "/view/governance/queue",
+        handler: (req, params) => handleListGovernanceQueue(req, params, commands),
       },
     );
   }

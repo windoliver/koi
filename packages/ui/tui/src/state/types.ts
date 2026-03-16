@@ -33,15 +33,20 @@ import type {
   AgentProcfsViewState,
   ChannelsViewState,
   CostViewState,
+  DelegationViewState,
   GatewayViewState,
   GovernancePendingApproval,
   GovernanceViewState,
   GovernanceViolation,
+  HandoffViewState,
   HarnessViewState,
+  MailboxViewState,
   MiddlewareViewState,
+  NexusBrowserState,
   NexusViewState,
   ProcessTreeViewState,
   SchedulerViewState,
+  ScratchpadViewState,
   SkillsViewState,
   SystemViewState,
   TaskBoardViewState,
@@ -52,13 +57,18 @@ import {
   createInitialAgentProcfsView,
   createInitialChannelsView,
   createInitialCostView,
+  createInitialDelegationView,
   createInitialGatewayView,
   createInitialGovernanceView,
+  createInitialHandoffView,
   createInitialHarnessView,
+  createInitialMailboxView,
   createInitialMiddlewareView,
+  createInitialNexusBrowser,
   createInitialNexusView,
   createInitialProcessTreeView,
   createInitialSchedulerView,
+  createInitialScratchpadView,
   createInitialSkillsView,
   createInitialSystemView,
   createInitialTaskBoardView,
@@ -97,10 +107,14 @@ export type TuiView =
   | "console"
   | "cost"
   | "datasources"
+  | "delegation"
+  | "files"
   | "forge"
   | "gateway"
   | "governance"
+  | "handoffs"
   | "harness"
+  | "mailbox"
   | "middleware"
   | "nameinput"
   | "nexus"
@@ -108,6 +122,7 @@ export type TuiView =
   | "presetdetail"
   | "processtree"
   | "scheduler"
+  | "scratchpad"
   | "sessions"
   | "skills"
   | "sourcedetail"
@@ -225,6 +240,11 @@ export interface TuiState {
   readonly middlewareView: MiddlewareViewState;
   readonly processTreeView: ProcessTreeViewState;
   readonly agentProcfsView: AgentProcfsViewState;
+  readonly delegationView: DelegationViewState;
+  readonly handoffView: HandoffViewState;
+  readonly scratchpadView: ScratchpadViewState;
+  readonly mailboxView: MailboxViewState;
+  readonly nexusBrowser: NexusBrowserState;
   /** Server capabilities — which subsystems are available. */
   readonly capabilities: TuiCapabilities | null;
 }
@@ -280,6 +300,11 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     middlewareView: createInitialMiddlewareView(),
     processTreeView: createInitialProcessTreeView(),
     agentProcfsView: createInitialAgentProcfsView(),
+    delegationView: createInitialDelegationView(),
+    handoffView: createInitialHandoffView(),
+    scratchpadView: createInitialScratchpadView(),
+    mailboxView: createInitialMailboxView(),
+    nexusBrowser: createInitialNexusBrowser(),
     capabilities: null,
   };
 }
@@ -469,7 +494,44 @@ export type TuiAction =
   | { readonly kind: "set_skills_list"; readonly skills: readonly DashboardSkillSummary[] }
   | { readonly kind: "set_channels_list"; readonly channels: readonly DashboardChannelSummary[] }
   | { readonly kind: "set_system_metrics"; readonly metrics: DashboardSystemMetrics }
-  | { readonly kind: "scroll_domain_view"; readonly domain: string; readonly offset: number };
+  | { readonly kind: "scroll_domain_view"; readonly domain: string; readonly offset: number }
+  // ─── Delegation actions ──────────────────────────────────────────
+  | {
+      readonly kind: "set_delegations";
+      readonly delegations: readonly import("@koi/dashboard-types").DelegationSummary[];
+    }
+  | { readonly kind: "set_delegation_loading"; readonly loading: boolean }
+  // ─── Handoff actions ─────────────────────────────────────────────
+  | {
+      readonly kind: "set_handoffs";
+      readonly handoffs: readonly import("@koi/dashboard-types").HandoffSummary[];
+    }
+  | { readonly kind: "set_handoff_loading"; readonly loading: boolean }
+  // ─── Scratchpad actions ──────────────────────────────────────────
+  | {
+      readonly kind: "set_scratchpad_entries";
+      readonly entries: readonly import("@koi/dashboard-types").ScratchpadEntrySummary[];
+    }
+  | {
+      readonly kind: "set_scratchpad_detail";
+      readonly detail: import("@koi/dashboard-types").ScratchpadEntryDetail | null;
+    }
+  | { readonly kind: "set_scratchpad_loading"; readonly loading: boolean }
+  // ─── Mailbox actions ─────────────────────────────────────────────
+  | {
+      readonly kind: "set_mailbox_messages";
+      readonly messages: readonly import("@koi/dashboard-types").AgentMessage[];
+    }
+  | { readonly kind: "set_mailbox_loading"; readonly loading: boolean }
+  // ─── Nexus browser actions ───────────────────────────────────────
+  | {
+      readonly kind: "set_nexus_browser_entries";
+      readonly entries: readonly import("@koi/dashboard-client").FsEntry[];
+      readonly path: string;
+    }
+  | { readonly kind: "set_nexus_browser_content"; readonly content: string | null }
+  | { readonly kind: "set_nexus_browser_loading"; readonly loading: boolean }
+  | { readonly kind: "select_nexus_browser_entry"; readonly index: number };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;

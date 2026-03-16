@@ -21,13 +21,18 @@ import { ConsentView } from "./consent-view.js";
 import { ConsoleView } from "./console-view.js";
 import { CostView } from "./cost-view.js";
 import { DataSourcesView } from "./data-sources-view.js";
+import { DelegationView } from "./delegation-view.js";
 import { ForgeView } from "./forge-view.js";
 import { GatewayView } from "./gateway-view.js";
 import { GovernanceView } from "./governance-view.js";
+import { HandoffView } from "./handoff-view.js";
 import { HarnessView } from "./harness-view.js";
+import { MailboxView } from "./mailbox-view.js";
 import { MiddlewareView } from "./middleware-view.js";
+import { NexusBrowserView } from "./nexus-browser-view.js";
 import { NexusView } from "./nexus-view.js";
 import { ProcessTreeView } from "./process-tree-view.js";
+import { ScratchpadView } from "./scratchpad-view.js";
 import { SchedulerView } from "./scheduler-view.js";
 import { SessionPickerView } from "./session-picker-view.js";
 import { SkillsView } from "./skills-view.js";
@@ -81,7 +86,7 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
   if (key.name === "ArrowUp") return "\x1b[A";
   if (key.name === "ArrowDown") return "\x1b[B";
   // Single-char keys for view-specific shortcuts
-  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "+", "?", " "];
+  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "+", "?", " "];
   if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
     return key.name;
   }
@@ -394,6 +399,21 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         )}
         {view === "agentprocfs" && (
           <AgentProcfsView agentProcfsView={state.agentProcfsView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "delegation" && (
+          <DelegationView delegationView={state.delegationView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "handoffs" && (
+          <HandoffView handoffView={state.handoffView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "scratchpad" && (
+          <ScratchpadView scratchpadView={state.scratchpadView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "mailbox" && (
+          <MailboxView mailboxView={state.mailboxView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "files" && (
+          <NexusBrowserView nexusBrowser={state.nexusBrowser} focused={true} zoomLevel={state.zoomLevel} />
         )}
 
         {/* Command palette overlay */}
