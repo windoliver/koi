@@ -92,6 +92,7 @@ function createPromoteToolsTool(middleware: ToolDisclosureMiddleware): Tool {
  */
 export function createToolDisclosureBundle(config: ToolDisclosureConfig): ToolDisclosureBundle {
   const middleware = createToolDisclosureMiddleware(config);
+  middleware.notifyCompanionRegistered();
 
   const provider = createSingleToolProvider({
     name: "tool-disclosure",

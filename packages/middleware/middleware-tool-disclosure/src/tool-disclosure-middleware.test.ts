@@ -544,46 +544,53 @@ describe("memoization", () => {
 // ---------------------------------------------------------------------------
 
 describe("describeCapabilities", () => {
-  test("returns undefined when disclosure has not activated", () => {
+  test("standalone middleware — returns undefined without notifyCompanionRegistered", () => {
     const store = createMockStore();
-    const mw = createToolDisclosureMiddleware({ store, threshold: 50 });
-    const ctx = mockTurnContext();
+    const mw = createToolDisclosureMiddleware({ store, threshold: 5 });
 
-    // No wrapModelCall yet — disclosure inactive
-    expect(mw.describeCapabilities(ctx)).toBeUndefined();
-  });
-
-  test("returns undefined when tool count is below threshold", async () => {
-    const store = createMockStore();
-    const mw = createToolDisclosureMiddleware({ store, threshold: 50 });
-    const tools = descriptors(10);
-    const capture = captureTools();
-
-    await callWrapModelCall(mw, mockTurnContext(), { messages: [], tools }, capture.handler);
-
-    // Below threshold — disclosure inactive
+    // Standalone use: no companion tool registered → no capability fragment.
+    // This prevents the model from seeing "Use promote_tools…" when the
+    // tool doesn't actually exist.
     expect(mw.describeCapabilities(mockTurnContext())).toBeUndefined();
   });
 
-  test("returns fragment when tool count is above threshold", async () => {
+  test("standalone middleware — still undefined even after wrapModelCall above threshold", async () => {
     const store = createMockStore();
     const mw = createToolDisclosureMiddleware({ store, threshold: 5 });
-    const tools = descriptors(10);
     const capture = captureTools();
 
-    await callWrapModelCall(mw, mockTurnContext(), { messages: [], tools }, capture.handler);
+    await callWrapModelCall(
+      mw,
+      mockTurnContext(),
+      { messages: [], tools: descriptors(10) },
+      capture.handler,
+    );
 
+    // Without notifyCompanionRegistered, no fragment regardless of tool count
+    expect(mw.describeCapabilities(mockTurnContext())).toBeUndefined();
+  });
+
+  test("with companion — returns fragment after notifyCompanionRegistered", () => {
+    const store = createMockStore();
+    const mw = createToolDisclosureMiddleware({ store, threshold: 50 });
+    mw.notifyCompanionRegistered();
+
+    // Fragment is available immediately — no wrapModelCall required.
+    // This matches engine lifecycle: describeCapabilities runs BEFORE wrapModelCall.
     const fragment = requireDefined(mw.describeCapabilities(mockTurnContext()), "fragment");
     expect(fragment.label).toBe("tool-disclosure");
-    expect(fragment.description).toContain("0 tools promoted");
     expect(fragment.description).toContain("promote_tools");
   });
 
-  test("transitions from active to inactive when tools drop below threshold", async () => {
+  test("with companion — fragment is stable across threshold transitions", async () => {
     const store = createMockStore();
     const mw = createToolDisclosureMiddleware({ store, threshold: 50 });
+    mw.notifyCompanionRegistered();
 
-    // First call: above threshold → disclosure active
+    // describeCapabilities called BEFORE wrapModelCall (engine ordering)
+    expect(mw.describeCapabilities(mockTurnContext())).toBeDefined();
+
+    // Above threshold turn
     const capture1 = captureTools();
     await callWrapModelCall(
       mw,
@@ -593,7 +600,7 @@ describe("describeCapabilities", () => {
     );
     expect(mw.describeCapabilities(mockTurnContext())).toBeDefined();
 
-    // Second call: below threshold → disclosure inactive
+    // Below threshold turn — fragment still present (companion is registered)
     const capture2 = captureTools();
     await callWrapModelCall(
       mw,
@@ -601,7 +608,7 @@ describe("describeCapabilities", () => {
       { messages: [], tools: descriptors(5) },
       capture2.handler,
     );
-    expect(mw.describeCapabilities(mockTurnContext())).toBeUndefined();
+    expect(mw.describeCapabilities(mockTurnContext())).toBeDefined();
   });
 });
 

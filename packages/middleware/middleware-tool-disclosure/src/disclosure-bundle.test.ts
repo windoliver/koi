@@ -3,8 +3,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { BrickSummary, ForgeStore, KoiError, Result, Tool } from "@koi/core";
-import { agentId, isAttachResult } from "@koi/core";
+import type { BrickSummary, ForgeStore, KoiError, Result, Tool, TurnContext } from "@koi/core";
+import { agentId, isAttachResult, runId, sessionId, turnId } from "@koi/core";
 import { createToolDisclosureBundle } from "./disclosure-bundle.js";
 
 // ---------------------------------------------------------------------------
@@ -124,5 +124,29 @@ describe("createToolDisclosureBundle", () => {
     };
     expect(output.ok).toBe(false);
     expect(output.error.code).toBe("VALIDATION");
+  });
+
+  test("bundle wires notifyCompanionRegistered — describeCapabilities returns fragment", () => {
+    const bundle = createToolDisclosureBundle({ store: createMockStore() });
+    const ctx: TurnContext = {
+      session: {
+        agentId: "test-agent",
+        sessionId: sessionId("s-1"),
+        runId: runId("r-1"),
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: turnId(runId("r-1"), 0),
+      messages: [],
+      metadata: {},
+    };
+
+    // Bundle calls notifyCompanionRegistered() during construction,
+    // so describeCapabilities should return a fragment immediately —
+    // before any wrapModelCall (matching real engine lifecycle).
+    const fragment = bundle.middleware.describeCapabilities(ctx);
+    expect(fragment).toBeDefined();
+    expect(fragment?.label).toBe("tool-disclosure");
+    expect(fragment?.description).toContain("promote_tools");
   });
 });

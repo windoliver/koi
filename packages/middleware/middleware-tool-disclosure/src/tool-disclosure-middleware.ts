@@ -196,6 +196,15 @@ export interface ToolDisclosureMiddleware extends KoiMiddleware {
   readonly promoteByName: (names: readonly string[]) => Promise<readonly string[]>;
   /** Clear the promotion cache. */
   readonly clearCache: () => void;
+  /**
+   * Notify the middleware that the `promote_tools` companion tool has been
+   * registered. When set, `describeCapabilities` advertises the companion
+   * tool. Without this call (standalone use), the capability fragment is
+   * suppressed to avoid referencing a nonexistent tool.
+   *
+   * Called once at setup by the bundle factory — not per-turn.
+   */
+  readonly notifyCompanionRegistered: () => void;
 }
 
 export function createToolDisclosureMiddleware(
@@ -212,8 +221,8 @@ export function createToolDisclosureMiddleware(
   // let justified: mutable snapshot of promoted names for change detection
   let lastPromotedSnapshot: ReadonlySet<string> = new Set();
 
-  // let justified: mutable flag tracking whether disclosure activated on last model call
-  let disclosureActive = false;
+  // let justified: mutable flag — set once by notifyCompanionRegistered()
+  let companionToolRegistered = false;
 
   // Index of all tool descriptors by name (rebuilt when input ref changes)
   // let justified: mutable map rebuilt on input change
@@ -290,20 +299,23 @@ export function createToolDisclosureMiddleware(
       next: ModelHandler,
     ): Promise<ModelResponse> {
       if (request.tools === undefined || request.tools.length <= threshold) {
-        disclosureActive = false;
         return next(request);
       }
 
-      disclosureActive = true;
       const disclosedTools = buildDisclosedTools(request.tools);
       return next({ ...request, tools: disclosedTools });
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
-      // Only advertise promote_tools when disclosure is actually active.
-      // When below threshold (or before any model call), returning undefined
-      // prevents the model from trying to call a nonexistent tool.
-      if (!disclosureActive) return undefined;
+      // Only advertise promote_tools when the companion tool is actually
+      // registered (bundle path). Standalone middleware never calls
+      // notifyCompanionRegistered(), so this stays undefined — preventing
+      // the model from trying to call a tool that doesn't exist.
+      //
+      // This is a setup-time flag, not per-turn state, so it cannot go
+      // stale relative to the engine lifecycle (describeCapabilities runs
+      // before wrapModelCall).
+      if (!companionToolRegistered) return undefined;
 
       const promoted = cache.promotedNames();
       return {
@@ -320,6 +332,10 @@ export function createToolDisclosureMiddleware(
       cache.clear();
       lastOutput = undefined;
       lastPromotedSnapshot = new Set();
+    },
+
+    notifyCompanionRegistered(): void {
+      companionToolRegistered = true;
     },
   };
 
