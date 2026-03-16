@@ -5,6 +5,7 @@
  * when compaction should trigger and how much budget remains.
  */
 
+import { estimateTokens } from "@koi/token-estimator";
 import { DEFAULT_CONTEXT_WINDOW_TOKENS } from "./types.js";
 
 export interface TokenTracker {
@@ -35,7 +36,7 @@ export function createTokenTracker(capacityTokens?: number): TokenTracker {
 
   return {
     add(text: string): void {
-      tokens += Math.ceil(text.length / 4);
+      tokens += estimateTokens(text);
     },
     addTokens(count: number): void {
       tokens += count;

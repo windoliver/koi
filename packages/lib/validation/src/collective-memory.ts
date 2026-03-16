@@ -7,6 +7,7 @@
 
 import type { CollectiveMemory, CollectiveMemoryDefaults, CollectiveMemoryEntry } from "@koi/core";
 import { COLLECTIVE_MEMORY_DEFAULTS } from "@koi/core";
+import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 
 // ---------------------------------------------------------------------------
 // Priority scoring
@@ -97,7 +98,7 @@ export function deduplicateEntries(
 // Budget selection
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CHARS_PER_TOKEN = 4;
+const DEFAULT_CHARS_PER_TOKEN = CHARS_PER_TOKEN;
 
 /**
  * Selects entries that fit within a token budget, sorted by priority (highest first).

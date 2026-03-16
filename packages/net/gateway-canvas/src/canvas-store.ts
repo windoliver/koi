@@ -10,6 +10,8 @@
 import type { KoiError, Result } from "@koi/core";
 import { conflict, notFound } from "@koi/core";
 
+import { computeStringHash } from "@koi/hash";
+
 // Re-export interfaces from @koi/gateway-types
 export type { SurfaceEntry, SurfaceStore, SurfaceStoreConfig } from "@koi/gateway-types";
 
@@ -19,17 +21,6 @@ type SurfaceStoreConfig = import("@koi/gateway-types").SurfaceStoreConfig;
 const DEFAULT_SURFACE_STORE_CONFIG: SurfaceStoreConfig = {
   maxSurfaces: 10_000,
 } as const;
-
-// ---------------------------------------------------------------------------
-// Content hashing
-// ---------------------------------------------------------------------------
-
-/** Compute SHA-256 hex digest of content using Bun native crypto. */
-export function computeContentHash(content: string): string {
-  const hasher = new Bun.CryptoHasher("sha256");
-  hasher.update(content);
-  return hasher.digest("hex");
-}
 
 // ---------------------------------------------------------------------------
 // In-memory implementation with LRU eviction
@@ -92,7 +83,7 @@ export function createInMemorySurfaceStore(
       const entry: SurfaceEntry = {
         surfaceId: id,
         content,
-        contentHash: computeContentHash(content),
+        contentHash: computeStringHash(content),
         createdAt: now,
         updatedAt: now,
         lastAccessedAt: now,
@@ -123,10 +114,13 @@ export function createInMemorySurfaceStore(
         };
       }
       const now = Date.now();
+      // Skip re-hashing when content is unchanged (identity optimization)
+      const contentHash =
+        content === existing.content ? existing.contentHash : computeStringHash(content);
       const updated: SurfaceEntry = {
         ...existing,
         content,
-        contentHash: computeContentHash(content),
+        contentHash,
         updatedAt: now,
         lastAccessedAt: now,
       };

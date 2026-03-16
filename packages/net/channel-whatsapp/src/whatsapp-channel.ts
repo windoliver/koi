@@ -181,7 +181,7 @@ export function createWhatsAppChannel(config: WhatsAppChannelConfig): WhatsAppCh
 // ---------------------------------------------------------------------------
 
 async function createBaileysSocket(config: WhatsAppChannelConfig): Promise<BaileysSocketLike> {
-  const baileys = require("@whiskeysockets/baileys") as {
+  const baileys = (await import("@whiskeysockets/baileys")) as unknown as {
     readonly default: (opts: Record<string, unknown>) => BaileysSocketLike;
     readonly useMultiFileAuthState: (
       path: string,

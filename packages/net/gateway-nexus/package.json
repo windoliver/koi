@@ -13,6 +13,7 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/gateway-types": "workspace:*",
+    "@koi/hash": "workspace:*",
     "@koi/nexus-client": "workspace:*"
   },
   "devDependencies": {

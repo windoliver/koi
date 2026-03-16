@@ -1,24 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { computeStringHash } from "@koi/hash";
 import { runSurfaceStoreContractTests } from "@koi/test-utils";
-import { computeContentHash, createInMemorySurfaceStore } from "./canvas-store.js";
+import { createInMemorySurfaceStore } from "./canvas-store.js";
 
 // Run shared contract suite
 runSurfaceStoreContractTests(() => createInMemorySurfaceStore());
-
-describe("computeContentHash", () => {
-  test("returns deterministic SHA-256 hex for same content", () => {
-    const hash1 = computeContentHash("hello world");
-    const hash2 = computeContentHash("hello world");
-    expect(hash1).toBe(hash2);
-    expect(hash1).toHaveLength(64); // SHA-256 hex = 64 chars
-  });
-
-  test("returns different hashes for different content", () => {
-    const hash1 = computeContentHash("hello");
-    const hash2 = computeContentHash("world");
-    expect(hash1).not.toBe(hash2);
-  });
-});
 
 describe("createInMemorySurfaceStore", () => {
   test("create → get returns entry with correct hash", async () => {
@@ -28,7 +14,7 @@ describe("createInMemorySurfaceStore", () => {
     if (!result.ok) return;
     expect(result.value.surfaceId).toBe("s1");
     expect(result.value.content).toBe("content-1");
-    expect(result.value.contentHash).toBe(computeContentHash("content-1"));
+    expect(result.value.contentHash).toBe(computeStringHash("content-1"));
     expect(result.value.metadata).toEqual({ key: "val" });
 
     const getResult = await store.get("s1");
@@ -64,7 +50,7 @@ describe("createInMemorySurfaceStore", () => {
     expect(updated.ok).toBe(true);
     if (!updated.ok) return;
     expect(updated.value.content).toBe("v2");
-    expect(updated.value.contentHash).toBe(computeContentHash("v2"));
+    expect(updated.value.contentHash).toBe(computeStringHash("v2"));
     expect(updated.value.contentHash).not.toBe(oldHash);
   });
 

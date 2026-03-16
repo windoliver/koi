@@ -6,6 +6,7 @@
  * detection and structure hints.
  */
 
+import { estimateTokens } from "@koi/token-estimator";
 import type { ChunkDescriptor, InputFormat, InputMetadata } from "./types.js";
 import { DEFAULT_CHUNK_SIZE, DEFAULT_MAX_INPUT_BYTES, DEFAULT_PREVIEW_LENGTH } from "./types.js";
 
@@ -136,7 +137,7 @@ export function createInputStore(input: string, options?: InputStoreOptions): In
     cachedMetadata = {
       format,
       sizeBytes: inputBytes,
-      estimatedTokens: Math.ceil(input.length / 4),
+      estimatedTokens: estimateTokens(input),
       totalChunks,
       structureHints,
       preview,

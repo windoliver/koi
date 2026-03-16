@@ -11,6 +11,7 @@
 import type { MemoryResult } from "@koi/core";
 import type { InboundMessage } from "@koi/core/message";
 import type { CapabilityFragment, KoiMiddleware, SessionContext } from "@koi/core/middleware";
+import { CHARS_PER_TOKEN, estimateTokens } from "@koi/token-estimator";
 import type { HotMemoryConfig } from "./types.js";
 import { HOT_MEMORY_DEFAULTS } from "./types.js";
 
@@ -31,14 +32,9 @@ function formatMemories(memories: readonly MemoryResult[]): string {
   return memories.map((m) => `- ${m.content}`).join("\n");
 }
 
-/** Heuristic token estimate: ~4 chars per token. */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
 /** Truncate text to fit within a token budget using heuristic estimation. */
 function truncateToTokenBudget(text: string, maxTokens: number): string {
-  const maxChars = maxTokens * 4;
+  const maxChars = maxTokens * CHARS_PER_TOKEN;
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}...[truncated]`;
 }

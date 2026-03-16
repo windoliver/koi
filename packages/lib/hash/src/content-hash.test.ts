@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { computeContentHash } from "./content-hash.js";
+import { computeContentHash, computeStringHash } from "./content-hash.js";
 
 describe("computeContentHash", () => {
   test("same data different key order produces same hash", () => {
@@ -65,5 +65,39 @@ describe("computeContentHash", () => {
     const a = { l1: { l2: { z: "deep", a: "deeper" } } };
     const b = { l1: { l2: { a: "deeper", z: "deep" } } };
     expect(computeContentHash(a)).toBe(computeContentHash(b));
+  });
+});
+
+describe("computeStringHash", () => {
+  test("returns 64-character hex digest", () => {
+    const hash = computeStringHash("hello world");
+    expect(hash).toHaveLength(64);
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("same input produces same hash", () => {
+    expect(computeStringHash("test")).toBe(computeStringHash("test"));
+  });
+
+  test("different inputs produce different hashes", () => {
+    expect(computeStringHash("a")).not.toBe(computeStringHash("b"));
+  });
+
+  test("empty string produces consistent hash", () => {
+    const hash1 = computeStringHash("");
+    const hash2 = computeStringHash("");
+    expect(hash1).toBe(hash2);
+  });
+
+  test("hashes raw string without JSON serialization", () => {
+    // computeContentHash wraps strings in JSON.stringify (adds quotes)
+    // computeStringHash hashes the raw string — they must differ
+    expect(computeStringHash("hello")).not.toBe(computeContentHash("hello"));
+  });
+
+  test("unicode content hashes consistently", () => {
+    const hash1 = computeStringHash("工具-名前-도구 🤖");
+    const hash2 = computeStringHash("工具-名前-도구 🤖");
+    expect(hash1).toBe(hash2);
   });
 });

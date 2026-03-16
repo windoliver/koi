@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/gateway-types": "workspace:*"
+    "@koi/gateway-types": "workspace:*",
+    "@koi/hash": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

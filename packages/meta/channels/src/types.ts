@@ -20,6 +20,12 @@ export interface ChannelRuntimeOpts {
  *
  * Mirrors MiddlewareFactory from @koi/starter — accepts JSON-serializable
  * config from a manifest and optional runtime overrides.
+ *
+ * The `config: JsonObject` parameter is untyped because manifests are parsed
+ * from YAML. Each adapter shim casts this to the L2 factory's config type
+ * via `config as unknown as SpecificConfig`. This cast is architecturally
+ * intentional — it keeps L3 decoupled from L2 type imports, and the L2
+ * factory validates the config shape at runtime.
  */
 export type ChannelFactory = (
   config: JsonObject,

@@ -43,3 +43,19 @@ export function computeContentHash(data: unknown): string {
   hasher.update(serialized);
   return hasher.digest("hex");
 }
+
+/**
+ * Compute a SHA-256 hex digest of a raw string.
+ *
+ * Unlike {@link computeContentHash}, this does NOT do deterministic
+ * serialization — the string is hashed as-is. Use this for content
+ * that is already in its canonical string form (e.g., surface content).
+ *
+ * @param content - The raw string to hash.
+ * @returns 64-character lowercase hex digest.
+ */
+export function computeStringHash(content: string): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(content);
+  return hasher.digest("hex");
+}

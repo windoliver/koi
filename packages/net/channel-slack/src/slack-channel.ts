@@ -90,16 +90,20 @@ interface WebClientLike {
 export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdapter {
   const features = resolveFeatures(config.features);
 
-  // Create or use injected clients
-  const webClient = (config._webClient ?? createWebClient(config.botToken)) as WebClientLike;
-  const socketClient =
+  // let justified: actual client instances, created during platformConnect if not injected
+  let webClient: WebClientLike | undefined = config._webClient as WebClientLike | undefined;
+  let socketClient: SocketModeClientLike | undefined =
     config.deployment.mode === "socket"
-      ? ((config._socketClient ??
-          createSocketClient(config.deployment.appToken)) as SocketModeClientLike)
+      ? (config._socketClient as SocketModeClientLike | undefined)
       : undefined;
 
   const api: SlackWebApi = {
-    postMessage: async (args: Record<string, unknown>) => webClient.chat.postMessage(args),
+    postMessage: async (args: Record<string, unknown>) => {
+      if (webClient === undefined) {
+        throw new Error("[channel-slack] Cannot send: not connected");
+      }
+      return webClient.chat.postMessage(args);
+    },
   };
 
   // let justified: botUserId determined after auth.test response
@@ -121,6 +125,13 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
     capabilities: SLACK_CAPABILITIES,
 
     platformConnect: async () => {
+      // Lazy-load SDK modules via dynamic import (ESM-only)
+      if (webClient === undefined) {
+        webClient = await createWebClient(config.botToken);
+      }
+      if (config.deployment.mode === "socket" && socketClient === undefined) {
+        socketClient = await createSocketClient(config.deployment.appToken);
+      }
       if (socketClient !== undefined) {
         await socketClient.start();
       }
@@ -348,18 +359,15 @@ function applyReplyToMode(message: OutboundMessage, mode: SlackReplyToMode): Out
 // Client constructors (lazy-loaded to avoid import overhead in tests)
 // ---------------------------------------------------------------------------
 
-function createWebClient(token: string): WebClientLike {
-  // Dynamic import would be cleaner but TS strict + ESM makes it verbose.
-  // @slack/web-api is a declared dependency.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { WebClient } = require("@slack/web-api") as {
+async function createWebClient(token: string): Promise<WebClientLike> {
+  const { WebClient } = (await import("@slack/web-api")) as unknown as {
     readonly WebClient: new (token: string) => WebClientLike;
   };
   return new WebClient(token);
 }
 
-function createSocketClient(appToken: string): SocketModeClientLike {
-  const { SocketModeClient } = require("@slack/socket-mode") as {
+async function createSocketClient(appToken: string): Promise<SocketModeClientLike> {
+  const { SocketModeClient } = (await import("@slack/socket-mode")) as unknown as {
     readonly SocketModeClient: new (opts: { readonly appToken: string }) => SocketModeClientLike;
   };
   return new SocketModeClient({ appToken });

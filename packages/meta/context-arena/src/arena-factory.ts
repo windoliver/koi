@@ -27,6 +27,7 @@ import { createContextEditingMiddleware } from "@koi/middleware-context-editing"
 import { createConversationMiddleware } from "@koi/middleware-conversation";
 import { createHotMemoryMiddleware } from "@koi/middleware-hot-memory";
 import { createUserModelMiddleware } from "@koi/middleware-user-model";
+import { estimateTokens } from "@koi/token-estimator";
 import { createSquashProvider } from "@koi/tool-squash";
 import { resolveContextArenaConfig } from "./config-resolution.js";
 import type { ContextArenaBundle, ContextArenaConfig } from "./types.js";
@@ -150,7 +151,7 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
           // Falls back to chars/4 if the estimator is async — matches conversation's own default.
           estimateTokens: (text: string): number => {
             const result = resolved.tokenEstimator.estimateText(text);
-            return typeof result === "number" ? result : Math.ceil(text.length / 4);
+            return typeof result === "number" ? result : estimateTokens(text);
           },
           ...(config.conversation?.resolveThreadId !== undefined
             ? { resolveThreadId: config.conversation.resolveThreadId }

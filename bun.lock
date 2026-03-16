@@ -834,6 +834,7 @@
         "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/session-repair": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
     },
     "packages/kernel/engine-reconcile": {
@@ -1044,6 +1045,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
         "zod": "4.3.6",
       },
       "devDependencies": {
@@ -1733,6 +1735,7 @@
         "@koi/core": "workspace:*",
         "@koi/execution-context": "workspace:*",
         "@koi/name-resolution": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1769,6 +1772,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -2035,6 +2039,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -2340,6 +2345,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/gateway-types": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -2351,6 +2357,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/gateway-types": "workspace:*",
+        "@koi/hash": "workspace:*",
         "@koi/nexus-client": "workspace:*",
       },
       "devDependencies": {

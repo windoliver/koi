@@ -90,8 +90,8 @@ function removePidFile(): void {
  * port is the most reliable cross-version readiness signal.
  */
 async function isServerReady(port: number, _timeoutMs: number): Promise<boolean> {
+  const { connect } = await import("node:net");
   return new Promise((resolve) => {
-    const { connect } = require("node:net") as typeof import("node:net");
     const socket = connect({ host: "127.0.0.1", port }, () => {
       socket.destroy();
       resolve(true);

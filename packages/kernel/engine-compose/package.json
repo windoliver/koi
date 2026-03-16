@@ -14,7 +14,8 @@
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
     "@koi/hash": "workspace:*",
-    "@koi/session-repair": "workspace:*"
+    "@koi/session-repair": "workspace:*",
+    "@koi/token-estimator": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

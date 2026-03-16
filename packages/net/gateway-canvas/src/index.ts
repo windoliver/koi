@@ -5,10 +5,13 @@
  * Depends on @koi/core only.
  */
 
+// Backward-compatible re-export: raw-string SHA-256 hash moved to @koi/hash.
+// Prefer importing computeStringHash from @koi/hash directly.
+// @deprecated Use `import { computeStringHash } from "@koi/hash"` instead.
+export { computeStringHash as computeContentHash } from "@koi/hash";
 // canvas factory
 export type { CanvasConfig, CanvasWiring } from "./canvas.js";
 export { createCanvas } from "./canvas.js";
-
 // canvas routes
 export type {
   CanvasAuthenticator,
@@ -17,7 +20,6 @@ export type {
   CanvasServer,
 } from "./canvas-routes.js";
 export { createCanvasServer } from "./canvas-routes.js";
-
 // canvas SSE
 export type {
   CanvasSseConfig,
@@ -26,11 +28,10 @@ export type {
   SseSubscriber,
 } from "./canvas-sse.js";
 export { createCanvasSseManager, formatSseEvent } from "./canvas-sse.js";
-
 // canvas store
 export type {
   SurfaceEntry,
   SurfaceStore,
   SurfaceStoreConfig,
 } from "./canvas-store.js";
-export { computeContentHash, createInMemorySurfaceStore } from "./canvas-store.js";
+export { createInMemorySurfaceStore } from "./canvas-store.js";

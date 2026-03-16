@@ -15,6 +15,7 @@ import type {
   ThreadSnapshot,
 } from "@koi/core";
 import { DEFAULT_THREAD_PRUNING_POLICY, isMessageSnapshot } from "@koi/core";
+import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -133,7 +134,7 @@ export function createThreadCompactor(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Rough token estimate: ~4 chars per token, ~50 chars per message. */
+/** Rough token estimate: ~50 chars per message, using canonical chars-per-token. */
 function estimateTokens(messageCount: number): number {
-  return Math.ceil((messageCount * 50) / 4);
+  return Math.ceil((messageCount * 50) / CHARS_PER_TOKEN);
 }

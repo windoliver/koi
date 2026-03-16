@@ -6,7 +6,8 @@
  * zone) is yielded. On flush, all remaining content is scanned and returned.
  *
  * Block strategy is downgraded to redact in streaming mode — we can't
- * retract already-yielded content.
+ * retract already-yielded content. The caller is responsible for logging
+ * a warning once; the buffer only fires the onStrategyDowngrade callback.
  */
 
 import { scanString } from "./scan.js";
@@ -31,6 +32,9 @@ export interface PIIStreamBuffer {
   readonly flush: () => PIIStreamBufferResult;
 }
 
+/** Callback invoked when block strategy is downgraded to redact in streaming mode. */
+export type StrategyDowngradeCallback = (original: PIIStrategy, effective: PIIStrategy) => void;
+
 /**
  * Create a sliding window stream buffer for PII detection in streaming output.
  * Block strategy is downgraded to redact (can't un-yield sent chunks).
@@ -40,36 +44,50 @@ export function createPIIStreamBuffer(
   strategy: PIIStrategy,
   createHasher?: PIIHasherFactory,
   bufferSize: number = DEFAULT_BUFFER_SIZE,
+  onStrategyDowngrade?: StrategyDowngradeCallback,
 ): PIIStreamBuffer {
   // Downgrade block to redact for streaming
   const effectiveStrategy: PIIStrategy = strategy === "block" ? "redact" : strategy;
 
-  // let justified: mutable internal buffer accumulating streaming text
-  let buffer = "";
+  if (strategy === "block") {
+    onStrategyDowngrade?.(strategy, effectiveStrategy);
+  }
+
+  // Array-based buffer: avoids per-chunk string concatenation on immutable strings
+  const parts: string[] = [];
+  // let justified: tracks total character count across accumulated parts
+  let totalLength = 0;
 
   function push(text: string): PIIStreamBufferResult {
-    buffer += text;
+    parts.push(text);
+    totalLength += text.length;
 
-    if (buffer.length <= bufferSize) {
+    if (totalLength <= bufferSize) {
       return EMPTY_RESULT;
     }
 
-    // The last bufferSize chars might contain a split PII pattern — keep them buffered
+    const buffer = parts.join("");
     const safeEnd = buffer.length - bufferSize;
     const safeChunk = buffer.slice(0, safeEnd);
-    buffer = buffer.slice(safeEnd);
+
+    // Reset to just the tail
+    const tail = buffer.slice(safeEnd);
+    parts.length = 0;
+    parts.push(tail);
+    totalLength = tail.length;
 
     const result = scanString(safeChunk, detectors, effectiveStrategy, createHasher);
     return { safe: result.text, matches: result.matches };
   }
 
   function flush(): PIIStreamBufferResult {
-    if (buffer.length === 0) {
+    if (totalLength === 0) {
       return EMPTY_RESULT;
     }
 
-    const remaining = buffer;
-    buffer = "";
+    const remaining = parts.join("");
+    parts.length = 0;
+    totalLength = 0;
 
     const result = scanString(remaining, detectors, effectiveStrategy, createHasher);
     return { safe: result.text, matches: result.matches };

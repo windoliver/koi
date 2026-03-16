@@ -13,7 +13,8 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/execution-context": "workspace:*",
-    "@koi/name-resolution": "workspace:*"
+    "@koi/name-resolution": "workspace:*",
+    "@koi/token-estimator": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

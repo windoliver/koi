@@ -22,6 +22,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 
 // ---------------------------------------------------------------------------
 // Phase-aware middleware sorting
@@ -428,9 +429,9 @@ export function formatCapabilityMessage(fragments: readonly CapabilityFragment[]
   };
 }
 
-/** Heuristic token estimate: ~4 chars per token. */
+/** Heuristic token estimate using the canonical chars-per-token constant. */
 function estimateTokensFromChars(charCount: number): number {
-  return Math.ceil(charCount / 4);
+  return Math.ceil(charCount / CHARS_PER_TOKEN);
 }
 
 /**

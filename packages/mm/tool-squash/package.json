@@ -18,7 +18,8 @@
     "test:api": "bun test src/__tests__/api-surface.test.ts"
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/token-estimator": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",

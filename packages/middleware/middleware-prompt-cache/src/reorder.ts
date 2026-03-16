@@ -9,6 +9,7 @@
  */
 
 import type { InboundMessage } from "@koi/core";
+import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 
 /**
  * Classify a message as static (system-origin — stable across turns)
@@ -78,5 +79,5 @@ export function estimateTokens(messages: readonly InboundMessage[]): number {
       }
     }
   }
-  return Math.ceil(charCount / 4);
+  return Math.ceil(charCount / CHARS_PER_TOKEN);
 }
