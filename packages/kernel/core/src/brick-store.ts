@@ -312,6 +312,26 @@ export type BrickArtifact =
   | CompositeArtifact;
 
 // ---------------------------------------------------------------------------
+// Brick summary — lightweight discovery type for progressive disclosure
+// ---------------------------------------------------------------------------
+
+/** Disclosure level for progressive tool/brick loading. */
+export type BrickDisclosureLevel = "summary" | "descriptor" | "full";
+
+/**
+ * Lightweight summary for brick discovery (~20 tokens).
+ * Contains only what's needed to decide relevance — no implementation,
+ * content, schema, or other heavy fields.
+ */
+export interface BrickSummary {
+  readonly id: BrickId;
+  readonly kind: BrickKind;
+  readonly name: string;
+  readonly description: string;
+  readonly tags: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
 // Forge query (structured search)
 // ---------------------------------------------------------------------------
 
@@ -373,6 +393,14 @@ export interface ForgeStore {
   readonly save: (brick: BrickArtifact) => Promise<Result<void, KoiError>>;
   readonly load: (id: BrickId) => Promise<Result<BrickArtifact, KoiError>>;
   readonly search: (query: ForgeQuery) => Promise<Result<readonly BrickArtifact[], KoiError>>;
+  /**
+   * Lightweight search returning only summary-level data (~20 tokens per brick).
+   * Omits implementation, content, schemas, and other heavy fields.
+   * Falls back to search() + projection if the backend doesn't natively support it.
+   */
+  readonly searchSummaries: (
+    query: ForgeQuery,
+  ) => Promise<Result<readonly BrickSummary[], KoiError>>;
   readonly remove: (id: BrickId) => Promise<Result<void, KoiError>>;
   readonly update: (id: BrickId, updates: BrickUpdate) => Promise<Result<void, KoiError>>;
   readonly exists: (id: BrickId) => Promise<Result<boolean, KoiError>>;

@@ -6,6 +6,7 @@
 import type {
   BrickArtifact,
   BrickId,
+  BrickSummary,
   BrickUpdate,
   ForgeQuery,
   ForgeScope,
@@ -79,6 +80,23 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: undefined };
   };
 
+  const searchSummaries = async (
+    query: ForgeQuery,
+  ): Promise<Result<readonly BrickSummary[], KoiError>> => {
+    const result = await search(query);
+    if (!result.ok) return result;
+    const summaries: readonly BrickSummary[] = result.value.map(
+      (brick: BrickArtifact): BrickSummary => ({
+        id: brick.id,
+        kind: brick.kind,
+        name: brick.name,
+        description: brick.description,
+        tags: brick.tags,
+      }),
+    );
+    return { ok: true, value: summaries };
+  };
+
   const exists = async (id: BrickId): Promise<Result<boolean, KoiError>> => {
     return { ok: true, value: bricks.has(id) };
   };
@@ -102,6 +120,7 @@ export function createInMemoryForgeStore(): ForgeStore {
     save,
     load,
     search,
+    searchSummaries,
     remove,
     update,
     exists,

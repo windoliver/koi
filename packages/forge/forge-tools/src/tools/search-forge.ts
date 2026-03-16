@@ -2,7 +2,7 @@
  * search_forge — Discovers existing bricks via ForgeStore queries.
  */
 
-import type { Result, Tool } from "@koi/core";
+import type { BrickSummary, Result, Tool } from "@koi/core";
 import type { BrickArtifact, ForgeError, ForgeQuery } from "@koi/forge-types";
 import { filterByAgentScope, staticError } from "@koi/forge-types";
 import { sortBricks } from "@koi/validation";
@@ -39,6 +39,11 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
         type: "number",
         description: "Minimum fitness score (0-1). Bricks below this threshold are excluded.",
       },
+      detail: {
+        type: "string",
+        description:
+          "Result detail level: 'summary' (default, ~20 tokens/brick — name + description + tags only) or 'full' (complete artifact with implementation/schema).",
+      },
     },
   },
   handler: searchForgeHandler,
@@ -51,7 +56,7 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
 async function searchForgeHandler(
   input: unknown,
   deps: ForgeDeps,
-): Promise<Result<readonly BrickArtifact[], ForgeError>> {
+): Promise<Result<readonly BrickArtifact[] | readonly BrickSummary[], ForgeError>> {
   // Allow null/undefined (defaults to empty query), but reject non-objects
   if (input !== null && input !== undefined && typeof input !== "object") {
     return {
@@ -61,7 +66,10 @@ async function searchForgeHandler(
   }
 
   // All fields are optional — cast safely since ForgeQuery is all-optional
-  const rawQuery = (input ?? {}) as ForgeQuery;
+  const rawQuery = (input ?? {}) as ForgeQuery & { readonly detail?: string };
+
+  // Extract detail level (default: "summary" for token efficiency)
+  const detail = rawQuery.detail === "full" ? "full" : "summary";
 
   // Lightweight validation: clamp minFitnessScore to [0,1], default invalid orderBy
   const orderBy =
@@ -78,6 +86,46 @@ async function searchForgeHandler(
     ...(clampedMin !== undefined ? { minFitnessScore: clampedMin } : {}),
   };
 
+  // Summary mode: return lightweight BrickSummary[] (~20 tokens/brick)
+  if (detail === "summary") {
+    const result = await deps.store.searchSummaries(query);
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: {
+          stage: "store",
+          code: "SEARCH_FAILED",
+          message: `Search failed: ${result.error.message}`,
+        },
+      };
+    }
+    // BrickSummary lacks scope/fitness fields — filter by agent ID on full search then project
+    const fullResult = await deps.store.search(query);
+    if (!fullResult.ok) {
+      return {
+        ok: false,
+        error: {
+          stage: "store",
+          code: "SEARCH_FAILED",
+          message: `Search failed: ${fullResult.error.message}`,
+        },
+      };
+    }
+    const scoped = filterByAgentScope(fullResult.value, deps.context.agentId, deps.context.zoneId);
+    const ranked = sortBricks(scoped, query, { nowMs: Date.now() });
+    const summaries: readonly BrickSummary[] = ranked.map(
+      (b): BrickSummary => ({
+        id: b.id,
+        kind: b.kind,
+        name: b.name,
+        description: b.description,
+        tags: b.tags,
+      }),
+    );
+    return { ok: true, value: summaries };
+  }
+
+  // Full mode: return complete BrickArtifact[] (existing behavior)
   const result = await deps.store.search(query);
 
   if (!result.ok) {
