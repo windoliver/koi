@@ -10,6 +10,7 @@
  * Auth is resolved from NEXUS_API_KEY env var (remote mode only).
  */
 
+import { spawnSync } from "node:child_process";
 import type { ComponentProvider, KoiMiddleware } from "@koi/core";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,36 @@ export interface NexusResolution {
   readonly providers: readonly ComponentProvider[];
   readonly dispose: () => Promise<void>;
   readonly baseUrl: string;
+}
+
+// ---------------------------------------------------------------------------
+// Build helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates `--nexus-build` / `--nexus-source` flag combination and runs
+ * `uv sync` in the source directory when `--nexus-build` is set.
+ *
+ * Call this before Nexus startup in `up`, `start`, and `serve`.
+ */
+export function runNexusBuildIfNeeded(nexusBuild: boolean, nexusSource: string | undefined): void {
+  if (!nexusBuild) return;
+
+  if (nexusSource === undefined) {
+    process.stderr.write("error: --nexus-build requires --nexus-source <path>\n");
+    process.exit(1);
+  }
+
+  process.stderr.write(`Running uv sync in ${nexusSource}...\n`);
+  const result = spawnSync("uv", ["sync"], {
+    cwd: nexusSource,
+    stdio: "inherit",
+  });
+
+  if (result.status !== 0) {
+    process.stderr.write(`error: uv sync failed with exit code ${String(result.status ?? 1)}\n`);
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +69,7 @@ export async function resolveNexusStack(
   nexusUrl: string | undefined,
   manifestNexusUrl: string | undefined,
   embedProfile?: string | undefined,
+  nexusSource?: string | undefined,
 ): Promise<NexusResolution> {
   // Priority: CLI flag > env var > manifest nexus.url > embed mode (no URL)
   const baseUrl = nexusUrl ?? process.env.NEXUS_URL ?? manifestNexusUrl;
@@ -51,6 +83,7 @@ export async function resolveNexusStack(
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
     ...(embedProfile !== undefined ? { embedProfile } : {}),
+    ...(nexusSource !== undefined ? { sourceDir: nexusSource } : {}),
   });
 
   return {
@@ -92,9 +125,10 @@ export async function resolveNexusOrWarn(
   manifestNexusUrl: string | undefined,
   verbose: boolean,
   embedProfile?: string | undefined,
+  nexusSource?: string | undefined,
 ): Promise<NexusResolvedState> {
   try {
-    const nexus = await resolveNexusStack(nexusUrl, manifestNexusUrl, embedProfile);
+    const nexus = await resolveNexusStack(nexusUrl, manifestNexusUrl, embedProfile, nexusSource);
     if (verbose) {
       process.stderr.write(`Nexus: ${nexus.baseUrl}\n`);
     }

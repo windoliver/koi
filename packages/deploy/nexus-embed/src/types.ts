@@ -29,6 +29,8 @@ export interface EmbedConfig {
   readonly spawn?: SpawnFn | undefined;
   /** Injectable fetch for testing. Default: globalThis.fetch. */
   readonly fetch?: FetchFn | undefined;
+  /** Nexus source directory for `uv run --directory <sourceDir> nexus`. */
+  readonly sourceDir?: string | undefined;
 }
 
 /** Result returned by ensureNexusRunning(). */

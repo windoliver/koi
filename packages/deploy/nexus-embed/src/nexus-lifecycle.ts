@@ -29,6 +29,8 @@ export interface NexusLifecycleOptions {
   readonly cwd?: string | undefined;
   /** Emit verbose diagnostics to stderr. Default: false. */
   readonly verbose?: boolean | undefined;
+  /** Nexus source directory for `uv run --directory <sourceDir> nexus`. */
+  readonly sourceDir?: string | undefined;
 }
 
 /** Result of a successful `nexus up`. */
@@ -64,14 +66,15 @@ export async function nexusInit(
 ): Promise<Result<void, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
+  const sourceDir = options?.sourceDir;
 
-  const binaryCheck = await ensureBinary();
+  const binaryCheck = await ensureBinary(sourceDir);
   if (!binaryCheck.ok) return binaryCheck;
 
   const nexusPreset = PRESET_MAP[koiPreset] ?? "local";
   const args = ["init", "--preset", nexusPreset, "--force"];
 
-  return runNexusCommand(args, cwd, verbose, "nexus init");
+  return runNexusCommand(args, cwd, verbose, "nexus init", sourceDir);
 }
 
 /**
@@ -99,8 +102,9 @@ export async function nexusUp(
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
   const host = options?.host ?? DEFAULT_HOST;
+  const sourceDir = options?.sourceDir;
 
-  const binaryCheck = await ensureBinary();
+  const binaryCheck = await ensureBinary(sourceDir);
   if (!binaryCheck.ok) return binaryCheck;
 
   // Auto-init if no config file exists (nexus.yaml or nexus.yml)
@@ -113,7 +117,7 @@ export async function nexusUp(
         `Nexus: nexus.yaml not found, running nexus init --preset ${koiPreset}\n`,
       );
     }
-    const initResult = await nexusInit(koiPreset, { cwd, verbose });
+    const initResult = await nexusInit(koiPreset, { cwd, verbose, sourceDir });
     if (!initResult.ok) return initResult;
     autoInitialized = true;
     configPath = findNexusConfig(cwd) ?? join(cwd, "nexus.yaml");
@@ -127,7 +131,7 @@ export async function nexusUp(
   delete process.env.NEXUS_API_KEY;
 
   // Run nexus up (blocks until healthy)
-  const upResult = await runNexusCommand(["up"], cwd, verbose, "nexus up");
+  const upResult = await runNexusCommand(["up"], cwd, verbose, "nexus up", sourceDir);
 
   // Restore the original env var (may be needed by other code)
   if (savedApiKey !== undefined) {
@@ -163,11 +167,12 @@ export async function nexusDown(
 ): Promise<Result<void, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
+  const sourceDir = options?.sourceDir;
 
-  const binaryCheck = await ensureBinary();
+  const binaryCheck = await ensureBinary(sourceDir);
   if (!binaryCheck.ok) return binaryCheck;
 
-  return runNexusCommand(["down"], cwd, verbose, "nexus down");
+  return runNexusCommand(["down"], cwd, verbose, "nexus down", sourceDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -175,8 +180,8 @@ export async function nexusDown(
 // ---------------------------------------------------------------------------
 
 /** Checks that the nexus binary is available on PATH. */
-async function ensureBinary(): Promise<Result<void, KoiError>> {
-  const binaryParts = resolveNexusBinary();
+async function ensureBinary(sourceDir?: string | undefined): Promise<Result<void, KoiError>> {
+  const binaryParts = resolveNexusBinary(sourceDir);
   const available = await checkBinaryAvailable(binaryParts);
   if (!available) {
     const binaryName = binaryParts[0] ?? "nexus";
@@ -290,8 +295,9 @@ async function runNexusCommand(
   cwd: string,
   verbose: boolean,
   label: string,
+  sourceDir?: string | undefined,
 ): Promise<Result<void, KoiError>> {
-  const binaryParts = resolveNexusBinary();
+  const binaryParts = resolveNexusBinary(sourceDir);
   const cmd = [...binaryParts, ...args];
 
   if (verbose) {

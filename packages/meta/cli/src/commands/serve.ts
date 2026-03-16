@@ -44,7 +44,7 @@ import {
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 import { resolveAutonomousOrWarn } from "../resolve-autonomous.js";
 import { mergeBootstrapContext } from "../resolve-bootstrap.js";
-import { resolveNexusOrWarn } from "../resolve-nexus.js";
+import { resolveNexusOrWarn, runNexusBuildIfNeeded } from "../resolve-nexus.js";
 import { resolveOrchestrationFromAgent } from "../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../resolve-temporal.js";
 
@@ -68,6 +68,9 @@ function deriveSessionKey(channelName: string, inbound: InboundMessage): string 
 // ---------------------------------------------------------------------------
 
 export async function runServe(flags: ServeFlags): Promise<void> {
+  // Validate --nexus-build / --nexus-source and run uv sync if needed
+  runNexusBuildIfNeeded(flags.nexusBuild, flags.nexusSource);
+
   // 1. RESOLVE: Find manifest path
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
 
@@ -133,7 +136,13 @@ export async function runServe(flags: ServeFlags): Promise<void> {
 
   // 6b. Resolve Nexus and autonomous in parallel (Decision 14)
   const [nexus, autonomous] = await Promise.all([
-    resolveNexusOrWarn(flags.nexusUrl, manifest.nexus?.url, flags.verbose),
+    resolveNexusOrWarn(
+      flags.nexusUrl,
+      manifest.nexus?.url,
+      flags.verbose,
+      undefined,
+      flags.nexusSource,
+    ),
     resolveAutonomousOrWarn(manifest, flags.verbose),
   ]);
 

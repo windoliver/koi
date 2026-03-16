@@ -156,5 +156,11 @@ if (matched !== undefined) {
   process.stderr.write(
     "  --admin-port PORT      Admin panel port (serve only, defaults to health port)\n",
   );
+  process.stderr.write(
+    "  --nexus-source PATH    Nexus source directory (uv run --directory PATH nexus)\n",
+  );
+  process.stderr.write(
+    "  --nexus-build          Run uv sync in source dir before starting Nexus\n",
+  );
   process.exit(1);
 }

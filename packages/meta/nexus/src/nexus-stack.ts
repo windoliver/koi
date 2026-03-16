@@ -35,6 +35,7 @@ export async function createNexusStack(config: NexusStackConfig): Promise<NexusB
     const embedResult = await ensureNexusRunning({
       ...(config.fetch !== undefined ? { fetch: config.fetch } : {}),
       ...(config.embedProfile !== undefined ? { profile: config.embedProfile } : {}),
+      ...(config.sourceDir !== undefined ? { sourceDir: config.sourceDir } : {}),
     });
     if (!embedResult.ok) {
       throw new Error(embedResult.error.message, { cause: embedResult.error });

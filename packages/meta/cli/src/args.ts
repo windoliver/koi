@@ -34,6 +34,8 @@ export interface StartFlags extends BaseFlags {
   readonly verbose: boolean;
   readonly dryRun: boolean;
   readonly nexusUrl: string | undefined;
+  readonly nexusSource: string | undefined;
+  readonly nexusBuild: boolean;
   readonly admin: boolean;
   readonly temporalUrl: string | undefined;
   readonly logFormat: "text" | "json";
@@ -45,6 +47,8 @@ export interface ServeFlags extends BaseFlags {
   readonly port: number | undefined;
   readonly verbose: boolean;
   readonly nexusUrl: string | undefined;
+  readonly nexusSource: string | undefined;
+  readonly nexusBuild: boolean;
   readonly admin: boolean;
   readonly adminPort: number | undefined;
   readonly temporalUrl: string | undefined;
@@ -116,6 +120,8 @@ export interface UpFlags extends BaseFlags {
   readonly web: boolean;
   readonly timing: boolean;
   readonly nexusUrl: string | undefined;
+  readonly nexusSource: string | undefined;
+  readonly nexusBuild: boolean;
   readonly temporalUrl: string | undefined;
   readonly logFormat: "text" | "json";
 }
@@ -225,6 +231,8 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
       verbose: { type: "boolean", short: "v", default: false },
       "dry-run": { type: "boolean", default: false },
       "nexus-url": { type: "string" },
+      "nexus-source": { type: "string" },
+      "nexus-build": { type: "boolean", default: false },
       admin: { type: "boolean", default: false },
       "temporal-url": { type: "string" },
       "log-format": { type: "string" },
@@ -243,6 +251,8 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     verbose: (values.verbose as boolean | undefined) ?? false,
     dryRun: (values["dry-run"] as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
+    nexusSource: values["nexus-source"] as string | undefined,
+    nexusBuild: (values["nexus-build"] as boolean | undefined) ?? false,
     admin: (values.admin as boolean | undefined) ?? false,
     temporalUrl: values["temporal-url"] as string | undefined,
     logFormat: resolveLogFormat(values["log-format"] as string | undefined),
@@ -257,6 +267,8 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
       port: { type: "string", short: "p" },
       verbose: { type: "boolean", short: "v", default: false },
       "nexus-url": { type: "string" },
+      "nexus-source": { type: "string" },
+      "nexus-build": { type: "boolean", default: false },
       admin: { type: "boolean", default: false },
       "admin-port": { type: "string" },
       "temporal-url": { type: "string" },
@@ -277,6 +289,8 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
     port: portStr !== undefined ? Number.parseInt(portStr, 10) : undefined,
     verbose: (values.verbose as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
+    nexusSource: values["nexus-source"] as string | undefined,
+    nexusBuild: (values["nexus-build"] as boolean | undefined) ?? false,
     admin: (values.admin as boolean | undefined) ?? false,
     adminPort: adminPortStr !== undefined ? Number.parseInt(adminPortStr, 10) : undefined,
     temporalUrl: values["temporal-url"] as string | undefined,
@@ -449,6 +463,8 @@ export function parseUpFlags(rest: readonly string[]): UpFlags {
       web: { type: "boolean", default: false },
       timing: { type: "boolean", default: false },
       "nexus-url": { type: "string" },
+      "nexus-source": { type: "string" },
+      "nexus-build": { type: "boolean", default: false },
       "temporal-url": { type: "string" },
       "log-format": { type: "string" },
     },
@@ -467,6 +483,8 @@ export function parseUpFlags(rest: readonly string[]): UpFlags {
     web: (values.web as boolean | undefined) ?? false,
     timing: (values.timing as boolean | undefined) ?? false,
     nexusUrl: values["nexus-url"] as string | undefined,
+    nexusSource: values["nexus-source"] as string | undefined,
+    nexusBuild: (values["nexus-build"] as boolean | undefined) ?? false,
     temporalUrl: values["temporal-url"] as string | undefined,
     logFormat: resolveLogFormat(values["log-format"] as string | undefined),
   };

@@ -17,10 +17,11 @@ export async function startNexusStack(
   workspaceRoot: string,
   koiPreset: string,
   verbose: boolean,
+  sourceDir?: string | undefined,
 ): Promise<NexusStartResult | undefined> {
   try {
     const { nexusUp } = await import("@koi/nexus-embed");
-    const result = await nexusUp({ cwd: workspaceRoot, koiPreset, verbose });
+    const result = await nexusUp({ cwd: workspaceRoot, koiPreset, verbose, sourceDir });
     if (!result.ok) {
       process.stderr.write(`warn: nexus up failed: ${result.error.message}\n`);
       return undefined;

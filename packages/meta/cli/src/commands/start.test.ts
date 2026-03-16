@@ -114,6 +114,8 @@ function makeFlags(overrides: Partial<StartFlags> = {}): StartFlags {
     verbose: false,
     dryRun: false,
     nexusUrl: undefined,
+    nexusSource: undefined,
+    nexusBuild: false,
     admin: false,
     temporalUrl: undefined,
     logFormat: "text" as const,
