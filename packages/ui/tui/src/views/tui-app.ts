@@ -1,11 +1,6 @@
 /**
  * TUI application — wires views, store, clients, and OpenTUI together.
- *
- * Uses OpenTUI's CliRenderer with React reconciler for declarative UI.
- * Supports two modes: "welcome" (no admin API) and "boardroom" (connected).
- *
- * Command dispatch extracted to tui-commands.ts.
- * Data source operations extracted to tui-data-sources.ts.
+ * Modules: tui-commands.ts, tui-data-sources.ts, tui-event-stream.ts, tui-consent.ts.
  */
 
 import {
@@ -16,15 +11,9 @@ import {
   createDebounce,
   createReconnectingStream,
   parseSessionRecord,
-  type ReconnectHandle,
   startChatStream,
 } from "@koi/dashboard-client";
-import type {
-  AgentDashboardEvent,
-  DashboardEventBatch,
-  DataSourceDashboardEvent,
-} from "@koi/dashboard-types";
-import { isAgentEvent, isDataSourceEvent, isPtyOutputEvent } from "@koi/dashboard-types";
+import type { DashboardEventBatch } from "@koi/dashboard-types";
 import { type CliRenderer, createCliRenderer, SyntaxStyle } from "@opentui/core";
 import { createRoot, type Root } from "@opentui/react";
 import { createElement } from "react";
@@ -38,14 +27,29 @@ import {
 import { createAguiEventHandler } from "./agui-event-handler.js";
 import { type CommandDeps, dispatchCommand, handleSlashCommand } from "./tui-commands.js";
 import {
+  type ConsentDeps,
+  closeConsent as closeConsentHelper,
+  consentApprove as consentApproveHelper,
+  consentDeny as consentDenyHelper,
+  consentDetails as consentDetailsHelper,
+} from "./tui-consent.js";
+import {
   approveDataSource,
   type DataSourceDeps,
   forwardConsentPrompts,
   openDataSources,
-  rejectDataSource,
   rescanDataSources,
   viewDataSourceSchema,
 } from "./tui-data-sources.js";
+import {
+  checkConsentPrompts as checkConsentPromptsHelper,
+  createEventStream,
+  type EventStreamHandle,
+  fetchDataForView as fetchDataForViewFn,
+  forwardAgentEventsToConsole as forwardAgentEventsHelper,
+  getDomainScrollOffset,
+  viewToDomainKey,
+} from "./tui-event-stream.js";
 import { createKeyboardHandler } from "./tui-keyboard.js";
 import { TuiRoot } from "./tui-root.js";
 import { fetchRecentAgentActivity, persistCurrentSession, restoreSession } from "./tui-session.js";
@@ -54,19 +58,12 @@ import { fetchRecentAgentActivity, persistCurrentSession, restoreSession } from 
 export interface TuiAppConfig {
   readonly adminUrl: string;
   readonly authToken?: string;
-  /** App mode: "welcome" (no admin API) or "boardroom" (connected). */
   readonly mode?: TuiMode | undefined;
-  /** Refresh interval for agent list in ms (default: 30000 — SSE is primary). */
   readonly refreshIntervalMs?: number;
-  /** Auto-attach to this agent on launch. */
   readonly initialAgentId?: string;
-  /** Resume a specific session (requires initialAgentId). */
   readonly initialSessionId?: string;
-  /** Callback when a preset is selected in welcome mode. */
   readonly onPresetSelected?: ((presetId: string, agentName: string) => Promise<void>) | undefined;
-  /** Scrollback lines for split-pane terminals (default: 500). */
   readonly splitPaneScrollback?: number | undefined;
-  /** Presets to display in welcome mode. Passed in to avoid L2-to-L2 import. */
   readonly presets?: readonly import("../state/types.js").PresetInfo[] | undefined;
 }
 
@@ -111,7 +108,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   // ─── Active stream handles ──────────────────────────────────────────
   let activeChatStream: AguiStreamHandle | null = null;
-  let sseStream: ReconnectHandle | null = null;
   let tuiRenderer: CliRenderer | null = null;
   const syntaxStyle = SyntaxStyle.create();
   const aguiHandler = createAguiEventHandler(store);
@@ -127,6 +123,15 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let reactRoot: Root | null = null;
+  let lastView: import("../state/types.js").TuiView = mode === "welcome" ? "welcome" : "agents";
+
+  // ─── View-open data fetching ──────────────────────────────────────
+  const fetchDeps = { store, client };
+  store.subscribe((s) => {
+    if (s.view === lastView) return;
+    lastView = s.view;
+    fetchDataForViewFn(s.view, fetchDeps);
+  });
 
   // ─── Shared helpers ─────────────────────────────────────────────────
 
@@ -255,104 +260,41 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   // ─── SSE event stream ─────────────────────────────────────────────
 
+  const eventStream: EventStreamHandle = createEventStream({
+    store,
+    eventsUrl: client.eventsUrl(),
+    authToken,
+    createReconnectingStream,
+    onBatch: (typedBatch) => {
+      store.dispatch({ kind: "apply_event_batch", batch: typedBatch });
+      debouncedRefresh.call();
+      forwardAgentEventsToConsole(typedBatch);
+      checkConsentPrompts(typedBatch);
+    },
+  });
+
   function startEventStream(): void {
-    if (sseStream !== null) return;
-    const eventsUrl = client.eventsUrl();
-    const hdrs: Record<string, string> = {};
-    if (authToken !== undefined) {
-      hdrs.Authorization = `Bearer ${authToken}`;
-    }
-
-    sseStream = createReconnectingStream(
-      async (lastEventId) => {
-        const fetchHeaders: Record<string, string> = { ...hdrs };
-        if (lastEventId !== undefined) {
-          fetchHeaders["Last-Event-ID"] = lastEventId;
-        }
-        return fetch(eventsUrl, { headers: fetchHeaders });
-      },
-      {
-        onEvent: (event) => {
-          try {
-            const batch: unknown = JSON.parse(event.data);
-            if (
-              typeof batch === "object" &&
-              batch !== null &&
-              "events" in batch &&
-              "seq" in batch &&
-              "timestamp" in batch
-            ) {
-              const typedBatch = batch as DashboardEventBatch;
-              store.dispatch({ kind: "apply_event_batch", batch: typedBatch });
-              debouncedRefresh.call();
-              forwardAgentEventsToConsole(typedBatch);
-              checkConsentPrompts(typedBatch);
-            }
-          } catch {
-            // Malformed SSE data — skip
-          }
-        },
-        onStatus: (status) => {
-          switch (status.kind) {
-            case "connected":
-              store.dispatch({ kind: "set_connection_status", status: "connected" });
-              break;
-            case "reconnecting":
-              store.dispatch({ kind: "set_connection_status", status: "reconnecting" });
-              break;
-            case "failed":
-              store.dispatch({ kind: "set_connection_status", status: "disconnected" });
-              break;
-          }
-        },
-      },
-      { maxAttempts: 10, initialDelayMs: 500, maxDelayMs: 10_000 },
-    );
+    eventStream.start();
   }
-
   function stopEventStream(): void {
-    if (sseStream !== null) {
-      sseStream.stop();
-      sseStream = null;
-    }
+    eventStream.stop();
   }
 
   // ─── Event forwarding ──────────────────────────────────────────────
 
+  const eventForwardDeps = {
+    store,
+    addLifecycleMessage,
+    openDataSources: () => openDataSources(dsDeps),
+    forwardConsentPrompts: (hasDiscovery: boolean) => forwardConsentPrompts(hasDiscovery, dsDeps),
+  };
+
   function forwardAgentEventsToConsole(batch: DashboardEventBatch): void {
-    const session = store.getState().activeSession;
-    for (const evt of batch.events) {
-      if (isPtyOutputEvent(evt)) {
-        store.dispatch({ kind: "append_pty_data", agentId: evt.agentId, data: evt.data });
-        continue;
-      }
-      if (isDataSourceEvent(evt)) {
-        const desc = formatDataSourceEvent(evt);
-        if (desc !== null) {
-          addLifecycleMessage(desc);
-          if (evt.subKind === "data_source_discovered") {
-            openDataSources(dsDeps).catch(() => {});
-          }
-        }
-        continue;
-      }
-      if (session === null) continue;
-      if (!isAgentEvent(evt)) continue;
-      if (evt.agentId !== session.agentId) continue;
-      const desc = formatAgentEvent(evt);
-      if (desc !== null) addLifecycleMessage(desc);
-    }
+    forwardAgentEventsHelper(batch, eventForwardDeps);
   }
 
   function checkConsentPrompts(batch: DashboardEventBatch): void {
-    let hasDiscovery = false;
-    for (const evt of batch.events) {
-      if (isDataSourceEvent(evt) && evt.subKind === "data_source_discovered") {
-        hasDiscovery = true;
-        break;
-      }
-    }
-    forwardConsentPrompts(hasDiscovery, dsDeps);
+    checkConsentPromptsHelper(batch, eventForwardDeps);
   }
 
   // ─── Palette ───────────────────────────────────────────────────────
@@ -431,40 +373,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   // ─── Consent ────────────────────────────────────────────────────────
 
+  const cDeps: ConsentDeps = { store, dsDeps, addLifecycleMessage };
   function consentApprove(): void {
-    const pending = store.getState().pendingConsent;
-    if (pending === undefined || pending.length === 0) return;
-    const first = pending[0];
-    if (first === undefined) return;
-    approveDataSource(first.name, dsDeps).catch(() => {});
-    store.dispatch({ kind: "clear_pending_consent" });
-    store.dispatch({ kind: "set_view", view: "agents" });
+    consentApproveHelper(cDeps);
   }
-
   function consentDeny(): void {
-    const pending = store.getState().pendingConsent;
-    if (pending !== undefined) {
-      for (const s of pending) {
-        rejectDataSource(s.name, dsDeps).catch(() => {});
-      }
-    }
-    store.dispatch({ kind: "clear_pending_consent" });
-    store.dispatch({ kind: "set_view", view: "agents" });
-    addLifecycleMessage("Data source denied");
+    consentDenyHelper(cDeps);
   }
-
   function consentDetails(): void {
-    const pending = store.getState().pendingConsent;
-    if (pending === undefined || pending.length === 0) return;
-    const first = pending[0];
-    if (first === undefined) return;
-    viewDataSourceSchema(first.name, dsDeps).catch(() => {});
+    consentDetailsHelper(cDeps);
   }
-
   function closeConsent(): void {
-    store.dispatch({ kind: "clear_pending_consent" });
-    const session = store.getState().activeSession;
-    store.dispatch({ kind: "set_view", view: session !== null ? "console" : "agents" });
+    closeConsentHelper(cDeps);
   }
 
   // ─── Agent logs ──────────────────────────────────────────────────
@@ -514,6 +434,16 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       })
       .catch(() => {
         addLifecycleMessage("Failed to open browser");
+      });
+  }
+
+  function scrollDomain(d: number): void {
+    const dk = viewToDomainKey(store.getState().view);
+    if (dk !== null)
+      store.dispatch({
+        kind: "scroll_domain_view",
+        domain: dk,
+        offset: getDomainScrollOffset(store.getState(), dk) + d,
       });
   }
 
@@ -571,6 +501,23 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     toggleForge: () => {
       const currentView = store.getState().view;
       store.dispatch({ kind: "set_view", view: currentView === "forge" ? "agents" : "forge" });
+    },
+    toggleCost: () => {
+      const currentView = store.getState().view;
+      store.dispatch({ kind: "set_view", view: currentView === "cost" ? "agents" : "cost" });
+    },
+    toggleNexus: () => {
+      const currentView = store.getState().view;
+      store.dispatch({ kind: "set_view", view: currentView === "nexus" ? "agents" : "nexus" });
+    },
+    closeDomainView: () => {
+      store.dispatch({ kind: "set_view", view: "agents" });
+    },
+    domainScrollUp: () => {
+      scrollDomain(-1);
+    },
+    domainScrollDown: () => {
+      scrollDomain(1);
     },
     presetSelect: () => {
       const presets = store.getState().presets;
@@ -705,6 +652,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const healthResult = await client.checkHealth();
     if (healthResult.ok) {
       store.dispatch({ kind: "set_connection_status", status: "connected" });
+      if (healthResult.value.capabilities !== undefined) {
+        store.dispatch({ kind: "set_capabilities", capabilities: healthResult.value.capabilities });
+      }
     } else {
       store.dispatch({ kind: "set_connection_status", status: "disconnected" });
       store.dispatch({ kind: "set_error", error: healthResult.error });
@@ -738,6 +688,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const healthResult = await client.checkHealth();
     if (healthResult.ok) {
       store.dispatch({ kind: "set_connection_status", status: "connected" });
+      if (healthResult.value.capabilities !== undefined) {
+        store.dispatch({ kind: "set_capabilities", capabilities: healthResult.value.capabilities });
+      }
     } else {
       store.dispatch({ kind: "set_connection_status", status: "disconnected" });
       store.dispatch({ kind: "set_error", error: healthResult.error });
@@ -826,34 +779,4 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     handleKeyInput: keyboardHandler,
     transitionToBoardroom,
   };
-}
-
-// ─── Event formatters ──────────────────────────────────────────────────
-
-function formatAgentEvent(evt: AgentDashboardEvent): string | null {
-  switch (evt.subKind) {
-    case "status_changed":
-      return `Agent state: ${evt.from} → ${evt.to}`;
-    case "dispatched":
-      return `Agent dispatched: ${evt.name}`;
-    case "terminated":
-      return `Agent terminated${evt.reason !== undefined ? `: ${evt.reason}` : ""}`;
-    case "metrics_updated":
-      return `Turns: ${String(evt.turns)}, tokens: ${String(evt.tokenCount)}`;
-    default:
-      return null;
-  }
-}
-
-function formatDataSourceEvent(evt: DataSourceDashboardEvent): string | null {
-  switch (evt.subKind) {
-    case "data_source_discovered":
-      return `Data source discovered: ${evt.name} (${evt.protocol}) from ${evt.source}`;
-    case "connector_forged":
-      return `Connector forged for: ${evt.name} (${evt.protocol})`;
-    case "connector_health_update":
-      return `Connector ${evt.name}: ${evt.healthy ? "healthy" : "unhealthy"}`;
-    default:
-      return null;
-  }
 }

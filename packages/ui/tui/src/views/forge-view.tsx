@@ -7,11 +7,20 @@
 
 import { PanelChrome } from "../components/panel-chrome.js";
 import { sparkline } from "../lib/sparkline.js";
-import type { TuiState } from "../state/types.js";
+import type { ForgeDashboardEvent, MonitorDashboardEvent } from "@koi/dashboard-types";
+import type { TuiBrickSummary } from "../state/types.js";
 import { COLORS } from "../theme.js";
 
+/** Typed forge view state slice (avoids passing full TuiState). */
+export interface ForgeViewState {
+  readonly forgeBricks: Readonly<Record<string, TuiBrickSummary>>;
+  readonly forgeSparklines: Readonly<Record<string, readonly number[]>>;
+  readonly forgeEvents: readonly ForgeDashboardEvent[];
+  readonly monitorEvents: readonly MonitorDashboardEvent[];
+}
+
 export interface ForgeViewProps {
-  readonly state: TuiState;
+  readonly state: ForgeViewState;
   readonly focused: boolean;
   readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }

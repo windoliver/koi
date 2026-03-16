@@ -69,6 +69,26 @@ export {
 // Lib — terminal emulation
 export type { TerminalConfig, TerminalInstance } from "./lib/ghostty-wasm.js";
 export { createTerminal } from "./lib/ghostty-wasm.js";
+// State — domain types
+export type {
+  AgentProcfsViewState,
+  ChannelsViewState,
+  CostViewState,
+  GatewayViewState,
+  GovernancePendingApproval,
+  GovernanceViewState,
+  GovernanceViolation,
+  HarnessViewState,
+  MiddlewareViewState,
+  NexusViewState,
+  ProcessTreeViewState,
+  SchedulerViewState,
+  SkillsViewState,
+  SystemViewState,
+  TaskBoardViewState,
+  TemporalViewState,
+  TuiCapabilities,
+} from "./state/domain-types.js";
 // State
 export type { StateListener, TuiStore } from "./state/store.js";
 export { createStore, reduce } from "./state/store.js";
@@ -97,16 +117,39 @@ export { AddonPickerView, AVAILABLE_ADDONS } from "./views/addon-picker-view.js"
 // Views — OpenTUI components
 export type { AgentListViewProps } from "./views/agent-list-view.js";
 export { AgentListView } from "./views/agent-list-view.js";
+export type { AgentProcfsViewProps } from "./views/agent-procfs-view.js";
+export { AgentProcfsView } from "./views/agent-procfs-view.js";
+export type { ChannelsViewProps } from "./views/channels-view.js";
+export { ChannelsView } from "./views/channels-view.js";
 export type { PaletteCallbacks, PaletteCommand } from "./views/command-palette.js";
 export { commandsToSelectItems, DEFAULT_COMMANDS } from "./views/command-palette.js";
 export type { CommandPaletteViewProps } from "./views/command-palette-view.js";
 export { CommandPaletteView } from "./views/command-palette-view.js";
 export type { ConsoleViewProps } from "./views/console-view.js";
 export { ConsoleView } from "./views/console-view.js";
+export type { CostViewProps } from "./views/cost-view.js";
+export { CostView } from "./views/cost-view.js";
+export type { GatewayViewProps } from "./views/gateway-view.js";
+export { GatewayView } from "./views/gateway-view.js";
+export type { GovernanceViewProps } from "./views/governance-view.js";
+export { GovernanceView } from "./views/governance-view.js";
+export type { HarnessViewProps } from "./views/harness-view.js";
+export { HarnessView } from "./views/harness-view.js";
 export type { MessageRowProps } from "./views/message-row.js";
 export { MessageRow } from "./views/message-row.js";
+export type { MiddlewareViewProps } from "./views/middleware-view.js";
+export { MiddlewareView } from "./views/middleware-view.js";
+export type { NexusViewProps } from "./views/nexus-view.js";
+export { NexusView } from "./views/nexus-view.js";
+export type { ProcessTreeViewProps } from "./views/process-tree-view.js";
+export { ProcessTreeView } from "./views/process-tree-view.js";
+export type { SchedulerViewProps } from "./views/scheduler-view.js";
+export { SchedulerView } from "./views/scheduler-view.js";
 export type { SessionPickerViewProps } from "./views/session-picker-view.js";
 export { SessionPickerView } from "./views/session-picker-view.js";
+// Views — new domain views
+export type { SkillsViewProps } from "./views/skills-view.js";
+export { SkillsView } from "./views/skills-view.js";
 // Views — status bar
 export type { StatusBarData } from "./views/status-bar.js";
 export {
@@ -117,12 +160,21 @@ export {
 export type { StatusBarViewProps } from "./views/status-bar-view.js";
 export { StatusBarView } from "./views/status-bar-view.js";
 export { useDerivedState, useStoreState } from "./views/store-bridge.js";
+export type { SystemViewProps } from "./views/system-view.js";
+export { SystemView } from "./views/system-view.js";
+export type { TaskBoardViewProps } from "./views/taskboard-view.js";
+export { TaskBoardView } from "./views/taskboard-view.js";
+export type { TemporalViewProps } from "./views/temporal-view.js";
+export { TemporalView } from "./views/temporal-view.js";
 // App
 export type { TuiAppConfig, TuiAppHandle } from "./views/tui-app.js";
 export { createTuiApp } from "./views/tui-app.js";
 // Views — extracted modules
 export type { CommandDeps } from "./views/tui-commands.js";
 export { dispatchCommand, handleSlashCommand } from "./views/tui-commands.js";
+// Views — consent
+export type { ConsentDeps } from "./views/tui-consent.js";
+export { closeConsent, consentApprove, consentDeny, consentDetails } from "./views/tui-consent.js";
 export type { DataSourceDeps } from "./views/tui-data-sources.js";
 export {
   approveDataSource,
@@ -132,6 +184,16 @@ export {
   rescanDataSources,
   viewDataSourceSchema,
 } from "./views/tui-data-sources.js";
+// Views — event stream
+export type { EventForwardDeps } from "./views/tui-event-stream.js";
+export {
+  checkConsentPrompts,
+  formatAgentEvent,
+  formatDataSourceEvent,
+  forwardAgentEventsToConsole,
+  getDomainScrollOffset,
+  viewToDomainKey,
+} from "./views/tui-event-stream.js";
 // Views — keyboard
 export type { KeyboardCallbacks } from "./views/tui-keyboard.js";
 export { createKeyboardHandler } from "./views/tui-keyboard.js";

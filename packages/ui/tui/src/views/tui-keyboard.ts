@@ -26,6 +26,11 @@ export interface KeyboardCallbacks {
   readonly consentDetails: () => void;
   readonly closeConsent: () => void;
   readonly toggleForge: () => void;
+  readonly toggleCost: () => void;
+  readonly toggleNexus: () => void;
+  readonly closeDomainView: () => void;
+  readonly domainScrollUp: () => void;
+  readonly domainScrollDown: () => void;
   readonly presetSelect: () => void;
   readonly presetDetails: () => void;
   readonly presetBack: () => void;
@@ -73,6 +78,12 @@ export function createKeyboardHandler(
     // Ctrl+G — toggle forge view
     if (sequence === "\x07") {
       callbacks.toggleForge();
+      return true;
+    }
+
+    // Ctrl+F — toggle nexus files view
+    if (sequence === "\x06") {
+      callbacks.toggleNexus();
       return true;
     }
 
@@ -204,6 +215,34 @@ export function createKeyboardHandler(
       return false;
     }
 
+    // Domain views with j/k scroll support
+    const SCROLLABLE_VIEWS = new Set([
+      "skills",
+      "channels",
+      "system",
+      "nexus",
+      "gateway",
+      "temporal",
+      "scheduler",
+      "taskboard",
+      "harness",
+      "middleware",
+      "processtree",
+      "agentprocfs",
+      "cost",
+      "governance",
+    ]);
+    if (SCROLLABLE_VIEWS.has(view)) {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        callbacks.domainScrollDown();
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        callbacks.domainScrollUp();
+        return true;
+      }
+    }
+
     // Escape — context-dependent back/close
     if (sequence === "\x1b") {
       if (view === "palette") {
@@ -228,6 +267,10 @@ export function createKeyboardHandler(
       }
       if (view === "forge") {
         callbacks.toggleForge();
+        return true;
+      }
+      if (SCROLLABLE_VIEWS.has(view)) {
+        callbacks.closeDomainView();
         return true;
       }
     }

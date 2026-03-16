@@ -8,13 +8,27 @@
 import type {
   AgentProcfs,
   ApiResult,
+  CheckpointEntry,
+  CronSchedule,
   DashboardAgentDetail,
   DashboardAgentSummary,
   DashboardChannelSummary,
   DashboardSkillSummary,
   DashboardSystemMetrics,
   DataSourceSummary,
+  ForgeBrickView,
+  ForgeStats,
+  GatewayTopology,
+  HarnessStatus,
+  MiddlewareChain,
   ProcessTreeSnapshot,
+  SchedulerDeadLetterEntry,
+  SchedulerStats,
+  SchedulerTaskSummary,
+  TaskBoardSnapshot,
+  TemporalHealth,
+  WorkflowDetail,
+  WorkflowSummary,
 } from "@koi/dashboard-types";
 import { ADMIN_ROUTES, interpolatePath } from "@koi/dashboard-types";
 import type { DashboardClientError } from "../types.js";
@@ -69,7 +83,21 @@ export interface AdminClient {
   readonly resumeAgent: (agentId: string) => Promise<ClientResult<null>>;
   readonly terminateAgent: (agentId: string) => Promise<ClientResult<null>>;
   readonly dispatchAgent: (req: DispatchRequest) => Promise<ClientResult<DispatchResponse>>;
-  readonly checkHealth: () => Promise<ClientResult<{ readonly status: string }>>;
+  readonly checkHealth: () => Promise<
+    ClientResult<{
+      readonly status: string;
+      readonly capabilities?: {
+        readonly temporal: boolean;
+        readonly scheduler: boolean;
+        readonly taskboard: boolean;
+        readonly harness: boolean;
+        readonly forge: boolean;
+        readonly gateway: boolean;
+        readonly nexus: boolean;
+        readonly governance: boolean;
+      };
+    }>
+  >;
   readonly fsList: (path: string) => Promise<ClientResult<readonly FsEntry[]>>;
   readonly fsRead: (path: string) => Promise<ClientResult<string>>;
   readonly fsWrite: (path: string, content: string) => Promise<ClientResult<null>>;
@@ -85,6 +113,57 @@ export interface AdminClient {
   ) => Promise<ClientResult<Readonly<Record<string, unknown>>>>;
   /** Trigger a server-side rescan for new data sources. */
   readonly rescanDataSources: () => Promise<ClientResult<readonly DataSourceSummary[]>>;
+  // ─── Runtime views ───────────────────────────────────────────────
+  /** Fetch middleware chain for an agent. */
+  readonly getMiddlewareChain: (agentId: string) => Promise<ClientResult<MiddlewareChain>>;
+  /** Fetch gateway topology. */
+  readonly getGatewayTopology: () => Promise<ClientResult<GatewayTopology>>;
+  /** List forge bricks. */
+  readonly listForgeBricks: () => Promise<ClientResult<readonly ForgeBrickView[]>>;
+  /** Get forge stats. */
+  readonly getForgeStats: () => Promise<ClientResult<ForgeStats>>;
+  /** List recent forge events. */
+  readonly listForgeEvents: () => Promise<
+    ClientResult<readonly import("@koi/dashboard-types").ForgeDashboardEvent[]>
+  >;
+  // ─── Temporal orchestration ─────────────────────────────────────
+  /** Check Temporal server health. */
+  readonly getTemporalHealth: () => Promise<ClientResult<TemporalHealth>>;
+  /** List active workflows. */
+  readonly listWorkflows: () => Promise<ClientResult<readonly WorkflowSummary[]>>;
+  /** Get workflow detail by ID. */
+  readonly getWorkflow: (workflowId: string) => Promise<ClientResult<WorkflowDetail>>;
+  /** Send a signal to a workflow. */
+  readonly signalWorkflow: (workflowId: string, signal: string) => Promise<ClientResult<null>>;
+  /** Terminate a workflow. */
+  readonly terminateWorkflow: (workflowId: string) => Promise<ClientResult<null>>;
+  // ─── Scheduler orchestration ────────────────────────────────────
+  /** List scheduler tasks. */
+  readonly listSchedulerTasks: () => Promise<ClientResult<readonly SchedulerTaskSummary[]>>;
+  /** Get scheduler stats. */
+  readonly getSchedulerStats: () => Promise<ClientResult<SchedulerStats>>;
+  /** List cron schedules. */
+  readonly listSchedules: () => Promise<ClientResult<readonly CronSchedule[]>>;
+  /** List dead letter entries. */
+  readonly listDeadLetters: () => Promise<ClientResult<readonly SchedulerDeadLetterEntry[]>>;
+  /** Retry a dead letter entry. */
+  readonly retryDeadLetter: (entryId: string) => Promise<ClientResult<null>>;
+  /** Pause a schedule. */
+  readonly pauseSchedule: (scheduleId: string) => Promise<ClientResult<null>>;
+  /** Resume a schedule. */
+  readonly resumeSchedule: (scheduleId: string) => Promise<ClientResult<null>>;
+  // ─── TaskBoard ──────────────────────────────────────────────────
+  /** Get task board DAG snapshot. */
+  readonly getTaskBoardSnapshot: () => Promise<ClientResult<TaskBoardSnapshot>>;
+  // ─── Harness ────────────────────────────────────────────────────
+  /** Get harness status. */
+  readonly getHarnessStatus: () => Promise<ClientResult<HarnessStatus>>;
+  /** List harness checkpoints. */
+  readonly listCheckpoints: () => Promise<ClientResult<readonly CheckpointEntry[]>>;
+  /** Pause the harness. */
+  readonly pauseHarness: () => Promise<ClientResult<null>>;
+  /** Resume the harness. */
+  readonly resumeHarness: () => Promise<ClientResult<null>>;
   /** Build the SSE events URL for reconnecting stream. */
   readonly eventsUrl: () => string;
   /** Build the AG-UI chat URL for a specific agent. */
@@ -204,7 +283,20 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
     dispatchAgent: (req) =>
       request<DispatchResponse>("POST", ADMIN_ROUTES.dispatchAgent.path, undefined, req),
 
-    checkHealth: () => request<{ readonly status: string }>("GET", ADMIN_ROUTES.health.path),
+    checkHealth: () =>
+      request<{
+        readonly status: string;
+        readonly capabilities?: {
+          readonly temporal: boolean;
+          readonly scheduler: boolean;
+          readonly taskboard: boolean;
+          readonly harness: boolean;
+          readonly forge: boolean;
+          readonly gateway: boolean;
+          readonly nexus: boolean;
+          readonly governance: boolean;
+        };
+      }>("GET", ADMIN_ROUTES.health.path),
 
     fsList: (path) =>
       request<readonly FsEntry[]>(
@@ -233,6 +325,72 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
 
     rescanDataSources: () =>
       request<readonly DataSourceSummary[]>("POST", ADMIN_ROUTES.rescanDataSources.path),
+
+    // ─── Runtime views ─────────────────────────────────────────────
+    getMiddlewareChain: (agentId) =>
+      request<MiddlewareChain>("GET", ADMIN_ROUTES.middlewareChain.path, { id: agentId }),
+
+    getGatewayTopology: () => request<GatewayTopology>("GET", ADMIN_ROUTES.gatewayTopology.path),
+
+    listForgeBricks: () => request<readonly ForgeBrickView[]>("GET", ADMIN_ROUTES.forgeBricks.path),
+
+    getForgeStats: () => request<ForgeStats>("GET", ADMIN_ROUTES.forgeStats.path),
+
+    listForgeEvents: () =>
+      request<readonly import("@koi/dashboard-types").ForgeDashboardEvent[]>(
+        "GET",
+        ADMIN_ROUTES.forgeEvents.path,
+      ),
+
+    // ─── Temporal orchestration ────────────────────────────────────
+    getTemporalHealth: () => request<TemporalHealth>("GET", ADMIN_ROUTES.temporalHealth.path),
+
+    listWorkflows: () =>
+      request<readonly WorkflowSummary[]>("GET", ADMIN_ROUTES.temporalWorkflows.path),
+
+    getWorkflow: (workflowId) =>
+      request<WorkflowDetail>("GET", ADMIN_ROUTES.temporalWorkflow.path, { id: workflowId }),
+
+    signalWorkflow: (workflowId, signal) =>
+      request<null>("POST", ADMIN_ROUTES.temporalSignal.path, { id: workflowId }, { signal }),
+
+    terminateWorkflow: (workflowId) =>
+      request<null>("POST", ADMIN_ROUTES.temporalTerminate.path, { id: workflowId }),
+
+    // ─── Scheduler orchestration ───────────────────────────────────
+    listSchedulerTasks: () =>
+      request<readonly SchedulerTaskSummary[]>("GET", ADMIN_ROUTES.schedulerTasks.path),
+
+    getSchedulerStats: () => request<SchedulerStats>("GET", ADMIN_ROUTES.schedulerStats.path),
+
+    listSchedules: () =>
+      request<readonly CronSchedule[]>("GET", ADMIN_ROUTES.schedulerSchedules.path),
+
+    listDeadLetters: () =>
+      request<readonly SchedulerDeadLetterEntry[]>("GET", ADMIN_ROUTES.schedulerDlq.path),
+
+    retryDeadLetter: (entryId) =>
+      request<null>("POST", ADMIN_ROUTES.retryDeadLetter.path, { id: entryId }),
+
+    pauseSchedule: (scheduleId) =>
+      request<null>("POST", ADMIN_ROUTES.schedulerPause.path, { id: scheduleId }),
+
+    resumeSchedule: (scheduleId) =>
+      request<null>("POST", ADMIN_ROUTES.schedulerResume.path, { id: scheduleId }),
+
+    // ─── TaskBoard ─────────────────────────────────────────────────
+    getTaskBoardSnapshot: () =>
+      request<TaskBoardSnapshot>("GET", ADMIN_ROUTES.taskBoardSnapshot.path),
+
+    // ─── Harness ───────────────────────────────────────────────────
+    getHarnessStatus: () => request<HarnessStatus>("GET", ADMIN_ROUTES.harnessStatus.path),
+
+    listCheckpoints: () =>
+      request<readonly CheckpointEntry[]>("GET", ADMIN_ROUTES.harnessCheckpoints.path),
+
+    pauseHarness: () => request<null>("POST", ADMIN_ROUTES.harnessPause.path),
+
+    resumeHarness: () => request<null>("POST", ADMIN_ROUTES.harnessResume.path),
 
     eventsUrl: () => url(ADMIN_ROUTES.events.path),
 

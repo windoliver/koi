@@ -6,12 +6,61 @@
  */
 
 import type {
+  AgentProcfs,
+  CheckpointEntry,
+  CronSchedule,
   DashboardAgentSummary,
   DashboardEventBatch,
   DataSourceSummary,
   ForgeDashboardEvent,
+  GatewayTopology,
+  HarnessStatus,
+  MiddlewareChain,
   MonitorDashboardEvent,
+  ProcessTreeSnapshot,
+  SchedulerDeadLetterEntry,
+  SchedulerStats,
+  SchedulerTaskSummary,
+  TaskBoardSnapshot,
+  TemporalHealth,
+  WorkflowDetail,
+  WorkflowSummary,
 } from "@koi/dashboard-types";
+import type {
+  AgentProcfsViewState,
+  ChannelsViewState,
+  CostViewState,
+  GatewayViewState,
+  GovernancePendingApproval,
+  GovernanceViewState,
+  GovernanceViolation,
+  HarnessViewState,
+  MiddlewareViewState,
+  NexusViewState,
+  ProcessTreeViewState,
+  SchedulerViewState,
+  SkillsViewState,
+  SystemViewState,
+  TaskBoardViewState,
+  TemporalViewState,
+  TuiCapabilities,
+} from "./domain-types.js";
+import {
+  createInitialAgentProcfsView,
+  createInitialChannelsView,
+  createInitialCostView,
+  createInitialGatewayView,
+  createInitialGovernanceView,
+  createInitialHarnessView,
+  createInitialMiddlewareView,
+  createInitialNexusView,
+  createInitialProcessTreeView,
+  createInitialSchedulerView,
+  createInitialSkillsView,
+  createInitialSystemView,
+  createInitialTaskBoardView,
+  createInitialTemporalView,
+} from "./domain-types.js";
 
 // Re-export shared types from dashboard-client
 /** TUI-specific error alias for backward compat. */
@@ -39,16 +88,30 @@ export interface SessionState {
 export type TuiView =
   | "addons"
   | "agents"
+  | "agentprocfs"
+  | "channels"
   | "consent"
   | "console"
+  | "cost"
   | "datasources"
   | "forge"
+  | "gateway"
+  | "governance"
+  | "harness"
+  | "middleware"
   | "nameinput"
+  | "nexus"
   | "palette"
   | "presetdetail"
+  | "processtree"
+  | "scheduler"
   | "sessions"
+  | "skills"
   | "sourcedetail"
   | "splitpanes"
+  | "system"
+  | "taskboard"
+  | "temporal"
   | "welcome";
 
 /** Panel zoom level — cycles with +/Esc. */
@@ -144,6 +207,23 @@ export interface TuiState {
   readonly splitSessions: Readonly<Record<string, SessionState>>;
   /** Index of focused pane in split view. */
   readonly focusedPaneIndex: number;
+  // ─── Domain view slices ──────────────────────────────────────────
+  readonly skillsView: SkillsViewState;
+  readonly channelsView: ChannelsViewState;
+  readonly systemView: SystemViewState;
+  readonly nexusView: NexusViewState;
+  readonly gatewayView: GatewayViewState;
+  readonly temporalView: TemporalViewState;
+  readonly schedulerView: SchedulerViewState;
+  readonly taskBoardView: TaskBoardViewState;
+  readonly harnessView: HarnessViewState;
+  readonly governanceView: GovernanceViewState;
+  readonly costView: CostViewState;
+  readonly middlewareView: MiddlewareViewState;
+  readonly processTreeView: ProcessTreeViewState;
+  readonly agentProcfsView: AgentProcfsViewState;
+  /** Server capabilities — which subsystems are available. */
+  readonly capabilities: TuiCapabilities | null;
 }
 
 /** App mode: welcome (no admin API) or boardroom (connected). */
@@ -183,6 +263,21 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     ptyBuffers: {},
     splitSessions: {},
     focusedPaneIndex: 0,
+    skillsView: createInitialSkillsView(),
+    channelsView: createInitialChannelsView(),
+    systemView: createInitialSystemView(),
+    nexusView: createInitialNexusView(),
+    gatewayView: createInitialGatewayView(),
+    temporalView: createInitialTemporalView(),
+    schedulerView: createInitialSchedulerView(),
+    taskBoardView: createInitialTaskBoardView(),
+    harnessView: createInitialHarnessView(),
+    governanceView: createInitialGovernanceView(),
+    costView: createInitialCostView(),
+    middlewareView: createInitialMiddlewareView(),
+    processTreeView: createInitialProcessTreeView(),
+    agentProcfsView: createInitialAgentProcfsView(),
+    capabilities: null,
   };
 }
 
@@ -301,7 +396,74 @@ export type TuiAction =
   | {
       readonly kind: "set_focused_pane";
       readonly index: number;
-    };
+    }
+  // ─── Domain view actions ───────────────────────────────────────────
+  | {
+      readonly kind: "apply_skill_event";
+      readonly event: import("@koi/dashboard-types").SkillDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_channel_event";
+      readonly event: import("@koi/dashboard-types").ChannelDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_system_event";
+      readonly event: import("@koi/dashboard-types").SystemDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_nexus_event";
+      readonly event: import("@koi/dashboard-types").NexusDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_gateway_event";
+      readonly event: import("@koi/dashboard-types").GatewayDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_temporal_event";
+      readonly event: import("@koi/dashboard-types").TemporalDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_scheduler_event";
+      readonly event: import("@koi/dashboard-types").SchedulerDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_taskboard_event";
+      readonly event: import("@koi/dashboard-types").TaskBoardDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_harness_event";
+      readonly event: import("@koi/dashboard-types").HarnessDashboardEvent;
+    }
+  | { readonly kind: "set_capabilities"; readonly capabilities: TuiCapabilities }
+  | { readonly kind: "set_gateway_topology"; readonly topology: GatewayTopology }
+  | { readonly kind: "set_temporal_health"; readonly health: TemporalHealth }
+  | { readonly kind: "set_temporal_workflows"; readonly workflows: readonly WorkflowSummary[] }
+  | { readonly kind: "set_temporal_workflow_detail"; readonly detail: WorkflowDetail | null }
+  | { readonly kind: "select_temporal_workflow"; readonly index: number }
+  | { readonly kind: "set_scheduler_stats"; readonly stats: SchedulerStats }
+  | { readonly kind: "set_scheduler_tasks"; readonly tasks: readonly SchedulerTaskSummary[] }
+  | { readonly kind: "set_scheduler_schedules"; readonly schedules: readonly CronSchedule[] }
+  | {
+      readonly kind: "set_scheduler_dead_letters";
+      readonly entries: readonly SchedulerDeadLetterEntry[];
+    }
+  | { readonly kind: "set_taskboard_snapshot"; readonly snapshot: TaskBoardSnapshot }
+  | { readonly kind: "set_harness_status"; readonly status: HarnessStatus }
+  | { readonly kind: "set_harness_checkpoints"; readonly checkpoints: readonly CheckpointEntry[] }
+  | { readonly kind: "set_middleware_chain"; readonly chain: MiddlewareChain }
+  | { readonly kind: "set_middleware_loading"; readonly loading: boolean }
+  | { readonly kind: "set_process_tree"; readonly snapshot: ProcessTreeSnapshot }
+  | { readonly kind: "set_process_tree_loading"; readonly loading: boolean }
+  | { readonly kind: "set_agent_procfs"; readonly procfs: AgentProcfs }
+  | { readonly kind: "set_agent_procfs_loading"; readonly loading: boolean }
+  | {
+      readonly kind: "add_governance_approval";
+      readonly approval: GovernancePendingApproval;
+    }
+  | { readonly kind: "remove_governance_approval"; readonly id: string }
+  | { readonly kind: "add_governance_violation"; readonly violation: GovernanceViolation }
+  | { readonly kind: "select_governance_item"; readonly index: number }
+  | { readonly kind: "scroll_domain_view"; readonly domain: string; readonly offset: number };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;

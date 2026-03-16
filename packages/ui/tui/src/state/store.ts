@@ -7,7 +7,35 @@
 
 import type { ChatMessage } from "@koi/dashboard-client";
 import type { DashboardAgentSummary, ForgeDashboardEvent } from "@koi/dashboard-types";
-import { isAgentEvent, isForgeEvent, isMonitorEvent } from "@koi/dashboard-types";
+import {
+  isAgentEvent,
+  isChannelEvent,
+  isForgeEvent,
+  isGatewayEvent,
+  isHarnessEvent,
+  isMonitorEvent,
+  isNexusEvent,
+  isSchedulerEvent,
+  isSkillEvent,
+  isSystemEvent,
+  isTaskBoardEvent,
+  isTemporalEvent,
+} from "@koi/dashboard-types";
+import {
+  addGovernanceApproval,
+  addGovernanceViolation,
+  computeDagLayout,
+  reduceChannels,
+  reduceGateway,
+  reduceHarness,
+  reduceNexus,
+  reduceScheduler,
+  reduceSkills,
+  reduceSystem,
+  reduceTaskBoard,
+  reduceTemporal,
+  removeGovernanceApproval,
+} from "./domain-reducers.js";
 import type { TuiBrickSummary } from "./types.js";
 import { MAX_SESSION_MESSAGES, type TuiAction, type TuiState, type ZoomLevel } from "./types.js";
 
@@ -200,12 +228,50 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       const expectedSeq = state.lastEventSeq + 1;
       const hasGap = state.lastEventSeq > 0 && batch.seq !== expectedSeq;
 
+      // Domain sub-state accumulators
+      let skillsView = state.skillsView;
+      let channelsView = state.channelsView;
+      let systemView = state.systemView;
+      let nexusView = state.nexusView;
+      let gatewayView = state.gatewayView;
+      let temporalView = state.temporalView;
+      let schedulerView = state.schedulerView;
+      let taskBoardView = state.taskBoardView;
+      let harnessView = state.harnessView;
+
       for (const event of batch.events) {
         if (isAgentEvent(event)) {
           updatedAgents = state.agents;
         }
         if (isForgeEvent(event)) {
           forgeEvents.push(event);
+        }
+        if (isSkillEvent(event)) {
+          skillsView = reduceSkills(skillsView, event);
+        }
+        if (isChannelEvent(event)) {
+          channelsView = reduceChannels(channelsView, event);
+        }
+        if (isSystemEvent(event)) {
+          systemView = reduceSystem(systemView, event);
+        }
+        if (isNexusEvent(event)) {
+          nexusView = reduceNexus(nexusView, event);
+        }
+        if (isGatewayEvent(event)) {
+          gatewayView = reduceGateway(gatewayView, event);
+        }
+        if (isTemporalEvent(event)) {
+          temporalView = reduceTemporal(temporalView, event);
+        }
+        if (isSchedulerEvent(event)) {
+          schedulerView = reduceScheduler(schedulerView, event);
+        }
+        if (isTaskBoardEvent(event)) {
+          taskBoardView = reduceTaskBoard(taskBoardView, event);
+        }
+        if (isHarnessEvent(event)) {
+          harnessView = reduceHarness(harnessView, event);
         }
       }
 
@@ -234,6 +300,15 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         ...(updatedAgents !== null ? { agents: updatedAgents } : {}),
         ...forgeState,
         ...monitorState,
+        skillsView,
+        channelsView,
+        systemView,
+        nexusView,
+        gatewayView,
+        temporalView,
+        schedulerView,
+        taskBoardView,
+        harnessView,
         // Surface gap as an error for UI to handle
         ...(hasGap
           ? {
@@ -378,6 +453,245 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         focusedPaneIndex: Math.max(0, Math.min(action.index, maxIndex)),
       };
     }
+
+    // ─── Domain event actions ──────────────────────────────────────────
+
+    case "apply_skill_event":
+      return { ...state, skillsView: reduceSkills(state.skillsView, action.event) };
+
+    case "apply_channel_event":
+      return { ...state, channelsView: reduceChannels(state.channelsView, action.event) };
+
+    case "apply_system_event":
+      return { ...state, systemView: reduceSystem(state.systemView, action.event) };
+
+    case "apply_nexus_event":
+      return { ...state, nexusView: reduceNexus(state.nexusView, action.event) };
+
+    case "apply_gateway_event":
+      return { ...state, gatewayView: reduceGateway(state.gatewayView, action.event) };
+
+    case "apply_temporal_event":
+      return { ...state, temporalView: reduceTemporal(state.temporalView, action.event) };
+
+    case "apply_scheduler_event":
+      return { ...state, schedulerView: reduceScheduler(state.schedulerView, action.event) };
+
+    case "apply_taskboard_event":
+      return { ...state, taskBoardView: reduceTaskBoard(state.taskBoardView, action.event) };
+
+    case "apply_harness_event":
+      return { ...state, harnessView: reduceHarness(state.harnessView, action.event) };
+
+    case "set_capabilities":
+      return { ...state, capabilities: action.capabilities };
+
+    // ─── Domain data-fetch actions ─────────────────────────────────────
+
+    case "set_gateway_topology":
+      return { ...state, gatewayView: { ...state.gatewayView, topology: action.topology } };
+
+    case "set_temporal_health":
+      return { ...state, temporalView: { ...state.temporalView, health: action.health } };
+
+    case "set_temporal_workflows":
+      return {
+        ...state,
+        temporalView: {
+          ...state.temporalView,
+          workflows: action.workflows,
+          selectedWorkflowIndex: Math.min(
+            state.temporalView.selectedWorkflowIndex,
+            Math.max(0, action.workflows.length - 1),
+          ),
+        },
+      };
+
+    case "set_temporal_workflow_detail":
+      return { ...state, temporalView: { ...state.temporalView, workflowDetail: action.detail } };
+
+    case "select_temporal_workflow":
+      return {
+        ...state,
+        temporalView: {
+          ...state.temporalView,
+          selectedWorkflowIndex: Math.max(
+            0,
+            Math.min(action.index, state.temporalView.workflows.length - 1),
+          ),
+        },
+      };
+
+    case "set_scheduler_stats":
+      return { ...state, schedulerView: { ...state.schedulerView, stats: action.stats } };
+
+    case "set_scheduler_tasks":
+      return { ...state, schedulerView: { ...state.schedulerView, tasks: action.tasks } };
+
+    case "set_scheduler_schedules":
+      return { ...state, schedulerView: { ...state.schedulerView, schedules: action.schedules } };
+
+    case "set_scheduler_dead_letters":
+      return { ...state, schedulerView: { ...state.schedulerView, deadLetters: action.entries } };
+
+    case "set_taskboard_snapshot": {
+      const { snapshot } = action;
+      const prev = state.taskBoardView;
+      const needsRelayout =
+        prev.snapshot === null ||
+        snapshot.nodes.length !== prev.layoutNodeCount ||
+        snapshot.edges.length !== prev.layoutEdgeCount;
+      const layout = needsRelayout
+        ? computeDagLayout(snapshot.nodes, snapshot.edges)
+        : prev.cachedLayout;
+      return {
+        ...state,
+        taskBoardView: {
+          ...prev,
+          snapshot,
+          cachedLayout: layout,
+          layoutNodeCount: snapshot.nodes.length,
+          layoutEdgeCount: snapshot.edges.length,
+        },
+      };
+    }
+
+    case "set_harness_status":
+      return { ...state, harnessView: { ...state.harnessView, status: action.status } };
+
+    case "set_harness_checkpoints":
+      return { ...state, harnessView: { ...state.harnessView, checkpoints: action.checkpoints } };
+
+    case "set_middleware_chain":
+      return {
+        ...state,
+        middlewareView: { ...state.middlewareView, chain: action.chain, loading: false },
+      };
+
+    case "set_middleware_loading":
+      return { ...state, middlewareView: { ...state.middlewareView, loading: action.loading } };
+
+    case "set_process_tree":
+      return {
+        ...state,
+        processTreeView: { ...state.processTreeView, snapshot: action.snapshot, loading: false },
+      };
+
+    case "set_process_tree_loading":
+      return { ...state, processTreeView: { ...state.processTreeView, loading: action.loading } };
+
+    case "set_agent_procfs":
+      return {
+        ...state,
+        agentProcfsView: { ...state.agentProcfsView, procfs: action.procfs, loading: false },
+      };
+
+    case "set_agent_procfs_loading":
+      return { ...state, agentProcfsView: { ...state.agentProcfsView, loading: action.loading } };
+
+    // ─── Governance actions ────────────────────────────────────────────
+
+    case "add_governance_approval":
+      return {
+        ...state,
+        governanceView: addGovernanceApproval(state.governanceView, action.approval),
+      };
+
+    case "remove_governance_approval":
+      return {
+        ...state,
+        governanceView: removeGovernanceApproval(state.governanceView, action.id),
+      };
+
+    case "add_governance_violation":
+      return {
+        ...state,
+        governanceView: addGovernanceViolation(state.governanceView, action.violation),
+      };
+
+    case "select_governance_item":
+      return {
+        ...state,
+        governanceView: {
+          ...state.governanceView,
+          selectedIndex: Math.max(
+            0,
+            Math.min(action.index, state.governanceView.pendingApprovals.length - 1),
+          ),
+        },
+      };
+
+    case "scroll_domain_view": {
+      const { domain, offset } = action;
+      switch (domain) {
+        case "skills":
+          return {
+            ...state,
+            skillsView: { ...state.skillsView, scrollOffset: Math.max(0, offset) },
+          };
+        case "channels":
+          return {
+            ...state,
+            channelsView: { ...state.channelsView, scrollOffset: Math.max(0, offset) },
+          };
+        case "system":
+          return {
+            ...state,
+            systemView: { ...state.systemView, scrollOffset: Math.max(0, offset) },
+          };
+        case "nexus":
+          return { ...state, nexusView: { ...state.nexusView, scrollOffset: Math.max(0, offset) } };
+        case "gateway":
+          return {
+            ...state,
+            gatewayView: { ...state.gatewayView, scrollOffset: Math.max(0, offset) },
+          };
+        case "temporal":
+          return {
+            ...state,
+            temporalView: { ...state.temporalView, scrollOffset: Math.max(0, offset) },
+          };
+        case "scheduler":
+          return {
+            ...state,
+            schedulerView: { ...state.schedulerView, scrollOffset: Math.max(0, offset) },
+          };
+        case "taskboard":
+          return {
+            ...state,
+            taskBoardView: { ...state.taskBoardView, scrollOffset: Math.max(0, offset) },
+          };
+        case "harness":
+          return {
+            ...state,
+            harnessView: { ...state.harnessView, scrollOffset: Math.max(0, offset) },
+          };
+        case "governance":
+          return {
+            ...state,
+            governanceView: { ...state.governanceView, scrollOffset: Math.max(0, offset) },
+          };
+        case "middleware":
+          return {
+            ...state,
+            middlewareView: { ...state.middlewareView, scrollOffset: Math.max(0, offset) },
+          };
+        case "processtree":
+          return {
+            ...state,
+            processTreeView: { ...state.processTreeView, scrollOffset: Math.max(0, offset) },
+          };
+        case "agentprocfs":
+          return {
+            ...state,
+            agentProcfsView: { ...state.agentProcfsView, scrollOffset: Math.max(0, offset) },
+          };
+        case "cost":
+          return { ...state, costView: { ...state.costView, scrollOffset: Math.max(0, offset) } };
+        default:
+          return state;
+      }
+    }
   }
 }
 
@@ -397,32 +711,39 @@ function applyForgeBatch(
       case "brick_demand_forged":
         bricks[event.brickId] = { name: event.name, status: "active", fitness: 0 };
         break;
-      case "brick_deprecated":
-        if (bricks[event.brickId] !== undefined) {
+      case "brick_deprecated": {
+        const existing = bricks[event.brickId];
+        if (existing !== undefined) {
           bricks[event.brickId] = {
-            ...bricks[event.brickId]!,
+            ...existing,
             status: "deprecated",
             fitness: event.fitnessOriginal,
           };
         }
         break;
-      case "brick_promoted":
-        if (bricks[event.brickId] !== undefined) {
+      }
+      case "brick_promoted": {
+        const existing = bricks[event.brickId];
+        if (existing !== undefined) {
           bricks[event.brickId] = {
-            ...bricks[event.brickId]!,
+            ...existing,
             status: "promoted",
             fitness: event.fitnessOriginal,
           };
         }
         break;
-      case "brick_quarantined":
-        if (bricks[event.brickId] !== undefined) {
-          bricks[event.brickId] = { ...bricks[event.brickId]!, status: "quarantined" };
+      }
+      case "brick_quarantined": {
+        const existing = bricks[event.brickId];
+        if (existing !== undefined) {
+          bricks[event.brickId] = { ...existing, status: "quarantined" };
         }
         break;
+      }
       case "fitness_flushed": {
-        if (bricks[event.brickId] !== undefined) {
-          bricks[event.brickId] = { ...bricks[event.brickId]!, fitness: event.successRate };
+        const existing = bricks[event.brickId];
+        if (existing !== undefined) {
+          bricks[event.brickId] = { ...existing, fitness: event.successRate };
         }
         const prev = sparklines[event.brickId] ?? [];
         sparklines[event.brickId] = [...prev, event.successRate].slice(-MAX_FORGE_SPARKLINE_POINTS);

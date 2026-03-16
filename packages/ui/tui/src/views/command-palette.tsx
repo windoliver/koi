@@ -12,6 +12,8 @@ export interface PaletteCommand {
   readonly description: string;
   /** Keyboard shortcut hint (e.g., "Ctrl+R"). */
   readonly shortcut?: string;
+  /** Required server capability — command hidden when absent. */
+  readonly requiredCapability?: string;
 }
 
 /** Callbacks for palette interactions. */
@@ -44,8 +46,34 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
     shortcut: "Ctrl+O",
   },
   { id: "split-panes", label: "/split", description: "Toggle agent split-pane terminal view" },
+  { id: "skills", label: "/skills", description: "Show installed skills" },
+  { id: "channels", label: "/channels", description: "Show channel connections" },
+  { id: "system", label: "/system", description: "Show system metrics and events" },
+  { id: "nexus", label: "/nexus", description: "Show Nexus file/namespace events", shortcut: "Ctrl+F" },
+  { id: "gateway", label: "/gateway", description: "Show gateway topology" },
+  { id: "middleware", label: "/middleware", description: "Show middleware chain for active agent" },
+  { id: "temporal", label: "/temporal", description: "Show Temporal workflows", requiredCapability: "temporal" },
+  { id: "scheduler", label: "/scheduler", description: "Show scheduler tasks and schedules", requiredCapability: "scheduler" },
+  { id: "taskboard", label: "/taskboard", description: "Show task board DAG", requiredCapability: "taskboard" },
+  { id: "harness", label: "/harness", description: "Show harness status", requiredCapability: "harness" },
+  { id: "cost", label: "/cost", description: "Show cost and token usage" },
+  { id: "processtree", label: "/proctree", description: "Show agent process tree" },
+  { id: "agentprocfs", label: "/procfs", description: "Show agent runtime state (procfs)" },
+  { id: "governance", label: "/governance", description: "Show governance approvals and violations", requiredCapability: "governance" },
   { id: "quit", label: "/quit", description: "Exit TUI", shortcut: "q" },
 ] as const;
+
+/** Filter commands by server capabilities. */
+export function filterCommandsByCapabilities(
+  commands: readonly PaletteCommand[],
+  capabilities: import("../state/domain-types.js").TuiCapabilities | null,
+): readonly PaletteCommand[] {
+  return commands.filter((cmd) => {
+    if (cmd.requiredCapability === undefined) return true;
+    if (capabilities === null) return false;
+    return (capabilities as unknown as Readonly<Record<string, boolean>>)[cmd.requiredCapability] === true;
+  });
+}
 
 /** Convert palette commands to select items for OpenTUI Select/DialogSelect. */
 export function commandsToSelectItems(

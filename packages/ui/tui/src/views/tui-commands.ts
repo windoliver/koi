@@ -137,6 +137,62 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
       return true;
     }
 
+    case "skills":
+      deps.store.dispatch({ kind: "set_view", view: "skills" });
+      return true;
+
+    case "channels":
+      deps.store.dispatch({ kind: "set_view", view: "channels" });
+      return true;
+
+    case "system":
+      deps.store.dispatch({ kind: "set_view", view: "system" });
+      return true;
+
+    case "nexus":
+      deps.store.dispatch({ kind: "set_view", view: "nexus" });
+      return true;
+
+    case "gateway":
+      deps.store.dispatch({ kind: "set_view", view: "gateway" });
+      return true;
+
+    case "middleware":
+      deps.store.dispatch({ kind: "set_view", view: "middleware" });
+      return true;
+
+    case "temporal":
+      deps.store.dispatch({ kind: "set_view", view: "temporal" });
+      return true;
+
+    case "scheduler":
+      deps.store.dispatch({ kind: "set_view", view: "scheduler" });
+      return true;
+
+    case "taskboard":
+      deps.store.dispatch({ kind: "set_view", view: "taskboard" });
+      return true;
+
+    case "harness":
+      deps.store.dispatch({ kind: "set_view", view: "harness" });
+      return true;
+
+    case "cost":
+      deps.store.dispatch({ kind: "set_view", view: "cost" });
+      return true;
+
+    case "processtree":
+      deps.store.dispatch({ kind: "set_view", view: "processtree" });
+      return true;
+
+    case "agentprocfs":
+      deps.store.dispatch({ kind: "set_view", view: "agentprocfs" });
+      return true;
+
+    case "governance":
+      deps.store.dispatch({ kind: "set_view", view: "governance" });
+      return true;
+
     case "quit":
       deps.stop().catch(() => {});
       return true;

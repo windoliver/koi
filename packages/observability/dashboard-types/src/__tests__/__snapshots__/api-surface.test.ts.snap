@@ -1027,6 +1027,74 @@ declare const ADMIN_ROUTES: {
         readonly method: "GET";
         readonly path: "/view/forge/events";
     };
+    readonly temporalHealth: {
+        readonly method: "GET";
+        readonly path: "/view/temporal/health";
+    };
+    readonly temporalWorkflows: {
+        readonly method: "GET";
+        readonly path: "/view/temporal/workflows";
+    };
+    readonly temporalWorkflow: {
+        readonly method: "GET";
+        readonly path: "/view/temporal/workflows/:id";
+    };
+    readonly temporalSignal: {
+        readonly method: "POST";
+        readonly path: "/cmd/temporal/workflows/:id/signal";
+    };
+    readonly temporalTerminate: {
+        readonly method: "POST";
+        readonly path: "/cmd/temporal/workflows/:id/terminate";
+    };
+    readonly schedulerTasks: {
+        readonly method: "GET";
+        readonly path: "/view/scheduler/tasks";
+    };
+    readonly schedulerStats: {
+        readonly method: "GET";
+        readonly path: "/view/scheduler/stats";
+    };
+    readonly schedulerSchedules: {
+        readonly method: "GET";
+        readonly path: "/view/scheduler/schedules";
+    };
+    readonly schedulerDlq: {
+        readonly method: "GET";
+        readonly path: "/view/scheduler/dlq";
+    };
+    readonly schedulerPause: {
+        readonly method: "POST";
+        readonly path: "/cmd/scheduler/schedules/:id/pause";
+    };
+    readonly schedulerResume: {
+        readonly method: "POST";
+        readonly path: "/cmd/scheduler/schedules/:id/resume";
+    };
+    readonly schedulerDeleteSchedule: {
+        readonly method: "DELETE";
+        readonly path: "/cmd/scheduler/schedules/:id";
+    };
+    readonly taskBoardSnapshot: {
+        readonly method: "GET";
+        readonly path: "/view/taskboard/snapshot";
+    };
+    readonly harnessStatus: {
+        readonly method: "GET";
+        readonly path: "/view/harness/status";
+    };
+    readonly harnessCheckpoints: {
+        readonly method: "GET";
+        readonly path: "/view/harness/checkpoints";
+    };
+    readonly harnessPause: {
+        readonly method: "POST";
+        readonly path: "/cmd/harness/pause";
+    };
+    readonly harnessResume: {
+        readonly method: "POST";
+        readonly path: "/cmd/harness/resume";
+    };
     readonly listDataSources: {
         readonly method: "GET";
         readonly path: "/data-sources";
