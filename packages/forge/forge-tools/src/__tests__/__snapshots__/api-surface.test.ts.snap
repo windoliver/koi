@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
-"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, CompanionSkillDefinition, ComponentProvider, StoreChangeNotifier, KoiError, BrickRegistryWriter, Resolver, BrickRequires, EngineAdapter } from '@koi/core';
+"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, CompanionSkillDefinition, ComponentProvider, StoreChangeNotifier, KoiError, BrickRegistryWriter, Resolver, BrickRequires, BrickSummary, EngineAdapter } from '@koi/core';
 import { ForgeError, DriftChecker, ForgeDeps, ForgeInput, ArtifactBuilder, ForgeResult, ForgeToolInput, DelegateOptions, AgentArtifact, SandboxExecutor as SandboxExecutor$1 } from '@koi/forge-types';
 export { ArtifactBuilder, DelegateOptions, ForgeDeps } from '@koi/forge-types';
 import { BrickDescriptor } from '@koi/resolve';
@@ -350,13 +350,11 @@ declare function checkBrickRequires(requires: BrickRequires | undefined, availab
  * AgentSkills.io progressive disclosure pattern: metadata → instructions → resources.
  */
 
-/** Minimal metadata for skill discovery (level 1: cheapest). */
-interface SkillMetadata {
-    readonly id: string;
-    readonly name: string;
-    readonly description: string;
-    readonly tags: readonly string[];
-}
+/**
+ * Minimal metadata for skill discovery (level 1: cheapest).
+ * Extends BrickSummary — all brick kinds share this lightweight shape.
+ */
+type SkillMetadata = BrickSummary;
 /** Full skill instructions (level 2: on demand). */
 interface SkillInstructions {
     readonly id: string;

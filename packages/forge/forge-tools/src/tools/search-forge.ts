@@ -6,7 +6,7 @@
  * no retriever is available or on retriever error.
  */
 
-import type { BrickArtifact, BrickId, Result, Tool } from "@koi/core";
+import type { BrickArtifact, BrickId, BrickSummary, Result, Tool } from "@koi/core";
 import { DEFAULT_BRICK_FITNESS } from "@koi/core";
 import type { ForgeError, ForgeQuery } from "@koi/forge-types";
 import { filterByAgentScope, staticError } from "@koi/forge-types";
@@ -42,6 +42,7 @@ const searchInputSchema = z
     limit: z.number().optional(),
     orderBy: z.string().optional(),
     minFitnessScore: z.number().optional(),
+    detail: z.enum(["full", "summary"]).optional(),
   })
   .optional();
 
@@ -80,6 +81,11 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
         type: "number",
         description: "Minimum fitness score (0-1). Bricks below this threshold are excluded.",
       },
+      detail: {
+        type: "string",
+        description:
+          "Result detail level: 'full' (default, complete artifact) or 'summary' (~20 tokens/brick — name + description + tags only).",
+      },
     },
   },
   handler: searchForgeHandler,
@@ -92,7 +98,7 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
 async function searchForgeHandler(
   input: unknown,
   deps: ForgeDeps,
-): Promise<Result<readonly BrickArtifact[], ForgeError>> {
+): Promise<Result<readonly BrickArtifact[] | readonly BrickSummary[], ForgeError>> {
   // Allow null/undefined (defaults to empty query), but reject non-objects
   if (input !== null && input !== undefined && typeof input !== "object") {
     return {
@@ -113,6 +119,10 @@ async function searchForgeHandler(
     };
   }
 
+  // Extract detail level (default: "full" for backward compatibility)
+  // Callers opt into "summary" explicitly when they want token savings.
+  const detail = parsed.data?.detail === "summary" ? "summary" : "full";
+
   const raw = parsed.data ?? {};
   const query = raw.query ?? raw.text;
   const limit = raw.limit ?? 20;
@@ -125,7 +135,7 @@ async function searchForgeHandler(
 
   // --- Retriever path: hybrid BM25+vector search ---
   if (query !== undefined && query.length > 0 && deps.retriever !== undefined) {
-    const retrieverResult = await retrieverSearch(query, limit, raw, deps);
+    const retrieverResult = await retrieverSearch(query, limit, raw, detail, deps);
     if (retrieverResult !== undefined) {
       return retrieverResult;
     }
@@ -133,7 +143,7 @@ async function searchForgeHandler(
   }
 
   // --- Store path: structured ForgeStore.search() ---
-  return storeSearch(raw, query, orderBy, clampedMin, limit, deps);
+  return storeSearch(raw, query, orderBy, clampedMin, limit, detail, deps);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,8 +158,9 @@ async function retrieverSearch(
   query: string,
   limit: number,
   raw: NonNullable<SearchInput>,
+  detail: "full" | "summary",
   deps: ForgeDeps,
-): Promise<Result<readonly BrickArtifact[], ForgeError> | undefined> {
+): Promise<Result<readonly BrickArtifact[] | readonly BrickSummary[], ForgeError> | undefined> {
   try {
     const retriever = deps.retriever;
     if (retriever === undefined) return undefined;
@@ -203,7 +214,23 @@ async function retrieverSearch(
     }
 
     // Truncate to requested limit (relevance ordering preserved from retriever)
-    return { ok: true, value: bricks.slice(0, limit) };
+    const truncated = bricks.slice(0, limit);
+
+    // Summary mode: project to lightweight BrickSummary[] (~20 tokens/brick)
+    if (detail === "summary") {
+      const summaries: readonly BrickSummary[] = truncated.map(
+        (b): BrickSummary => ({
+          id: b.id,
+          kind: b.kind,
+          name: b.name,
+          description: b.description,
+          tags: b.tags,
+        }),
+      );
+      return { ok: true, value: summaries };
+    }
+
+    return { ok: true, value: truncated };
   } catch (e: unknown) {
     if (deps.onError !== undefined) {
       deps.onError(e);
@@ -222,8 +249,9 @@ async function storeSearch(
   orderBy: string,
   clampedMin: number | undefined,
   limit: number,
+  detail: "full" | "summary",
   deps: ForgeDeps,
-): Promise<Result<readonly BrickArtifact[], ForgeError>> {
+): Promise<Result<readonly BrickArtifact[] | readonly BrickSummary[], ForgeError>> {
   // Build ForgeQuery imperatively to satisfy exactOptionalPropertyTypes —
   // conditional spread can leak `undefined` into optional fields.
   const forgeQuery = Object.assign(
@@ -252,6 +280,21 @@ async function storeSearch(
 
   const scoped = filterByAgentScope(result.value, deps.context.agentId, deps.context.zoneId);
   const ranked = sortBricks(scoped, forgeQuery, { nowMs: Date.now() });
+
+  // Summary mode: project to lightweight BrickSummary[] (~20 tokens/brick)
+  if (detail === "summary") {
+    const summaries: readonly BrickSummary[] = ranked.map(
+      (b): BrickSummary => ({
+        id: b.id,
+        kind: b.kind,
+        name: b.name,
+        description: b.description,
+        tags: b.tags,
+      }),
+    );
+    return { ok: true, value: summaries };
+  }
+
   return { ok: true, value: ranked };
 }
 
