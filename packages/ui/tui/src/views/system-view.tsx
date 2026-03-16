@@ -9,7 +9,7 @@ export interface SystemViewProps {
 }
 
 export function SystemView(props: SystemViewProps): React.ReactNode {
-  const { events, scrollOffset } = props.systemView;
+  const { events, scrollOffset, metrics } = props.systemView;
   const VISIBLE_ROWS = 20;
   const visible = events.slice(scrollOffset, scrollOffset + VISIBLE_ROWS);
 
@@ -21,16 +21,27 @@ export function SystemView(props: SystemViewProps): React.ReactNode {
     if (event.subKind === "error") errorCount++;
   }
 
+  const uptimeStr = metrics !== null
+    ? `${String(Math.floor(metrics.uptimeMs / 60_000))}m`
+    : "--";
+
   return (
     <PanelChrome
       title="System"
       count={events.length}
       focused={props.focused}
       zoomLevel={props.zoomLevel}
-      isEmpty={events.length === 0}
+      isEmpty={events.length === 0 && metrics === null}
       emptyMessage="No system events yet."
       emptyHint="System events include memory warnings, errors, and activity."
     >
+      {metrics !== null && (
+        <box height={1} flexDirection="row">
+          <text fg={COLORS.dim}>
+            {` Uptime: ${uptimeStr} │ Heap: ${String(metrics.heapUsedMb)}/${String(metrics.heapTotalMb)}MB │ Agents: ${String(metrics.activeAgents)}/${String(metrics.totalAgents)} │ Channels: ${String(metrics.activeChannels)}`}
+          </text>
+        </box>
+      )}
       <box height={1} flexDirection="row">
         <text fg={COLORS.dim}>
           {` Warnings: ${String(warningCount)} │ Errors: ${String(errorCount)}`}

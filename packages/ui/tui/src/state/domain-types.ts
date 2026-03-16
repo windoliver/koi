@@ -11,6 +11,9 @@ import type {
   ChannelDashboardEvent,
   CheckpointEntry,
   CronSchedule,
+  DashboardChannelSummary,
+  DashboardSkillSummary,
+  DashboardSystemMetrics,
   GatewayDashboardEvent,
   GatewayTopology,
   HarnessDashboardEvent,
@@ -49,18 +52,21 @@ export const MAX_GOVERNANCE_VIOLATIONS = 200;
 export interface SkillsViewState {
   readonly events: readonly SkillDashboardEvent[];
   readonly scrollOffset: number;
+  readonly skills: readonly DashboardSkillSummary[];
 }
 
 /** Channels view — connection/message events + fetched channel list. */
 export interface ChannelsViewState {
   readonly events: readonly ChannelDashboardEvent[];
   readonly scrollOffset: number;
+  readonly channels: readonly DashboardChannelSummary[];
 }
 
 /** System view — memory warnings, errors, activity events + metrics. */
 export interface SystemViewState {
   readonly events: readonly SystemDashboardEvent[];
   readonly scrollOffset: number;
+  readonly metrics: DashboardSystemMetrics | null;
 }
 
 /** Nexus view — file/namespace change events. */
@@ -184,15 +190,15 @@ export interface TuiCapabilities {
 // ─── Initial state factories ──────────────────────────────────────────
 
 export function createInitialSkillsView(): SkillsViewState {
-  return { events: [], scrollOffset: 0 };
+  return { events: [], scrollOffset: 0, skills: [] };
 }
 
 export function createInitialChannelsView(): ChannelsViewState {
-  return { events: [], scrollOffset: 0 };
+  return { events: [], scrollOffset: 0, channels: [] };
 }
 
 export function createInitialSystemView(): SystemViewState {
-  return { events: [], scrollOffset: 0 };
+  return { events: [], scrollOffset: 0, metrics: null };
 }
 
 export function createInitialNexusView(): NexusViewState {

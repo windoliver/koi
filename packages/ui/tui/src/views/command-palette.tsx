@@ -60,6 +60,7 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "processtree", label: "/proctree", description: "Show agent process tree" },
   { id: "agentprocfs", label: "/procfs", description: "Show agent runtime state (procfs)" },
   { id: "governance", label: "/governance", description: "Show governance approvals and violations", requiredCapability: "governance" },
+  { id: "tree", label: "/tree", description: "Toggle agent list tree view" },
   { id: "quit", label: "/quit", description: "Exit TUI", shortcut: "q" },
 ] as const;
 

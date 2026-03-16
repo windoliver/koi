@@ -10,7 +10,10 @@ import type {
   CheckpointEntry,
   CronSchedule,
   DashboardAgentSummary,
+  DashboardChannelSummary,
   DashboardEventBatch,
+  DashboardSkillSummary,
+  DashboardSystemMetrics,
   DataSourceSummary,
   ForgeDashboardEvent,
   GatewayTopology,
@@ -463,6 +466,9 @@ export type TuiAction =
   | { readonly kind: "remove_governance_approval"; readonly id: string }
   | { readonly kind: "add_governance_violation"; readonly violation: GovernanceViolation }
   | { readonly kind: "select_governance_item"; readonly index: number }
+  | { readonly kind: "set_skills_list"; readonly skills: readonly DashboardSkillSummary[] }
+  | { readonly kind: "set_channels_list"; readonly channels: readonly DashboardChannelSummary[] }
+  | { readonly kind: "set_system_metrics"; readonly metrics: DashboardSystemMetrics }
   | { readonly kind: "scroll_domain_view"; readonly domain: string; readonly offset: number };
 
 /** Maximum messages kept in session memory (sliding window). */

@@ -28,9 +28,16 @@ export interface KeyboardCallbacks {
   readonly toggleForge: () => void;
   readonly toggleCost: () => void;
   readonly toggleNexus: () => void;
-  readonly closeDomainView: () => void;
+  readonly navigateBack: () => void;
   readonly domainScrollUp: () => void;
   readonly domainScrollDown: () => void;
+  readonly temporalDetail: () => void;
+  readonly temporalSignal: () => void;
+  readonly temporalTerminate: () => void;
+  readonly schedulerRetryDlq: () => void;
+  readonly harnessPauseResume: () => void;
+  readonly governanceApprove: () => void;
+  readonly governanceDeny: () => void;
   readonly presetSelect: () => void;
   readonly presetDetails: () => void;
   readonly presetBack: () => void;
@@ -243,6 +250,50 @@ export function createKeyboardHandler(
       }
     }
 
+    // Temporal view — Enter detail, s signal, t terminate
+    if (view === "temporal") {
+      if (sequence === "\r") {
+        callbacks.temporalDetail();
+        return true;
+      }
+      if (sequence === "s") {
+        callbacks.temporalSignal();
+        return true;
+      }
+      if (sequence === "t") {
+        callbacks.temporalTerminate();
+        return true;
+      }
+    }
+
+    // Scheduler view — r retry DLQ
+    if (view === "scheduler") {
+      if (sequence === "r") {
+        callbacks.schedulerRetryDlq();
+        return true;
+      }
+    }
+
+    // Harness view — p pause/resume toggle
+    if (view === "harness") {
+      if (sequence === "p") {
+        callbacks.harnessPauseResume();
+        return true;
+      }
+    }
+
+    // Governance view — a approve, d deny
+    if (view === "governance") {
+      if (sequence === "a") {
+        callbacks.governanceApprove();
+        return true;
+      }
+      if (sequence === "d") {
+        callbacks.governanceDeny();
+        return true;
+      }
+    }
+
     // Escape — context-dependent back/close
     if (sequence === "\x1b") {
       if (view === "palette") {
@@ -270,7 +321,7 @@ export function createKeyboardHandler(
         return true;
       }
       if (SCROLLABLE_VIEWS.has(view)) {
-        callbacks.closeDomainView();
+        callbacks.navigateBack();
         return true;
       }
     }

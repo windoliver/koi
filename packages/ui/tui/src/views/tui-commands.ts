@@ -193,6 +193,10 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
       deps.store.dispatch({ kind: "set_view", view: "governance" });
       return true;
 
+    case "tree":
+      deps.store.dispatch({ kind: "set_view", view: "processtree" });
+      return true;
+
     case "quit":
       deps.stop().catch(() => {});
       return true;

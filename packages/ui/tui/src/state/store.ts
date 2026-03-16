@@ -621,6 +621,15 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         },
       };
 
+    case "set_skills_list":
+      return { ...state, skillsView: { ...state.skillsView, skills: action.skills } };
+
+    case "set_channels_list":
+      return { ...state, channelsView: { ...state.channelsView, channels: action.channels } };
+
+    case "set_system_metrics":
+      return { ...state, systemView: { ...state.systemView, metrics: action.metrics } };
+
     case "scroll_domain_view": {
       const { domain, offset } = action;
       switch (domain) {

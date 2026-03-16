@@ -80,6 +80,36 @@ export interface ViewDataFetchDeps {
 export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
   const { store, client } = deps;
   switch (view) {
+    case "skills":
+      client
+        .listSkills()
+        .then((r) => {
+          if (r.ok) store.dispatch({ kind: "set_skills_list", skills: r.value });
+        })
+        .catch(() => {});
+      break;
+    case "channels":
+      client
+        .listChannels()
+        .then((r) => {
+          if (r.ok) store.dispatch({ kind: "set_channels_list", channels: r.value });
+        })
+        .catch(() => {});
+      client
+        .getGatewayTopology()
+        .then((r) => {
+          if (r.ok) store.dispatch({ kind: "set_gateway_topology", topology: r.value });
+        })
+        .catch(() => {});
+      break;
+    case "system":
+      client
+        .getMetrics()
+        .then((r) => {
+          if (r.ok) store.dispatch({ kind: "set_system_metrics", metrics: r.value });
+        })
+        .catch(() => {});
+      break;
     case "gateway":
       client
         .getGatewayTopology()
@@ -185,6 +215,100 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
       }
       break;
     }
+  }
+}
+
+// ─── Domain action helpers ────────────────────────────────────────────
+
+/** Dependencies for domain operator actions. */
+export interface DomainActionDeps {
+  readonly store: TuiStore;
+  readonly client: import("@koi/dashboard-client").AdminClient;
+  readonly addLifecycleMessage: (event: string) => void;
+}
+
+export function temporalDetail(deps: DomainActionDeps): void {
+  const tw = deps.store.getState().temporalView;
+  const wf = tw.workflows[tw.selectedWorkflowIndex];
+  if (wf !== undefined) {
+    deps.client
+      .getWorkflow(wf.workflowId)
+      .then((r) => {
+        if (r.ok) deps.store.dispatch({ kind: "set_temporal_workflow_detail", detail: r.value });
+      })
+      .catch(() => {});
+  }
+}
+
+export function temporalSignal(deps: DomainActionDeps): void {
+  const tw = deps.store.getState().temporalView;
+  const wf = tw.workflows[tw.selectedWorkflowIndex];
+  if (wf !== undefined) {
+    deps.client
+      .signalWorkflow(wf.workflowId, "refresh")
+      .then((r) => {
+        if (r.ok) deps.addLifecycleMessage(`Signal sent to ${wf.workflowId}`);
+        else deps.addLifecycleMessage(`Signal failed: ${r.error.kind}`);
+      })
+      .catch(() => {});
+  }
+}
+
+export function temporalTerminate(deps: DomainActionDeps): void {
+  const tw = deps.store.getState().temporalView;
+  const wf = tw.workflows[tw.selectedWorkflowIndex];
+  if (wf !== undefined) {
+    deps.client
+      .terminateWorkflow(wf.workflowId)
+      .then((r) => {
+        if (r.ok) deps.addLifecycleMessage(`Terminated ${wf.workflowId}`);
+        else deps.addLifecycleMessage(`Terminate failed: ${r.error.kind}`);
+      })
+      .catch(() => {});
+  }
+}
+
+export function schedulerRetryDlq(deps: DomainActionDeps): void {
+  const dl = deps.store.getState().schedulerView.deadLetters[0];
+  if (dl !== undefined) {
+    deps.client
+      .retryDeadLetter(dl.entryId)
+      .then((r) => {
+        if (r.ok) deps.addLifecycleMessage(`Retried dead letter ${dl.entryId}`);
+        else deps.addLifecycleMessage(`Retry failed: ${r.error.kind}`);
+      })
+      .catch(() => {});
+  }
+}
+
+export function harnessPauseResume(deps: DomainActionDeps): void {
+  const hv = deps.store.getState().harnessView;
+  if (hv.status === null) return;
+  const isPaused = hv.status.phase === "paused";
+  const action = isPaused ? deps.client.resumeHarness() : deps.client.pauseHarness();
+  action
+    .then((r) => {
+      if (r.ok) deps.addLifecycleMessage(`Harness ${isPaused ? "resumed" : "paused"}`);
+      else deps.addLifecycleMessage(`Harness action failed: ${r.error.kind}`);
+    })
+    .catch(() => {});
+}
+
+export function governanceApprove(deps: DomainActionDeps): void {
+  const gv = deps.store.getState().governanceView;
+  const item = gv.pendingApprovals[gv.selectedIndex];
+  if (item !== undefined) {
+    deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
+    deps.addLifecycleMessage(`Approved: ${item.action} on ${item.resource}`);
+  }
+}
+
+export function governanceDeny(deps: DomainActionDeps): void {
+  const gv = deps.store.getState().governanceView;
+  const item = gv.pendingApprovals[gv.selectedIndex];
+  if (item !== undefined) {
+    deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
+    deps.addLifecycleMessage(`Denied: ${item.action} on ${item.resource}`);
   }
 }
 

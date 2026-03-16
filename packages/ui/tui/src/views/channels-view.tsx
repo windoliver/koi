@@ -9,7 +9,7 @@ export interface ChannelsViewProps {
 }
 
 export function ChannelsView(props: ChannelsViewProps): React.ReactNode {
-  const { events, scrollOffset } = props.channelsView;
+  const { events, scrollOffset, channels } = props.channelsView;
   const VISIBLE_ROWS = 20;
   const visible = events.slice(scrollOffset, scrollOffset + VISIBLE_ROWS);
 
@@ -19,11 +19,26 @@ export function ChannelsView(props: ChannelsViewProps): React.ReactNode {
       count={events.length}
       focused={props.focused}
       zoomLevel={props.zoomLevel}
-      isEmpty={events.length === 0}
+      isEmpty={events.length === 0 && channels.length === 0}
       emptyMessage="No channel events yet."
       emptyHint="Channels connect agents to I/O sources (CLI, Slack, Discord)."
     >
       <box flexDirection="column">
+        {channels.length > 0 && (
+          <>
+            <box height={1}>
+              <text fg={COLORS.dim}>{" Connected Channels"}</text>
+            </box>
+            {channels.map((ch) => (
+              <box key={ch.channelId} height={1}>
+                <text>{`  ${ch.channelId.padEnd(20).slice(0, 20)} ${ch.channelType.padEnd(12).slice(0, 12)} ${ch.connected ? "up" : "down"}`}</text>
+              </box>
+            ))}
+            <box height={1}>
+              <text fg={COLORS.dim}>{""}</text>
+            </box>
+          </>
+        )}
         <box height={1}>
           <text fg={COLORS.dim}>{" Event              Channel              Type         Time"}</text>
         </box>

@@ -1,7 +1,4 @@
-/**
- * TUI application — wires views, store, clients, and OpenTUI together.
- * Modules: tui-commands.ts, tui-data-sources.ts, tui-event-stream.ts, tui-consent.ts.
- */
+/** TUI application — wires views, store, clients, and OpenTUI together. */
 
 import {
   type AdminClient,
@@ -44,10 +41,18 @@ import {
 import {
   checkConsentPrompts as checkConsentPromptsHelper,
   createEventStream,
+  type DomainActionDeps,
   type EventStreamHandle,
   fetchDataForView as fetchDataForViewFn,
   forwardAgentEventsToConsole as forwardAgentEventsHelper,
   getDomainScrollOffset,
+  governanceApprove as govApproveFn,
+  governanceDeny as govDenyFn,
+  harnessPauseResume as harnessPrFn,
+  schedulerRetryDlq as schedRetryFn,
+  temporalDetail as tempDetailFn,
+  temporalSignal as tempSignalFn,
+  temporalTerminate as tempTermFn,
   viewToDomainKey,
 } from "./tui-event-stream.js";
 import { createKeyboardHandler } from "./tui-keyboard.js";
@@ -98,21 +103,17 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     presets: configPresets,
   } = config;
 
-  // ─── State ──────────────────────────────────────────────────────────
   const store = createStore(createInitialState(adminUrl, mode));
 
-  // ─── Admin client ───────────────────────────────────────────────────
   const clientConfig =
     authToken !== undefined ? { baseUrl: adminUrl, authToken } : { baseUrl: adminUrl };
   const client: AdminClient = createAdminClient(clientConfig);
 
-  // ─── Active stream handles ──────────────────────────────────────────
   let activeChatStream: AguiStreamHandle | null = null;
   let tuiRenderer: CliRenderer | null = null;
   const syntaxStyle = SyntaxStyle.create();
   const aguiHandler = createAguiEventHandler(store);
 
-  // ─── Debounced operations ───────────────────────────────────────────
   const debouncedRefresh = createDebounce(() => {
     refreshAgents().catch(() => {});
   }, 300);
@@ -125,15 +126,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   let reactRoot: Root | null = null;
   let lastView: import("../state/types.js").TuiView = mode === "welcome" ? "welcome" : "agents";
 
-  // ─── View-open data fetching ──────────────────────────────────────
   const fetchDeps = { store, client };
   store.subscribe((s) => {
     if (s.view === lastView) return;
     lastView = s.view;
     fetchDataForViewFn(s.view, fetchDeps);
   });
-
-  // ─── Shared helpers ─────────────────────────────────────────────────
 
   function addLifecycleMessage(event: string): void {
     store.dispatch({
@@ -160,8 +158,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
   }
 
-  // ─── Dependency bundles for extracted modules ───────────────────────
-
   const dsDeps: DataSourceDeps = { store, client, addLifecycleMessage };
 
   const cmdDeps: CommandDeps = {
@@ -180,8 +176,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     stop,
     addLifecycleMessage,
   };
-
-  // ─── Agent console wiring ──────────────────────────────────────────
 
   function openAgentConsole(agentId: string): void {
     cancelActiveStream();
@@ -258,8 +252,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     );
   }
 
-  // ─── SSE event stream ─────────────────────────────────────────────
-
   const eventStream: EventStreamHandle = createEventStream({
     store,
     eventsUrl: client.eventsUrl(),
@@ -280,8 +272,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     eventStream.stop();
   }
 
-  // ─── Event forwarding ──────────────────────────────────────────────
-
   const eventForwardDeps = {
     store,
     addLifecycleMessage,
@@ -297,8 +287,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     checkConsentPromptsHelper(batch, eventForwardDeps);
   }
 
-  // ─── Palette ───────────────────────────────────────────────────────
-
   function togglePalette(): void {
     if (store.getState().view === "palette") {
       hidePalette();
@@ -313,8 +301,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const targetView: TuiView = session !== null ? "console" : "agents";
     store.dispatch({ kind: "set_view", view: targetView });
   }
-
-  // ─── Session picker (N+1 fix: parallel fetches) ───────────────────
 
   async function openSessionPicker(): Promise<void> {
     store.dispatch({ kind: "set_session_picker", entries: [], loading: true });
@@ -371,8 +357,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       .catch(() => addLifecycleMessage(`Failed to restore session ${sessionId}`));
   }
 
-  // ─── Consent ────────────────────────────────────────────────────────
-
   const cDeps: ConsentDeps = { store, dsDeps, addLifecycleMessage };
   function consentApprove(): void {
     consentApproveHelper(cDeps);
@@ -386,8 +370,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   function closeConsent(): void {
     closeConsentHelper(cDeps);
   }
-
-  // ─── Agent logs ──────────────────────────────────────────────────
 
   async function showAgentLogs(): Promise<void> {
     const session = store.getState().activeSession;
@@ -437,6 +419,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       });
   }
 
+  const domainDeps: DomainActionDeps = { store, client, addLifecycleMessage };
+
   function scrollDomain(d: number): void {
     const dk = viewToDomainKey(store.getState().view);
     if (dk !== null)
@@ -446,8 +430,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         offset: getDomainScrollOffset(store.getState(), dk) + d,
       });
   }
-
-  // ─── Keyboard handler ─────────────────────────────────────────────
 
   const keyboardHandler = createKeyboardHandler(store, {
     togglePalette,
@@ -510,14 +492,36 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       const currentView = store.getState().view;
       store.dispatch({ kind: "set_view", view: currentView === "nexus" ? "agents" : "nexus" });
     },
-    closeDomainView: () => {
-      store.dispatch({ kind: "set_view", view: "agents" });
+    navigateBack: () => {
+      const session = store.getState().activeSession;
+      store.dispatch({ kind: "set_view", view: session !== null ? "console" : "agents" });
     },
     domainScrollUp: () => {
       scrollDomain(-1);
     },
     domainScrollDown: () => {
       scrollDomain(1);
+    },
+    temporalDetail: () => {
+      tempDetailFn(domainDeps);
+    },
+    temporalSignal: () => {
+      tempSignalFn(domainDeps);
+    },
+    temporalTerminate: () => {
+      tempTermFn(domainDeps);
+    },
+    schedulerRetryDlq: () => {
+      schedRetryFn(domainDeps);
+    },
+    harnessPauseResume: () => {
+      harnessPrFn(domainDeps);
+    },
+    governanceApprove: () => {
+      govApproveFn(domainDeps);
+    },
+    governanceDeny: () => {
+      govDenyFn(domainDeps);
     },
     presetSelect: () => {
       const presets = store.getState().presets;
@@ -575,8 +579,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
   });
 
-  // ─── Public API ───────────────────────────────────────────────────
-
   function handleConsoleInput(text: string): void {
     if (text.startsWith("/")) {
       handleSlashCommand(text, cmdDeps);
@@ -593,8 +595,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   function handleAgentSelect(agentId: string): void {
     openAgentConsole(agentId);
   }
-
-  // ─── Welcome mode handlers ────────────────────────────────────────
 
   function handlePresetSelect(presetId: string): void {
     // Don't call onPresetSelected yet — go to name input first
@@ -627,8 +627,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "presetdetail" });
     }
   }
-
-  // ─── Lifecycle ────────────────────────────────────────────────────
 
   async function start(): Promise<void> {
     // Start OpenTUI rendering first (enters raw mode, takes over terminal)
