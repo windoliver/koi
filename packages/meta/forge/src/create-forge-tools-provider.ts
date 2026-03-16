@@ -22,6 +22,7 @@ import {
   createSearchForgeTool,
 } from "@koi/forge-tools";
 import type { ForgeConfig, ForgePipeline } from "@koi/forge-types";
+import type { Retriever } from "@koi/search-provider";
 import { FORGE_COMPANION_SKILL } from "./forge-companion-skill.js";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,10 @@ export interface ForgeToolsProviderConfig {
   readonly pipeline?: ForgePipeline | undefined;
   /** Resolve the current engine session ID. Resets forge counter on change. */
   readonly resolveSessionId?: (() => string) | undefined;
+  /** Optional hybrid retriever for semantic brick discovery (BM25+vector via Nexus Search). */
+  readonly retriever?: Retriever | undefined;
+  /** Optional error callback for non-fatal failures (notification errors, indexing errors). */
+  readonly onError?: ((error: unknown) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +98,8 @@ export function createForgeToolsProvider(config: ForgeToolsProviderConfig): Comp
         // optional props without `| undefined` cannot receive explicit undefined.
         ...(config.notifier !== undefined ? { notifier: config.notifier } : {}),
         ...(config.pipeline !== undefined ? { pipeline: config.pipeline } : {}),
+        ...(config.retriever !== undefined ? { retriever: config.retriever } : {}),
+        ...(config.onError !== undefined ? { onError: config.onError } : {}),
       };
 
       const components = new Map<string, unknown>();

@@ -5,6 +5,7 @@ exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
 import { ForgeError, DriftChecker, ForgeDeps, ForgeInput, ArtifactBuilder, ForgeResult, ForgeToolInput, DelegateOptions, AgentArtifact, SandboxExecutor as SandboxExecutor$1 } from '@koi/forge-types';
 export { ArtifactBuilder, DelegateOptions, ForgeDeps } from '@koi/forge-types';
 import { BrickDescriptor } from '@koi/resolve';
+import { IndexDocument } from '@koi/search-provider';
 export { createMemoryStoreChangeNotifier } from '@koi/validation';
 
 /**
@@ -290,6 +291,22 @@ interface SkillMdInput {
 declare function generateSkillMd(input: SkillMdInput): string;
 
 /**
+ * mapBrickToIndexDoc — maps a BrickArtifact to an IndexDocument for search indexing.
+ *
+ * Pure function: no side effects, no I/O. Used by the indexing subscriber
+ * in @koi/forge (L3) to keep the search index in sync with the forge store.
+ */
+
+/**
+ * Maps a BrickArtifact to an IndexDocument for hybrid search indexing.
+ *
+ * - \`id\`: brick.id (content-addressed, used for dedup on re-index)
+ * - \`content\`: concatenation of name, description, tags, and kind-specific extra content
+ * - \`metadata\`: kind, scope, lifecycle, tags (used for post-retrieval filtering)
+ */
+declare function mapBrickToIndexDoc(brick: BrickArtifact): IndexDocument;
+
+/**
  * InMemoryForgeStore — simple Map-based store for tests and development.
  * No eviction, no persistence across restarts.
  */
@@ -568,11 +585,15 @@ interface RunSkillScriptDeps {
 declare function createRunSkillScriptTool(deps: RunSkillScriptDeps): Tool;
 
 /**
- * search_forge — Discovers existing bricks via ForgeStore queries.
+ * search_forge — Discovers existing bricks via ForgeStore queries or hybrid retrieval.
+ *
+ * When a \`Retriever\` is injected (via ForgeDeps), \`query\` triggers BM25+vector
+ * hybrid search through Nexus Search. Falls back to ForgeStore.search() when
+ * no retriever is available or on retriever error.
  */
 
 declare function createSearchForgeTool(deps: ForgeDeps): Tool;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, FORGE_COMPANION_SKILL, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type RunSkillScriptDeps, type RunSkillScriptResult, type SkillInstructions, type SkillMdInput, type SkillMetadata, type SkillReferenceProvider, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeCompanionSkillProvider, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createRunSkillScriptTool, createSearchForgeTool, createSkillReferenceProvider, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust, runForgePipeline };
+export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, FORGE_COMPANION_SKILL, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type RunSkillScriptDeps, type RunSkillScriptResult, type SkillInstructions, type SkillMdInput, type SkillMetadata, type SkillReferenceProvider, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeCompanionSkillProvider, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createRunSkillScriptTool, createSearchForgeTool, createSkillReferenceProvider, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapBrickToIndexDoc, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust, runForgePipeline };
 "
 `;
