@@ -376,6 +376,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
     output.spinner.stop();
     output.error(formatResolutionError(resolved.error));
     if (sandboxBridge !== undefined) await sandboxBridge.dispose();
+    if (nexus.dispose !== undefined) await nexus.dispose();
+    if (nexusStartedByUs) await stopNexusStack(workspaceRoot, flags.verbose);
+    if (temporalEmbedHandle !== undefined) await temporalEmbedHandle.dispose();
     process.exit(EXIT_CONFIG);
   }
   output.spinner.stop(undefined);
