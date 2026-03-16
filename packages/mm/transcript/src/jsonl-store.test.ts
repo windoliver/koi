@@ -298,5 +298,28 @@ describe("JsonlTranscript", () => {
         expect(result.error.code).toBe("VALIDATION");
       }
     });
+
+    test("compact with preserveLastN=0 keeps only compaction entry", async () => {
+      const dir = await makeTmpDir();
+      tmpDirs.push(dir);
+      const store = createJsonlTranscript({ baseDir: dir });
+      const sid = sessionId("compact-zero");
+
+      const entries = Array.from({ length: 5 }, (_, i) =>
+        makeTranscriptEntry({ content: `msg-${i}`, timestamp: 1000 * (i + 1) }),
+      );
+      await store.append(sid, entries);
+
+      const compactResult = await store.compact(sid, "Full conversation summary", 0);
+      expect(compactResult.ok).toBe(true);
+
+      const loadResult = await store.load(sid);
+      expect(loadResult.ok).toBe(true);
+      if (loadResult.ok) {
+        expect(loadResult.value.entries.length).toBe(1);
+        expect(loadResult.value.entries[0]?.role).toBe("compaction");
+        expect(loadResult.value.entries[0]?.content).toBe("Full conversation summary");
+      }
+    });
   });
 });

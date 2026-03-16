@@ -14,3 +14,5 @@ export type {
 export { descriptor } from "./descriptor.js";
 export type { SlackChannelAdapter } from "./slack-channel.js";
 export { createSlackChannel } from "./slack-channel.js";
+export type { VerifySlackRequestResult } from "./verify-signature.js";
+export { verifySlackRequest, verifySlackSignature } from "./verify-signature.js";

@@ -295,7 +295,7 @@ export function createJsonlTranscript(config: JsonlTranscriptConfig): SessionTra
         timestamp: Date.now(),
       };
 
-      const preserved = entries.slice(-preserveLastN);
+      const preserved = preserveLastN === 0 ? [] : entries.slice(-preserveLastN);
       const compacted = [compactionEntry, ...preserved];
       const jsonl = `${compacted.map((e) => JSON.stringify(e)).join("\n")}\n`;
 

@@ -192,6 +192,26 @@ export function runSessionTranscriptContractTests(createStore: () => SessionTran
         expect(loadResult.value.entries[2]?.content).toBe("msg-4");
       }
     });
+
+    test("compact with preserveLastN=0 preserves only the compaction summary", async () => {
+      const store = createStore();
+      const sid = sessionId("s1");
+      const entries = Array.from({ length: 5 }, (_, i) =>
+        makeTranscriptEntry({ content: `msg-${i}`, timestamp: 1000 * (i + 1) }),
+      );
+      await store.append(sid, entries);
+
+      const compactResult = await store.compact(sid, "Full conversation summary", 0);
+      expect(compactResult.ok).toBe(true);
+
+      const loadResult = await store.load(sid);
+      expect(loadResult.ok).toBe(true);
+      if (loadResult.ok) {
+        expect(loadResult.value.entries.length).toBe(1);
+        expect(loadResult.value.entries[0]?.role).toBe("compaction");
+        expect(loadResult.value.entries[0]?.content).toBe("Full conversation summary");
+      }
+    });
   });
 
   // -----------------------------------------------------------------------

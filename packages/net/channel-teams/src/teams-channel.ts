@@ -14,6 +14,7 @@ import { DEFAULT_TEAMS_PORT } from "./config.js";
 import { createNormalizer } from "./normalize.js";
 import type { TeamsTurnContext, TurnContextStore } from "./platform-send.js";
 import { createPlatformSend } from "./platform-send.js";
+import { createBotFrameworkAuthenticator } from "./verify-jwt.js";
 
 const TEAMS_CAPABILITIES: ChannelCapabilities = {
   text: true,
@@ -93,11 +94,21 @@ export function createTeamsChannel(config: TeamsChannelConfig): TeamsChannelAdap
         return;
       }
 
+      // Create authenticator once so JWKS is cached across requests.
+      // Pass tenantId to enforce single-tenant isolation when configured.
+      const authenticator = createBotFrameworkAuthenticator(appId, config.tenantId);
+
       server = Bun.serve({
         port,
         async fetch(req) {
           if (req.method !== "POST") {
             return new Response("Method not allowed", { status: 405 });
+          }
+
+          // Verify Bot Framework JWT before processing
+          const authResult = await authenticator.verify(req);
+          if (!authResult.ok) {
+            return new Response("Unauthorized", { status: 401 });
           }
 
           try {

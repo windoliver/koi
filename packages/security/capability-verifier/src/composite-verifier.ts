@@ -46,7 +46,10 @@ export function createCompositeVerifier(config: CompositeVerifierConfig): Capabi
   const hmacVerifier = createHmacVerifier(config.hmacSecret, config.scopeChecker);
   const ed25519Verifier = createEd25519Verifier(config.scopeChecker, config.keyRegistry);
 
-  function verify(token: CapabilityToken, context: VerifyContext): CapabilityVerifyResult {
+  function verify(
+    token: CapabilityToken,
+    context: VerifyContext,
+  ): CapabilityVerifyResult | Promise<CapabilityVerifyResult> {
     // Check cache first — but re-check expiry and session revocation before returning
     if (config.cache !== undefined) {
       const cached = config.cache.get(token.id, context.toolId);
@@ -67,7 +70,18 @@ export function createCompositeVerifier(config: CompositeVerifierConfig): Capabi
 
     const result = computeVerification(token, context);
 
-    // Store in cache (cache both allow and deny results)
+    // If result is a Promise (async scope checker or key registry),
+    // await before caching to store the resolved value, not the Promise.
+    if (result instanceof Promise) {
+      return result.then((resolved) => {
+        if (config.cache !== undefined) {
+          config.cache.set(token.id, context.toolId, resolved);
+        }
+        return resolved;
+      });
+    }
+
+    // Sync result — cache directly
     if (config.cache !== undefined) {
       config.cache.set(token.id, context.toolId, result);
     }
@@ -78,12 +92,12 @@ export function createCompositeVerifier(config: CompositeVerifierConfig): Capabi
   function computeVerification(
     token: CapabilityToken,
     context: VerifyContext,
-  ): CapabilityVerifyResult {
+  ): CapabilityVerifyResult | Promise<CapabilityVerifyResult> {
     switch (token.proof.kind) {
       case "hmac-sha256":
-        return hmacVerifier.verify(token, context) as CapabilityVerifyResult;
+        return hmacVerifier.verify(token, context);
       case "ed25519":
-        return ed25519Verifier.verify(token, context) as CapabilityVerifyResult;
+        return ed25519Verifier.verify(token, context);
       case "nexus":
         // nexus backend deferred to v2 — interface defined, no implementation yet
         return { ok: false, reason: "proof_type_unsupported" };

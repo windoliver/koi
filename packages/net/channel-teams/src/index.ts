@@ -27,3 +27,5 @@ export type { TeamsChannelAdapter, TeamsChannelConfig, TeamsFeatures } from "./c
 export { DEFAULT_TEAMS_PORT } from "./config.js";
 export { descriptor } from "./descriptor.js";
 export { createTeamsChannel } from "./teams-channel.js";
+export type { BotFrameworkAuthenticator, BotFrameworkAuthResult } from "./verify-jwt.js";
+export { createBotFrameworkAuthenticator } from "./verify-jwt.js";

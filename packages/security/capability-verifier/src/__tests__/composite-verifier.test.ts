@@ -321,3 +321,89 @@ describe("createInMemoryVerifierCache", () => {
     expect(cache.get(id2, "b:c")).toBe(r2);
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// Async verification paths (Issue 9A)
+// ─────────────────────────────────────────────────────────────
+
+describe("createCompositeVerifier — async verification paths", () => {
+  test("resolves correctly with async scope checker", async () => {
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      scopeChecker: { isAllowed: () => Promise.resolve(true) },
+    });
+    const token = makeHmacToken("async-scope-ok");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects correctly with async scope checker returning false", async () => {
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      scopeChecker: { isAllowed: () => Promise.resolve(false) },
+    });
+    const token = makeHmacToken("async-scope-deny");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("scope_exceeded");
+  });
+
+  test("resolves correctly with async key registry", async () => {
+    const correctKey = Buffer.from(ed25519Public).toString("base64");
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      keyRegistry: { resolve: () => Promise.resolve(correctKey) },
+    });
+    const token = makeEd25519Token("async-registry-ok");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects with async key registry returning wrong key", async () => {
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      keyRegistry: { resolve: () => Promise.resolve("wrong-key") },
+    });
+    const token = makeEd25519Token("async-registry-wrong");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("caches resolved value (not Promise) with async scope checker", async () => {
+    const cache = createInMemoryVerifierCache();
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      scopeChecker: { isAllowed: () => Promise.resolve(true) },
+      cache,
+    });
+    const token = makeHmacToken("async-scope-cache");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(true);
+
+    const cached = cache.get(token.id, defaultCtx.toolId);
+    // Must be a resolved CapabilityVerifyResult, not a Promise
+    expect(cached).toBeDefined();
+    expect(cached instanceof Promise).toBe(false);
+    expect(cached?.ok).toBe(true);
+  });
+
+  test("caches resolved value with async key registry", async () => {
+    const cache = createInMemoryVerifierCache();
+    const correctKey = Buffer.from(ed25519Public).toString("base64");
+    const composite = createCompositeVerifier({
+      hmacSecret: HMAC_SECRET,
+      keyRegistry: { resolve: () => Promise.resolve(correctKey) },
+      cache,
+    });
+    const token = makeEd25519Token("async-registry-cache");
+    const result = await composite.verify(token, defaultCtx);
+    expect(result.ok).toBe(true);
+
+    const cached = cache.get(token.id, defaultCtx.toolId);
+    // Must be a resolved CapabilityVerifyResult, not a Promise
+    expect(cached).toBeDefined();
+    expect(cached instanceof Promise).toBe(false);
+    expect(cached?.ok).toBe(true);
+  });
+});

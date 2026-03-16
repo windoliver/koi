@@ -14,7 +14,8 @@
     "@koi/channel-base": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
-    "@koi/resolve": "workspace:*"
+    "@koi/resolve": "workspace:*",
+    "jose": "6.2.1"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",

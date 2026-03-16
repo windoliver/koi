@@ -88,7 +88,7 @@ export function createInMemoryTranscript(): SessionTranscript {
       content: summary,
       timestamp: Date.now(),
     };
-    const preserved = existing.slice(-preserveLastN);
+    const preserved = preserveLastN === 0 ? [] : existing.slice(-preserveLastN);
     store.set(sessionId, [compactionEntry, ...preserved]);
     return { ok: true, value: undefined };
   };

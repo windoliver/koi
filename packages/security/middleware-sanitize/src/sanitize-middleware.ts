@@ -40,12 +40,40 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
   const sanitizeToolOutput = config.sanitizeToolOutput ?? true;
   const maxDepth = config.jsonWalkMaxDepth ?? DEFAULT_JSON_WALK_MAX_DEPTH;
   const onSanitization = config.onSanitization;
+  const maxContentLength = config.maxContentLength;
+
+  /** Returns true if text exceeds maxContentLength — skip sanitization to prevent ReDoS. */
+  function exceedsLengthGuard(text: string): boolean {
+    return maxContentLength !== undefined && text.length > maxContentLength;
+  }
 
   /** Sanitize all messages in a ModelRequest. Throws on block. */
   function sanitizeRequestMessages(request: ModelRequest): ModelRequest {
     // let justified: tracks whether any message was modified
     let anyChanged = false;
     const sanitizedMessages = request.messages.map((msg) => {
+      // ReDoS guard: skip sanitization if any sanitizable string field exceeds the limit.
+      // Checks all block kinds that sanitizeBlock processes: text, file name, image alt,
+      // button label/action — not just text blocks.
+      if (maxContentLength !== undefined) {
+        const hasOversized = msg.content.some((block) => {
+          switch (block.kind) {
+            case "text":
+              return block.text.length > maxContentLength;
+            case "file":
+              return block.name !== undefined && block.name.length > maxContentLength;
+            case "image":
+              return block.alt !== undefined && block.alt.length > maxContentLength;
+            case "button":
+              return (
+                block.label.length > maxContentLength || block.action.length > maxContentLength
+              );
+            default:
+              return false;
+          }
+        });
+        if (hasOversized) return msg;
+      }
       const result = sanitizeMessage(msg, allRules, "input", onSanitization);
       if (result.blocked) {
         throw KoiRuntimeError.from("VALIDATION", "Content blocked by sanitization rule", {
@@ -86,7 +114,10 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
       // Call next
       const response = await next(sanitizedRequest);
 
-      // OUTPUT: sanitize response content string
+      // OUTPUT: sanitize response content string (skip if oversized — ReDoS guard)
+      if (exceedsLengthGuard(response.content)) {
+        return response;
+      }
       const outputResult = sanitizeString(
         response.content,
         allRules,
@@ -159,19 +190,22 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
               onSanitization?.(event);
             }
 
-            // Sanitize the final ModelResponse content
-            const sanitizedContent = sanitizeString(
-              chunk.response.content,
-              allRules,
-              "output",
-              "text",
-              onSanitization,
-            );
-            // Block action downgraded — we already yielded partial content
-            const sanitizedResponse: ModelResponse =
-              sanitizedContent.events.length > 0
-                ? { ...chunk.response, content: sanitizedContent.text }
-                : chunk.response;
+            // Sanitize the final ModelResponse content (skip if oversized — ReDoS guard)
+            let sanitizedResponse: ModelResponse = chunk.response;
+            if (!exceedsLengthGuard(chunk.response.content)) {
+              const sanitizedContent = sanitizeString(
+                chunk.response.content,
+                allRules,
+                "output",
+                "text",
+                onSanitization,
+              );
+              // Block action downgraded — we already yielded partial content
+              sanitizedResponse =
+                sanitizedContent.events.length > 0
+                  ? { ...chunk.response, content: sanitizedContent.text }
+                  : chunk.response;
+            }
 
             yield { kind: "done", response: sanitizedResponse };
             break;
@@ -191,7 +225,7 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
     ): Promise<ToolResponse> {
       // INPUT: sanitize tool input
       const sanitizedRequest = sanitizeToolInput
-        ? sanitizeToolInputFn(request, allRules, maxDepth, onSanitization)
+        ? sanitizeToolInputFn(request, allRules, maxDepth, onSanitization, maxContentLength)
         : request;
 
       // Call next
@@ -208,6 +242,7 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
         "tool-output",
         onSanitization,
         maxDepth,
+        maxContentLength,
       );
 
       if (outputResult.blocked) {
@@ -233,8 +268,16 @@ function sanitizeToolInputFn(
   rules: readonly SanitizeRule[],
   maxDepth: number,
   onSanitization: ((event: SanitizationEvent) => void) | undefined,
+  maxContentLength: number | undefined,
 ): ToolRequest {
-  const inputResult = walkJsonStrings(request.input, rules, "tool-input", onSanitization, maxDepth);
+  const inputResult = walkJsonStrings(
+    request.input,
+    rules,
+    "tool-input",
+    onSanitization,
+    maxDepth,
+    maxContentLength,
+  );
 
   if (inputResult.blocked) {
     throw KoiRuntimeError.from(
