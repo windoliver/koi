@@ -2,11 +2,8 @@
  * Start-stack — runs koi startup in-process with progress callbacks.
  *
  * Phases 1-4 perform real validation (manifest, preset, preflight, agent resolve).
- * Phase 5 boots the runtime via `koi up --detach` and polls health.
- *
- * The detached process is necessary because `runUp()` blocks on the REPL loop
- * and owns the terminal. The TUI is already rendering, so we run the runtime
- * in a separate process and wait for its admin API to become healthy.
+ * Phase 5 boots the runtime in-process via bootRuntime() and stores the handle
+ * on context for the caller to manage lifecycle.
  */
 
 import type {
@@ -16,6 +13,7 @@ import type {
   SetupWizardState,
 } from "@koi/setup-core";
 import { runPhases } from "@koi/setup-core";
+import type { RuntimeHandle } from "./boot-runtime.js";
 
 /** Context passed through all startup phases. */
 export interface StartStackContext {
@@ -25,6 +23,8 @@ export interface StartStackContext {
   readonly verbose: boolean;
   readonly adminPort: number;
   readonly adminUrl: string;
+  /** Set by the runtime phase — handle for lifecycle cleanup. Mutable by design. */
+  runtimeHandle?: RuntimeHandle | undefined;
 }
 
 /**
@@ -101,40 +101,20 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       id: "runtime",
       label: "Starting runtime",
       execute: async (ctx, onProgress) => {
-        onProgress("Booting runtime process");
-        // runUp() is a blocking function that owns the terminal (REPL + channels).
-        // Since the TUI is already rendering, we start the runtime as a detached
-        // process and poll its admin API for health.
-        const { spawn } = await import("node:child_process");
-        const bunPath = process.argv[0] ?? "bun";
-        const cliEntry = new URL("../../bin.ts", import.meta.url).pathname;
-        const child = spawn(bunPath, [cliEntry, "up", "--detach"], {
-          detached: true,
-          stdio: "ignore",
-          cwd: ctx.workspaceRoot,
+        onProgress("Booting services in-process");
+        const { bootRuntime } = await import("./boot-runtime.js");
+        const handle = await bootRuntime({
+          manifestPath: ctx.manifestPath,
+          workspaceRoot: ctx.workspaceRoot,
+          verbose: ctx.verbose,
+          adminPort: ctx.adminPort,
+          onProgress: (_phase, msg) => {
+            onProgress(msg);
+          },
         });
-        child.unref();
-
-        // Poll admin API for health
-        onProgress("Waiting for admin API...");
-        const maxAttempts = 60;
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
-          try {
-            const res = await fetch(`${ctx.adminUrl}/health`, {
-              signal: AbortSignal.timeout(2000),
-            });
-            if (res.ok) {
-              onProgress("Admin API healthy");
-              return;
-            }
-          } catch {
-            // Not ready yet
-          }
-          await new Promise((r) => setTimeout(r, 500));
-        }
-        throw new Error(
-          "Admin API did not become healthy within 30 seconds. Run `koi doctor` for diagnostics.",
-        );
+        // Store the handle on context for the caller to manage lifecycle
+        ctx.runtimeHandle = handle;
+        onProgress(`Admin API ready at ${handle.adminUrl}`);
       },
     },
   ];
@@ -144,7 +124,7 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
  * Start the Koi stack with phase progress callbacks.
  *
  * Runs real validation (manifest, preflight, agent resolve) then boots
- * the runtime process and waits for admin API health.
+ * the runtime in-process and stores the handle on context for cleanup.
  */
 export async function startStack(
   context: StartStackContext,

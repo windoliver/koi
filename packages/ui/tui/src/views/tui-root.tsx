@@ -21,6 +21,7 @@ import { CommandPaletteView } from "./command-palette-view.js";
 import { ConsentView } from "./consent-view.js";
 import { ConsoleView } from "./console-view.js";
 import { DataSourcesView } from "./data-sources-view.js";
+import { DoctorView } from "./doctor-view.js";
 import { EngineStepView } from "./engine-step-view.js";
 import { ForgeView } from "./forge-view.js";
 import { LogView } from "./log-view.js";
@@ -349,6 +350,11 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         {/* Service management view */}
         {view === "service" && (
           <ServiceView status={state.serviceStatus} />
+        )}
+
+        {/* Doctor view */}
+        {view === "doctor" && (
+          <DoctorView checks={state.doctorChecks} />
         )}
 
         {/* Log view */}

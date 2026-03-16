@@ -168,6 +168,8 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
       return true;
 
     case "doctor":
+      deps.store.dispatch({ kind: "clear_doctor_checks" });
+      deps.store.dispatch({ kind: "set_view", view: "doctor" });
       deps.onServiceCommand?.("doctor").catch(() => {});
       return true;
 

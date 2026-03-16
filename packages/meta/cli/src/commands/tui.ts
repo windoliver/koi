@@ -20,6 +20,8 @@ import type { OperationResult, PhaseCallbacks, SetupWizardState } from "@koi/set
 import { KNOWN_MODELS } from "@koi/setup-core";
 import type { PresetInfo } from "@koi/tui";
 import type { TuiFlags } from "../args.js";
+import type { RuntimeHandle } from "./up/boot-runtime.js";
+import type { StartStackContext } from "./up/start-stack.js";
 
 const DEFAULT_ADMIN_URL = "http://localhost:3100/admin/api";
 
@@ -135,6 +137,10 @@ export async function runTui(flags: TuiFlags): Promise<void> {
   // In welcome mode, load presets and wire the selection callback
   const presets = isWelcome ? await loadPresetInfos() : undefined;
 
+  // Captured from startStack context for lifecycle management
+  // let justified: set by onStartStack, read by shutdown handler
+  let runtimeHandle: RuntimeHandle | undefined;
+
   const app = createTuiApp({
     adminUrl,
     refreshIntervalMs: refreshMs,
@@ -154,20 +160,21 @@ export async function runTui(flags: TuiFlags): Promise<void> {
             await scaffoldManifestFromWizard(wizardState);
 
             // 2. Run all phases in-process: validate manifest, preflight,
-            //    resolve agent, then boot runtime and wait for admin health
+            //    resolve agent, then boot runtime via bootRuntime()
             const { resolve } = await import("node:path");
             const { startStack } = await import("./up/start-stack.js");
-            return startStack(
-              {
-                wizardState,
-                manifestPath: resolve("koi.yaml"),
-                workspaceRoot: process.cwd(),
-                verbose: false,
-                adminPort: 3100,
-                adminUrl,
-              },
-              callbacks,
-            );
+            const ctx: StartStackContext = {
+              wizardState,
+              manifestPath: resolve("koi.yaml"),
+              workspaceRoot: process.cwd(),
+              verbose: false,
+              adminPort: 3100,
+              adminUrl,
+            };
+            const result = await startStack(ctx, callbacks);
+            // Capture the runtime handle for lifecycle cleanup on shutdown
+            runtimeHandle = ctx.runtimeHandle;
+            return result;
           },
           onPresetSelected: async (presetId: string, agentName: string): Promise<void> => {
             // Fallback: scaffold and spawn detached
@@ -206,41 +213,97 @@ export async function runTui(flags: TuiFlags): Promise<void> {
                 await client.shutdown();
                 break;
               case "doctor": {
-                // Run preflight checks and report results via lifecycle messages
-                const addMsg = (msg: string): void => {
-                  app.store.dispatch({
-                    kind: "add_message",
-                    message: { kind: "lifecycle", event: msg, timestamp: Date.now() },
-                  });
+                const dispatch = (check: {
+                  readonly id: string;
+                  readonly label: string;
+                  readonly status: "pass" | "fail" | "warn" | "running";
+                  readonly detail?: string;
+                }): void => {
+                  app.store.dispatch({ kind: "append_doctor_check", check });
                 };
-                addMsg("Running diagnostics...");
+
+                dispatch({ id: "manifest", label: "Manifest", status: "running" });
                 try {
                   const { loadManifest } = await import("@koi/manifest");
                   const loadResult = await loadManifest("koi.yaml");
                   if (!loadResult.ok) {
-                    addMsg(`Doctor: No koi.yaml found — ${loadResult.error.message}`);
+                    dispatch({
+                      id: "manifest",
+                      label: "Manifest",
+                      status: "fail",
+                      detail: loadResult.error.message,
+                    });
                     break;
                   }
-                  addMsg(`Doctor: Manifest loaded (${loadResult.value.manifest.name})`);
+                  // Replace running with pass
+                  app.store.dispatch({
+                    kind: "set_doctor_checks",
+                    checks: [
+                      {
+                        id: "manifest",
+                        label: "Manifest",
+                        status: "pass",
+                        detail: loadResult.value.manifest.name,
+                      },
+                    ],
+                  });
+
+                  dispatch({ id: "admin", label: "Admin API", status: "running" });
                   const healthResult = await client.checkHealth();
-                  addMsg(
+                  // Rebuild checks array
+                  const checks: {
+                    readonly id: string;
+                    readonly label: string;
+                    readonly status: "pass" | "fail" | "warn" | "running";
+                    readonly detail?: string;
+                  }[] = [
+                    {
+                      id: "manifest",
+                      label: "Manifest",
+                      status: "pass" as const,
+                      detail: loadResult.value.manifest.name,
+                    },
                     healthResult.ok
-                      ? `Doctor: Admin API healthy (${healthResult.value.status})`
-                      : `Doctor: Admin API unreachable (${healthResult.error.kind})`,
-                  );
+                      ? {
+                          id: "admin",
+                          label: "Admin API",
+                          status: "pass" as const,
+                          detail: healthResult.value.status,
+                        }
+                      : {
+                          id: "admin",
+                          label: "Admin API",
+                          status: "fail" as const,
+                          detail: healthResult.error.kind,
+                        },
+                  ];
+
                   const statusResult = await client.detailedStatus();
                   if (statusResult.ok) {
-                    const subs = statusResult.value.subsystems;
-                    for (const [name, sub] of Object.entries(subs)) {
+                    for (const [name, sub] of Object.entries(statusResult.value.subsystems)) {
                       const latency =
                         sub.latencyMs !== undefined ? ` (${String(sub.latencyMs)}ms)` : "";
-                      addMsg(`Doctor: ${name} — ${sub.status}${latency}`);
+                      checks.push({
+                        id: `sub-${name}`,
+                        label: name,
+                        status:
+                          sub.status === "ready"
+                            ? ("pass" as const)
+                            : sub.status === "degraded"
+                              ? ("warn" as const)
+                              : ("fail" as const),
+                        detail: `${sub.status}${latency}`,
+                      });
                     }
                   }
-                  addMsg("Doctor: Diagnostics complete");
+
+                  app.store.dispatch({ kind: "set_doctor_checks", checks });
                 } catch (err: unknown) {
                   const msg = err instanceof Error ? err.message : String(err);
-                  addMsg(`Doctor: Failed — ${msg}`);
+                  app.store.dispatch({
+                    kind: "set_doctor_checks",
+                    checks: [{ id: "error", label: "Doctor", status: "fail", detail: msg }],
+                  });
                 }
                 break;
               }
@@ -276,9 +339,12 @@ export async function runTui(flags: TuiFlags): Promise<void> {
       : {}),
   });
 
-  // Graceful shutdown on signals
+  // Graceful shutdown on signals — dispose in-process runtime if started
   const shutdown = async (): Promise<void> => {
     await app.stop();
+    if (runtimeHandle !== undefined) {
+      await runtimeHandle.dispose();
+    }
     process.exit(0);
   };
 

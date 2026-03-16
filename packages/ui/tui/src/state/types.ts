@@ -44,6 +44,7 @@ export type TuiView =
   | "consent"
   | "console"
   | "datasources"
+  | "doctor"
   | "engine"
   | "forge"
   | "logs"
@@ -117,6 +118,14 @@ export interface ServiceStatusState {
     readonly service: string;
     readonly status: string;
   }[];
+}
+
+/** A single doctor diagnostic check result. */
+export interface DoctorCheck {
+  readonly id: string;
+  readonly label: string;
+  readonly status: "pass" | "fail" | "warn" | "running";
+  readonly detail?: string | undefined;
 }
 
 /** Maximum log entries kept in buffer. */
@@ -193,6 +202,8 @@ export interface TuiState {
   readonly logLevel: LogLevel;
   /** Service subsystem status. */
   readonly serviceStatus: ServiceStatusState | null;
+  /** Doctor diagnostic check results. */
+  readonly doctorChecks: readonly DoctorCheck[];
   /** Per-agent PTY output buffers (base64 chunks). */
   readonly ptyBuffers: Readonly<Record<string, readonly string[]>>;
   /** Per-agent sessions for split-pane mode. */
@@ -245,6 +256,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     logBuffer: [],
     logLevel: "info",
     serviceStatus: null,
+    doctorChecks: [],
     ptyBuffers: {},
     splitSessions: {},
     focusedPaneIndex: 0,
@@ -379,7 +391,10 @@ export type TuiAction =
   | { readonly kind: "append_log"; readonly entry: LogEntry }
   | { readonly kind: "set_log_level"; readonly level: LogLevel }
   | { readonly kind: "clear_logs" }
-  | { readonly kind: "set_service_status"; readonly status: ServiceStatusState | null };
+  | { readonly kind: "set_service_status"; readonly status: ServiceStatusState | null }
+  | { readonly kind: "set_doctor_checks"; readonly checks: readonly DoctorCheck[] }
+  | { readonly kind: "append_doctor_check"; readonly check: DoctorCheck }
+  | { readonly kind: "clear_doctor_checks" };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;

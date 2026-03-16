@@ -23,6 +23,7 @@ const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   consent: "[y] approve  [n] deny  [d] details  Esc:dismiss",
   console: "Type message  Enter:send  Esc:back  Ctrl+P:commands",
   datasources: "↑↓:navigate  [a] approve  [s] schema  Esc:back",
+  doctor: "Esc:back",
   engine: "Enter:confirm  s:skip  Esc:back",
   forge: "Esc:back  Ctrl+G:close  Ctrl+P:commands",
   logs: "l:cycle-level  Esc:back",

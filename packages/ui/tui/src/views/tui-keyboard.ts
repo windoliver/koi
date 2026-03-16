@@ -320,6 +320,15 @@ export function createKeyboardHandler(
       return false;
     }
 
+    // Doctor view — Esc=back
+    if (view === "doctor") {
+      if (sequence === "\x1b") {
+        callbacks.serviceBack();
+        return true;
+      }
+      return false;
+    }
+
     // Logs view — l=cycle level, Esc=back
     if (view === "logs") {
       if (sequence === "l") {

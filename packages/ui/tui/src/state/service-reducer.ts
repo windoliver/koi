@@ -28,6 +28,15 @@ export function reduceService(state: TuiState, action: TuiAction): Partial<TuiSt
     case "set_service_status":
       return { serviceStatus: action.status };
 
+    case "set_doctor_checks":
+      return { doctorChecks: action.checks };
+
+    case "append_doctor_check":
+      return { doctorChecks: [...state.doctorChecks, action.check] };
+
+    case "clear_doctor_checks":
+      return { doctorChecks: [] };
+
     default:
       return undefined;
   }

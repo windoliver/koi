@@ -75,6 +75,7 @@ export type { StateListener, TuiStore } from "./state/store.js";
 export { createStore, reduce } from "./state/store.js";
 export type {
   ConnectionStatus,
+  DoctorCheck,
   LogEntry,
   LogLevel,
   PresetInfo,
@@ -111,6 +112,8 @@ export type { CommandPaletteViewProps } from "./views/command-palette-view.js";
 export { CommandPaletteView } from "./views/command-palette-view.js";
 export type { ConsoleViewProps } from "./views/console-view.js";
 export { ConsoleView } from "./views/console-view.js";
+export type { DoctorViewProps } from "./views/doctor-view.js";
+export { DoctorView } from "./views/doctor-view.js";
 export type { EngineStepViewProps } from "./views/engine-step-view.js";
 export { EngineStepView } from "./views/engine-step-view.js";
 export type { LogViewProps } from "./views/log-view.js";
