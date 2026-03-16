@@ -13,23 +13,41 @@ import type { TuiState, TuiView, ZoomLevel } from "../state/types.js";
 const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   addons: "j/k:navigate  Space:toggle  Enter:confirm  s:skip  Esc:back",
   agents: "↑↓:navigate  Enter:select  Ctrl+G:forge  Ctrl+P:commands  q:quit",
-  channels: "j/k:navigate  Space:toggle  Enter:confirm  Esc:back",
+  agentprocfs: "Esc:back  Ctrl+P:commands",
+  channels: "j/k:scroll  Esc:back  Ctrl+P:commands",
   consent: "[y] approve  [n] deny  [d] details  Esc:dismiss",
   console: "Type message  Enter:send  Esc:back  Ctrl+P:commands",
+  cost: "j/k:scroll  Esc:back  Ctrl+P:commands",
   datasources: "↑↓:navigate  [a] approve  [s] schema  Esc:back",
+  delegation: "j/k:scroll  Esc:back  Ctrl+P:commands",
   doctor: "Esc:back",
   engine: "Enter:confirm  s:skip  Esc:back",
-  forge: "Esc:back  Ctrl+G:close  Ctrl+P:commands",
+  files: "j/k:navigate  Enter:open  Esc:back  Ctrl+P:commands",
+  forge: "j/k:navigate  [p] promote  [d] demote  [q] quarantine  Esc:back",
+  gateway: "j/k:scroll  Esc:back  Ctrl+P:commands",
+  governance: "j/k:navigate  [a] approve  [d] deny  Esc:back",
+  handoffs: "j/k:scroll  Esc:back  Ctrl+P:commands",
+  harness: "j/k:scroll  [p] pause/resume  Esc:back  Ctrl+P:commands",
   logs: "l:cycle-level  Esc:back",
+  mailbox: "j/k:scroll  Esc:back  Ctrl+P:commands",
+  middleware: "Esc:back  Ctrl+P:commands",
   model: "j/k:navigate  Enter:select  Esc:back",
   nameinput: "Enter:confirm  Esc:back",
+  nexus: "j/k:scroll  Esc:back  Ctrl+F:close  Ctrl+P:commands",
   presetdetail: "Enter:select  Esc:back  q:quit",
+  processtree: "j/k:scroll  Esc:back  Ctrl+P:commands",
   progress: "Starting Koi…",
+  scheduler: "j/k:scroll  [r] retry DLQ  Esc:back  Ctrl+P:commands",
+  scratchpad: "j/k:scroll  Enter:read  Esc:back  Ctrl+P:commands",
   service: "s:stop  d:doctor  l:logs  Esc:back",
   sourcedetail: "Esc:back  [a] approve",
   splitpanes: "Tab:focus-next  Enter:zoom  Esc:back  +:cycle-zoom",
   palette: "↑↓:navigate  Enter:select  Esc:close",
   sessions: "↑↓:navigate  Enter:select  Esc:back",
+  skills: "j/k:scroll  Esc:back  Ctrl+P:commands",
+  system: "j/k:scroll  Esc:back  Ctrl+P:commands",
+  taskboard: "j/k:scroll  Esc:back  Ctrl+P:commands",
+  temporal: "j/k:navigate  Enter:detail  [s] signal  [t] terminate  Esc:back",
   welcome: "j/k:navigate  Enter:select  ?:details  q:quit",
 } as const;
 
@@ -39,7 +57,7 @@ const ZOOM_LABELS: Readonly<Record<ZoomLevel, string>> = {
   full: "FULL",
 } as const;
 
-/** View display names for the tab bar. */
+/** View display names for the tab bar (primary views only — keeps line 1 compact). */
 const VIEW_LABELS: Readonly<Partial<Record<TuiView, string>>> = {
   agents: "Agents",
   console: "Console",
@@ -93,6 +111,15 @@ export function StatusBarView(props: StatusBarViewProps): React.ReactNode {
               );
             })}
             <box flexGrow={1} />
+            {state.capabilities !== null && (
+              <>
+                <text fg={state.capabilities.nexus ? COLORS.green : COLORS.dim}>{state.capabilities.nexus ? "●" : "○"}</text>
+                <text fg={state.capabilities.temporal ? COLORS.green : COLORS.dim}>{state.capabilities.temporal ? "●" : "○"}</text>
+                <text fg={state.capabilities.scheduler ? COLORS.green : COLORS.dim}>{state.capabilities.scheduler ? "●" : "○"}</text>
+                <text fg={state.capabilities.gateway ? COLORS.green : COLORS.dim}>{state.capabilities.gateway ? "●" : "○"}</text>
+                <text fg={state.capabilities.harness ? COLORS.green : COLORS.dim}>{state.capabilities.harness ? "●" : "○"}</text>
+              </>
+            )}
             <text fg={conn.color}>{` ${conn.indicator}`}</text>
             <text fg={COLORS.dim}>{" │ "}</text>
             <text fg={COLORS.white}>{`${String(agentCount)} agents`}</text>

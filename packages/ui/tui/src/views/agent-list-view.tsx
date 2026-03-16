@@ -17,6 +17,7 @@ export interface AgentListViewProps {
   readonly onSelect: (agentId: string) => void;
   readonly focused: boolean;
   readonly zoomLevel?: "normal" | "half" | "full" | undefined;
+  readonly listMode?: "flat" | "tree" | undefined;
 }
 
 /** Format an agent summary as a select option description. */
@@ -26,7 +27,7 @@ function formatAgentDescription(agent: DashboardAgentSummary): string {
   return `${agent.state} │ ${agent.model} │ ${String(agent.turns)} turns │ ${timeLabel}`;
 }
 
-/** Map agent summaries to SelectOption array. */
+/** Map agent summaries to SelectOption array (flat mode). */
 function agentsToOptions(agents: readonly DashboardAgentSummary[]): readonly SelectOption[] {
   return agents.map((a) => ({
     name: a.name,
@@ -35,9 +36,33 @@ function agentsToOptions(agents: readonly DashboardAgentSummary[]): readonly Sel
   }));
 }
 
+/** Map agent summaries to SelectOption array with tree grouping by type. */
+function agentsToTreeOptions(agents: readonly DashboardAgentSummary[]): readonly SelectOption[] {
+  const copilots = agents.filter((a) => a.agentType === "copilot");
+  const workers = agents.filter((a) => a.agentType === "worker");
+  const result: SelectOption[] = [];
+  if (copilots.length > 0) {
+    result.push({ name: "── copilots ──", description: "", value: "__header_copilot__" });
+    for (const a of copilots) {
+      result.push({ name: `  ${a.name}`, description: formatAgentDescription(a), value: a.agentId });
+    }
+  }
+  if (workers.length > 0) {
+    result.push({ name: "── workers ──", description: "", value: "__header_worker__" });
+    for (const a of workers) {
+      result.push({ name: `  ${a.name}`, description: formatAgentDescription(a), value: a.agentId });
+    }
+  }
+  return result;
+}
+
 /** Agent list view with selectable agent entries. */
 export function AgentListView(props: AgentListViewProps): React.ReactNode {
-  const options = useMemo(() => agentsToOptions(props.agents), [props.agents]);
+  const isTree = props.listMode === "tree";
+  const options = useMemo(
+    () => (isTree ? agentsToTreeOptions(props.agents) : agentsToOptions(props.agents)),
+    [props.agents, isTree],
+  );
 
   return (
     <PanelChrome

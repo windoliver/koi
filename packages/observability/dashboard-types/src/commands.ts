@@ -100,4 +100,111 @@ export interface CommandDispatcher {
   readonly pauseHarness?: () => Promise<Result<void, KoiError>>;
 
   readonly resumeHarness?: () => Promise<Result<void, KoiError>>;
+
+  // Delegation chain
+  readonly listDelegations?: (
+    agentId: AgentId,
+  ) =>
+    | Result<readonly DelegationSummary[], KoiError>
+    | Promise<Result<readonly DelegationSummary[], KoiError>>;
+
+  // Handoff tracking
+  readonly listHandoffs?: (
+    agentId: AgentId,
+  ) =>
+    | Result<readonly HandoffSummary[], KoiError>
+    | Promise<Result<readonly HandoffSummary[], KoiError>>;
+
+  // Scratchpad
+  readonly listScratchpad?: (
+    groupId?: string,
+  ) =>
+    | Result<readonly ScratchpadEntrySummary[], KoiError>
+    | Promise<Result<readonly ScratchpadEntrySummary[], KoiError>>;
+
+  readonly readScratchpad?: (
+    path: string,
+  ) => Result<ScratchpadEntryDetail, KoiError> | Promise<Result<ScratchpadEntryDetail, KoiError>>;
+
+  // Governance review
+  readonly reviewGovernance?: (
+    id: string,
+    decision: "approved" | "rejected",
+    reason?: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  readonly listGovernanceQueue?: () =>
+    | Result<readonly GovernancePendingItem[], KoiError>
+    | Promise<Result<readonly GovernancePendingItem[], KoiError>>;
+
+  // Forge brick lifecycle
+  readonly promoteBrick?: (
+    brickId: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  readonly demoteBrick?: (
+    brickId: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  readonly quarantineBrick?: (
+    brickId: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+}
+
+// ---------------------------------------------------------------------------
+// Delegation
+// ---------------------------------------------------------------------------
+
+export interface DelegationSummary {
+  readonly id: string;
+  readonly issuerId: string;
+  readonly delegateeId: string;
+  readonly scope: string;
+  readonly expiresAt: number | null;
+  readonly chainDepth: number;
+}
+
+// ---------------------------------------------------------------------------
+// Handoff
+// ---------------------------------------------------------------------------
+
+export interface HandoffSummary {
+  readonly id: string;
+  readonly from: string;
+  readonly to: string;
+  readonly status: string;
+  readonly phase: {
+    readonly completed: number;
+    readonly next: string;
+  };
+  readonly createdAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Scratchpad
+// ---------------------------------------------------------------------------
+
+export interface ScratchpadEntrySummary {
+  readonly path: string;
+  readonly authorId: string;
+  readonly groupId: string;
+  readonly sizeBytes: number;
+  readonly updatedAt: number;
+}
+
+export interface ScratchpadEntryDetail extends ScratchpadEntrySummary {
+  readonly content: string;
+  readonly generation: number;
+}
+
+// ---------------------------------------------------------------------------
+// Governance queue
+// ---------------------------------------------------------------------------
+
+export interface GovernancePendingItem {
+  readonly id: string;
+  readonly agentId: string;
+  readonly requestKind: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly timestamp: number;
 }

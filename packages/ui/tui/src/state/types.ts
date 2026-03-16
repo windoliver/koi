@@ -6,13 +6,75 @@
  */
 
 import type {
+  AgentProcfs,
+  CheckpointEntry,
+  CronSchedule,
   DashboardAgentSummary,
+  DashboardChannelSummary,
   DashboardEventBatch,
+  DashboardSkillSummary,
+  DashboardSystemMetrics,
   DataSourceSummary,
   ForgeDashboardEvent,
+  GatewayTopology,
+  HarnessStatus,
+  MiddlewareChain,
   MonitorDashboardEvent,
+  ProcessTreeSnapshot,
+  SchedulerDeadLetterEntry,
+  SchedulerStats,
+  SchedulerTaskSummary,
+  TaskBoardSnapshot,
+  TemporalHealth,
+  WorkflowDetail,
+  WorkflowSummary,
 } from "@koi/dashboard-types";
 import type { PhaseProgress } from "@koi/setup-core";
+import type {
+  AgentProcfsViewState,
+  ChannelsViewState,
+  CostViewState,
+  DelegationViewState,
+  GatewayViewState,
+  GovernancePendingApproval,
+  GovernanceViewState,
+  GovernanceViolation,
+  HandoffViewState,
+  HarnessViewState,
+  MailboxViewState,
+  MiddlewareViewState,
+  NexusBrowserState,
+  NexusViewState,
+  ProcessTreeViewState,
+  SchedulerViewState,
+  ScratchpadViewState,
+  SkillsViewState,
+  SystemViewState,
+  TaskBoardViewState,
+  TemporalViewState,
+  TuiCapabilities,
+} from "./domain-types.js";
+import {
+  createInitialAgentProcfsView,
+  createInitialChannelsView,
+  createInitialCostView,
+  createInitialDelegationView,
+  createInitialGatewayView,
+  createInitialGovernanceView,
+  createInitialHandoffView,
+  createInitialHarnessView,
+  createInitialMailboxView,
+  createInitialMiddlewareView,
+  createInitialNexusBrowser,
+  createInitialNexusView,
+  createInitialProcessTreeView,
+  createInitialSchedulerView,
+  createInitialScratchpadView,
+  createInitialSkillsView,
+  createInitialSystemView,
+  createInitialTaskBoardView,
+  createInitialTemporalView,
+} from "./domain-types.js";
 
 // Re-export shared types from dashboard-client
 /** TUI-specific error alias for backward compat. */
@@ -40,23 +102,41 @@ export interface SessionState {
 export type TuiView =
   | "addons"
   | "agents"
+  | "agentprocfs"
   | "channels"
   | "consent"
   | "console"
+  | "cost"
   | "datasources"
+  | "delegation"
   | "doctor"
   | "engine"
+  | "files"
   | "forge"
+  | "gateway"
+  | "governance"
+  | "handoffs"
+  | "harness"
   | "logs"
+  | "mailbox"
+  | "middleware"
   | "model"
   | "nameinput"
+  | "nexus"
   | "palette"
   | "presetdetail"
+  | "processtree"
   | "progress"
+  | "scheduler"
+  | "scratchpad"
   | "service"
   | "sessions"
+  | "skills"
   | "sourcedetail"
   | "splitpanes"
+  | "system"
+  | "taskboard"
+  | "temporal"
   | "welcome";
 
 /** Panel zoom level — cycles with +/Esc. */
@@ -94,6 +174,9 @@ export interface PresetInfo {
   readonly agentRoles?: readonly { readonly role: string; readonly description: string }[];
   readonly prompts?: readonly string[];
 }
+
+/** Agent list display mode — flat list or hierarchy tree. */
+export type AgentListMode = "flat" | "tree";
 
 /** Log level for filtering. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -136,6 +219,8 @@ export interface TuiState {
   readonly view: TuiView;
   readonly agents: readonly DashboardAgentSummary[];
   readonly selectedAgentIndex: number;
+  /** Agent list display mode — toggled by /tree. */
+  readonly agentListMode: AgentListMode;
   readonly activeSession: SessionState | null;
   readonly connectionStatus: ConnectionStatus;
   readonly error: import("@koi/dashboard-client").DashboardClientError | null;
@@ -166,6 +251,8 @@ export interface TuiState {
   readonly forgeBricks: Readonly<Record<string, TuiBrickSummary>>;
   /** Forge sparkline data by brick ID. */
   readonly forgeSparklines: Readonly<Record<string, readonly number[]>>;
+  /** Selected forge brick index for keyboard navigation. */
+  readonly forgeSelectedBrickIndex: number;
   /** Current zoom level for focused panel. */
   readonly zoomLevel: ZoomLevel;
   /** Available presets for the welcome screen. */
@@ -210,6 +297,30 @@ export interface TuiState {
   readonly splitSessions: Readonly<Record<string, SessionState>>;
   /** Index of focused pane in split view. */
   readonly focusedPaneIndex: number;
+  // ─── Domain view slices ──────────────────────────────────────────
+  readonly skillsView: SkillsViewState;
+  readonly channelsView: ChannelsViewState;
+  readonly systemView: SystemViewState;
+  readonly nexusView: NexusViewState;
+  readonly gatewayView: GatewayViewState;
+  readonly temporalView: TemporalViewState;
+  readonly schedulerView: SchedulerViewState;
+  readonly taskBoardView: TaskBoardViewState;
+  readonly harnessView: HarnessViewState;
+  readonly governanceView: GovernanceViewState;
+  readonly costView: CostViewState;
+  readonly middlewareView: MiddlewareViewState;
+  readonly processTreeView: ProcessTreeViewState;
+  readonly agentProcfsView: AgentProcfsViewState;
+  readonly delegationView: DelegationViewState;
+  readonly handoffView: HandoffViewState;
+  readonly scratchpadView: ScratchpadViewState;
+  readonly mailboxView: MailboxViewState;
+  /** Override agent ID for mailbox — set by /mailbox <agentId>. */
+  readonly mailboxTargetAgentId: string | null;
+  readonly nexusBrowser: NexusBrowserState;
+  /** Server capabilities — which subsystems are available. */
+  readonly capabilities: TuiCapabilities | null;
 }
 
 /** App mode: welcome (no admin API) or boardroom (connected). */
@@ -221,6 +332,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     view: mode === "welcome" ? "welcome" : "agents",
     agents: [],
     selectedAgentIndex: 0,
+    agentListMode: "flat" as AgentListMode,
     activeSession: null,
     connectionStatus: "disconnected",
     error: null,
@@ -238,6 +350,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     monitorEvents: [],
     forgeBricks: {},
     forgeSparklines: {},
+    forgeSelectedBrickIndex: 0,
     zoomLevel: "normal",
     presets: [],
     selectedPresetIndex: 0,
@@ -260,6 +373,27 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     ptyBuffers: {},
     splitSessions: {},
     focusedPaneIndex: 0,
+    skillsView: createInitialSkillsView(),
+    channelsView: createInitialChannelsView(),
+    systemView: createInitialSystemView(),
+    nexusView: createInitialNexusView(),
+    gatewayView: createInitialGatewayView(),
+    temporalView: createInitialTemporalView(),
+    schedulerView: createInitialSchedulerView(),
+    taskBoardView: createInitialTaskBoardView(),
+    harnessView: createInitialHarnessView(),
+    governanceView: createInitialGovernanceView(),
+    costView: createInitialCostView(),
+    middlewareView: createInitialMiddlewareView(),
+    processTreeView: createInitialProcessTreeView(),
+    agentProcfsView: createInitialAgentProcfsView(),
+    delegationView: createInitialDelegationView(),
+    handoffView: createInitialHandoffView(),
+    scratchpadView: createInitialScratchpadView(),
+    mailboxView: createInitialMailboxView(),
+    mailboxTargetAgentId: null,
+    nexusBrowser: createInitialNexusBrowser(),
+    capabilities: null,
   };
 }
 
@@ -379,6 +513,7 @@ export type TuiAction =
       readonly kind: "set_focused_pane";
       readonly index: number;
     }
+  // ─── Wizard/setup actions ─────────────────────────────────────────
   | { readonly kind: "set_selected_model"; readonly model: string }
   | { readonly kind: "set_model_focused_index"; readonly index: number }
   | { readonly kind: "set_selected_engine"; readonly engine: string | undefined }
@@ -388,13 +523,124 @@ export type TuiAction =
   | { readonly kind: "append_phase_progress"; readonly progress: PhaseProgress }
   | { readonly kind: "set_setup_running"; readonly running: boolean }
   | { readonly kind: "clear_phase_progress" }
+  // ─── Service/log actions ─────────────────────────────────────────
   | { readonly kind: "append_log"; readonly entry: LogEntry }
   | { readonly kind: "set_log_level"; readonly level: LogLevel }
   | { readonly kind: "clear_logs" }
   | { readonly kind: "set_service_status"; readonly status: ServiceStatusState | null }
   | { readonly kind: "set_doctor_checks"; readonly checks: readonly DoctorCheck[] }
   | { readonly kind: "append_doctor_check"; readonly check: DoctorCheck }
-  | { readonly kind: "clear_doctor_checks" };
+  | { readonly kind: "clear_doctor_checks" }
+  // ─── Domain view actions ───────────────────────────────────────────
+  | {
+      readonly kind: "apply_skill_event";
+      readonly event: import("@koi/dashboard-types").SkillDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_channel_event";
+      readonly event: import("@koi/dashboard-types").ChannelDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_system_event";
+      readonly event: import("@koi/dashboard-types").SystemDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_nexus_event";
+      readonly event: import("@koi/dashboard-types").NexusDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_gateway_event";
+      readonly event: import("@koi/dashboard-types").GatewayDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_temporal_event";
+      readonly event: import("@koi/dashboard-types").TemporalDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_scheduler_event";
+      readonly event: import("@koi/dashboard-types").SchedulerDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_taskboard_event";
+      readonly event: import("@koi/dashboard-types").TaskBoardDashboardEvent;
+    }
+  | {
+      readonly kind: "apply_harness_event";
+      readonly event: import("@koi/dashboard-types").HarnessDashboardEvent;
+    }
+  | { readonly kind: "set_capabilities"; readonly capabilities: TuiCapabilities }
+  | { readonly kind: "set_gateway_topology"; readonly topology: GatewayTopology }
+  | { readonly kind: "set_temporal_health"; readonly health: TemporalHealth }
+  | { readonly kind: "set_temporal_workflows"; readonly workflows: readonly WorkflowSummary[] }
+  | { readonly kind: "set_temporal_workflow_detail"; readonly detail: WorkflowDetail | null }
+  | { readonly kind: "select_temporal_workflow"; readonly index: number }
+  | { readonly kind: "set_scheduler_stats"; readonly stats: SchedulerStats }
+  | { readonly kind: "set_scheduler_tasks"; readonly tasks: readonly SchedulerTaskSummary[] }
+  | { readonly kind: "set_scheduler_schedules"; readonly schedules: readonly CronSchedule[] }
+  | {
+      readonly kind: "set_scheduler_dead_letters";
+      readonly entries: readonly SchedulerDeadLetterEntry[];
+    }
+  | { readonly kind: "set_taskboard_snapshot"; readonly snapshot: TaskBoardSnapshot }
+  | { readonly kind: "set_harness_status"; readonly status: HarnessStatus }
+  | { readonly kind: "set_harness_checkpoints"; readonly checkpoints: readonly CheckpointEntry[] }
+  | { readonly kind: "set_middleware_chain"; readonly chain: MiddlewareChain }
+  | { readonly kind: "set_middleware_loading"; readonly loading: boolean }
+  | { readonly kind: "set_process_tree"; readonly snapshot: ProcessTreeSnapshot }
+  | { readonly kind: "set_process_tree_loading"; readonly loading: boolean }
+  | { readonly kind: "set_agent_procfs"; readonly procfs: AgentProcfs }
+  | { readonly kind: "set_agent_procfs_loading"; readonly loading: boolean }
+  | {
+      readonly kind: "add_governance_approval";
+      readonly approval: GovernancePendingApproval;
+    }
+  | { readonly kind: "remove_governance_approval"; readonly id: string }
+  | { readonly kind: "add_governance_violation"; readonly violation: GovernanceViolation }
+  | { readonly kind: "select_governance_item"; readonly index: number }
+  | { readonly kind: "set_skills_list"; readonly skills: readonly DashboardSkillSummary[] }
+  | { readonly kind: "set_channels_list"; readonly channels: readonly DashboardChannelSummary[] }
+  | { readonly kind: "set_system_metrics"; readonly metrics: DashboardSystemMetrics }
+  | { readonly kind: "scroll_domain_view"; readonly domain: string; readonly offset: number }
+  | { readonly kind: "select_forge_brick"; readonly index: number }
+  | { readonly kind: "toggle_agent_list_mode" }
+  | { readonly kind: "set_mailbox_target"; readonly agentId: string | null }
+  // ─── Delegation actions ──────────────────────────────────────────
+  | {
+      readonly kind: "set_delegations";
+      readonly delegations: readonly import("@koi/dashboard-types").DelegationSummary[];
+    }
+  | { readonly kind: "set_delegation_loading"; readonly loading: boolean }
+  // ─── Handoff actions ─────────────────────────────────────────────
+  | {
+      readonly kind: "set_handoffs";
+      readonly handoffs: readonly import("@koi/dashboard-types").HandoffSummary[];
+    }
+  | { readonly kind: "set_handoff_loading"; readonly loading: boolean }
+  // ─── Scratchpad actions ──────────────────────────────────────────
+  | {
+      readonly kind: "set_scratchpad_entries";
+      readonly entries: readonly import("@koi/dashboard-types").ScratchpadEntrySummary[];
+    }
+  | {
+      readonly kind: "set_scratchpad_detail";
+      readonly detail: import("@koi/dashboard-types").ScratchpadEntryDetail | null;
+    }
+  | { readonly kind: "set_scratchpad_loading"; readonly loading: boolean }
+  // ─── Mailbox actions ─────────────────────────────────────────────
+  | {
+      readonly kind: "set_mailbox_messages";
+      readonly messages: readonly import("@koi/dashboard-types").AgentMessage[];
+    }
+  | { readonly kind: "set_mailbox_loading"; readonly loading: boolean }
+  // ─── Nexus browser actions ───────────────────────────────────────
+  | {
+      readonly kind: "set_nexus_browser_entries";
+      readonly entries: readonly import("@koi/dashboard-client").FsEntry[];
+      readonly path: string;
+    }
+  | { readonly kind: "set_nexus_browser_content"; readonly content: string | null }
+  | { readonly kind: "set_nexus_browser_loading"; readonly loading: boolean }
+  | { readonly kind: "select_nexus_browser_entry"; readonly index: number };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;

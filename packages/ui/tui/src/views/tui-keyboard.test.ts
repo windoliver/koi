@@ -92,6 +92,84 @@ function makeCallbacks(): KeyboardCallbacks & {
     addonsBack: () => {
       mutableCalls.push("addonsBack");
     },
+    toggleCost: () => {
+      mutableCalls.push("toggleCost");
+    },
+    toggleNexus: () => {
+      mutableCalls.push("toggleNexus");
+    },
+    navigateBack: () => {
+      mutableCalls.push("navigateBack");
+    },
+    domainScrollUp: () => {
+      mutableCalls.push("domainScrollUp");
+    },
+    domainScrollDown: () => {
+      mutableCalls.push("domainScrollDown");
+    },
+    temporalSelectNext: () => {
+      mutableCalls.push("temporalSelectNext");
+    },
+    temporalSelectPrev: () => {
+      mutableCalls.push("temporalSelectPrev");
+    },
+    temporalDetail: () => {
+      mutableCalls.push("temporalDetail");
+    },
+    temporalSignal: () => {
+      mutableCalls.push("temporalSignal");
+    },
+    temporalTerminate: () => {
+      mutableCalls.push("temporalTerminate");
+    },
+    schedulerRetryDlq: () => {
+      mutableCalls.push("schedulerRetryDlq");
+    },
+    harnessPauseResume: () => {
+      mutableCalls.push("harnessPauseResume");
+    },
+    governanceSelectNext: () => {
+      mutableCalls.push("governanceSelectNext");
+    },
+    governanceSelectPrev: () => {
+      mutableCalls.push("governanceSelectPrev");
+    },
+    governanceApprove: () => {
+      mutableCalls.push("governanceApprove");
+    },
+    governanceDeny: () => {
+      mutableCalls.push("governanceDeny");
+    },
+    forgeSelectNext: () => {
+      mutableCalls.push("forgeSelectNext");
+    },
+    forgeSelectPrev: () => {
+      mutableCalls.push("forgeSelectPrev");
+    },
+    forgePromote: () => {
+      mutableCalls.push("forgePromote");
+    },
+    forgeDemote: () => {
+      mutableCalls.push("forgeDemote");
+    },
+    forgeQuarantine: () => {
+      mutableCalls.push("forgeQuarantine");
+    },
+    nexusBrowserSelectNext: () => {
+      mutableCalls.push("nexusBrowserSelectNext");
+    },
+    nexusBrowserSelectPrev: () => {
+      mutableCalls.push("nexusBrowserSelectPrev");
+    },
+    nexusBrowserOpen: () => {
+      mutableCalls.push("nexusBrowserOpen");
+    },
+    nexusBrowserBack: () => {
+      mutableCalls.push("nexusBrowserBack");
+    },
+    scratchpadOpen: () => {
+      mutableCalls.push("scratchpadOpen");
+    },
     modelSelect: () => {
       mutableCalls.push("modelSelect");
     },
