@@ -424,6 +424,8 @@ export function createContextHubExecutor(
     if (!parsed.ok) return parsed;
 
     registryCache = { registry: parsed.value, expiresAt: Date.now() + cacheTtlMs };
+    // Invalidate search index so it rebuilds from the fresh registry
+    searchIndexCache = undefined;
     return parsed;
   }
 

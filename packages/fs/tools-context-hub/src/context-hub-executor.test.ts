@@ -175,6 +175,76 @@ describe("ContextHubExecutor.search", () => {
     expect(result.error.retryable).toBe(true);
   });
 
+  test("rebuilds search index after registry TTL expires", async () => {
+    const INITIAL_REGISTRY = {
+      ...FIXTURE_REGISTRY,
+      docs: FIXTURE_REGISTRY.docs.slice(0, 1), // only stripe/payments
+    };
+    const UPDATED_REGISTRY = {
+      ...FIXTURE_REGISTRY,
+      version: "2.0.0",
+      docs: [
+        ...FIXTURE_REGISTRY.docs,
+        {
+          id: "aws/s3",
+          name: "AWS S3 Object Storage",
+          description: "Store and retrieve objects from S3",
+          source: "official",
+          tags: ["cloud", "storage"],
+          languages: [
+            {
+              language: "javascript",
+              versions: [
+                {
+                  version: "1.0.0",
+                  path: "aws/s3/javascript/DOC.md",
+                  size: 2000,
+                  lastUpdated: "2026-01-15",
+                },
+              ],
+              recommendedVersion: "1.0.0",
+            },
+          ],
+        },
+      ],
+    };
+
+    let currentRegistry = INITIAL_REGISTRY;
+    const fetchFn: FetchFn = async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("registry.json")) {
+        return new Response(JSON.stringify(currentRegistry), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("doc content", { status: 200 });
+    };
+
+    const executor = createContextHubExecutor({
+      fetchFn,
+      baseUrl: "https://cdn.test.example/v1",
+      cacheTtlMs: 1, // 1ms TTL so it expires immediately
+    });
+
+    // First search: only stripe/payments in registry
+    const first = await executor.search("s3 storage");
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.length).toBe(0);
+
+    // Wait for TTL to expire, update registry with new doc
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    currentRegistry = UPDATED_REGISTRY;
+
+    // Second search: should find aws/s3 from refreshed registry
+    const second = await executor.search("s3 storage");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.length).toBeGreaterThan(0);
+    expect(second.value[0]?.id).toBe("aws/s3");
+  });
+
   test("returns SCHEMA_MISMATCH for invalid registry JSON", async () => {
     const executor = createExecutor({ registryBody: { invalid: true } });
     const result = await executor.search("stripe");
