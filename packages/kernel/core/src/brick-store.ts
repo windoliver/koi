@@ -312,6 +312,26 @@ export type BrickArtifact =
   | CompositeArtifact;
 
 // ---------------------------------------------------------------------------
+// Brick summary — lightweight discovery type for progressive disclosure
+// ---------------------------------------------------------------------------
+
+/** Disclosure level for progressive tool/brick loading. */
+export type BrickDisclosureLevel = "summary" | "descriptor" | "full";
+
+/**
+ * Lightweight summary for brick discovery (~20 tokens).
+ * Contains only what's needed to decide relevance — no implementation,
+ * content, schema, or other heavy fields.
+ */
+export interface BrickSummary {
+  readonly id: BrickId;
+  readonly kind: BrickKind;
+  readonly name: string;
+  readonly description: string;
+  readonly tags: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
 // Forge query (structured search)
 // ---------------------------------------------------------------------------
 
@@ -373,6 +393,15 @@ export interface ForgeStore {
   readonly save: (brick: BrickArtifact) => Promise<Result<void, KoiError>>;
   readonly load: (id: BrickId) => Promise<Result<BrickArtifact, KoiError>>;
   readonly search: (query: ForgeQuery) => Promise<Result<readonly BrickArtifact[], KoiError>>;
+  /**
+   * Lightweight search returning only summary-level data (~20 tokens per brick).
+   * Omits implementation, content, schemas, and other heavy fields.
+   * Optional — callers should use `searchSummariesWithFallback()` which falls
+   * back to search() + projection when this method is not implemented.
+   */
+  readonly searchSummaries?: (
+    query: ForgeQuery,
+  ) => Promise<Result<readonly BrickSummary[], KoiError>>;
   readonly remove: (id: BrickId) => Promise<Result<void, KoiError>>;
   readonly update: (id: BrickId, updates: BrickUpdate) => Promise<Result<void, KoiError>>;
   readonly exists: (id: BrickId) => Promise<Result<boolean, KoiError>>;
@@ -398,6 +427,32 @@ export interface ForgeStore {
   readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
   /** Clean up resources (filesystem watchers, timers). Not all backends hold resources. */
   readonly dispose?: () => void;
+}
+
+/**
+ * Search for brick summaries with automatic fallback.
+ * Uses `store.searchSummaries()` when available, otherwise falls back
+ * to `store.search()` + field projection.
+ */
+export async function searchSummariesWithFallback(
+  store: ForgeStore,
+  query: ForgeQuery,
+): Promise<Result<readonly BrickSummary[], KoiError>> {
+  if (store.searchSummaries !== undefined) {
+    return store.searchSummaries(query);
+  }
+  const result = await store.search(query);
+  if (!result.ok) return result;
+  const summaries: readonly BrickSummary[] = result.value.map(
+    (brick): BrickSummary => ({
+      id: brick.id,
+      kind: brick.kind,
+      name: brick.name,
+      description: brick.description,
+      tags: brick.tags,
+    }),
+  );
+  return { ok: true, value: summaries };
 }
 
 // ---------------------------------------------------------------------------

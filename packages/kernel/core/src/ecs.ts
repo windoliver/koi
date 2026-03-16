@@ -285,6 +285,17 @@ export interface ToolDescriptor {
   readonly tags?: readonly string[];
 }
 
+/**
+ * Lightweight tool summary for progressive disclosure (~20 tokens).
+ * Contains only name + description — enough for the model to know a tool
+ * exists without loading the full inputSchema.
+ */
+export interface ToolSummary {
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[];
+}
+
 /** Options bag for Tool.execute — extensible without breaking existing callers. */
 export interface ToolExecuteOptions {
   readonly signal?: AbortSignal | undefined;

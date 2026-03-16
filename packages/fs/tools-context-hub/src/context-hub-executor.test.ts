@@ -165,7 +165,7 @@ describe("ContextHubExecutor.search", () => {
     expect(result.value.length).toBeLessThanOrEqual(1);
   });
 
-  test("returns REGISTRY_UNAVAILABLE when CDN is down", async () => {
+  test("returns EXTERNAL when CDN is down", async () => {
     const executor = createExecutor({ registryStatus: 500 });
     const result = await executor.search("stripe");
 
@@ -305,7 +305,7 @@ describe("ContextHubExecutor.get", () => {
     expect(result.value.language).toBe("python");
   });
 
-  test("returns LANG_NOT_FOUND when multiple languages exist and none specified", async () => {
+  test("returns NOT_FOUND when multiple languages exist and none specified", async () => {
     const executor = createExecutor();
     const result = await executor.get("stripe/payments");
 
@@ -379,7 +379,7 @@ describe("ContextHubExecutor.get", () => {
     expect(fetchCount).toBe(firstCount);
   });
 
-  test("returns REGISTRY_UNAVAILABLE when CDN is down", async () => {
+  test("returns EXTERNAL when CDN is down", async () => {
     const executor = createExecutor({ registryStatus: 503 });
     const result = await executor.get("stripe/payments", "javascript");
 

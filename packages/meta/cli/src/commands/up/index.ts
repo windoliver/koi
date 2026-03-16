@@ -259,67 +259,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     `Preset: ${presetId} (tui=${String(services.tui)}, temporal=${services.temporal}, gateway=${String(services.gateway)})`,
   );
 
-  // 5. FORGE + AUTO-HARNESS
-  // Auto-harness needs forgeStore at construction, so we pre-create the store
-  // and pass harness outputs into forge bootstrap for full synthesis wiring.
-  let currentSessionId = `up:${manifest.name}:0`;
-  let sessionCounter = 0;
-
-  // Pre-create auto-harness when preset enables it and forge is enabled.
-  // The same store is shared with forge bootstrap so synthesized bricks
-  // land in the active forge system.
-  let autoHarnessOutputs: import("../../bootstrap-forge.js").AutoHarnessOutputs | undefined;
-  let preCreatedHarnessMiddleware: import("@koi/core").KoiMiddleware | undefined;
-  if (preset.stacks.autoHarness === true && manifest.forge !== undefined) {
-    try {
-      const { createInMemoryForgeStore } = await import("@koi/forge");
-      const { createAutoHarnessStack } = await import("@koi/auto-harness");
-      const preForgeStore = createInMemoryForgeStore();
-      const harnessStack = createAutoHarnessStack({
-        forgeStore: preForgeStore,
-        generate: async () => "",
-      });
-      preCreatedHarnessMiddleware = harnessStack.policyCacheMiddleware;
-      autoHarnessOutputs = {
-        store: preForgeStore,
-        synthesizeHarness: harnessStack.synthesizeHarness,
-        maxSynthesesPerSession: harnessStack.maxSynthesesPerSession,
-        policyCacheHandle: harnessStack.policyCacheHandle,
-      };
-    } catch {
-      // Auto-harness is non-fatal
-    }
-  }
-
-  const forgeResult = await timer.time("forge", () =>
-    bootstrapForgeOrWarn(manifest, () => currentSessionId, flags.verbose, autoHarnessOutputs),
-  );
-  const forgeBootstrap = forgeResult?.bootstrap;
-  const sandboxBridge = forgeResult?.sandboxBridge;
-
-  const { createAgentChatBridge } = await import("../../agui-chat-bridge.js");
-  const chatBridge: AgentChatBridge = createAgentChatBridge();
-
-  // 6. RESOLVE agent + subsystems
-  output.spinner.start("Resolving agent...");
-  const resolved = await timer.time("resolve", () =>
-    resolveAgent({
-      manifestPath,
-      manifest,
-      ...(forgeBootstrap !== undefined ? { forgeStore: forgeBootstrap.store } : {}),
-    }),
-  );
-  if (!resolved.ok) {
-    output.spinner.stop();
-    output.error(formatResolutionError(resolved.error));
-    if (sandboxBridge !== undefined) await sandboxBridge.dispose();
-    process.exit(EXIT_CONFIG);
-  }
-  output.spinner.stop(undefined);
-  output.success("Agent resolved");
-
-  const adapter = resolved.value.engine ?? createPiAdapter({ model: modelName });
-
+  // 5. NEXUS + SUBSYSTEMS (before forge, so search backends are available)
   // Nexus auto-start (embed-auth)
   let nexusBaseUrl = flags.nexusUrl ?? manifest.nexus?.url ?? process.env.NEXUS_URL;
   let nexusStartedByUs = false;
@@ -375,6 +315,78 @@ export async function runUp(flags: UpFlags): Promise<void> {
   );
   output.spinner.stop(undefined);
   output.success("Subsystems resolved");
+
+  // 5b. FORGE + AUTO-HARNESS
+  // Auto-harness needs forgeStore at construction, so we pre-create the store
+  // and pass harness outputs into forge bootstrap for full synthesis wiring.
+  let currentSessionId = `up:${manifest.name}:0`;
+  let sessionCounter = 0;
+
+  // Pre-create auto-harness when preset enables it and forge is enabled.
+  // The same store is shared with forge bootstrap so synthesized bricks
+  // land in the active forge system.
+  let autoHarnessOutputs: import("../../bootstrap-forge.js").AutoHarnessOutputs | undefined;
+  let preCreatedHarnessMiddleware: import("@koi/core").KoiMiddleware | undefined;
+  if (preset.stacks.autoHarness === true && manifest.forge !== undefined) {
+    try {
+      const { createInMemoryForgeStore } = await import("@koi/forge");
+      const { createAutoHarnessStack } = await import("@koi/auto-harness");
+      const preForgeStore = createInMemoryForgeStore();
+      const harnessStack = createAutoHarnessStack({
+        forgeStore: preForgeStore,
+        generate: async () => "",
+      });
+      preCreatedHarnessMiddleware = harnessStack.policyCacheMiddleware;
+      autoHarnessOutputs = {
+        store: preForgeStore,
+        synthesizeHarness: harnessStack.synthesizeHarness,
+        maxSynthesesPerSession: harnessStack.maxSynthesesPerSession,
+        policyCacheHandle: harnessStack.policyCacheHandle,
+      };
+    } catch {
+      // Auto-harness is non-fatal
+    }
+  }
+
+  const forgeResult = await timer.time("forge", () =>
+    bootstrapForgeOrWarn(
+      manifest,
+      () => currentSessionId,
+      flags.verbose,
+      autoHarnessOutputs,
+      nexus.search,
+    ),
+  );
+  const forgeBootstrap = forgeResult?.bootstrap;
+  const sandboxBridge = forgeResult?.sandboxBridge;
+
+  const { createAgentChatBridge } = await import("../../agui-chat-bridge.js");
+  const chatBridge: AgentChatBridge = createAgentChatBridge();
+
+  // 6. RESOLVE agent + subsystems
+  output.spinner.start("Resolving agent...");
+  const resolved = await timer.time("resolve", () =>
+    resolveAgent({
+      manifestPath,
+      manifest,
+      ...(forgeBootstrap !== undefined ? { forgeStore: forgeBootstrap.store } : {}),
+    }),
+  );
+  if (!resolved.ok) {
+    output.spinner.stop();
+    output.error(formatResolutionError(resolved.error));
+    if (sandboxBridge !== undefined) await sandboxBridge.dispose();
+    if (autonomous !== undefined) await autonomous.dispose();
+    if (temporalAdmin !== undefined) await temporalAdmin.dispose();
+    if (nexus.dispose !== undefined) await nexus.dispose();
+    if (nexusStartedByUs) await stopNexusStack(workspaceRoot, flags.verbose);
+    if (temporalEmbedHandle !== undefined) await temporalEmbedHandle.dispose();
+    process.exit(EXIT_CONFIG);
+  }
+  output.spinner.stop(undefined);
+  output.success("Agent resolved");
+
+  const adapter = resolved.value.engine ?? createPiAdapter({ model: modelName });
 
   // 7. ASSEMBLE
   output.spinner.start("Assembling runtime...");

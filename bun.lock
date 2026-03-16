@@ -1222,6 +1222,7 @@
         "@koi/runtime-presets": "workspace:*",
         "@koi/sandbox": "workspace:*",
         "@koi/sandbox-ipc": "workspace:*",
+        "@koi/search-provider": "workspace:*",
         "@koi/setup-core": "workspace:*",
         "@koi/shutdown": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
@@ -1831,6 +1832,17 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-tool-disclosure": {
+      "name": "@koi/middleware-tool-disclosure",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -4022,6 +4034,8 @@
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/middleware/middleware-semantic-retry"],
 
     "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/middleware/middleware-tool-audit"],
+
+    "@koi/middleware-tool-disclosure": ["@koi/middleware-tool-disclosure@workspace:packages/middleware/middleware-tool-disclosure"],
 
     "@koi/middleware-tool-error-formatter": ["@koi/middleware-tool-error-formatter@workspace:packages/middleware/middleware-tool-error-formatter"],
 

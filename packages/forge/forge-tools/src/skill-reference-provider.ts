@@ -10,26 +10,18 @@
  * AgentSkills.io progressive disclosure pattern: metadata → instructions → resources.
  */
 
-import type {
-  BrickArtifact,
-  ForgeQuery,
-  ForgeStore,
-  KoiError,
-  Result,
-  SkillArtifact,
-} from "@koi/core";
+import type { BrickSummary, ForgeQuery, ForgeStore, KoiError, Result } from "@koi/core";
+import { searchSummariesWithFallback } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** Minimal metadata for skill discovery (level 1: cheapest). */
-export interface SkillMetadata {
-  readonly id: string;
-  readonly name: string;
-  readonly description: string;
-  readonly tags: readonly string[];
-}
+/**
+ * Minimal metadata for skill discovery (level 1: cheapest).
+ * Extends BrickSummary — all brick kinds share this lightweight shape.
+ */
+export type SkillMetadata = BrickSummary;
 
 /** Full skill instructions (level 2: on demand). */
 export interface SkillInstructions {
@@ -59,18 +51,7 @@ export interface SkillReferenceProvider {
 export function createSkillReferenceProvider(store: ForgeStore): SkillReferenceProvider {
   const listSkills = async (): Promise<Result<readonly SkillMetadata[], KoiError>> => {
     const query: ForgeQuery = { kind: "skill" };
-    const result = await store.search(query);
-    if (!result.ok) return result;
-
-    const metadata: readonly SkillMetadata[] = result.value.map(
-      (brick: BrickArtifact): SkillMetadata => ({
-        id: brick.id,
-        name: brick.name,
-        description: brick.description,
-        tags: brick.tags,
-      }),
-    );
-    return { ok: true, value: metadata };
+    return searchSummariesWithFallback(store, query);
   };
 
   const getInstructions = async (skillId: string): Promise<Result<SkillInstructions, KoiError>> => {
@@ -89,13 +70,12 @@ export function createSkillReferenceProvider(store: ForgeStore): SkillReferenceP
       };
     }
 
-    const skillBrick = brick as SkillArtifact;
     return {
       ok: true,
       value: {
         id: brick.id,
         name: brick.name,
-        content: skillBrick.content,
+        content: brick.content,
       },
     };
   };

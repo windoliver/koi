@@ -92,10 +92,12 @@ export type {
   AgentArtifact,
   BrickArtifact,
   BrickArtifactBase,
+  BrickDisclosureLevel,
   BrickDriftContext,
   BrickFitnessMetrics,
   BrickPort,
   BrickRequires,
+  BrickSummary,
   BrickUpdate,
   CollectiveMemory,
   CollectiveMemoryCategory,
@@ -128,6 +130,7 @@ export {
   DEFAULT_COLLECTIVE_MEMORY,
   DEFAULT_TRAIL_CONFIG,
   DEFAULT_TRAIL_STRENGTH,
+  searchSummariesWithFallback,
 } from "./brick-store.js";
 // browser driver — cross-engine abstraction for browser automation
 export type {
@@ -357,6 +360,7 @@ export type {
   ToolExecuteOptions,
   ToolOrigin,
   ToolPolicy,
+  ToolSummary,
   TurnId,
   WorkspaceComponent,
 } from "./ecs.js";
