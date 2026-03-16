@@ -46,6 +46,7 @@ export type TuiView =
   | "presetdetail"
   | "sessions"
   | "sourcedetail"
+  | "splitpanes"
   | "welcome";
 
 /** Panel zoom level — cycles with +/Esc. */

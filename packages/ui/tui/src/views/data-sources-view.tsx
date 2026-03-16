@@ -19,6 +19,7 @@ export interface DataSourcesViewProps {
   readonly onApprove?: ((name: string) => void) | undefined;
   readonly onViewSchema?: ((name: string) => void) | undefined;
   readonly focused: boolean;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 function statusColor(status: string): string {
@@ -95,6 +96,7 @@ export function DataSourcesView(props: DataSourcesViewProps): React.ReactNode {
       title="Data Sources"
       count={sources.length}
       focused={props.focused}
+      zoomLevel={props.zoomLevel}
       loading={loading}
       loadingMessage="Loading data sources..."
       isEmpty={sources.length === 0}

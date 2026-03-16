@@ -18,6 +18,7 @@ const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   forge: "Esc:back  Ctrl+G:close  Ctrl+P:commands",
   presetdetail: "Enter:select  Esc:back  q:quit",
   sourcedetail: "Esc:back  [a] approve",
+  splitpanes: "Tab:focus-next  Enter:zoom  Esc:back  +:cycle-zoom",
   palette: "↑↓:navigate  Enter:select  Esc:close",
   sessions: "↑↓:navigate  Enter:select  Esc:back",
   welcome: "j/k:navigate  Enter:select  ?:details  q:quit",

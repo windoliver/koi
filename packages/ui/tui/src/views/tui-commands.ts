@@ -128,6 +128,15 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
       deps.openInBrowser();
       return true;
 
+    case "split-panes": {
+      const currentView = deps.store.getState().view;
+      deps.store.dispatch({
+        kind: "set_view",
+        view: currentView === "splitpanes" ? "agents" : "splitpanes",
+      });
+      return true;
+    }
+
     case "quit":
       deps.stop().catch(() => {});
       return true;

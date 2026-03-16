@@ -7,6 +7,8 @@
 
 import type { KeyEvent, SyntaxStyle } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
+import { useMemo } from "react";
+import { AgentSplitPane, type AgentPaneData } from "../components/agent-split-pane.js";
 import type { TuiStore } from "../state/store.js";
 import type { PresetInfo } from "../state/types.js";
 import { COLORS } from "../theme.js";
@@ -58,10 +60,11 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
     }
   }
   if (key.name === "Escape") return "\x1b";
+  if (key.name === "Enter" || key.name === "Return") return "\r";
   if (key.name === "ArrowUp") return "\x1b[A";
   if (key.name === "ArrowDown") return "\x1b[B";
   // Single-char keys for view-specific shortcuts
-  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "+", "?"];
+  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "+", "?", " "];
   if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
     return key.name;
   }
@@ -85,6 +88,24 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
   const pendingText = session?.pendingText ?? "";
   const isPalette = view === "palette";
   const backgroundView = session !== null ? "console" : view === "forge" ? "forge" : "agents";
+
+  // Build split pane data from agents + PTY buffers
+  const splitPaneData: readonly AgentPaneData[] = useMemo(() => {
+    if (view !== "splitpanes") return [];
+    return agents.map((agent) => {
+      const chunks = state.ptyBuffers[agent.agentId] ?? [];
+      // Decode base64 chunks into a single Uint8Array for the terminal
+      const ptyData = chunks.length > 0
+        ? new TextEncoder().encode(chunks.map((c) => atob(c)).join(""))
+        : undefined;
+      return {
+        agentId: agent.agentId,
+        agentName: agent.name,
+        state: agent.state as AgentPaneData["state"],
+        ptyData,
+      };
+    });
+  }, [view, agents, state.ptyBuffers]);
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS.bg}>
@@ -175,7 +196,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
 
         {/* Boardroom views */}
         {(view === "agents" || (isPalette && backgroundView === "agents")) && (
-          <AgentListView agents={agents} onSelect={props.onAgentSelect} focused={view === "agents"} />
+          <AgentListView agents={agents} onSelect={props.onAgentSelect} focused={view === "agents"} zoomLevel={state.zoomLevel} />
         )}
 
         {(view === "console" || (isPalette && backgroundView === "console")) && (
@@ -185,6 +206,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onSubmit={props.onConsoleInput}
             focused={view === "console"}
             syntaxStyle={props.syntaxStyle}
+            zoomLevel={state.zoomLevel}
           />
         )}
 
@@ -196,6 +218,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onApprove={props.onDataSourceApprove}
             onViewSchema={props.onDataSourceViewSchema}
             focused={true}
+            zoomLevel={state.zoomLevel}
           />
         )}
 
@@ -208,6 +231,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onBack={() => { props.store.dispatch({ kind: "set_view", view: "datasources" }); }}
             focused={true}
             syntaxStyle={props.syntaxStyle}
+            zoomLevel={state.zoomLevel}
           />
         )}
 
@@ -219,11 +243,12 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onDetails={(name) => props.onConsentDetails?.(name)}
             onDismiss={() => props.onConsentDismiss?.()}
             focused={true}
+            zoomLevel={state.zoomLevel}
           />
         )}
 
         {(view === "forge" || (isPalette && backgroundView === "forge")) && (
-          <ForgeView state={state} focused={view === "forge"} />
+          <ForgeView state={state} focused={view === "forge"} zoomLevel={state.zoomLevel} />
         )}
 
         {view === "sessions" && (
@@ -233,6 +258,22 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onCancel={props.onSessionCancel ?? (() => {})}
             focused={true}
             loading={state.sessionPickerLoading}
+            zoomLevel={state.zoomLevel}
+          />
+        )}
+
+        {/* Split panes — per-agent terminal output */}
+        {view === "splitpanes" && (
+          <AgentSplitPane
+            panes={splitPaneData}
+            focusedIndex={state.focusedPaneIndex}
+            onFocusChange={(index) => {
+              props.store.dispatch({ kind: "set_focused_pane", index });
+            }}
+            onZoomToggle={() => {
+              props.store.dispatch({ kind: "cycle_zoom" });
+            }}
+            maxScrollback={500}
           />
         )}
 

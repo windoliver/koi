@@ -107,25 +107,34 @@ export async function runTui(flags: TuiFlags): Promise<void> {
             // 1. Scaffold koi.yaml with the selected preset
             await scaffoldManifest(presetId, agentName);
 
-            // 2. Run `koi up` in-process (imports dynamically to avoid circular deps)
-            const { runUp } = await import("./up.js");
-            await runUp({
-              command: "up",
-              directory: undefined,
-              manifest: undefined,
-              verbose: false,
-              detach: false,
-              web: false,
-              timing: false,
-              nexusUrl: undefined,
-              nexusBuild: false,
-              nexusSource: undefined,
-              nexusPort: undefined,
-              temporalUrl: undefined,
-              logFormat: "text",
+            // 2. Spawn `koi up` as a detached background process.
+            //    We can't call runUp() in-process because it creates its own
+            //    TUI and renderer, which conflicts with our welcome TUI.
+            const { spawn } = await import("node:child_process");
+            const bunPath = process.argv[0] ?? "bun";
+            const cliEntry = new URL("../bin.ts", import.meta.url).pathname;
+            const child = spawn(bunPath, [cliEntry, "up", "--detach"], {
+              detached: true,
+              stdio: "ignore",
+              cwd: process.cwd(),
             });
+            child.unref();
 
-            // 3. Transition the TUI from welcome to boardroom
+            // 3. Wait for admin API to become healthy (poll every 500ms, up to 30s)
+            const maxAttempts = 60;
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+              try {
+                const res = await fetch(`${adminUrl}/health`, {
+                  signal: AbortSignal.timeout(2000),
+                });
+                if (res.ok) break;
+              } catch {
+                // Not ready yet
+              }
+              await new Promise((r) => setTimeout(r, 500));
+            }
+
+            // 4. Transition the TUI from welcome to boardroom
             await app.transitionToBoardroom();
           },
         }

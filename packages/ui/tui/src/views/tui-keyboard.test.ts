@@ -59,6 +59,18 @@ function makeCallbacks(): KeyboardCallbacks & {
     toggleForge: () => {
       mutableCalls.push("toggleForge");
     },
+    presetSelect: () => {
+      mutableCalls.push("presetSelect");
+    },
+    presetDetails: () => {
+      mutableCalls.push("presetDetails");
+    },
+    presetBack: () => {
+      mutableCalls.push("presetBack");
+    },
+    toggleSplitPanes: () => {
+      mutableCalls.push("toggleSplitPanes");
+    },
   };
 }
 
@@ -200,5 +212,85 @@ describe("createKeyboardHandler", () => {
     expect(handler("z")).toBe(false);
     expect(handler("\x01")).toBe(false);
     expect(cbs.calls).toEqual([]);
+  });
+
+  test("Enter selects preset in welcome view", () => {
+    const store = createStore(createInitialState("http://localhost:3100", "welcome"));
+    store.dispatch({
+      kind: "set_presets",
+      presets: [
+        {
+          id: "demo",
+          description: "Demo",
+          nexusMode: "embed-auth",
+          demoPack: "connected",
+          services: {},
+          stacks: {},
+        },
+      ],
+    });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("\r")).toBe(true);
+    expect(cbs.calls).toEqual(["presetSelect"]);
+  });
+
+  test("? shows preset details in welcome view", () => {
+    const store = createStore(createInitialState("http://localhost:3100", "welcome"));
+    store.dispatch({
+      kind: "set_presets",
+      presets: [
+        {
+          id: "demo",
+          description: "Demo",
+          nexusMode: "embed-auth",
+          demoPack: "connected",
+          services: {},
+          stacks: {},
+        },
+      ],
+    });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("?")).toBe(true);
+    expect(cbs.calls).toEqual(["presetDetails"]);
+  });
+
+  test("Enter selects in preset detail view", () => {
+    const store = createStore(createInitialState("http://localhost:3100", "welcome"));
+    store.dispatch({ kind: "set_view", view: "presetdetail" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("\r")).toBe(true);
+    expect(cbs.calls).toEqual(["presetSelect"]);
+  });
+
+  test("Escape goes back from preset detail to welcome", () => {
+    const store = createStore(createInitialState("http://localhost:3100", "welcome"));
+    store.dispatch({ kind: "set_view", view: "presetdetail" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("\x1b")).toBe(true);
+    expect(cbs.calls).toEqual(["presetBack"]);
+  });
+
+  test("Escape in split panes resets zoom then goes back", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "splitpanes" });
+    store.dispatch({ kind: "set_zoom_level", level: "half" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    // First Esc: reset zoom to normal
+    expect(handler("\x1b")).toBe(true);
+    expect(store.getState().zoomLevel).toBe("normal");
+
+    // Second Esc: go back to agents
+    expect(handler("\x1b")).toBe(true);
+    expect(store.getState().view).toBe("agents");
   });
 });

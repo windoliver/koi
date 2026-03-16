@@ -15,6 +15,7 @@ export interface SessionPickerViewProps {
   readonly onCancel: () => void;
   readonly focused: boolean;
   readonly loading: boolean;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 function formatTimeAgo(timestamp: number): string {
@@ -42,6 +43,7 @@ export function SessionPickerView(props: SessionPickerViewProps): React.ReactNod
       title="Sessions"
       count={props.sessions.length}
       focused={props.focused}
+      zoomLevel={props.zoomLevel}
       loading={props.loading}
       loadingMessage="Loading sessions..."
       isEmpty={props.sessions.length === 0}

@@ -46,6 +46,7 @@ export interface SourceDetailViewProps {
   readonly onBack: () => void;
   readonly focused: boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 /** Render a text-based fitness bar: e.g. "████████░░ 85%" */
@@ -197,6 +198,7 @@ export function SourceDetailView(props: SourceDetailViewProps): React.ReactNode 
     <PanelChrome
       title={data !== null ? `Source: ${data.name}` : "Source Detail"}
       focused={props.focused}
+      zoomLevel={props.zoomLevel}
       loading={loading}
       loadingMessage="Loading source detail..."
       isEmpty={data === null}

@@ -16,6 +16,7 @@ export interface ConsentViewProps {
   readonly onDetails: (name: string) => void;
   readonly onDismiss: () => void;
   readonly focused: boolean;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 export function ConsentView(props: ConsentViewProps): React.ReactNode {
@@ -26,7 +27,7 @@ export function ConsentView(props: ConsentViewProps): React.ReactNode {
   }
 
   return (
-    <PanelChrome title="New Data Source Detected" focused={focused}>
+    <PanelChrome title="New Data Source Detected" focused={focused} zoomLevel={props.zoomLevel}>
       <box flexDirection="column" paddingLeft={1}>
         <text fg={COLORS.dim}>
           {"The following data source(s) were discovered during this session:"}

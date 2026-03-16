@@ -13,6 +13,7 @@ import { COLORS } from "../theme.js";
 export interface ForgeViewProps {
   readonly state: TuiState;
   readonly focused: boolean;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 export function ForgeView(props: ForgeViewProps): React.ReactNode {
@@ -47,6 +48,7 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
       title="Forge"
       count={brickEntries.length}
       focused={props.focused}
+      zoomLevel={props.zoomLevel}
       isEmpty={brickEntries.length === 0}
       emptyMessage="No bricks forged yet."
       emptyHint="The forge creates reusable tools from agent behavior. Try the self-improvement demo pack."

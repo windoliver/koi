@@ -19,6 +19,7 @@ export interface ConsoleViewProps {
   readonly onSubmit: (text: string) => void;
   readonly focused: boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 /** Console view with scrollable message list and text input. */
@@ -43,6 +44,7 @@ export function ConsoleView(props: ConsoleViewProps): React.ReactNode {
     <PanelChrome
       title="Console"
       focused={props.focused}
+      zoomLevel={props.zoomLevel}
       isEmpty={props.session === null}
       emptyMessage="Select an agent from the Agents panel to start a conversation."
       emptyHint="Use ↑↓ to navigate, Enter to select."

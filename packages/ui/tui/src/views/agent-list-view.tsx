@@ -16,6 +16,7 @@ export interface AgentListViewProps {
   readonly agents: readonly DashboardAgentSummary[];
   readonly onSelect: (agentId: string) => void;
   readonly focused: boolean;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
 /** Format an agent summary as a select option description. */
@@ -43,6 +44,7 @@ export function AgentListView(props: AgentListViewProps): React.ReactNode {
       title="Agents"
       count={props.agents.length}
       focused={props.focused}
+      zoomLevel={props.zoomLevel}
       isEmpty={props.agents.length === 0}
       emptyMessage="No agents running."
       emptyHint="Press Ctrl+P → /dispatch to spawn one, or run koi up --preset demo."

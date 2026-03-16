@@ -20,6 +20,8 @@ import {
   useLastUserMessage,
 } from "../../stores/chat-store.js";
 import { useConnectionStore } from "../../stores/connection-store.js";
+import { usePtyBuffer, useTerminalActive, useTerminalStore } from "../../stores/terminal-store.js";
+import { AgentTerminal } from "./agent-terminal.js";
 import { Composer } from "./composer.js";
 import { ConsoleHeader } from "./console-header.js";
 import { MessageList } from "./message-list.js";
@@ -57,6 +59,8 @@ export const ConsoleView = memo(function ConsoleView({
   const lastUserMessage = useLastUserMessage();
   const agentTerminated = useChatAgentTerminated();
   const connectionStatus = useConnectionStore((s) => s.status);
+  const terminalMode = useTerminalActive(agentId);
+  const ptyData = usePtyBuffer(agentId);
   const [showSessions, setShowSessions] = useState(true);
 
   const { sessions, isLoading: sessionsLoading, loadSession, refresh, persistCurrentSession } =
@@ -142,6 +146,10 @@ export const ConsoleView = memo(function ConsoleView({
     [persistCurrentSession, loadSession, cancel],
   );
 
+  const handleToggleTerminal = useCallback(() => {
+    useTerminalStore.getState().setTerminalActive(agentId, !terminalMode);
+  }, [agentId, terminalMode]);
+
   const currentSessionId = useChatStore((s) => s.session?.sessionId ?? null);
   const canRetry = error !== null && lastUserMessage !== null && !isStreaming;
 
@@ -165,6 +173,8 @@ export const ConsoleView = memo(function ConsoleView({
           onBack={onBack}
           connectionStatus={connectionStatus}
           agentTerminated={agentTerminated}
+          terminalMode={terminalMode}
+          onToggleTerminal={handleToggleTerminal}
         />
 
         {/* Error banner with retry */}
@@ -197,14 +207,20 @@ export const ConsoleView = memo(function ConsoleView({
           </div>
         )}
 
-        <MessageList />
+        {terminalMode ? (
+          <AgentTerminal agentId={agentId} ptyData={ptyData} />
+        ) : (
+          <>
+            <MessageList />
 
-        <Composer
-          onSend={handleSend}
-          onCancel={cancel}
-          isStreaming={isStreaming}
-          disabled={agentTerminated}
-        />
+            <Composer
+              onSend={handleSend}
+              onCancel={cancel}
+              isStreaming={isStreaming}
+              disabled={agentTerminated}
+            />
+          </>
+        )}
       </div>
     </div>
   );

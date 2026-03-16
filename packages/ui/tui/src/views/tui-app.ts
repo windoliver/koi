@@ -572,6 +572,37 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       const currentView = store.getState().view;
       store.dispatch({ kind: "set_view", view: currentView === "forge" ? "agents" : "forge" });
     },
+    presetSelect: () => {
+      const presets = store.getState().presets;
+      const idx = store.getState().selectedPresetIndex;
+      const preset = presets[idx];
+      if (preset !== undefined) {
+        // In preset detail view, select the active detail preset
+        const activeDetail = store.getState().activePresetDetail;
+        const targetPreset =
+          store.getState().view === "presetdetail" && activeDetail !== null ? activeDetail : preset;
+        handlePresetSelect(targetPreset.id);
+      }
+    },
+    presetDetails: () => {
+      const presets = store.getState().presets;
+      const idx = store.getState().selectedPresetIndex;
+      const preset = presets[idx];
+      if (preset !== undefined) {
+        handlePresetDetails(preset.id);
+      }
+    },
+    presetBack: () => {
+      store.dispatch({ kind: "set_active_preset_detail", detail: null });
+      store.dispatch({ kind: "set_view", view: "welcome" });
+    },
+    toggleSplitPanes: () => {
+      const currentView = store.getState().view;
+      store.dispatch({
+        kind: "set_view",
+        view: currentView === "splitpanes" ? "agents" : "splitpanes",
+      });
+    },
   });
 
   // ─── Public API ───────────────────────────────────────────────────

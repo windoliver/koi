@@ -26,6 +26,10 @@ export interface KeyboardCallbacks {
   readonly consentDetails: () => void;
   readonly closeConsent: () => void;
   readonly toggleForge: () => void;
+  readonly presetSelect: () => void;
+  readonly presetDetails: () => void;
+  readonly presetBack: () => void;
+  readonly toggleSplitPanes: () => void;
 }
 
 /**
@@ -72,7 +76,17 @@ export function createKeyboardHandler(
       return true;
     }
 
-    // Welcome mode — j/k navigation, Enter (via onSelect), ? for details, q to quit
+    // Esc in split panes — reset zoom to normal, then go back
+    if (view === "splitpanes" && sequence === "\x1b") {
+      if (store.getState().zoomLevel !== "normal") {
+        store.dispatch({ kind: "set_zoom_level", level: "normal" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "agents" });
+      }
+      return true;
+    }
+
+    // Welcome mode — j/k navigation, Enter to select, ? for details, q to quit
     if (view === "welcome") {
       if (sequence === "j" || sequence === "\x1b[B") {
         store.dispatch({
@@ -88,6 +102,14 @@ export function createKeyboardHandler(
         });
         return true;
       }
+      if (sequence === "\r") {
+        callbacks.presetSelect();
+        return true;
+      }
+      if (sequence === "?") {
+        callbacks.presetDetails();
+        return true;
+      }
       if (sequence === "q") {
         callbacks.stop();
         return true;
@@ -95,11 +117,14 @@ export function createKeyboardHandler(
       return false;
     }
 
-    // Preset detail view — Esc to go back, q to quit
+    // Preset detail view — Enter to select, Esc to go back, q to quit
     if (view === "presetdetail") {
+      if (sequence === "\r") {
+        callbacks.presetSelect();
+        return true;
+      }
       if (sequence === "\x1b") {
-        store.dispatch({ kind: "set_active_preset_detail", detail: null });
-        store.dispatch({ kind: "set_view", view: "welcome" });
+        callbacks.presetBack();
         return true;
       }
       if (sequence === "q") {

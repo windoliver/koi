@@ -1,7 +1,9 @@
 /**
  * WASM wrapper for libghostty-vt terminal emulation.
- * Provides terminal state management per agent pane with a plain text
- * fallback when the WASM module is unavailable.
+ *
+ * Loads ghostty_vt.wasm at runtime via Bun.file() and provides a
+ * TerminalInstance API backed by real VT emulation. Falls back to
+ * plain text accumulation if the WASM module is unavailable.
  */
 
 const DEFAULT_COLS = 80;
@@ -30,18 +32,47 @@ export interface TerminalConfig {
   readonly maxScrollback?: number | undefined;
 }
 
-// WASM loader (lazy, one-shot)
+// ─── WASM loader (lazy, one-shot) ──────────────────────────────────────
 
-let wasmModule: WebAssembly.Module | null = null;
+interface GhosttyExports {
+  readonly memory: WebAssembly.Memory;
+  readonly ghostty_wasm_alloc_opaque: () => number;
+  readonly ghostty_wasm_free_opaque: (ptr: number) => void;
+  readonly ghostty_wasm_alloc_u8_array: (len: number) => number;
+  readonly ghostty_wasm_free_u8_array: (ptr: number, len: number) => void;
+  readonly ghostty_wasm_alloc_usize: () => number;
+  readonly ghostty_wasm_free_usize: (ptr: number) => void;
+  readonly ghostty_terminal_new: (allocator: number, outPtr: number, opts: number) => number;
+  readonly ghostty_terminal_free: (terminal: number) => void;
+  readonly ghostty_terminal_vt_write: (terminal: number, data: number, len: number) => void;
+  readonly ghostty_terminal_resize: (terminal: number, cols: number, rows: number) => number;
+  readonly ghostty_terminal_scroll_viewport: (terminal: number, tag: number, value: number) => void;
+  readonly ghostty_formatter_terminal_new: (
+    allocator: number,
+    outPtr: number,
+    terminal: number,
+    opts: number,
+  ) => number;
+  readonly ghostty_formatter_format_alloc: (
+    formatter: number,
+    allocator: number,
+    bufPtr: number,
+    lenPtr: number,
+  ) => number;
+  readonly ghostty_formatter_free: (formatter: number) => void;
+}
+
+let wasmInstance: WebAssembly.Instance | null = null;
 let wasmLoadAttempted = false;
 
 async function loadWasm(): Promise<boolean> {
-  if (wasmLoadAttempted) return wasmModule !== null;
+  if (wasmLoadAttempted) return wasmInstance !== null;
   wasmLoadAttempted = true;
   try {
     const wasmPath = new URL("./ghostty_vt.wasm", import.meta.url);
     const wasmBytes = await Bun.file(wasmPath.pathname).arrayBuffer();
-    wasmModule = await WebAssembly.compile(wasmBytes);
+    const module = await WebAssembly.compile(wasmBytes);
+    wasmInstance = await WebAssembly.instantiate(module, {});
     return true;
   } catch {
     return false;
@@ -50,10 +81,116 @@ async function loadWasm(): Promise<boolean> {
 
 /** Whether the WASM backend is available. */
 export function isWasmAvailable(): boolean {
-  return wasmModule !== null;
+  return wasmInstance !== null;
 }
 
-// Plain text fallback
+// ─── WASM-backed terminal ───────────────────────────────────────────────
+
+function createWasmTerminal(exports: GhosttyExports, config: TerminalConfig): TerminalInstance {
+  const cols = config.cols ?? DEFAULT_COLS;
+  const rows = config.rows ?? DEFAULT_ROWS;
+  const maxScrollback = config.maxScrollback ?? DEFAULT_MAX_SCROLLBACK;
+  const view = new DataView(exports.memory.buffer);
+  let destroyed = false;
+
+  // Allocate terminal
+  const termOutPtr = exports.ghostty_wasm_alloc_opaque();
+  // Write options struct: cols(u16) + rows(u16) + padding(4) + max_scrollback(usize=4 in wasm32)
+  const optsPtr = exports.ghostty_wasm_alloc_u8_array(16);
+  const optsView = new DataView(exports.memory.buffer);
+  optsView.setUint16(optsPtr, cols, true);
+  optsView.setUint16(optsPtr + 2, rows, true);
+  optsView.setUint32(optsPtr + 8, maxScrollback, true);
+
+  const result = exports.ghostty_terminal_new(0, termOutPtr, optsPtr);
+  exports.ghostty_wasm_free_u8_array(optsPtr, 16);
+
+  if (result !== 0) {
+    exports.ghostty_wasm_free_opaque(termOutPtr);
+    // Fall through to plain text
+    throw new Error("ghostty_terminal_new failed");
+  }
+  const terminal = view.getUint32(termOutPtr, true);
+  exports.ghostty_wasm_free_opaque(termOutPtr);
+
+  const write = (data: Uint8Array): void => {
+    if (destroyed) return;
+    const dataPtr = exports.ghostty_wasm_alloc_u8_array(data.length);
+    const mem = new Uint8Array(exports.memory.buffer);
+    mem.set(data, dataPtr);
+    exports.ghostty_terminal_vt_write(terminal, dataPtr, data.length);
+    exports.ghostty_wasm_free_u8_array(dataPtr, data.length);
+  };
+
+  const resize = (newCols: number, newRows: number): void => {
+    if (destroyed) return;
+    exports.ghostty_terminal_resize(terminal, newCols, newRows);
+  };
+
+  // GHOSTTY_SCROLL_VIEWPORT_DELTA = 2
+  const scroll = (delta: number): void => {
+    if (destroyed) return;
+    exports.ghostty_terminal_scroll_viewport(terminal, 2, delta);
+  };
+
+  const render = (): readonly string[] => {
+    if (destroyed) return [];
+    // Create formatter for plain text output
+    const fmtOutPtr = exports.ghostty_wasm_alloc_opaque();
+    // Formatter options: emit=PLAIN(0), trim=true(1), unwrap=true(1)
+    const fmtOptsPtr = exports.ghostty_wasm_alloc_u8_array(8);
+    const fmtView = new DataView(exports.memory.buffer);
+    fmtView.setUint8(fmtOptsPtr, 0); // PLAIN
+    fmtView.setUint8(fmtOptsPtr + 1, 1); // trim
+    fmtView.setUint8(fmtOptsPtr + 2, 1); // unwrap
+
+    const fmtResult = exports.ghostty_formatter_terminal_new(0, fmtOutPtr, terminal, fmtOptsPtr);
+    exports.ghostty_wasm_free_u8_array(fmtOptsPtr, 8);
+    if (fmtResult !== 0) {
+      exports.ghostty_wasm_free_opaque(fmtOutPtr);
+      return [];
+    }
+    const formatter = new DataView(exports.memory.buffer).getUint32(fmtOutPtr, true);
+    exports.ghostty_wasm_free_opaque(fmtOutPtr);
+
+    // Format to allocated buffer
+    const bufPtrPtr = exports.ghostty_wasm_alloc_opaque();
+    const lenPtr = exports.ghostty_wasm_alloc_usize();
+    const allocResult = exports.ghostty_formatter_format_alloc(formatter, 0, bufPtrPtr, lenPtr);
+    exports.ghostty_formatter_free(formatter);
+
+    if (allocResult !== 0) {
+      exports.ghostty_wasm_free_opaque(bufPtrPtr);
+      exports.ghostty_wasm_free_usize(lenPtr);
+      return [];
+    }
+
+    const bufPtr = new DataView(exports.memory.buffer).getUint32(bufPtrPtr, true);
+    const bufLen = new DataView(exports.memory.buffer).getUint32(lenPtr, true);
+    exports.ghostty_wasm_free_opaque(bufPtrPtr);
+    exports.ghostty_wasm_free_usize(lenPtr);
+
+    const text = new TextDecoder().decode(new Uint8Array(exports.memory.buffer, bufPtr, bufLen));
+    // Free the allocated format buffer
+    exports.ghostty_wasm_free_u8_array(bufPtr, bufLen);
+    return text.split("\n");
+  };
+
+  const dimensions = (): { readonly cols: number; readonly rows: number } => ({
+    cols,
+    rows,
+  });
+
+  const destroy = (): void => {
+    if (destroyed) return;
+    destroyed = true;
+    exports.ghostty_terminal_free(terminal);
+  };
+
+  return { write, resize, scroll, render, dimensions, destroy };
+}
+
+// ─── Plain text fallback ────────────────────────────────────────────────
 
 const decoder = new TextDecoder();
 
@@ -61,7 +198,7 @@ function createPlainTextTerminal(config: TerminalConfig): TerminalInstance {
   let cols = config.cols ?? DEFAULT_COLS;
   let rows = config.rows ?? DEFAULT_ROWS;
   const maxScrollback = config.maxScrollback ?? DEFAULT_MAX_SCROLLBACK;
-  let lines: string[] = []; // mutable internal buffer
+  let lines: string[] = [];
   let scrollOffset = 0;
   let destroyed = false;
 
@@ -91,7 +228,7 @@ function createPlainTextTerminal(config: TerminalConfig): TerminalInstance {
       }
     }
     trimBuffer();
-    scrollOffset = 0; // auto-scroll to bottom on new data
+    scrollOffset = 0;
   };
 
   const resize = (newCols: number, newRows: number): void => {
@@ -112,7 +249,6 @@ function createPlainTextTerminal(config: TerminalConfig): TerminalInstance {
     const end = Math.max(0, lines.length - scrollOffset);
     const start = Math.max(0, end - rows);
     const visible = lines.slice(start, end);
-    // Pad to full screen height so caller always gets `rows` lines.
     while (visible.length < rows) {
       visible.push("");
     }
@@ -132,17 +268,25 @@ function createPlainTextTerminal(config: TerminalConfig): TerminalInstance {
   return { write, resize, scroll, render, dimensions, destroy };
 }
 
-// Public factory
+// ─── Public factory ─────────────────────────────────────────────────────
 
 /**
  * Create a terminal instance. Attempts WASM on first call; falls back to
- * plain text if unavailable.
+ * plain text if unavailable or if WASM initialization fails.
  */
 export function createTerminal(config?: TerminalConfig): TerminalInstance {
-  // Kick off WASM loading (fire-and-forget for future calls).
   if (!wasmLoadAttempted) {
     void loadWasm();
   }
-  // TODO: when WASM is loaded, return a WASM-backed instance.
+
+  if (wasmInstance !== null) {
+    try {
+      const exports = wasmInstance.exports as unknown as GhosttyExports;
+      return createWasmTerminal(exports, config ?? {});
+    } catch {
+      // WASM terminal creation failed — fall back to plain text
+    }
+  }
+
   return createPlainTextTerminal(config ?? {});
 }
