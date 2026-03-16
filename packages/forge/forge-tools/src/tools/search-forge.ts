@@ -42,7 +42,7 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
       detail: {
         type: "string",
         description:
-          "Result detail level: 'summary' (default, ~20 tokens/brick — name + description + tags only) or 'full' (complete artifact with implementation/schema).",
+          "Result detail level: 'full' (default, complete artifact) or 'summary' (~20 tokens/brick — name + description + tags only).",
       },
     },
   },
@@ -68,8 +68,9 @@ async function searchForgeHandler(
   // All fields are optional — cast safely since ForgeQuery is all-optional
   const rawQuery = (input ?? {}) as ForgeQuery & { readonly detail?: string };
 
-  // Extract detail level (default: "summary" for token efficiency)
-  const detail = rawQuery.detail === "full" ? "full" : "summary";
+  // Extract detail level (default: "full" for backward compatibility)
+  // Callers opt into "summary" explicitly when they want token savings.
+  const detail = rawQuery.detail === "summary" ? "summary" : "full";
 
   // Lightweight validation: clamp minFitnessScore to [0,1], default invalid orderBy
   const orderBy =

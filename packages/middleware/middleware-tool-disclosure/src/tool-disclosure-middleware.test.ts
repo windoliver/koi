@@ -491,6 +491,51 @@ describe("memoization", () => {
     // Different input ref → different output ref (even if content is same)
     expect(capture1.captured()).not.toBe(capture2.captured());
   });
+
+  test("LRU eviction invalidates memo even when promoted count stays the same", async () => {
+    // Regression: with cacheCapacity=1, promoting tool-a then tool-b evicts tool-a.
+    // The promoted set changes {a} → {b} but size stays 1. The old memoization
+    // checked only size, so it would return stale output with tool-a promoted.
+    const store = createMockStore();
+    const mw = createToolDisclosureMiddleware({ store, threshold: 5, cacheCapacity: 1 });
+    const tools = descriptors(10);
+
+    // Warm up descriptor index
+    const warmup = captureTools();
+    await callWrapModelCall(mw, mockTurnContext(), { messages: [], tools }, warmup.handler);
+
+    // Promote tool-3
+    await mw.promoteByName(["tool-3"]);
+    const capture1 = captureTools();
+    await callWrapModelCall(mw, mockTurnContext(), { messages: [], tools }, capture1.handler);
+    const result1 = requireDefined(capture1.captured(), "result1");
+    const tool3v1 = requireDefined(
+      result1.find((t) => t.name === "tool-3"),
+      "tool-3 v1",
+    );
+    expect(isFullLevel(tool3v1)).toBe(true);
+
+    // Promote tool-7 — with cacheCapacity=1, this evicts tool-3
+    await mw.promoteByName(["tool-7"]);
+    const capture2 = captureTools();
+    await callWrapModelCall(mw, mockTurnContext(), { messages: [], tools }, capture2.handler);
+    const result2 = requireDefined(capture2.captured(), "result2");
+
+    // tool-7 should now be full, tool-3 should be back to summary
+    const tool7 = requireDefined(
+      result2.find((t) => t.name === "tool-7"),
+      "tool-7",
+    );
+    const tool3v2 = requireDefined(
+      result2.find((t) => t.name === "tool-3"),
+      "tool-3 v2",
+    );
+    expect(isFullLevel(tool7)).toBe(true);
+    expect(isSummaryLevel(tool3v2)).toBe(true);
+
+    // Output refs must differ — memo must have been invalidated
+    expect(result1).not.toBe(result2);
+  });
 });
 
 // ---------------------------------------------------------------------------

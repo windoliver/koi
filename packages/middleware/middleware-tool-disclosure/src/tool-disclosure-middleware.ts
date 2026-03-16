@@ -101,6 +101,19 @@ function createDescriptorCache(capacity: number): DescriptorCache {
 }
 
 // ---------------------------------------------------------------------------
+// Set equality — used for memoization of promoted tool names
+// ---------------------------------------------------------------------------
+
+/** Shallow set equality: same size + every element in A is in B. */
+function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const item of a) {
+    if (!b.has(item)) return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Summary projection
 // ---------------------------------------------------------------------------
 
@@ -193,8 +206,8 @@ export function createToolDisclosureMiddleware(
   let lastInputRef: readonly ToolDescriptor[] | undefined;
   // let justified: mutable cached output
   let lastOutput: readonly ToolDescriptor[] | undefined;
-  // let justified: mutable promoted set ref for change detection
-  let lastPromotedSize = 0;
+  // let justified: mutable snapshot of promoted names for change detection
+  let lastPromotedSnapshot: ReadonlySet<string> = new Set();
 
   // Index of all tool descriptors by name (rebuilt when input ref changes)
   // let justified: mutable map rebuilt on input change
@@ -212,11 +225,12 @@ export function createToolDisclosureMiddleware(
 
     const promotedNames = cache.promotedNames();
 
-    // Check memoization: same input ref + same promoted set size → same output
+    // Check memoization: same input ref + identical promoted set → same output
+    // Compare set contents, not just size — eviction can swap members without changing count
     if (
       lastInputRef === tools &&
-      promotedNames.size === lastPromotedSize &&
-      lastOutput !== undefined
+      lastOutput !== undefined &&
+      setsEqual(promotedNames, lastPromotedSnapshot)
     ) {
       return lastOutput;
     }
@@ -249,10 +263,10 @@ export function createToolDisclosureMiddleware(
       }
     }
 
-    // Update memoization state
+    // Update memoization state — snapshot the promoted set for next comparison
     lastInputRef = tools;
     lastOutput = result;
-    lastPromotedSize = promotedNames.size;
+    lastPromotedSnapshot = new Set(promotedNames);
 
     return result;
   }
@@ -294,7 +308,7 @@ export function createToolDisclosureMiddleware(
     clearCache(): void {
       cache.clear();
       lastOutput = undefined;
-      lastPromotedSize = 0;
+      lastPromotedSnapshot = new Set();
     },
   };
 
