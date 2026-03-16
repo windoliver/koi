@@ -352,11 +352,9 @@ export function createContextHubExecutor(
   const docCache = createCache<string>(maxCacheEntries, cacheTtlMs);
 
   // Registry + search index: loaded lazily, cached in closure.
-  // registryVersion tracks the registry that searchIndexCache was built from;
-  // when the registry refreshes (TTL expiry) the index is rebuilt.
+  // searchIndexCache is invalidated whenever loadRegistry() fetches a fresh copy.
   let registryCache: { readonly registry: Registry; readonly expiresAt: number } | undefined;
   let searchIndexCache: SearchIndex | undefined;
-  let searchIndexRegistryVersion: string | undefined;
 
   // -------------------------------------------------------------------------
   // Internal: fetch with timeout
@@ -427,6 +425,7 @@ export function createContextHubExecutor(
     if (!parsed.ok) return parsed;
 
     registryCache = { registry: parsed.value, expiresAt: Date.now() + cacheTtlMs };
+    searchIndexCache = undefined; // Invalidate — content may have changed
     return parsed;
   }
 
@@ -459,11 +458,10 @@ export function createContextHubExecutor(
 
     const registry = registryResult.value;
 
-    // Rebuild search index when registry changes (TTL refresh) or on first load
-    const registryFingerprint = `${registry.version}:${String(registry.docs.length)}`;
-    if (searchIndexCache === undefined || searchIndexRegistryVersion !== registryFingerprint) {
+    // Rebuild search index on first load or after registry refresh (loadRegistry
+    // sets searchIndexCache = undefined whenever it fetches a fresh registry).
+    if (searchIndexCache === undefined) {
       searchIndexCache = buildIndex(registry);
-      searchIndexRegistryVersion = registryFingerprint;
     }
 
     const limit = maxResults ?? DEFAULT_MAX_SEARCH_RESULTS;

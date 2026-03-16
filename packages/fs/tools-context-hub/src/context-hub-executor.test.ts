@@ -186,31 +186,29 @@ describe("ContextHubExecutor.search", () => {
     expect(result.error.message).toContain("schema mismatch");
   });
 
-  test("rebuilds search index when registry refreshes after TTL expiry", async () => {
-    const REGISTRY_V1 = {
-      ...FIXTURE_REGISTRY,
+  test("rebuilds search index when registry content changes after TTL expiry", async () => {
+    // Regression: same version, same doc count, but changed name/description/tags.
+    // The search index must reflect the new content, not the stale cached index.
+    const makeRegistry = (desc: string, tags: readonly string[]): typeof FIXTURE_REGISTRY => ({
       version: "1.0.0",
-    };
-    const REGISTRY_V2 = {
-      ...FIXTURE_REGISTRY,
-      version: "2.0.0",
+      generated: "2026-01-01T00:00:00Z",
+      base_url: "https://cdn.test.example/v1",
       docs: [
-        ...FIXTURE_REGISTRY.docs,
         {
-          id: "twilio/sms",
-          name: "Twilio SMS API",
-          description: "Send SMS messages with Twilio",
+          id: "acme/api",
+          name: desc,
+          description: `${desc} integration`,
           source: "official",
-          tags: ["sms", "messaging"],
+          tags: [...tags],
           languages: [
             {
               language: "javascript",
               versions: [
                 {
                   version: "1.0.0",
-                  path: "twilio/sms/javascript/DOC.md",
+                  path: "acme/api/javascript/DOC.md",
                   size: 2000,
-                  lastUpdated: "2026-02-01",
+                  lastUpdated: "2026-01-01",
                 },
               ],
               recommendedVersion: "1.0.0",
@@ -218,9 +216,9 @@ describe("ContextHubExecutor.search", () => {
           ],
         },
       ],
-    };
+    });
 
-    let currentRegistry = REGISTRY_V1;
+    let currentRegistry = makeRegistry("payments", ["payments", "billing"]);
     const fetchFn: FetchFn = async (input, _init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("registry.json")) {
@@ -238,21 +236,21 @@ describe("ContextHubExecutor.search", () => {
       cacheTtlMs: 50, // 50ms TTL for fast test
     });
 
-    // First search — twilio not in V1 registry
-    const r1 = await executor.search("twilio");
+    // First search — "messaging" not in V1 content
+    const r1 = await executor.search("messaging");
     expect(r1.ok).toBe(true);
     if (r1.ok) expect(r1.value).toEqual([]);
 
-    // Wait for registry TTL to expire, then switch to V2
+    // Wait for registry TTL to expire, swap to content with "messaging"
     await new Promise((resolve) => setTimeout(resolve, 60));
-    currentRegistry = REGISTRY_V2;
+    currentRegistry = makeRegistry("messaging", ["sms", "messaging"]);
 
-    // Second search — should rebuild index from V2 and find twilio
-    const r2 = await executor.search("twilio");
+    // Second search — must rebuild index and find "messaging"
+    const r2 = await executor.search("messaging");
     expect(r2.ok).toBe(true);
     if (r2.ok) {
       expect(r2.value.length).toBeGreaterThan(0);
-      expect(r2.value[0]?.id).toBe("twilio/sms");
+      expect(r2.value[0]?.id).toBe("acme/api");
     }
   });
 
