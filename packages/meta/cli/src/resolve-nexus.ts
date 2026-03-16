@@ -12,6 +12,7 @@
 
 import { spawnSync } from "node:child_process";
 import type { ComponentProvider, KoiMiddleware } from "@koi/core";
+import type { Indexer, Retriever } from "@koi/search-provider";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +23,7 @@ export interface NexusResolution {
   readonly providers: readonly ComponentProvider[];
   readonly dispose: () => Promise<void>;
   readonly baseUrl: string;
+  readonly search?: { readonly retriever: Retriever; readonly indexer: Indexer } | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +91,10 @@ export async function resolveNexusStack(
     providers: bundle.providers,
     dispose: bundle.dispose,
     baseUrl: bundle.config.baseUrl,
+    search:
+      bundle.backends.search !== undefined
+        ? { retriever: bundle.backends.search.retriever, indexer: bundle.backends.search.indexer }
+        : undefined,
   };
 }
 
@@ -102,6 +108,7 @@ const EMPTY_NEXUS = {
   providers: [],
   dispose: undefined,
   baseUrl: undefined,
+  search: undefined,
 } as const satisfies NexusResolvedState;
 
 /** Resolved Nexus state with optional values for the dispose/baseUrl. */
@@ -110,6 +117,7 @@ export interface NexusResolvedState {
   readonly providers: readonly ComponentProvider[];
   readonly dispose: (() => Promise<void>) | undefined;
   readonly baseUrl: string | undefined;
+  readonly search?: { readonly retriever: Retriever; readonly indexer: Indexer } | undefined;
 }
 
 /**

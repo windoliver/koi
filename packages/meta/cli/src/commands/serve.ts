@@ -96,7 +96,19 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const deployConfig = manifest.deploy;
   const healthPort = flags.port ?? deployConfig?.port ?? 9100;
 
-  // 4. Bootstrap forge system (before resolution, so forgeStore is available)
+  // 4. Resolve Nexus + autonomous in parallel (before forge, so search backends are available)
+  const [nexus, autonomous] = await Promise.all([
+    resolveNexusOrWarn(
+      flags.nexusUrl,
+      manifest.nexus?.url,
+      flags.verbose,
+      undefined,
+      flags.nexusSource,
+    ),
+    resolveAutonomousOrWarn(manifest, flags.verbose),
+  ]);
+
+  // 4b. Bootstrap forge system (before resolution, so forgeStore is available)
   // let justified: tracks current session key for forge counter scoping
   let currentServeSessionId = `serve:${manifest.name}:default`;
 
@@ -104,6 +116,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     manifest,
     () => currentServeSessionId,
     flags.verbose,
+    undefined,
+    nexus.search,
   );
   const forgeBootstrap = forgeResult?.bootstrap;
   const sandboxBridge = forgeResult?.sandboxBridge;
@@ -133,18 +147,6 @@ export async function runServe(flags: ServeFlags): Promise<void> {
 
   // 6. ASSEMBLE: Use resolved engine or fall back to pi adapter
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
-
-  // 6b. Resolve Nexus and autonomous in parallel (Decision 14)
-  const [nexus, autonomous] = await Promise.all([
-    resolveNexusOrWarn(
-      flags.nexusUrl,
-      manifest.nexus?.url,
-      flags.verbose,
-      undefined,
-      flags.nexusSource,
-    ),
-    resolveAutonomousOrWarn(manifest, flags.verbose),
-  ]);
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources

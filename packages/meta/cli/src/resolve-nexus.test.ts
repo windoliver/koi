@@ -13,6 +13,7 @@ const mockCreateNexusStack = mock(async (_config: Record<string, unknown>) => ({
   providers: [],
   dispose: async () => {},
   config: { baseUrl: "http://localhost:2026" },
+  backends: { search: undefined },
 }));
 
 mock.module("@koi/nexus", () => ({

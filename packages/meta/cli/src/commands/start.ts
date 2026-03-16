@@ -179,7 +179,19 @@ export async function runStart(flags: StartFlags): Promise<void> {
     return;
   }
 
-  // 4. Bootstrap forge system (before resolution, so forgeStore is available)
+  // 4. Resolve Nexus + autonomous in parallel (before forge, so search backends are available)
+  const [nexus, autonomous] = await Promise.all([
+    resolveNexusOrWarn(
+      flags.nexusUrl,
+      manifest.nexus?.url,
+      flags.verbose,
+      undefined,
+      flags.nexusSource,
+    ),
+    resolveAutonomousOrWarn(manifest, flags.verbose),
+  ]);
+
+  // 4b. Bootstrap forge system (before resolution, so forgeStore is available)
   // let justified: tracks current session ID for forge counter scoping
   let currentStartSessionId = `start:${manifest.name}:0`;
   // let justified: incremented per REPL message to generate unique session IDs
@@ -189,11 +201,13 @@ export async function runStart(flags: StartFlags): Promise<void> {
     manifest,
     () => currentStartSessionId,
     flags.verbose,
+    undefined,
+    nexus.search,
   );
   const forgeBootstrap = forgeResult?.bootstrap;
   const sandboxBridge = forgeResult?.sandboxBridge;
 
-  // 4b. Create AG-UI chat bridge for admin chat endpoint (loaded lazily)
+  // 4c. Create AG-UI chat bridge for admin chat endpoint (loaded lazily)
   let chatBridge: AgentChatBridge | undefined;
   if (flags.admin) {
     const { createAgentChatBridge } = await import("../agui-chat-bridge.js");
@@ -219,18 +233,6 @@ export async function runStart(flags: StartFlags): Promise<void> {
 
   // 6. ASSEMBLE: Use resolved engine or fall back to pi adapter
   const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
-
-  // 6b. Resolve Nexus, autonomous, and temporal in parallel (Decision 14)
-  const [nexus, autonomous] = await Promise.all([
-    resolveNexusOrWarn(
-      flags.nexusUrl,
-      manifest.nexus?.url,
-      flags.verbose,
-      undefined,
-      flags.nexusSource,
-    ),
-    resolveAutonomousOrWarn(manifest, flags.verbose),
-  ]);
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
