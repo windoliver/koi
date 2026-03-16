@@ -198,7 +198,7 @@ describe("signalGroup", () => {
         }
         return registry.transition(
           id,
-          rest[0] as string,
+          rest[0] as ProcessState,
           rest[1] as number,
           rest[2] as { readonly kind: string },
         );
