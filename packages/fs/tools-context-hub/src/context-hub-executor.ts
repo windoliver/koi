@@ -351,7 +351,8 @@ export function createContextHubExecutor(
 
   const docCache = createCache<string>(maxCacheEntries, cacheTtlMs);
 
-  // Registry + search index: loaded lazily, cached in closure
+  // Registry + search index: loaded lazily, cached in closure.
+  // searchIndexCache is invalidated whenever loadRegistry() fetches a fresh copy.
   let registryCache: { readonly registry: Registry; readonly expiresAt: number } | undefined;
   let searchIndexCache: SearchIndex | undefined;
 
@@ -400,7 +401,7 @@ export function createContextHubExecutor(
         ok: false,
         error: {
           code: "EXTERNAL",
-          message: `Registry returned HTTP ${response.status}`,
+          message: `Registry unavailable: HTTP ${response.status}`,
           retryable: response.status >= 500,
         },
       };
@@ -413,8 +414,8 @@ export function createContextHubExecutor(
       return {
         ok: false,
         error: {
-          code: "VALIDATION",
-          message: "Registry response is not valid JSON",
+          code: "EXTERNAL",
+          message: "Registry unavailable: response is not valid JSON",
           retryable: false,
         },
       };
@@ -424,8 +425,7 @@ export function createContextHubExecutor(
     if (!parsed.ok) return parsed;
 
     registryCache = { registry: parsed.value, expiresAt: Date.now() + cacheTtlMs };
-    // Invalidate search index so it rebuilds from the fresh registry
-    searchIndexCache = undefined;
+    searchIndexCache = undefined; // Invalidate — content may have changed
     return parsed;
   }
 
@@ -458,7 +458,8 @@ export function createContextHubExecutor(
 
     const registry = registryResult.value;
 
-    // Lazy build search index
+    // Rebuild search index on first load or after registry refresh (loadRegistry
+    // sets searchIndexCache = undefined whenever it fetches a fresh registry).
     if (searchIndexCache === undefined) {
       searchIndexCache = buildIndex(registry);
     }
@@ -550,11 +551,10 @@ export function createContextHubExecutor(
 
     const response = fetchResult.value;
     if (!response.ok) {
-      const code = response.status === 404 ? "NOT_FOUND" : "EXTERNAL";
       return {
         ok: false,
         error: {
-          code,
+          code: response.status === 404 ? "NOT_FOUND" : "EXTERNAL",
           message: `Doc fetch returned HTTP ${response.status} for "${id}"`,
           retryable: response.status >= 500,
         },

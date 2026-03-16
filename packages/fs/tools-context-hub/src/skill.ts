@@ -64,14 +64,12 @@ If a doc proves especially useful and the agent has forge capabilities:
 
 ## Error handling
 
-| Code                  | Meaning                        | What to do                                       |
-|-----------------------|--------------------------------|--------------------------------------------------|
-| VALIDATION            | Bad argument                   | Fix the argument and retry                       |
-| TIMEOUT               | CDN request timed out          | Try again — CDN may be slow                      |
-| REGISTRY_UNAVAILABLE  | Cannot reach Context Hub CDN   | CDN is down — try again later or skip             |
-| DOC_NOT_FOUND         | Doc ID does not exist          | Check the ID from search results                 |
-| LANG_NOT_FOUND        | Language variant not available  | Error message lists available languages — pick one |
-| SCHEMA_MISMATCH       | Registry format changed        | Report to operator — tool may need update        |
+| Code         | Meaning                                    | What to do                                       |
+|--------------|--------------------------------------------|--------------------------------------------------|
+| VALIDATION   | Bad argument or registry schema mismatch   | Fix the argument and retry; if "schema mismatch", report to operator |
+| NOT_FOUND    | Doc ID, language, or version not available | Check the ID from search results; error message lists available options |
+| TIMEOUT      | CDN request timed out                      | Try again — CDN may be slow                      |
+| EXTERNAL     | Cannot reach Context Hub CDN               | CDN is down — try again later or skip            |
 
 ## Best practices
 

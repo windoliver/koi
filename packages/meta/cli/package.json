@@ -84,6 +84,7 @@
     "@koi/retry-stack": "workspace:*",
     "@koi/runtime-presets": "workspace:*",
     "@koi/tool-stack": "workspace:*",
+    "@koi/tools-context-hub": "workspace:*",
     "@koi/demo-packs": "workspace:*",
     "@koi/nexus-client": "workspace:*",
     "@koi/temporal": "workspace:*"

@@ -122,6 +122,7 @@ const DESCRIPTIONS: Readonly<Record<string, string>> = {
   "@koi/tool-exec":
     "Execute ephemeral code in sandbox with input validation and timeout enforcement",
   "@koi/tools-github": "Manage PR lifecycle (create, review, merge) and CI waits via GitHub CLI",
+  "@koi/tools-context-hub": "Search and fetch curated API docs from Context Hub CDN",
   "@koi/tools-web": "Fetch and search the web with SSRF protection and result caching",
 
   // ── Net (channels, gateway, MCP) ─────────────────────────────────────

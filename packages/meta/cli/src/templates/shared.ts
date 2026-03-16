@@ -116,6 +116,7 @@ export function generateManifestYaml(state: WizardState): string {
     additional.push("  koi:");
     additional.push('    - name: "@koi/tool-ask-user"');
     additional.push('    - name: "@koi/tools-web"');
+    additional.push('    - name: "@koi/tools-context-hub"');
   }
 
   additional.push("");
@@ -318,6 +319,7 @@ export function generateDemoManifestYaml(state: WizardState): string {
   additional.push('    - name: "@koi/tool-ask-user"');
   additional.push('    - name: "@koi/tools-web"');
   additional.push('    - name: "@koi/tool-exec"');
+  additional.push('    - name: "@koi/tools-context-hub"');
   additional.push("");
 
   additional.push("forge:");

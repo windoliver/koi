@@ -165,41 +165,50 @@ describe("ContextHubExecutor.search", () => {
     expect(result.value.length).toBeLessThanOrEqual(1);
   });
 
-  test("returns REGISTRY_UNAVAILABLE when CDN is down", async () => {
+  test("returns EXTERNAL when CDN is down", async () => {
     const executor = createExecutor({ registryStatus: 500 });
     const result = await executor.search("stripe");
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("EXTERNAL");
+    expect(result.error.message).toContain("Registry unavailable");
     expect(result.error.retryable).toBe(true);
   });
 
-  test("rebuilds search index after registry TTL expires", async () => {
-    const INITIAL_REGISTRY = {
-      ...FIXTURE_REGISTRY,
-      docs: FIXTURE_REGISTRY.docs.slice(0, 1), // only stripe/payments
-    };
-    const UPDATED_REGISTRY = {
-      ...FIXTURE_REGISTRY,
-      version: "2.0.0",
+  test("returns VALIDATION for invalid registry JSON schema", async () => {
+    const executor = createExecutor({ registryBody: { invalid: true } });
+    const result = await executor.search("stripe");
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.message).toContain("schema mismatch");
+  });
+
+  test("rebuilds search index when registry content changes after TTL expiry", async () => {
+    // Regression: same version, same doc count, but changed name/description/tags.
+    // The search index must reflect the new content, not the stale cached index.
+    const makeRegistry = (desc: string, tags: readonly string[]): typeof FIXTURE_REGISTRY => ({
+      version: "1.0.0",
+      generated: "2026-01-01T00:00:00Z",
+      base_url: "https://cdn.test.example/v1",
       docs: [
-        ...FIXTURE_REGISTRY.docs,
         {
-          id: "aws/s3",
-          name: "AWS S3 Object Storage",
-          description: "Store and retrieve objects from S3",
+          id: "acme/api",
+          name: desc,
+          description: `${desc} integration`,
           source: "official",
-          tags: ["cloud", "storage"],
+          tags: [...tags],
           languages: [
             {
               language: "javascript",
               versions: [
                 {
                   version: "1.0.0",
-                  path: "aws/s3/javascript/DOC.md",
+                  path: "acme/api/javascript/DOC.md",
                   size: 2000,
-                  lastUpdated: "2026-01-15",
+                  lastUpdated: "2026-01-01",
                 },
               ],
               recommendedVersion: "1.0.0",
@@ -207,10 +216,10 @@ describe("ContextHubExecutor.search", () => {
           ],
         },
       ],
-    };
+    });
 
-    let currentRegistry = INITIAL_REGISTRY;
-    const fetchFn: FetchFn = async (input) => {
+    let currentRegistry = makeRegistry("payments", ["payments", "billing"]);
+    const fetchFn: FetchFn = async (input, _init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("registry.json")) {
         return new Response(JSON.stringify(currentRegistry), {
@@ -224,34 +233,25 @@ describe("ContextHubExecutor.search", () => {
     const executor = createContextHubExecutor({
       fetchFn,
       baseUrl: "https://cdn.test.example/v1",
-      cacheTtlMs: 1, // 1ms TTL so it expires immediately
+      cacheTtlMs: 50, // 50ms TTL for fast test
     });
 
-    // First search: only stripe/payments in registry
-    const first = await executor.search("s3 storage");
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    expect(first.value.length).toBe(0);
+    // First search — "messaging" not in V1 content
+    const r1 = await executor.search("messaging");
+    expect(r1.ok).toBe(true);
+    if (r1.ok) expect(r1.value).toEqual([]);
 
-    // Wait for TTL to expire, update registry with new doc
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    currentRegistry = UPDATED_REGISTRY;
+    // Wait for registry TTL to expire, swap to content with "messaging"
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    currentRegistry = makeRegistry("messaging", ["sms", "messaging"]);
 
-    // Second search: should find aws/s3 from refreshed registry
-    const second = await executor.search("s3 storage");
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    expect(second.value.length).toBeGreaterThan(0);
-    expect(second.value[0]?.id).toBe("aws/s3");
-  });
-
-  test("returns SCHEMA_MISMATCH for invalid registry JSON", async () => {
-    const executor = createExecutor({ registryBody: { invalid: true } });
-    const result = await executor.search("stripe");
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe("VALIDATION");
+    // Second search — must rebuild index and find "messaging"
+    const r2 = await executor.search("messaging");
+    expect(r2.ok).toBe(true);
+    if (r2.ok) {
+      expect(r2.value.length).toBeGreaterThan(0);
+      expect(r2.value[0]?.id).toBe("acme/api");
+    }
   });
 
   test("returns TIMEOUT when fetch aborts", async () => {
@@ -305,18 +305,19 @@ describe("ContextHubExecutor.get", () => {
     expect(result.value.language).toBe("python");
   });
 
-  test("returns LANG_NOT_FOUND when multiple languages exist and none specified", async () => {
+  test("returns NOT_FOUND when multiple languages exist and none specified", async () => {
     const executor = createExecutor();
     const result = await executor.get("stripe/payments");
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("NOT_FOUND");
+    expect(result.error.message).toContain("Multiple languages");
     expect(result.error.message).toContain("javascript");
     expect(result.error.message).toContain("python");
   });
 
-  test("returns LANG_NOT_FOUND for nonexistent language", async () => {
+  test("returns NOT_FOUND for nonexistent language", async () => {
     const executor = createExecutor();
     const result = await executor.get("stripe/payments", "ruby");
 
@@ -327,7 +328,7 @@ describe("ContextHubExecutor.get", () => {
     expect(result.error.message).toContain("Available");
   });
 
-  test("returns DOC_NOT_FOUND for nonexistent doc id", async () => {
+  test("returns NOT_FOUND for nonexistent doc id", async () => {
     const executor = createExecutor();
     const result = await executor.get("nonexistent/doc");
 
@@ -336,7 +337,7 @@ describe("ContextHubExecutor.get", () => {
     expect(result.error.code).toBe("NOT_FOUND");
   });
 
-  test("returns DOC_NOT_FOUND when CDN returns 404", async () => {
+  test("returns NOT_FOUND when CDN returns 404", async () => {
     const executor = createExecutor({ docStatus: 404 });
     const result = await executor.get("openai/chat");
 
@@ -378,12 +379,13 @@ describe("ContextHubExecutor.get", () => {
     expect(fetchCount).toBe(firstCount);
   });
 
-  test("returns REGISTRY_UNAVAILABLE when CDN is down", async () => {
+  test("returns EXTERNAL when CDN is down", async () => {
     const executor = createExecutor({ registryStatus: 503 });
     const result = await executor.get("stripe/payments", "javascript");
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("EXTERNAL");
+    expect(result.error.message).toContain("Registry unavailable");
   });
 });

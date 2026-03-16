@@ -27,6 +27,7 @@ export const DEMO_PRESET: RuntimePreset = {
     autoHarness: true,
     goalStack: true,
     qualityGate: true,
+    contextHub: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },
