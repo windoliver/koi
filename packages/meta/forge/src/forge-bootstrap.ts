@@ -21,7 +21,7 @@ import type { ForgeComponentProviderInstance } from "@koi/forge-tools";
 import { createInMemoryForgeStore } from "@koi/forge-tools";
 import type { ForgeConfig, SandboxExecutor } from "@koi/forge-types";
 import { createDefaultForgeConfig } from "@koi/forge-types";
-import type { Embedder, Indexer, Retriever } from "@koi/search-provider";
+import type { Indexer, Retriever } from "@koi/search-provider";
 import { createForgeToolsProvider } from "./create-forge-tools-provider.js";
 import type { FullForgeSystem } from "./create-full-forge-system.js";
 import { createFullForgeSystem } from "./create-full-forge-system.js";
@@ -69,8 +69,6 @@ export interface ForgeBootstrapConfig {
   readonly retriever?: Retriever | undefined;
   /** Optional indexer for keeping the search index in sync with the forge store. */
   readonly indexer?: Indexer | undefined;
-  /** Optional embedder for generating embeddings during indexing. */
-  readonly embedder?: Embedder | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +138,6 @@ export function createForgeBootstrap(
         ? { policyCacheHandle: config.policyCacheHandle }
         : {}),
       ...(config.indexer !== undefined ? { indexer: config.indexer } : {}),
-      ...(config.embedder !== undefined ? { embedder: config.embedder } : {}),
     });
 
     // Cast provider to its full instance type for dispose access.

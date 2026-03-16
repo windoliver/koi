@@ -24,8 +24,8 @@ import { KoiRuntime } from '@koi/engine';
 import { ConfiguredKoiOptions } from '@koi/starter';
 import * as _koi_middleware_policy_cache from '@koi/middleware-policy-cache';
 import { PolicyCacheHandle, PolicyDecision } from '@koi/middleware-policy-cache';
-import { Indexer, Embedder, Retriever } from '@koi/search-provider';
 import { FeedbackLoopHandle } from '@koi/middleware-feedback-loop';
+import { Indexer, Embedder, Retriever } from '@koi/search-provider';
 import { DiscoverySource } from '@koi/agent-discovery';
 
 /**

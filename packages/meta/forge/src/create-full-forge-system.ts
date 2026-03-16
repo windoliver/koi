@@ -31,7 +31,7 @@ import {
 } from "@koi/forge-tools";
 import type { ForgeConfig, ForgePipeline, SandboxExecutor } from "@koi/forge-types";
 import type { FeedbackLoopHandle } from "@koi/middleware-feedback-loop";
-import type { Embedder, Indexer } from "@koi/search-provider";
+import type { Indexer } from "@koi/search-provider";
 import type { ForgeMiddlewareStackResult } from "./create-forge-middleware-stack.js";
 import { createForgeMiddlewareStack } from "./create-forge-middleware-stack.js";
 import { createForgePipeline } from "./create-forge-stack.js";
@@ -68,8 +68,6 @@ export interface CreateFullForgeSystemConfig {
   readonly policyCacheHandle?: import("@koi/middleware-policy-cache").PolicyCacheHandle | undefined;
   /** Optional indexer for keeping the search index in sync with the forge store. */
   readonly indexer?: Indexer | undefined;
-  /** Optional embedder for generating embeddings during indexing. */
-  readonly embedder?: Embedder | undefined;
 }
 
 // ---------------------------------------------------------------------------
