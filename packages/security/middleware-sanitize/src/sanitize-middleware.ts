@@ -52,13 +52,27 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
     // let justified: tracks whether any message was modified
     let anyChanged = false;
     const sanitizedMessages = request.messages.map((msg) => {
-      // ReDoS guard: skip sanitization for oversized messages
+      // ReDoS guard: skip sanitization if any sanitizable string field exceeds the limit.
+      // Checks all block kinds that sanitizeBlock processes: text, file name, image alt,
+      // button label/action — not just text blocks.
       if (maxContentLength !== undefined) {
-        const totalLength = msg.content.reduce((sum, block) => {
-          if (block.kind === "text") return sum + block.text.length;
-          return sum;
-        }, 0);
-        if (totalLength > maxContentLength) return msg;
+        const hasOversized = msg.content.some((block) => {
+          switch (block.kind) {
+            case "text":
+              return block.text.length > maxContentLength;
+            case "file":
+              return block.name !== undefined && block.name.length > maxContentLength;
+            case "image":
+              return block.alt !== undefined && block.alt.length > maxContentLength;
+            case "button":
+              return (
+                block.label.length > maxContentLength || block.action.length > maxContentLength
+              );
+            default:
+              return false;
+          }
+        });
+        if (hasOversized) return msg;
       }
       const result = sanitizeMessage(msg, allRules, "input", onSanitization);
       if (result.blocked) {

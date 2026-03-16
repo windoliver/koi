@@ -22,6 +22,22 @@ export interface BotFrameworkAuthenticator {
 const BOT_FRAMEWORK_JWKS_URL = "https://login.botframework.com/v1/.well-known/keys";
 
 /**
+ * Known Bot Framework / Azure AD issuer prefixes.
+ * Tokens from the Bot Connector service are issued by these authorities.
+ * This allowlist prevents accepting tokens signed by Microsoft keys but
+ * issued for unrelated services.
+ */
+const KNOWN_ISSUER_PREFIXES: readonly string[] = [
+  "https://login.microsoftonline.com/",
+  "https://sts.windows.net/",
+  "https://api.botframework.com",
+] as const;
+
+function isKnownBotFrameworkIssuer(iss: string): boolean {
+  return KNOWN_ISSUER_PREFIXES.some((prefix) => iss.startsWith(prefix));
+}
+
+/**
  * Creates an authenticator that validates Bot Framework JWTs.
  *
  * The JWKS is fetched and cached by `jose` automatically, including
@@ -61,8 +77,9 @@ export function createBotFrameworkAuthenticator(
         return { ok: false, reason: "invalid_token" };
       }
 
-      // Validate issuer starts with https:// (Bot Framework issuers)
-      if (typeof payload.iss !== "string" || !payload.iss.startsWith("https://")) {
+      // Validate issuer is a known Bot Framework / Azure AD issuer.
+      // Bot Framework tokens are issued by login.microsoftonline.com or sts.windows.net.
+      if (typeof payload.iss !== "string" || !isKnownBotFrameworkIssuer(payload.iss)) {
         return { ok: false, reason: "invalid_token" };
       }
 
