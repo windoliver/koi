@@ -192,16 +192,11 @@ describe("signalGroup", () => {
     const failingRegistry = {
       ...registry,
       list: () => [entry("a1", "running", 0, GROUP_A), entry("a2", "running", 0, GROUP_A)],
-      transition: async (id: ReturnType<typeof agentId>, ...rest: readonly unknown[]) => {
+      transition: async (id: ReturnType<typeof agentId>) => {
         if (id === agentId("a1")) {
           throw new Error("simulated failure for a1");
         }
-        return registry.transition(
-          id,
-          rest[0] as ProcessState,
-          rest[1] as number,
-          rest[2] as { readonly kind: string },
-        );
+        // a2 succeeds silently
       },
     } as unknown as InMemoryRegistry;
 
