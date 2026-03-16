@@ -25,7 +25,7 @@ import { ConfiguredKoiOptions } from '@koi/starter';
 import * as _koi_middleware_policy_cache from '@koi/middleware-policy-cache';
 import { PolicyCacheHandle, PolicyDecision } from '@koi/middleware-policy-cache';
 import { FeedbackLoopHandle } from '@koi/middleware-feedback-loop';
-import { Indexer, Embedder, Retriever } from '@koi/search-provider';
+import { Indexer, Retriever } from '@koi/search-provider';
 import { DiscoverySource } from '@koi/agent-discovery';
 
 /**
@@ -91,8 +91,6 @@ interface CreateFullForgeSystemConfig {
     readonly policyCacheHandle?: _koi_middleware_policy_cache.PolicyCacheHandle | undefined;
     /** Optional indexer for keeping the search index in sync with the forge store. */
     readonly indexer?: Indexer | undefined;
-    /** Optional embedder for generating embeddings during indexing. */
-    readonly embedder?: Embedder | undefined;
 }
 interface FullForgeSystem {
     readonly runtime: ForgeRuntimeInstance;
@@ -370,8 +368,6 @@ interface ForgeBootstrapConfig {
     readonly retriever?: Retriever | undefined;
     /** Optional indexer for keeping the search index in sync with the forge store. */
     readonly indexer?: Indexer | undefined;
-    /** Optional embedder for generating embeddings during indexing. */
-    readonly embedder?: Embedder | undefined;
 }
 /** Successful forge bootstrap result — everything needed for createKoi(). */
 interface ForgeBootstrapResult {
