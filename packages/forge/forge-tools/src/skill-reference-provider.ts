@@ -11,6 +11,7 @@
  */
 
 import type { BrickSummary, ForgeQuery, ForgeStore, KoiError, Result } from "@koi/core";
+import { searchSummariesWithFallback } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,7 +51,7 @@ export interface SkillReferenceProvider {
 export function createSkillReferenceProvider(store: ForgeStore): SkillReferenceProvider {
   const listSkills = async (): Promise<Result<readonly SkillMetadata[], KoiError>> => {
     const query: ForgeQuery = { kind: "skill" };
-    return store.searchSummaries(query);
+    return searchSummariesWithFallback(store, query);
   };
 
   const getInstructions = async (skillId: string): Promise<Result<SkillInstructions, KoiError>> => {

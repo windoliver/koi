@@ -86,46 +86,6 @@ async function searchForgeHandler(
     ...(clampedMin !== undefined ? { minFitnessScore: clampedMin } : {}),
   };
 
-  // Summary mode: return lightweight BrickSummary[] (~20 tokens/brick)
-  if (detail === "summary") {
-    const result = await deps.store.searchSummaries(query);
-    if (!result.ok) {
-      return {
-        ok: false,
-        error: {
-          stage: "store",
-          code: "SEARCH_FAILED",
-          message: `Search failed: ${result.error.message}`,
-        },
-      };
-    }
-    // BrickSummary lacks scope/fitness fields — filter by agent ID on full search then project
-    const fullResult = await deps.store.search(query);
-    if (!fullResult.ok) {
-      return {
-        ok: false,
-        error: {
-          stage: "store",
-          code: "SEARCH_FAILED",
-          message: `Search failed: ${fullResult.error.message}`,
-        },
-      };
-    }
-    const scoped = filterByAgentScope(fullResult.value, deps.context.agentId, deps.context.zoneId);
-    const ranked = sortBricks(scoped, query, { nowMs: Date.now() });
-    const summaries: readonly BrickSummary[] = ranked.map(
-      (b): BrickSummary => ({
-        id: b.id,
-        kind: b.kind,
-        name: b.name,
-        description: b.description,
-        tags: b.tags,
-      }),
-    );
-    return { ok: true, value: summaries };
-  }
-
-  // Full mode: return complete BrickArtifact[] (existing behavior)
   const result = await deps.store.search(query);
 
   if (!result.ok) {
@@ -141,6 +101,21 @@ async function searchForgeHandler(
 
   const scoped = filterByAgentScope(result.value, deps.context.agentId, deps.context.zoneId);
   const ranked = sortBricks(scoped, query, { nowMs: Date.now() });
+
+  // Summary mode: project to lightweight BrickSummary[] (~20 tokens/brick)
+  if (detail === "summary") {
+    const summaries: readonly BrickSummary[] = ranked.map(
+      (b): BrickSummary => ({
+        id: b.id,
+        kind: b.kind,
+        name: b.name,
+        description: b.description,
+        tags: b.tags,
+      }),
+    );
+    return { ok: true, value: summaries };
+  }
+
   return { ok: true, value: ranked };
 }
 

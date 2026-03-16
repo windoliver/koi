@@ -130,6 +130,7 @@ export {
   DEFAULT_COLLECTIVE_MEMORY,
   DEFAULT_TRAIL_CONFIG,
   DEFAULT_TRAIL_STRENGTH,
+  searchSummariesWithFallback,
 } from "./brick-store.js";
 // browser driver — cross-engine abstraction for browser automation
 export type {

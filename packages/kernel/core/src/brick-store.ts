@@ -396,9 +396,10 @@ export interface ForgeStore {
   /**
    * Lightweight search returning only summary-level data (~20 tokens per brick).
    * Omits implementation, content, schemas, and other heavy fields.
-   * Falls back to search() + projection if the backend doesn't natively support it.
+   * Optional — callers should use `searchSummariesWithFallback()` which falls
+   * back to search() + projection when this method is not implemented.
    */
-  readonly searchSummaries: (
+  readonly searchSummaries?: (
     query: ForgeQuery,
   ) => Promise<Result<readonly BrickSummary[], KoiError>>;
   readonly remove: (id: BrickId) => Promise<Result<void, KoiError>>;
@@ -426,6 +427,32 @@ export interface ForgeStore {
   readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
   /** Clean up resources (filesystem watchers, timers). Not all backends hold resources. */
   readonly dispose?: () => void;
+}
+
+/**
+ * Search for brick summaries with automatic fallback.
+ * Uses `store.searchSummaries()` when available, otherwise falls back
+ * to `store.search()` + field projection.
+ */
+export async function searchSummariesWithFallback(
+  store: ForgeStore,
+  query: ForgeQuery,
+): Promise<Result<readonly BrickSummary[], KoiError>> {
+  if (store.searchSummaries !== undefined) {
+    return store.searchSummaries(query);
+  }
+  const result = await store.search(query);
+  if (!result.ok) return result;
+  const summaries: readonly BrickSummary[] = result.value.map(
+    (brick): BrickSummary => ({
+      id: brick.id,
+      kind: brick.kind,
+      name: brick.name,
+      description: brick.description,
+      tags: brick.tags,
+    }),
+  );
+  return { ok: true, value: summaries };
 }
 
 // ---------------------------------------------------------------------------
