@@ -71,6 +71,24 @@ function makeCallbacks(): KeyboardCallbacks & {
     toggleSplitPanes: () => {
       mutableCalls.push("toggleSplitPanes");
     },
+    nameConfirm: () => {
+      mutableCalls.push("nameConfirm");
+    },
+    nameBack: () => {
+      mutableCalls.push("nameBack");
+    },
+    addonsConfirm: () => {
+      mutableCalls.push("addonsConfirm");
+    },
+    addonsSkip: () => {
+      mutableCalls.push("addonsSkip");
+    },
+    addonsToggle: () => {
+      mutableCalls.push("addonsToggle");
+    },
+    addonsBack: () => {
+      mutableCalls.push("addonsBack");
+    },
   };
 }
 

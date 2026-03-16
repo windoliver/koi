@@ -12,6 +12,7 @@ import { AgentSplitPane, type AgentPaneData } from "../components/agent-split-pa
 import type { TuiStore } from "../state/store.js";
 import type { PresetInfo } from "../state/types.js";
 import { COLORS } from "../theme.js";
+import { AddonPickerView, AVAILABLE_ADDONS } from "./addon-picker-view.js";
 import { AgentListView } from "./agent-list-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { ConsentView } from "./consent-view.js";
@@ -61,6 +62,7 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
   }
   if (key.name === "Escape") return "\x1b";
   if (key.name === "Enter" || key.name === "Return") return "\r";
+  if (key.name === "Tab") return "\t";
   if (key.name === "ArrowUp") return "\x1b[A";
   if (key.name === "ArrowDown") return "\x1b[B";
   // Single-char keys for view-specific shortcuts
@@ -94,10 +96,24 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
     if (view !== "splitpanes") return [];
     return agents.map((agent) => {
       const chunks = state.ptyBuffers[agent.agentId] ?? [];
-      // Decode base64 chunks into a single Uint8Array for the terminal
-      const ptyData = chunks.length > 0
-        ? new TextEncoder().encode(chunks.map((c) => atob(c)).join(""))
-        : undefined;
+      // Decode base64 chunks to binary — atob() only handles Latin-1,
+      // so we decode each chunk to a byte array properly
+      let ptyData: Uint8Array | undefined;
+      if (chunks.length > 0) {
+        const parts: Uint8Array[] = [];
+        for (const chunk of chunks) {
+          const bin = Uint8Array.from(Buffer.from(chunk, "base64"));
+          parts.push(bin);
+        }
+        const totalLen = parts.reduce((sum, p) => sum + p.length, 0);
+        const merged = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const part of parts) {
+          merged.set(part, offset);
+          offset += part.length;
+        }
+        ptyData = merged;
+      }
       return {
         agentId: agent.agentId,
         agentName: agent.name,
@@ -192,6 +208,50 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
               <text fg={COLORS.dim}>{"  Enter:select  Esc:back  q:quit"}</text>
             </box>
           </box>
+        )}
+
+        {/* Name input step */}
+        {view === "nameinput" && (
+          <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingTop={1}>
+            <text fg={COLORS.cyan}><b>{"  Agent Name"}</b></text>
+            <box marginTop={1} paddingLeft={2} flexDirection="column">
+              <text fg={COLORS.dim}>{"  Enter a name for your agent:"}</text>
+              <box marginTop={1} paddingLeft={2}>
+                <textarea
+                  height={1}
+                  focused={true}
+                  placeholder={state.agentNameInput}
+                  placeholderColor={COLORS.dim}
+                  backgroundColor={COLORS.bg}
+                  textColor={COLORS.white}
+                  focusedBackgroundColor="#001a33"
+                  focusedTextColor={COLORS.white}
+                  onContentChange={(ref) => {
+                    if (ref !== null && typeof ref === "object" && "plainText" in ref) {
+                      const text = (ref as { readonly plainText: string }).plainText;
+                      props.store.dispatch({ kind: "set_agent_name_input", name: text });
+                    }
+                  }}
+                />
+              </box>
+            </box>
+            <box marginTop={1} paddingLeft={2}>
+              <text fg={COLORS.dim}>{"  Enter:confirm  Esc:back"}</text>
+            </box>
+          </box>
+        )}
+
+        {/* Add-on picker step */}
+        {view === "addons" && (
+          <AddonPickerView
+            addons={AVAILABLE_ADDONS}
+            selected={state.selectedAddons}
+            focusedIndex={0}
+            onToggle={(id) => { props.store.dispatch({ kind: "toggle_addon", addonId: id }); }}
+            onConfirm={() => { /* handled by keyboard */ }}
+            onSkip={() => { /* handled by keyboard */ }}
+            focused={true}
+          />
         )}
 
         {/* Boardroom views */}

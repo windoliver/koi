@@ -603,6 +603,24 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         view: currentView === "splitpanes" ? "agents" : "splitpanes",
       });
     },
+    nameConfirm: () => {
+      handleNameConfirm();
+    },
+    nameBack: () => {
+      store.dispatch({ kind: "set_view", view: "welcome" });
+    },
+    addonsConfirm: () => {
+      handleAddonsConfirm();
+    },
+    addonsSkip: () => {
+      handleAddonsSkip();
+    },
+    addonsToggle: () => {
+      // Toggle focused addon - not implemented yet (needs addon focus state)
+    },
+    addonsBack: () => {
+      store.dispatch({ kind: "set_view", view: "nameinput" });
+    },
   });
 
   // ─── Public API ───────────────────────────────────────────────────
@@ -627,9 +645,27 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   // ─── Welcome mode handlers ────────────────────────────────────────
 
   function handlePresetSelect(presetId: string): void {
-    if (onPresetSelected !== undefined) {
-      onPresetSelected(presetId, `koi-${presetId}`).catch(() => {});
+    // Don't call onPresetSelected yet — go to name input first
+    store.dispatch({ kind: "set_selected_preset_id", presetId });
+    store.dispatch({ kind: "set_agent_name_input", name: `koi-${presetId}` });
+    store.dispatch({ kind: "set_view", view: "nameinput" });
+  }
+
+  function handleNameConfirm(): void {
+    // After name input, go to add-on picker
+    store.dispatch({ kind: "set_view", view: "addons" });
+  }
+
+  function handleAddonsConfirm(): void {
+    const presetId = store.getState().selectedPresetId;
+    const agentName = store.getState().agentNameInput;
+    if (presetId !== null && onPresetSelected !== undefined) {
+      onPresetSelected(presetId, agentName).catch(() => {});
     }
+  }
+
+  function handleAddonsSkip(): void {
+    handleAddonsConfirm();
   }
 
   function handlePresetDetails(presetId: string): void {

@@ -282,6 +282,23 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_active_preset_detail":
       return { ...state, activePresetDetail: action.detail };
 
+    case "set_selected_preset_id":
+      return { ...state, selectedPresetId: action.presetId };
+
+    case "set_agent_name_input":
+      return { ...state, agentNameInput: action.name };
+
+    case "toggle_addon": {
+      const current = state.selectedAddons;
+      const next = new Set(current);
+      if (next.has(action.addonId)) {
+        next.delete(action.addonId);
+      } else {
+        next.add(action.addonId);
+      }
+      return { ...state, selectedAddons: next };
+    }
+
     case "append_pty_data": {
       const prev = state.ptyBuffers[action.agentId] ?? [];
       const updated = [...prev, action.data].slice(-MAX_PTY_CHUNKS);

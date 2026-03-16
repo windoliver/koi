@@ -30,6 +30,12 @@ export interface KeyboardCallbacks {
   readonly presetDetails: () => void;
   readonly presetBack: () => void;
   readonly toggleSplitPanes: () => void;
+  readonly nameConfirm: () => void;
+  readonly nameBack: () => void;
+  readonly addonsConfirm: () => void;
+  readonly addonsSkip: () => void;
+  readonly addonsToggle: () => void;
+  readonly addonsBack: () => void;
 }
 
 /**
@@ -76,14 +82,29 @@ export function createKeyboardHandler(
       return true;
     }
 
-    // Esc in split panes — reset zoom to normal, then go back
-    if (view === "splitpanes" && sequence === "\x1b") {
-      if (store.getState().zoomLevel !== "normal") {
-        store.dispatch({ kind: "set_zoom_level", level: "normal" });
-      } else {
-        store.dispatch({ kind: "set_view", view: "agents" });
+    // Split pane controls: Tab (focus next), Enter (zoom toggle), Esc (back)
+    if (view === "splitpanes") {
+      if (sequence === "\t") {
+        // Tab: cycle focused pane
+        const paneCount =
+          Object.keys(store.getState().splitSessions).length || store.getState().agents.length;
+        const next = (store.getState().focusedPaneIndex + 1) % Math.max(1, paneCount);
+        store.dispatch({ kind: "set_focused_pane", index: next });
+        return true;
       }
-      return true;
+      if (sequence === "\r") {
+        // Enter: zoom focused pane
+        store.dispatch({ kind: "cycle_zoom" });
+        return true;
+      }
+      if (sequence === "\x1b") {
+        if (store.getState().zoomLevel !== "normal") {
+          store.dispatch({ kind: "set_zoom_level", level: "normal" });
+        } else {
+          store.dispatch({ kind: "set_view", view: "agents" });
+        }
+        return true;
+      }
     }
 
     // Welcome mode — j/k navigation, Enter to select, ? for details, q to quit
@@ -129,6 +150,41 @@ export function createKeyboardHandler(
       }
       if (sequence === "q") {
         callbacks.stop();
+        return true;
+      }
+      return false;
+    }
+
+    // Name input — Enter to confirm, Esc to go back
+    // (actual text input is handled by the <textarea> component, not here)
+    if (view === "nameinput") {
+      if (sequence === "\r") {
+        callbacks.nameConfirm();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.nameBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Add-on picker — j/k navigate, Space toggle, Enter confirm, s skip, Esc back
+    if (view === "addons") {
+      if (sequence === "\r") {
+        callbacks.addonsConfirm();
+        return true;
+      }
+      if (sequence === " ") {
+        callbacks.addonsToggle();
+        return true;
+      }
+      if (sequence === "s") {
+        callbacks.addonsSkip();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.addonsBack();
         return true;
       }
       return false;

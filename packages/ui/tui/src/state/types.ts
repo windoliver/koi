@@ -37,11 +37,13 @@ export interface SessionState {
 
 /** Which TUI view is currently active. */
 export type TuiView =
+  | "addons"
   | "agents"
   | "consent"
   | "console"
   | "datasources"
   | "forge"
+  | "nameinput"
   | "palette"
   | "presetdetail"
   | "sessions"
@@ -128,6 +130,12 @@ export interface TuiState {
   readonly selectedPresetIndex: number;
   /** Active preset detail being viewed. */
   readonly activePresetDetail: PresetInfo | null;
+  /** Selected preset ID (after choosing from welcome screen). */
+  readonly selectedPresetId: string | null;
+  /** Agent name input by user during setup. */
+  readonly agentNameInput: string;
+  /** Selected add-on IDs during setup. */
+  readonly selectedAddons: ReadonlySet<string>;
   /** Per-agent PTY output buffers (base64 chunks). */
   readonly ptyBuffers: Readonly<Record<string, readonly string[]>>;
   /** Per-agent sessions for split-pane mode. */
@@ -166,6 +174,9 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     presets: [],
     selectedPresetIndex: 0,
     activePresetDetail: null,
+    selectedPresetId: null,
+    agentNameInput: "",
+    selectedAddons: new Set<string>(),
     ptyBuffers: {},
     splitSessions: {},
     focusedPaneIndex: 0,
@@ -256,6 +267,9 @@ export type TuiAction =
       readonly kind: "set_active_preset_detail";
       readonly detail: PresetInfo | null;
     }
+  | { readonly kind: "set_selected_preset_id"; readonly presetId: string }
+  | { readonly kind: "set_agent_name_input"; readonly name: string }
+  | { readonly kind: "toggle_addon"; readonly addonId: string }
   | {
       readonly kind: "append_pty_data";
       readonly agentId: string;
