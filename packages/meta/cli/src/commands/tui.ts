@@ -84,6 +84,46 @@ async function scaffoldManifest(presetId: string, agentName: string): Promise<vo
   await Bun.write(manifestPath, yaml);
 }
 
+/**
+ * Scaffolds a koi.yaml from the full wizard state, including model, engine,
+ * channels, and addons — not just preset and name.
+ */
+async function scaffoldManifestFromWizard(wizardState: SetupWizardState): Promise<void> {
+  const { resolve } = await import("node:path");
+  const { DEFAULT_STATE } = await import("../wizard/state.js");
+  const { generateManifestYaml, generateDemoManifestYaml } = await import("../templates/shared.js");
+
+  const presetId = wizardState.preset;
+  // SetupWizardState.channels is readonly string[]; WizardState.channels
+  // requires ChannelName[]. The TUI wizard only offers known channel names,
+  // so the cast is safe.
+  const channels =
+    wizardState.channels.length > 0
+      ? (wizardState.channels as typeof DEFAULT_STATE.channels)
+      : DEFAULT_STATE.channels;
+  const state = {
+    ...DEFAULT_STATE,
+    name: wizardState.name,
+    model: wizardState.model,
+    engine: wizardState.engine,
+    channels,
+    addons: [...wizardState.addons],
+    preset: presetId as typeof DEFAULT_STATE.preset,
+    template: (presetId === "demo" || presetId === "mesh"
+      ? "copilot"
+      : "minimal") as typeof DEFAULT_STATE.template,
+    ...(wizardState.demoPack !== undefined ? { demoPack: wizardState.demoPack } : {}),
+  };
+
+  const yaml =
+    presetId === "demo" || presetId === "mesh"
+      ? generateDemoManifestYaml(state)
+      : generateManifestYaml(state);
+
+  const manifestPath = resolve("koi.yaml");
+  await Bun.write(manifestPath, yaml);
+}
+
 export async function runTui(flags: TuiFlags): Promise<void> {
   const adminUrl = flags.url ?? DEFAULT_ADMIN_URL;
   const refreshMs = flags.refresh * 1000;
@@ -110,10 +150,10 @@ export async function runTui(flags: TuiFlags): Promise<void> {
             wizardState: SetupWizardState,
             callbacks: PhaseCallbacks,
           ): Promise<OperationResult<void>> => {
-            // 1. Scaffold koi.yaml with the wizard state
-            await scaffoldManifest(wizardState.preset, wizardState.name);
+            // 1. Scaffold koi.yaml from full wizard state
+            await scaffoldManifestFromWizard(wizardState);
 
-            // 2. Import and run start-stack in-process
+            // 2. Run validation phases (manifest, preflight, resolve)
             const { resolve } = await import("node:path");
             const { startStack } = await import("./up/start-stack.js");
             const result = await startStack(
@@ -127,7 +167,51 @@ export async function runTui(flags: TuiFlags): Promise<void> {
               callbacks,
             );
 
-            return result;
+            if (!result.ok) return result;
+
+            // 3. Start the actual runtime as a detached process
+            callbacks.onPhaseStart("runtime", "Starting runtime");
+            const { spawn } = await import("node:child_process");
+            const bunPath = process.argv[0] ?? "bun";
+            const cliEntry = new URL("../bin.ts", import.meta.url).pathname;
+            const child = spawn(bunPath, [cliEntry, "up", "--detach"], {
+              detached: true,
+              stdio: "ignore",
+              cwd: process.cwd(),
+            });
+            child.unref();
+
+            // 4. Wait for admin API health
+            callbacks.onPhaseProgress("runtime", "Waiting for admin API...");
+            const maxAttempts = 60;
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+              try {
+                const res = await fetch(`${adminUrl}/health`, {
+                  signal: AbortSignal.timeout(2000),
+                });
+                if (res.ok) {
+                  callbacks.onPhaseDone("runtime");
+                  return { ok: true, value: undefined };
+                }
+              } catch {
+                // Not ready yet
+              }
+              await new Promise((r) => setTimeout(r, 500));
+            }
+
+            callbacks.onPhaseFailed(
+              "runtime",
+              "Admin API did not become healthy within 30 seconds",
+            );
+            return {
+              ok: false,
+              error: {
+                code: "TIMEOUT",
+                message: "Admin API did not become healthy within 30 seconds",
+                phase: "runtime",
+                fix: "Check logs with `koi logs` or run `koi doctor`",
+              },
+            };
           },
           onPresetSelected: async (presetId: string, agentName: string): Promise<void> => {
             // Fallback: scaffold and spawn detached
@@ -165,8 +249,47 @@ export async function runTui(flags: TuiFlags): Promise<void> {
               case "stop":
                 await client.shutdown();
                 break;
-              case "doctor":
-                // Doctor runs preflight checks
+              case "doctor": {
+                // Run preflight checks and report results
+                const { loadManifest } = await import("@koi/manifest");
+                const loadResult = await loadManifest("koi.yaml");
+                if (!loadResult.ok) break;
+                const { createCliOutput } = await import("@koi/cli-render");
+                const output = createCliOutput({ verbose: false });
+                const { runPreflight } = await import("./up/preflight.js");
+                await runPreflight({
+                  manifest: loadResult.value.manifest,
+                  env: process.env,
+                  temporalRequired: false,
+                  output,
+                });
+                break;
+              }
+              case "demo-init": {
+                const packs = await client.demoPacks();
+                if (packs.ok && packs.value.length > 0) {
+                  const first = packs.value[0];
+                  if (first !== undefined) {
+                    await client.demoInit(first.id);
+                  }
+                }
+                break;
+              }
+              case "demo-reset": {
+                const packs = await client.demoPacks();
+                if (packs.ok && packs.value.length > 0) {
+                  const first = packs.value[0];
+                  if (first !== undefined) {
+                    await client.demoReset(first.id);
+                  }
+                }
+                break;
+              }
+              case "deploy":
+                await client.deploy();
+                break;
+              case "undeploy":
+                await client.undeploy();
                 break;
             }
           },

@@ -221,10 +221,17 @@ export function createKeyboardHandler(
     // Model step — j/k navigate, Enter confirm, Esc back
     if (view === "model") {
       if (sequence === "j" || sequence === "\x1b[B") {
-        // Navigation handled by component local state — dispatch not needed
+        store.dispatch({
+          kind: "set_model_focused_index",
+          index: store.getState().modelFocusedIndex + 1,
+        });
         return true;
       }
       if (sequence === "k" || sequence === "\x1b[A") {
+        store.dispatch({
+          kind: "set_model_focused_index",
+          index: store.getState().modelFocusedIndex - 1,
+        });
         return true;
       }
       if (sequence === "\r") {
@@ -258,9 +265,17 @@ export function createKeyboardHandler(
     // Channels step — j/k, Space toggle, Enter confirm, Esc back
     if (view === "channels") {
       if (sequence === "j" || sequence === "\x1b[B") {
+        store.dispatch({
+          kind: "set_channel_focused_index",
+          index: store.getState().channelFocusedIndex + 1,
+        });
         return true;
       }
       if (sequence === "k" || sequence === "\x1b[A") {
+        store.dispatch({
+          kind: "set_channel_focused_index",
+          index: store.getState().channelFocusedIndex - 1,
+        });
         return true;
       }
       if (sequence === " ") {

@@ -31,6 +31,7 @@ import {
   isPtyOutputEvent,
 } from "@koi/dashboard-types";
 import type { OperationResult, PhaseCallbacks, SetupWizardState } from "@koi/setup-core";
+import { KNOWN_CHANNELS, KNOWN_MODELS } from "@koi/setup-core";
 import { type CliRenderer, createCliRenderer, SyntaxStyle } from "@opentui/core";
 import { createRoot, type Root } from "@opentui/react";
 import { createElement } from "react";
@@ -654,9 +655,15 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       }
     },
     addonsBack: () => {
-      store.dispatch({ kind: "set_view", view: "nameinput" });
+      store.dispatch({ kind: "set_view", view: "channels" });
     },
     modelSelect: () => {
+      const models = config.models ?? [...KNOWN_MODELS];
+      const idx = store.getState().modelFocusedIndex;
+      const model = models[idx];
+      if (model !== undefined) {
+        store.dispatch({ kind: "set_selected_model", model });
+      }
       store.dispatch({ kind: "set_view", view: "engine" });
     },
     modelBack: () => {
@@ -676,7 +683,11 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "addons" });
     },
     channelsToggle: () => {
-      // Toggle is managed by channels view local state
+      const idx = store.getState().channelFocusedIndex;
+      const channel = KNOWN_CHANNELS[idx];
+      if (channel !== undefined) {
+        store.dispatch({ kind: "toggle_channel", channel });
+      }
     },
     channelsBack: () => {
       store.dispatch({ kind: "set_view", view: "engine" });
@@ -731,8 +742,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   }
 
   function handleNameConfirm(): void {
-    // After name input, go to add-on picker
-    store.dispatch({ kind: "set_view", view: "addons" });
+    // After name input, go to model selection
+    store.dispatch({ kind: "set_view", view: "model" });
   }
 
   function handleAddonsConfirm(): void {
@@ -804,10 +815,32 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
           store.dispatch({ kind: "set_setup_running", running: false });
           if (result.ok) {
             transitionToBoardroom().catch(() => {});
+          } else {
+            // Surface the error as a failed phase in the progress view
+            store.dispatch({
+              kind: "append_phase_progress",
+              progress: {
+                phaseId: result.error.phase ?? "unknown",
+                label: result.error.phase ?? "Setup",
+                status: "failed",
+                error: result.error.message,
+              },
+            });
           }
         })
-        .catch(() => {
+        .catch((err: unknown) => {
+          // Unexpected error (scaffold failure, import failure, etc.)
           store.dispatch({ kind: "set_setup_running", running: false });
+          const message = err instanceof Error ? err.message : String(err);
+          store.dispatch({
+            kind: "append_phase_progress",
+            progress: {
+              phaseId: "setup",
+              label: "Setup",
+              status: "failed",
+              error: message,
+            },
+          });
         });
       return;
     }

@@ -53,4 +53,43 @@ describe("wizard reducer via store", () => {
     expect(state.phaseProgress).toEqual([]);
     expect(state.setupRunning).toBe(false);
   });
+
+  test("set_model_focused_index updates index", () => {
+    const result = reduce(base, { kind: "set_model_focused_index", index: 3 });
+    expect(result.modelFocusedIndex).toBe(3);
+  });
+
+  test("set_model_focused_index clamps to zero", () => {
+    const result = reduce(base, { kind: "set_model_focused_index", index: -1 });
+    expect(result.modelFocusedIndex).toBe(0);
+  });
+
+  test("set_channel_focused_index updates index", () => {
+    const result = reduce(base, { kind: "set_channel_focused_index", index: 2 });
+    expect(result.channelFocusedIndex).toBe(2);
+  });
+
+  test("set_channel_focused_index clamps to zero", () => {
+    const result = reduce(base, { kind: "set_channel_focused_index", index: -5 });
+    expect(result.channelFocusedIndex).toBe(0);
+  });
+
+  test("toggle_channel adds a channel", () => {
+    const result = reduce(base, { kind: "toggle_channel", channel: "slack" });
+    expect(result.selectedChannels).toContain("cli");
+    expect(result.selectedChannels).toContain("slack");
+  });
+
+  test("toggle_channel removes a channel when already selected", () => {
+    const withTwo = reduce(base, { kind: "toggle_channel", channel: "slack" });
+    const result = reduce(withTwo, { kind: "toggle_channel", channel: "cli" });
+    expect(result.selectedChannels).toEqual(["slack"]);
+  });
+
+  test("toggle_channel does not remove the last channel", () => {
+    // base has only ["cli"]
+    const result = reduce(base, { kind: "toggle_channel", channel: "cli" });
+    // Should not change — at least one channel must remain
+    expect(result.selectedChannels).toEqual(["cli"]);
+  });
 });

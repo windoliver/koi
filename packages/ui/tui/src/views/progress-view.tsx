@@ -38,8 +38,8 @@ export function ProgressView(props: ProgressViewProps): React.ReactNode {
 
   return (
     <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingTop={1}>
-      <text fg={COLORS.cyan}>
-        <b>{setupRunning ? "  Starting Koi..." : "  Setup Complete"}</b>
+      <text fg={failedPhase !== undefined ? COLORS.red : setupRunning ? COLORS.cyan : COLORS.green}>
+        <b>{failedPhase !== undefined ? "  Setup Failed" : setupRunning ? "  Starting Koi..." : "  Setup Complete"}</b>
       </text>
 
       <box marginTop={1} paddingLeft={2} flexDirection="column">
@@ -69,7 +69,7 @@ export function ProgressView(props: ProgressViewProps): React.ReactNode {
         </box>
       )}
 
-      {!setupRunning && failedPhase === undefined && (
+      {!setupRunning && failedPhase === undefined && phases.length > 0 && (
         <box marginTop={1} paddingLeft={2}>
           <text fg={COLORS.green}>{"  All phases complete. Transitioning to boardroom..."}</text>
         </box>

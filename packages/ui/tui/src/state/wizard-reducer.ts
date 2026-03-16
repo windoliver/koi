@@ -43,11 +43,30 @@ export function reduceWizard(state: TuiState, action: TuiAction): Partial<TuiSta
     case "set_selected_model":
       return { selectedModel: action.model };
 
+    case "set_model_focused_index":
+      return { modelFocusedIndex: Math.max(0, action.index) };
+
     case "set_selected_engine":
       return { selectedEngine: action.engine };
 
     case "set_selected_channels":
       return { selectedChannels: action.channels };
+
+    case "set_channel_focused_index":
+      return { channelFocusedIndex: Math.max(0, action.index) };
+
+    case "toggle_channel": {
+      const channels = [...state.selectedChannels];
+      const idx = channels.indexOf(action.channel);
+      if (idx >= 0) {
+        channels.splice(idx, 1);
+      } else {
+        channels.push(action.channel);
+      }
+      // Ensure at least one channel remains selected
+      if (channels.length === 0) return undefined;
+      return { selectedChannels: channels };
+    }
 
     case "append_phase_progress":
       return { phaseProgress: [...state.phaseProgress, action.progress] };

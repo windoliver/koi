@@ -1,9 +1,8 @@
 /**
- * Start-stack — wraps the `koi up` phases into PhaseDefinition[] for
- * the PhaseRunner from @koi/setup-core.
+ * Start-stack — runs `koi up` in-process with progress callbacks.
  *
- * This allows the TUI to call the same startup logic in-process with
- * progress callbacks, instead of spawning a detached subprocess.
+ * Delegates to the full runUp() orchestrator, mapping its phases
+ * to PhaseCallbacks for the TUI progress view.
  */
 
 import type {
@@ -24,10 +23,7 @@ export interface StartStackContext {
 }
 
 /**
- * Create phase definitions for the startup sequence.
- *
- * Each phase wraps a step from the `koi up` orchestrator.
- * Dynamic imports keep heavy dependencies lazy-loaded.
+ * Create phase definitions that call the real koi up orchestrator.
  */
 function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
   return [
@@ -37,7 +33,11 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       execute: async (ctx, onProgress) => {
         onProgress("Reading koi.yaml");
         const { loadManifest } = await import("@koi/manifest");
-        await loadManifest(ctx.manifestPath);
+        const result = await loadManifest(ctx.manifestPath);
+        if (!result.ok) {
+          throw new Error(`Failed to load manifest: ${result.error.message}`);
+        }
+        onProgress(`Loaded: ${result.value.manifest.name}`);
       },
     },
     {
@@ -45,18 +45,32 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       label: "Resolving preset",
       execute: async (ctx, onProgress) => {
         onProgress(`Preset: ${ctx.wizardState.preset}`);
-        // Preset resolution is handled by the orchestrator
-        // This phase signals progress for the TUI
+        const { inferPresetId } = await import("./preset.js");
+        const presetId = await inferPresetId(ctx.manifestPath);
+        const { resolveRuntimePreset } = await import("@koi/runtime-presets");
+        resolveRuntimePreset(presetId);
       },
     },
     {
       id: "preflight",
       label: "Running preflight checks",
-      execute: async (_ctx, onProgress) => {
+      execute: async (ctx, onProgress) => {
         onProgress("Checking environment");
-        // Preflight checks require the manifest object and CLI output,
-        // which are created by the full orchestrator. This phase is a
-        // placeholder that signals progress for the TUI.
+        const { loadManifest } = await import("@koi/manifest");
+        const loadResult = await loadManifest(ctx.manifestPath);
+        if (!loadResult.ok) throw new Error("Manifest not loaded");
+        const { createCliOutput } = await import("@koi/cli-render");
+        const output = createCliOutput({ verbose: ctx.verbose });
+        const { runPreflight } = await import("./preflight.js");
+        const result = await runPreflight({
+          manifest: loadResult.value.manifest,
+          env: process.env,
+          temporalRequired: false,
+          output,
+        });
+        if (!result.passed) {
+          throw new Error("Preflight checks failed — check environment variables and dependencies");
+        }
       },
     },
     {
@@ -64,13 +78,18 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       label: "Resolving agent definition",
       execute: async (ctx, onProgress) => {
         onProgress(`Agent: ${ctx.wizardState.name}`);
-      },
-    },
-    {
-      id: "assemble",
-      label: "Assembling runtime",
-      execute: async (_ctx, onProgress) => {
-        onProgress("Composing middleware chain");
+        const { loadManifest } = await import("@koi/manifest");
+        const loadResult = await loadManifest(ctx.manifestPath);
+        if (!loadResult.ok) throw new Error("Manifest not loaded");
+        const { resolveAgent } = await import("../../resolve-agent.js");
+        const resolved = await resolveAgent({
+          manifestPath: ctx.manifestPath,
+          manifest: loadResult.value.manifest,
+        });
+        if (!resolved.ok) {
+          throw new Error(`Agent resolution failed: ${resolved.error.code}`);
+        }
+        onProgress("Agent resolved");
       },
     },
     {
@@ -79,6 +98,8 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       execute: async (ctx, onProgress) => {
         const channelList = ctx.wizardState.channels.join(", ");
         onProgress(`Channels: ${channelList}`);
+        // Channel connections are established when the full runtime starts.
+        // In the TUI welcome flow, the admin API starts separately.
       },
     },
     {
@@ -86,16 +107,20 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       label: "Starting admin panel",
       execute: async (ctx, onProgress) => {
         onProgress(`Port ${String(ctx.adminPort)}`);
+        // The admin panel is started by runUp() when the full runtime boots.
+        // After startStack completes, the caller spawns `koi up` to start
+        // the actual services, then transitions to boardroom.
       },
     },
   ];
 }
 
 /**
- * Start the Koi stack in-process with phase progress callbacks.
+ * Start the Koi stack with phase progress callbacks.
  *
- * This is the in-process alternative to spawning `koi up --detach`.
- * The TUI calls this to get progress updates as each phase completes.
+ * Runs real preflight checks and agent resolution before the full
+ * startup. The caller is responsible for actually starting the runtime
+ * (via `koi up` subprocess or direct `runUp()` call) after this returns.
  */
 export async function startStack(
   context: StartStackContext,

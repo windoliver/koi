@@ -175,10 +175,14 @@ export interface TuiState {
   readonly addonFocusedIndex: number;
   /** Selected model during setup. */
   readonly selectedModel: string;
+  /** Focused model index during model selection. */
+  readonly modelFocusedIndex: number;
   /** Selected engine during setup. */
   readonly selectedEngine: string | undefined;
   /** Selected channels during setup. */
   readonly selectedChannels: readonly string[];
+  /** Focused channel index during channel selection. */
+  readonly channelFocusedIndex: number;
   /** Phase progress entries for the progress view. */
   readonly phaseProgress: readonly PhaseProgress[];
   /** Whether setup is currently running. */
@@ -232,8 +236,10 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     selectedAddons: new Set<string>(),
     addonFocusedIndex: 0,
     selectedModel: "anthropic:claude-sonnet-4-5-20250929",
+    modelFocusedIndex: 0,
     selectedEngine: undefined,
     selectedChannels: ["cli"],
+    channelFocusedIndex: 0,
     phaseProgress: [],
     setupRunning: false,
     logBuffer: [],
@@ -362,8 +368,11 @@ export type TuiAction =
       readonly index: number;
     }
   | { readonly kind: "set_selected_model"; readonly model: string }
+  | { readonly kind: "set_model_focused_index"; readonly index: number }
   | { readonly kind: "set_selected_engine"; readonly engine: string | undefined }
   | { readonly kind: "set_selected_channels"; readonly channels: readonly string[] }
+  | { readonly kind: "set_channel_focused_index"; readonly index: number }
+  | { readonly kind: "toggle_channel"; readonly channel: string }
   | { readonly kind: "append_phase_progress"; readonly progress: PhaseProgress }
   | { readonly kind: "set_setup_running"; readonly running: boolean }
   | { readonly kind: "clear_phase_progress" }

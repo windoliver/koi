@@ -1,27 +1,22 @@
 /**
  * Model selection step — shows known models as a selectable list.
  *
- * j/k navigation, Enter to select.
+ * j/k navigation, Enter to select. Focus index managed by parent store.
  */
 
-import { useState } from "react";
 import { COLORS } from "../theme.js";
 
 export interface ModelStepViewProps {
   readonly models: readonly string[];
   readonly selectedModel: string;
+  readonly focusedIndex: number;
   readonly onSelect: (model: string) => void;
   readonly focused?: boolean | undefined;
 }
 
 /** Model selection step view. */
 export function ModelStepView(props: ModelStepViewProps): React.ReactNode {
-  const { models, selectedModel, focused } = props;
-  const initialIndex = Math.max(0, models.indexOf(selectedModel));
-  const [focusedIndex, setFocusedIndex] = useState(initialIndex);
-
-  // The parent keyboard handler will call onSelect — this is just display
-  const _ = { setFocusedIndex }; // suppress unused warning for local state
+  const { models, selectedModel, focusedIndex } = props;
 
   return (
     <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingTop={1}>

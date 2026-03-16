@@ -188,6 +188,35 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
         .catch(() => {});
       return true;
 
+    case "undeploy":
+      deps.client
+        .undeploy()
+        .then((r) => {
+          deps.addLifecycleMessage(
+            r.ok ? "Undeploy initiated" : `Undeploy failed: ${r.error.kind}`,
+          );
+        })
+        .catch(() => {});
+      return true;
+
+    case "demo-list":
+      deps.client
+        .demoPacks()
+        .then((r) => {
+          if (r.ok) {
+            const lines = r.value.map((p) => `  ${p.id}: ${p.description}`);
+            deps.addLifecycleMessage(
+              lines.length > 0
+                ? `Available demo packs:\n${lines.join("\n")}`
+                : "No demo packs available",
+            );
+          } else {
+            deps.addLifecycleMessage(`Failed to list demo packs: ${r.error.kind}`);
+          }
+        })
+        .catch(() => {});
+      return true;
+
     default:
       return false;
   }

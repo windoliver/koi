@@ -319,6 +319,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           <ModelStepView
             models={[...KNOWN_MODELS]}
             selectedModel={state.selectedModel}
+            focusedIndex={state.modelFocusedIndex}
             onSelect={(model) => { props.store.dispatch({ kind: "set_selected_model", model }); }}
           />
         )}
@@ -333,7 +334,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           <ChannelsStepView
             channels={[...KNOWN_CHANNELS]}
             selected={[...state.selectedChannels]}
-            focusedIndex={0}
+            focusedIndex={state.channelFocusedIndex}
           />
         )}
 
