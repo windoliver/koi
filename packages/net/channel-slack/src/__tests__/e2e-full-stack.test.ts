@@ -615,16 +615,17 @@ describeE2E("e2e: channel-slack + createKoi + createPiAdapter full stack", () =>
     await channel.disconnect();
   });
 
-  // ── Test 10: HTTP mode handleEvent through full pipeline ───────────
+  // ── Test 10: HTTP mode handleHttpRequest through full pipeline ─────
 
   test(
-    "HTTP mode handleEvent → normalize → createKoi → real LLM",
+    "HTTP mode handleHttpRequest → normalize → createKoi → real LLM",
     async () => {
+      const signingSecret = "test-secret";
       const webClient = createMockWebClient();
       const socketClient = createMockSocketClient();
       const channel = createSlackChannel({
         botToken: "xoxb-test",
-        deployment: { mode: "http", signingSecret: "test-secret" },
+        deployment: { mode: "http", signingSecret },
         _webClient: webClient,
         _socketClient: socketClient,
       });
@@ -636,10 +637,12 @@ describeE2E("e2e: channel-slack + createKoi + createPiAdapter full stack", () =>
         received.push(msg);
       });
 
-      const handleEvent = (channel as { readonly handleEvent?: (p: unknown) => void }).handleEvent;
-      expect(handleEvent).toBeDefined();
+      const handleHttpRequest = (
+        channel as { readonly handleHttpRequest?: (r: Request) => Promise<Response> }
+      ).handleHttpRequest;
+      expect(handleHttpRequest).toBeDefined();
 
-      handleEvent?.({
+      const body = JSON.stringify({
         type: "event_callback",
         event: {
           type: "message",
@@ -649,6 +652,21 @@ describeE2E("e2e: channel-slack + createKoi + createPiAdapter full stack", () =>
           ts: "1234567890.000001",
         },
       });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const sigBase = `v0:${timestamp}:${body}`;
+      const { createHmac } = await import("node:crypto");
+      const signature = `v0=${createHmac("sha256", signingSecret).update(sigBase).digest("hex")}`;
+      const request = new Request("https://localhost/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Slack-Request-Timestamp": timestamp,
+          "X-Slack-Signature": signature,
+        },
+        body,
+      });
+      const response = await handleHttpRequest?.(request);
+      expect(response.status).toBe(200);
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       expect(received).toHaveLength(1);

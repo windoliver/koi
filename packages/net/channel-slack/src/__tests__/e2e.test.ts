@@ -6,9 +6,28 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
+import { createHmac } from "node:crypto";
 import type { InboundMessage, OutboundMessage } from "@koi/core";
 import { createSlackChannel } from "../slack-channel.js";
 import { createMockSocketClient, createMockWebClient } from "../test-helpers.js";
+
+const TEST_SIGNING_SECRET = "test-secret";
+
+/** Build a signed Slack HTTP request for testing handleHttpRequest. */
+function createSignedSlackRequest(body: string): Request {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const sigBase = `v0:${timestamp}:${body}`;
+  const signature = `v0=${createHmac("sha256", TEST_SIGNING_SECRET).update(sigBase).digest("hex")}`;
+  return new Request("https://localhost/slack/events", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Slack-Request-Timestamp": timestamp,
+      "X-Slack-Signature": signature,
+    },
+    body,
+  });
+}
 
 describe("slack channel e2e lifecycle", () => {
   test("full roundtrip: message in → handler → reply out", async () => {
@@ -301,13 +320,13 @@ describe("slack channel e2e lifecycle", () => {
     await adapter.disconnect();
   });
 
-  test("HTTP mode handleEvent dispatches event_callback", async () => {
+  test("HTTP mode handleHttpRequest dispatches event_callback", async () => {
     const webClient = createMockWebClient();
     const socketClient = createMockSocketClient();
 
     const adapter = createSlackChannel({
       botToken: "xoxb-test",
-      deployment: { mode: "http", signingSecret: "test-secret" },
+      deployment: { mode: "http", signingSecret: TEST_SIGNING_SECRET },
       _webClient: webClient,
       _socketClient: socketClient,
     });
@@ -319,10 +338,12 @@ describe("slack channel e2e lifecycle", () => {
 
     await adapter.connect();
 
-    const handleEvent = (adapter as { readonly handleEvent?: (p: unknown) => void }).handleEvent;
-    expect(handleEvent).toBeDefined();
+    const handleHttpRequest = (
+      adapter as { readonly handleHttpRequest?: (r: Request) => Promise<Response> }
+    ).handleHttpRequest;
+    expect(handleHttpRequest).toBeDefined();
 
-    handleEvent?.({
+    const body = JSON.stringify({
       type: "event_callback",
       event: {
         type: "message",
@@ -332,6 +353,8 @@ describe("slack channel e2e lifecycle", () => {
         ts: "1234567890.000001",
       },
     });
+    const response = await handleHttpRequest?.(createSignedSlackRequest(body));
+    expect(response.status).toBe(200);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -341,13 +364,13 @@ describe("slack channel e2e lifecycle", () => {
     await adapter.disconnect();
   });
 
-  test("HTTP mode handleEvent dispatches app_mention", async () => {
+  test("HTTP mode handleHttpRequest dispatches app_mention", async () => {
     const webClient = createMockWebClient();
     const socketClient = createMockSocketClient();
 
     const adapter = createSlackChannel({
       botToken: "xoxb-test",
-      deployment: { mode: "http", signingSecret: "test-secret" },
+      deployment: { mode: "http", signingSecret: TEST_SIGNING_SECRET },
       _webClient: webClient,
       _socketClient: socketClient,
     });
@@ -359,8 +382,10 @@ describe("slack channel e2e lifecycle", () => {
 
     await adapter.connect();
 
-    const handleEvent = (adapter as { readonly handleEvent?: (p: unknown) => void }).handleEvent;
-    handleEvent?.({
+    const handleHttpRequest = (
+      adapter as { readonly handleHttpRequest?: (r: Request) => Promise<Response> }
+    ).handleHttpRequest;
+    const body = JSON.stringify({
       type: "event_callback",
       event: {
         type: "app_mention",
@@ -370,6 +395,8 @@ describe("slack channel e2e lifecycle", () => {
         ts: "1234567890.000001",
       },
     });
+    const response = await handleHttpRequest?.(createSignedSlackRequest(body));
+    expect(response.status).toBe(200);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 

@@ -129,14 +129,19 @@ describe("createSlackChannel", () => {
     expect(adapter.sendStatus).toBeDefined();
   });
 
-  test("handleEvent is present in http mode", () => {
+  test("handleHttpRequest is present in http mode", () => {
     const { adapter } = createTestAdapter({ mode: "http" });
-    expect((adapter as { readonly handleEvent?: unknown }).handleEvent).toBeDefined();
+    expect((adapter as { readonly handleHttpRequest?: unknown }).handleHttpRequest).toBeDefined();
   });
 
-  test("handleEvent is absent in socket mode", () => {
-    const { adapter } = createTestAdapter({ mode: "socket" });
+  test("handleEvent is absent in http mode (unsigned path removed)", () => {
+    const { adapter } = createTestAdapter({ mode: "http" });
     expect((adapter as { readonly handleEvent?: unknown }).handleEvent).toBeUndefined();
+  });
+
+  test("handleEvent is present in socket mode", () => {
+    const { adapter } = createTestAdapter({ mode: "socket" });
+    expect((adapter as { readonly handleEvent?: unknown }).handleEvent).toBeDefined();
   });
 
   test("send() with empty content does not throw", async () => {
