@@ -5,6 +5,7 @@ exports[`@koi/gateway-canvas API surface . has stable type surface 1`] = `
 import * as _koi_gateway_types from '@koi/gateway-types';
 import { SurfaceStore } from '@koi/gateway-types';
 export { SurfaceEntry, SurfaceStore, SurfaceStoreConfig } from '@koi/gateway-types';
+export { computeStringHash as computeContentHash } from '@koi/hash';
 
 /**
  * SSE (Server-Sent Events) subscriber registry for canvas surfaces.

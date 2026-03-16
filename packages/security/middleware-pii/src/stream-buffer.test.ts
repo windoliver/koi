@@ -100,7 +100,6 @@ describe("createPIIStreamBuffer", () => {
 
   describe("block to redact downgrade", () => {
     test("uses redact strategy instead of block in streaming mode", () => {
-      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
       const buf = createPIIStreamBuffer([emailDetector], "block", undefined, 10);
       const pushResult = buf.push("email: user@test.com padding text here");
       const flushResult = buf.flush();
@@ -108,19 +107,16 @@ describe("createPIIStreamBuffer", () => {
       // Should redact, not throw
       expect(combined).toContain("[REDACTED_EMAIL]");
       expect(combined).not.toContain("user@test.com");
-      warnSpy.mockRestore();
     });
 
-    test("logs console.warn when block strategy is downgraded", () => {
+    test("does not log console.warn directly (caller is responsible for logging)", () => {
       const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
       createPIIStreamBuffer([emailDetector], "block");
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0]?.[0]).toContain("block strategy downgraded to redact");
+      expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });
 
     test("calls onStrategyDowngrade callback with ('block', 'redact')", () => {
-      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
       // let justified: captures downgrade callback args
       let originalArg: string | undefined;
       // let justified: captures effective strategy arg
@@ -131,31 +127,24 @@ describe("createPIIStreamBuffer", () => {
       });
       expect(originalArg).toBe("block");
       expect(effectiveArg).toBe("redact");
-      warnSpy.mockRestore();
     });
 
-    test("does not warn or call downgrade callback for redact strategy", () => {
-      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    test("does not call downgrade callback for redact strategy", () => {
       // let justified: flag to detect unexpected callback invocation
       let called = false;
       createPIIStreamBuffer([emailDetector], "redact", undefined, 64, () => {
         called = true;
       });
-      expect(warnSpy).not.toHaveBeenCalled();
       expect(called).toBe(false);
-      warnSpy.mockRestore();
     });
 
-    test("does not warn or call downgrade callback for mask strategy", () => {
-      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    test("does not call downgrade callback for mask strategy", () => {
       // let justified: flag to detect unexpected callback invocation
       let called = false;
       createPIIStreamBuffer([emailDetector], "mask", undefined, 64, () => {
         called = true;
       });
-      expect(warnSpy).not.toHaveBeenCalled();
       expect(called).toBe(false);
-      warnSpy.mockRestore();
     });
   });
 

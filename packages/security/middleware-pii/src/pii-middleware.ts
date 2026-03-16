@@ -121,6 +121,13 @@ export function createPIIMiddleware(config: PIIConfig): KoiMiddleware {
       }
 
       // OUTPUT: buffer and scan streaming text
+      // Log once if block→redact downgrade applies (both buffers share the same strategy)
+      if (strategy === "block") {
+        console.warn(
+          "[middleware-pii] block strategy downgraded to redact in streaming mode — " +
+            "previously streamed bytes cannot be retracted",
+        );
+      }
       const textBuf = createPIIStreamBuffer(detectors, strategy, createHasher);
       const thinkBuf = createPIIStreamBuffer(detectors, strategy, createHasher);
 

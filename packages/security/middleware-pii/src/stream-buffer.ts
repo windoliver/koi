@@ -6,7 +6,8 @@
  * zone) is yielded. On flush, all remaining content is scanned and returned.
  *
  * Block strategy is downgraded to redact in streaming mode — we can't
- * retract already-yielded content. A warning is logged when this occurs.
+ * retract already-yielded content. The caller is responsible for logging
+ * a warning once; the buffer only fires the onStrategyDowngrade callback.
  */
 
 import { scanString } from "./scan.js";
@@ -49,10 +50,6 @@ export function createPIIStreamBuffer(
   const effectiveStrategy: PIIStrategy = strategy === "block" ? "redact" : strategy;
 
   if (strategy === "block") {
-    console.warn(
-      "[middleware-pii] block strategy downgraded to redact in streaming mode — " +
-        "previously streamed bytes cannot be retracted",
-    );
     onStrategyDowngrade?.(strategy, effectiveStrategy);
   }
 
