@@ -23,6 +23,16 @@ export interface StartStackContext {
   readonly verbose: boolean;
   readonly adminPort: number;
   readonly adminUrl: string;
+  /** Path to Nexus source repo for --nexus-source. */
+  readonly nexusSource: string | undefined;
+  /** Build Nexus from source before starting. */
+  readonly nexusBuild: boolean;
+  /** Override the Nexus HTTP port. */
+  readonly nexusPort: number | undefined;
+  /** Set by the nexus phase — base URL of the running Nexus instance. Mutable by design. */
+  nexusBaseUrl?: string | undefined;
+  /** Set by the nexus phase — true if we started Nexus ourselves. Mutable by design. */
+  nexusStartedByUs?: boolean | undefined;
   /** Set by the runtime phase — handle for lifecycle cleanup. Mutable by design. */
   runtimeHandle?: RuntimeHandle | undefined;
 }
@@ -54,6 +64,60 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
         const presetId = await inferPresetId(ctx.manifestPath);
         const { resolveRuntimePreset } = await import("@koi/runtime-presets");
         resolveRuntimePreset(presetId);
+      },
+    },
+    {
+      id: "nexus",
+      label: "Starting Nexus",
+      execute: async (ctx, onProgress) => {
+        // Run build-from-source if flags are set
+        if (ctx.nexusBuild && ctx.nexusSource !== undefined) {
+          onProgress("Building Nexus from source");
+          const { runNexusBuildIfNeeded } = await import("../../resolve-nexus.js");
+          runNexusBuildIfNeeded(ctx.nexusBuild, ctx.nexusSource);
+        }
+
+        // Check if preset requires embedded Nexus
+        const { inferPresetId } = await import("./preset.js");
+        const presetId = await inferPresetId(ctx.manifestPath);
+        const { resolveRuntimePreset } = await import("@koi/runtime-presets");
+        const { resolved: preset } = resolveRuntimePreset(presetId);
+
+        if (preset.nexusMode !== "embed-auth") {
+          onProgress("Nexus not required for this preset");
+          return;
+        }
+
+        // Skip if Nexus URL already provided via env or manifest
+        const { loadManifest } = await import("@koi/manifest");
+        const loadResult = await loadManifest(ctx.manifestPath);
+        const manifestNexusUrl = loadResult.ok ? loadResult.value.manifest.nexus?.url : undefined;
+        const existingUrl = manifestNexusUrl ?? process.env.NEXUS_URL;
+        if (existingUrl !== undefined) {
+          ctx.nexusBaseUrl = existingUrl;
+          onProgress("Using existing Nexus URL");
+          return;
+        }
+
+        // Start Nexus with auto port strategy
+        onProgress("Starting Nexus stack");
+        const { startNexusStack } = await import("./nexus.js");
+        const nexusResult = await startNexusStack(ctx.workspaceRoot, presetId, ctx.verbose, {
+          build: ctx.nexusBuild || undefined,
+          sourceDir: ctx.nexusSource,
+          port: ctx.nexusPort,
+          portStrategy: "auto",
+        });
+        if (nexusResult !== undefined) {
+          ctx.nexusBaseUrl = nexusResult.baseUrl;
+          ctx.nexusStartedByUs = true;
+          if (nexusResult.apiKey !== undefined && process.env.NEXUS_API_KEY === undefined) {
+            process.env.NEXUS_API_KEY = nexusResult.apiKey;
+          }
+          onProgress(`Nexus ready at ${nexusResult.baseUrl}`);
+        } else {
+          onProgress("Nexus startup failed (non-fatal)");
+        }
       },
     },
     {
@@ -103,11 +167,21 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
       execute: async (ctx, onProgress) => {
         onProgress("Booting services in-process");
         const { bootRuntime } = await import("./boot-runtime.js");
+        // Build nexus cleanup callback if we started Nexus ourselves
+        let nexusCleanup: (() => Promise<void>) | undefined;
+        if (ctx.nexusStartedByUs === true) {
+          nexusCleanup = async () => {
+            const { stopNexusStack } = await import("./nexus.js");
+            await stopNexusStack(ctx.workspaceRoot, ctx.verbose);
+          };
+        }
         const handle = await bootRuntime({
           manifestPath: ctx.manifestPath,
           workspaceRoot: ctx.workspaceRoot,
           verbose: ctx.verbose,
           adminPort: ctx.adminPort,
+          nexusBaseUrl: ctx.nexusBaseUrl,
+          nexusCleanup,
           onProgress: (_phase, msg) => {
             onProgress(msg);
           },

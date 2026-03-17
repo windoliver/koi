@@ -126,10 +126,30 @@ async function scaffoldManifestFromWizard(wizardState: SetupWizardState): Promis
   await Bun.write(manifestPath, yaml);
 }
 
+async function probeAdminHealth(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function runTui(flags: TuiFlags): Promise<void> {
   const adminUrl = flags.url ?? DEFAULT_ADMIN_URL;
   const refreshMs = flags.refresh * 1000;
-  const isWelcome = flags.mode === "welcome";
+  let isWelcome = flags.mode === "welcome";
+
+  // Auto-detect: no koi.yaml + no admin → welcome mode
+  if (!isWelcome) {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync("koi.yaml")) {
+      const reachable = await probeAdminHealth(adminUrl);
+      if (!reachable) {
+        isWelcome = true;
+      }
+    }
+  }
 
   // Dynamic import to keep @koi/tui out of the main CLI bundle
   const { createTuiApp } = await import("@koi/tui");
@@ -170,6 +190,9 @@ export async function runTui(flags: TuiFlags): Promise<void> {
               verbose: false,
               adminPort: 3100,
               adminUrl,
+              nexusSource: flags.nexusSource,
+              nexusBuild: flags.nexusBuild,
+              nexusPort: flags.nexusPort,
             };
             const result = await startStack(ctx, callbacks);
             // Capture the runtime handle for lifecycle cleanup on shutdown
@@ -324,6 +347,16 @@ export async function runTui(flags: TuiFlags): Promise<void> {
                   if (first !== undefined) {
                     await client.demoReset(first.id);
                   }
+                }
+                break;
+              }
+              case "demo-list": {
+                const packList = await client.demoPacks();
+                if (packList.ok) {
+                  app.store.dispatch({
+                    kind: "set_demo_packs",
+                    packs: packList.value.map((p) => ({ id: p.id, description: p.description })),
+                  });
                 }
                 break;
               }

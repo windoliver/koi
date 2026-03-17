@@ -321,6 +321,10 @@ export interface TuiState {
   readonly nexusBrowser: NexusBrowserState;
   /** Server capabilities — which subsystems are available. */
   readonly capabilities: TuiCapabilities | null;
+  /** Available demo packs from /demo list. */
+  readonly demoPacks: readonly { readonly id: string; readonly description: string }[];
+  /** Whether /stop confirmation is pending. */
+  readonly pendingStopConfirm: boolean;
 }
 
 /** App mode: welcome (no admin API) or boardroom (connected). */
@@ -394,6 +398,8 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     mailboxTargetAgentId: null,
     nexusBrowser: createInitialNexusBrowser(),
     capabilities: null,
+    demoPacks: [],
+    pendingStopConfirm: false,
   };
 }
 
@@ -531,6 +537,12 @@ export type TuiAction =
   | { readonly kind: "set_doctor_checks"; readonly checks: readonly DoctorCheck[] }
   | { readonly kind: "append_doctor_check"; readonly check: DoctorCheck }
   | { readonly kind: "clear_doctor_checks" }
+  | {
+      readonly kind: "set_demo_packs";
+      readonly packs: readonly { readonly id: string; readonly description: string }[];
+    }
+  | { readonly kind: "set_pending_stop" }
+  | { readonly kind: "clear_pending_stop" }
   // ─── Domain view actions ───────────────────────────────────────────
   | {
       readonly kind: "apply_skill_event";

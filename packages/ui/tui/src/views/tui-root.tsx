@@ -369,7 +369,11 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
 
         {/* Service management view */}
         {view === "service" && (
-          <ServiceView status={state.serviceStatus} />
+          <ServiceView
+            status={state.serviceStatus}
+            demoPacks={state.demoPacks}
+            pendingStopConfirm={state.pendingStopConfirm}
+          />
         )}
 
         {/* Doctor view */}

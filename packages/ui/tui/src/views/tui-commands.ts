@@ -109,7 +109,7 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
     }
 
     case "logs":
-      deps.showAgentLogs().catch(() => {});
+      deps.store.dispatch({ kind: "set_view", view: "logs" });
       return true;
 
     case "health":
@@ -122,7 +122,9 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
             deps.addLifecycleMessage(`Health check failed: ${r.error.kind}`);
           }
         })
-        .catch(() => {});
+        .catch((err: unknown) => {
+          deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+        });
       return true;
 
     case "open-browser":
@@ -263,14 +265,22 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
       return true;
 
     case "stop":
-      deps.client
-        .shutdown()
-        .then((r) => {
-          deps.addLifecycleMessage(
-            r.ok ? "Shutdown initiated" : `Shutdown failed: ${r.error.kind}`,
-          );
-        })
-        .catch(() => {});
+      if (deps.store.getState().pendingStopConfirm) {
+        deps.store.dispatch({ kind: "clear_pending_stop" });
+        deps.client
+          .shutdown()
+          .then((r) => {
+            deps.addLifecycleMessage(
+              r.ok ? "Shutdown initiated" : `Shutdown failed: ${r.error.kind}`,
+            );
+          })
+          .catch((err: unknown) => {
+            deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+          });
+      } else {
+        deps.store.dispatch({ kind: "set_pending_stop" });
+        deps.addLifecycleMessage("Press /stop again to confirm shutdown");
+      }
       return true;
 
     case "status":
@@ -284,21 +294,29 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
             deps.addLifecycleMessage(`Status failed: ${r.error.kind}`);
           }
         })
-        .catch(() => {});
+        .catch((err: unknown) => {
+          deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+        });
       return true;
 
     case "doctor":
       deps.store.dispatch({ kind: "clear_doctor_checks" });
       deps.store.dispatch({ kind: "set_view", view: "doctor" });
-      deps.onServiceCommand?.("doctor").catch(() => {});
+      deps.onServiceCommand?.("doctor").catch((err: unknown) => {
+        deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+      });
       return true;
 
     case "demo-init":
-      deps.onServiceCommand?.("demo-init").catch(() => {});
+      deps.onServiceCommand?.("demo-init").catch((err: unknown) => {
+        deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+      });
       return true;
 
     case "demo-reset":
-      deps.onServiceCommand?.("demo-reset").catch(() => {});
+      deps.onServiceCommand?.("demo-reset").catch((err: unknown) => {
+        deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+      });
       return true;
 
     case "deploy":
@@ -307,7 +325,9 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
         .then((r) => {
           deps.addLifecycleMessage(r.ok ? "Deploy initiated" : `Deploy failed: ${r.error.kind}`);
         })
-        .catch(() => {});
+        .catch((err: unknown) => {
+          deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+        });
       return true;
 
     case "undeploy":
@@ -318,25 +338,34 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
             r.ok ? "Undeploy initiated" : `Undeploy failed: ${r.error.kind}`,
           );
         })
-        .catch(() => {});
+        .catch((err: unknown) => {
+          deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+        });
       return true;
 
     case "demo-list":
-      deps.client
-        .demoPacks()
-        .then((r) => {
-          if (r.ok) {
-            const lines = r.value.map((p) => `  ${p.id}: ${p.description}`);
-            deps.addLifecycleMessage(
-              lines.length > 0
-                ? `Available demo packs:\n${lines.join("\n")}`
-                : "No demo packs available",
-            );
-          } else {
-            deps.addLifecycleMessage(`Failed to list demo packs: ${r.error.kind}`);
-          }
-        })
-        .catch(() => {});
+      deps.onServiceCommand?.("demo-list").catch((err: unknown) => {
+        deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+      });
+      // Also fetch via direct client call as fallback when no onServiceCommand
+      if (deps.onServiceCommand === undefined) {
+        deps.client
+          .demoPacks()
+          .then((r) => {
+            if (r.ok) {
+              deps.store.dispatch({
+                kind: "set_demo_packs",
+                packs: r.value.map((p) => ({ id: p.id, description: p.description })),
+              });
+              deps.store.dispatch({ kind: "set_view", view: "service" });
+            } else {
+              deps.addLifecycleMessage(`Failed to list demo packs: ${r.error.kind}`);
+            }
+          })
+          .catch((err: unknown) => {
+            deps.store.dispatch({ kind: "set_error", error: { kind: "unexpected", cause: err } });
+          });
+      }
       return true;
 
     default:

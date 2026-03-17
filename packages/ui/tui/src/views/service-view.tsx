@@ -7,9 +7,17 @@
 import type { ServiceStatusState } from "../state/types.js";
 import { COLORS } from "../theme.js";
 
+/** Demo pack summary for display. */
+export interface DemoPackEntry {
+  readonly id: string;
+  readonly description: string;
+}
+
 export interface ServiceViewProps {
   readonly status: ServiceStatusState | null;
   readonly focused?: boolean | undefined;
+  readonly demoPacks?: readonly DemoPackEntry[] | undefined;
+  readonly pendingStopConfirm?: boolean | undefined;
 }
 
 function subsystemIndicator(status: string): { readonly symbol: string; readonly color: string } {
@@ -22,7 +30,7 @@ function subsystemIndicator(status: string): { readonly symbol: string; readonly
 
 /** Service status and management view. */
 export function ServiceView(props: ServiceViewProps): React.ReactNode {
-  const { status } = props;
+  const { status, demoPacks, pendingStopConfirm } = props;
 
   if (status === null) {
     return (
@@ -73,6 +81,24 @@ export function ServiceView(props: ServiceViewProps): React.ReactNode {
               <text fg={COLORS.dim}>{`${p.service} (${p.status})`}</text>
             </box>
           ))}
+        </box>
+      )}
+
+      {demoPacks !== undefined && demoPacks.length > 0 && (
+        <box marginTop={1} paddingLeft={2} flexDirection="column">
+          <text fg={COLORS.white}><b>{"  Demo Packs"}</b></text>
+          {demoPacks.map((p) => (
+            <box key={p.id} height={1} flexDirection="row">
+              <text fg={COLORS.cyan}>{`    ${p.id.padEnd(16)}`}</text>
+              <text fg={COLORS.dim}>{p.description}</text>
+            </box>
+          ))}
+        </box>
+      )}
+
+      {pendingStopConfirm === true && (
+        <box marginTop={1} paddingLeft={2}>
+          <text fg={COLORS.yellow}><b>{"  ⚠ Press /stop again to confirm shutdown"}</b></text>
         </box>
       )}
 

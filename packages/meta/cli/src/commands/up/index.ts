@@ -217,6 +217,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
         agent: undefined,
         session: undefined,
         mode: "welcome",
+        nexusSource: flags.nexusSource,
+        nexusBuild: flags.nexusBuild,
+        nexusPort: flags.nexusPort,
       });
       return;
     }
@@ -270,6 +273,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
         build: flags.nexusBuild || undefined,
         sourceDir: flags.nexusSource,
         port: flags.nexusPort,
+        portStrategy: "auto",
       }),
     );
     if (nexusResult !== undefined) {

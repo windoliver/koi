@@ -11,6 +11,8 @@ export interface NexusStartOptions {
   readonly sourceDir?: string | undefined;
   /** Override the Nexus HTTP port. */
   readonly port?: number | undefined;
+  /** Port conflict strategy: "auto" picks next free, "prompt" asks, "fail" aborts. */
+  readonly portStrategy?: "auto" | "prompt" | "fail" | undefined;
 }
 
 export interface NexusStartResult {
@@ -37,6 +39,7 @@ export async function startNexusStack(
       build: nexusOptions?.build,
       sourceDir: nexusOptions?.sourceDir,
       port: nexusOptions?.port,
+      portStrategy: nexusOptions?.portStrategy,
     });
     if (!result.ok) {
       process.stderr.write(`warn: nexus up failed: ${result.error.message}\n`);

@@ -280,10 +280,10 @@ describe("dispatchCommand", () => {
     expect(deps.lifecycleMessages[0]).toContain("No data sources");
   });
 
-  test("logs opens agent logs", () => {
+  test("logs switches to live log view", () => {
     const deps = makeDeps();
     expect(dispatchCommand("logs", deps)).toBe(true);
-    expect(deps.showAgentLogs).toHaveBeenCalledTimes(1);
+    expect(deps.store.getState().view).toBe("logs");
   });
 
   test("health reports healthy status", async () => {
