@@ -37,6 +37,8 @@ export interface NexusLifecycleOptions {
 export interface NexusInitOptions extends NexusLifecycleOptions {
   /** Override the HTTP port in nexus.yaml (patched after scaffolding). */
   readonly port?: number | undefined;
+  /** Docker image channel: "stable" or "edge". Default: "edge". */
+  readonly channel?: "stable" | "edge" | undefined;
 }
 
 /** Result of a successful `nexus up`. */
@@ -78,7 +80,8 @@ export async function nexusInit(
   if (!binaryCheck.ok) return binaryCheck;
 
   const nexusPreset = PRESET_MAP[koiPreset] ?? "local";
-  const args: string[] = ["init", "--preset", nexusPreset, "--force"];
+  const channel = options?.channel ?? "edge";
+  const args: string[] = ["init", "--preset", nexusPreset, "--force", "--channel", channel];
 
   const result = await runNexusCommand(args, cwd, verbose, "nexus init", sourceDir);
   if (!result.ok) return result;
@@ -120,6 +123,8 @@ export async function nexusUp(
     readonly portStrategy?: "auto" | "prompt" | "fail" | undefined;
     /** Override the HTTP port (passed to `nexus init` during auto-init). */
     readonly port?: number | undefined;
+    /** Docker image channel for auto-init: "stable" or "edge". Default: "edge". */
+    readonly channel?: "stable" | "edge" | undefined;
   },
 ): Promise<Result<NexusUpResult, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
@@ -140,7 +145,13 @@ export async function nexusUp(
         `Nexus: nexus.yaml not found, running nexus init --preset ${koiPreset}\n`,
       );
     }
-    const initResult = await nexusInit(koiPreset, { cwd, verbose, sourceDir, port: options?.port });
+    const initResult = await nexusInit(koiPreset, {
+      cwd,
+      verbose,
+      sourceDir,
+      port: options?.port,
+      channel: options?.channel,
+    });
     if (!initResult.ok) return initResult;
     autoInitialized = true;
     configPath = findNexusConfig(cwd) ?? join(cwd, "nexus.yaml");
