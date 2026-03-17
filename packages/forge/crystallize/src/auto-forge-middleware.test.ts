@@ -344,6 +344,50 @@ describe("demand trigger-based dedup", () => {
     expect(store.save).not.toHaveBeenCalled();
   });
 
+  test("does NOT suppress forge when brick matches only by description (no triggers)", async () => {
+    // Regression: demand dedup must use triggerText, not text.
+    // A brick whose description matches but has no triggers should not suppress forging.
+    const descriptionOnlyBrick = createTestToolArtifact({
+      name: "unrelated-tool",
+      description: "visualize theorem data",
+      // No trigger field — only description matches
+    });
+    const store = createMockForgeStore({
+      // triggerText query returns empty (no trigger metadata on brick)
+      search: mock(
+        async (): Promise<Result<readonly BrickArtifact[], KoiError>> => ({
+          ok: true,
+          value: [],
+        }),
+      ),
+    });
+    const signal = createDemandSignal();
+    const demandHandle = createDemandHandle([signal]);
+    const handle = createMockCrystallizeHandle();
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5 },
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    // Forge should proceed — description-only match must not suppress
+    expect(store.save).toHaveBeenCalled();
+    // Verify the search used triggerText, not text
+    const searchCall = (store.search as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(searchCall.triggerText).toBe("visualize theorem");
+    expect(searchCall.text).toBeUndefined();
+    void descriptionOnlyBrick; // referenced for documentation
+  });
+
   test("proceeds with forge when no existing brick matches", async () => {
     const store = createMockForgeStore({
       search: mock(

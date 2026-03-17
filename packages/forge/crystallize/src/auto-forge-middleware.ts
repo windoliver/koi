@@ -514,13 +514,14 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
           // Check confidence threshold
           if (signal.confidence < demandBudget.demandThreshold) continue;
 
-          // Trigger-based dedup: search for existing bricks whose triggers
-          // match the demand's capability description before forging a new one
+          // Trigger-based dedup: search for existing bricks whose trigger patterns
+          // match the demand's capability description before forging a new one.
+          // Uses triggerText (not text) to avoid false positives from name/description matches.
           const searchText = extractTriggerSearchText(signal.trigger);
           if (searchText !== undefined) {
             try {
               const existing = await config.forgeStore.search({
-                text: searchText,
+                triggerText: searchText,
                 lifecycle: "active",
                 limit: 1,
               });

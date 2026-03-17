@@ -78,7 +78,7 @@ async function composeForgeHandler(
     return parsed;
   }
 
-  const { name, description, tags, files: inputFiles } = parsed.value;
+  const { name, description, tags, trigger, files: inputFiles } = parsed.value;
 
   if (parsed.value.brickIds.length < 2) {
     return {
@@ -215,6 +215,7 @@ async function composeForgeHandler(
       name,
       description,
       ...(tags !== undefined ? { tags } : {}),
+      ...(trigger !== undefined ? { trigger } : {}),
       ...(inputFiles !== undefined ? { files: inputFiles } : {}),
     },
     {
