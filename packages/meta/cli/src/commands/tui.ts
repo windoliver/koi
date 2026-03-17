@@ -442,9 +442,5 @@ export async function runTui(flags: TuiFlags): Promise<void> {
   if (!isWelcome) {
     process.stderr.write(`Connecting to ${adminUrl}…\n`);
   }
-  try {
-    await app.start();
-  } finally {
-    restoreTerminal();
-  }
+  await app.start();
 }
