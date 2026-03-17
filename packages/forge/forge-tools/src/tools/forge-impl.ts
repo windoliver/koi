@@ -49,6 +49,12 @@ const IMPLEMENTATION_INPUT_SCHEMA: Readonly<Record<string, unknown>> = {
       },
     },
     tags: { type: "array", items: { type: "string" } },
+    trigger: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Activation trigger patterns — short natural language phrases declaring when this brick is relevant",
+    },
     files: { type: "object", description: "Companion files: relative path → content" },
     requires: {
       type: "object",
@@ -106,9 +112,6 @@ function createImplementationForgeHandler(
       kind: kind as "middleware" | "channel",
       implementation: forgeInput.implementation,
       ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
-      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
-      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
-      ...(forgeInput.configSchema !== undefined ? { configSchema: forgeInput.configSchema } : {}),
     }));
   };
 }

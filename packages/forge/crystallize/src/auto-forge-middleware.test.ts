@@ -1,7 +1,15 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import type { ForgeStore, KoiError, Result, ToolArtifact } from "@koi/core";
-import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
-import type { AutoForgeVerifier } from "./auto-forge-middleware.js";
+import type {
+  BrickArtifact,
+  ForgeDemandSignal,
+  ForgeStore,
+  KoiError,
+  Result,
+  ToolArtifact,
+} from "@koi/core";
+import { DEFAULT_FORGE_BUDGET, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import { createTestToolArtifact } from "@koi/test-utils";
+import type { AutoForgeDemandHandle, AutoForgeVerifier } from "./auto-forge-middleware.js";
 import { createAutoForgeMiddleware } from "./auto-forge-middleware.js";
 import type { CrystallizedToolDescriptor } from "./forge-handler.js";
 import type { CrystallizationCandidate, CrystallizeHandle } from "./types.js";
@@ -275,5 +283,137 @@ describe("createAutoForgeMiddleware", () => {
     expect(savedBrick.tags).toContain("crystallized");
     expect(savedBrick.tags).toContain("auto-forged");
     expect(savedBrick.provenance.source.origin).toBe("forged");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Demand trigger-based dedup
+// ---------------------------------------------------------------------------
+
+describe("demand trigger-based dedup", () => {
+  function createDemandSignal(overrides?: Partial<ForgeDemandSignal>): ForgeDemandSignal {
+    return {
+      id: "demand-1",
+      kind: "forge_demand",
+      trigger: { kind: "no_matching_tool", query: "visualize theorem", attempts: 1 },
+      confidence: 0.9,
+      suggestedBrickKind: "tool",
+      context: { failureCount: 1, failedToolCalls: ["visualize"] },
+      emittedAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  function createDemandHandle(signals: readonly ForgeDemandSignal[]): AutoForgeDemandHandle {
+    return {
+      getSignals: () => signals,
+      dismiss: mock(() => {}),
+    };
+  }
+
+  test("skips forge when existing brick matches demand trigger", async () => {
+    const matchingBrick = createTestToolArtifact({
+      name: "theorem-viz",
+      trigger: ["visualize theorem", "animate proof"],
+    });
+    const store = createMockForgeStore({
+      search: mock(
+        async (): Promise<Result<readonly BrickArtifact[], KoiError>> => ({
+          ok: true,
+          value: [matchingBrick],
+        }),
+      ),
+    });
+    const signal = createDemandSignal();
+    const demandHandle = createDemandHandle([signal]);
+    const handle = createMockCrystallizeHandle();
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5 },
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    // Signal dismissed without forging
+    expect(demandHandle.dismiss).toHaveBeenCalledWith("demand-1");
+    expect(store.save).not.toHaveBeenCalled();
+  });
+
+  test("does NOT suppress forge when brick matches only by description (no triggers)", async () => {
+    // Regression: demand dedup must use triggerText, not text.
+    // A brick whose description matches but has no triggers should not suppress forging.
+    const descriptionOnlyBrick = createTestToolArtifact({
+      name: "unrelated-tool",
+      description: "visualize theorem data",
+      // No trigger field — only description matches
+    });
+    const store = createMockForgeStore({
+      // triggerText query returns empty (no trigger metadata on brick)
+      search: mock(
+        async (): Promise<Result<readonly BrickArtifact[], KoiError>> => ({
+          ok: true,
+          value: [],
+        }),
+      ),
+    });
+    const signal = createDemandSignal();
+    const demandHandle = createDemandHandle([signal]);
+    const handle = createMockCrystallizeHandle();
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5 },
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    // Forge should proceed — description-only match must not suppress
+    expect(store.save).toHaveBeenCalled();
+    // Verify the search used triggerText, not text
+    const searchCall = (store.search as ReturnType<typeof mock>).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(searchCall.triggerText).toBe("visualize theorem");
+    expect(searchCall.text).toBeUndefined();
+    void descriptionOnlyBrick; // referenced for documentation
+  });
+
+  test("proceeds with forge when no existing brick matches", async () => {
+    const store = createMockForgeStore({
+      search: mock(
+        async (): Promise<Result<readonly BrickArtifact[], KoiError>> => ({
+          ok: true,
+          value: [],
+        }),
+      ),
+    });
+    const signal = createDemandSignal();
+    const demandHandle = createDemandHandle([signal]);
+    const handle = createMockCrystallizeHandle();
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5 },
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    // Signal dismissed after forge dispatch
+    expect(demandHandle.dismiss).toHaveBeenCalledWith("demand-1");
+    expect(store.save).toHaveBeenCalled();
   });
 });

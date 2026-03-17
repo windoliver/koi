@@ -225,6 +225,7 @@ async function retrieverSearch(
           name: b.name,
           description: b.description,
           tags: b.tags,
+          ...(b.trigger !== undefined ? { trigger: b.trigger } : {}),
         }),
       );
       return { ok: true, value: summaries };
@@ -290,6 +291,7 @@ async function storeSearch(
         name: b.name,
         description: b.description,
         tags: b.tags,
+        ...(b.trigger !== undefined ? { trigger: b.trigger } : {}),
       }),
     );
     return { ok: true, value: summaries };

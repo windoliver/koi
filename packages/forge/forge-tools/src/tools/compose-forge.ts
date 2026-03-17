@@ -52,6 +52,12 @@ const COMPOSE_FORGE_CONFIG: ForgeToolConfig = {
         description: "IDs of bricks to compose as an ordered pipeline",
       },
       tags: { type: "array", items: { type: "string" } },
+      trigger: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Activation trigger patterns — short natural language phrases declaring when this composite is relevant",
+      },
       files: { type: "object", description: "Additional companion files: relative path → content" },
     },
     required: ["name", "description", "brickIds"],
@@ -72,7 +78,7 @@ async function composeForgeHandler(
     return parsed;
   }
 
-  const { name, description, tags, files: inputFiles } = parsed.value;
+  const { name, description, tags, trigger, files: inputFiles } = parsed.value;
 
   if (parsed.value.brickIds.length < 2) {
     return {
@@ -205,7 +211,13 @@ async function composeForgeHandler(
   // Build the composite artifact
   const baseFields = buildBaseFields(
     id,
-    { name, description, ...(tags !== undefined ? { tags } : {}) },
+    {
+      name,
+      description,
+      ...(tags !== undefined ? { tags } : {}),
+      ...(trigger !== undefined ? { trigger } : {}),
+      ...(inputFiles !== undefined ? { files: inputFiles } : {}),
+    },
     {
       stages: [],
       sandbox: (deps.config.defaultPolicy ?? DEFAULT_SANDBOXED_POLICY).sandbox,
@@ -239,7 +251,6 @@ async function composeForgeHandler(
     exposedInput: firstStep.inputPort,
     exposedOutput: lastStep.outputPort,
     outputKind,
-    ...(inputFiles !== undefined ? { files: inputFiles } : {}),
   };
 
   const saveResult = await deps.store.save(artifact);

@@ -114,6 +114,8 @@ export interface ForgeInputBase {
   readonly requires?: BrickRequires;
   readonly classification?: DataClassification;
   readonly contentMarkers?: readonly ContentMarker[];
+  /** Activation trigger patterns — natural language phrases declaring when this brick is relevant. */
+  readonly trigger?: readonly string[];
 }
 
 export interface ForgeToolInput extends ForgeInputBase {

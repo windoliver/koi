@@ -35,6 +35,12 @@ const FORGE_SKILL_CONFIG: ForgeToolConfig = {
       description: { type: "string" },
       body: { type: "string" },
       tags: { type: "array", items: { type: "string" } },
+      trigger: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Activation trigger patterns — short natural language phrases declaring when this skill is relevant (e.g., ['review layout', 'check visual quality'])",
+      },
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
         type: "object",
@@ -105,6 +111,7 @@ async function forgeSkillHandler(
     body: forgeInput.body,
     ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
     ...(parsed.value.configSchema !== undefined ? { configSchema: parsed.value.configSchema } : {}),
+    ...(forgeInput.trigger !== undefined ? { trigger: forgeInput.trigger } : {}),
   });
 
   // datasource:* tag convention — skills with "datasource" tag get a prefixed tag for discovery
@@ -116,8 +123,6 @@ async function forgeSkillHandler(
     ...buildBaseFields(brickId("placeholder"), inputForPipeline, report, deps),
     kind: "skill" as const,
     content: generatedContent,
-    ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
-    ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
   }));
 }
 

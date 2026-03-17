@@ -92,6 +92,7 @@ export function createInMemoryForgeStore(): ForgeStore {
         name: brick.name,
         description: brick.description,
         tags: brick.tags,
+        ...(brick.trigger !== undefined ? { trigger: brick.trigger } : {}),
       }),
     );
     return { ok: true, value: summaries };

@@ -202,6 +202,30 @@ async function runVerifiers(
 // ---------------------------------------------------------------------------
 
 /** Extracts a short descriptor from a trigger for naming pioneer bricks. */
+/**
+ * Extract a capability search text from a demand trigger.
+ * Returns undefined for trigger kinds where trigger-based matching is not meaningful
+ * (e.g., repeated_failure uses a tool name, not a capability description).
+ */
+function extractTriggerSearchText(trigger: ForgeTrigger): string | undefined {
+  switch (trigger.kind) {
+    case "no_matching_tool":
+      return trigger.query;
+    case "capability_gap":
+      return trigger.requiredCapability;
+    case "data_source_gap":
+      return trigger.missingCapability;
+    case "user_correction":
+      return trigger.correctionDescription;
+    case "complex_task_completed":
+      return trigger.taskDescription;
+    case "novel_workflow":
+      return trigger.workflowDescription;
+    default:
+      return undefined;
+  }
+}
+
 function describeTrigger(trigger: ForgeTrigger): string {
   switch (trigger.kind) {
     case "repeated_failure":
@@ -489,6 +513,28 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
           if (demandForgedCount >= demandBudget.maxForgesPerSession) break;
           // Check confidence threshold
           if (signal.confidence < demandBudget.demandThreshold) continue;
+
+          // Trigger-based dedup: search for existing bricks whose trigger patterns
+          // match the demand's capability description before forging a new one.
+          // Uses triggerText (not text) to avoid false positives from name/description matches.
+          const searchText = extractTriggerSearchText(signal.trigger);
+          if (searchText !== undefined) {
+            try {
+              const existing = await config.forgeStore.search({
+                triggerText: searchText,
+                lifecycle: "active",
+                limit: 1,
+              });
+              if (existing.ok && existing.value.length > 0) {
+                // Existing brick covers this capability — dismiss without forging
+                config.demandHandle?.dismiss(signal.id);
+                continue;
+              }
+            } catch (e: unknown) {
+              // Non-fatal: proceed with forge if search fails
+              onError(e);
+            }
+          }
 
           // Increment synchronously BEFORE async dispatch to enforce budget
           // across concurrent fire-and-forget tasks

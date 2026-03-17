@@ -6,6 +6,7 @@ import type {
   BrickArtifact,
   BrickArtifactBase,
   BrickId,
+  BrickRequires,
   JsonObject,
   Result,
   Tool,
@@ -100,6 +101,7 @@ export interface ParsedBaseInput {
   readonly configSchema?: Readonly<Record<string, unknown>> | undefined;
   readonly classification?: "public" | "internal" | "secret" | undefined;
   readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[] | undefined;
+  readonly trigger?: readonly string[] | undefined;
 }
 
 export interface ParsedToolInput extends ParsedBaseInput {
@@ -168,6 +170,7 @@ const baseInputFields = {
   configSchema: z.record(z.string(), z.unknown()).optional(),
   classification: z.enum(["public", "internal", "secret"]).optional(),
   contentMarkers: z.array(z.enum(["credentials", "pii", "phi", "payment"])).optional(),
+  trigger: z.array(z.string()).optional(),
 };
 
 const forgeToolInputSchema = z.object({
@@ -371,6 +374,7 @@ export function mapParsedBaseFields(parsed: ParsedBaseInput): {
   readonly configSchema?: Readonly<Record<string, unknown>>;
   readonly classification?: "public" | "internal" | "secret";
   readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
+  readonly trigger?: readonly string[];
 } {
   return {
     ...(parsed.tags !== undefined ? { tags: parsed.tags } : {}),
@@ -406,6 +410,7 @@ export function mapParsedBaseFields(parsed: ParsedBaseInput): {
     ...(parsed.configSchema !== undefined ? { configSchema: parsed.configSchema } : {}),
     ...(parsed.classification !== undefined ? { classification: parsed.classification } : {}),
     ...(parsed.contentMarkers !== undefined ? { contentMarkers: parsed.contentMarkers } : {}),
+    ...(parsed.trigger !== undefined ? { trigger: parsed.trigger } : {}),
   };
 }
 
@@ -425,6 +430,10 @@ export function buildBaseFields(
     readonly name: string;
     readonly description: string;
     readonly tags?: readonly string[];
+    readonly trigger?: readonly string[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly configSchema?: Readonly<Record<string, unknown>>;
   },
   report: VerificationReport,
   deps: ForgeDeps,
@@ -440,6 +449,10 @@ export function buildBaseFields(
     version: "0.0.1",
     tags: input.tags ?? [],
     usageCount: 0,
+    ...(input.trigger !== undefined ? { trigger: input.trigger } : {}),
+    ...(input.files !== undefined ? { files: input.files } : {}),
+    ...(input.requires !== undefined ? { requires: input.requires } : {}),
+    ...(input.configSchema !== undefined ? { configSchema: input.configSchema } : {}),
   };
 }
 
