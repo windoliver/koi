@@ -93,6 +93,12 @@ export function createKeyboardHandler(
   return (sequence: string): boolean => {
     const view = store.getState().view;
 
+    // Ctrl+C — always quit (raw mode swallows SIGINT)
+    if (sequence === "\x03") {
+      callbacks.stop();
+      return true;
+    }
+
     // Ctrl+P — toggle command palette (not in welcome mode)
     if (sequence === "\x10" && view !== "welcome" && view !== "presetdetail") {
       callbacks.togglePalette();
@@ -326,8 +332,12 @@ export function createKeyboardHandler(
       return false;
     }
 
-    // Progress view — read-only, no keyboard actions
+    // Progress view — q to quit, otherwise read-only
     if (view === "progress") {
+      if (sequence === "q") {
+        callbacks.stop();
+        return true;
+      }
       return false;
     }
 

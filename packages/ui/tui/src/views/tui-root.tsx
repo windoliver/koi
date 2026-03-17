@@ -82,6 +82,7 @@ export interface TuiRootProps {
 function mapKeyEventToSequence(key: KeyEvent): string | null {
   if (key.ctrl) {
     switch (key.name) {
+      case "c": return "\x03";
       case "p": return "\x10";
       case "r": return "\x12";
       case "o": return "\x0F";
