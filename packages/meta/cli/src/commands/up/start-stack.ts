@@ -100,7 +100,7 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
         }
 
         // Start Nexus with auto port strategy
-        onProgress("Starting Nexus stack");
+        onProgress("Starting Nexus stack (pulling Docker images, this may take a minute…)");
         const { startNexusStack } = await import("./nexus.js");
         const nexusResult = await startNexusStack(ctx.workspaceRoot, presetId, ctx.verbose, {
           build: ctx.nexusBuild || undefined,

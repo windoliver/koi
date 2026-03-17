@@ -380,6 +380,15 @@ async function runNexusCommand(
       // Always pipe to capture output; forward to user in verbose mode after
       stdout: "pipe",
       stderr: "pipe",
+      env: {
+        ...process.env,
+        // Suppress Docker Compose TTY progress bars that bypass pipe redirections
+        DOCKER_CLI_HINTS: "false",
+        BUILDKIT_PROGRESS: "plain",
+        // Prevent Python Rich Console from writing ANSI to /dev/tty
+        NO_COLOR: "1",
+        TERM: "dumb",
+      },
     });
 
     const exitCode = await proc.exited;
