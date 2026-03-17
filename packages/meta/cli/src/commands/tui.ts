@@ -183,6 +183,24 @@ export async function runTui(flags: TuiFlags): Promise<void> {
             //    resolve agent, then boot runtime via bootRuntime()
             const { resolve } = await import("node:path");
             const { startStack } = await import("./up/start-stack.js");
+
+            // Read Nexus config from TUI wizard state
+            const tuiState = app.store.getState();
+            const nexusMode = tuiState.nexusConfigMode;
+            const nexusSource =
+              nexusMode === "source"
+                ? tuiState.nexusSourcePath || flags.nexusSource
+                : flags.nexusSource;
+            const nexusBuild = nexusMode === "source" || flags.nexusBuild;
+            // Remote mode: set NEXUS_URL env var so the nexus phase skips Docker
+            if (nexusMode === "remote" && tuiState.nexusRemoteUrl !== "") {
+              process.env.NEXUS_URL = tuiState.nexusRemoteUrl;
+            }
+            // Skip mode: set NEXUS_URL to empty to signal no-nexus
+            if (nexusMode === "skip") {
+              process.env.KOI_NEXUS_SKIP = "1";
+            }
+
             const ctx: StartStackContext = {
               wizardState,
               manifestPath: resolve("koi.yaml"),
@@ -190,8 +208,8 @@ export async function runTui(flags: TuiFlags): Promise<void> {
               verbose: false,
               adminPort: 3100,
               adminUrl,
-              nexusSource: flags.nexusSource,
-              nexusBuild: flags.nexusBuild,
+              nexusSource,
+              nexusBuild,
               nexusPort: flags.nexusPort,
             };
             const result = await startStack(ctx, callbacks);

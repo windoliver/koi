@@ -37,6 +37,7 @@ import { MailboxView } from "./mailbox-view.js";
 import { MiddlewareView } from "./middleware-view.js";
 import { ModelStepView } from "./model-step-view.js";
 import { NexusBrowserView } from "./nexus-browser-view.js";
+import { NexusConfigView } from "./nexus-config-view.js";
 import { NexusView } from "./nexus-view.js";
 import { ProcessTreeView } from "./process-tree-view.js";
 import { ProgressView } from "./progress-view.js";
@@ -265,6 +266,16 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             onConfirm={() => { /* handled by keyboard */ }}
             onSkip={() => { /* handled by keyboard */ }}
             focused={true}
+          />
+        )}
+
+        {/* Nexus config step */}
+        {view === "nexusconfig" && (
+          <NexusConfigView
+            focusedIndex={state.nexusConfigFocusedIndex}
+            selectedMode={state.nexusConfigMode}
+            sourcePath={state.nexusSourcePath}
+            remoteUrl={state.nexusRemoteUrl}
           />
         )}
 

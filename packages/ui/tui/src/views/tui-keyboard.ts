@@ -71,6 +71,8 @@ export interface KeyboardCallbacks {
   readonly channelsConfirm: () => void;
   readonly channelsToggle: () => void;
   readonly channelsBack: () => void;
+  readonly nexusConfigConfirm: () => void;
+  readonly nexusConfigBack: () => void;
   readonly serviceStop: () => void;
   readonly serviceDoctor: () => void;
   readonly serviceLogs: () => void;
@@ -252,6 +254,33 @@ export function createKeyboardHandler(
       }
       if (sequence === "\x1b") {
         callbacks.addonsBack();
+        return true;
+      }
+      return false;
+    }
+
+    // Nexus config step — j/k navigate, Enter select & confirm, Esc back
+    if (view === "nexusconfig") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        store.dispatch({
+          kind: "set_nexus_config_focused_index",
+          index: store.getState().nexusConfigFocusedIndex + 1,
+        });
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        store.dispatch({
+          kind: "set_nexus_config_focused_index",
+          index: store.getState().nexusConfigFocusedIndex - 1,
+        });
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.nexusConfigConfirm();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.nexusConfigBack();
         return true;
       }
       return false;

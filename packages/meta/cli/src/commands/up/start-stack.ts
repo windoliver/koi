@@ -83,7 +83,7 @@ function createStartupPhases(): readonly PhaseDefinition<StartStackContext>[] {
         const { resolveRuntimePreset } = await import("@koi/runtime-presets");
         const { resolved: preset } = resolveRuntimePreset(presetId);
 
-        if (preset.nexusMode !== "embed-auth") {
+        if (preset.nexusMode !== "embed-auth" || process.env.KOI_NEXUS_SKIP === "1") {
           onProgress("Nexus not required for this preset");
           return;
         }

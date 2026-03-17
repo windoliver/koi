@@ -123,6 +123,7 @@ export type TuiView =
   | "model"
   | "nameinput"
   | "nexus"
+  | "nexusconfig"
   | "palette"
   | "presetdetail"
   | "processtree"
@@ -177,6 +178,25 @@ export interface PresetInfo {
 
 /** Agent list display mode — flat list or hierarchy tree. */
 export type AgentListMode = "flat" | "tree";
+
+/** Nexus configuration mode for the wizard. */
+export type NexusConfigMode = "skip" | "docker" | "source" | "remote";
+
+/** Available Nexus config options. */
+export const NEXUS_CONFIG_OPTIONS: readonly {
+  readonly id: NexusConfigMode;
+  readonly label: string;
+  readonly description: string;
+}[] = [
+  { id: "docker", label: "Docker", description: "Run Nexus via Docker Compose (default)" },
+  {
+    id: "source",
+    label: "Build from source",
+    description: "Build and run from local ~/nexus repo",
+  },
+  { id: "remote", label: "Remote URL", description: "Connect to an existing Nexus instance" },
+  { id: "skip", label: "Skip", description: "No Nexus (local-only mode)" },
+] as const;
 
 /** Log level for filtering. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -325,6 +345,16 @@ export interface TuiState {
   readonly demoPacks: readonly { readonly id: string; readonly description: string }[];
   /** Whether /stop confirmation is pending. */
   readonly pendingStopConfirm: boolean;
+  /** Selected Nexus mode during wizard: "skip", "docker", "source", "remote". */
+  readonly nexusConfigMode: NexusConfigMode;
+  /** Focused index in Nexus config picker. */
+  readonly nexusConfigFocusedIndex: number;
+  /** Nexus source path (for "source" mode). */
+  readonly nexusSourcePath: string;
+  /** Nexus remote URL (for "remote" mode). */
+  readonly nexusRemoteUrl: string;
+  /** Whether to build Nexus from source. */
+  readonly nexusBuildFromSource: boolean;
 }
 
 /** App mode: welcome (no admin API) or boardroom (connected). */
@@ -400,6 +430,11 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     capabilities: null,
     demoPacks: [],
     pendingStopConfirm: false,
+    nexusConfigMode: "docker" as NexusConfigMode,
+    nexusConfigFocusedIndex: 0,
+    nexusSourcePath: "~/nexus",
+    nexusRemoteUrl: "",
+    nexusBuildFromSource: false,
   };
 }
 
@@ -543,6 +578,12 @@ export type TuiAction =
     }
   | { readonly kind: "set_pending_stop" }
   | { readonly kind: "clear_pending_stop" }
+  // ─── Nexus config actions ─────────────────────────────────────────
+  | { readonly kind: "set_nexus_config_mode"; readonly mode: NexusConfigMode }
+  | { readonly kind: "set_nexus_config_focused_index"; readonly index: number }
+  | { readonly kind: "set_nexus_source_path"; readonly path: string }
+  | { readonly kind: "set_nexus_remote_url"; readonly url: string }
+  | { readonly kind: "set_nexus_build_from_source"; readonly build: boolean }
   // ─── Domain view actions ───────────────────────────────────────────
   | {
       readonly kind: "apply_skill_event";

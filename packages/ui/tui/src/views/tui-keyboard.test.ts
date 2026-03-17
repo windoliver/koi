@@ -194,6 +194,12 @@ function makeCallbacks(): KeyboardCallbacks & {
     channelsBack: () => {
       mutableCalls.push("channelsBack");
     },
+    nexusConfigConfirm: () => {
+      mutableCalls.push("nexusConfigConfirm");
+    },
+    nexusConfigBack: () => {
+      mutableCalls.push("nexusConfigBack");
+    },
     serviceStop: () => {
       mutableCalls.push("serviceStop");
     },

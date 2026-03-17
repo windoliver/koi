@@ -77,6 +77,21 @@ export function reduceWizard(state: TuiState, action: TuiAction): Partial<TuiSta
     case "clear_phase_progress":
       return { phaseProgress: [], setupRunning: false };
 
+    case "set_nexus_config_mode":
+      return { nexusConfigMode: action.mode };
+
+    case "set_nexus_config_focused_index":
+      return { nexusConfigFocusedIndex: Math.max(0, Math.min(action.index, 3)) };
+
+    case "set_nexus_source_path":
+      return { nexusSourcePath: action.path };
+
+    case "set_nexus_remote_url":
+      return { nexusRemoteUrl: action.url };
+
+    case "set_nexus_build_from_source":
+      return { nexusBuildFromSource: action.build };
+
     default:
       return undefined;
   }

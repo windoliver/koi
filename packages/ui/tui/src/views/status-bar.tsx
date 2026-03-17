@@ -40,6 +40,7 @@ const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   model: "j/k:navigate  Enter:select  Esc:back",
   nameinput: "Enter:confirm  Esc:back",
   nexus: "j/k:scroll  Esc:back  Ctrl+F:close  Ctrl+P:commands",
+  nexusconfig: "j/k:navigate  Enter:select  Esc:back",
   presetdetail: "Enter:select  Esc:back  q:quit",
   processtree: "j/k:scroll  Esc:back  Ctrl+P:commands",
   progress: "Starting Koi…",

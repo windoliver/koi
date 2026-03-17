@@ -615,10 +615,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "welcome" });
     },
     addonsConfirm: () => {
-      handleAddonsConfirm();
+      store.dispatch({ kind: "set_view", view: "nexusconfig" });
     },
     addonsSkip: () => {
-      handleAddonsSkip();
+      store.dispatch({ kind: "set_view", view: "nexusconfig" });
     },
     addonsToggle: () => {
       const ADDON_IDS = ["telegram", "slack", "discord", "temporal", "mcp", "browser", "voice"];
@@ -628,6 +628,19 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     addonsBack: () => {
       const presetId = store.getState().selectedPresetId;
       store.dispatch({ kind: "set_view", view: presetId === "local" ? "datasources" : "channels" });
+    },
+    nexusConfigConfirm: () => {
+      // Select the focused option and proceed to start
+      const options = ["docker", "source", "remote", "skip"] as const;
+      const idx = store.getState().nexusConfigFocusedIndex;
+      const mode = options[idx];
+      if (mode !== undefined) {
+        store.dispatch({ kind: "set_nexus_config_mode", mode });
+      }
+      handleAddonsConfirm();
+    },
+    nexusConfigBack: () => {
+      store.dispatch({ kind: "set_view", view: "addons" });
     },
     modelSelect: () => {
       const models = config.models ?? [...KNOWN_MODELS];
@@ -826,10 +839,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     if (presetId !== null && onPresetSelected !== undefined) {
       onPresetSelected(presetId, agentName).catch(() => {});
     }
-  }
-
-  function handleAddonsSkip(): void {
-    handleAddonsConfirm();
   }
 
   function handlePresetDetails(presetId: string): void {
