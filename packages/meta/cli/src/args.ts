@@ -432,7 +432,7 @@ export function parseAdminFlags(rest: readonly string[]): AdminFlags {
 }
 
 export function parseTuiFlags(rest: readonly string[]): TuiFlags {
-  const { values } = nodeParseArgs({
+  const { values, positionals } = nodeParseArgs({
     args: rest as string[],
     options: {
       url: { type: "string" },
@@ -449,6 +449,9 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     allowPositionals: true,
   });
 
+  // `koi tui init` — force welcome mode regardless of koi.yaml
+  const subcommand = positionals[0];
+
   const refreshStr = values.refresh as string | undefined;
   // --admin-url is an alias for --url
   const urlValue =
@@ -463,7 +466,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     refresh: refreshStr !== undefined ? Number.parseInt(refreshStr, 10) : 5,
     agent: values.agent as string | undefined,
     session: values.session as string | undefined,
-    mode: undefined,
+    mode: subcommand === "init" ? ("welcome" as const) : undefined,
     nexusSource: values["nexus-source"] as string | undefined,
     nexusBuild: (values["nexus-build"] as boolean | undefined) ?? false,
     nexusPort: nexusPortStr !== undefined ? Number.parseInt(nexusPortStr, 10) : undefined,
