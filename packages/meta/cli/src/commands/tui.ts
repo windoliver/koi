@@ -358,6 +358,15 @@ export async function runTui(flags: TuiFlags): Promise<void> {
                     packs: packList.value.map((p) => ({ id: p.id, description: p.description })),
                   });
                   app.store.dispatch({ kind: "set_view", view: "service" });
+                } else {
+                  app.store.dispatch({
+                    kind: "set_error",
+                    error: {
+                      kind: "api_error",
+                      code: packList.error.kind,
+                      message: `Failed to list demo packs: ${packList.error.kind}`,
+                    },
+                  });
                 }
                 break;
               }
