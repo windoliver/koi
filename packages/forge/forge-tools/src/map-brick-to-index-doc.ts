@@ -50,6 +50,10 @@ export function mapBrickToIndexDoc(brick: BrickArtifact): IndexDocument {
     parts.push(brick.tags.join(" "));
   }
 
+  if (brick.trigger !== undefined && brick.trigger.length > 0) {
+    parts.push(brick.trigger.join(" "));
+  }
+
   const extra = extractExtraContent(brick);
   if (extra.length > 0) {
     parts.push(extra);

@@ -147,4 +147,44 @@ describe("mapBrickToIndexDoc", () => {
     expect(doc.content).toContain("my-skill");
     expect(doc.content).not.toContain("some readme");
   });
+
+  // --- trigger indexing ---
+
+  test("includes trigger patterns in content", () => {
+    const brick = createTestToolArtifact({
+      id: brickId("tool-triggers"),
+      name: "chart-tool",
+      description: "Creates charts",
+      trigger: ["visualize data", "create chart", "plot graph"],
+      inputSchema: { type: "object" },
+    });
+    const doc = mapBrickToIndexDoc(brick);
+
+    expect(doc.content).toContain("visualize data create chart plot graph");
+  });
+
+  test("omits trigger content when trigger is undefined", () => {
+    const brick = createTestToolArtifact({
+      id: brickId("tool-no-triggers"),
+      name: "plain-tool",
+      description: "No triggers",
+      inputSchema: { type: "object" },
+    });
+    const doc = mapBrickToIndexDoc(brick);
+
+    expect(doc.content).toBe("plain-tool No triggers");
+  });
+
+  test("omits trigger content when trigger is empty array", () => {
+    const brick = createTestToolArtifact({
+      id: brickId("tool-empty-triggers"),
+      name: "plain-tool",
+      description: "Empty triggers",
+      trigger: [],
+      inputSchema: { type: "object" },
+    });
+    const doc = mapBrickToIndexDoc(brick);
+
+    expect(doc.content).toBe("plain-tool Empty triggers");
+  });
 });

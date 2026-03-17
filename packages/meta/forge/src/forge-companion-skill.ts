@@ -63,6 +63,16 @@ When creating a tool, include:
 - Tags for discoverability
 - \`files\` for helper scripts if the tool needs supporting code
 
+## Trigger Patterns
+
+When creating any brick, include **trigger patterns** — short natural language phrases that describe when this brick should activate. Good triggers dramatically improve discovery.
+
+- Write **3–5 diverse phrases** per brick, covering different ways a user might describe the need
+- Keep each phrase **2–5 words** — concise, not sentences
+- Cover **synonyms and variations** of the same intent
+- Example for a data visualization tool: \`["visualize data", "create chart", "plot graph", "show trends"]\`
+- Example for a code review skill: \`["review code", "check code quality", "find bugs", "audit implementation"]\`
+
 ## Visibility
 
 - **Agent scope**: Only you can see it (default for new bricks)

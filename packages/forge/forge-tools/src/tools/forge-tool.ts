@@ -45,6 +45,12 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
         },
       },
       tags: { type: "array", items: { type: "string" } },
+      trigger: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Activation trigger patterns — short natural language phrases declaring when this tool is relevant (e.g., ['parse CSV', 'convert spreadsheet'])",
+      },
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
         type: "object",
@@ -162,9 +168,6 @@ async function forgeToolHandler(
     inputSchema: forgeInput.inputSchema,
     ...(forgeInput.outputSchema !== undefined ? { outputSchema: forgeInput.outputSchema } : {}),
     ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
-    ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
-    ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
-    ...(forgeInput.configSchema !== undefined ? { configSchema: forgeInput.configSchema } : {}),
   }));
 }
 

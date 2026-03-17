@@ -38,6 +38,8 @@ export interface SkillMdInput {
   readonly body: string;
   readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
+  /** Activation trigger patterns for skill discovery. */
+  readonly trigger?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +90,14 @@ export function generateSkillMd(input: SkillMdInput): string {
     lines.push("  tags:");
     for (const tag of input.tags) {
       lines.push(`    - ${yamlQuote(tag)}`);
+    }
+  }
+
+  // Trigger patterns (activation conditions for discovery)
+  if (input.trigger !== undefined && input.trigger.length > 0) {
+    lines.push("trigger:");
+    for (const t of input.trigger) {
+      lines.push(`  - ${yamlQuote(t)}`);
     }
   }
 

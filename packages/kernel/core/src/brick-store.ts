@@ -249,6 +249,8 @@ export interface BrickArtifactBase {
   readonly composition?: BrickComposition | undefined;
   /** Cross-run learnings accumulated by workers of this brick type. */
   readonly collectiveMemory?: CollectiveMemory | undefined;
+  /** Activation trigger patterns — natural language phrases declaring when this brick is relevant. */
+  readonly trigger?: readonly string[] | undefined;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -329,6 +331,7 @@ export interface BrickSummary {
   readonly name: string;
   readonly description: string;
   readonly tags: readonly string[];
+  readonly trigger?: readonly string[] | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +358,8 @@ export interface ForgeQuery {
   readonly minFitnessScore?: number;
   /** Minimum trail strength threshold (0–1). Bricks below are excluded. */
   readonly minTrailStrength?: number;
+  /** Case-insensitive substring match against brick trigger patterns. */
+  readonly triggerText?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +382,8 @@ export interface BrickUpdate {
   readonly driftContext?: BrickDriftContext | undefined;
   /** Updated collective memory (replaces entire collective memory object). */
   readonly collectiveMemory?: CollectiveMemory | undefined;
+  /** Updated trigger patterns. */
+  readonly trigger?: readonly string[] | undefined;
 }
 
 /** Compile-time check: every key of BrickUpdate must exist on BrickArtifactBase. */
@@ -450,6 +457,7 @@ export async function searchSummariesWithFallback(
       name: brick.name,
       description: brick.description,
       tags: brick.tags,
+      ...(brick.trigger !== undefined ? { trigger: brick.trigger } : {}),
     }),
   );
   return { ok: true, value: summaries };

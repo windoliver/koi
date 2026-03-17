@@ -46,13 +46,21 @@ export function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): 
       }
     }
   }
-  // Case-insensitive substring match against name + description
+  // Case-insensitive substring match against name + description + trigger patterns
   if (query.text !== undefined && query.text.length > 0) {
     const lower = query.text.toLowerCase();
-    if (
-      !brick.name.toLowerCase().includes(lower) &&
-      !brick.description.toLowerCase().includes(lower)
-    ) {
+    const matchesNameOrDesc =
+      brick.name.toLowerCase().includes(lower) || brick.description.toLowerCase().includes(lower);
+    const matchesTrigger = brick.trigger?.some((t) => t.toLowerCase().includes(lower)) ?? false;
+    if (!matchesNameOrDesc && !matchesTrigger) {
+      return false;
+    }
+  }
+  // Case-insensitive substring match against trigger patterns
+  if (query.triggerText !== undefined && query.triggerText.length > 0) {
+    const lower = query.triggerText.toLowerCase();
+    const hasTriggerMatch = brick.trigger?.some((t) => t.toLowerCase().includes(lower)) ?? false;
+    if (!hasTriggerMatch) {
       return false;
     }
   }

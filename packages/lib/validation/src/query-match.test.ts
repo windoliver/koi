@@ -108,6 +108,20 @@ describe("matchesBrickQuery", () => {
     expect(matchesBrickQuery(brick, { text: "" })).toBe(true);
   });
 
+  test("text filter also matches trigger patterns", () => {
+    const brick = createBrickBase({
+      name: "chart-tool",
+      description: "Creates charts",
+      trigger: ["visualize data", "plot graph"],
+    });
+    // Matches via trigger, not name or description
+    expect(matchesBrickQuery(brick, { text: "plot" })).toBe(true);
+    // Matches via name
+    expect(matchesBrickQuery(brick, { text: "chart" })).toBe(true);
+    // No match anywhere
+    expect(matchesBrickQuery(brick, { text: "spreadsheet" })).toBe(false);
+  });
+
   test("combines multiple filters (AND semantics)", () => {
     const brick = createBrickBase({
       kind: "tool",
@@ -137,5 +151,41 @@ describe("matchesBrickQuery", () => {
     // Empty object — all optional fields are absent (not explicitly undefined)
     const query: ForgeQuery = {};
     expect(matchesBrickQuery(brick, query)).toBe(true);
+  });
+
+  // --- triggerText matching ---
+
+  test("filters by triggerText (case-insensitive substring on trigger array)", () => {
+    const brick = createBrickBase({
+      trigger: ["visualize theorem", "animate proof", "mathematical explanation video"],
+    });
+    expect(matchesBrickQuery(brick, { triggerText: "animate" })).toBe(true);
+    expect(matchesBrickQuery(brick, { triggerText: "VISUALIZE" })).toBe(true);
+    expect(matchesBrickQuery(brick, { triggerText: "explanation" })).toBe(true);
+    expect(matchesBrickQuery(brick, { triggerText: "spreadsheet" })).toBe(false);
+  });
+
+  test("triggerText returns false when brick has no triggers", () => {
+    const brick = createBrickBase();
+    expect(matchesBrickQuery(brick, { triggerText: "anything" })).toBe(false);
+  });
+
+  test("triggerText returns false when brick has empty trigger array", () => {
+    const brick = createBrickBase({ trigger: [] });
+    expect(matchesBrickQuery(brick, { triggerText: "anything" })).toBe(false);
+  });
+
+  test("skips triggerText filter when empty string", () => {
+    const brick = createBrickBase();
+    expect(matchesBrickQuery(brick, { triggerText: "" })).toBe(true);
+  });
+
+  test("triggerText combines with other filters (AND semantics)", () => {
+    const brick = createBrickBase({
+      kind: "skill",
+      trigger: ["visualize data", "create chart"],
+    });
+    expect(matchesBrickQuery(brick, { kind: "skill", triggerText: "visualize" })).toBe(true);
+    expect(matchesBrickQuery(brick, { kind: "tool", triggerText: "visualize" })).toBe(false);
   });
 });

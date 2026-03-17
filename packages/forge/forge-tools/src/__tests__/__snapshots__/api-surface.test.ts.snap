@@ -287,6 +287,8 @@ interface SkillMdInput {
     readonly body: string;
     readonly requires?: BrickRequires;
     readonly configSchema?: Readonly<Record<string, unknown>>;
+    /** Activation trigger patterns for skill discovery. */
+    readonly trigger?: readonly string[];
 }
 declare function generateSkillMd(input: SkillMdInput): string;
 
@@ -407,6 +409,7 @@ interface ParsedBaseInput {
     readonly configSchema?: Readonly<Record<string, unknown>> | undefined;
     readonly classification?: "public" | "internal" | "secret" | undefined;
     readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[] | undefined;
+    readonly trigger?: readonly string[] | undefined;
 }
 /**
  * Maps parsed test cases into the ForgeInput test case shape.
@@ -447,6 +450,7 @@ declare function mapParsedBaseFields(parsed: ParsedBaseInput): {
     readonly configSchema?: Readonly<Record<string, unknown>>;
     readonly classification?: "public" | "internal" | "secret";
     readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
+    readonly trigger?: readonly string[];
 };
 declare function runForgePipeline(forgeInput: ForgeInput, deps: ForgeDeps, buildArtifact: ArtifactBuilder): Promise<Result<ForgeResult, ForgeError>>;
 declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;

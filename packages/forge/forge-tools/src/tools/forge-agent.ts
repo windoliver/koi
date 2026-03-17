@@ -78,6 +78,12 @@ const FORGE_AGENT_DESCRIPTOR = {
       model: { type: "string", description: "Model for auto-assembled manifest" },
       agentType: { type: "string", description: "Agent type for auto-assembled manifest" },
       tags: { type: "array", items: { type: "string" } },
+      trigger: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Activation trigger patterns — short natural language phrases declaring when this agent is relevant",
+      },
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
         type: "object",
@@ -213,8 +219,6 @@ async function forgeAgentHandler(
     ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
     kind: "agent" as const,
     manifestYaml,
-    ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
-    ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
   }));
 
   return { result, resolvedEngine };

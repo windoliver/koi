@@ -561,6 +561,72 @@ describe("search_forge — retriever path", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Trigger-based search tests
+// ---------------------------------------------------------------------------
+
+describe("search_forge — trigger matching", () => {
+  test("store path: text query matches brick triggers", async () => {
+    const withTrigger = createTestToolArtifact({
+      id: brickId("t1"),
+      name: "theorem-viz",
+      description: "Visualizes theorems",
+      trigger: ["animate proof", "visualize theorem"],
+    });
+    const withoutTrigger = createTestToolArtifact({
+      id: brickId("t2"),
+      name: "csv-parser",
+      description: "Parses CSV files",
+    });
+    const store = mockStore([withTrigger, withoutTrigger]);
+    const pipeline = mockPipeline();
+    const deps = makeDeps({ store, pipeline });
+
+    // "animate" matches t1 via trigger but not t2
+    const result = await executeSearch(deps, { query: "animate" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Store returns all bricks; ranking via sortBricks filters based on text match in ForgeQuery
+      // The store mock returns both bricks, but matchesBrickQuery filters by text (which now includes triggers)
+      const names = result.value.map((b) => (b as BrickArtifact).name);
+      expect(names).toContain("theorem-viz");
+    }
+  });
+
+  test("retriever path: trigger content indexed and discoverable", async () => {
+    const brick = createTestSkillArtifact({
+      id: brickId("s1"),
+      name: "review-skill",
+      description: "Code review guidance",
+      trigger: ["review code", "audit implementation"],
+    });
+    const store = mockStore([brick]);
+    const retriever = mockRetriever([
+      {
+        id: "s1" as string,
+        score: 0.95,
+        content: "review code audit",
+        metadata: {},
+        source: "nexus",
+      },
+    ]);
+    (store.load as ReturnType<typeof mock>).mockImplementation(async (id: BrickId) => {
+      if (id === brickId("s1")) return { ok: true, value: brick };
+      return { ok: false, error: { code: "NOT_FOUND", message: "not found", retryable: false } };
+    });
+    const pipeline = mockPipeline();
+    const deps = makeDeps({ store, retriever, pipeline });
+
+    const result = await executeSearch(deps, { query: "review code" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(1);
+      expect(result.value[0]?.name).toBe("review-skill");
+    }
+    expect(retriever.retrieve).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mock pipeline for governance pre-check bypass
 // ---------------------------------------------------------------------------
 
