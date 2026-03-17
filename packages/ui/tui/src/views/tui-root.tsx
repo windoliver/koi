@@ -89,11 +89,11 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
       case "f": return "\x06";
     }
   }
-  if (key.name === "Escape") return "\x1b";
-  if (key.name === "Enter" || key.name === "Return") return "\r";
-  if (key.name === "Tab") return "\t";
-  if (key.name === "ArrowUp") return "\x1b[A";
-  if (key.name === "ArrowDown") return "\x1b[B";
+  if (key.name === "escape" || key.name === "Escape") return "\x1b";
+  if (key.name === "return" || key.name === "Enter" || key.name === "Return") return "\r";
+  if (key.name === "tab" || key.name === "Tab") return "\t";
+  if (key.name === "up" || key.name === "ArrowUp") return "\x1b[A";
+  if (key.name === "down" || key.name === "ArrowDown") return "\x1b[B";
   // Single-char keys for view-specific shortcuts
   const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "l", "+", "?", " ", "r"];
   if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
