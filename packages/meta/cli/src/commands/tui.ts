@@ -420,8 +420,31 @@ export async function runTui(flags: TuiFlags): Promise<void> {
     });
   });
 
+  // Ensure terminal is restored on any exit — raw mode must be cleaned up
+  const restoreTerminal = (): void => {
+    try {
+      app.stop().catch(() => {});
+    } catch {
+      // Best effort
+    }
+    // Force cooked mode in case renderer.destroy() didn't run
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+  };
+  process.on("exit", restoreTerminal);
+  process.on("uncaughtException", (err) => {
+    restoreTerminal();
+    process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+
   if (!isWelcome) {
     process.stderr.write(`Connecting to ${adminUrl}…\n`);
   }
-  await app.start();
+  try {
+    await app.start();
+  } finally {
+    restoreTerminal();
+  }
 }
