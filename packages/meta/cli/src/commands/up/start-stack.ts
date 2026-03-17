@@ -205,5 +205,18 @@ export async function startStack(
   callbacks: PhaseCallbacks,
 ): Promise<OperationResult<void>> {
   const phases = createStartupPhases();
-  return runPhases(phases, context, callbacks);
+  const result = await runPhases(phases, context, callbacks);
+
+  // Clean up Nexus if we started it and a later phase failed
+  if (!result.ok && context.nexusStartedByUs === true) {
+    try {
+      const { stopNexusStack } = await import("./nexus.js");
+      await stopNexusStack(context.workspaceRoot, context.verbose);
+    } catch {
+      // Best-effort cleanup — don't mask the original error
+    }
+    context.nexusStartedByUs = false;
+  }
+
+  return result;
 }

@@ -671,7 +671,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "engine" });
     },
     serviceStop: () => {
-      onServiceCommand?.("stop").catch(() => {});
+      dispatchCommand("stop", cmdDeps);
     },
     serviceDoctor: () => {
       onServiceCommand?.("doctor").catch(() => {});

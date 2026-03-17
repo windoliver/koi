@@ -357,6 +357,7 @@ export async function runTui(flags: TuiFlags): Promise<void> {
                     kind: "set_demo_packs",
                     packs: packList.value.map((p) => ({ id: p.id, description: p.description })),
                   });
+                  app.store.dispatch({ kind: "set_view", view: "service" });
                 }
                 break;
               }
