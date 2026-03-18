@@ -327,8 +327,13 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // let justified: conditionally set when --admin, disposed at cleanup
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
 
-  // let justified: mutable model override — /model switches it mid-session
+  // let justified: mutable model name — /model updates it; the engine adapter
+  // is created with a fixed model so this only affects display + next-session hint.
   let activeModelName = modelName;
+  // let justified: mutable active agent target — /attach switches it.
+  // When undefined, messages go to the primary runtime. When set to an agentId,
+  // messages route through the dispatched agent's chat handler.
+  let activeDispatchedAgentId: string | undefined;
 
   const commandDeps: CliCommandDeps = {
     cancelStream: () => {
@@ -349,7 +354,11 @@ export async function runStart(flags: StartFlags): Promise<void> {
       ? {
           getStatus: async () => {
             if (adminBridge === undefined) return "Admin server starting...";
-            return `Agent: ${manifest.name} — model: ${activeModelName}`;
+            const target =
+              activeDispatchedAgentId !== undefined
+                ? ` (attached: ${activeDispatchedAgentId})`
+                : "";
+            return `Agent: ${manifest.name} — model: ${activeModelName}${target}`;
           },
           listAgents: async () => {
             if (adminBridge === undefined) return [];
@@ -364,12 +373,26 @@ export async function runStart(flags: StartFlags): Promise<void> {
             if (adminDispatcher === undefined) {
               return { ok: false, message: "Agent dispatch not available yet" } as const;
             }
-            const handler = adminDispatcher.getChatHandler(name);
-            if (handler === undefined) {
-              return { ok: false, message: `No chat handler for agent: ${name}` } as const;
+            // Find agent by name in dispatched agents
+            for (const [id, agent] of adminDispatcher.dispatched) {
+              if (agent.name.toLowerCase() === name.toLowerCase()) {
+                activeDispatchedAgentId = id;
+                return { ok: true } as const;
+              }
             }
-            process.stderr.write(`Attached to agent: ${name}\n`);
-            return { ok: true } as const;
+            // "primary" or the manifest agent name returns to the primary runtime
+            if (
+              name.toLowerCase() === "primary" ||
+              name.toLowerCase() === manifest.name.toLowerCase()
+            ) {
+              activeDispatchedAgentId = undefined;
+              return { ok: true } as const;
+            }
+            const names = [...adminDispatcher.dispatched.values()].map((a) => a.name);
+            return {
+              ok: false,
+              message: `Agent not found: ${name}. Available: ${["primary", ...names].join(", ")}`,
+            } as const;
           },
           listSessions: async () => {
             // Read session chat logs from the local workspace filesystem
@@ -407,6 +430,18 @@ export async function runStart(flags: StartFlags): Promise<void> {
             const loadResult = await forgeBootstrap.store.load(id);
             if (!loadResult.ok) {
               return { ok: false, message: `Brick not found: ${id}` } as const;
+            }
+            // Activate the brick — sets lifecycle to "active" so the forge runtime
+            // picks it up via its store watch listener. The tool becomes available
+            // to the agent on the next turn without re-assembly.
+            const activateResult = await forgeBootstrap.store.update(id, {
+              lifecycle: "active",
+            });
+            if (!activateResult.ok) {
+              return {
+                ok: false,
+                message: `Failed to activate: ${activateResult.error.message}`,
+              } as const;
             }
             return { ok: true } as const;
           },
@@ -647,24 +682,42 @@ export async function runStart(flags: StartFlags): Promise<void> {
       };
 
       try {
-        const deltas: string[] = [];
-        for await (const event of runtime.run(input)) {
-          if (controller.signal.aborted || runCancelled) break;
-          renderEvent(event, { verbose: flags.verbose });
-          if (event.kind === "text_delta") deltas.push(event.delta);
-          if (event.kind === "done" && adminBridge !== undefined) {
-            const m = event.output.metrics;
-            adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+        // Route to dispatched agent if /attach switched the target
+        if (activeDispatchedAgentId !== undefined && adminDispatcher !== undefined) {
+          const handler = adminDispatcher.getChatHandler(activeDispatchedAgentId);
+          if (handler !== undefined) {
+            const body = JSON.stringify({ messages: [{ role: "user", content: text }] });
+            const response = await handler(
+              new Request("http://local/chat", { method: "POST", body }),
+            );
+            const responseText = await response.text();
+            process.stdout.write(`${responseText}\n`);
+          } else {
+            process.stderr.write(
+              `Agent ${activeDispatchedAgentId} is no longer available. Reverting to primary.\n`,
+            );
+            activeDispatchedAgentId = undefined;
           }
+        } else {
+          const deltas: string[] = [];
+          for await (const event of runtime.run(input)) {
+            if (controller.signal.aborted || runCancelled) break;
+            renderEvent(event, { verbose: flags.verbose });
+            if (event.kind === "text_delta") deltas.push(event.delta);
+            if (event.kind === "done" && adminBridge !== undefined) {
+              const m = event.output.metrics;
+              adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+            }
+          }
+          // Persist to shared chat log (best-effort, warns on failure)
+          await persistChatExchangeSafely(
+            startWorkspaceRoot,
+            persistAgentId,
+            currentStartSessionId,
+            text,
+            deltas.join(""),
+          );
         }
-        // Persist to shared chat log (best-effort, warns on failure)
-        await persistChatExchangeSafely(
-          startWorkspaceRoot,
-          persistAgentId,
-          currentStartSessionId,
-          text,
-          deltas.join(""),
-        );
       } catch (error: unknown) {
         if (!controller.signal.aborted) {
           const message = error instanceof Error ? error.message : String(error);

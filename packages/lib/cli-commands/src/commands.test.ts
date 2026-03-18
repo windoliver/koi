@@ -153,13 +153,12 @@ describe("/model", () => {
     expect(deps.written()).toContain("Model set to: claude-opus-4-6");
   });
 
-  test("returns error for unknown model", () => {
+  test("accepts any model name without validation", () => {
     const deps = createMockDeps();
     const result = cmd.execute("gpt-99", deps);
-    expect(result).toEqual({
-      ok: false,
-      message: "Unknown model: gpt-99. Available: claude-sonnet-4-6, claude-opus-4-6",
-    });
+    expect(result).toEqual({ ok: true });
+    expect(deps.setModel).toHaveBeenCalledWith("gpt-99");
+    expect(deps.written()).toContain("Model set to: gpt-99");
   });
 
   test("completer returns matching models", () => {

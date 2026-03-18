@@ -96,10 +96,6 @@ const modelCommand: SlashCommand = {
       return OK;
     }
     const name = rawArgs;
-    const available = deps.listModels();
-    if (available.length > 0 && !available.includes(name)) {
-      return { ok: false, message: `Unknown model: ${name}. Available: ${available.join(", ")}` };
-    }
     deps.setModel(name);
     write(deps, `Model set to: ${name}`);
     return OK;
