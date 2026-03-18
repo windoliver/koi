@@ -66,8 +66,8 @@ export interface CliCommandDepsBase {
   readonly listModels: () => readonly string[];
   /** Get the current model name. */
   readonly currentModel: () => string;
-  /** Switch to a different model. */
-  readonly setModel: (name: string) => void;
+  /** Switch to a different model. Returns a result indicating success or failure. */
+  readonly setModel: (name: string) => CommandResult | Promise<CommandResult>;
   /** Writable stream for command output. */
   readonly output: NodeJS.WritableStream;
   /** Exit the REPL cleanly. */

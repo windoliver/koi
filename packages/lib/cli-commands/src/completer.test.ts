@@ -20,7 +20,7 @@ function createMockDeps(overrides: Partial<CliCommandDeps> = {}): CliCommandDeps
     cancelStream: mock(() => {}),
     listModels: mock(() => ["claude-sonnet-4-6", "claude-opus-4-6"]),
     currentModel: mock(() => "claude-sonnet-4-6"),
-    setModel: mock(() => {}),
+    setModel: mock(() => ({ ok: true })),
     output: new PassThrough(),
     exit: mock(() => {}),
     ...overrides,

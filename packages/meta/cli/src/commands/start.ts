@@ -341,11 +341,6 @@ export async function runStart(flags: StartFlags): Promise<void> {
 
   /** Rebuild the engine adapter + runtime for a new model name. */
   async function rebuildRuntimeForModel(newModel: string): Promise<void> {
-    if (hasCustomEngine) {
-      process.stderr.write("warn: model switching not supported with custom engine adapters\n");
-      activeModelName = newModel;
-      return;
-    }
     switchingModel = true;
     try {
       await runtime.dispose();
@@ -367,10 +362,6 @@ export async function runStart(flags: StartFlags): Promise<void> {
       });
       runtime = rebuilt.runtime;
       activeModelName = newModel;
-      process.stderr.write(`Switched to model: ${newModel}\n`);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`Failed to switch model: ${msg}\n`);
     } finally {
       switchingModel = false;
     }
@@ -380,11 +371,48 @@ export async function runStart(flags: StartFlags): Promise<void> {
     cancelStream: () => {
       cancelCurrentRun?.();
     },
-    listModels: () => [modelName],
+    listModels: () => {
+      // Return well-known models for the active provider to enable dynamic tab completion.
+      // The manifest model's provider prefix (e.g., "anthropic:") determines the catalog.
+      const colonIdx = activeModelName.indexOf(":");
+      const provider = colonIdx !== -1 ? activeModelName.slice(0, colonIdx) : "";
+      const KNOWN_MODELS: Readonly<Record<string, readonly string[]>> = {
+        anthropic: [
+          "anthropic:claude-opus-4-6",
+          "anthropic:claude-sonnet-4-6",
+          "anthropic:claude-haiku-4-5-20251001",
+        ],
+        openai: [
+          "openai:gpt-4.1",
+          "openai:gpt-4.1-mini",
+          "openai:gpt-4.1-nano",
+          "openai:o3",
+          "openai:o4-mini",
+        ],
+        google: ["google:gemini-2.5-pro", "google:gemini-2.5-flash"],
+      };
+      const providerModels = KNOWN_MODELS[provider] ?? [];
+      // Include the active model if not already in the list
+      if (!providerModels.includes(activeModelName)) {
+        return [activeModelName, ...providerModels];
+      }
+      return [...providerModels];
+    },
     currentModel: () => activeModelName,
-    setModel: (name: string) => {
-      // Fire-and-forget: rebuild happens async, blocks new messages via switchingModel flag
-      rebuildRuntimeForModel(name).catch(() => {});
+    setModel: async (name: string) => {
+      if (hasCustomEngine) {
+        return {
+          ok: false,
+          message: "Model switching is not supported with custom engine adapters",
+        } as const;
+      }
+      try {
+        await rebuildRuntimeForModel(name);
+        return { ok: true } as const;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, message: `Failed to switch model: ${msg}` } as const;
+      }
     },
     output: process.stdout,
     exit: () => {

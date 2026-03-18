@@ -19,7 +19,7 @@ function createMockDeps(overrides: Partial<CliCommandDeps> = {}): CliCommandDeps
     cancelStream: mock(() => {}),
     listModels: mock(() => ["claude-sonnet-4-6", "claude-opus-4-6"]),
     currentModel: mock(() => "claude-sonnet-4-6"),
-    setModel: mock(() => {}),
+    setModel: mock(() => ({ ok: true })),
     output,
     exit: mock(() => {}),
     written() {
@@ -136,29 +136,29 @@ describe("/quit", () => {
 describe("/model", () => {
   const cmd = findCommand("model");
 
-  test("shows current model when called without args", () => {
+  test("shows current model when called without args", async () => {
     const deps = createMockDeps();
-    const result = cmd.execute("", deps);
+    const result = await cmd.execute("", deps);
     expect(result).toEqual({ ok: true });
     const out = deps.written();
     expect(out).toContain("Current model: claude-sonnet-4-6");
     expect(out).toContain("Available:");
   });
 
-  test("switches model when valid name provided", () => {
+  test("switches model and reports success", async () => {
     const deps = createMockDeps();
-    const result = cmd.execute("claude-opus-4-6", deps);
+    const result = await cmd.execute("claude-opus-4-6", deps);
     expect(result).toEqual({ ok: true });
     expect(deps.setModel).toHaveBeenCalledWith("claude-opus-4-6");
-    expect(deps.written()).toContain("Model set to: claude-opus-4-6");
+    expect(deps.written()).toContain("Model switched to: claude-opus-4-6");
   });
 
-  test("accepts any model name without validation", () => {
-    const deps = createMockDeps();
-    const result = cmd.execute("gpt-99", deps);
-    expect(result).toEqual({ ok: true });
-    expect(deps.setModel).toHaveBeenCalledWith("gpt-99");
-    expect(deps.written()).toContain("Model set to: gpt-99");
+  test("reports failure from setModel", async () => {
+    const deps = createMockDeps({
+      setModel: mock(() => ({ ok: false, message: "Model switching not supported" })),
+    });
+    const result = await cmd.execute("gpt-99", deps);
+    expect(result).toEqual({ ok: false, message: "Model switching not supported" });
   });
 
   test("completer returns matching models", () => {

@@ -85,7 +85,7 @@ const modelCommand: SlashCommand = {
   name: "model",
   description: "Show or switch the active model",
   args: "[name]",
-  execute(rawArgs, deps) {
+  async execute(rawArgs, deps) {
     if (rawArgs === "") {
       const current = deps.currentModel();
       const available = deps.listModels();
@@ -96,8 +96,9 @@ const modelCommand: SlashCommand = {
       return OK;
     }
     const name = rawArgs;
-    deps.setModel(name);
-    write(deps, `Model set to: ${name}`);
+    const result = await deps.setModel(name);
+    if (!result.ok) return result;
+    write(deps, `Model switched to: ${name}`);
     return OK;
   },
   complete(partial, deps) {

@@ -612,7 +612,7 @@ function createMockCommandDeps(
     cancelStream: mock(() => {}),
     listModels: mock(() => ["claude-sonnet-4-6"]),
     currentModel: mock(() => "claude-sonnet-4-6"),
-    setModel: mock(() => {}),
+    setModel: mock(() => ({ ok: true })),
     output: depOutput,
     exit: mock(() => {}),
     written() {
