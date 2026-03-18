@@ -881,6 +881,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/lib/cli-commands": {
+      "name": "@koi/cli-commands",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/cli-render": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/lib/cli-render": {
       "name": "@koi/cli-render",
       "version": "0.0.0",
@@ -2188,6 +2199,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/channel-base": "workspace:*",
+        "@koi/cli-commands": "workspace:*",
+        "@koi/cli-render": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
       },
@@ -3812,6 +3825,8 @@
     "@koi/channels": ["@koi/channels@workspace:packages/meta/channels"],
 
     "@koi/cli": ["@koi/cli@workspace:packages/meta/cli"],
+
+    "@koi/cli-commands": ["@koi/cli-commands@workspace:packages/lib/cli-commands"],
 
     "@koi/cli-render": ["@koi/cli-render@workspace:packages/lib/cli-render"],
 

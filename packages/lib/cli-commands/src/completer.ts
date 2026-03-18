@@ -1,0 +1,152 @@
+/**
+ * Tab completion for CLI REPL slash commands.
+ *
+ * Uses a sync completer with TTL-cached dynamic data to avoid
+ * async I/O on every Tab press. Cache is refreshed in the background.
+ */
+
+import { CLI_COMMANDS } from "./commands.js";
+import type { CliCommandDeps } from "./types.js";
+
+// ─── Completion Cache ───────────────────────────────────────────────
+
+/** Cached completion data with TTL. */
+interface CacheEntry {
+  readonly data: readonly string[];
+  readonly expiresAt: number;
+}
+
+/** In-memory cache for dynamic completion candidates. */
+export interface CompletionCache {
+  agents: CacheEntry | undefined;
+  models: CacheEntry | undefined;
+}
+
+const CACHE_TTL_MS = 5_000;
+
+/**
+ * Creates a new empty completion cache.
+ * Exported for testing and for the channel adapter to hold a reference.
+ */
+export function createCompletionCache(): CompletionCache {
+  return { agents: undefined, models: undefined };
+}
+
+/** Read cached agent names, or return empty if expired/missing. */
+function getCachedAgents(cache: CompletionCache): readonly string[] {
+  if (cache.agents === undefined || Date.now() > cache.agents.expiresAt) return [];
+  return cache.agents.data;
+}
+
+/** Read cached model names, or return empty if expired/missing. */
+function getCachedModels(cache: CompletionCache): readonly string[] {
+  if (cache.models === undefined || Date.now() > cache.models.expiresAt) return [];
+  return cache.models.data;
+}
+
+/**
+ * Refresh cached data in the background. Non-blocking, fire-and-forget.
+ * Called after each command dispatch or on a timer.
+ */
+export function refreshCache(cache: CompletionCache, deps: CliCommandDeps): void {
+  const now = Date.now();
+  const expiry = now + CACHE_TTL_MS;
+
+  // Always refresh models (sync)
+  try {
+    const models = deps.listModels();
+    cache.models = { data: models, expiresAt: expiry };
+  } catch {
+    // Non-fatal — keep stale data
+  }
+
+  // Refresh agents if available (async, fire-and-forget)
+  if (deps.listAgents !== undefined) {
+    deps
+      .listAgents()
+      .then((agents) => {
+        cache.agents = { data: agents.map((a) => a.name), expiresAt: now + CACHE_TTL_MS };
+      })
+      .catch(() => {
+        // Non-fatal — keep stale data
+      });
+  }
+}
+
+// ─── Command Names ──────────────────────────────────────────────────
+
+/** All command names + aliases for command-level completion. */
+const ALL_COMMAND_NAMES: readonly string[] = CLI_COMMANDS.flatMap((cmd) => {
+  const names = [`/${cmd.name}`];
+  if (cmd.aliases !== undefined) {
+    for (const alias of cmd.aliases) {
+      names.push(`/${alias}`);
+    }
+  }
+  return names;
+});
+
+// ─── Completer ──────────────────────────────────────────────────────
+
+/**
+ * Sync tab completer for readline.
+ *
+ * @param line - Current input line.
+ * @param cache - Completion cache (managed by the channel adapter).
+ * @param deps - Command dependencies (for per-command completers).
+ * @returns [completions, line] tuple for readline.
+ */
+export function slashCompleter(
+  line: string,
+  cache: CompletionCache,
+  deps: CliCommandDeps,
+): readonly [readonly string[], string] {
+  const trimmed = line.trimStart();
+
+  // Non-slash input: no completions
+  if (!trimmed.startsWith("/")) {
+    return [[], line];
+  }
+
+  // Check if we're completing a command name or command arguments
+  const withoutSlash = trimmed.slice(1);
+  const spaceIndex = withoutSlash.indexOf(" ");
+
+  if (spaceIndex === -1) {
+    // Completing command name: "/he" → ["/help"]
+    const lower = trimmed.toLowerCase();
+    const matches = ALL_COMMAND_NAMES.filter((name) => name.toLowerCase().startsWith(lower));
+    return [matches, trimmed];
+  }
+
+  // Completing arguments: "/attach al" → agent names starting with "al"
+  const cmdName = withoutSlash.slice(0, spaceIndex).toLowerCase();
+  const argPartial = withoutSlash.slice(spaceIndex + 1).trimStart();
+
+  // Special-case: /attach → agent names from cache
+  if (cmdName === "attach") {
+    const agents = getCachedAgents(cache);
+    if (argPartial === "") return [agents.map(String), argPartial];
+    const lower = argPartial.toLowerCase();
+    const matches = agents.filter((a) => a.toLowerCase().startsWith(lower));
+    return [matches.map(String), argPartial];
+  }
+
+  // Special-case: /model → model names from cache
+  if (cmdName === "model") {
+    const models = getCachedModels(cache);
+    if (argPartial === "") return [models.map(String), argPartial];
+    const lower = argPartial.toLowerCase();
+    const matches = models.filter((m) => m.toLowerCase().startsWith(lower));
+    return [matches.map(String), argPartial];
+  }
+
+  // Fall back to command's own completer if defined
+  const cmd = CLI_COMMANDS.find((c) => c.name === cmdName || c.aliases?.includes(cmdName));
+  if (cmd?.complete !== undefined) {
+    const matches = cmd.complete(argPartial, deps);
+    return [matches.map(String), argPartial];
+  }
+
+  return [[], argPartial];
+}

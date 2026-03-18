@@ -15,6 +15,7 @@ import type { Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
+import type { CliCommandDeps } from "@koi/cli-commands";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineInput } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
@@ -299,20 +300,78 @@ export async function runStart(flags: StartFlags): Promise<void> {
       : {}),
   });
 
-  // 6b. Set up channels — use resolved channels or fall back to CLI channel
-  const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
+  // 6b. Set up AbortController early — needed by commandDeps for /cancel
+  const controller = new AbortController();
+  let shuttingDown = false; // let: mutated by signal handler
+  // let justified: per-run abort controller for /cancel without full shutdown
+  let cancelCurrentRun: (() => void) | undefined;
+
+  function shutdown(): void {
+    if (shuttingDown) {
+      // Second signal — force exit immediately
+      process.stderr.write("\nForce exit.\n");
+      process.exit(1);
+    }
+    shuttingDown = true;
+    process.stderr.write("\nShutting down...\n");
+    controller.abort();
+  }
+
+  process.on("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+
+  // 6c. Set up channels — use resolved channels or fall back to CLI channel with slash commands
+  // Admin deps use closures that late-bind to adminBridge (set up in 6d below).
+  // let justified: conditionally set inside try/catch, read by closures + cleanup
+  let adminBridge: AdminPanelBridgeResult | undefined;
+  // let justified: conditionally set when --admin, disposed at cleanup
+  let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
+
+  const commandDeps: CliCommandDeps = {
+    cancelStream: () => {
+      cancelCurrentRun?.();
+    },
+    listModels: () => [modelName],
+    currentModel: () => modelName,
+    setModel: () => {
+      // Model switching not supported in koi start (single manifest)
+    },
+    output: process.stdout,
+    exit: () => {
+      shutdown();
+    },
+    // Admin-only deps: closures capture adminBridge which is set up later.
+    // Before admin is initialized, these return unavailable/empty results.
+    ...(flags.admin
+      ? {
+          getStatus: async () => {
+            if (adminBridge === undefined) return "Admin server starting...";
+            return `Agent: ${manifest.name} — model: ${modelName}`;
+          },
+          listAgents: async () => {
+            if (adminBridge === undefined) return [];
+            const agents = await adminBridge.dataSource.listAgents();
+            return agents.map((a) => ({
+              name: a.name,
+              agentId: a.agentId,
+              state: a.state,
+            }));
+          },
+        }
+      : {}),
+  };
+
+  const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [
+    createCliChannel({ commandDeps }),
+  ];
   for (const ch of channels) {
     await ch.connect();
   }
 
-  // 6c. Optional admin panel server (--admin flag)
+  // 6d. Optional admin panel server (--admin flag)
   const DEFAULT_ADMIN_PORT = 3100;
   // let justified: conditionally set inside try/catch, called at cleanup
   let stopAdmin: (() => void) | undefined;
-  // let justified: conditionally set when --admin, read in REPL loop for metrics
-  let adminBridge: AdminPanelBridgeResult | undefined;
-  // let justified: conditionally set when --admin, disposed at cleanup
-  let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
 
   // let justified: conditionally set when --temporal-url, disposed at cleanup
   let temporalAdmin: Awaited<ReturnType<typeof resolveTemporalOrWarn>>;
@@ -428,25 +487,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // so the TUI/session-picker can read back shared chat logs at the same path.
   const persistAgentId = adminBridge?.agentId ?? manifest.name;
 
-  // 7. Set up AbortController for graceful shutdown
-  const controller = new AbortController();
-  let shuttingDown = false;
-
-  function shutdown(): void {
-    if (shuttingDown) {
-      // Second signal — force exit immediately
-      process.stderr.write("\nForce exit.\n");
-      process.exit(1);
-    }
-    shuttingDown = true;
-    process.stderr.write("\nShutting down...\n");
-    controller.abort();
-  }
-
-  process.on("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
-
-  // 8. Print startup info
+  // 7. Print startup info
   if (flags.verbose) {
     process.stderr.write(`Agent: ${manifest.name} v${manifest.version}\n`);
     process.stderr.write(`Engine: ${engineName}\n`);
@@ -512,10 +553,16 @@ export async function runStart(flags: StartFlags): Promise<void> {
       currentStartSessionId = `start:${manifest.name}:${String(startSessionCounter)}`;
       const input: EngineInput = { kind: "text", text };
 
+      // Per-run cancel: /cancel aborts this flag, not the entire process
+      let runCancelled = false; // let: mutated by cancelCurrentRun closure
+      cancelCurrentRun = () => {
+        runCancelled = true;
+      };
+
       try {
         const deltas: string[] = [];
         for await (const event of runtime.run(input)) {
-          if (controller.signal.aborted) break;
+          if (controller.signal.aborted || runCancelled) break;
           renderEvent(event, { verbose: flags.verbose });
           if (event.kind === "text_delta") deltas.push(event.delta);
           if (event.kind === "done" && adminBridge !== undefined) {
@@ -538,6 +585,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
         }
       } finally {
         processing = false;
+        cancelCurrentRun = undefined;
       }
     }),
   );

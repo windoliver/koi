@@ -1,6 +1,6 @@
 {
-  "name": "@koi/channel-cli",
-  "description": "Read user input via readline, write output to stdout",
+  "name": "@koi/cli-commands",
+  "description": "Slash commands, dispatch, and tab completion for CLI REPL channels",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,11 +11,8 @@
     }
   },
   "dependencies": {
-    "@koi/channel-base": "workspace:*",
-    "@koi/cli-commands": "workspace:*",
     "@koi/cli-render": "workspace:*",
-    "@koi/core": "workspace:*",
-    "@koi/resolve": "workspace:*"
+    "@koi/core": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

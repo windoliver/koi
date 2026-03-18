@@ -18,6 +18,7 @@ export const L0_PACKAGES: ReadonlySet<string> = new Set(["@koi/core"]);
 export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/acp-protocol",
   "@koi/channel-base",
+  "@koi/cli-commands",
   "@koi/cli-render",
   "@koi/crystallize",
   "@koi/crypto-utils",
