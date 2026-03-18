@@ -93,7 +93,7 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.pendingText).toBe("Hello world");
+      expect(session?.pendingText).toBe("Hello world");
     });
 
     test("TEXT_MESSAGE_END dispatches flush_tokens", () => {
@@ -102,10 +102,10 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.pendingText).toBe("");
-      expect(session!.messages).toHaveLength(1);
-      expect(session!.messages[0]!.kind).toBe("assistant");
-      expect((session!.messages[0] as { readonly text: string }).text).toBe("Complete message");
+      expect(session?.pendingText).toBe("");
+      expect(session?.messages).toHaveLength(1);
+      expect(session?.messages[0]?.kind).toBe("assistant");
+      expect((session?.messages[0] as { readonly text: string }).text).toBe("Complete message");
     });
   });
 
@@ -118,9 +118,10 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.messages).toHaveLength(1);
+      expect(session?.messages).toHaveLength(1);
 
-      const msg = session!.messages[0]!;
+      const msg = session?.messages[0];
+      if (msg === undefined) return;
       expect(msg.kind).toBe("tool_call");
       if (msg.kind === "tool_call") {
         expect(msg.name).toBe("readFile");
@@ -138,9 +139,10 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.messages).toHaveLength(1);
+      expect(session?.messages).toHaveLength(1);
 
-      const msg = session!.messages[0]!;
+      const msg = session?.messages[0];
+      if (msg === undefined) return;
       expect(msg.kind).toBe("tool_call");
       if (msg.kind === "tool_call") {
         expect(msg.result).toBe("file contents here");
@@ -152,7 +154,7 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.messages).toHaveLength(0);
+      expect(session?.messages).toHaveLength(0);
     });
 
     test("TOOL_CALL_END for unknown toolCallId does not create a message", () => {
@@ -160,7 +162,7 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.messages).toHaveLength(0);
+      expect(session?.messages).toHaveLength(0);
     });
   });
 
@@ -170,11 +172,11 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.isStreaming).toBe(true);
-      expect(session!.messages).toHaveLength(1);
-      expect(session!.messages[0]!.kind).toBe("lifecycle");
-      if (session!.messages[0]!.kind === "lifecycle") {
-        expect(session!.messages[0]!.event).toBe("Run started");
+      expect(session?.isStreaming).toBe(true);
+      expect(session?.messages).toHaveLength(1);
+      expect(session?.messages[0]?.kind).toBe("lifecycle");
+      if (session?.messages[0]?.kind === "lifecycle") {
+        expect(session?.messages[0]?.event).toBe("Run started");
       }
     });
 
@@ -185,11 +187,11 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.isStreaming).toBe(false);
-      expect(session!.messages).toHaveLength(2);
-      expect(session!.messages[1]!.kind).toBe("lifecycle");
-      if (session!.messages[1]!.kind === "lifecycle") {
-        expect(session!.messages[1]!.event).toBe("Run finished");
+      expect(session?.isStreaming).toBe(false);
+      expect(session?.messages).toHaveLength(2);
+      expect(session?.messages[1]?.kind).toBe("lifecycle");
+      if (session?.messages[1]?.kind === "lifecycle") {
+        expect(session?.messages[1]?.event).toBe("Run finished");
       }
     });
 
@@ -199,11 +201,11 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.isStreaming).toBe(false);
-      expect(session!.messages).toHaveLength(2);
-      expect(session!.messages[1]!.kind).toBe("lifecycle");
-      if (session!.messages[1]!.kind === "lifecycle") {
-        expect(session!.messages[1]!.event).toBe("Error: Model rate limited");
+      expect(session?.isStreaming).toBe(false);
+      expect(session?.messages).toHaveLength(2);
+      expect(session?.messages[1]?.kind).toBe("lifecycle");
+      if (session?.messages[1]?.kind === "lifecycle") {
+        expect(session?.messages[1]?.event).toBe("Error: Model rate limited");
       }
     });
   });
@@ -214,10 +216,10 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.messages).toHaveLength(1);
-      expect(session!.messages[0]!.kind).toBe("lifecycle");
-      if (session!.messages[0]!.kind === "lifecycle") {
-        expect(session!.messages[0]!.event).toBe("Step: planning");
+      expect(session?.messages).toHaveLength(1);
+      expect(session?.messages[0]?.kind).toBe("lifecycle");
+      if (session?.messages[0]?.kind === "lifecycle") {
+        expect(session?.messages[0]?.event).toBe("Step: planning");
       }
     });
   });
@@ -229,7 +231,7 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.pendingText).toBe("Let me think about this");
+      expect(session?.pendingText).toBe("Let me think about this");
     });
 
     test("REASONING_MESSAGE_END flushes tokens", () => {
@@ -238,9 +240,9 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.pendingText).toBe("");
-      expect(session!.messages).toHaveLength(1);
-      expect(session!.messages[0]!.kind).toBe("assistant");
+      expect(session?.pendingText).toBe("");
+      expect(session?.messages).toHaveLength(1);
+      expect(session?.messages[0]?.kind).toBe("assistant");
     });
   });
 
@@ -258,9 +260,9 @@ describe("createAguiEventHandler", () => {
 
       const afterState = store.getState();
       // State should be unchanged — these events are not handled
-      expect(afterState.activeSession!.messages).toHaveLength(0);
-      expect(afterState.activeSession!.pendingText).toBe("");
-      expect(afterState.activeSession!.isStreaming).toBe(beforeState.activeSession!.isStreaming);
+      expect(afterState.activeSession?.messages).toHaveLength(0);
+      expect(afterState.activeSession?.pendingText).toBe("");
+      expect(afterState.activeSession?.isStreaming).toBe(beforeState.activeSession?.isStreaming);
     });
   });
 
@@ -277,7 +279,7 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.messages).toHaveLength(0);
+      expect(session?.messages).toHaveLength(0);
     });
 
     test("clear() allows fresh tool call tracking after reset", () => {
@@ -291,9 +293,10 @@ describe("createAguiEventHandler", () => {
 
       const session = store.getState().activeSession;
       expect(session).not.toBeNull();
-      expect(session!.messages).toHaveLength(1);
+      expect(session?.messages).toHaveLength(1);
 
-      const msg = session!.messages[0]!;
+      const msg = session?.messages[0];
+      if (msg === undefined) return;
       expect(msg.kind).toBe("tool_call");
       if (msg.kind === "tool_call") {
         expect(msg.name).toBe("writeFile");

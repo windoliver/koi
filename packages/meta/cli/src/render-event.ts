@@ -37,7 +37,7 @@ export function renderEvent(event: EngineEvent, options: RenderEventOptions): vo
       if (event.output.stopReason === "error") {
         const errorMsg =
           event.output.metadata !== undefined && "errorMessage" in event.output.metadata
-            ? String(event.output.metadata["errorMessage"])
+            ? String(event.output.metadata.errorMessage)
             : "unknown error";
         err.write(`\n${red("error:")} ${errorMsg}\n`);
       }

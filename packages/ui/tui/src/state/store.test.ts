@@ -580,8 +580,8 @@ describe("reduce — apply_forge_batch", () => {
       ],
     });
     expect(next.forgeBricks["b-1"]).toBeDefined();
-    expect(next.forgeBricks["b-1"]!.name).toBe("my-tool");
-    expect(next.forgeBricks["b-1"]!.status).toBe("active");
+    expect(next.forgeBricks["b-1"]?.name).toBe("my-tool");
+    expect(next.forgeBricks["b-1"]?.status).toBe("active");
   });
 
   test("updates sparkline on fitness_flushed", () => {
@@ -605,7 +605,7 @@ describe("reduce — apply_forge_batch", () => {
       ],
     });
     expect(next.forgeSparklines["b-1"]).toEqual([0.85]);
-    expect(next.forgeBricks["b-1"]!.fitness).toBe(0.85);
+    expect(next.forgeBricks["b-1"]?.fitness).toBe(0.85);
   });
 
   test("caps forge events buffer at 200", () => {
