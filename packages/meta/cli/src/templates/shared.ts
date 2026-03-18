@@ -187,7 +187,7 @@ function generateEnvCore(state: WizardState, options: EnvCoreOptions): string[] 
   const modelEnvKey = getModelEnvKey(state.model);
   if (modelEnvKey !== undefined) {
     lines.push(`# Required for ${state.model}`);
-    lines.push(`${modelEnvKey}=`);
+    lines.push(`${modelEnvKey}=${state.apiKey ?? ""}`);
     lines.push("");
   }
 

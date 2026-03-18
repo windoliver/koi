@@ -5,7 +5,7 @@
  * Text deltas go to stdout (agent responses). Everything else goes to stderr.
  */
 
-import { bold, cyan, dim, green, yellow } from "@koi/cli-render";
+import { bold, cyan, dim, green, red, yellow } from "@koi/cli-render";
 import type { EngineEvent } from "@koi/core";
 
 export interface RenderEventOptions {
@@ -34,6 +34,13 @@ export function renderEvent(event: EngineEvent, options: RenderEventOptions): vo
       }
       break;
     case "done":
+      if (event.output.stopReason === "error") {
+        const errorMsg =
+          event.output.metadata !== undefined && "errorMessage" in event.output.metadata
+            ? String(event.output.metadata["errorMessage"])
+            : "unknown error";
+        err.write(`\n${red("error:")} ${errorMsg}\n`);
+      }
       out.write("\n");
       if (verbose) {
         const m = event.output.metrics;

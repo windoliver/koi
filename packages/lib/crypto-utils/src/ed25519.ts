@@ -60,7 +60,7 @@ export function signEd25519(payload: string, privateKeyDer: string): string {
     format: "der" as const,
     type: "pkcs8" as const,
   };
-  const signature = sign(null, Buffer.from(payload, "utf-8"), privateKey);
+  const signature = sign(null, new Uint8Array(Buffer.from(payload, "utf-8")), privateKey);
   return signature.toString("base64");
 }
 
@@ -83,7 +83,7 @@ export function verifyEd25519(payload: string, publicKeyDer: string, signature: 
       format: "der" as const,
       type: "spki" as const,
     };
-    return verify(null, Buffer.from(payload, "utf-8"), publicKey, Buffer.from(signature, "base64"));
+    return verify(null, new Uint8Array(Buffer.from(payload, "utf-8")), publicKey, new Uint8Array(Buffer.from(signature, "base64")));
   } catch {
     // Malformed key material or signature — treat as invalid
     return false;

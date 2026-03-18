@@ -332,8 +332,8 @@ describe("getOrCreateEd25519Keypair", () => {
   test("generates and caches Ed25519 keypair on first call", () => {
     resetKeypairCache(); // ensure fresh state
     const kp1 = getOrCreateEd25519Keypair();
-    expect(kp1.publicKey).toBeInstanceOf(Buffer);
-    expect(kp1.privateKey).toBeInstanceOf(Buffer);
+    expect(kp1.publicKey).toBeInstanceOf(Uint8Array);
+    expect(kp1.privateKey).toBeInstanceOf(Uint8Array);
     // Typical Ed25519 SPKI DER is 44 bytes, PKCS8 is 48 bytes
     expect(kp1.publicKey.length).toBeGreaterThan(0);
     expect(kp1.privateKey.length).toBeGreaterThan(0);

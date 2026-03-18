@@ -34,15 +34,15 @@ import { isAttenuated } from "./attenuation.js";
  * Lazily generated Ed25519 keypair for signing new capability tokens.
  * Generated on first grant() call, never before (Issue 15).
  */
-let cachedKeypair: { readonly privateKey: Buffer; readonly publicKey: Buffer } | undefined;
+let cachedKeypair: { readonly privateKey: Uint8Array; readonly publicKey: Uint8Array } | undefined;
 
 /**
  * Returns the lazy-initialized Ed25519 keypair.
  * Generated on first call using Node.js crypto.
  */
 export function getOrCreateEd25519Keypair(): {
-  readonly privateKey: Buffer;
-  readonly publicKey: Buffer;
+  readonly privateKey: Uint8Array;
+  readonly publicKey: Uint8Array;
 } {
   if (cachedKeypair !== undefined) return cachedKeypair;
 
@@ -52,8 +52,8 @@ export function getOrCreateEd25519Keypair(): {
   });
 
   cachedKeypair = {
-    privateKey: Buffer.from(privateKey),
-    publicKey: Buffer.from(publicKey),
+    privateKey: new Uint8Array(privateKey),
+    publicKey: new Uint8Array(publicKey),
   };
   return cachedKeypair;
 }
