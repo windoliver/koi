@@ -3,10 +3,15 @@
  *
  * Uses ScrollBox for auto-scrolling message list, Markdown for assistant
  * messages (with streaming support), and Textarea for user input.
+ *
+ * Enter submits via useKeyboard (global key listener) rather than the
+ * textarea's onSubmit prop, because OpenTUI's React reconciler drops
+ * onSubmit updates for non-Input renderables on re-render.
  */
 
-import { type SyntaxStyle, type TextareaRenderable } from "@opentui/core";
-import { useCallback, useRef, useState } from "react";
+import type { KeyEvent, SyntaxStyle, TextareaRenderable } from "@opentui/core";
+import { useKeyboard } from "@opentui/react";
+import { useCallback, useRef } from "react";
 import { PanelChrome } from "../components/panel-chrome.js";
 import type { SessionState } from "../state/types.js";
 import { COLORS } from "../theme.js";
@@ -25,17 +30,24 @@ export interface ConsoleViewProps {
 /** Console view with scrollable message list and text input. */
 export function ConsoleView(props: ConsoleViewProps): React.ReactNode {
   const textareaRef = useRef<TextareaRenderable | null>(null);
-  const [inputText, setInputText] = useState("");
 
   const handleSubmit = useCallback((): void => {
-    const text = inputText.trim();
+    if (textareaRef.current === null) return;
+    const text = textareaRef.current.plainText.trim();
     if (text === "") return;
     props.onSubmit(text);
-    setInputText("");
-    if (textareaRef.current !== null) {
-      textareaRef.current.setText("");
+    textareaRef.current.setText("");
+  }, [props.onSubmit]);
+
+  // Handle Enter key via global listener — fires before the textarea's
+  // renderable handler, so we preventDefault to suppress the newline.
+  useKeyboard(useCallback((key: KeyEvent): void => {
+    if (!props.focused) return;
+    if (key.name === "return" && !key.ctrl && !key.meta && !key.shift) {
+      key.preventDefault();
+      handleSubmit();
     }
-  }, [inputText, props.onSubmit]);
+  }, [props.focused, handleSubmit]));
 
   const messages = props.session?.messages ?? [];
   const hasPending = props.pendingText.length > 0;
@@ -91,12 +103,6 @@ export function ConsoleView(props: ConsoleViewProps): React.ReactNode {
         textColor={COLORS.white}
         focusedBackgroundColor="#001a33"
         focusedTextColor={COLORS.white}
-        onContentChange={() => {
-          if (textareaRef.current !== null) {
-            setInputText(textareaRef.current.plainText);
-          }
-        }}
-        onSubmit={handleSubmit}
       />
     </PanelChrome>
   );

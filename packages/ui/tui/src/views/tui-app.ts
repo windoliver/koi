@@ -218,11 +218,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       }));
 
     const chatUrl = client.agentChatUrl(session.agentId);
-    const chatUrlObj = new URL(chatUrl);
     const aguiConfig =
       authToken !== undefined
-        ? { baseUrl: chatUrlObj.origin, path: chatUrlObj.pathname, authToken }
-        : { baseUrl: chatUrlObj.origin, path: chatUrlObj.pathname };
+        ? { baseUrl: chatUrl, path: "", authToken }
+        : { baseUrl: chatUrl, path: "" };
 
     activeChatStream = startChatStream(
       aguiConfig,
@@ -243,11 +242,12 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         onError: (error) => {
           store.dispatch({ kind: "flush_tokens" });
           store.dispatch({ kind: "set_error", error });
+          const detail = "message" in error ? ` — ${error.message}` : "";
           store.dispatch({
             kind: "add_message",
             message: {
               kind: "lifecycle",
-              event: `Stream error: ${error.kind}`,
+              event: `Stream error: ${error.kind}${detail}`,
               timestamp: Date.now(),
             },
           });

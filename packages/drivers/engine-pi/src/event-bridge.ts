@@ -148,11 +148,7 @@ export function createEventSubscriber(
             queue.push({ kind: "text_delta", delta: assistantEvent.delta });
             break;
           case "thinking_delta":
-            queue.push({
-              kind: "custom",
-              type: "thinking_delta",
-              data: { delta: assistantEvent.delta },
-            });
+            queue.push({ kind: "thinking_delta", delta: assistantEvent.delta });
             break;
           case "toolcall_start": {
             const toolCall = findToolCallAtContentIndex(
@@ -260,7 +256,10 @@ export function createEventSubscriber(
             metrics.addCost(event.message.usage.cost);
           }
           // Track error state from the assistant message for propagation in agent_end
-          const msg = event.message as { readonly stopReason?: string; readonly errorMessage?: string };
+          const msg = event.message as {
+            readonly stopReason?: string;
+            readonly errorMessage?: string;
+          };
           if (msg.stopReason === "error" || msg.errorMessage) {
             lastStopReason = "error";
             lastErrorMessage = msg.errorMessage ?? "Model call failed";
@@ -294,7 +293,7 @@ export function createEventSubscriber(
         const { metrics: finalMetrics, metadata } = metrics.finalizeWithMetadata();
         const mergedMetadata: Record<string, unknown> = { ...metadata };
         if (lastErrorMessage) {
-          mergedMetadata["errorMessage"] = lastErrorMessage;
+          mergedMetadata.errorMessage = lastErrorMessage;
         }
         const output: EngineOutput = {
           content: [],

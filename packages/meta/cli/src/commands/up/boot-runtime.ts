@@ -10,7 +10,7 @@
 
 import { dirname, resolve } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
-import type { ChannelAdapter, EngineInput } from "@koi/core";
+import type { ChannelAdapter, EngineInput, InboundMessage } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { DashboardEvent } from "@koi/dashboard-types";
@@ -37,6 +37,44 @@ import { buildDemoManifestOverrides, provisionDemoAgents, seedDemoPackIfNeeded }
 import { mapNexusModeToProfile } from "./nexus.js";
 import { extractDemoPack, inferPresetId } from "./preset.js";
 import { activatePresetStacks } from "./stacks.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const LABEL_RE = /^\[(user|assistant|system)\]:\s*/;
+
+/**
+ * Expand stateless-normalized content blocks into separate InboundMessages.
+ *
+ * The AG-UI stateless normalizer flattens conversation history into labeled
+ * blocks like `[user]: hello`, `[assistant]: Hi!`. This function splits them
+ * back into individual InboundMessages so the engine adapter can send proper
+ * multi-turn messages to the model API.
+ */
+function expandLabeledBlocks(msg: InboundMessage): readonly InboundMessage[] {
+  const blocks = msg.content.filter(
+    (b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text",
+  );
+
+  // If no blocks match the labeled pattern, return the message as-is.
+  if (blocks.length === 0 || !LABEL_RE.test(blocks[0]?.text ?? "")) {
+    return [msg];
+  }
+
+  return blocks.map((block) => {
+    const match = LABEL_RE.exec(block.text);
+    const role = match?.[1] ?? "user";
+    const text = block.text.replace(LABEL_RE, "");
+    return {
+      content: [{ kind: "text" as const, text }],
+      senderId: role === "user" ? (msg.senderId ?? msg.threadId) : "assistant",
+      threadId: msg.threadId,
+      timestamp: msg.timestamp,
+      metadata: { ...msg.metadata, role },
+    };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -318,7 +356,11 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
       const text = extractTextFromBlocks(msg.content);
       if (text.trim() === "") return;
       const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
-      const input: EngineInput = { kind: "messages", messages: [msg] };
+
+      // Expand stateless-normalized content blocks ([user]: ..., [assistant]: ...)
+      // into separate InboundMessages so the engine sees proper multi-turn history.
+      const messages = expandLabeledBlocks(msg);
+      const input: EngineInput = { kind: "messages", messages };
       const deltas: string[] = [];
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);

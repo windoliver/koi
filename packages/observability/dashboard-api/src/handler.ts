@@ -218,10 +218,11 @@ export function createDashboardHandler(
             501,
           );
         }
-        const id = params.id;
-        if (id === undefined) {
+        const rawId = params.id;
+        if (rawId === undefined) {
           return errorResponse("VALIDATION", "Missing agent ID", 400);
         }
+        const id = decodeURIComponent(rawId);
         // Verify agent exists and is not terminated before delegating to chat handler
         const agent = await dataSource.getAgent(toAgentId(id));
         if (agent === undefined) {
