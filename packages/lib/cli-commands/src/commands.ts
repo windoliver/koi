@@ -1,5 +1,5 @@
 /**
- * CLI REPL slash commands — 9 self-contained command definitions.
+ * CLI REPL slash commands — 10 self-contained command definitions.
  *
  * Each command carries its own handler and optional completer.
  * The /help command auto-generates output from this array.
@@ -221,6 +221,93 @@ const toolsCommand: SlashCommand = {
   },
 };
 
+const FORGE_SUBCOMMANDS = ["search", "install", "inspect"] as const;
+
+const forgeCommand: SlashCommand = {
+  name: "forge",
+  description: "Search, install, or inspect forge tools",
+  args: "search <query> | install <id> | inspect <id>",
+  async execute(rawArgs, deps) {
+    const parts = rawArgs.split(/\s+/);
+    const subcommand = parts[0]?.toLowerCase() ?? "";
+    const arg = parts.slice(1).join(" ").trim();
+
+    if (
+      subcommand === "" ||
+      !FORGE_SUBCOMMANDS.includes(subcommand as (typeof FORGE_SUBCOMMANDS)[number])
+    ) {
+      return {
+        ok: false,
+        message: `Usage: /forge ${FORGE_SUBCOMMANDS.join(" | ")}. Example: /forge search "csv parser"`,
+      };
+    }
+
+    if (subcommand === "search") {
+      if (deps.forgeSearch === undefined) {
+        return { ok: false, message: "Forge is not configured. Add forge settings to koi.yaml." };
+      }
+      if (arg === "") {
+        return { ok: false, message: "Usage: /forge search <query>" };
+      }
+      try {
+        const results = await deps.forgeSearch(arg);
+        if (results.length === 0) {
+          write(deps, `No results for "${arg}".`);
+          return OK;
+        }
+        write(deps, `Forge results for "${arg}":`);
+        for (const r of results) {
+          write(deps, `  ${r.id}  ${r.name} (${r.kind}) — ${r.description}`);
+        }
+        write(deps, "Use /forge install <id> to activate.");
+        return OK;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, message: `Forge search failed: ${msg}` };
+      }
+    }
+
+    if (subcommand === "install") {
+      if (deps.forgeInstall === undefined) {
+        return { ok: false, message: "Forge is not configured. Add forge settings to koi.yaml." };
+      }
+      if (arg === "") {
+        return { ok: false, message: "Usage: /forge install <id>" };
+      }
+      try {
+        return await deps.forgeInstall(arg);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, message: `Forge install failed: ${msg}` };
+      }
+    }
+
+    if (subcommand === "inspect") {
+      if (deps.forgeInspect === undefined) {
+        return { ok: false, message: "Forge is not configured. Add forge settings to koi.yaml." };
+      }
+      if (arg === "") {
+        return { ok: false, message: "Usage: /forge inspect <id>" };
+      }
+      try {
+        const detail = await deps.forgeInspect(arg);
+        write(deps, detail);
+        return OK;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, message: `Forge inspect failed: ${msg}` };
+      }
+    }
+
+    return { ok: false, message: `Unknown forge subcommand: ${subcommand}` };
+  },
+  complete(partial) {
+    if (partial === "") return [...FORGE_SUBCOMMANDS];
+    const lower = partial.toLowerCase();
+    return FORGE_SUBCOMMANDS.filter((s) => s.startsWith(lower));
+  },
+};
+
 // ─── Command Registry ───────────────────────────────────────────────
 
 /** All CLI REPL slash commands. Order defines /help output order. */
@@ -234,4 +321,5 @@ export const CLI_COMMANDS: readonly SlashCommand[] = [
   attachCommand,
   sessionsCommand,
   toolsCommand,
+  forgeCommand,
 ] as const;

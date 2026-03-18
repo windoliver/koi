@@ -359,6 +359,41 @@ export async function runStart(flags: StartFlags): Promise<void> {
           },
         }
       : {}),
+    // Forge deps: closures capture forgeBootstrap which is already set up above.
+    ...(forgeBootstrap !== undefined
+      ? {
+          forgeSearch: async (query: string) => {
+            const result = await forgeBootstrap.store.search({ query, limit: 10 });
+            if (!result.ok) return [];
+            return result.value.map((b) => ({
+              id: b.id,
+              name: b.name,
+              description: b.description ?? "",
+              kind: b.kind,
+            }));
+          },
+          forgeInstall: async (id: string) => {
+            const loadResult = await forgeBootstrap.store.load(id);
+            if (!loadResult.ok) {
+              return { ok: false, message: `Brick not found: ${id}` } as const;
+            }
+            return { ok: true } as const;
+          },
+          forgeInspect: async (id: string) => {
+            const loadResult = await forgeBootstrap.store.load(id);
+            if (!loadResult.ok) return `Brick not found: ${id}`;
+            const brick = loadResult.value;
+            return [
+              `Name: ${brick.name}`,
+              `Kind: ${brick.kind}`,
+              `Description: ${brick.description ?? "(none)"}`,
+              ...(brick.tags !== undefined && brick.tags.length > 0
+                ? [`Tags: ${brick.tags.join(", ")}`]
+                : []),
+            ].join("\n");
+          },
+        }
+      : {}),
   };
 
   const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [

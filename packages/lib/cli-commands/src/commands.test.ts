@@ -362,6 +362,125 @@ describe("/tools", () => {
   });
 });
 
+// ─── /forge ─────────────────────────────────────────────────────────
+
+describe("/forge", () => {
+  const cmd = findCommand("forge");
+
+  test("shows usage when called without subcommand", async () => {
+    const deps = createMockDeps();
+    const result = await cmd.execute("", deps);
+    expect(result.ok).toBe(false);
+    expect((result as { readonly message: string }).message).toContain("Usage:");
+  });
+
+  test("shows usage for unknown subcommand", async () => {
+    const deps = createMockDeps();
+    const result = await cmd.execute("delete foo", deps);
+    expect(result.ok).toBe(false);
+    expect((result as { readonly message: string }).message).toContain("Usage:");
+  });
+
+  test("search returns results", async () => {
+    const deps = createMockDeps({
+      forgeSearch: mock(async () => [
+        { id: "b1", name: "csv-parser", kind: "tool", description: "Parse CSV files" },
+      ]),
+    });
+    const result = await cmd.execute("search csv", deps);
+    expect(result).toEqual({ ok: true });
+    const out = deps.written();
+    expect(out).toContain("csv-parser");
+    expect(out).toContain("/forge install");
+  });
+
+  test("search shows empty message", async () => {
+    const deps = createMockDeps({
+      forgeSearch: mock(async () => []),
+    });
+    const result = await cmd.execute("search nonexistent", deps);
+    expect(result).toEqual({ ok: true });
+    expect(deps.written()).toContain("No results");
+  });
+
+  test("search returns error when forge not configured", async () => {
+    const deps = createMockDeps({ forgeSearch: undefined });
+    const result = await cmd.execute("search csv", deps);
+    expect(result.ok).toBe(false);
+    expect((result as { readonly message: string }).message).toContain("not configured");
+  });
+
+  test("search requires a query", async () => {
+    const deps = createMockDeps({
+      forgeSearch: mock(async () => []),
+    });
+    const result = await cmd.execute("search", deps);
+    expect(result.ok).toBe(false);
+    expect((result as { readonly message: string }).message).toContain("Usage:");
+  });
+
+  test("install delegates to forgeInstall", async () => {
+    const deps = createMockDeps({
+      forgeInstall: mock(async () => ({ ok: true }) as CommandResult),
+    });
+    const result = await cmd.execute("install b1", deps);
+    expect(result).toEqual({ ok: true });
+    expect(deps.forgeInstall).toHaveBeenCalledWith("b1");
+  });
+
+  test("install returns error when forge not configured", async () => {
+    const deps = createMockDeps({ forgeInstall: undefined });
+    const result = await cmd.execute("install b1", deps);
+    expect(result.ok).toBe(false);
+    expect((result as { readonly message: string }).message).toContain("not configured");
+  });
+
+  test("install requires an id", async () => {
+    const deps = createMockDeps({
+      forgeInstall: mock(async () => ({ ok: true }) as CommandResult),
+    });
+    const result = await cmd.execute("install", deps);
+    expect(result.ok).toBe(false);
+    expect((result as { readonly message: string }).message).toContain("Usage:");
+  });
+
+  test("inspect shows brick details", async () => {
+    const deps = createMockDeps({
+      forgeInspect: mock(async () => "Name: csv-parser\nKind: tool\nStatus: active"),
+    });
+    const result = await cmd.execute("inspect b1", deps);
+    expect(result).toEqual({ ok: true });
+    expect(deps.written()).toContain("csv-parser");
+  });
+
+  test("inspect returns error when forge not configured", async () => {
+    const deps = createMockDeps({ forgeInspect: undefined });
+    const result = await cmd.execute("inspect b1", deps);
+    expect(result.ok).toBe(false);
+  });
+
+  test("search handles thrown error gracefully", async () => {
+    const deps = createMockDeps({
+      forgeSearch: mock(async () => {
+        throw new Error("connection refused");
+      }),
+    });
+    const result = await cmd.execute("search csv", deps);
+    expect(result).toEqual({
+      ok: false,
+      message: "Forge search failed: connection refused",
+    });
+  });
+
+  test("completer returns subcommands", () => {
+    expect(cmd.complete?.("", createMockDeps())).toEqual(["search", "install", "inspect"]);
+  });
+
+  test("completer filters subcommands", () => {
+    expect(cmd.complete?.("se", createMockDeps())).toEqual(["search"]);
+  });
+});
+
 // ─── Registry integrity ─────────────────────────────────────────────
 
 describe("CLI_COMMANDS registry", () => {
@@ -381,7 +500,7 @@ describe("CLI_COMMANDS registry", () => {
     }
   });
 
-  test("contains exactly 9 commands", () => {
-    expect(CLI_COMMANDS).toHaveLength(9);
+  test("contains exactly 10 commands", () => {
+    expect(CLI_COMMANDS).toHaveLength(10);
   });
 });

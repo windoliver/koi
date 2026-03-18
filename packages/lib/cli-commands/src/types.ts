@@ -2,7 +2,7 @@
  * Types for CLI REPL slash commands.
  *
  * Defines the command shape, result type, and dependency interfaces
- * for the 9 channel-cli slash commands.
+ * for the 10 channel-cli slash commands.
  */
 
 // ─── Command Result ─────────────────────────────────────────────────
@@ -74,6 +74,14 @@ export interface CliCommandDepsBase {
   readonly exit: () => void;
 }
 
+/** Search result from forge store. */
+export interface ForgeSearchResult {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly kind: string;
+}
+
 /**
  * Full CLI command dependencies — base + optional admin capabilities.
  *
@@ -91,4 +99,10 @@ export interface CliCommandDeps extends CliCommandDepsBase {
   readonly listSessions?: (() => Promise<readonly CliSessionSummary[]>) | undefined;
   /** List currently loaded tools. */
   readonly listTools?: (() => readonly CliToolSummary[]) | undefined;
+  /** Search the forge store for bricks. Requires forge to be configured. */
+  readonly forgeSearch?: ((query: string) => Promise<readonly ForgeSearchResult[]>) | undefined;
+  /** Install (activate) a forge brick by ID. Requires forge to be configured. */
+  readonly forgeInstall?: ((id: string) => Promise<CommandResult>) | undefined;
+  /** Inspect a forge brick by ID, returning a detail string. */
+  readonly forgeInspect?: ((id: string) => Promise<string>) | undefined;
 }
