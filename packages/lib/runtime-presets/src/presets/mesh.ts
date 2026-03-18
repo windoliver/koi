@@ -30,7 +30,7 @@ export const MESH_PRESET: RuntimePreset = {
     contextHub: true,
     threadStoreBackend: "nexus",
     ace: true,
-    aceStoreBackend: "sqlite",
+    aceStoreBackend: "nexus",
   },
   manifestOverrides: {
     autonomous: { enabled: true },

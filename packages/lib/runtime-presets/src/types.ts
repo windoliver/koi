@@ -54,7 +54,7 @@ export interface PresetServices {
 export type ThreadStoreBackend = "memory" | "sqlite" | "nexus";
 
 /** ACE store backend for trajectory/playbook persistence. */
-export type AceStoreBackend = "memory" | "sqlite";
+export type AceStoreBackend = "memory" | "sqlite" | "nexus";
 
 /** Which L3 middleware stacks `koi up` should activate for this preset. */
 export interface PresetStacks {

@@ -154,7 +154,13 @@ async function activateAce(
   config: StackActivationConfig,
   middleware: KoiMiddleware[],
 ): Promise<void> {
-  const backend = config.stacks.aceStoreBackend ?? "memory";
+  let backend = config.stacks.aceStoreBackend ?? "memory";
+
+  // Nexus ACE stores are not yet implemented — fall back to SQLite
+  if (backend === "nexus") {
+    log(config, "Stack: ace — Nexus ACE stores not yet available, falling back to sqlite");
+    backend = "sqlite";
+  }
 
   if (backend === "sqlite" && config.aceDataDir !== undefined) {
     const { resolve } = await import("node:path");

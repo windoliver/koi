@@ -147,6 +147,29 @@ describe("activatePresetStacks", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test("activates ace with nexus backend falling back to sqlite", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const tmpDir = mkdtempSync(join(tmpdir(), "koi-ace-nexus-test-"));
+
+    const result = await activatePresetStacks({
+      stacks: { ace: true, aceStoreBackend: "nexus" },
+      forgeBootstrap: undefined,
+      aceDataDir: tmpDir,
+    });
+
+    // Nexus falls back to SQLite — should still produce 1 middleware
+    expect(result.middleware.length).toBe(1);
+
+    // Verify SQLite DB was created as fallback
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(tmpDir, "ace.db"))).toBe(true);
+
+    const { rmSync } = await import("node:fs");
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   test("skips ace when flag is false", async () => {
     const result = await activatePresetStacks({
       stacks: { ace: false },
