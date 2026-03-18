@@ -351,8 +351,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // 5b. FORGE + AUTO-HARNESS
   // Auto-harness needs forgeStore at construction, so we pre-create the store
   // and pass harness outputs into forge bootstrap for full synthesis wiring.
-  let currentSessionId = `up:${manifest.name}:0`;
   let sessionCounter = 0;
+  // --resume: start from the given session ID so context-arena loads its history
+  if (flags.resume !== undefined) {
+    // Parse counter from "up:name:N" format if possible
+    const parts = flags.resume.split(":");
+    const parsed = Number.parseInt(parts[parts.length - 1] ?? "", 10);
+    if (!Number.isNaN(parsed)) sessionCounter = parsed;
+  }
+  let currentSessionId = flags.resume ?? `up:${manifest.name}:${String(sessionCounter)}`;
 
   // Pre-create auto-harness when preset enables it and forge is enabled.
   // The same store is shared with forge bootstrap so synthesized bricks
@@ -504,7 +511,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // partition tool results; updated per-message in the channel onMessage handler.
   let currentUpMessages: readonly InboundMessage[] = [];
   // let justified: mutable thread key read by conversation middleware's resolveThreadId
-  let currentUpThreadKey: string | undefined;
+  // When resuming, pre-set the thread key so conversation middleware loads history
+  let currentUpThreadKey: string | undefined = flags.resume;
 
   let contextArenaDispose: (() => void | Promise<void>) | undefined;
   let contextArenaConfig: import("@koi/context-arena").ContextArenaConfig | undefined;
@@ -548,6 +556,22 @@ export async function runUp(flags: UpFlags): Promise<void> {
       if (flags.verbose) {
         process.stderr.write(`  Context-arena: disabled (${message})\n`);
       }
+    }
+  }
+
+  // Validate resumed session exists (best-effort via JSONL file check)
+  if (flags.resume !== undefined) {
+    const { existsSync } = await import("node:fs");
+    const chatFile = resolve(
+      workspaceRoot,
+      "agents",
+      manifest.name,
+      "session",
+      "chat",
+      `${flags.resume}.jsonl`,
+    );
+    if (!existsSync(chatFile)) {
+      output.warn(`Session "${flags.resume}" not found — starting fresh conversation`);
     }
   }
 
@@ -846,6 +870,10 @@ export async function runUp(flags: UpFlags): Promise<void> {
     discoveredSources: discoveredSourceNames,
     prompts: seedResult.prompts,
   });
+
+  if (flags.resume !== undefined) {
+    output.info(`Resuming session: ${flags.resume}`);
+  }
 
   // 12. TUI
   let tuiApp:
