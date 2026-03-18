@@ -41,7 +41,7 @@ function verifyHmacProof(token: CapabilityToken, secret: string): boolean {
   const expected = createHmac("sha256", secret).update(canonical).digest("hex");
 
   try {
-    return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(digest, "hex"));
+    return timingSafeEqual(new Uint8Array(Buffer.from(expected, "hex")), new Uint8Array(Buffer.from(digest, "hex")));
   } catch {
     return false;
   }

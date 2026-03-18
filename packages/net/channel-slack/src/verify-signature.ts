@@ -41,7 +41,7 @@ export function verifySlackSignature(
     return false;
   }
 
-  return timingSafeEqual(Buffer.from(computed), Buffer.from(signature));
+  return timingSafeEqual(new Uint8Array(Buffer.from(computed)), new Uint8Array(Buffer.from(signature)));
 }
 
 /** Result of verifying a Slack HTTP request. */

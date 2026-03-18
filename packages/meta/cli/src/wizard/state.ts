@@ -37,6 +37,8 @@ export interface WizardState {
   readonly demoPack: string | undefined;
   /** Discovered data sources from env probing. */
   readonly dataSources: readonly { readonly name: string; readonly protocol: string }[];
+  /** API key for the selected model provider (entered during init). */
+  readonly apiKey: string | undefined;
 }
 
 export const DEFAULT_STATE: WizardState = {
@@ -52,4 +54,5 @@ export const DEFAULT_STATE: WizardState = {
   addons: [],
   demoPack: undefined,
   dataSources: [],
+  apiKey: undefined,
 } as const;

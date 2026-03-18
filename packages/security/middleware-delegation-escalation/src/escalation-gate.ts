@@ -69,10 +69,13 @@ export function createEscalationGate(
   timeoutMs?: number,
 ): EscalationGate {
   // Support both old positional args and new options object
-  const isOpts = signalOrOptions !== undefined && !(signalOrOptions instanceof AbortSignal);
-  const signal = isOpts ? signalOrOptions.signal : signalOrOptions;
-  const resolvedTimeoutMs = isOpts ? signalOrOptions.timeoutMs : timeoutMs;
-  const correlationToken = isOpts ? signalOrOptions.correlationToken : undefined;
+  const opts: EscalationGateOptions | undefined =
+    signalOrOptions === undefined ? undefined
+    : signalOrOptions instanceof AbortSignal ? { signal: signalOrOptions as AbortSignal }
+    : signalOrOptions as EscalationGateOptions;
+  const signal: AbortSignal | undefined = opts?.signal;
+  const resolvedTimeoutMs: number | undefined = opts?.timeoutMs ?? timeoutMs;
+  const correlationToken: string | undefined = opts?.correlationToken;
   // let: mutable — gate state is inherently stateful (pending → resolved)
   let pending = true;
   // let: mutable — cleanup references cleared on resolution

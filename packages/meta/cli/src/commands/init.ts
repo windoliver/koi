@@ -18,6 +18,7 @@ import { generateMinimal } from "../templates/minimal.js";
 import type { FileMap } from "../templates/shared.js";
 import { DEFAULT_STATE, type TemplateName, type WizardState } from "../wizard/state.js";
 import {
+  enterApiKey,
   enterDescription,
   enterName,
   selectChannels,
@@ -64,6 +65,7 @@ export async function runInit(flags: InitFlags): Promise<void> {
     enterName,
     enterDescription,
     selectModel,
+    enterApiKey,
     selectEngine,
     selectChannels,
     selectDataSources,

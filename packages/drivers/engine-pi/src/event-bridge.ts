@@ -133,6 +133,11 @@ export function createEventSubscriber(
   // let justified: per-turn guard to prevent double-counting usage when both
   // message_update "done" and turn_end fire for the same turn
   let usageRecordedThisTurn = false;
+  // Track error state from turn_end / message_update errors for propagation in agent_end
+  // let justified: pi-agent-core sets errorMessage on turn_end messages but the agent_end
+  // event only carries final messages — we must track the last error across turns
+  let lastStopReason: EngineStopReason = "completed";
+  let lastErrorMessage: string | undefined;
 
   return (event: AgentEvent): void => {
     switch (event.type) {
@@ -189,6 +194,8 @@ export function createEventSubscriber(
               );
               usageRecordedThisTurn = true;
             }
+            lastStopReason = "error";
+            lastErrorMessage = assistantEvent.error.errorMessage ?? "Unknown streaming error";
             break;
           }
           case "toolcall_delta":
@@ -252,6 +259,12 @@ export function createEventSubscriber(
           if (event.message.usage.cost) {
             metrics.addCost(event.message.usage.cost);
           }
+          // Track error state from the assistant message for propagation in agent_end
+          const msg = event.message as { readonly stopReason?: string; readonly errorMessage?: string };
+          if (msg.stopReason === "error" || msg.errorMessage) {
+            lastStopReason = "error";
+            lastErrorMessage = msg.errorMessage ?? "Model call failed";
+          }
         }
         metrics.addTurn();
         queue.push({ kind: "turn_end", turnIndex });
@@ -263,12 +276,31 @@ export function createEventSubscriber(
       }
 
       case "agent_end": {
+        // Check agent_end messages for error info (catch-block path in pi-agent-core
+        // emits agent_end with an error message containing stopReason + errorMessage)
+        if (lastStopReason === "completed" && event.messages.length > 0) {
+          for (const msg of event.messages) {
+            if ("role" in msg && msg.role === "assistant") {
+              const aMsg = msg as { readonly stopReason?: string; readonly errorMessage?: string };
+              if (aMsg.stopReason === "error" || aMsg.errorMessage) {
+                lastStopReason = "error";
+                lastErrorMessage = aMsg.errorMessage ?? "Agent ended with error";
+                break;
+              }
+            }
+          }
+        }
+
         const { metrics: finalMetrics, metadata } = metrics.finalizeWithMetadata();
+        const mergedMetadata: Record<string, unknown> = { ...metadata };
+        if (lastErrorMessage) {
+          mergedMetadata["errorMessage"] = lastErrorMessage;
+        }
         const output: EngineOutput = {
           content: [],
-          stopReason: "completed",
+          stopReason: lastStopReason,
           metrics: finalMetrics,
-          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+          ...(Object.keys(mergedMetadata).length > 0 ? { metadata: mergedMetadata } : {}),
         };
         queue.push({ kind: "done", output });
         queue.end();

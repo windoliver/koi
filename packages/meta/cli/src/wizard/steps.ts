@@ -176,6 +176,38 @@ export async function selectModel(state: WizardState, flags: InitFlags): Promise
   return { ...state, model: value as string };
 }
 
+export async function enterApiKey(state: WizardState, flags: InitFlags): Promise<StepResult> {
+  const provider = state.model.split(":")[0];
+  const envKey = provider !== undefined ? PROVIDER_ENV_KEYS[provider] : undefined;
+  if (envKey === undefined) {
+    return state;
+  }
+
+  // Skip if already set in environment
+  if (process.env[envKey] !== undefined && process.env[envKey] !== "") {
+    return state;
+  }
+
+  if (flags.yes) {
+    return state;
+  }
+
+  const value = await p.password({
+    message: `${envKey} (required for ${state.model})`,
+  });
+
+  if (p.isCancel(value)) {
+    p.cancel("Setup cancelled.");
+    return null;
+  }
+
+  if (value.trim().length === 0) {
+    return state;
+  }
+
+  return { ...state, apiKey: value.trim() };
+}
+
 export async function selectEngine(state: WizardState, flags: InitFlags): Promise<StepResult> {
   if (flags.engine !== undefined) {
     const value = flags.engine.trim();

@@ -74,7 +74,7 @@ function verifySignatureUncached(grant: DelegationGrant, secret: string): boolea
   }
 
   try {
-    return timingSafeEqual(Buffer.from(expectedProof.digest, "hex"), Buffer.from(digest, "hex"));
+    return timingSafeEqual(new Uint8Array(Buffer.from(expectedProof.digest, "hex")), new Uint8Array(Buffer.from(digest, "hex")));
   } catch {
     return false;
   }
