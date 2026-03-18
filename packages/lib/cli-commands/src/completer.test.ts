@@ -123,20 +123,49 @@ describe("argument completion", () => {
   });
 });
 
-// ─── Non-slash input ────────────────────────────────────────────────
+// ─── Non-slash input — file path completion ─────────────────────────
 
-describe("non-slash input", () => {
-  test("plain text returns no completions", () => {
-    const cache = createCompletionCache();
-    const deps = createMockDeps();
-    const [matches] = slashCompleter("hello", cache, deps);
-    expect(matches).toEqual([]);
-  });
-
+describe("file path completion", () => {
   test("empty string returns no completions", () => {
     const cache = createCompletionCache();
     const deps = createMockDeps();
     const [matches] = slashCompleter("", cache, deps);
+    expect(matches).toEqual([]);
+  });
+
+  test("partial relative path returns matching files", () => {
+    const cache = createCompletionCache();
+    const deps = createMockDeps();
+    // "packages/" is a known directory in the worktree root (where bun test runs)
+    const [matches] = slashCompleter("packages/lib/cli-commands/src/", cache, deps);
+    expect(matches.length).toBeGreaterThan(0);
+    expect(matches.some((m) => m.includes("completer.test.ts"))).toBe(true);
+  });
+
+  test("non-existent directory returns empty", () => {
+    const cache = createCompletionCache();
+    const deps = createMockDeps();
+    const [matches] = slashCompleter("nonexistent_dir_xyz/", cache, deps);
+    expect(matches).toEqual([]);
+  });
+
+  test("extracts last token from multi-word input", () => {
+    const cache = createCompletionCache();
+    const deps = createMockDeps();
+    const [matches, partial] = slashCompleter(
+      "look at packages/lib/cli-commands/src/",
+      cache,
+      deps,
+    );
+    expect(partial).toBe("packages/lib/cli-commands/src/");
+    expect(matches.length).toBeGreaterThan(0);
+  });
+
+  test("plain text without path returns no completions", () => {
+    const cache = createCompletionCache();
+    const deps = createMockDeps();
+    const [matches] = slashCompleter("hello world", cache, deps);
+    // "world" doesn't match any file/dir — returns empty
     expect(matches).toEqual([]);
   });
 });

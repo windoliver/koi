@@ -28,8 +28,37 @@ import {
 import { createColors } from "@koi/cli-render";
 import type { ChannelAdapter, ChannelCapabilities } from "@koi/core";
 
-/** Color mode for CLI output. */
-export type CliColorMode = "auto" | "always" | "never";
+/** Named theme presets for CLI output styling. */
+export type CliTheme = "default" | "mono" | "dark" | "light";
+
+/** Resolved theme settings derived from a CliTheme preset. */
+interface ResolvedTheme {
+  readonly colorEnabled: boolean;
+  readonly prompt: string;
+}
+
+/** Map theme presets to resolved settings. */
+function resolveTheme(
+  theme: CliTheme | string,
+  stream: NodeJS.WritableStream,
+  promptOverride?: string,
+): ResolvedTheme {
+  switch (theme) {
+    case "mono":
+      return { colorEnabled: false, prompt: promptOverride ?? "> " };
+    case "dark":
+      return { colorEnabled: detectTTY(stream), prompt: promptOverride ?? "\x1b[36mkoi>\x1b[0m " };
+    case "light":
+      return { colorEnabled: detectTTY(stream), prompt: promptOverride ?? "\x1b[34mkoi>\x1b[0m " };
+    default:
+      return { colorEnabled: detectTTY(stream), prompt: promptOverride ?? "> " };
+  }
+}
+
+/** Check if a stream is a TTY (for auto color detection). */
+function detectTTY(stream: NodeJS.WritableStream): boolean {
+  return (stream as NodeJS.WriteStream).isTTY === true;
+}
 
 /**
  * Configuration for the CLI channel adapter.
@@ -45,8 +74,15 @@ export interface CliChannelConfig {
   readonly prompt?: string;
   /** Sender ID for inbound messages. Defaults to `"cli-user"`. */
   readonly senderId?: string;
-  /** Color mode for command output. Defaults to `"auto"`. */
-  readonly colorMode?: CliColorMode;
+  /**
+   * Theme preset for CLI styling. Controls prompt appearance and color output.
+   * - `"default"` — auto-detect colors, plain prompt
+   * - `"mono"` — no colors, plain prompt
+   * - `"dark"` — auto-detect colors, cyan "koi>" prompt
+   * - `"light"` — auto-detect colors, blue "koi>" prompt
+   * Defaults to `"default"`.
+   */
+  readonly theme?: CliTheme | string;
   /**
    * Dependencies for slash command execution.
    * When provided, lines starting with "/" are intercepted as commands.
@@ -66,15 +102,6 @@ const CLI_CAPABILITIES = {
   supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
-/** Resolve color enabled state from color mode. */
-function resolveColorEnabled(mode: CliColorMode, stream: NodeJS.WritableStream): boolean {
-  if (mode === "always") return true;
-  if (mode === "never") return false;
-  // "auto" — detect from stream
-  const ws = stream as NodeJS.WriteStream;
-  return ws.isTTY === true;
-}
-
 /**
  * Creates a CLI channel adapter that reads from stdin and writes to stdout.
  *
@@ -85,14 +112,13 @@ export function createCliChannel(config?: CliChannelConfig): ChannelAdapter {
   const input = config?.input ?? process.stdin;
   const output = config?.output ?? process.stdout;
   const errorOutput = config?.errorOutput ?? process.stderr;
-  const prompt = config?.prompt ?? "> ";
   const senderId = config?.senderId ?? "cli-user";
-  const colorMode = config?.colorMode ?? "auto";
   const commandDeps = config?.commandDeps;
 
-  // Detect color once at creation time (Issue #14 — no per-write detection)
-  const colorEnabled = resolveColorEnabled(colorMode, output);
-  const colors = createColors(colorEnabled);
+  // Resolve theme preset — prompt and color settings determined once at creation
+  const theme = resolveTheme(config?.theme ?? "default", output, config?.prompt);
+  const prompt = theme.prompt;
+  const colors = createColors(theme.colorEnabled);
 
   // Completion cache — refreshed in background, read synchronously by completer
   const completionCache: CompletionCache = createCompletionCache();

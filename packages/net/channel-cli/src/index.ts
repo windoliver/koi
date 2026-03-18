@@ -5,6 +5,6 @@
  * terminal sessions. Reads user input via readline, writes output to stdout.
  */
 
-export type { CliChannelConfig, CliColorMode } from "./cli-channel.js";
+export type { CliChannelConfig, CliTheme } from "./cli-channel.js";
 export { createCliChannel } from "./cli-channel.js";
 export { descriptor } from "./descriptor.js";

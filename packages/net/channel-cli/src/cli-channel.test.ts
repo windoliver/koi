@@ -420,6 +420,81 @@ describe("createCliChannel", () => {
     await channel.disconnect();
   });
 
+  test("dark theme uses colored koi> prompt", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      theme: "dark",
+    });
+
+    await channel.connect();
+
+    const written = readStream(streams.output);
+    expect(written).toContain("koi>");
+
+    await channel.disconnect();
+  });
+
+  test("light theme uses colored koi> prompt", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      theme: "light",
+    });
+
+    await channel.connect();
+
+    const written = readStream(streams.output);
+    expect(written).toContain("koi>");
+
+    await channel.disconnect();
+  });
+
+  test("mono theme uses plain prompt", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      theme: "mono",
+    });
+
+    await channel.connect();
+
+    const written = readStream(streams.output);
+    expect(written).toContain("> ");
+    // Mono should not contain ANSI escape codes in prompt
+    expect(written).not.toContain("\x1b[36m");
+
+    await channel.disconnect();
+  });
+
+  test("prompt override takes precedence over theme default", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      theme: "dark",
+      prompt: "custom> ",
+    });
+
+    await channel.connect();
+
+    const written = readStream(streams.output);
+    expect(written).toContain("custom> ");
+
+    await channel.disconnect();
+  });
+
   test("does not implement sendStatus (backward-compatible)", () => {
     const streams = createMockStreams();
     activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];

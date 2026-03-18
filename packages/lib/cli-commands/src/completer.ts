@@ -3,8 +3,12 @@
  *
  * Uses a sync completer with TTL-cached dynamic data to avoid
  * async I/O on every Tab press. Cache is refreshed in the background.
+ *
+ * For non-slash input, provides file path completion via readdirSync.
  */
 
+import { readdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { CLI_COMMANDS } from "./commands.js";
 import type { CliCommandDeps } from "./types.js";
 
@@ -103,9 +107,9 @@ export function slashCompleter(
 ): readonly [readonly string[], string] {
   const trimmed = line.trimStart();
 
-  // Non-slash input: no completions
+  // Non-slash input: file path completion
   if (!trimmed.startsWith("/")) {
-    return [[], line];
+    return completeFilePath(trimmed);
   }
 
   // Check if we're completing a command name or command arguments
@@ -149,4 +153,38 @@ export function slashCompleter(
   }
 
   return [[], argPartial];
+}
+
+// ─── File Path Completion ───────────────────────────────────────────
+
+/**
+ * Complete file paths from the last whitespace-separated token on the line.
+ * Uses readdirSync to list entries in the directory portion of the partial path.
+ */
+function completeFilePath(line: string): readonly [readonly string[], string] {
+  // Extract the last token (the partial path being typed)
+  const tokens = line.split(/\s+/);
+  const partial = tokens[tokens.length - 1] ?? "";
+  if (partial === "") return [[], line];
+
+  try {
+    const resolved = resolve(partial);
+    const dir = partial.endsWith("/") ? resolved : dirname(resolved);
+    const prefix = partial.endsWith("/") ? "" : partial.slice(partial.lastIndexOf("/") + 1);
+    const entries = readdirSync(dir);
+    const lower = prefix.toLowerCase();
+    const matches = entries
+      .filter((e) => e.toLowerCase().startsWith(lower))
+      .map((e) => {
+        // Reconstruct the full partial path with the completed filename
+        const base = partial.endsWith("/")
+          ? partial
+          : partial.slice(0, partial.lastIndexOf("/") + 1);
+        return `${base}${e}`;
+      });
+    return [matches, partial];
+  } catch {
+    // Directory doesn't exist or not readable — no completions
+    return [[], partial];
+  }
 }
