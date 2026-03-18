@@ -343,11 +343,12 @@ export async function runStart(flags: StartFlags): Promise<void> {
   async function rebuildRuntimeForModel(newModel: string): Promise<void> {
     switchingModel = true;
     try {
-      await runtime.dispose();
-      adapter = createPiAdapter({ model: newModel });
+      // Build the new runtime BEFORE disposing the old one — if construction
+      // fails, the previous runtime remains intact and usable.
+      const newAdapter = createPiAdapter({ model: newModel });
       const rebuilt = await createForgeConfiguredKoi({
         manifest,
-        adapter,
+        adapter: newAdapter,
         middleware: composed.middleware,
         providers: composed.providers,
         extensions,
@@ -360,8 +361,12 @@ export async function runStart(flags: StartFlags): Promise<void> {
             }
           : {}),
       });
+      // New runtime is good — now dispose the old one and swap
+      const oldRuntime = runtime;
       runtime = rebuilt.runtime;
+      adapter = newAdapter;
       activeModelName = newModel;
+      await oldRuntime.dispose();
     } finally {
       switchingModel = false;
     }
