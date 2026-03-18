@@ -327,26 +327,29 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // let justified: conditionally set when --admin, disposed at cleanup
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
 
+  // let justified: mutable model override — /model switches it mid-session
+  let activeModelName = modelName;
+
   const commandDeps: CliCommandDeps = {
     cancelStream: () => {
       cancelCurrentRun?.();
     },
     listModels: () => [modelName],
-    currentModel: () => modelName,
-    setModel: () => {
-      // Model switching not supported in koi start (single manifest)
+    currentModel: () => activeModelName,
+    setModel: (name: string) => {
+      activeModelName = name;
     },
     output: process.stdout,
     exit: () => {
       shutdown();
     },
-    // Admin-only deps: closures capture adminBridge which is set up later.
+    // Admin-only deps: closures capture adminBridge/adminDispatcher set up later.
     // Before admin is initialized, these return unavailable/empty results.
     ...(flags.admin
       ? {
           getStatus: async () => {
             if (adminBridge === undefined) return "Admin server starting...";
-            return `Agent: ${manifest.name} — model: ${modelName}`;
+            return `Agent: ${manifest.name} — model: ${activeModelName}`;
           },
           listAgents: async () => {
             if (adminBridge === undefined) return [];
@@ -356,6 +359,34 @@ export async function runStart(flags: StartFlags): Promise<void> {
               agentId: a.agentId,
               state: a.state,
             }));
+          },
+          attachAgent: async (name: string) => {
+            if (adminDispatcher === undefined) {
+              return { ok: false, message: "Agent dispatch not available yet" } as const;
+            }
+            const handler = adminDispatcher.getChatHandler(name);
+            if (handler === undefined) {
+              return { ok: false, message: `No chat handler for agent: ${name}` } as const;
+            }
+            process.stderr.write(`Attached to agent: ${name}\n`);
+            return { ok: true } as const;
+          },
+          listSessions: async () => {
+            // Read session chat logs from the local workspace filesystem
+            const agentDirName = adminBridge?.agentId ?? manifest.name;
+            const chatDir = join(startWorkspaceRoot, "agents", agentDirName, "session", "chat");
+            try {
+              const entries = await readdir(chatDir);
+              return entries
+                .filter((f) => f.endsWith(".jsonl"))
+                .map((f) => ({
+                  sessionId: f.replace(".jsonl", ""),
+                  agentName: manifest.name,
+                  startedAt: 0,
+                }));
+            } catch {
+              return [];
+            }
           },
         }
       : {}),
@@ -396,9 +427,30 @@ export async function runStart(flags: StartFlags): Promise<void> {
       : {}),
   };
 
-  const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [
-    createCliChannel({ commandDeps }),
-  ];
+  // Inject commandDeps into CLI channels — whether manifest-resolved or default.
+  // Manifest-resolved CLI channels are created by the descriptor without commandDeps,
+  // so we replace them with a fresh instance that carries slash command support.
+  const resolvedChannels = resolved.value.channels;
+  const cliManifestOptions = (manifest.channels ?? []).find(
+    (c) => c.name === "@koi/channel-cli" || c.name === "cli",
+  )?.options as Readonly<Record<string, unknown>> | undefined;
+  const channels: readonly ChannelAdapter[] =
+    resolvedChannels !== undefined
+      ? resolvedChannels.map((ch) => {
+          if (ch.name === "cli") {
+            return createCliChannel({
+              commandDeps,
+              ...(typeof cliManifestOptions?.theme === "string"
+                ? { theme: cliManifestOptions.theme }
+                : {}),
+              ...(typeof cliManifestOptions?.prompt === "string"
+                ? { prompt: cliManifestOptions.prompt }
+                : {}),
+            });
+          }
+          return ch;
+        })
+      : [createCliChannel({ commandDeps })];
   for (const ch of channels) {
     await ch.connect();
   }
