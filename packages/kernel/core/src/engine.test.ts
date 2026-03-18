@@ -27,6 +27,8 @@ function engineEventLabel(event: EngineEvent): string {
       return "start";
     case "text_delta":
       return "delta";
+    case "thinking_delta":
+      return "thinking";
     case "tool_call_start":
       return "tcs";
     case "tool_call_delta":
@@ -63,6 +65,11 @@ describe("EngineEvent exhaustiveness", () => {
   test("text_delta variant is handled", () => {
     const event: EngineEvent = { kind: "text_delta", delta: "hi" };
     expect(engineEventLabel(event)).toBe("delta");
+  });
+
+  test("thinking_delta variant is handled", () => {
+    const event: EngineEvent = { kind: "thinking_delta", delta: "hmm" };
+    expect(engineEventLabel(event)).toBe("thinking");
   });
 
   test("tool_call_start variant is handled", () => {
