@@ -133,11 +133,15 @@ describe("file path completion", () => {
     expect(matches).toEqual([]);
   });
 
-  test("partial relative path returns matching files", () => {
+  // Use absolute path so tests work regardless of CWD (package dir or monorepo root).
+  // Absolute paths like "/Users/..." are distinguished from slash commands ("/help")
+  // by the presence of "/" after the leading slash.
+  const testDir = `${import.meta.dir}/`;
+
+  test("partial path returns matching files", () => {
     const cache = createCompletionCache();
     const deps = createMockDeps();
-    // "packages/" is a known directory in the worktree root (where bun test runs)
-    const [matches] = slashCompleter("packages/lib/cli-commands/src/", cache, deps);
+    const [matches] = slashCompleter(testDir, cache, deps);
     expect(matches.length).toBeGreaterThan(0);
     expect(matches.some((m) => m.includes("completer.test.ts"))).toBe(true);
   });
@@ -152,12 +156,8 @@ describe("file path completion", () => {
   test("extracts last token from multi-word input", () => {
     const cache = createCompletionCache();
     const deps = createMockDeps();
-    const [matches, partial] = slashCompleter(
-      "look at packages/lib/cli-commands/src/",
-      cache,
-      deps,
-    );
-    expect(partial).toBe("packages/lib/cli-commands/src/");
+    const [matches, partial] = slashCompleter(`look at ${testDir}`, cache, deps);
+    expect(partial).toBe(testDir);
     expect(matches.length).toBeGreaterThan(0);
   });
 

@@ -107,8 +107,13 @@ export function slashCompleter(
 ): readonly [readonly string[], string] {
   const trimmed = line.trimStart();
 
-  // Non-slash input: file path completion
-  if (!trimmed.startsWith("/")) {
+  // Distinguish slash commands ("/help", "/model claude") from absolute paths ("/Users/foo").
+  // Slash commands: first token is /word with no embedded slashes.
+  // Absolute paths: contain "/" after the leading slash (e.g., "/Users/").
+  const firstToken = trimmed.split(/\s+/)[0] ?? "";
+  const isSlashCommand = firstToken.startsWith("/") && !firstToken.slice(1).includes("/");
+
+  if (!isSlashCommand) {
     return completeFilePath(trimmed);
   }
 
