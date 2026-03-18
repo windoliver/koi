@@ -126,4 +126,130 @@ describe("createDockerAdapter", () => {
       }),
     );
   });
+
+  // ---- findOrCreate persistence tests ----
+
+  test("findOrCreate is absent when client lacks find/inspect/start", () => {
+    const client = createMockClient();
+    const result = createDockerAdapter({ client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.findOrCreate).toBeUndefined();
+  });
+
+  test("findOrCreate reuses running container", async () => {
+    const container = createMockContainer();
+    const client: DockerClient = {
+      createContainer: mock(() => Promise.resolve(createMockContainer())),
+      findContainer: mock(() => Promise.resolve(container)),
+      inspectState: mock(() => Promise.resolve("running")),
+      startContainer: mock(() => Promise.resolve()),
+    };
+    const result = createDockerAdapter({ client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.findOrCreate).toBeDefined();
+
+    const instance = await result.value.findOrCreate?.("my-scope", {
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    expect(client.findContainer).toHaveBeenCalledWith({ "koi.sandbox.scope": "my-scope" });
+    expect(client.startContainer).not.toHaveBeenCalled();
+    expect(client.createContainer).not.toHaveBeenCalled();
+    expect(instance).toBeDefined();
+    if (instance === undefined) return;
+    expect(instance.detach).toBeDefined();
+  });
+
+  test("findOrCreate restarts stopped container", async () => {
+    const container = createMockContainer();
+    const client: DockerClient = {
+      createContainer: mock(() => Promise.resolve(createMockContainer())),
+      findContainer: mock(() => Promise.resolve(container)),
+      inspectState: mock(() => Promise.resolve("exited")),
+      startContainer: mock(() => Promise.resolve()),
+    };
+    const result = createDockerAdapter({ client });
+    if (!result.ok) return;
+
+    await result.value.findOrCreate?.("my-scope", {
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    expect(client.startContainer).toHaveBeenCalledWith(container.id);
+    expect(client.createContainer).not.toHaveBeenCalled();
+  });
+
+  test("findOrCreate creates fresh when container not found", async () => {
+    const newContainer = createMockContainer();
+    const client: DockerClient = {
+      createContainer: mock(() => Promise.resolve(newContainer)),
+      findContainer: mock(() => Promise.resolve(undefined)),
+      inspectState: mock(() => Promise.resolve("")),
+      startContainer: mock(() => Promise.resolve()),
+    };
+    const result = createDockerAdapter({ client });
+    if (!result.ok) return;
+
+    await result.value.findOrCreate?.("my-scope", {
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    expect(client.createContainer).toHaveBeenCalledTimes(1);
+    const callArgs = (client.createContainer as ReturnType<typeof mock>).mock
+      .calls[0]?.[0] as Record<string, unknown>;
+    expect(callArgs.labels).toMatchObject({ "koi.sandbox.scope": "my-scope" });
+  });
+
+  test("findOrCreate creates fresh when container is dead", async () => {
+    const deadContainer = createMockContainer();
+    const client: DockerClient = {
+      createContainer: mock(() => Promise.resolve(createMockContainer())),
+      findContainer: mock(() => Promise.resolve(deadContainer)),
+      inspectState: mock(() => Promise.resolve("dead")),
+      startContainer: mock(() => Promise.resolve()),
+    };
+    const result = createDockerAdapter({ client });
+    if (!result.ok) return;
+
+    await result.value.findOrCreate?.("my-scope", {
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    expect(client.createContainer).toHaveBeenCalledTimes(1);
+  });
+
+  test("detach stops container without removing", async () => {
+    const container = createMockContainer();
+    const client: DockerClient = {
+      createContainer: mock(() => Promise.resolve(createMockContainer())),
+      findContainer: mock(() => Promise.resolve(container)),
+      inspectState: mock(() => Promise.resolve("running")),
+      startContainer: mock(() => Promise.resolve()),
+    };
+    const result = createDockerAdapter({ client });
+    if (!result.ok) return;
+
+    const instance = await result.value.findOrCreate?.("my-scope", {
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    if (instance === undefined) return;
+    expect(instance.detach).toBeDefined();
+    await instance.detach?.();
+
+    expect(container.stop).toHaveBeenCalledTimes(1);
+    expect(container.remove).not.toHaveBeenCalled();
+  });
 });

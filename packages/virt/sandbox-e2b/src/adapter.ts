@@ -9,7 +9,7 @@ import {
   mountNexusFuse,
 } from "@koi/sandbox-cloud-base";
 import { createE2bInstance } from "./instance.js";
-import type { E2bAdapterConfig, E2bCreateOpts } from "./types.js";
+import type { E2bAdapterConfig, E2bCreateOpts, E2bSdkSandbox } from "./types.js";
 import { validateE2bConfig } from "./validate.js";
 
 /**
@@ -23,6 +23,16 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
   if (!validated.ok) return validated;
 
   const resolvedConfig = validated.value;
+
+  async function wrapSdk(sdkSandbox: E2bSdkSandbox, profile: SandboxProfile) {
+    const instance = createE2bInstance(sdkSandbox);
+    if (profile.nexusMounts !== undefined && profile.nexusMounts.length > 0) {
+      await mountNexusFuse(instance, profile.nexusMounts);
+    }
+    return instance;
+  }
+
+  const findByScope = resolvedConfig.client.findSandboxByScope;
 
   return {
     ok: true,
@@ -42,12 +52,40 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
             : {}),
         };
         const sdkSandbox = await resolvedConfig.client.createSandbox(opts);
-        const instance = createE2bInstance(sdkSandbox);
-        if (_profile.nexusMounts !== undefined && _profile.nexusMounts.length > 0) {
-          await mountNexusFuse(instance, _profile.nexusMounts);
-        }
-        return instance;
+        return wrapSdk(sdkSandbox, _profile);
       },
+      ...(findByScope !== undefined
+        ? {
+            findOrCreate: async (scope: string, profile: SandboxProfile) => {
+              const unsupported = detectUnsupportedProfileFields(profile);
+              if (unsupported !== undefined) {
+                throw new Error(formatUnsupportedProfileError("E2B", unsupported));
+              }
+
+              // Try finding and resuming a paused sandbox by scope key.
+              // The client does scope → sandbox-ID resolution via metadata search.
+              try {
+                const resumed = await findByScope(scope);
+                return wrapSdk(resumed, profile);
+              } catch {
+                // Not found or resume failed — create fresh with scope metadata
+                // so the client can find it in the next session.
+                const opts: E2bCreateOpts = {
+                  apiKey: resolvedConfig.apiKey,
+                  ...(resolvedConfig.template !== undefined
+                    ? { template: resolvedConfig.template }
+                    : {}),
+                  ...(resolvedConfig.mounts !== undefined && resolvedConfig.mounts.length > 0
+                    ? { mounts: resolvedConfig.mounts }
+                    : {}),
+                  metadata: { "koi.sandbox.scope": scope },
+                };
+                const sdkSandbox = await resolvedConfig.client.createSandbox(opts);
+                return wrapSdk(sdkSandbox, profile);
+              }
+            },
+          }
+        : {}),
     },
   };
 }

@@ -103,6 +103,7 @@ export type EngineInput =
 
 export type EngineEvent =
   | { readonly kind: "text_delta"; readonly delta: string }
+  | { readonly kind: "thinking_delta"; readonly delta: string }
   | {
       readonly kind: "tool_call_start";
       readonly toolName: string;

@@ -4,6 +4,10 @@
  * Cloud sandbox instances are expensive to create. This bridge keeps
  * a single instance alive and reuses it across execute() calls,
  * destroying it after a configurable TTL of inactivity.
+ *
+ * When `scope` is set, the bridge uses `adapter.findOrCreate(scope, profile)`
+ * for instance creation and calls `instance.detach()` on dispose instead of
+ * `instance.destroy()`, enabling cross-session sandbox persistence.
  */
 
 import type {
@@ -21,6 +25,10 @@ export interface BridgeConfig {
   readonly profile: SandboxProfile;
   /** Time-to-live in ms after last use. Default: 60_000. */
   readonly ttlMs?: number;
+  /** Persistence scope. When set, uses findOrCreate and detach instead of create/destroy. */
+  readonly scope?: string | undefined;
+  /** Hard upper bound on sandbox lifetime in ms. Instance is destroyed (not detached) after this. */
+  readonly maxLifetimeMs?: number | undefined;
 }
 
 /** Default TTL: 60 seconds. */
@@ -44,12 +52,15 @@ export interface CachedExecutor extends SandboxExecutor {
 export function createCachedBridge(config: BridgeConfig): CachedExecutor {
   const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
   const profileTimeoutMs = config.profile.resources.timeoutMs;
+  const scope = config.scope;
+  const maxLifetimeMs = config.maxLifetimeMs;
 
   // Mutable state — instance lifecycle management
   let instance: SandboxInstance | undefined;
   // let justified: inflight tracks the pending create() to prevent duplicate instance creation
   let inflightCreate: Promise<SandboxInstance> | undefined;
   let ttlTimer: ReturnType<typeof setTimeout> | undefined;
+  let lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
 
   function resetTtl(): void {
@@ -57,8 +68,40 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
       clearTimeout(ttlTimer);
     }
     ttlTimer = setTimeout(() => {
-      void destroyInstance();
+      void disposeInstance();
     }, ttlMs);
+    // Prevent the TTL timer from keeping the process alive
+    if (typeof ttlTimer === "object" && "unref" in ttlTimer) {
+      ttlTimer.unref();
+    }
+  }
+
+  function startLifetimeTimer(): void {
+    if (maxLifetimeMs === undefined || lifetimeTimer !== undefined) return;
+    lifetimeTimer = setTimeout(() => {
+      // Hard lifetime expired — force destroy (not detach), even for scoped instances
+      void forceDestroyInstance();
+    }, maxLifetimeMs);
+    if (typeof lifetimeTimer === "object" && "unref" in lifetimeTimer) {
+      lifetimeTimer.unref();
+    }
+  }
+
+  /** Force-destroy regardless of scope — used for lifetime expiry. */
+  async function forceDestroyInstance(): Promise<void> {
+    if (ttlTimer !== undefined) {
+      clearTimeout(ttlTimer);
+      ttlTimer = undefined;
+    }
+    if (lifetimeTimer !== undefined) {
+      clearTimeout(lifetimeTimer);
+      lifetimeTimer = undefined;
+    }
+    if (instance !== undefined) {
+      const toDestroy = instance;
+      instance = undefined;
+      await toDestroy.destroy();
+    }
   }
 
   async function ensureInstance(): Promise<SandboxInstance> {
@@ -70,24 +113,45 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
     }
     // Lock: reuse in-flight creation to prevent concurrent duplicate instances
     if (inflightCreate === undefined) {
-      inflightCreate = config.adapter.create(config.profile).then((inst) => {
-        instance = inst;
-        inflightCreate = undefined;
-        return inst;
-      });
+      const createPromise =
+        scope !== undefined && config.adapter.findOrCreate !== undefined
+          ? config.adapter.findOrCreate(scope, config.profile)
+          : config.adapter.create(config.profile);
+
+      inflightCreate = createPromise.then(
+        (inst) => {
+          instance = inst;
+          inflightCreate = undefined;
+          startLifetimeTimer();
+          return inst;
+        },
+        (err: unknown) => {
+          inflightCreate = undefined;
+          throw err;
+        },
+      );
     }
     return inflightCreate;
   }
 
-  async function destroyInstance(): Promise<void> {
+  async function disposeInstance(): Promise<void> {
     if (ttlTimer !== undefined) {
       clearTimeout(ttlTimer);
       ttlTimer = undefined;
     }
+    if (lifetimeTimer !== undefined) {
+      clearTimeout(lifetimeTimer);
+      lifetimeTimer = undefined;
+    }
     if (instance !== undefined) {
-      const toDestroy = instance;
+      const toDispose = instance;
       instance = undefined;
-      await toDestroy.destroy();
+      // Scope-aware: detach if scope set and instance supports it, otherwise destroy
+      if (scope !== undefined && toDispose.detach !== undefined) {
+        await toDispose.detach();
+      } else {
+        await toDispose.destroy();
+      }
     }
   }
 
@@ -170,7 +234,7 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
 
     dispose: async (): Promise<void> => {
       disposed = true;
-      await destroyInstance();
+      await disposeInstance();
     },
 
     warmup: async (): Promise<void> => {

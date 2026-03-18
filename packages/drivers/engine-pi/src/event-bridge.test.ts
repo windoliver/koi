@@ -152,9 +152,8 @@ describe("createEventSubscriber", () => {
 
     const events = await collectEvents(queue);
     expect(events[0]).toEqual({
-      kind: "custom",
-      type: "thinking_delta",
-      data: { delta: "reasoning..." },
+      kind: "thinking_delta",
+      delta: "reasoning...",
     });
   });
 

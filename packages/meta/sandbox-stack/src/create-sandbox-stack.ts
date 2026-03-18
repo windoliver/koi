@@ -30,6 +30,8 @@ export function createSandboxStack(config: SandboxStackConfig): SandboxStack {
     adapter: config.adapter,
     profile,
     ttlMs: config.idleTtlMs ?? DEFAULT_IDLE_TTL_MS,
+    scope: config.scope,
+    maxLifetimeMs: config.maxLifetimeMs,
   });
 
   const guardedExecutor = createTimeoutGuardedExecutor(bridge, timeoutMs);

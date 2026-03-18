@@ -22,6 +22,7 @@ const STATE: WizardState = {
   addons: [],
   demoPack: undefined,
   dataSources: [],
+  apiKey: undefined,
 };
 
 describe("generateManifestYaml", () => {
@@ -218,6 +219,7 @@ const DEMO_STATE: WizardState = {
   addons: [],
   demoPack: "connected",
   dataSources: [],
+  apiKey: undefined,
 };
 
 describe("generateDemoManifestYaml", () => {

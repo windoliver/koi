@@ -14,7 +14,7 @@ import type {
   SandboxSpawnOptions,
 } from "@koi/core";
 import type { ClassifiedError } from "./classify-error.js";
-import { createDestroyGuard } from "./guard.js";
+import { createInstanceGuard } from "./guard.js";
 import { shellJoin } from "./shell-escape.js";
 import { createOutputAccumulator, DEFAULT_MAX_OUTPUT_BYTES } from "./truncate.js";
 
@@ -87,6 +87,8 @@ export interface CloudInstanceConfig {
   readonly destroy: () => Promise<void>;
   /** Adapter name for error messages (e.g., "e2b", "vercel"). */
   readonly name: string;
+  /** Provider-specific detach function. When provided, instance.detach is exposed. */
+  readonly detach?: (() => Promise<void>) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +98,7 @@ export interface CloudInstanceConfig {
 /** Create a SandboxInstance backed by a cloud SDK sandbox. */
 export function createCloudInstance(config: CloudInstanceConfig): SandboxInstance {
   const { sdk, classifyError, destroy, name } = config;
-  const guard = createDestroyGuard(name);
+  const guard = createInstanceGuard(name);
 
   return {
     exec: async (
@@ -292,5 +294,18 @@ export function createCloudInstance(config: CloudInstanceConfig): SandboxInstanc
       guard.markDestroyed();
       await destroy();
     },
+
+    // Only expose detach() if the provider supports it
+    ...(config.detach !== undefined
+      ? {
+          detach: async (): Promise<void> => {
+            guard.markDetached();
+            const detachFn = config.detach;
+            if (detachFn !== undefined) {
+              await detachFn();
+            }
+          },
+        }
+      : {}),
   };
 }

@@ -11,6 +11,13 @@
 import type { SandboxProfile } from "./sandbox-profile.js";
 
 // ---------------------------------------------------------------------------
+// Instance lifecycle state
+// ---------------------------------------------------------------------------
+
+/** Tri-state lifecycle for sandbox instances that support persistence. */
+export type SandboxInstanceState = "active" | "detached" | "destroyed";
+
+// ---------------------------------------------------------------------------
 // Execution options for commands inside a sandbox
 // ---------------------------------------------------------------------------
 
@@ -117,6 +124,14 @@ export interface SandboxInstance {
   readonly readFile: (path: string) => Promise<Uint8Array>;
   readonly writeFile: (path: string, content: Uint8Array) => Promise<void>;
   readonly destroy: () => Promise<void>;
+  /**
+   * Detach from this instance without destroying it.
+   *
+   * The instance remains alive (paused/stopped) and can be reattached later
+   * via `SandboxAdapter.findOrCreate`. Optional — only persistent-capable
+   * backends expose this. Callers must check for undefined.
+   */
+  readonly detach?: (() => Promise<void>) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,4 +147,16 @@ export interface SandboxInstance {
 export interface SandboxAdapter {
   readonly name: string;
   readonly create: (profile: SandboxProfile) => Promise<SandboxInstance>;
+  /**
+   * Find an existing sandbox by scope key or create a new one.
+   *
+   * Used for cross-session persistence: the bridge calls this instead of
+   * `create()` when a scope is configured. The adapter looks up a previous
+   * instance (by label/metadata), reattaches if possible, or creates fresh.
+   *
+   * Optional — adapters that don't support persistence omit this.
+   */
+  readonly findOrCreate?:
+    | ((scope: string, profile: SandboxProfile) => Promise<SandboxInstance>)
+    | undefined;
 }

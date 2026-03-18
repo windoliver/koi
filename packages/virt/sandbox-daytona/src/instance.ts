@@ -14,5 +14,7 @@ export function createDaytonaInstance(sdk: DaytonaSdkSandbox): SandboxInstance {
     classifyError: classifyDaytonaError,
     destroy: () => sdk.close(),
     name: "daytona",
+    // Daytona workspaces persist by default — detach = close without delete
+    detach: () => sdk.close(),
   });
 }

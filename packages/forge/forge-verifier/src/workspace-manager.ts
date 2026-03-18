@@ -263,7 +263,6 @@ async function computeDirectorySize(dir: string): Promise<number> {
   // let justified: totalSize is accumulated across entries
   let totalSize = 0;
   try {
-    // @ts-expect-error — recursive option exists at runtime but not in all @types/node versions
     const entries: readonly string[] = await readdir(dir, { recursive: true });
     for (const entry of entries) {
       try {

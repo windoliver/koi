@@ -69,7 +69,7 @@ function expandLabeledBlocks(msg: InboundMessage): readonly InboundMessage[] {
     return {
       content: [{ kind: "text" as const, text }],
       senderId: role === "assistant" ? "assistant" : (msg.senderId ?? msg.threadId),
-      threadId: msg.threadId,
+      ...(msg.threadId !== undefined ? { threadId: msg.threadId } : {}),
       timestamp: msg.timestamp,
       metadata: { ...msg.metadata, role },
     };
