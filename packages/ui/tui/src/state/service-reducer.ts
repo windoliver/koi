@@ -37,6 +37,15 @@ export function reduceService(state: TuiState, action: TuiAction): Partial<TuiSt
     case "clear_doctor_checks":
       return { doctorChecks: [] };
 
+    case "set_demo_packs":
+      return { demoPacks: action.packs };
+
+    case "set_pending_stop":
+      return { pendingStopConfirm: true };
+
+    case "clear_pending_stop":
+      return { pendingStopConfirm: false };
+
     default:
       return undefined;
   }

@@ -32,6 +32,8 @@
     "check:unused": "bunx knip",
     "check:duplicates": "bunx jscpd .",
     "koi": "./packages/meta/cli/dist/bin.js",
+    "tui": "bun ./packages/meta/cli/dist/bin.js tui",
+    "tui:init": "bun ./packages/meta/cli/dist/bin.js tui init",
     "changeset": "bunx changeset",
     "changeset:version": "bunx changeset version && bun install",
     "changeset:publish": "bunx changeset publish",

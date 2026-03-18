@@ -37,6 +37,7 @@ import { MailboxView } from "./mailbox-view.js";
 import { MiddlewareView } from "./middleware-view.js";
 import { ModelStepView } from "./model-step-view.js";
 import { NexusBrowserView } from "./nexus-browser-view.js";
+import { NexusConfigView } from "./nexus-config-view.js";
 import { NexusView } from "./nexus-view.js";
 import { ProcessTreeView } from "./process-tree-view.js";
 import { ProgressView } from "./progress-view.js";
@@ -82,6 +83,7 @@ export interface TuiRootProps {
 function mapKeyEventToSequence(key: KeyEvent): string | null {
   if (key.ctrl) {
     switch (key.name) {
+      case "c": return "\x03";
       case "p": return "\x10";
       case "r": return "\x12";
       case "o": return "\x0F";
@@ -89,11 +91,11 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
       case "f": return "\x06";
     }
   }
-  if (key.name === "Escape") return "\x1b";
-  if (key.name === "Enter" || key.name === "Return") return "\r";
-  if (key.name === "Tab") return "\t";
-  if (key.name === "ArrowUp") return "\x1b[A";
-  if (key.name === "ArrowDown") return "\x1b[B";
+  if (key.name === "escape" || key.name === "Escape") return "\x1b";
+  if (key.name === "return" || key.name === "Enter" || key.name === "Return") return "\r";
+  if (key.name === "tab" || key.name === "Tab") return "\t";
+  if (key.name === "up" || key.name === "ArrowUp") return "\x1b[A";
+  if (key.name === "down" || key.name === "ArrowDown") return "\x1b[B";
   // Single-char keys for view-specific shortcuts
   const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "l", "+", "?", " ", "r"];
   if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
@@ -267,6 +269,16 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           />
         )}
 
+        {/* Nexus config step */}
+        {view === "nexusconfig" && (
+          <NexusConfigView
+            focusedIndex={state.nexusConfigFocusedIndex}
+            selectedMode={state.nexusConfigMode}
+            sourcePath={state.nexusSourcePath}
+            remoteUrl={state.nexusRemoteUrl}
+          />
+        )}
+
         {/* Boardroom views */}
         {(view === "agents" || (isPalette && backgroundView === "agents")) && (
           <AgentListView agents={agents} onSelect={props.onAgentSelect} focused={view === "agents"} zoomLevel={state.zoomLevel} listMode={state.agentListMode} />
@@ -369,7 +381,11 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
 
         {/* Service management view */}
         {view === "service" && (
-          <ServiceView status={state.serviceStatus} />
+          <ServiceView
+            status={state.serviceStatus}
+            demoPacks={state.demoPacks}
+            pendingStopConfirm={state.pendingStopConfirm}
+          />
         )}
 
         {/* Doctor view */}

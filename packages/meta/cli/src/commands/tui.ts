@@ -126,10 +126,30 @@ async function scaffoldManifestFromWizard(wizardState: SetupWizardState): Promis
   await Bun.write(manifestPath, yaml);
 }
 
+async function probeAdminHealth(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function runTui(flags: TuiFlags): Promise<void> {
   const adminUrl = flags.url ?? DEFAULT_ADMIN_URL;
   const refreshMs = flags.refresh * 1000;
-  const isWelcome = flags.mode === "welcome";
+  let isWelcome = flags.mode === "welcome";
+
+  // Auto-detect: no koi.yaml + no admin → welcome mode
+  if (!isWelcome) {
+    const { existsSync } = await import("node:fs");
+    if (!existsSync("koi.yaml")) {
+      const reachable = await probeAdminHealth(adminUrl);
+      if (!reachable) {
+        isWelcome = true;
+      }
+    }
+  }
 
   // Dynamic import to keep @koi/tui out of the main CLI bundle
   const { createTuiApp } = await import("@koi/tui");
@@ -163,6 +183,24 @@ export async function runTui(flags: TuiFlags): Promise<void> {
             //    resolve agent, then boot runtime via bootRuntime()
             const { resolve } = await import("node:path");
             const { startStack } = await import("./up/start-stack.js");
+
+            // Read Nexus config from TUI wizard state
+            const tuiState = app.store.getState();
+            const nexusMode = tuiState.nexusConfigMode;
+            const nexusSource =
+              nexusMode === "source"
+                ? tuiState.nexusSourcePath || flags.nexusSource
+                : flags.nexusSource;
+            const nexusBuild = nexusMode === "source" || flags.nexusBuild;
+            // Remote mode: set NEXUS_URL env var so the nexus phase skips Docker
+            if (nexusMode === "remote" && tuiState.nexusRemoteUrl !== "") {
+              process.env.NEXUS_URL = tuiState.nexusRemoteUrl;
+            }
+            // Skip mode: set NEXUS_URL to empty to signal no-nexus
+            if (nexusMode === "skip") {
+              process.env.KOI_NEXUS_SKIP = "1";
+            }
+
             const ctx: StartStackContext = {
               wizardState,
               manifestPath: resolve("koi.yaml"),
@@ -170,6 +208,9 @@ export async function runTui(flags: TuiFlags): Promise<void> {
               verbose: false,
               adminPort: 3100,
               adminUrl,
+              nexusSource,
+              nexusBuild,
+              nexusPort: flags.nexusPort,
             };
             const result = await startStack(ctx, callbacks);
             // Capture the runtime handle for lifecycle cleanup on shutdown
@@ -327,6 +368,26 @@ export async function runTui(flags: TuiFlags): Promise<void> {
                 }
                 break;
               }
+              case "demo-list": {
+                const packList = await client.demoPacks();
+                if (packList.ok) {
+                  app.store.dispatch({
+                    kind: "set_demo_packs",
+                    packs: packList.value.map((p) => ({ id: p.id, description: p.description })),
+                  });
+                  app.store.dispatch({ kind: "set_view", view: "service" });
+                } else {
+                  app.store.dispatch({
+                    kind: "set_error",
+                    error: {
+                      kind: "api_error",
+                      code: packList.error.kind,
+                      message: `Failed to list demo packs: ${packList.error.kind}`,
+                    },
+                  });
+                }
+                break;
+              }
               case "deploy":
                 await client.deploy();
                 break;
@@ -357,6 +418,25 @@ export async function runTui(flags: TuiFlags): Promise<void> {
     shutdown().catch(() => {
       process.exit(1);
     });
+  });
+
+  // Ensure terminal is restored on any exit — raw mode must be cleaned up
+  const restoreTerminal = (): void => {
+    try {
+      app.stop().catch(() => {});
+    } catch {
+      // Best effort
+    }
+    // Force cooked mode in case renderer.destroy() didn't run
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+  };
+  process.on("exit", restoreTerminal);
+  process.on("uncaughtException", (err) => {
+    restoreTerminal();
+    process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
   });
 
   if (!isWelcome) {

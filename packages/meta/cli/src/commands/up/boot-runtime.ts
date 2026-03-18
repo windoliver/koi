@@ -97,6 +97,10 @@ export interface BootRuntimeOptions {
   readonly verbose: boolean;
   /** Admin panel HTTP port (default: 3100). */
   readonly adminPort?: number | undefined;
+  /** Base URL of a running Nexus instance (set by the nexus phase in start-stack). */
+  readonly nexusBaseUrl?: string | undefined;
+  /** Cleanup callback for Nexus shutdown (if we started it). */
+  readonly nexusCleanup?: (() => Promise<void>) | undefined;
   /** Progress callback for phase reporting. */
   readonly onProgress?: ((phase: string, message: string) => void) | undefined;
 }
@@ -175,7 +179,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
 
   const adapter = resolved.value.engine ?? createPiAdapter({ model: modelName });
 
-  const nexusBaseUrl = manifest.nexus?.url ?? process.env.NEXUS_URL;
+  const nexusBaseUrl = options.nexusBaseUrl ?? manifest.nexus?.url ?? process.env.NEXUS_URL;
   const embedProfile = mapNexusModeToProfile(preset.nexusMode);
 
   progress("subsystems", "Resolving subsystems");
@@ -402,6 +406,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     forgeBootstrap?.dispose();
     if (sandboxBridge !== undefined) await sandboxBridge.dispose();
     if (nexus.dispose !== undefined) await nexus.dispose();
+    if (options.nexusCleanup !== undefined) await options.nexusCleanup();
   };
 
   return { adminUrl, dispose };

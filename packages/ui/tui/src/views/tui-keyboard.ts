@@ -71,6 +71,8 @@ export interface KeyboardCallbacks {
   readonly channelsConfirm: () => void;
   readonly channelsToggle: () => void;
   readonly channelsBack: () => void;
+  readonly nexusConfigConfirm: () => void;
+  readonly nexusConfigBack: () => void;
   readonly serviceStop: () => void;
   readonly serviceDoctor: () => void;
   readonly serviceLogs: () => void;
@@ -92,6 +94,12 @@ export function createKeyboardHandler(
 ): (sequence: string) => boolean {
   return (sequence: string): boolean => {
     const view = store.getState().view;
+
+    // Ctrl+C — always quit (raw mode swallows SIGINT)
+    if (sequence === "\x03") {
+      callbacks.stop();
+      return true;
+    }
 
     // Ctrl+P — toggle command palette (not in welcome mode)
     if (sequence === "\x10" && view !== "welcome" && view !== "presetdetail") {
@@ -251,6 +259,33 @@ export function createKeyboardHandler(
       return false;
     }
 
+    // Nexus config step — j/k navigate, Enter select & confirm, Esc back
+    if (view === "nexusconfig") {
+      if (sequence === "j" || sequence === "\x1b[B") {
+        store.dispatch({
+          kind: "set_nexus_config_focused_index",
+          index: store.getState().nexusConfigFocusedIndex + 1,
+        });
+        return true;
+      }
+      if (sequence === "k" || sequence === "\x1b[A") {
+        store.dispatch({
+          kind: "set_nexus_config_focused_index",
+          index: store.getState().nexusConfigFocusedIndex - 1,
+        });
+        return true;
+      }
+      if (sequence === "\r") {
+        callbacks.nexusConfigConfirm();
+        return true;
+      }
+      if (sequence === "\x1b") {
+        callbacks.nexusConfigBack();
+        return true;
+      }
+      return false;
+    }
+
     // Model step — j/k navigate, Enter confirm, Esc back
     if (view === "model") {
       if (sequence === "j" || sequence === "\x1b[B") {
@@ -326,8 +361,12 @@ export function createKeyboardHandler(
       return false;
     }
 
-    // Progress view — read-only, no keyboard actions
+    // Progress view — q to quit, otherwise read-only
     if (view === "progress") {
+      if (sequence === "q") {
+        callbacks.stop();
+        return true;
+      }
       return false;
     }
 

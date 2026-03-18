@@ -164,6 +164,9 @@ if (matched !== undefined) {
       agent: undefined,
       session: undefined,
       mode: "welcome",
+      nexusSource: undefined,
+      nexusBuild: false,
+      nexusPort: undefined,
     });
   }
 } else {
