@@ -239,7 +239,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
 
   // 6. ASSEMBLE: Use resolved engine or fall back to pi adapter
-  const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
+  // let justified: adapter is recreated when /model switches to a different model
+  let adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
+  const hasCustomEngine = resolved.value.engine !== undefined;
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
@@ -284,7 +286,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // let justified: mutable ref set when adminBridge is created
   let emitDashboardEvent: ((event: DashboardEvent) => void) | undefined;
 
-  const { runtime } = await createForgeConfiguredKoi({
+  // let justified: runtime is recreated when /model switches to a different model
+  let { runtime } = await createForgeConfiguredKoi({
     manifest,
     adapter,
     middleware: composed.middleware,
@@ -327,13 +330,51 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // let justified: conditionally set when --admin, disposed at cleanup
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
 
-  // let justified: mutable model name — /model updates it; the engine adapter
-  // is created with a fixed model so this only affects display + next-session hint.
+  // let justified: mutable model name — /model updates it and rebuilds the runtime.
   let activeModelName = modelName;
   // let justified: mutable active agent target — /attach switches it.
   // When undefined, messages go to the primary runtime. When set to an agentId,
   // messages route through the dispatched agent's chat handler.
   let activeDispatchedAgentId: string | undefined;
+  // let justified: set to true while model-switch runtime rebuild is in progress
+  let switchingModel = false;
+
+  /** Rebuild the engine adapter + runtime for a new model name. */
+  async function rebuildRuntimeForModel(newModel: string): Promise<void> {
+    if (hasCustomEngine) {
+      process.stderr.write("warn: model switching not supported with custom engine adapters\n");
+      activeModelName = newModel;
+      return;
+    }
+    switchingModel = true;
+    try {
+      await runtime.dispose();
+      adapter = createPiAdapter({ model: newModel });
+      const rebuilt = await createForgeConfiguredKoi({
+        manifest,
+        adapter,
+        middleware: composed.middleware,
+        providers: composed.providers,
+        extensions,
+        ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
+        ...(flags.admin
+          ? {
+              onDashboardEvent: (event: DashboardEvent) => {
+                emitDashboardEvent?.(event);
+              },
+            }
+          : {}),
+      });
+      runtime = rebuilt.runtime;
+      activeModelName = newModel;
+      process.stderr.write(`Switched to model: ${newModel}\n`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`Failed to switch model: ${msg}\n`);
+    } finally {
+      switchingModel = false;
+    }
+  }
 
   const commandDeps: CliCommandDeps = {
     cancelStream: () => {
@@ -342,7 +383,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
     listModels: () => [modelName],
     currentModel: () => activeModelName,
     setModel: (name: string) => {
-      activeModelName = name;
+      // Fire-and-forget: rebuild happens async, blocks new messages via switchingModel flag
+      rebuildRuntimeForModel(name).catch(() => {});
     },
     output: process.stdout,
     exit: () => {
@@ -400,13 +442,27 @@ export async function runStart(flags: StartFlags): Promise<void> {
             const chatDir = join(startWorkspaceRoot, "agents", agentDirName, "session", "chat");
             try {
               const entries = await readdir(chatDir);
-              return entries
-                .filter((f) => f.endsWith(".jsonl"))
-                .map((f) => ({
-                  sessionId: f.replace(".jsonl", ""),
-                  agentName: manifest.name,
-                  startedAt: 0,
-                }));
+              const jsonlFiles = entries.filter((f) => f.endsWith(".jsonl"));
+              // Stat files in parallel to get real timestamps
+              const results = await Promise.all(
+                jsonlFiles.map(async (f) => {
+                  try {
+                    const fileStat = await stat(join(chatDir, f));
+                    return {
+                      sessionId: f.replace(".jsonl", ""),
+                      agentName: manifest.name,
+                      startedAt: fileStat.mtimeMs,
+                    };
+                  } catch {
+                    return {
+                      sessionId: f.replace(".jsonl", ""),
+                      agentName: manifest.name,
+                      startedAt: 0,
+                    };
+                  }
+                }),
+              );
+              return results;
             } catch {
               return [];
             }
@@ -665,7 +721,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
 
       if (text.trim() === "") return;
 
-      if (processing) {
+      if (processing || switchingModel) {
         process.stderr.write("(busy — please wait for the current response)\n");
         return;
       }
@@ -686,12 +742,40 @@ export async function runStart(flags: StartFlags): Promise<void> {
         if (activeDispatchedAgentId !== undefined && adminDispatcher !== undefined) {
           const handler = adminDispatcher.getChatHandler(activeDispatchedAgentId);
           if (handler !== undefined) {
-            const body = JSON.stringify({ messages: [{ role: "user", content: text }] });
+            // Send proper AG-UI RunAgentInput request
+            const threadId = `thread-${Date.now().toString(36)}`;
+            const runId = `run-${Date.now().toString(36)}`;
+            const body = JSON.stringify({
+              threadId,
+              runId,
+              messages: [{ id: `msg-${Date.now().toString(36)}`, role: "user", content: text }],
+              tools: [],
+              context: [],
+            });
             const response = await handler(
-              new Request("http://local/chat", { method: "POST", body }),
+              new Request("http://local/chat", {
+                method: "POST",
+                body,
+                headers: { "content-type": "application/json" },
+              }),
             );
-            const responseText = await response.text();
-            process.stdout.write(`${responseText}\n`);
+            // Parse SSE stream to extract text deltas
+            const sseText = await response.text();
+            for (const line of sseText.split("\n")) {
+              if (!line.startsWith("data: ")) continue;
+              try {
+                const event = JSON.parse(line.slice(6)) as {
+                  readonly type: string;
+                  readonly delta?: string;
+                };
+                if (event.type === "TEXT_MESSAGE_CONTENT" && event.delta !== undefined) {
+                  process.stdout.write(event.delta);
+                }
+              } catch {
+                // Skip malformed SSE lines
+              }
+            }
+            process.stdout.write("\n");
           } else {
             process.stderr.write(
               `Agent ${activeDispatchedAgentId} is no longer available. Reverting to primary.\n`,
