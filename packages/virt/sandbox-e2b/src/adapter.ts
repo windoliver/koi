@@ -32,7 +32,7 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
     return instance;
   }
 
-  const resumeFn = resolvedConfig.client.resumeSandbox;
+  const findByScope = resolvedConfig.client.findSandboxByScope;
 
   return {
     ok: true,
@@ -54,7 +54,7 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
         const sdkSandbox = await resolvedConfig.client.createSandbox(opts);
         return wrapSdk(sdkSandbox, _profile);
       },
-      ...(resumeFn !== undefined
+      ...(findByScope !== undefined
         ? {
             findOrCreate: async (scope: string, profile: SandboxProfile) => {
               const unsupported = detectUnsupportedProfileFields(profile);
@@ -62,12 +62,14 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
                 throw new Error(formatUnsupportedProfileError("E2B", unsupported));
               }
 
-              // Try resuming a paused sandbox by scope key
+              // Try finding and resuming a paused sandbox by scope key.
+              // The client does scope → sandbox-ID resolution via metadata search.
               try {
-                const resumed = await resumeFn(scope);
+                const resumed = await findByScope(scope);
                 return wrapSdk(resumed, profile);
               } catch {
-                // Resume failed — create fresh with scope metadata
+                // Not found or resume failed — create fresh with scope metadata
+                // so the client can find it in the next session.
                 const opts: E2bCreateOpts = {
                   apiKey: resolvedConfig.apiKey,
                   ...(resolvedConfig.template !== undefined

@@ -162,7 +162,7 @@ describe("createE2bAdapter", () => {
 
   // ---- findOrCreate persistence tests ----
 
-  test("findOrCreate is absent when client lacks resumeSandbox", () => {
+  test("findOrCreate is absent when client lacks findSandboxByScope", () => {
     const client = createMockClient();
     const result = createE2bAdapter({ apiKey: "test-key", client });
     expect(result.ok).toBe(true);
@@ -170,11 +170,11 @@ describe("createE2bAdapter", () => {
     expect(result.value.findOrCreate).toBeUndefined();
   });
 
-  test("findOrCreate resumes sandbox by scope", async () => {
+  test("findOrCreate finds and resumes sandbox by scope", async () => {
     const resumedSdk = createMockSdk();
     const client: E2bClient = {
       createSandbox: mock(() => Promise.resolve(createMockSdk())),
-      resumeSandbox: mock(() => Promise.resolve(resumedSdk)),
+      findSandboxByScope: mock(() => Promise.resolve(resumedSdk)),
     };
     const result = createE2bAdapter({ apiKey: "test-key", client });
     expect(result.ok).toBe(true);
@@ -187,16 +187,16 @@ describe("createE2bAdapter", () => {
       resources: {},
     });
 
-    expect(client.resumeSandbox).toHaveBeenCalledWith("my-scope");
+    expect(client.findSandboxByScope).toHaveBeenCalledWith("my-scope");
     expect(client.createSandbox).not.toHaveBeenCalled();
     expect(instance).toBeDefined();
   });
 
-  test("findOrCreate creates fresh on resume failure", async () => {
+  test("findOrCreate creates fresh with scope metadata on lookup failure", async () => {
     const freshSdk = createMockSdk();
     const client: E2bClient = {
       createSandbox: mock(() => Promise.resolve(freshSdk)),
-      resumeSandbox: mock(() => Promise.reject(new Error("not found"))),
+      findSandboxByScope: mock(() => Promise.reject(new Error("not found"))),
     };
     const result = createE2bAdapter({ apiKey: "test-key", client });
     if (!result.ok) return;

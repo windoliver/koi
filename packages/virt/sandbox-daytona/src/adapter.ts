@@ -66,7 +66,8 @@ export function createDaytonaAdapter(
                 return wrapSdk(existing, profile);
               }
 
-              // Not found — create fresh
+              // Not found — create fresh with scope metadata so findSandbox
+              // can locate it in the next session.
               const opts: DaytonaCreateOpts = {
                 apiKey: resolvedConfig.apiKey,
                 apiUrl: resolvedConfig.apiUrl,
@@ -74,6 +75,7 @@ export function createDaytonaAdapter(
                 ...(resolvedConfig.volumes !== undefined && resolvedConfig.volumes.length > 0
                   ? { volumes: resolvedConfig.volumes }
                   : {}),
+                metadata: { "koi.sandbox.scope": scope },
               };
               const sdkSandbox = await resolvedConfig.client.createSandbox(opts);
               return wrapSdk(sdkSandbox, profile);

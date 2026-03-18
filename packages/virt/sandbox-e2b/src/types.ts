@@ -73,8 +73,16 @@ export interface E2bSdkSandbox {
 /** Injectable E2B client interface for testing. */
 export interface E2bClient {
   readonly createSandbox: (opts: E2bCreateOpts) => Promise<E2bSdkSandbox>;
-  /** Resume a previously paused sandbox by ID. Optional — enables persistence. */
-  readonly resumeSandbox?: ((sandboxId: string) => Promise<E2bSdkSandbox>) | undefined;
+  /**
+   * Find and resume a sandbox by scope key.
+   *
+   * The client is responsible for scope→sandbox-ID resolution, typically by
+   * searching platform metadata for `koi.sandbox.scope` and then calling the
+   * E2B reconnect/resume API with the matched sandbox ID.
+   *
+   * Optional — enables cross-session persistence.
+   */
+  readonly findSandboxByScope?: ((scope: string) => Promise<E2bSdkSandbox>) | undefined;
 }
 
 /** E2B adapter configuration. */

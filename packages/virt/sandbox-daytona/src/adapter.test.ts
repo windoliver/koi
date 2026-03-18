@@ -173,7 +173,7 @@ describe("createDaytonaAdapter", () => {
     expect(instance).toBeDefined();
   });
 
-  test("findOrCreate creates fresh when not found", async () => {
+  test("findOrCreate creates fresh with scope metadata when not found", async () => {
     const freshSdk = createMockSdk();
     const client: DaytonaClient = {
       createSandbox: mock(() => Promise.resolve(freshSdk)),
@@ -189,6 +189,9 @@ describe("createDaytonaAdapter", () => {
     });
 
     expect(client.createSandbox).toHaveBeenCalledTimes(1);
+    expect(client.createSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { "koi.sandbox.scope": "my-scope" } }),
+    );
   });
 
   test("detach calls sdk.close", async () => {

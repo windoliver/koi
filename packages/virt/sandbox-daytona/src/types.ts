@@ -14,6 +14,8 @@ export interface DaytonaCreateOpts {
   readonly apiKey?: string;
   readonly apiUrl?: string;
   readonly target?: string;
+  /** Key-value metadata for tagging sandboxes (used for scope-based lookup). */
+  readonly metadata?: Readonly<Record<string, string>> | undefined;
 }
 
 /** Handle returned by Daytona background process spawn. */
@@ -70,7 +72,14 @@ export interface DaytonaSdkSandbox {
 /** Injectable Daytona client interface for testing. */
 export interface DaytonaClient {
   readonly createSandbox: (opts: DaytonaCreateOpts) => Promise<DaytonaSdkSandbox>;
-  /** Find an existing sandbox by scope key. Optional — enables persistence. */
+  /**
+   * Find an existing sandbox by scope key.
+   *
+   * The client is responsible for scope resolution, typically by searching
+   * platform metadata for `koi.sandbox.scope` matching the given scope key.
+   *
+   * Optional — enables cross-session persistence.
+   */
   readonly findSandbox?: ((scope: string) => Promise<DaytonaSdkSandbox | undefined>) | undefined;
 }
 
