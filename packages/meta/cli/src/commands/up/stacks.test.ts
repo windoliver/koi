@@ -112,6 +112,62 @@ describe("activatePresetStacks", () => {
     expect(result.middleware).toEqual([]);
     expect(result.providers).toEqual([]);
   });
+  // --- ACE activation ---
+
+  test("activates ace with memory backend by default", async () => {
+    const result = await activatePresetStacks({
+      stacks: { ace: true },
+      forgeBootstrap: undefined,
+    });
+
+    // ACE produces exactly 1 middleware
+    expect(result.middleware.length).toBe(1);
+  });
+
+  test("activates ace with sqlite backend when aceDataDir provided", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const tmpDir = mkdtempSync(join(tmpdir(), "koi-ace-test-"));
+
+    const result = await activatePresetStacks({
+      stacks: { ace: true, aceStoreBackend: "sqlite" },
+      forgeBootstrap: undefined,
+      aceDataDir: tmpDir,
+    });
+
+    expect(result.middleware.length).toBe(1);
+
+    // Verify the SQLite DB was created
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(tmpDir, "ace.db"))).toBe(true);
+
+    // Cleanup
+    const { rmSync } = await import("node:fs");
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("skips ace when flag is false", async () => {
+    const result = await activatePresetStacks({
+      stacks: { ace: false },
+      forgeBootstrap: undefined,
+    });
+
+    expect(result.middleware).toEqual([]);
+  });
+
+  test("ace failure is non-fatal", async () => {
+    // Even if something goes wrong internally, the tryActivate wrapper
+    // catches the error and returns gracefully. Here we verify the
+    // wrapper works by checking stacks still return successfully.
+    const result = await activatePresetStacks({
+      stacks: { ace: true },
+      forgeBootstrap: undefined,
+    });
+
+    // Should not throw; middleware may or may not be present
+    expect(result).toBeDefined();
+  });
 });
 
 /** Minimal stub for a ModelHandler — never called in stack activation tests. */

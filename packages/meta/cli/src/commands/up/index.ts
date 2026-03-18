@@ -589,6 +589,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       ? { preCreatedAutoHarness: { policyCacheMiddleware: preCreatedHarnessMiddleware } }
       : {}),
     ...(contextArenaConfig !== undefined ? { contextArenaConfig } : {}),
+    aceDataDir: resolve(workspaceRoot, ".koi", "data"),
   });
 
   const composed = composeRuntimeMiddleware({

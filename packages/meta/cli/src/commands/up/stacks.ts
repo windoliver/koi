@@ -53,6 +53,8 @@ export interface StackActivationConfig {
   };
   /** Optional context-arena config. Required when contextArena stack is enabled. */
   readonly contextArenaConfig?: import("@koi/context-arena").ContextArenaConfig | undefined;
+  /** Directory for ACE SQLite databases. Required when ace stack uses "sqlite" backend. */
+  readonly aceDataDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +150,51 @@ async function activateContextArena(
   log(config, `Stack: context-arena (${String(bundle.middleware.length)} middleware)`);
 }
 
+async function activateAce(
+  config: StackActivationConfig,
+  middleware: KoiMiddleware[],
+): Promise<void> {
+  const backend = config.stacks.aceStoreBackend ?? "memory";
+
+  if (backend === "sqlite" && config.aceDataDir !== undefined) {
+    const { resolve } = await import("node:path");
+    const { mkdirSync } = await import("node:fs");
+    const dbDir = config.aceDataDir;
+    mkdirSync(dbDir, { recursive: true });
+
+    const {
+      createSqliteTrajectoryStore,
+      createSqlitePlaybookStore,
+      createSqliteStructuredPlaybookStore,
+      createAceMiddleware,
+    } = await import("@koi/middleware-ace");
+
+    const dbPath = resolve(dbDir, "ace.db");
+    const trajectoryStore = createSqliteTrajectoryStore({ dbPath });
+    const playbookStore = createSqlitePlaybookStore({ dbPath });
+    const structuredPlaybookStore = createSqliteStructuredPlaybookStore({ dbPath });
+
+    const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
+    middleware.push(mw);
+    log(config, `Stack: ace (backend=sqlite, db=${dbPath})`);
+  } else {
+    const {
+      createInMemoryTrajectoryStore,
+      createInMemoryPlaybookStore,
+      createInMemoryStructuredPlaybookStore,
+      createAceMiddleware,
+    } = await import("@koi/middleware-ace");
+
+    const trajectoryStore = createInMemoryTrajectoryStore();
+    const playbookStore = createInMemoryPlaybookStore();
+    const structuredPlaybookStore = createInMemoryStructuredPlaybookStore();
+
+    const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
+    middleware.push(mw);
+    log(config, `Stack: ace (backend=memory)`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -208,6 +255,10 @@ export async function activatePresetStacks(
 
   if (config.stacks.contextArena === true) {
     await tryActivate("context-arena", () => activateContextArena(config, middleware, providers));
+  }
+
+  if (config.stacks.ace === true) {
+    await tryActivate("ace", () => activateAce(config, middleware));
   }
 
   if (config.stacks.goalStack === true) {

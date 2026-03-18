@@ -30,6 +30,8 @@ export const DEMO_PRESET: RuntimePreset = {
     contextHub: true,
     contextArena: true,
     threadStoreBackend: "sqlite",
+    ace: true,
+    aceStoreBackend: "sqlite",
   },
   manifestOverrides: {
     autonomous: { enabled: true },
