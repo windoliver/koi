@@ -56,6 +56,10 @@ export function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): 
       return false;
     }
   }
+  // Namespace filter — exact match
+  if (query.namespace !== undefined && brick.namespace !== query.namespace) {
+    return false;
+  }
   // Case-insensitive substring match against trigger patterns
   if (query.triggerText !== undefined && query.triggerText.length > 0) {
     const lower = query.triggerText.toLowerCase();

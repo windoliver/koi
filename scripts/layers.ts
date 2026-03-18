@@ -79,6 +79,7 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/autonomous",
   "@koi/channels",
   "@koi/cli",
+  "@koi/community-registry",
   "@koi/context-arena",
   "@koi/data-source-stack",
   "@koi/forge",

@@ -1,0 +1,19 @@
+/**
+ * @koi/community-registry — Community registry HTTP server for brick distribution.
+ *
+ * L3 meta-package. Provides a composable HTTP handler for brick search,
+ * retrieval, and publish with optional security gate scanning.
+ */
+
+export type { CommunityRegistryHandler } from "./handler.js";
+export { createCommunityRegistryHandler } from "./handler.js";
+export type { SecurityDecision, SecurityVerdict } from "./security-gate.js";
+export { evaluateSecurityGate } from "./security-gate.js";
+export type {
+  BatchCheckEntry,
+  BatchCheckRequest,
+  BatchCheckResponse,
+  CommunityRegistryConfig,
+  SecurityGate,
+  SecurityGateResult,
+} from "./types.js";

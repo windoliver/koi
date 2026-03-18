@@ -76,11 +76,19 @@ describe("applyRegistryMigrations", () => {
     expect(indexes).toContain("idx_versions_lookup");
   });
 
-  test("sets user_version to 1", () => {
+  test("sets user_version to latest", () => {
     const db = createDb();
     applyRegistryMigrations(db);
 
-    expect(getUserVersion(db)).toBe(1);
+    expect(getUserVersion(db)).toBe(2);
+  });
+
+  test("creates namespace column and index in V2", () => {
+    const db = createDb();
+    applyRegistryMigrations(db);
+
+    const indexes = indexNames(db);
+    expect(indexes).toContain("idx_bricks_namespace");
   });
 
   test("calling twice is idempotent", () => {
@@ -88,7 +96,7 @@ describe("applyRegistryMigrations", () => {
     applyRegistryMigrations(db);
     applyRegistryMigrations(db);
 
-    expect(getUserVersion(db)).toBe(1);
+    expect(getUserVersion(db)).toBe(2);
     const tables = tableNames(db);
     expect(tables).toContain("bricks");
     expect(tables).toContain("skills");
@@ -97,10 +105,10 @@ describe("applyRegistryMigrations", () => {
 
   test("skips migration when user_version is already current", () => {
     const db = createDb();
-    db.exec("PRAGMA user_version = 1");
+    db.exec("PRAGMA user_version = 2");
 
     // Should not throw even though tables don't exist
     applyRegistryMigrations(db);
-    expect(getUserVersion(db)).toBe(1);
+    expect(getUserVersion(db)).toBe(2);
   });
 });

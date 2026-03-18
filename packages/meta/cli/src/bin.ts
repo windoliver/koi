@@ -10,6 +10,7 @@ import {
   isDemoFlags,
   isDeployFlags,
   isDoctorFlags,
+  isForgeFlags,
   isInitFlags,
   isLogsFlags,
   isReplayFlags,
@@ -76,6 +77,14 @@ const COMMANDS: readonly CommandEntry[] = [
       return runDemo(f as Parameters<typeof runDemo>[0]);
     },
     description: "koi demo <init|list|reset> [pack]  Manage demo data",
+  },
+  {
+    match: isForgeFlags,
+    run: async (f) => {
+      const { runForge } = await import("./commands/forge.js");
+      return runForge(f as Parameters<typeof runForge>[0]);
+    },
+    description: "koi forge <cmd>        Manage community bricks",
   },
   {
     match: isDeployFlags,

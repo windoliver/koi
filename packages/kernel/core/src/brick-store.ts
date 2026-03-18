@@ -251,6 +251,8 @@ export interface BrickArtifactBase {
   readonly collectiveMemory?: CollectiveMemory | undefined;
   /** Activation trigger patterns — natural language phrases declaring when this brick is relevant. */
   readonly trigger?: readonly string[] | undefined;
+  /** Scoped namespace for community marketplace distribution (e.g., "@author/name"). */
+  readonly namespace?: string | undefined;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -360,6 +362,8 @@ export interface ForgeQuery {
   readonly minTrailStrength?: number;
   /** Case-insensitive substring match against brick trigger patterns. */
   readonly triggerText?: string;
+  /** Filter by community namespace (e.g., "@author"). */
+  readonly namespace?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +388,8 @@ export interface BrickUpdate {
   readonly collectiveMemory?: CollectiveMemory | undefined;
   /** Updated trigger patterns. */
   readonly trigger?: readonly string[] | undefined;
+  /** Updated community namespace. */
+  readonly namespace?: string | undefined;
 }
 
 /** Compile-time check: every key of BrickUpdate must exist on BrickArtifactBase. */

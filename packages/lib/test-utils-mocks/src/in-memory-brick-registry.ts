@@ -46,6 +46,7 @@ export function createInMemoryBrickRegistry(): BrickRegistryBackend {
           return false;
         }
       }
+      if (query.namespace !== undefined && brick.namespace !== query.namespace) return false;
       if (query.tags !== undefined && query.tags.length > 0) {
         for (const tag of query.tags) {
           if (!brick.tags.includes(tag)) return false;
@@ -67,10 +68,14 @@ export function createInMemoryBrickRegistry(): BrickRegistryBackend {
     };
   };
 
-  const get = (kind: BrickKind, name: string): Result<BrickArtifact, KoiError> => {
+  const get = (
+    kind: BrickKind,
+    name: string,
+    namespace?: string,
+  ): Result<BrickArtifact, KoiError> => {
     const key = registryKey(kind, name);
     const brick = bricks.get(key);
-    if (brick === undefined) {
+    if (brick === undefined || (namespace !== undefined && brick.namespace !== namespace)) {
       return {
         ok: false,
         error: {

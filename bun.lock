@@ -225,6 +225,9 @@
         "@koi/forge-types": "workspace:*",
         "@koi/hash": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
     },
     "packages/forge/forge-optimizer": {
       "name": "@koi/forge-optimizer",
@@ -474,6 +477,15 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/registry-remote": {
+      "name": "@koi/registry-remote",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/forge-types": "workspace:*",
       },
     },
     "packages/fs/registry-sqlite": {
@@ -1188,6 +1200,8 @@
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/forge": "workspace:*",
+        "@koi/forge-integrity": "workspace:*",
+        "@koi/forge-tools": "workspace:*",
         "@koi/gateway": "workspace:*",
         "@koi/gateway-stack": "workspace:*",
         "@koi/goal-stack": "workspace:*",
@@ -1217,6 +1231,7 @@
         "@koi/nexus-embed": "workspace:*",
         "@koi/node-stack": "workspace:*",
         "@koi/quality-gate": "workspace:*",
+        "@koi/registry-remote": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/retry-stack": "workspace:*",
         "@koi/runtime-presets": "workspace:*",
@@ -2356,6 +2371,14 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/community-registry": {
+      "name": "@koi/community-registry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/net/gateway": {
@@ -3819,6 +3842,8 @@
 
     "@koi/code-mode": ["@koi/code-mode@workspace:packages/fs/code-mode"],
 
+    "@koi/community-registry": ["@koi/community-registry@workspace:packages/net/community-registry"],
+
     "@koi/config": ["@koi/config@workspace:packages/kernel/config"],
 
     "@koi/connector-forge": ["@koi/connector-forge@workspace:packages/data-source/connector-forge"],
@@ -4086,6 +4111,8 @@
     "@koi/registry-memory": ["@koi/registry-memory@workspace:packages/fs/registry-memory"],
 
     "@koi/registry-nexus": ["@koi/registry-nexus@workspace:packages/fs/registry-nexus"],
+
+    "@koi/registry-remote": ["@koi/registry-remote@workspace:packages/fs/registry-remote"],
 
     "@koi/registry-sqlite": ["@koi/registry-sqlite@workspace:packages/fs/registry-sqlite"],
 

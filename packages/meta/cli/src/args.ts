@@ -151,6 +151,26 @@ export interface DemoFlags extends BaseFlags {
   readonly verbose: boolean;
 }
 
+export interface ForgeFlags extends BaseFlags {
+  readonly command: "forge";
+  readonly subcommand:
+    | "install"
+    | "publish"
+    | "search"
+    | "inspect"
+    | "update"
+    | "uninstall"
+    | undefined;
+  readonly name: string | undefined;
+  readonly manifest: string | undefined;
+  readonly kind: string | undefined;
+  readonly tags: string | undefined;
+  readonly yes: boolean;
+  readonly all: boolean;
+  readonly namespace: string | undefined;
+  readonly registry: string | undefined;
+}
+
 export type CliFlags =
   | InitFlags
   | StartFlags
@@ -165,6 +185,7 @@ export type CliFlags =
   | UpFlags
   | ReplayFlags
   | DemoFlags
+  | ForgeFlags
   | BaseFlags;
 
 // ---------------------------------------------------------------------------
@@ -545,6 +566,48 @@ export function parseDemoFlags(rest: readonly string[]): DemoFlags {
   };
 }
 
+export function parseForgeFlags(rest: readonly string[]): ForgeFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+      kind: { type: "string" },
+      tags: { type: "string" },
+      yes: { type: "boolean", short: "y", default: false },
+      all: { type: "boolean", default: false },
+      namespace: { type: "string" },
+      registry: { type: "string" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  // First positional is the subcommand (install, publish, search, inspect, update, uninstall)
+  const sub = positionals[0] as string | undefined;
+  const validSubs = ["install", "publish", "search", "inspect", "update", "uninstall"] as const;
+  const subcommand =
+    sub !== undefined && (validSubs as readonly string[]).includes(sub)
+      ? (sub as "install" | "publish" | "search" | "inspect" | "update" | "uninstall")
+      : undefined;
+
+  // Second positional is the name/query/brick-id
+  const name = positionals[1] as string | undefined;
+
+  return {
+    command: "forge" as const,
+    directory: undefined,
+    subcommand,
+    name,
+    manifest: values.manifest as string | undefined,
+    kind: values.kind as string | undefined,
+    tags: values.tags as string | undefined,
+    yes: (values.yes as boolean | undefined) ?? false,
+    all: (values.all as boolean | undefined) ?? false,
+    namespace: values.namespace as string | undefined,
+    registry: values.registry as string | undefined,
+  };
+}
+
 export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
   const { values, positionals } = nodeParseArgs({
     args: rest as string[],
@@ -647,6 +710,10 @@ export function isDemoFlags(flags: CliFlags): flags is DemoFlags {
   return flags.command === "demo";
 }
 
+export function isForgeFlags(flags: CliFlags): flags is ForgeFlags {
+  return flags.command === "forge";
+}
+
 // ---------------------------------------------------------------------------
 // Command registry
 // ---------------------------------------------------------------------------
@@ -666,6 +733,7 @@ const COMMAND_PARSERS: Readonly<Record<string, (rest: readonly string[]) => CliF
   up: parseUpFlags,
   replay: parseReplayFlags,
   demo: parseDemoFlags,
+  forge: parseForgeFlags,
 };
 
 // ---------------------------------------------------------------------------
