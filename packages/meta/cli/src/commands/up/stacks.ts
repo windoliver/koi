@@ -59,6 +59,8 @@ export interface StackActivationConfig {
   readonly nexusBaseUrl?: string;
   /** Nexus API key for Nexus-backed ACE stores. */
   readonly nexusApiKey?: string;
+  /** Agent name for scoping Nexus ACE store paths (e.g. "agents/{name}/ace/..."). */
+  readonly agentName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,13 +170,20 @@ async function activateAce(
       createNexusStructuredPlaybookStore,
     } = await import("@koi/nexus-store");
 
-    const nexusCfg = {
-      baseUrl: config.nexusBaseUrl,
-      apiKey: config.nexusApiKey ?? "",
-    };
-    const trajectoryStore = createNexusTrajectoryStore(nexusCfg);
-    const playbookStore = createNexusPlaybookStore(nexusCfg);
-    const structuredPlaybookStore = createNexusStructuredPlaybookStore(nexusCfg);
+    const agentPrefix = config.agentName !== undefined ? `agents/${config.agentName}/` : "";
+    const nexusBase = { baseUrl: config.nexusBaseUrl, apiKey: config.nexusApiKey ?? "" };
+    const trajectoryStore = createNexusTrajectoryStore({
+      ...nexusBase,
+      basePath: `${agentPrefix}ace/trajectories`,
+    });
+    const playbookStore = createNexusPlaybookStore({
+      ...nexusBase,
+      basePath: `${agentPrefix}ace/playbooks`,
+    });
+    const structuredPlaybookStore = createNexusStructuredPlaybookStore({
+      ...nexusBase,
+      basePath: `${agentPrefix}ace/structured-playbooks`,
+    });
 
     const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
     middleware.push(mw);

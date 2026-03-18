@@ -592,6 +592,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     aceDataDir: resolve(workspaceRoot, ".koi", "data"),
     ...(nexusBaseUrl !== undefined ? { nexusBaseUrl } : {}),
     ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
+    agentName: manifest.name,
   });
 
   const composed = composeRuntimeMiddleware({
