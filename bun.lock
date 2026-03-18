@@ -1183,6 +1183,7 @@
         "@koi/bootstrap": "workspace:*",
         "@koi/channel-agui": "workspace:*",
         "@koi/channel-cli": "workspace:*",
+        "@koi/cli-commands": "workspace:*",
         "@koi/cli-render": "workspace:*",
         "@koi/context": "workspace:*",
         "@koi/context-arena": "workspace:*",
