@@ -10,8 +10,8 @@
  *         theme: dark
  */
 
-import type { ChannelAdapter } from "@koi/core";
-import type { BrickDescriptor, JsonObject } from "@koi/resolve";
+import type { ChannelAdapter, JsonObject } from "@koi/core";
+import type { BrickDescriptor } from "@koi/resolve";
 import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import type { CliTheme } from "./cli-channel.js";
 import { createCliChannel } from "./cli-channel.js";
