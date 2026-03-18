@@ -965,11 +965,16 @@ export async function runUp(flags: UpFlags): Promise<void> {
         return;
       }
       processing = true;
-      sessionCounter++;
-      currentSessionId = `up:${manifest.name}:${String(sessionCounter)}`;
-      // Update context-arena message buffer and thread key before engine run
+      // On first turn of a resumed session, keep the original thread key
+      // so conversation middleware loads the existing history.
+      const isResumedFirstTurn = flags.resume !== undefined && currentUpThreadKey === flags.resume;
+      if (!isResumedFirstTurn) {
+        sessionCounter++;
+        currentSessionId = `up:${manifest.name}:${String(sessionCounter)}`;
+        currentUpThreadKey = currentSessionId;
+      }
+      // Update context-arena message buffer before engine run
       currentUpMessages = [inbound];
-      currentUpThreadKey = currentSessionId;
       const input: EngineInput = { kind: "text", text };
       try {
         const deltas: string[] = [];
