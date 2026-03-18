@@ -55,6 +55,10 @@ export interface StackActivationConfig {
   readonly contextArenaConfig?: import("@koi/context-arena").ContextArenaConfig | undefined;
   /** Directory for ACE SQLite databases. Required when ace stack uses "sqlite" backend. */
   readonly aceDataDir?: string;
+  /** Nexus base URL for Nexus-backed ACE stores. */
+  readonly nexusBaseUrl?: string;
+  /** Nexus API key for Nexus-backed ACE stores. */
+  readonly nexusApiKey?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,15 +158,36 @@ async function activateAce(
   config: StackActivationConfig,
   middleware: KoiMiddleware[],
 ): Promise<void> {
-  let backend = config.stacks.aceStoreBackend ?? "memory";
+  const backend = config.stacks.aceStoreBackend ?? "memory";
+  const { createAceMiddleware } = await import("@koi/middleware-ace");
 
-  // Nexus ACE stores are not yet implemented — fall back to SQLite
-  if (backend === "nexus") {
-    log(config, "Stack: ace — Nexus ACE stores not yet available, falling back to sqlite");
-    backend = "sqlite";
+  if (backend === "nexus" && config.nexusBaseUrl !== undefined) {
+    const {
+      createNexusTrajectoryStore,
+      createNexusPlaybookStore,
+      createNexusStructuredPlaybookStore,
+    } = await import("@koi/nexus-store");
+
+    const nexusCfg = {
+      baseUrl: config.nexusBaseUrl,
+      apiKey: config.nexusApiKey ?? "",
+    };
+    const trajectoryStore = createNexusTrajectoryStore(nexusCfg);
+    const playbookStore = createNexusPlaybookStore(nexusCfg);
+    const structuredPlaybookStore = createNexusStructuredPlaybookStore(nexusCfg);
+
+    const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
+    middleware.push(mw);
+    log(config, `Stack: ace (backend=nexus, url=${config.nexusBaseUrl})`);
+    return;
   }
 
-  if (backend === "sqlite" && config.aceDataDir !== undefined) {
+  // Nexus requested but no URL available — fall back to SQLite
+  if (backend === "nexus") {
+    log(config, "Stack: ace — Nexus URL not available, falling back to sqlite");
+  }
+
+  if ((backend === "sqlite" || backend === "nexus") && config.aceDataDir !== undefined) {
     const { resolve } = await import("node:path");
     const { mkdirSync } = await import("node:fs");
     const dbDir = config.aceDataDir;
@@ -172,7 +197,6 @@ async function activateAce(
       createSqliteTrajectoryStore,
       createSqlitePlaybookStore,
       createSqliteStructuredPlaybookStore,
-      createAceMiddleware,
     } = await import("@koi/middleware-ace");
 
     const dbPath = resolve(dbDir, "ace.db");
@@ -188,7 +212,6 @@ async function activateAce(
       createInMemoryTrajectoryStore,
       createInMemoryPlaybookStore,
       createInMemoryStructuredPlaybookStore,
-      createAceMiddleware,
     } = await import("@koi/middleware-ace");
 
     const trajectoryStore = createInMemoryTrajectoryStore();

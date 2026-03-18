@@ -590,6 +590,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
       : {}),
     ...(contextArenaConfig !== undefined ? { contextArenaConfig } : {}),
     aceDataDir: resolve(workspaceRoot, ".koi", "data"),
+    ...(nexusBaseUrl !== undefined ? { nexusBaseUrl } : {}),
+    ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
   });
 
   const composed = composeRuntimeMiddleware({
