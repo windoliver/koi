@@ -22,8 +22,17 @@ import { conflict } from "@koi/core";
 // Public API
 // ---------------------------------------------------------------------------
 
+/** Default maximum retained snapshots per thread before pruning. */
+const DEFAULT_MAX_RETAINED = 500;
+
 export interface CreateThreadStoreConfig {
   readonly store: ThreadSnapshotStore;
+  /**
+   * Maximum snapshots to retain per thread. Older snapshots are pruned
+   * after each append to bound disk/memory growth.
+   * Default: 500 (~2.5 MB per thread at 5 KB/snapshot).
+   */
+  readonly maxRetained?: number;
 }
 
 /**
@@ -34,6 +43,7 @@ export interface CreateThreadStoreConfig {
  */
 export function createThreadStore(config: CreateThreadStoreConfig): ThreadStore {
   const { store } = config;
+  const maxRetained = config.maxRetained ?? DEFAULT_MAX_RETAINED;
 
   // Per-thread idempotency tracking: ThreadId → Set<ThreadMessageId>
   const seenMessages = new Map<string, Set<string>>();
@@ -80,6 +90,15 @@ export function createThreadStore(config: CreateThreadStoreConfig): ThreadStore 
     // Mark message IDs as seen (only after successful persistence)
     for (const msg of messages) {
       seen.add(msg.id);
+    }
+
+    // Prune old snapshots to bound storage growth (best-effort, non-fatal)
+    if (maxRetained > 0) {
+      try {
+        await store.prune(chainId, { retainCount: maxRetained });
+      } catch {
+        // Pruning failure should never block message persistence
+      }
     }
 
     return { ok: true, value: undefined };

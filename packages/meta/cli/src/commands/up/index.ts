@@ -24,6 +24,7 @@ import type { UpFlags } from "../../args.js";
 import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
+import { createContextArenaConfigForUp } from "../../context-arena-config.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -37,7 +38,6 @@ import { mergeBootstrapContext } from "../../resolve-bootstrap.js";
 import { resolveNexusOrWarn, runNexusBuildIfNeeded } from "../../resolve-nexus.js";
 import { resolveOrchestrationFromAgent } from "../../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../../resolve-temporal.js";
-
 import { printBanner } from "./banner.js";
 import { createInteractiveConsent } from "./consent.js";
 import { buildDemoManifestOverrides, provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
@@ -499,6 +499,58 @@ export async function runUp(flags: UpFlags): Promise<void> {
     // Data source discovery is non-fatal
   }
 
+  // Wire context-arena conversation persistence (Decision 1A, 2A)
+  // let justified: mutable message buffer so context-arena squash middleware can
+  // partition tool results; updated per-message in the channel onMessage handler.
+  let currentUpMessages: readonly InboundMessage[] = [];
+  // let justified: mutable thread key read by conversation middleware's resolveThreadId
+  let currentUpThreadKey: string | undefined;
+
+  let contextArenaDispose: (() => void | Promise<void>) | undefined;
+  let contextArenaConfig: import("@koi/context-arena").ContextArenaConfig | undefined;
+
+  if (preset.stacks.contextArena === true) {
+    try {
+      // For nexus backend, create a dedicated thread snapshot store
+      let nexusSnapshotStore: import("@koi/core").ThreadSnapshotStore | undefined;
+      if (preset.stacks.threadStoreBackend === "nexus" && nexus.baseUrl !== undefined) {
+        try {
+          const { createNexusSnapshotStore } = await import("@koi/nexus-store");
+          nexusSnapshotStore = createNexusSnapshotStore({
+            baseUrl: nexus.baseUrl,
+            apiKey: process.env.NEXUS_API_KEY ?? "",
+            basePath: `agents/${manifest.name}/threads`,
+          });
+        } catch {
+          // Fall back to SQLite if Nexus store creation fails
+        }
+      }
+
+      const arenaResult = createContextArenaConfigForUp({
+        summarizer: resolved.value.model,
+        manifestName: manifest.name,
+        threadStoreBackend: preset.stacks.threadStoreBackend,
+        dataDir: resolve(workspaceRoot, ".koi", "data"),
+        nexusSnapshotStore,
+        getMessages: () => currentUpMessages,
+        resolveThreadId: () => currentUpThreadKey,
+      });
+      contextArenaConfig = arenaResult.config;
+      contextArenaDispose = arenaResult.dispose;
+
+      if (flags.verbose) {
+        process.stderr.write(
+          `  Context-arena: wired (backend=${preset.stacks.threadStoreBackend ?? "memory"})\n`,
+        );
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (flags.verbose) {
+        process.stderr.write(`  Context-arena: disabled (${message})\n`);
+      }
+    }
+  }
+
   // Activate L3 stacks based on preset flags
   const activatedStacks = await activatePresetStacks({
     stacks: preset.stacks,
@@ -510,6 +562,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     ...(preCreatedHarnessMiddleware !== undefined
       ? { preCreatedAutoHarness: { policyCacheMiddleware: preCreatedHarnessMiddleware } }
       : {}),
+    ...(contextArenaConfig !== undefined ? { contextArenaConfig } : {}),
   });
 
   const composed = composeRuntimeMiddleware({
@@ -884,6 +937,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       processing = true;
       sessionCounter++;
       currentSessionId = `up:${manifest.name}:${String(sessionCounter)}`;
+      // Update context-arena message buffer and thread key before engine run
+      currentUpMessages = [inbound];
+      currentUpThreadKey = currentSessionId;
       const input: EngineInput = { kind: "text", text };
       try {
         const deltas: string[] = [];
@@ -932,6 +988,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (temporalAdmin !== undefined) await temporalAdmin.dispose();
   if (temporalEmbedHandle !== undefined) await temporalEmbedHandle.dispose();
   await runtime.dispose();
+  if (contextArenaDispose !== undefined) await contextArenaDispose();
   for (const dispose of activatedStacks.disposables) await dispose();
   if (stopNode !== undefined) await stopNode();
   if (stopGateway !== undefined) await stopGateway();

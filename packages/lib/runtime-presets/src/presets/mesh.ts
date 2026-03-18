@@ -28,6 +28,7 @@ export const MESH_PRESET: RuntimePreset = {
     qualityGate: true,
     contextArena: true,
     contextHub: true,
+    threadStoreBackend: "nexus",
   },
   manifestOverrides: {
     autonomous: { enabled: true },

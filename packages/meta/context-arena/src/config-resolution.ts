@@ -59,7 +59,7 @@ export function resolveContextArenaConfig(config: ContextArenaConfig): ResolvedC
     squashMaxPendingSquashes: config.squash?.maxPendingSquashes ?? budget.squashMaxPendingSquashes,
 
     // Personalization
-    personalizationEnabled: config.personalization?.enabled ?? false,
+    personalizationEnabled: config.personalization?.enabled ?? config.memoryFs !== undefined,
     personalizationRelevanceThreshold: config.personalization?.relevanceThreshold ?? 0.7,
     personalizationMaxPreferenceTokens: config.personalization?.maxPreferenceTokens ?? 500,
 

@@ -87,6 +87,7 @@
     "@koi/tools-context-hub": "workspace:*",
     "@koi/demo-packs": "workspace:*",
     "@koi/nexus-client": "workspace:*",
+    "@koi/nexus-store": "workspace:*",
     "@koi/temporal": "workspace:*"
   }
 }

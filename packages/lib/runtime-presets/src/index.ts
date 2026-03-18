@@ -13,4 +13,5 @@ export type {
   PresetStacks,
   RuntimePreset,
   TemporalMode,
+  ThreadStoreBackend,
 } from "./types.js";

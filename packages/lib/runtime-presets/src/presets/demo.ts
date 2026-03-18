@@ -28,6 +28,8 @@ export const DEMO_PRESET: RuntimePreset = {
     goalStack: true,
     qualityGate: true,
     contextHub: true,
+    contextArena: true,
+    threadStoreBackend: "sqlite",
   },
   manifestOverrides: {
     autonomous: { enabled: true },
