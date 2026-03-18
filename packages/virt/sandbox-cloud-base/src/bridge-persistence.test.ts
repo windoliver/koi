@@ -217,4 +217,46 @@ describe("createCachedBridge persistence", () => {
 
     expect(instance.destroy).toHaveBeenCalledTimes(1);
   });
+
+  // ---- maxLifetimeMs ----
+
+  test("maxLifetimeMs force-destroys even scoped instances", async () => {
+    const detachFn = mock(() => Promise.resolve());
+    const instance = createMockInstance({ detach: detachFn });
+    const findOrCreate = mock(() => Promise.resolve(instance));
+    const adapter = createMockAdapter(instance, findOrCreate);
+    const bridge = createCachedBridge({
+      adapter,
+      profile,
+      scope: "my-agent",
+      ttlMs: 60_000, // long TTL so it doesn't interfere
+      maxLifetimeMs: 50, // short lifetime
+    });
+
+    await bridge.warmup();
+
+    // Wait for lifetime to expire
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Should force-destroy, not detach
+    expect(instance.destroy).toHaveBeenCalledTimes(1);
+    expect(detachFn).not.toHaveBeenCalled();
+  });
+
+  test("maxLifetimeMs destroys non-scoped instances", async () => {
+    const instance = createMockInstance();
+    const adapter = createMockAdapter(instance);
+    const bridge = createCachedBridge({
+      adapter,
+      profile,
+      ttlMs: 60_000,
+      maxLifetimeMs: 50,
+    });
+
+    await bridge.warmup();
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(instance.destroy).toHaveBeenCalledTimes(1);
+  });
 });

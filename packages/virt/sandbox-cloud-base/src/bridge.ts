@@ -27,6 +27,8 @@ export interface BridgeConfig {
   readonly ttlMs?: number;
   /** Persistence scope. When set, uses findOrCreate and detach instead of create/destroy. */
   readonly scope?: string | undefined;
+  /** Hard upper bound on sandbox lifetime in ms. Instance is destroyed (not detached) after this. */
+  readonly maxLifetimeMs?: number | undefined;
 }
 
 /** Default TTL: 60 seconds. */
@@ -51,12 +53,14 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
   const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
   const profileTimeoutMs = config.profile.resources.timeoutMs;
   const scope = config.scope;
+  const maxLifetimeMs = config.maxLifetimeMs;
 
   // Mutable state — instance lifecycle management
   let instance: SandboxInstance | undefined;
   // let justified: inflight tracks the pending create() to prevent duplicate instance creation
   let inflightCreate: Promise<SandboxInstance> | undefined;
   let ttlTimer: ReturnType<typeof setTimeout> | undefined;
+  let lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
 
   function resetTtl(): void {
@@ -69,6 +73,34 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
     // Prevent the TTL timer from keeping the process alive
     if (typeof ttlTimer === "object" && "unref" in ttlTimer) {
       ttlTimer.unref();
+    }
+  }
+
+  function startLifetimeTimer(): void {
+    if (maxLifetimeMs === undefined || lifetimeTimer !== undefined) return;
+    lifetimeTimer = setTimeout(() => {
+      // Hard lifetime expired — force destroy (not detach), even for scoped instances
+      void forceDestroyInstance();
+    }, maxLifetimeMs);
+    if (typeof lifetimeTimer === "object" && "unref" in lifetimeTimer) {
+      lifetimeTimer.unref();
+    }
+  }
+
+  /** Force-destroy regardless of scope — used for lifetime expiry. */
+  async function forceDestroyInstance(): Promise<void> {
+    if (ttlTimer !== undefined) {
+      clearTimeout(ttlTimer);
+      ttlTimer = undefined;
+    }
+    if (lifetimeTimer !== undefined) {
+      clearTimeout(lifetimeTimer);
+      lifetimeTimer = undefined;
+    }
+    if (instance !== undefined) {
+      const toDestroy = instance;
+      instance = undefined;
+      await toDestroy.destroy();
     }
   }
 
@@ -90,6 +122,7 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
         (inst) => {
           instance = inst;
           inflightCreate = undefined;
+          startLifetimeTimer();
           return inst;
         },
         (err: unknown) => {
@@ -105,6 +138,10 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
     if (ttlTimer !== undefined) {
       clearTimeout(ttlTimer);
       ttlTimer = undefined;
+    }
+    if (lifetimeTimer !== undefined) {
+      clearTimeout(lifetimeTimer);
+      lifetimeTimer = undefined;
     }
     if (instance !== undefined) {
       const toDispose = instance;

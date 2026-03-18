@@ -132,6 +132,12 @@ export interface ManifestSandboxPersistence {
    * and `instance.detach()` instead of `destroy()` on dispose.
    */
   readonly scope: string;
+  /** Human-readable label for the persistent sandbox (e.g., "my-dev-sandbox"). */
+  readonly label?: string | undefined;
+  /** Auto-destroy after this many ms of idle time. Overrides stack-level idleTtlMs. */
+  readonly idleTtlMs?: number | undefined;
+  /** Hard upper bound on sandbox lifetime in ms. Sandbox is destroyed after this regardless of activity. */
+  readonly maxLifetimeMs?: number | undefined;
 }
 
 /**

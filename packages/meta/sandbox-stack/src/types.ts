@@ -46,6 +46,12 @@ export interface SandboxStackConfig {
    * sandbox reuse.
    */
   readonly scope?: string | undefined;
+
+  /**
+   * Hard upper bound on sandbox lifetime in ms.
+   * The sandbox is force-destroyed (not detached) after this, regardless of activity.
+   */
+  readonly maxLifetimeMs?: number | undefined;
 }
 
 /** Return type of createSandboxStack(). */

@@ -49,6 +49,10 @@ export interface SpawnOptions {
   readonly profile?: SandboxProfile | undefined;
   /** Persistence scope. When set, the spawner uses findOrCreate and detach for sandbox lifecycle. */
   readonly scope?: string | undefined;
+  /** Override idle TTL for the sandbox bridge, in ms. */
+  readonly idleTtlMs?: number | undefined;
+  /** Hard upper bound on sandbox lifetime in ms. Force-destroyed after this. */
+  readonly maxLifetimeMs?: number | undefined;
 }
 
 /** Spawns external coding agents inside sandboxed containers. */
