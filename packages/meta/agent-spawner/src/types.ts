@@ -47,6 +47,8 @@ export interface SpawnOptions {
   readonly timeoutMs?: number | undefined;
   /** Sandbox profile override — derived from agent manifest. Defaults to a permissive profile. */
   readonly profile?: SandboxProfile | undefined;
+  /** Persistence scope. When set, the spawner uses findOrCreate and detach for sandbox lifecycle. */
+  readonly scope?: string | undefined;
 }
 
 /** Spawns external coding agents inside sandboxed containers. */

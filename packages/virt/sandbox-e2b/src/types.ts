@@ -64,11 +64,17 @@ export interface E2bSdkSandbox {
     readonly write: (path: string, content: string) => Promise<void>;
   };
   readonly kill: () => Promise<void>;
+  /** Pause the sandbox for later resumption. Optional — not all SDK versions support this. */
+  readonly pause?: (() => Promise<void>) | undefined;
+  /** Platform sandbox ID for resumption. */
+  readonly id?: string | undefined;
 }
 
 /** Injectable E2B client interface for testing. */
 export interface E2bClient {
   readonly createSandbox: (opts: E2bCreateOpts) => Promise<E2bSdkSandbox>;
+  /** Resume a previously paused sandbox by ID. Optional — enables persistence. */
+  readonly resumeSandbox?: ((sandboxId: string) => Promise<E2bSdkSandbox>) | undefined;
 }
 
 /** E2B adapter configuration. */

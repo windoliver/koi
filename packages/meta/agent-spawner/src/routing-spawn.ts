@@ -125,8 +125,10 @@ export function createRoutingSpawnFn(config: RoutingSpawnConfig): SpawnFn {
 
       if (descriptor !== undefined) {
         const profile = mapSandboxConfigToProfile(manifest.sandbox);
+        const scope = manifest.sandbox.persistence?.scope;
         const result = await config.agentSpawner.spawn(descriptor, request.description, {
           profile,
+          ...(scope !== undefined ? { scope } : {}),
         });
 
         if (result.ok) {

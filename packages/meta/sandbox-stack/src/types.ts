@@ -39,6 +39,13 @@ export interface SandboxStackConfig {
    * Default: 60_000 (1 minute).
    */
   readonly idleTtlMs?: number;
+
+  /**
+   * Persistence scope key. When set, the bridge uses findOrCreate instead of
+   * create and detaches instead of destroying on dispose — enabling cross-session
+   * sandbox reuse.
+   */
+  readonly scope?: string | undefined;
 }
 
 /** Return type of createSandboxStack(). */

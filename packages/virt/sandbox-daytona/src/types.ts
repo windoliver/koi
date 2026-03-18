@@ -63,11 +63,15 @@ export interface DaytonaSdkSandbox {
     readonly write: (path: string, content: string) => Promise<void>;
   };
   readonly close: () => Promise<void>;
+  /** Platform sandbox ID for lookup. */
+  readonly id?: string | undefined;
 }
 
 /** Injectable Daytona client interface for testing. */
 export interface DaytonaClient {
   readonly createSandbox: (opts: DaytonaCreateOpts) => Promise<DaytonaSdkSandbox>;
+  /** Find an existing sandbox by scope key. Optional — enables persistence. */
+  readonly findSandbox?: ((scope: string) => Promise<DaytonaSdkSandbox | undefined>) | undefined;
 }
 
 /** Daytona adapter configuration. */

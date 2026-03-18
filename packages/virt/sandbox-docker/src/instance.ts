@@ -3,7 +3,7 @@
  */
 
 import type { SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from "@koi/core";
-import { createDestroyGuard, createOutputAccumulator } from "@koi/sandbox-cloud-base";
+import { createInstanceGuard, createOutputAccumulator } from "@koi/sandbox-cloud-base";
 import { classifyDockerError } from "./classify.js";
 import type { DockerNetworkConfig } from "./network.js";
 import type { DockerContainer } from "./types.js";
@@ -16,12 +16,19 @@ function shellEscape(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
+/** Options for Docker instance creation. */
+interface DockerInstanceOptions {
+  /** When true, the instance exposes detach() which stops without removing. */
+  readonly detachable?: boolean;
+}
+
 /** Create a SandboxInstance backed by a Docker container. */
 export function createDockerInstance(
   container: DockerContainer,
   networkConfig: DockerNetworkConfig,
+  options?: DockerInstanceOptions,
 ): SandboxInstance {
-  const guard = createDestroyGuard("docker");
+  const guard = createInstanceGuard("docker");
   // let: mutable flag tracking whether iptables rules have been applied to this container
   let iptablesApplied = false;
 
@@ -29,12 +36,12 @@ export function createDockerInstance(
     exec: async (
       command: string,
       args: readonly string[],
-      options?: SandboxExecOptions,
+      execOptions?: SandboxExecOptions,
     ): Promise<SandboxAdapterResult> => {
       guard.check("exec");
 
       const startTime = performance.now();
-      const maxOutputBytes = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+      const maxOutputBytes = execOptions?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
       const stdoutAcc = createOutputAccumulator(maxOutputBytes);
       const stderrAcc = createOutputAccumulator(maxOutputBytes);
 
@@ -49,16 +56,18 @@ export function createDockerInstance(
         const baseCmd = args.length > 0 ? `${command} ${args.map(shellEscape).join(" ")}` : command;
         // Prepend cd for cwd support — Docker exec doesn't natively support workdir
         const fullCmd =
-          options?.cwd !== undefined ? `cd ${shellEscape(options.cwd)} && ${baseCmd}` : baseCmd;
+          execOptions?.cwd !== undefined
+            ? `cd ${shellEscape(execOptions.cwd)} && ${baseCmd}`
+            : baseCmd;
 
-        const execOpts = {
-          ...(options?.env !== undefined ? { env: options.env } : {}),
-          ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
+        const opts = {
+          ...(execOptions?.env !== undefined ? { env: execOptions.env } : {}),
+          ...(execOptions?.stdin !== undefined ? { stdin: execOptions.stdin } : {}),
         };
 
         // Enforce timeoutMs via a race with a timeout promise
-        const timeoutMs = options?.timeoutMs;
-        const execPromise = container.exec(fullCmd, execOpts);
+        const timeoutMs = execOptions?.timeoutMs;
+        const execPromise = container.exec(fullCmd, opts);
 
         const result =
           timeoutMs !== undefined
@@ -78,8 +87,8 @@ export function createDockerInstance(
         stdoutAcc.append(result.stdout);
         stderrAcc.append(result.stderr);
 
-        options?.onStdout?.(result.stdout);
-        options?.onStderr?.(result.stderr);
+        execOptions?.onStdout?.(result.stdout);
+        execOptions?.onStderr?.(result.stderr);
 
         const stdoutResult = stdoutAcc.result();
         const stderrResult = stderrAcc.result();
@@ -129,5 +138,15 @@ export function createDockerInstance(
         await container.remove();
       }
     },
+
+    // Only expose detach when the instance was created with persistence support
+    ...(options?.detachable === true
+      ? {
+          detach: async (): Promise<void> => {
+            guard.markDetached();
+            await container.stop();
+          },
+        }
+      : {}),
   };
 }
