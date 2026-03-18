@@ -98,11 +98,8 @@ export function createAguiEventHandler(store: TuiStore): {
         break;
 
       case "REASONING_MESSAGE_CONTENT":
-        store.dispatch({ kind: "append_tokens", text: event.delta });
-        break;
-
       case "REASONING_MESSAGE_END":
-        store.dispatch({ kind: "flush_tokens" });
+        // Chain-of-thought reasoning is not shown to users
         break;
 
       default:

@@ -9,7 +9,7 @@ import { dirname, resolve } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
 import { createCliOutput, createTimer } from "@koi/cli-render";
 import { createContextExtension } from "@koi/context";
-import type { ChannelAdapter, EngineInput } from "@koi/core";
+import type { ChannelAdapter, EngineInput, InboundMessage } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { DashboardEvent } from "@koi/dashboard-types";
@@ -47,6 +47,34 @@ import { runPreflight } from "./preflight.js";
 import { extractDemoPack, inferPresetId } from "./preset.js";
 import { activatePresetStacks } from "./stacks.js";
 import { startTemporalEmbed } from "./temporal.js";
+
+const LABEL_RE = /^\[(user|assistant|system)\]:\s*/;
+
+/**
+ * Expand stateless-normalized content blocks into separate InboundMessages.
+ * Splits `[user]: ...` / `[assistant]: ...` labeled blocks back into
+ * individual messages so the engine sends proper multi-turn conversation.
+ */
+function expandLabeledBlocks(msg: InboundMessage): readonly InboundMessage[] {
+  const blocks = msg.content.filter(
+    (b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text",
+  );
+  if (blocks.length === 0 || !LABEL_RE.test(blocks[0]?.text ?? "")) {
+    return [msg];
+  }
+  return blocks.map((block) => {
+    const match = LABEL_RE.exec(block.text);
+    const role = match?.[1] ?? "user";
+    const text = block.text.replace(LABEL_RE, "");
+    return {
+      content: [{ kind: "text" as const, text }],
+      senderId: role === "assistant" ? "assistant" : (msg.senderId ?? msg.threadId),
+      threadId: msg.threadId,
+      timestamp: msg.timestamp,
+      metadata: { ...msg.metadata, role },
+    };
+  });
+}
 
 /** Creates a forge view data source from a ForgeStore + optional seeded bricks. */
 function createForgeViewSource(
@@ -815,9 +843,10 @@ export async function runUp(flags: UpFlags): Promise<void> {
       const text = extractTextFromBlocks(msg.content);
       if (text.trim() === "") return;
       const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
-      // Use "messages" to preserve AG-UI metadata (runId) so the
-      // AG-UI stream middleware can route SSE events to the right writer.
-      const input: EngineInput = { kind: "messages", messages: [msg] };
+      // Expand stateless-normalized blocks ([user]: ..., [assistant]: ...)
+      // into separate InboundMessages for proper multi-turn conversation.
+      const expanded = expandLabeledBlocks(msg);
+      const input: EngineInput = { kind: "messages", messages: expanded };
       const deltas: string[] = [];
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);

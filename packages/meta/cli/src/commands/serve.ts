@@ -369,12 +369,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
               }
               const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
 
-              // Set bindings for context extension and forge scoping, but clear
-              // threadKey so conversation middleware skips history injection —
-              // stateless mode already provides full conversation context from
-              // the browser's persisted session history.
+              // Set bindings for context extension, forge scoping, and
+              // conversation middleware history injection.
               currentMessages = [msg];
-              currentThreadKey = undefined;
+              currentThreadKey = threadId;
               currentServeSessionId = threadId;
 
               const input: EngineInput = { kind: "text", text };
