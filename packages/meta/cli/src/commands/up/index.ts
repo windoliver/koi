@@ -69,7 +69,7 @@ function expandLabeledBlocks(msg: InboundMessage): readonly InboundMessage[] {
     return {
       content: [{ kind: "text" as const, text }],
       senderId: role === "assistant" ? "assistant" : (msg.senderId ?? msg.threadId),
-      threadId: msg.threadId,
+      ...(msg.threadId !== undefined ? { threadId: msg.threadId } : {}),
       timestamp: msg.timestamp,
       metadata: { ...msg.metadata, role },
     };
@@ -537,9 +537,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
       const arenaResult = createContextArenaConfigForUp({
         summarizer: resolved.value.model,
         manifestName: manifest.name,
-        threadStoreBackend: preset.stacks.threadStoreBackend,
+        ...(preset.stacks.threadStoreBackend !== undefined
+          ? { threadStoreBackend: preset.stacks.threadStoreBackend }
+          : {}),
         dataDir: resolve(workspaceRoot, ".koi", "data"),
-        nexusSnapshotStore,
+        ...(nexusSnapshotStore !== undefined ? { nexusSnapshotStore } : {}),
         getMessages: () => currentUpMessages,
         resolveThreadId: () => currentUpThreadKey,
       });

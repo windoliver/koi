@@ -109,7 +109,7 @@ describe("createContextArenaConfigForUp", () => {
       resolveThreadId,
     });
 
-    expect(result.config.conversation?.resolveThreadId?.()).toBe("thread-1");
+    expect(result.config.conversation?.resolveThreadId?.(undefined as never)).toBe("thread-1");
   });
 
   test("dispose is callable without error", async () => {
