@@ -160,6 +160,7 @@ describe("createDockerAdapter", () => {
     expect(client.startContainer).not.toHaveBeenCalled();
     expect(client.createContainer).not.toHaveBeenCalled();
     expect(instance).toBeDefined();
+    if (instance === undefined) return;
     expect(instance.detach).toBeDefined();
   });
 
@@ -244,6 +245,7 @@ describe("createDockerAdapter", () => {
       resources: {},
     });
 
+    if (instance === undefined) return;
     expect(instance.detach).toBeDefined();
     await instance.detach?.();
 
