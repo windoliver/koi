@@ -5,6 +5,8 @@
  * retrieval, and publish with optional security gate scanning.
  */
 
+export type { DefaultRegistryConfig } from "./create-default-registry.js";
+export { createDefaultRegistry } from "./create-default-registry.js";
 export type { CommunityRegistryHandler } from "./handler.js";
 export { createCommunityRegistryHandler } from "./handler.js";
 export type { SecurityDecision, SecurityVerdict } from "./security-gate.js";

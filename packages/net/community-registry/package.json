@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/forge-integrity": "workspace:*",
+    "@koi/skill-scanner": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

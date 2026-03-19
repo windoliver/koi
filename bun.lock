@@ -2380,6 +2380,8 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/forge-integrity": "workspace:*",
+        "@koi/skill-scanner": "workspace:*",
       },
     },
     "packages/net/gateway": {

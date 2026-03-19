@@ -111,17 +111,51 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
 
   const brick = result.value;
 
-  // Verify integrity
+  // Verify content-hash integrity
   process.stderr.write("  Verifying integrity...\n");
-  const { verifyBrickIntegrity } = await import("@koi/forge-integrity");
+  const { verifyBrickAttestation, verifyBrickIntegrity } = await import("@koi/forge-integrity");
   const integrityResult = verifyBrickIntegrity(brick);
   if (integrityResult.kind !== "ok") {
-    process.stderr.write(`  Integrity check failed: ${integrityResult.kind}\n`);
+    process.stderr.write(`  Content hash mismatch: ${integrityResult.kind}\n`);
     if (!flags.yes) {
       process.stderr.write("  Use --yes to install anyway (not recommended).\n");
       process.exit(1);
     }
     process.stderr.write("  Proceeding despite integrity failure (--yes).\n");
+  }
+
+  // Verify attestation signature (when brick has one)
+  if (brick.provenance.attestation !== undefined) {
+    process.stderr.write("  Verifying attestation signature...\n");
+    // Use HMAC-SHA256 signer for community registry attestations
+    const secret = process.env.KOI_REGISTRY_SIGNING_KEY ?? "koi-community-v1";
+    const signer: import("@koi/core").SigningBackend = {
+      algorithm: "hmac-sha256",
+      sign(data: Uint8Array): Uint8Array {
+        const hasher = new Bun.CryptoHasher("sha256", secret);
+        hasher.update(data);
+        return hasher.digest();
+      },
+      verify(data: Uint8Array, signature: Uint8Array): boolean {
+        const hasher = new Bun.CryptoHasher("sha256", secret);
+        hasher.update(data);
+        const expected = hasher.digest();
+        if (expected.length !== signature.length) return false;
+        for (let i = 0; i < expected.length; i++) {
+          if (expected[i] !== signature[i]) return false;
+        }
+        return true;
+      },
+    };
+    const attestResult = await verifyBrickAttestation(brick, signer);
+    if (attestResult.kind === "attestation_failed") {
+      process.stderr.write(`  Attestation verification failed: ${attestResult.reason}\n`);
+      if (!flags.yes) {
+        process.stderr.write("  Use --yes to install anyway (not recommended).\n");
+        process.exit(1);
+      }
+      process.stderr.write("  Proceeding despite attestation failure (--yes).\n");
+    }
   }
 
   // Check dependencies against the local store
@@ -444,16 +478,28 @@ async function runForgeUninstall(flags: ForgeFlags): Promise<void> {
   const manifestPath = flags.manifest ?? "koi.yaml";
   const store = await resolveLocalStore(manifestPath);
 
-  // Find the brick by name
-  const searchResult = await store.search({ text: name, limit: 1 });
+  // Exact match: search by kind + namespace, then filter by exact name
+  const kind = (flags.kind ?? "tool") as
+    | "tool"
+    | "skill"
+    | "agent"
+    | "middleware"
+    | "channel"
+    | "composite";
+  const query: import("@koi/core").ForgeQuery = {
+    kind,
+    ...(flags.namespace !== undefined ? { namespace: flags.namespace } : {}),
+  };
+  const searchResult = await store.search(query);
   if (!searchResult.ok) {
     process.stderr.write(`  Search failed: ${searchResult.error.message}\n`);
     process.exit(1);
   }
 
-  const found = searchResult.value[0];
+  // Filter to exact name match (not substring)
+  const found = searchResult.value.find((b) => b.name === name);
   if (found === undefined) {
-    process.stderr.write(`  Brick "${name}" not found in local store.\n`);
+    process.stderr.write(`  Brick "${kind}:${name}" not found in local store.\n`);
     process.exit(1);
   }
 
