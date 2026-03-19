@@ -16,6 +16,7 @@ const STATE: WizardState = {
   demoPack: undefined,
   dataSources: [],
   apiKey: undefined,
+  stacks: [],
 };
 
 describe("generateMinimal", () => {
