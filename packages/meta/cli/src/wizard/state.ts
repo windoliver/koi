@@ -24,7 +24,18 @@ export type PresetName = (typeof PRESETS)[number];
  * Stack IDs verified working with the sqlite preset.
  * Add new stacks here only after testing them end-to-end in TUI.
  */
-export const STACK_IDS = ["toolStack", "retryStack", "qualityGate"] as const;
+export const STACK_IDS = [
+  "toolStack",
+  "retryStack",
+  "qualityGate",
+  "contextArena",
+  "contextHub",
+  "ace",
+  "goalStack",
+  "forge",
+  "autoHarness",
+  "governance",
+] as const;
 export type StackId = (typeof STACK_IDS)[number];
 
 export interface WizardState {
