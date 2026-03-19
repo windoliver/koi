@@ -42,7 +42,7 @@ import { printBanner } from "./banner.js";
 import { createInteractiveConsent } from "./consent.js";
 import { buildDemoManifestOverrides, provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
 import { runDetach } from "./detach.js";
-import { mapNexusModeToProfile, startNexusStack, stopNexusStack } from "./nexus.js";
+import { mapNexusModeToProfile, startNexusStack } from "./nexus.js";
 import { runPreflight } from "./preflight.js";
 import { extractDemoPack, extractStacks, inferPresetId } from "./preset.js";
 import { activatePresetStacks } from "./stacks.js";
@@ -588,7 +588,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     if (autonomous !== undefined) await autonomous.dispose();
     if (temporalAdmin !== undefined) await temporalAdmin.dispose();
     if (nexus.dispose !== undefined) await nexus.dispose();
-    if (nexusStartedByUs) await stopNexusStack(workspaceRoot, flags.verbose);
+    // Nexus containers persist — don't stop on error exit either.
     if (temporalEmbedHandle !== undefined) await temporalEmbedHandle.dispose();
     process.exit(EXIT_CONFIG);
   }
@@ -1251,7 +1251,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   forgeBootstrap?.dispose();
   if (sandboxBridge !== undefined) await sandboxBridge.dispose();
   if (nexus.dispose !== undefined) await nexus.dispose();
-  if (nexusStartedByUs) await stopNexusStack(workspaceRoot, flags.verbose);
+  // Nexus containers are NOT stopped on quit — they persist data across sessions.
+  // Use `nexus down` or `docker compose down` to explicitly stop them.
 
   output.info("Goodbye.");
 }
