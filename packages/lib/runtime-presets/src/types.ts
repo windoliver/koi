@@ -7,8 +7,8 @@
 // Preset IDs
 // ---------------------------------------------------------------------------
 
-/** The three built-in runtime presets. */
-export type PresetId = "local" | "demo" | "mesh";
+/** The built-in runtime presets. */
+export type PresetId = "local" | "demo" | "mesh" | "sqlite";
 
 // ---------------------------------------------------------------------------
 // Add-on definitions

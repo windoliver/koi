@@ -56,6 +56,7 @@ export async function selectPreset(state: WizardState, flags: InitFlags): Promis
       { value: "local", label: "local", hint: "Single agent, local Nexus, no auth" },
       { value: "demo", label: "demo", hint: "Auth-enabled Nexus, seeded data, TUI" },
       { value: "mesh", label: "mesh", hint: "Multi-agent with gateway + Temporal" },
+      { value: "sqlite", label: "sqlite", hint: "SQLite persistence for system testing" },
     ],
   });
 

@@ -17,7 +17,7 @@ export async function inferPresetId(manifestPath: string): Promise<PresetId> {
     const presetMatch = /^preset:\s*(\S+)/m.exec(raw);
     if (presetMatch?.[1] !== undefined) {
       const id = presetMatch[1];
-      if (id === "local" || id === "demo" || id === "mesh") return id;
+      if (id === "local" || id === "demo" || id === "mesh" || id === "sqlite") return id;
     }
     // Infer demo from demo.pack presence
     if (/^demo:\s*\n\s+pack:/m.test(raw)) return "demo";
