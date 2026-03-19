@@ -276,6 +276,22 @@ describe("createCommunityRegistryHandler", () => {
   });
 
   // -------------------------------------------------------------------------
+  // 4b. Get with "_" sentinel means no namespace
+  // -------------------------------------------------------------------------
+
+  test("GET /v1/bricks/_/:name treats _ as no-namespace", async () => {
+    const brick = createToolBrick();
+    registry.register(brick);
+
+    const res = requireResponse(
+      await handler(new Request("http://localhost/v1/bricks/_/test-tool?kind=tool")),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string };
+    expect(body.name).toBe("test-tool");
+  });
+
+  // -------------------------------------------------------------------------
   // 5. Get by namespace + name returns 404 for missing
   // -------------------------------------------------------------------------
 
@@ -327,7 +343,7 @@ describe("createCommunityRegistryHandler", () => {
   // 7. Publish registers brick with valid auth
   // -------------------------------------------------------------------------
 
-  test("POST /v1/bricks registers brick with valid auth", async () => {
+  test("POST /v1/bricks registers brick and returns PublishResult", async () => {
     const brick = createToolBrick({ name: "published-tool" });
 
     const res = requireResponse(
@@ -343,8 +359,18 @@ describe("createCommunityRegistryHandler", () => {
       ),
     );
     expect(res.status).toBe(201);
-    const body = (await res.json()) as { ok: boolean };
-    expect(body.ok).toBe(true);
+    const body = (await res.json()) as {
+      id: string;
+      kind: string;
+      name: string;
+      url: string;
+      publishedAt: string;
+    };
+    expect(body.id).toBe(brick.id);
+    expect(body.kind).toBe("tool");
+    expect(body.name).toBe("published-tool");
+    expect(body.url).toContain("published-tool");
+    expect(body.publishedAt).toBeDefined();
 
     // Verify it was registered
     const getResult = await registry.get("tool", "published-tool");
@@ -429,8 +455,8 @@ describe("createCommunityRegistryHandler", () => {
       ),
     );
     expect(res.status).toBe(201);
-    const body = (await res.json()) as { ok: boolean; warnings?: string[] };
-    expect(body.ok).toBe(true);
+    const body = (await res.json()) as { id: string; name: string; warnings?: string[] };
+    expect(body.name).toBe("warn-tool");
     expect(body.warnings).toContain("Suspicious but acceptable pattern");
 
     // Verify it was registered despite warnings
@@ -472,8 +498,8 @@ describe("createCommunityRegistryHandler", () => {
       ),
     );
     expect(res.status).toBe(201);
-    const body = (await res.json()) as { ok: boolean; warnings?: string[] };
-    expect(body.ok).toBe(true);
+    const body = (await res.json()) as { id: string; name: string; warnings?: string[] };
+    expect(body.name).toBe("clean-tool");
     expect(body.warnings).toBeUndefined();
 
     gatedHandler.dispose();
@@ -483,7 +509,7 @@ describe("createCommunityRegistryHandler", () => {
   // 9. Batch check returns availability
   // -------------------------------------------------------------------------
 
-  test("POST /v1/batch-check returns availability", async () => {
+  test("POST /v1/batch-check returns existing and missing arrays", async () => {
     const brick = createToolBrick({
       provenance: { ...TEST_PROVENANCE, contentHash: "known-hash-123" },
     });
@@ -500,14 +526,11 @@ describe("createCommunityRegistryHandler", () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      updates: readonly { hash: string; available: boolean }[];
+      existing: readonly string[];
+      missing: readonly string[];
     };
-    expect(body.updates).toHaveLength(2);
-
-    const known = body.updates.find((u) => u.hash === "known-hash-123");
-    const unknownEntry = body.updates.find((u) => u.hash === "unknown-hash-999");
-    expect(known?.available).toBe(true);
-    expect(unknownEntry?.available).toBe(false);
+    expect(body.existing).toContain("known-hash-123");
+    expect(body.missing).toContain("unknown-hash-999");
   });
 
   // -------------------------------------------------------------------------

@@ -1229,6 +1229,7 @@
         "@koi/nexus": "workspace:*",
         "@koi/nexus-client": "workspace:*",
         "@koi/nexus-embed": "workspace:*",
+        "@koi/nexus-store": "workspace:*",
         "@koi/node-stack": "workspace:*",
         "@koi/quality-gate": "workspace:*",
         "@koi/registry-remote": "workspace:*",

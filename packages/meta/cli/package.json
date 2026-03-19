@@ -39,6 +39,7 @@
     "@koi/forge": "workspace:*",
     "@koi/forge-integrity": "workspace:*",
     "@koi/forge-tools": "workspace:*",
+    "@koi/nexus-store": "workspace:*",
     "@koi/registry-remote": "workspace:*",
     "@koi/engine-external": "workspace:*",
     "@koi/engine-loop": "workspace:*",

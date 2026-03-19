@@ -47,13 +47,36 @@ export async function runForge(flags: ForgeFlags): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Shared: resolve registry URL from flags → env → default
+// Shared: resolve registry URL / Nexus URL from flags → env → default
 // ---------------------------------------------------------------------------
 
 const DEFAULT_REGISTRY_URL = "https://registry.koi.dev";
+const DEFAULT_NEXUS_URL = "http://127.0.0.1:2026";
 
 function resolveRegistryUrl(flags: ForgeFlags): string {
   return flags.registry ?? process.env.KOI_REGISTRY_URL ?? DEFAULT_REGISTRY_URL;
+}
+
+function resolveNexusUrl(manifest: { readonly nexus?: { readonly url?: string } }): string {
+  return manifest.nexus?.url ?? process.env.NEXUS_URL ?? DEFAULT_NEXUS_URL;
+}
+
+/**
+ * Create a persistent Nexus-backed ForgeStore from the manifest.
+ *
+ * This ensures bricks persist across CLI invocations. Falls back to
+ * the manifest's Nexus URL → NEXUS_URL env → localhost:2026.
+ */
+async function resolveLocalStore(manifestPath: string): Promise<import("@koi/core").ForgeStore> {
+  const { loadManifestOrExit } = await import("../load-manifest-or-exit.js");
+  const { manifest } = await loadManifestOrExit(manifestPath);
+  const nexusUrl = resolveNexusUrl(manifest);
+  const { createNexusForgeStore } = await import("@koi/nexus-store");
+  return createNexusForgeStore({
+    baseUrl: nexusUrl,
+    apiKey: process.env.NEXUS_API_KEY ?? "",
+    basePath: `agents/${manifest.name}/forge`,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -101,12 +124,13 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
     process.stderr.write("  Proceeding despite integrity failure (--yes).\n");
   }
 
-  // Check dependencies — uses local in-memory store as placeholder
+  // Check dependencies against the local store
+  const manifestPath = flags.manifest ?? "koi.yaml";
+  const store = await resolveLocalStore(manifestPath);
+
   process.stderr.write("  Checking dependencies...\n");
   const { checkBrickDependencies } = await import("@koi/registry-remote");
-  const { createInMemoryForgeStore } = await import("@koi/forge-tools");
-  const localStore = createInMemoryForgeStore();
-  const depResult = await checkBrickDependencies(brick, localStore, registry);
+  const depResult = await checkBrickDependencies(brick, store, registry);
 
   if (!depResult.satisfied) {
     process.stderr.write("  Missing dependencies:\n");
@@ -122,7 +146,7 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
 
   // Save to local store — the existing pipeline (discovery → ECS → tools/system prompt)
   // picks up new bricks automatically via ForgeStore.save()
-  const saveResult = await localStore.save(brick);
+  const saveResult = await store.save(brick);
   if (!saveResult.ok) {
     process.stderr.write(`  Failed to save brick: ${saveResult.error.message}\n`);
     process.exit(1);
@@ -150,8 +174,8 @@ async function runForgePublish(flags: ForgeFlags): Promise<void> {
 
   process.stderr.write(`Loading brick "${brickIdStr}" from local store...\n`);
 
-  const { createInMemoryForgeStore } = await import("@koi/forge-tools");
-  const store = createInMemoryForgeStore();
+  const manifestPath = flags.manifest ?? "koi.yaml";
+  const store = await resolveLocalStore(manifestPath);
   const { brickId } = await import("@koi/core");
   const loadResult = await store.load(brickId(brickIdStr));
   if (!loadResult.ok) {
@@ -164,18 +188,22 @@ async function runForgePublish(flags: ForgeFlags): Promise<void> {
   process.stderr.write(`Publishing "${brick.name}" to ${registryUrl}...\n`);
 
   const { publishBrick } = await import("@koi/registry-remote");
+  const { verifyBrickIntegrity } = await import("@koi/forge-integrity");
   const publishResult = await publishBrick(brick, {
     registryUrl,
     authToken,
+    verifyIntegrity: (b) => {
+      const r = verifyBrickIntegrity(b);
+      return { ok: r.ok, kind: r.kind };
+    },
   });
   if (!publishResult.ok) {
     process.stderr.write(`  Publish failed: ${publishResult.error.message}\n`);
     process.exit(1);
   }
 
-  process.stderr.write(
-    `  Published "${brick.name}" (${brick.kind}) → ${publishResult.value.url}\n\n`,
-  );
+  const pv = publishResult.value;
+  process.stderr.write(`  Published "${pv.name}" (${pv.kind}) [${pv.id}]\n\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +237,6 @@ async function runForgeSearch(flags: ForgeFlags): Promise<void> {
     return;
   }
 
-  // Table header
   const nameCol = 24;
   const kindCol = 12;
   const versionCol = 10;
@@ -231,7 +258,6 @@ async function runForgeSearch(flags: ForgeFlags): Promise<void> {
   if (page.total !== undefined) {
     process.stdout.write(`\n${page.items.length} of ${page.total} results shown.\n`);
   }
-
   process.stdout.write("\n");
 }
 
@@ -277,7 +303,6 @@ async function runForgeInspect(flags: ForgeFlags): Promise<void> {
   if (brick.namespace !== undefined) {
     process.stdout.write(`Namespace:   ${brick.namespace}\n`);
   }
-
   if (brick.tags.length > 0) {
     process.stdout.write(`Tags:        ${brick.tags.join(", ")}\n`);
   }
@@ -326,7 +351,6 @@ async function runForgeInspect(flags: ForgeFlags): Promise<void> {
     process.stdout.write(`  Verified:    ${new Date(brick.lastVerifiedAt).toISOString()}\n`);
   }
   process.stdout.write(`  Content Hash: ${brick.provenance.contentHash}\n`);
-
   process.stdout.write("\n");
 }
 
@@ -343,8 +367,8 @@ async function runForgeUpdate(flags: ForgeFlags): Promise<void> {
 
   process.stderr.write("Checking for updates...\n");
 
-  const { createInMemoryForgeStore } = await import("@koi/forge-tools");
-  const store = createInMemoryForgeStore();
+  const manifestPath = flags.manifest ?? "koi.yaml";
+  const store = await resolveLocalStore(manifestPath);
 
   // List all installed community bricks (those with namespace set)
   const searchResult = await store.search({});
@@ -371,7 +395,7 @@ async function runForgeUpdate(flags: ForgeFlags): Promise<void> {
     process.exit(1);
   }
 
-  // Find bricks whose hash is in the "missing" set — they have newer versions
+  // Hashes not found in the remote registry indicate bricks with newer versions
   const missingSet = new Set(checkResult.value.missing);
   const needsUpdate = installed.filter((b) => missingSet.has(b.provenance.contentHash));
 
@@ -417,10 +441,10 @@ async function runForgeUninstall(flags: ForgeFlags): Promise<void> {
 
   process.stderr.write(`Removing "${name}" from local store...\n`);
 
-  const { createInMemoryForgeStore } = await import("@koi/forge-tools");
-  const store = createInMemoryForgeStore();
+  const manifestPath = flags.manifest ?? "koi.yaml";
+  const store = await resolveLocalStore(manifestPath);
 
-  // Find the brick by name first
+  // Find the brick by name
   const searchResult = await store.search({ text: name, limit: 1 });
   if (!searchResult.ok) {
     process.stderr.write(`  Search failed: ${searchResult.error.message}\n`);

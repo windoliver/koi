@@ -39,6 +39,9 @@ function isValidBrickKind(value: string): value is BrickKind {
   return VALID_BRICK_KINDS.has(value);
 }
 
+/** Sentinel path segment meaning "no namespace". */
+const NO_NAMESPACE_SENTINEL = "_";
+
 // ---------------------------------------------------------------------------
 // GET /v1/health
 // ---------------------------------------------------------------------------
@@ -81,7 +84,7 @@ export async function handleSearch(url: URL, config: CommunityRegistryConfig): P
 // ---------------------------------------------------------------------------
 
 export async function handleGetByName(
-  namespace: string,
+  rawNamespace: string,
   name: string,
   url: URL,
   config: CommunityRegistryConfig,
@@ -92,7 +95,10 @@ export async function handleGetByName(
     return errorResponse(`Invalid brick kind: ${kindParam}`, 400);
   }
 
-  // Default to "tool" when no kind specified — caller should provide ?kind=
+  // "_" is the sentinel for "no namespace"
+  const namespace =
+    rawNamespace === NO_NAMESPACE_SENTINEL ? undefined : decodeURIComponent(rawNamespace);
+
   const kind: BrickKind = kindParam !== null && isValidBrickKind(kindParam) ? kindParam : "tool";
   const result = await config.registry.get(kind, name, namespace);
 
@@ -111,7 +117,6 @@ export async function handleGetByHash(
   contentHash: string,
   config: CommunityRegistryConfig,
 ): Promise<Response> {
-  // Search all bricks and find by provenance.contentHash or id
   const page = await config.registry.search({});
   const match = page.items.find(
     (brick) => brick.id === contentHash || brick.provenance.contentHash === contentHash,
@@ -152,7 +157,34 @@ export async function handlePublish(
     return errorResponse(`Bad request body: ${message}`, 400);
   }
 
-  // 3. Security gate
+  // 3. Mandatory validation: provenance must be present
+  if (brick.provenance === undefined) {
+    return errorResponse("Brick is missing provenance metadata", 400);
+  }
+
+  // 4. Mandatory validation: content hash must match ID
+  if (config.verifyIntegrity !== undefined) {
+    const integrityResult = config.verifyIntegrity(brick);
+    if (!integrityResult.ok) {
+      return jsonResponse(
+        {
+          error: `Content integrity check failed: ${integrityResult.kind}`,
+          integrityKind: integrityResult.kind,
+        },
+        422,
+      );
+    }
+  }
+
+  // 5. Mandatory validation: attestation signature (when verifier provided)
+  if (config.verifyAttestation !== undefined && brick.provenance.attestation !== undefined) {
+    const attestationValid = await config.verifyAttestation(brick);
+    if (!attestationValid) {
+      return errorResponse("Attestation signature verification failed", 422);
+    }
+  }
+
+  // 6. Security gate (skill-scanner integration + NL injection scan)
   const decision = await evaluateSecurityGate(config.securityGate, brick);
   if (decision.verdict === "blocked") {
     return jsonResponse(
@@ -165,19 +197,24 @@ export async function handlePublish(
     );
   }
 
-  // 4. Register
+  // 7. Register
   const result = await config.registry.register(brick);
   if (!result.ok) {
     return errorResponse(result.error.message, 500);
   }
 
-  const status = decision.verdict === "warning" ? 201 : 201;
+  // 8. Return PublishResult matching the client contract
+  const ns = brick.namespace !== undefined ? `${brick.namespace}/` : "";
   return jsonResponse(
     {
-      ok: true,
+      id: brick.id,
+      kind: brick.kind,
+      name: brick.name,
+      url: `/v1/bricks/${ns.length > 0 ? encodeURIComponent(brick.namespace ?? "") : "_"}/${encodeURIComponent(brick.name)}`,
+      publishedAt: new Date().toISOString(),
       ...(decision.verdict === "warning" ? { warnings: decision.result.findings ?? [] } : {}),
     },
-    status,
+    201,
   );
 }
 
@@ -209,10 +246,16 @@ export async function handleBatchCheck(
     knownHashes.add(brick.provenance.contentHash);
   }
 
-  const updates = body.hashes.map((hash: string) => ({
-    hash,
-    available: knownHashes.has(hash),
-  }));
+  // Return { existing, missing } matching client BatchCheckResult type
+  const existing: string[] = [];
+  const missing: string[] = [];
+  for (const hash of body.hashes) {
+    if (knownHashes.has(hash)) {
+      existing.push(hash);
+    } else {
+      missing.push(hash);
+    }
+  }
 
-  return jsonResponse({ updates });
+  return jsonResponse({ existing, missing });
 }

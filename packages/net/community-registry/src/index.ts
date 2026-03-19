@@ -10,10 +10,12 @@ export { createCommunityRegistryHandler } from "./handler.js";
 export type { SecurityDecision, SecurityVerdict } from "./security-gate.js";
 export { evaluateSecurityGate } from "./security-gate.js";
 export type {
-  BatchCheckEntry,
+  AttestationVerifier,
   BatchCheckRequest,
   BatchCheckResponse,
   CommunityRegistryConfig,
+  IntegrityCheckResult,
+  IntegrityVerifier,
   SecurityGate,
   SecurityGateResult,
 } from "./types.js";
