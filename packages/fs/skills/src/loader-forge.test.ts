@@ -190,11 +190,12 @@ describe("loadForgeSkillBody", () => {
 });
 
 describe("loadForgeSkillBundled", () => {
-  test("includes artifact.files as scripts/references", async () => {
+  test("includes artifact.files as scripts/references/assets", async () => {
     const artifact = createMockArtifact({
       files: {
         "scripts/helper.sh": "#!/bin/bash\necho hello",
         "references/guide.md": "# Guide\n\nSome reference.",
+        "assets/report-template.md": "# Report\n\n{{summary}}",
         "other/ignored.txt": "this is ignored",
       },
     });
@@ -210,9 +211,12 @@ describe("loadForgeSkillBundled", () => {
     expect(result.value.scripts[0]?.content).toContain("echo hello");
     expect(result.value.references).toHaveLength(1);
     expect(result.value.references[0]?.filename).toBe("guide.md");
+    expect(result.value.assets).toHaveLength(1);
+    expect(result.value.assets[0]?.filename).toBe("report-template.md");
+    expect(result.value.assets[0]?.content).toContain("{{summary}}");
   });
 
-  test("returns empty scripts/references when artifact has no files", async () => {
+  test("returns empty scripts/references/assets when artifact has no files", async () => {
     // createMockArtifact() produces an artifact without a `files` field
     const artifact = createMockArtifact();
     const store = mockForgeStore(new Map([[TEST_BRICK_ID, artifact]]));
@@ -223,6 +227,7 @@ describe("loadForgeSkillBundled", () => {
 
     expect(result.value.scripts).toHaveLength(0);
     expect(result.value.references).toHaveLength(0);
+    expect(result.value.assets).toHaveLength(0);
   });
 });
 

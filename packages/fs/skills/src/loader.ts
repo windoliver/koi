@@ -4,7 +4,7 @@
  * Three loading levels:
  * - metadata: frontmatter only (cheapest)
  * - body: frontmatter + markdown body + security scan
- * - bundled: body + scripts/ + references/ directory contents
+ * - bundled: body + scripts/ + references/ + assets/ directory contents
  */
 
 import { exists, realpath } from "node:fs/promises";
@@ -16,6 +16,7 @@ import { parseSkillMd } from "./parse.js";
 import { resolveIncludes } from "./resolve-includes.js";
 import type {
   IncludeResolutionOptions,
+  SkillAsset,
   SkillBodyEntry,
   SkillBundledEntry,
   SkillEntry,
@@ -283,7 +284,12 @@ export async function loadSkillBody(
 }
 
 /**
- * Load skill at bundled level — body + scripts/ + references/ contents.
+ * Load skill at bundled level — body + scripts/ + references/ + assets/ contents.
+ *
+ * Directory conventions:
+ * - `scripts/`    — executable helper scripts
+ * - `references/` — input knowledge (conventions, checklists, style guides)
+ * - `assets/`     — output templates (report scaffolds, plan templates, doc structures)
  */
 export async function loadSkillBundled(
   dirPath: string,
@@ -295,10 +301,12 @@ export async function loadSkillBundled(
 
   const scriptsDir = join(dirPath, "scripts");
   const referencesDir = join(dirPath, "references");
+  const assetsDir = join(dirPath, "assets");
 
   // let: conditionally assigned based on directory existence
   let scripts: readonly SkillScript[] = [];
   let references: readonly SkillReference[] = [];
+  let assets: readonly SkillAsset[] = [];
 
   if (await exists(scriptsDir)) {
     const result = await readDirFiles(scriptsDir);
@@ -310,6 +318,11 @@ export async function loadSkillBundled(
     references = result.files;
   }
 
+  if (await exists(assetsDir)) {
+    const result = await readDirFiles(assetsDir);
+    assets = result.files;
+  }
+
   const { level: _, ...rest } = bodyResult.value;
   return {
     ok: true,
@@ -318,6 +331,7 @@ export async function loadSkillBundled(
       level: "bundled",
       scripts,
       references,
+      assets,
     },
   };
 }

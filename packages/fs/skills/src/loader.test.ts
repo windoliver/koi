@@ -80,7 +80,7 @@ describe("loadSkillBody", () => {
 });
 
 describe("loadSkillBundled", () => {
-  test("loads skill with scripts and references", async () => {
+  test("loads skill with scripts, references, and assets", async () => {
     const result = await loadSkillBundled(resolve(FIXTURES, "valid-skill"));
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -89,16 +89,19 @@ describe("loadSkillBundled", () => {
       expect(result.value.scripts.some((s) => s.filename === "helper.sh")).toBe(true);
       expect(result.value.references.length).toBeGreaterThanOrEqual(1);
       expect(result.value.references.some((r) => r.filename === "example.md")).toBe(true);
+      expect(result.value.assets.length).toBeGreaterThanOrEqual(1);
+      expect(result.value.assets.some((a) => a.filename === "report-template.md")).toBe(true);
     }
   });
 
-  test("returns empty scripts/references when directories missing", async () => {
+  test("returns empty scripts/references/assets when directories missing", async () => {
     const result = await loadSkillBundled(resolve(FIXTURES, "minimal-skill"));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.level).toBe("bundled");
       expect(result.value.scripts).toHaveLength(0);
       expect(result.value.references).toHaveLength(0);
+      expect(result.value.assets).toHaveLength(0);
     }
   });
 });

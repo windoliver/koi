@@ -44,6 +44,7 @@ export type {
   IncludeResolutionOptions,
   ProgressiveSkillProvider,
   ResolvedInclude,
+  SkillAsset,
   SkillBodyEntry,
   SkillBundledEntry,
   SkillEntry,

@@ -1,7 +1,7 @@
 /**
  * Progressive loading types for Agent Skills Standard.
  *
- * Three levels: metadata (frontmatter only), body (+ markdown), bundled (+ scripts/references).
+ * Three levels: metadata (frontmatter only), body (+ markdown), bundled (+ scripts/references/assets).
  */
 
 import type { ComponentProvider, KoiError, Result, SkillConfig } from "@koi/core";
@@ -19,6 +19,12 @@ export interface SkillScript {
 
 /** Bundled reference file content. */
 export interface SkillReference {
+  readonly filename: string;
+  readonly content: string;
+}
+
+/** Bundled asset file content (output templates, scaffolds). */
+export interface SkillAsset {
   readonly filename: string;
   readonly content: string;
 }
@@ -50,12 +56,13 @@ export interface SkillBodyEntry extends SkillEntryBase {
   readonly body: string;
 }
 
-/** Level 3: frontmatter + body + bundled scripts and references. */
+/** Level 3: frontmatter + body + bundled scripts, references, and assets. */
 export interface SkillBundledEntry extends SkillEntryBase {
   readonly level: "bundled";
   readonly body: string;
   readonly scripts: readonly SkillScript[];
   readonly references: readonly SkillReference[];
+  readonly assets: readonly SkillAsset[];
 }
 
 /** Discriminated union of all progressive loading levels. */

@@ -45,8 +45,8 @@ import { isAtOrAbove } from "./types.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Assembles bundled content: body + scripts + references into a single string.
- * Scripts and references are formatted as labeled sections after the body.
+ * Assembles bundled content: body + scripts + references + assets into a single string.
+ * Each category is formatted as a labeled section after the body.
  */
 function assembleBundledContent(entry: SkillBundledEntry): string {
   const parts = [entry.body];
@@ -63,6 +63,11 @@ function assembleBundledContent(entry: SkillBundledEntry): string {
       .map((r) => `### ${r.filename}\n\n${r.content}`)
       .join("\n\n");
     parts.push(`## References\n\n${refSections}`);
+  }
+
+  if (entry.assets.length > 0) {
+    const assetSections = entry.assets.map((a) => `### ${a.filename}\n\n${a.content}`).join("\n\n");
+    parts.push(`## Assets\n\n${assetSections}`);
   }
 
   return parts.join("\n\n");
