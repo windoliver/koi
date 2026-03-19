@@ -89,8 +89,12 @@ export async function bootstrapForgeOrWarn(
     forgeConfig: { enabled: true },
     resolveSessionId,
     onError: (err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
+      // Only log forge bootstrap errors in verbose mode — in TUI mode these
+      // raw stderr writes corrupt the alternate screen display.
+      if (verbose === true) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
+      }
     },
     ...(autoHarness !== undefined
       ? {

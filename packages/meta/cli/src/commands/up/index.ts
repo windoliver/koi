@@ -227,10 +227,24 @@ async function createVfsBackend(
         baseUrl: nexusBaseUrl,
         ...(apiKey !== undefined ? { apiKey } : {}),
       });
-      return {
-        fs: createNexusFileSystem({ client, basePath: `agents/${agentName}` }),
-        backend: "nexus",
+      const nexusFs = createNexusFileSystem({ client, basePath: `agents/${agentName}` });
+      // Filter out /agents subfolder from root — it contains per-session runtime
+      // instances (cli:koi-demo:{timestamp}) that are internal state, not user data.
+      const filteredFs: import("@koi/core").FileSystemBackend = {
+        ...nexusFs,
+        list: async (path, options) => {
+          const result = await nexusFs.list(path, options);
+          if (!result.ok || path !== "/") return result;
+          return {
+            ok: true,
+            value: {
+              ...result.value,
+              entries: result.value.entries.filter((e) => e.path !== "/agents"),
+            },
+          };
+        },
       };
+      return { fs: filteredFs, backend: "nexus" };
     } catch {
       // Fall back to local if Nexus filesystem package is unavailable
     }
