@@ -43,20 +43,25 @@ function createScannerSecurityGate(): SecurityGate {
       const { createScanner } = await import("@koi/skill-scanner");
       const scanner = createScanner();
 
-      // Extract implementation content for scanning
-      const content =
-        "implementation" in brick
+      // Route to the correct scanner path based on brick kind:
+      // - skill bricks use scanSkill() for markdown + NL prompt-injection rules
+      // - code bricks use scan() for AST-based security rules
+      const isSkill = brick.kind === "skill";
+      const content = isSkill
+        ? "content" in brick
+          ? (brick as { readonly content?: string }).content
+          : undefined
+        : "implementation" in brick
           ? (brick as { readonly implementation?: string }).implementation
-          : "content" in brick
-            ? (brick as { readonly content?: string }).content
-            : undefined;
+          : undefined;
 
       if (content === undefined) {
-        // No scannable content — pass with full score
         return { passed: true, score: 100 };
       }
 
-      const report = scanner.scan(content, `${brick.name}.ts`);
+      const report = isSkill
+        ? scanner.scanSkill(content)
+        : scanner.scan(content, `${brick.name}.ts`);
       const criticalCount = report.findings.filter((f) => f.severity === "CRITICAL").length;
       const highCount = report.findings.filter((f) => f.severity === "HIGH").length;
 
