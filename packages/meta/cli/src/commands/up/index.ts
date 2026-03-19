@@ -258,16 +258,29 @@ async function persistChatToNexus(
     readonly rpc: <_T>(m: string, p: Record<string, unknown>) => Promise<{ readonly ok: boolean }>;
   },
   agentName: string,
-  threadId: string,
+  sessionId: string,
   userText: string,
   assistantText: string,
 ): Promise<void> {
-  const path = `agents/${agentName}/session/chat/${threadId}.jsonl`;
+  const path = `/agents/${agentName}/session/chat/${sessionId}.jsonl`;
   // Read existing content, append new entries
-  const readResult = await client.rpc<string>("read", { path });
-  const existing = readResult.ok
-    ? (readResult as { readonly ok: true; readonly value: string }).value
-    : "";
+  const readResult = (await client.rpc<unknown>("read", { path })) as {
+    readonly ok: boolean;
+    readonly value?: unknown;
+  };
+  let existing = "";
+  if (readResult.ok && readResult.value !== undefined) {
+    const raw = readResult.value;
+    // Nexus returns { __type__: "bytes", data: "base64..." }
+    if (typeof raw === "string") {
+      existing = raw;
+    } else if (typeof raw === "object" && raw !== null) {
+      const obj = raw as Record<string, unknown>;
+      if (obj.__type__ === "bytes" && typeof obj.data === "string") {
+        existing = Buffer.from(obj.data, "base64").toString("utf-8");
+      }
+    }
+  }
   const entries = [
     JSON.stringify({ kind: "user", text: userText, timestamp: Date.now() }),
     JSON.stringify({ kind: "assistant", text: assistantText, timestamp: Date.now() }),
@@ -1165,9 +1178,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
         deltas.join(""),
       );
       if (demoNexusClient !== undefined) {
-        persistChatToNexus(demoNexusClient, manifest.name, threadId, text, deltas.join("")).catch(
-          () => {},
-        );
+        persistChatToNexus(
+          demoNexusClient,
+          manifest.name,
+          currentSessionId,
+          text,
+          deltas.join(""),
+        ).catch(() => {});
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
