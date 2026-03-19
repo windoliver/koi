@@ -34,6 +34,7 @@ const KNOWN_FIELDS = [
   "scope",
   "preset",
   "storage",
+  "stacks",
 ] as const;
 
 /**

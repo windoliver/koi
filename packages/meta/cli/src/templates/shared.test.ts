@@ -23,6 +23,7 @@ const STATE: WizardState = {
   demoPack: undefined,
   dataSources: [],
   apiKey: undefined,
+  stacks: [],
 };
 
 describe("generateManifestYaml", () => {
@@ -220,6 +221,7 @@ const DEMO_STATE: WizardState = {
   demoPack: "connected",
   dataSources: [],
   apiKey: undefined,
+  stacks: [],
 };
 
 describe("generateDemoManifestYaml", () => {

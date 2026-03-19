@@ -123,6 +123,23 @@ export function generateManifestYaml(state: WizardState): string {
     additional.push("");
     additional.push("storage:");
     additional.push("  driver: sqlite");
+
+    if (state.stacks.length > 0) {
+      additional.push("");
+      additional.push("stacks:");
+      for (const stack of state.stacks) {
+        additional.push(`  ${stack}: true`);
+      }
+      // Use sqlite backends when persistence stacks are enabled.
+      // Cast needed: contextArena/ace will be added to StackId after verification.
+      const stackNames = state.stacks as readonly string[];
+      if (stackNames.includes("contextArena")) {
+        additional.push("  threadStoreBackend: sqlite");
+      }
+      if (stackNames.includes("ace")) {
+        additional.push("  aceStoreBackend: sqlite");
+      }
+    }
   }
 
   additional.push("");

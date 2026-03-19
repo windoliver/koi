@@ -26,6 +26,7 @@ import {
   selectEngine,
   selectModel,
   selectPreset,
+  selectStacks,
   selectTemplate,
 } from "../wizard/steps.js";
 
@@ -68,6 +69,7 @@ export async function runInit(flags: InitFlags): Promise<void> {
     enterApiKey,
     selectEngine,
     selectChannels,
+    selectStacks,
     selectDataSources,
   ];
 
