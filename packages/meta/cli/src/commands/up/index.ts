@@ -262,6 +262,45 @@ async function persistChatToNexus(
   await client.rpc<null>("write", { path, content });
 }
 
+/** Probe nexus.yaml for an already-running Nexus instance. Returns URL+key if healthy. */
+async function probeExistingNexus(
+  workspaceRoot: string,
+): Promise<{ readonly baseUrl: string; readonly apiKey: string } | undefined> {
+  try {
+    const { join } = await import("node:path");
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(join(workspaceRoot, "nexus.yaml"), "utf-8");
+
+    // Parse YAML manually (just need ports.http and api_key)
+    const httpPortMatch = /^\s*http:\s*(\d+)/m.exec(raw);
+    const apiKeyMatch = /^api_key:\s*(.+)/m.exec(raw);
+    if (httpPortMatch === null || apiKeyMatch === null) return undefined;
+
+    const port = httpPortMatch[1];
+    const apiKey = apiKeyMatch[1]?.trim() ?? "";
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    // Health check — timeout 2s
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const resp = await fetch(`${baseUrl}/api/v2/search/health`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (resp.ok) {
+      const body = (await resp.json()) as Record<string, unknown>;
+      if (body.status === "healthy") {
+        return { baseUrl, apiKey };
+      }
+    }
+  } catch {
+    // nexus.yaml missing, unreadable, or Nexus not responding — start fresh
+  }
+  return undefined;
+}
+
 /** Infer actual store backend from config + Nexus availability. */
 function inferBackend(
   configured: "nexus" | "sqlite" | "memory" | undefined,
@@ -374,27 +413,37 @@ export async function runUp(flags: UpFlags): Promise<void> {
   );
 
   // 5. NEXUS + SUBSYSTEMS (before forge, so search backends are available)
-  // Nexus auto-start (embed-auth)
+  // Nexus: try reusing existing instance from nexus.yaml before starting a new one
   let nexusBaseUrl = flags.nexusUrl ?? manifest.nexus?.url ?? process.env.NEXUS_URL;
   let nexusStartedByUs = false;
   if (nexusBaseUrl === undefined && preset.nexusMode === "embed-auth") {
-    output.spinner.start("Starting Nexus...");
-    const nexusResult = await timer.time("nexus-up", () =>
-      startNexusStack(workspaceRoot, presetId, flags.verbose, {
-        build: flags.nexusBuild || undefined,
-        sourceDir: flags.nexusSource,
-        port: flags.nexusPort,
-        portStrategy: "auto",
-      }),
-    );
-    if (nexusResult !== undefined) {
-      nexusBaseUrl = nexusResult.baseUrl;
-      nexusStartedByUs = true;
-      if (nexusResult.apiKey !== undefined && process.env.NEXUS_API_KEY === undefined) {
-        process.env.NEXUS_API_KEY = nexusResult.apiKey;
+    // Probe nexus.yaml for a running instance
+    const existing = await probeExistingNexus(workspaceRoot);
+    if (existing !== undefined) {
+      nexusBaseUrl = existing.baseUrl;
+      if (process.env.NEXUS_API_KEY === undefined) {
+        process.env.NEXUS_API_KEY = existing.apiKey;
       }
+      output.info(`Nexus: reusing existing instance at ${existing.baseUrl}`);
+    } else {
+      output.spinner.start("Starting Nexus...");
+      const nexusResult = await timer.time("nexus-up", () =>
+        startNexusStack(workspaceRoot, presetId, flags.verbose, {
+          build: flags.nexusBuild || undefined,
+          sourceDir: flags.nexusSource,
+          port: flags.nexusPort,
+          portStrategy: "auto",
+        }),
+      );
+      if (nexusResult !== undefined) {
+        nexusBaseUrl = nexusResult.baseUrl;
+        nexusStartedByUs = true;
+        if (nexusResult.apiKey !== undefined && process.env.NEXUS_API_KEY === undefined) {
+          process.env.NEXUS_API_KEY = nexusResult.apiKey;
+        }
+      }
+      output.spinner.stop(undefined);
     }
-    output.spinner.stop(undefined);
   }
 
   // Temporal auto-start
