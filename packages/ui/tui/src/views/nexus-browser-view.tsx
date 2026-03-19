@@ -70,7 +70,7 @@ export function NexusBrowserView(props: NexusBrowserViewProps): React.ReactNode 
           <box height={1}>
             <text fg={COLORS.green}><b>{" File Preview"}</b></text>
           </box>
-          {fileContent.split("\n").slice(0, 8).map((line: string, i: number) => (
+          {fileContent.split("\n").filter((l: string) => l.trim() !== "").slice(-8).map((line: string, i: number) => (
             <box key={i} height={1}>
               <text fg={COLORS.dim}>{`   ${line.slice(0, 72)}`}</text>
             </box>
