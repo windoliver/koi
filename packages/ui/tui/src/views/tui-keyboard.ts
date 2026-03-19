@@ -79,6 +79,7 @@ export interface KeyboardCallbacks {
   readonly serviceBack: () => void;
   readonly logsCycleLevel: () => void;
   readonly logsBack: () => void;
+  readonly openSessionPicker: () => void;
 }
 
 /**
@@ -149,6 +150,11 @@ export function createKeyboardHandler(
       const target = TAB_KEYS[sequence] as string;
       // Console requires an active agent session
       if (target === "console" && store.getState().activeSession === null) return true;
+      // Sessions tab needs data fetch, not just view switch
+      if (target === "sessions") {
+        callbacks.openSessionPicker();
+        return true;
+      }
       store.dispatch({ kind: "set_view", view: target as import("../state/types.js").TuiView });
       return true;
     }

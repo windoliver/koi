@@ -725,6 +725,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     logsBack: () => {
       store.dispatch({ kind: "set_view", view: "service" });
     },
+    openSessionPicker: () => {
+      openSessionPicker().catch(() => {});
+    },
   });
 
   function handleConsoleInput(text: string): void {
