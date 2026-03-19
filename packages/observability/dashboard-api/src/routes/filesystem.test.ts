@@ -56,7 +56,7 @@ describe("handleFsList", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.ok).toBe(true);
-    expect((body.data as Record<string, unknown>).entries as unknown[]).toHaveLength(2);
+    expect(body.data as unknown[]).toHaveLength(2);
   });
 
   test("passes path query parameter", async () => {

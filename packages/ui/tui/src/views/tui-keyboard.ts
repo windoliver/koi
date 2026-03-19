@@ -137,6 +137,22 @@ export function createKeyboardHandler(
       return true;
     }
 
+    // 1-5 — switch primary tabs (Agents, Console, Forge, Sources, Sessions)
+    const TAB_KEYS: Readonly<Record<string, string>> = {
+      "1": "agents",
+      "2": "console",
+      "3": "forge",
+      "4": "datasources",
+      "5": "sessions",
+    };
+    if (sequence in TAB_KEYS) {
+      const target = TAB_KEYS[sequence] as string;
+      // Console requires an active agent session
+      if (target === "console" && store.getState().activeSession === null) return true;
+      store.dispatch({ kind: "set_view", view: target as import("../state/types.js").TuiView });
+      return true;
+    }
+
     // Split pane controls: Tab (focus next), Enter (zoom toggle), Esc (back)
     if (view === "splitpanes") {
       if (sequence === "\t") {

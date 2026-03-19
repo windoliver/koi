@@ -12,7 +12,7 @@ import type { TuiState, TuiView, ZoomLevel } from "../state/types.js";
 /** View-specific keyboard hints. */
 const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   addons: "j/k:navigate  Space:toggle  Enter:confirm  s:skip  Esc:back",
-  agents: "↑↓:navigate  Enter:select  Ctrl+G:forge  Ctrl+P:commands  q:quit",
+  agents: "↑↓:navigate  Enter:select  Ctrl+G:forge  Ctrl+P:commands  1-5:tabs  q:quit",
   agentprocfs: "Esc:back  Ctrl+P:commands",
   channels: "j/k:scroll  Esc:back  Ctrl+P:commands",
   consent: "[y] approve  [n] deny  [d] details  Esc:dismiss",
@@ -60,11 +60,11 @@ const ZOOM_LABELS: Readonly<Record<ZoomLevel, string>> = {
 
 /** View display names for the tab bar (primary views only — keeps line 1 compact). */
 const VIEW_LABELS: Readonly<Partial<Record<TuiView, string>>> = {
-  agents: "Agents",
-  console: "Console",
-  forge: "Forge",
-  datasources: "Sources",
-  sessions: "Sessions",
+  agents: "1:Agents",
+  console: "2:Console",
+  forge: "3:Forge",
+  datasources: "4:Sources",
+  sessions: "5:Sessions",
 } as const;
 
 export interface StatusBarViewProps {

@@ -80,7 +80,7 @@ export interface TuiRootProps {
  * Map a KeyEvent from OpenTUI to the raw byte sequence expected
  * by the keyboard handler.
  */
-function mapKeyEventToSequence(key: KeyEvent): string | null {
+function mapKeyEventToSequence(key: KeyEvent, paletteActive?: boolean): string | null {
   if (key.ctrl) {
     switch (key.name) {
       case "c": return "\x03";
@@ -96,8 +96,10 @@ function mapKeyEventToSequence(key: KeyEvent): string | null {
   if (key.name === "tab" || key.name === "Tab") return "\t";
   if (key.name === "up" || key.name === "ArrowUp") return "\x1b[A";
   if (key.name === "down" || key.name === "ArrowDown") return "\x1b[B";
-  // Single-char keys for view-specific shortcuts
-  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "l", "+", "?", " ", "r"];
+  // When command palette is open, let printable keys fall through to filter input
+  if (paletteActive === true) return null;
+  // Single-char keys for view-specific shortcuts (includes 1-5 for tab switching)
+  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "l", "+", "?", " ", "r", "1", "2", "3", "4", "5"];
   if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
     return key.name;
   }
@@ -109,7 +111,10 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
   const state = useStoreState(props.store);
 
   useKeyboard((key: KeyEvent) => {
-    const seq = mapKeyEventToSequence(key);
+    // In palette mode, only intercept control keys — let printable chars
+    // fall through to the palette's <input> for filter typing.
+    const inPalette = state.view === "palette";
+    const seq = mapKeyEventToSequence(key, inPalette);
     if (seq !== null) {
       props.onKeyInput(seq);
     }

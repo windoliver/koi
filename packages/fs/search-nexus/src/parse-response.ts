@@ -37,11 +37,10 @@ function isNexusSearchHit(value: unknown): value is NexusSearchHit {
 
 function isNexusQueryResponse(value: unknown): value is NexusQueryResponse {
   if (!isRecord(value)) return false;
-  if (!Array.isArray(value.hits)) return false;
+  if (!Array.isArray(value.results)) return false;
   if (typeof value.total !== "number") return false;
-  if (typeof value.has_more !== "boolean") return false;
 
-  for (const hit of value.hits) {
+  for (const hit of value.results) {
     if (!isNexusSearchHit(hit)) return false;
   }
 

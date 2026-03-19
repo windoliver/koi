@@ -12,6 +12,7 @@ import type {
   FileEdit,
   FileEditOptions,
   FileEditResult,
+  FileListEntry,
   FileListOptions,
   FileListResult,
   FileReadOptions,
@@ -90,11 +91,13 @@ function computeFullPath(basePath: string, userPath: string): Result<string, Koi
     if (part !== "" && part !== ".") return acc.concat(part);
     return acc;
   }, []);
-  const result = resolved.join("/");
+  // Nexus NFS expects paths with leading slash
+  const result = `/${resolved.join("/")}`;
 
   // Ensure result stays within basePath boundary
-  const baseWithSlash = basePath.endsWith("/") ? basePath : `${basePath}/`;
-  if (result !== basePath && !result.startsWith(baseWithSlash)) {
+  const normalizedBase = `/${basePath}`;
+  const baseWithSlash = normalizedBase.endsWith("/") ? normalizedBase : `${normalizedBase}/`;
+  if (result !== normalizedBase && !result.startsWith(baseWithSlash)) {
     return {
       ok: false,
       error: {
@@ -256,16 +259,62 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     const fullPathResult = computeFullPath(basePath, path);
     if (!fullPathResult.ok) return fullPathResult;
 
-    const result = await client.rpc<FileListResult>("list", {
-      path: fullPathResult.value,
-      ...(options?.recursive !== undefined ? { recursive: options.recursive } : {}),
-      ...(options?.glob !== undefined ? { glob: options.glob } : {}),
-    });
+    // Nexus RPC may return either:
+    //   { entries: FileListEntry[], truncated } (structured)
+    //   { files: string[] }                     (flat path list)
+    const result = await client.rpc<FileListResult | { readonly files: readonly string[] }>(
+      "list",
+      {
+        path: fullPathResult.value,
+        ...(options?.recursive !== undefined ? { recursive: options.recursive } : {}),
+        ...(options?.glob !== undefined ? { glob: options.glob } : {}),
+      },
+    );
 
     if (!result.ok) return result;
 
-    // Remap paths: strip basePath prefix so callers see user-relative paths
-    const entries = result.value.entries.map((entry) => ({
+    const raw = result.value;
+
+    // Handle flat file list from Nexus: derive directory entries from path prefixes
+    if ("files" in raw && Array.isArray(raw.files)) {
+      const prefix = fullPathResult.value.replace(/^\/+/, "");
+      const prefixWithSlash = prefix.length > 0 ? `${prefix}/` : "";
+      const seen = new Set<string>();
+      const entries: FileListEntry[] = [];
+
+      for (const file of raw.files) {
+        const normalized = file.replace(/^\/+/, "");
+        const relative =
+          prefixWithSlash.length > 0 && normalized.startsWith(prefixWithSlash)
+            ? normalized.slice(prefixWithSlash.length)
+            : normalized;
+        if (relative.length === 0) continue;
+        const slashIdx = relative.indexOf("/");
+        if (slashIdx === -1) {
+          // Immediate child — use extension heuristic to detect directories
+          // Nexus list returns both files and directory names as flat strings
+          const hasExt = relative.lastIndexOf(".") > 0;
+          const kind = hasExt ? ("file" as const) : ("directory" as const);
+          if (!seen.has(relative)) {
+            seen.add(relative);
+            entries.push({ path: `${path === "/" ? "" : path}/${relative}`, kind });
+          }
+        } else {
+          // Nested path — extract top-level directory
+          const dirName = relative.slice(0, slashIdx);
+          if (!seen.has(dirName)) {
+            seen.add(dirName);
+            entries.push({ path: `${path === "/" ? "" : path}/${dirName}`, kind: "directory" });
+          }
+        }
+      }
+
+      return { ok: true, value: { entries, truncated: false } };
+    }
+
+    // Structured response — remap paths to strip basePath prefix
+    const structured = raw as FileListResult;
+    const entries = structured.entries.map((entry) => ({
       ...entry,
       path: stripBasePath(basePath, entry.path),
     }));
@@ -274,7 +323,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       ok: true,
       value: {
         entries,
-        truncated: result.value.truncated,
+        truncated: structured.truncated,
       },
     };
   }

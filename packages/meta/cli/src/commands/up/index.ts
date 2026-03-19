@@ -209,6 +209,71 @@ function createProbeCallback(
     ]);
 }
 
+/** Create the VFS backend — Nexus agent namespace when available, local fallback. */
+async function createVfsBackend(
+  workspaceRoot: string,
+  nexusBaseUrl: string | undefined,
+  agentName: string,
+): Promise<import("@koi/core").FileSystemBackend> {
+  if (nexusBaseUrl !== undefined) {
+    try {
+      const { createNexusFileSystem } = await import("@koi/filesystem-nexus");
+      const { createNexusClient } = await import("@koi/nexus-client");
+      const apiKey = process.env.NEXUS_API_KEY;
+      const client = createNexusClient({
+        baseUrl: nexusBaseUrl,
+        ...(apiKey !== undefined ? { apiKey } : {}),
+      });
+      return createNexusFileSystem({ client, basePath: `agents/${agentName}` });
+    } catch {
+      // Fall back to local if Nexus filesystem package is unavailable
+    }
+  }
+  return createLocalFileSystem(workspaceRoot);
+}
+
+/** Persist chat to Nexus (best-effort, non-fatal). */
+async function persistChatToNexus(
+  client: {
+    readonly rpc: <T>(m: string, p: Record<string, unknown>) => Promise<{ readonly ok: boolean }>;
+  },
+  agentName: string,
+  threadId: string,
+  userText: string,
+  assistantText: string,
+): Promise<void> {
+  const path = `agents/${agentName}/session/chat/${threadId}.jsonl`;
+  // Read existing content, append new entries
+  const readResult = await client.rpc<string>("read", { path });
+  const existing = readResult.ok
+    ? (readResult as { readonly ok: true; readonly value: string }).value
+    : "";
+  const entries = [
+    JSON.stringify({ kind: "user", text: userText, timestamp: Date.now() }),
+    JSON.stringify({ kind: "assistant", text: assistantText, timestamp: Date.now() }),
+  ].join("\n");
+  const content = existing.length > 0 ? `${existing}\n${entries}\n` : `${entries}\n`;
+  await client.rpc<null>("write", { path, content });
+}
+
+/** Kill any stale process holding a port so the current `up` can bind. */
+async function freePort(port: number): Promise<void> {
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync("lsof", ["-i", `:${String(port)}`, "-t"], { encoding: "utf-8" });
+    const pids = (result.stdout ?? "").trim().split("\n").filter(Boolean);
+    for (const pid of pids) {
+      if (pid !== String(process.pid)) {
+        process.kill(Number(pid), "SIGTERM");
+      }
+    }
+    // Brief wait for port release
+    if (pids.length > 0) await new Promise((r) => setTimeout(r, 500));
+  } catch {
+    // Non-fatal — Bun.serve will fail with a clear error if port is still busy
+  }
+}
+
 export async function runUp(flags: UpFlags): Promise<void> {
   // 0. DETACH
   if (flags.detach) {
@@ -372,7 +437,22 @@ export async function runUp(flags: UpFlags): Promise<void> {
     try {
       const { createInMemoryForgeStore } = await import("@koi/forge");
       const { createAutoHarnessStack } = await import("@koi/auto-harness");
-      const preForgeStore = createInMemoryForgeStore();
+      // Use Nexus-backed forge store when available, fall back to in-memory
+      let preForgeStore: import("@koi/core").ForgeStore;
+      if (nexus.baseUrl !== undefined) {
+        try {
+          const { createNexusForgeStore } = await import("@koi/nexus-store");
+          preForgeStore = createNexusForgeStore({
+            baseUrl: nexus.baseUrl,
+            apiKey: process.env.NEXUS_API_KEY ?? "",
+            basePath: `agents/${manifest.name}/bricks`,
+          });
+        } catch {
+          preForgeStore = createInMemoryForgeStore();
+        }
+      } else {
+        preForgeStore = createInMemoryForgeStore();
+      }
       const harnessStack = createAutoHarnessStack({
         forgeStore: preForgeStore,
         generate: async () => "",
@@ -629,9 +709,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   output.spinner.stop(undefined);
   output.success("Runtime assembled");
 
-  // 8. Connect channels (parallel)
+  // 8. Prepare channels (connected after TUI decision in step 12b)
   const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
-  await Promise.all(channels.map((ch) => ch.connect()));
 
   // 8b. Gateway + Node (conditional on preset services)
   const DEFAULT_GATEWAY_PORT = 4100;
@@ -712,8 +791,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
     flags.verbose,
   );
 
-  // 9. ADMIN
+  // 9. ADMIN — kill stale processes on required ports before binding
   const DEFAULT_ADMIN_PORT = 3100;
+  await freePort(DEFAULT_ADMIN_PORT);
   let stopAdmin: (() => void) | undefined;
   let adminBridge: AdminPanelBridgeResult | undefined;
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
@@ -760,7 +840,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       model: modelName,
       channels: channelNames,
       skills: skillNames,
-      fileSystem: createLocalFileSystem(workspaceRoot),
+      fileSystem: await createVfsBackend(workspaceRoot, nexus.baseUrl, manifest.name),
       discoveredSources: discoveredSourceSummaries,
       dataSourceDescriptors: discoveredDescriptors,
       ...(dataSourceExecutorFn !== undefined ? { dataSourceExecutor: dataSourceExecutorFn } : {}),
@@ -846,6 +926,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 10. Health server
   const DEFAULT_HEALTH_PORT = 9100;
+  await freePort(DEFAULT_HEALTH_PORT);
   let stopHealth: (() => void) | undefined;
   try {
     const { createHealthServer } = await import("@koi/deploy");
@@ -901,7 +982,10 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
+  // 12b. Connect channels — skip CLI when TUI owns stdin/stdout
   if (tuiAttached) {
+    const nonCli = channels.filter((ch) => ch.name !== "cli");
+    await Promise.all(nonCli.map((ch) => ch.connect()));
     output.info("Operator console attached.\n");
   } else {
     output.info("Type a message or Ctrl+C to stop.\n");
@@ -957,6 +1041,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
         text,
         deltas.join(""),
       );
+      if (demoNexusClient !== undefined) {
+        persistChatToNexus(demoNexusClient, manifest.name, threadId, text, deltas.join("")).catch(
+          () => {},
+        );
+      }
     } finally {
       processing = false;
     }
@@ -1007,6 +1096,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
           text,
           deltas.join(""),
         );
+        if (demoNexusClient !== undefined) {
+          persistChatToNexus(
+            demoNexusClient,
+            manifest.name,
+            currentSessionId,
+            text,
+            deltas.join(""),
+          ).catch(() => {});
+        }
       } catch (error: unknown) {
         if (!controller.signal.aborted) {
           const message = error instanceof Error ? error.message : String(error);

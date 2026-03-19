@@ -15,7 +15,7 @@ function createClient(
 }
 
 const SUCCESS_RESPONSE: NexusQueryResponse = {
-  hits: [
+  results: [
     {
       path: "src/main.ts",
       chunk_text: "function main() {}",
@@ -56,7 +56,7 @@ describe("createNexusRetriever", () => {
     let capturedPath = "";
     const client = createClient((_method, path) => {
       capturedPath = path;
-      return { ok: true, value: { hits: [], total: 0, has_more: false } };
+      return { ok: true, value: { results: [], total: 0, has_more: false } };
     });
 
     const retriever = createNexusRetriever(client, BASE_CONFIG);
@@ -92,7 +92,7 @@ describe("createNexusRetriever", () => {
   it("returns VALIDATION error when filter is provided", async () => {
     const client = createClient(() => ({
       ok: true,
-      value: { hits: [], total: 0, has_more: false },
+      value: { results: [], total: 0, has_more: false },
     }));
     const retriever = createNexusRetriever(client, BASE_CONFIG);
 
@@ -126,7 +126,7 @@ describe("createNexusRetriever", () => {
   it("returns empty results when hits is empty", async () => {
     const client = createClient(() => ({
       ok: true,
-      value: { hits: [], total: 0, has_more: false },
+      value: { results: [], total: 0, has_more: false },
     }));
     const retriever = createNexusRetriever(client, BASE_CONFIG);
 
@@ -141,7 +141,7 @@ describe("createNexusRetriever", () => {
   it("includes cursor in response when present", async () => {
     const client = createClient(() => ({
       ok: true,
-      value: { hits: [], total: 50, has_more: true, cursor: "next-page" },
+      value: { results: [], total: 50, has_more: true, cursor: "next-page" },
     }));
     const retriever = createNexusRetriever(client, BASE_CONFIG);
 
@@ -157,7 +157,7 @@ describe("createNexusRetriever", () => {
     let capturedPath = "";
     const client = createClient((_method, path) => {
       capturedPath = path;
-      return { ok: true, value: { hits: [], total: 0, has_more: false } };
+      return { ok: true, value: { results: [], total: 0, has_more: false } };
     });
 
     const retriever = createNexusRetriever(client, {
@@ -174,7 +174,7 @@ describe("createNexusRetriever", () => {
     let capturedPath = "";
     const client = createClient((_method, path) => {
       capturedPath = path;
-      return { ok: true, value: { hits: [], total: 0, has_more: false } };
+      return { ok: true, value: { results: [], total: 0, has_more: false } };
     });
 
     const retriever = createNexusRetriever(client, {

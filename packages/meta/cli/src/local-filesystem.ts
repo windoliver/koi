@@ -160,6 +160,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
                 path: toApiPath(join(path, match)),
                 kind: s.isDirectory() ? "directory" : "file",
                 ...(s.isFile() ? { size: s.size } : {}),
+                modifiedAt: s.mtimeMs,
               });
             } catch {
               /* skip unreadable entries */
@@ -179,18 +180,19 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
               : ("file" as const);
 
           let size: number | undefined;
-          if (kind === "file") {
-            try {
-              const s = await stat(join(p.value, entry.name));
-              size = s.size;
-            } catch {
-              /* skip */
-            }
+          let modifiedAt: number | undefined;
+          try {
+            const s = await stat(join(p.value, entry.name));
+            if (kind === "file") size = s.size;
+            modifiedAt = s.mtimeMs;
+          } catch {
+            /* skip */
           }
           entries.push({
             path: toApiPath(join(path, entry.name)),
             kind,
             ...(size !== undefined ? { size } : {}),
+            ...(modifiedAt !== undefined ? { modifiedAt } : {}),
           });
         }
         return { ok: true, value: { entries, truncated: false } };

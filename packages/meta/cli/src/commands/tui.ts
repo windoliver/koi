@@ -181,15 +181,19 @@ export async function runTui(flags: TuiFlags): Promise<void> {
 
             // 2. Run all phases in-process: validate manifest, preflight,
             //    resolve agent, then boot runtime via bootRuntime()
-            const { resolve } = await import("node:path");
+            const { resolve, join } = await import("node:path");
+            const { homedir } = await import("node:os");
             const { startStack } = await import("./up/start-stack.js");
 
             // Read Nexus config from TUI wizard state
             const tuiState = app.store.getState();
             const nexusMode = tuiState.nexusConfigMode;
+            // Expand tilde — spawnSync/Bun.spawn don't run through a shell
+            const expandTilde = (p: string): string =>
+              p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
             const nexusSource =
               nexusMode === "source"
-                ? tuiState.nexusSourcePath || flags.nexusSource
+                ? expandTilde(tuiState.nexusSourcePath || (flags.nexusSource ?? "~/nexus"))
                 : flags.nexusSource;
             const nexusBuild = nexusMode === "source" || flags.nexusBuild;
             // Remote mode: set NEXUS_URL env var so the nexus phase skips Docker

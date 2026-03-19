@@ -163,7 +163,7 @@ describe("createNexusSearch", () => {
   describe("retriever", () => {
     it("retrieves through the composite", async () => {
       const queryResponse: NexusQueryResponse = {
-        hits: [{ path: "a.ts", chunk_text: "code", chunk_index: 0, score: 0.9 }],
+        results: [{ path: "a.ts", chunk_text: "code", chunk_index: 0, score: 0.9 }],
         total: 1,
         has_more: false,
       };

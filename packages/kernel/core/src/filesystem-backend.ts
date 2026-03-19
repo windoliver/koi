@@ -69,6 +69,8 @@ export interface FileListEntry {
   readonly path: string;
   readonly kind: FileEntryKind;
   readonly size?: number;
+  /** Last modification time in milliseconds since epoch. */
+  readonly modifiedAt?: number;
 }
 
 export interface FileListOptions {

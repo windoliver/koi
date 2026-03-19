@@ -22,17 +22,7 @@ export function validateNexusFileSystemConfig(
     };
   }
 
-  if (config.basePath !== undefined) {
-    if (config.basePath === "") {
-      return {
-        ok: false,
-        error: {
-          code: "VALIDATION",
-          message: "NexusFileSystemConfig.basePath must be non-empty when provided",
-          retryable: RETRYABLE_DEFAULTS.VALIDATION,
-        },
-      };
-    }
+  if (config.basePath !== undefined && config.basePath !== "") {
     // NexusPath convention: no leading slash, no ".." (#922)
     if (config.basePath.includes("..")) {
       return {
