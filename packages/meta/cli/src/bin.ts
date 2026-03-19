@@ -14,6 +14,7 @@ import {
   isLogsFlags,
   isReplayFlags,
   isServeFlags,
+  isSessionsFlags,
   isStartFlags,
   isStatusFlags,
   isStopFlags,
@@ -76,6 +77,14 @@ const COMMANDS: readonly CommandEntry[] = [
       return runDemo(f as Parameters<typeof runDemo>[0]);
     },
     description: "koi demo <init|list|reset> [pack]  Manage demo data",
+  },
+  {
+    match: isSessionsFlags,
+    run: async (f) => {
+      const { runSessions } = await import("./commands/sessions.js");
+      return runSessions(f as Parameters<typeof runSessions>[0]);
+    },
+    description: "koi sessions [list]    List chat sessions",
   },
   {
     match: isDeployFlags,

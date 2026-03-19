@@ -69,6 +69,17 @@ export {
   createInMemoryStructuredPlaybookStore,
   createInMemoryTrajectoryStore,
 } from "./stores.js";
+// SQLite stores
+export type {
+  SqlitePlaybookStoreConfig,
+  SqliteStructuredPlaybookStoreConfig,
+  SqliteTrajectoryStoreConfig,
+} from "./stores-sqlite.js";
+export {
+  createSqlitePlaybookStore,
+  createSqliteStructuredPlaybookStore,
+  createSqliteTrajectoryStore,
+} from "./stores-sqlite.js";
 // list_playbooks tool
 export type { ListPlaybooksToolConfig } from "./tools/list-playbooks.js";
 export { createListPlaybooksTool } from "./tools/list-playbooks.js";

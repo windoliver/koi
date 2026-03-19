@@ -1227,6 +1227,7 @@
         "@koi/nexus": "workspace:*",
         "@koi/nexus-client": "workspace:*",
         "@koi/nexus-embed": "workspace:*",
+        "@koi/nexus-store": "workspace:*",
         "@koi/node-stack": "workspace:*",
         "@koi/quality-gate": "workspace:*",
         "@koi/resolve": "workspace:*",
@@ -1943,6 +1944,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {

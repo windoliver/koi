@@ -36,6 +36,12 @@ declare function createSqliteSnapshotChainStore<T>(dbPath: string): SnapshotChai
 
 interface CreateThreadStoreConfig {
     readonly store: ThreadSnapshotStore;
+    /**
+     * Maximum snapshots to retain per thread. Older snapshots are pruned
+     * after each append to bound disk/memory growth.
+     * Default: 500 (~2.5 MB per thread at 5 KB/snapshot).
+     */
+    readonly maxRetained?: number;
 }
 /**
  * Create a ThreadStore backed by a SnapshotChainStore<ThreadSnapshot>.

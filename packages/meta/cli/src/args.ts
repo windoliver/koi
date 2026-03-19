@@ -133,6 +133,7 @@ export interface UpFlags extends BaseFlags {
   readonly nexusPort: number | undefined;
   readonly temporalUrl: string | undefined;
   readonly logFormat: "text" | "json";
+  readonly resume: string | undefined;
 }
 
 export interface ReplayFlags extends BaseFlags {
@@ -141,6 +142,13 @@ export interface ReplayFlags extends BaseFlags {
   readonly turn: number | undefined;
   readonly db: string | undefined;
   readonly events: boolean;
+}
+
+export interface SessionsFlags extends BaseFlags {
+  readonly command: "sessions";
+  readonly subcommand: "list" | undefined;
+  readonly manifest: string | undefined;
+  readonly limit: number;
 }
 
 export interface DemoFlags extends BaseFlags {
@@ -165,6 +173,7 @@ export type CliFlags =
   | UpFlags
   | ReplayFlags
   | DemoFlags
+  | SessionsFlags
   | BaseFlags;
 
 // ---------------------------------------------------------------------------
@@ -488,6 +497,7 @@ export function parseUpFlags(rest: readonly string[]): UpFlags {
       "nexus-port": { type: "string" },
       "temporal-url": { type: "string" },
       "log-format": { type: "string" },
+      resume: { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -510,6 +520,31 @@ export function parseUpFlags(rest: readonly string[]): UpFlags {
     nexusPort: nexusPortStr !== undefined ? Number.parseInt(nexusPortStr, 10) : undefined,
     temporalUrl: values["temporal-url"] as string | undefined,
     logFormat: resolveLogFormat(values["log-format"] as string | undefined),
+    resume: values.resume as string | undefined,
+  };
+}
+
+export function parseSessionsFlags(rest: readonly string[]): SessionsFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+      limit: { type: "string", short: "n" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const sub = positionals[0] as string | undefined;
+  const subcommand = sub === "list" ? ("list" as const) : undefined;
+  const limitStr = values.limit as string | undefined;
+
+  return {
+    command: "sessions" as const,
+    directory: undefined,
+    subcommand,
+    manifest: values.manifest as string | undefined,
+    limit: limitStr !== undefined ? Number.parseInt(limitStr, 10) : 20,
   };
 }
 
@@ -647,6 +682,10 @@ export function isDemoFlags(flags: CliFlags): flags is DemoFlags {
   return flags.command === "demo";
 }
 
+export function isSessionsFlags(flags: CliFlags): flags is SessionsFlags {
+  return flags.command === "sessions";
+}
+
 // ---------------------------------------------------------------------------
 // Command registry
 // ---------------------------------------------------------------------------
@@ -666,6 +705,7 @@ const COMMAND_PARSERS: Readonly<Record<string, (rest: readonly string[]) => CliF
   up: parseUpFlags,
   replay: parseReplayFlags,
   demo: parseDemoFlags,
+  sessions: parseSessionsFlags,
 };
 
 // ---------------------------------------------------------------------------

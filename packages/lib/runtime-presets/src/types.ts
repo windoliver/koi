@@ -50,6 +50,12 @@ export interface PresetServices {
   readonly node: NodeMode;
 }
 
+/** Thread store backend for context-arena conversation persistence. */
+export type ThreadStoreBackend = "memory" | "sqlite" | "nexus";
+
+/** ACE store backend for trajectory/playbook persistence. */
+export type AceStoreBackend = "memory" | "sqlite" | "nexus";
+
 /** Which L3 middleware stacks `koi up` should activate for this preset. */
 export interface PresetStacks {
   readonly forge?: boolean;
@@ -61,6 +67,12 @@ export interface PresetStacks {
   readonly qualityGate?: boolean;
   readonly autoHarness?: boolean;
   readonly contextHub?: boolean;
+  /** Backend for context-arena ThreadStore. Default: "memory". */
+  readonly threadStoreBackend?: ThreadStoreBackend;
+  /** Enable ACE (Adaptive Continuous Enhancement) middleware. */
+  readonly ace?: boolean;
+  /** Backend for ACE trajectory/playbook stores. Default: "memory". */
+  readonly aceStoreBackend?: AceStoreBackend;
 }
 
 /** A complete runtime preset definition. */

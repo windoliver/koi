@@ -24,6 +24,7 @@ import type { UpFlags } from "../../args.js";
 import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
+import { createContextArenaConfigForUp } from "../../context-arena-config.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -37,7 +38,6 @@ import { mergeBootstrapContext } from "../../resolve-bootstrap.js";
 import { resolveNexusOrWarn, runNexusBuildIfNeeded } from "../../resolve-nexus.js";
 import { resolveOrchestrationFromAgent } from "../../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../../resolve-temporal.js";
-
 import { printBanner } from "./banner.js";
 import { createInteractiveConsent } from "./consent.js";
 import { buildDemoManifestOverrides, provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
@@ -351,8 +351,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // 5b. FORGE + AUTO-HARNESS
   // Auto-harness needs forgeStore at construction, so we pre-create the store
   // and pass harness outputs into forge bootstrap for full synthesis wiring.
-  let currentSessionId = `up:${manifest.name}:0`;
   let sessionCounter = 0;
+  // --resume: start from the given session ID so context-arena loads its history
+  if (flags.resume !== undefined) {
+    // Parse counter from "up:name:N" format if possible
+    const parts = flags.resume.split(":");
+    const parsed = Number.parseInt(parts[parts.length - 1] ?? "", 10);
+    if (!Number.isNaN(parsed)) sessionCounter = parsed;
+  }
+  let currentSessionId = flags.resume ?? `up:${manifest.name}:${String(sessionCounter)}`;
 
   // Pre-create auto-harness when preset enables it and forge is enabled.
   // The same store is shared with forge bootstrap so synthesized bricks
@@ -499,6 +506,77 @@ export async function runUp(flags: UpFlags): Promise<void> {
     // Data source discovery is non-fatal
   }
 
+  // Wire context-arena conversation persistence (Decision 1A, 2A)
+  // let justified: mutable message buffer so context-arena squash middleware can
+  // partition tool results; updated per-message in the channel onMessage handler.
+  let currentUpMessages: readonly InboundMessage[] = [];
+  // let justified: mutable thread key read by conversation middleware's resolveThreadId
+  // When resuming, pre-set the thread key so conversation middleware loads history
+  let currentUpThreadKey: string | undefined = flags.resume;
+
+  let contextArenaDispose: (() => void | Promise<void>) | undefined;
+  let contextArenaConfig: import("@koi/context-arena").ContextArenaConfig | undefined;
+
+  if (preset.stacks.contextArena === true) {
+    try {
+      // For nexus backend, create a dedicated thread snapshot store
+      let nexusSnapshotStore: import("@koi/core").ThreadSnapshotStore | undefined;
+      if (preset.stacks.threadStoreBackend === "nexus" && nexus.baseUrl !== undefined) {
+        try {
+          const { createNexusSnapshotStore } = await import("@koi/nexus-store");
+          nexusSnapshotStore = createNexusSnapshotStore({
+            baseUrl: nexus.baseUrl,
+            apiKey: process.env.NEXUS_API_KEY ?? "",
+            basePath: `agents/${manifest.name}/threads`,
+          });
+        } catch {
+          // Fall back to SQLite if Nexus store creation fails
+        }
+      }
+
+      const arenaResult = createContextArenaConfigForUp({
+        summarizer: resolved.value.model,
+        manifestName: manifest.name,
+        ...(preset.stacks.threadStoreBackend !== undefined
+          ? { threadStoreBackend: preset.stacks.threadStoreBackend }
+          : {}),
+        dataDir: resolve(workspaceRoot, ".koi", "data"),
+        ...(nexusSnapshotStore !== undefined ? { nexusSnapshotStore } : {}),
+        getMessages: () => currentUpMessages,
+        resolveThreadId: () => currentUpThreadKey,
+      });
+      contextArenaConfig = arenaResult.config;
+      contextArenaDispose = arenaResult.dispose;
+
+      if (flags.verbose) {
+        process.stderr.write(
+          `  Context-arena: wired (backend=${preset.stacks.threadStoreBackend ?? "memory"})\n`,
+        );
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (flags.verbose) {
+        process.stderr.write(`  Context-arena: disabled (${message})\n`);
+      }
+    }
+  }
+
+  // Validate resumed session exists (best-effort via JSONL file check)
+  if (flags.resume !== undefined) {
+    const { existsSync } = await import("node:fs");
+    const chatFile = resolve(
+      workspaceRoot,
+      "agents",
+      manifest.name,
+      "session",
+      "chat",
+      `${flags.resume}.jsonl`,
+    );
+    if (!existsSync(chatFile)) {
+      output.warn(`Session "${flags.resume}" not found — starting fresh conversation`);
+    }
+  }
+
   // Activate L3 stacks based on preset flags
   const activatedStacks = await activatePresetStacks({
     stacks: preset.stacks,
@@ -510,6 +588,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
     ...(preCreatedHarnessMiddleware !== undefined
       ? { preCreatedAutoHarness: { policyCacheMiddleware: preCreatedHarnessMiddleware } }
       : {}),
+    ...(contextArenaConfig !== undefined ? { contextArenaConfig } : {}),
+    aceDataDir: resolve(workspaceRoot, ".koi", "data"),
+    ...(nexusBaseUrl !== undefined ? { nexusBaseUrl } : {}),
+    ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
+    agentName: manifest.name,
   });
 
   const composed = composeRuntimeMiddleware({
@@ -794,6 +877,10 @@ export async function runUp(flags: UpFlags): Promise<void> {
     prompts: seedResult.prompts,
   });
 
+  if (flags.resume !== undefined) {
+    output.info(`Resuming session: ${flags.resume}`);
+  }
+
   // 12. TUI
   let tuiApp:
     | { readonly start: () => Promise<void>; readonly stop: () => Promise<void> }
@@ -887,8 +974,16 @@ export async function runUp(flags: UpFlags): Promise<void> {
         return;
       }
       processing = true;
-      sessionCounter++;
-      currentSessionId = `up:${manifest.name}:${String(sessionCounter)}`;
+      // On first turn of a resumed session, keep the original thread key
+      // so conversation middleware loads the existing history.
+      const isResumedFirstTurn = flags.resume !== undefined && currentUpThreadKey === flags.resume;
+      if (!isResumedFirstTurn) {
+        sessionCounter++;
+        currentSessionId = `up:${manifest.name}:${String(sessionCounter)}`;
+        currentUpThreadKey = currentSessionId;
+      }
+      // Update context-arena message buffer before engine run
+      currentUpMessages = [inbound];
       const input: EngineInput = { kind: "text", text };
       try {
         const deltas: string[] = [];
@@ -937,6 +1032,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (temporalAdmin !== undefined) await temporalAdmin.dispose();
   if (temporalEmbedHandle !== undefined) await temporalEmbedHandle.dispose();
   await runtime.dispose();
+  if (contextArenaDispose !== undefined) await contextArenaDispose();
   for (const dispose of activatedStacks.disposables) await dispose();
   if (stopNode !== undefined) await stopNode();
   if (stopGateway !== undefined) await stopGateway();

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { AdminFlags, InitFlags, ServeFlags, StartFlags, StopFlags } from "./args.js";
+import type {
+  AdminFlags,
+  InitFlags,
+  ServeFlags,
+  SessionsFlags,
+  StartFlags,
+  StopFlags,
+  UpFlags,
+} from "./args.js";
 import { parseArgs } from "./args.js";
 
 describe("parseArgs", () => {
@@ -308,6 +316,60 @@ describe("parseArgs — temporal-url flag", () => {
   test("defaults temporalUrl to undefined for serve", () => {
     const result = parseArgs(["serve"]) as ServeFlags;
     expect(result.temporalUrl).toBeUndefined();
+  });
+});
+
+describe("parseArgs — sessions command", () => {
+  test("parses bare sessions command", () => {
+    const result = parseArgs(["sessions"]) as SessionsFlags;
+    expect(result.command).toBe("sessions");
+    expect(result.subcommand).toBeUndefined();
+    expect(result.limit).toBe(20);
+  });
+
+  test("parses sessions list subcommand", () => {
+    const result = parseArgs(["sessions", "list"]) as SessionsFlags;
+    expect(result.command).toBe("sessions");
+    expect(result.subcommand).toBe("list");
+  });
+
+  test("parses --limit flag", () => {
+    const result = parseArgs(["sessions", "list", "--limit", "5"]) as SessionsFlags;
+    expect(result.limit).toBe(5);
+  });
+
+  test("parses -n shorthand for --limit", () => {
+    const result = parseArgs(["sessions", "list", "-n", "10"]) as SessionsFlags;
+    expect(result.limit).toBe(10);
+  });
+
+  test("parses --manifest flag", () => {
+    const result = parseArgs(["sessions", "list", "--manifest", "agent.yaml"]) as SessionsFlags;
+    expect(result.manifest).toBe("agent.yaml");
+  });
+
+  test("defaults limit to 20", () => {
+    const result = parseArgs(["sessions", "list"]) as SessionsFlags;
+    expect(result.limit).toBe(20);
+  });
+});
+
+describe("parseArgs — up --resume", () => {
+  test("parses --resume flag", () => {
+    const result = parseArgs(["up", "--resume", "up:myagent:3"]) as UpFlags;
+    expect(result.command).toBe("up");
+    expect(result.resume).toBe("up:myagent:3");
+  });
+
+  test("defaults resume to undefined", () => {
+    const result = parseArgs(["up"]) as UpFlags;
+    expect(result.resume).toBeUndefined();
+  });
+
+  test("parses --resume with other flags", () => {
+    const result = parseArgs(["up", "--resume", "up:agent:1", "--verbose"]) as UpFlags;
+    expect(result.resume).toBe("up:agent:1");
+    expect(result.verbose).toBe(true);
   });
 });
 
