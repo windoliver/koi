@@ -18,6 +18,7 @@ import { createCliChannel } from "@koi/channel-cli";
 import type { CliCommandDeps } from "@koi/cli-commands";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineInput } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { DashboardEvent } from "@koi/dashboard-types";
@@ -506,7 +507,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
     ...(forgeBootstrap !== undefined
       ? {
           forgeSearch: async (query: string) => {
-            const result = await forgeBootstrap.store.search({ query, limit: 10 });
+            const result = await forgeBootstrap.store.search({ text: query, limit: 10 });
             if (!result.ok) return [];
             return result.value.map((b) => ({
               id: b.id,
@@ -516,14 +517,15 @@ export async function runStart(flags: StartFlags): Promise<void> {
             }));
           },
           forgeInstall: async (id: string) => {
-            const loadResult = await forgeBootstrap.store.load(id);
+            const bid = brickId(id);
+            const loadResult = await forgeBootstrap.store.load(bid);
             if (!loadResult.ok) {
               return { ok: false, message: `Brick not found: ${id}` } as const;
             }
             // Activate the brick — sets lifecycle to "active" so the forge runtime
             // picks it up via its store watch listener. The tool becomes available
             // to the agent on the next turn without re-assembly.
-            const activateResult = await forgeBootstrap.store.update(id, {
+            const activateResult = await forgeBootstrap.store.update(bid, {
               lifecycle: "active",
             });
             if (!activateResult.ok) {
@@ -535,7 +537,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
             return { ok: true } as const;
           },
           forgeInspect: async (id: string) => {
-            const loadResult = await forgeBootstrap.store.load(id);
+            const loadResult = await forgeBootstrap.store.load(brickId(id));
             if (!loadResult.ok) return `Brick not found: ${id}`;
             const brick = loadResult.value;
             return [
