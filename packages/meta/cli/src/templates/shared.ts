@@ -289,7 +289,7 @@ export function generateBootstrapInstructions(state: WizardState): string {
   lines.push(`# ${state.name}`);
   lines.push("");
   lines.push(
-    `You are "${state.name}". ${state.description}. Always identify yourself by this name.`,
+    `You are "${state.name}". Always identify yourself by this name, not by the underlying model.`,
   );
   lines.push("");
   lines.push(`Goal: ${state.description}`);
