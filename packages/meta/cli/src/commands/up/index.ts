@@ -994,7 +994,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
         const deltas: string[] = [];
         for await (const event of runtime.run(input)) {
           if (controller.signal.aborted) break;
-          renderEvent(event, { verbose: flags.verbose });
+          // Only render to CLI stdout for CLI channel messages
+          if (ch.name === "cli") renderEvent(event, { verbose: flags.verbose });
           if (event.kind === "text_delta") deltas.push(event.delta);
           if (event.kind === "done" && adminBridge !== undefined) {
             adminBridge.updateMetrics({
