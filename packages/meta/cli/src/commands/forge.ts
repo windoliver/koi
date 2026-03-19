@@ -57,7 +57,9 @@ function resolveRegistryUrl(flags: ForgeFlags): string {
   return flags.registry ?? process.env.KOI_REGISTRY_URL ?? DEFAULT_REGISTRY_URL;
 }
 
-function resolveNexusUrl(manifest: { readonly nexus?: { readonly url?: string } }): string {
+function resolveNexusUrl(manifest: {
+  readonly nexus?: { readonly url?: string | undefined } | undefined;
+}): string {
   return manifest.nexus?.url ?? process.env.NEXUS_URL ?? DEFAULT_NEXUS_URL;
 }
 
