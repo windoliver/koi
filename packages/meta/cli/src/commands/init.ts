@@ -19,6 +19,7 @@ import type { FileMap } from "../templates/shared.js";
 import { DEFAULT_STATE, type TemplateName, type WizardState } from "../wizard/state.js";
 import {
   enterApiKey,
+  enterChannelTokens,
   enterDescription,
   enterName,
   selectChannels,
@@ -69,6 +70,7 @@ export async function runInit(flags: InitFlags): Promise<void> {
     enterApiKey,
     selectEngine,
     selectChannels,
+    enterChannelTokens,
     selectStacks,
     selectDataSources,
   ];

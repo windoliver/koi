@@ -235,7 +235,8 @@ function generateEnvCore(state: WizardState, options: EnvCoreOptions): string[] 
   for (const { channel, envKeys } of selectedChannelEnvKeys) {
     lines.push(`# ${channel[0]?.toUpperCase() ?? ""}${channel.slice(1)} channel`);
     for (const envKey of envKeys) {
-      lines.push(`${envKey}=`);
+      const entered = state.channelTokens[envKey];
+      lines.push(`${envKey}=${entered ?? ""}`);
     }
     lines.push("");
   }
@@ -286,6 +287,10 @@ export function generateGitignore(): string {
 export function generateBootstrapInstructions(state: WizardState): string {
   const lines: string[] = [];
   lines.push(`# ${state.name}`);
+  lines.push("");
+  lines.push(
+    `You are "${state.name}". Always identify yourself by this name, not by the underlying model.`,
+  );
   lines.push("");
   lines.push(`Goal: ${state.description}`);
   lines.push("");
