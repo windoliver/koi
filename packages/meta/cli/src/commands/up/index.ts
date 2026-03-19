@@ -44,7 +44,7 @@ import { buildDemoManifestOverrides, provisionDemoAgents, seedDemoPackIfNeeded }
 import { runDetach } from "./detach.js";
 import { mapNexusModeToProfile, startNexusStack, stopNexusStack } from "./nexus.js";
 import { runPreflight } from "./preflight.js";
-import { extractDemoPack, inferPresetId } from "./preset.js";
+import { extractDemoPack, extractStacks, inferPresetId } from "./preset.js";
 import { activatePresetStacks } from "./stacks.js";
 import { startTemporalEmbed } from "./temporal.js";
 
@@ -268,7 +268,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 3. PRESET
   const presetId = await timer.time("preset", () => inferPresetId(manifestPath));
-  const { resolved: preset } = resolveRuntimePreset(presetId);
+  const manifestStacks = await extractStacks(manifestPath);
+  const stackOverrides = Object.keys(manifestStacks).length > 0 ? { stacks: manifestStacks } : {};
+  const { resolved: preset } = resolveRuntimePreset(presetId, stackOverrides);
   const services = preset.services;
 
   // 4. PREFLIGHT

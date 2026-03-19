@@ -20,6 +20,13 @@ export type ChannelName = (typeof CHANNELS)[number];
 export const PRESETS: typeof KNOWN_PRESETS = KNOWN_PRESETS;
 export type PresetName = (typeof PRESETS)[number];
 
+/**
+ * Stack IDs verified working with the sqlite preset.
+ * Add new stacks here only after testing them end-to-end in TUI.
+ */
+export const STACK_IDS = ["toolStack", "retryStack", "qualityGate"] as const;
+export type StackId = (typeof STACK_IDS)[number];
+
 export interface WizardState {
   readonly template: TemplateName;
   readonly name: string;
@@ -39,6 +46,8 @@ export interface WizardState {
   readonly dataSources: readonly { readonly name: string; readonly protocol: string }[];
   /** API key for the selected model provider (entered during init). */
   readonly apiKey: string | undefined;
+  /** L3 stacks selected for the sqlite preset. */
+  readonly stacks: readonly StackId[];
 }
 
 export const DEFAULT_STATE: WizardState = {
@@ -55,4 +64,5 @@ export const DEFAULT_STATE: WizardState = {
   demoPack: undefined,
   dataSources: [],
   apiKey: undefined,
+  stacks: [],
 } as const;

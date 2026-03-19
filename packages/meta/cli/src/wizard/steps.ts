@@ -17,6 +17,7 @@ import {
   MODELS,
   PRESETS,
   type PresetName,
+  type StackId,
   TEMPLATES,
   type TemplateName,
   type WizardState,
@@ -244,6 +245,53 @@ export async function selectChannels(state: WizardState, flags: InitFlags): Prom
   }
 
   return { ...state, channels: value as ChannelName[] };
+}
+
+/**
+ * Selects L3 middleware stacks to enable. Only shown for the sqlite preset.
+ * Uses grouped multiselect so stacks are organized by test phase.
+ */
+export async function selectStacks(state: WizardState, flags: InitFlags): Promise<StepResult> {
+  if (state.preset !== "sqlite") {
+    return state;
+  }
+
+  const verified: StackId[] = ["toolStack", "retryStack", "qualityGate"];
+
+  if (flags.yes) {
+    return { ...state, stacks: verified };
+  }
+
+  const value = await p.groupMultiselect({
+    message: "Select feature stacks to enable",
+    initialValues: verified,
+    options: {
+      "Core (verified)": [
+        {
+          value: "toolStack" as StackId,
+          label: "toolStack",
+          hint: "Tool wrapping, error formatting, recovery",
+        },
+        {
+          value: "retryStack" as StackId,
+          label: "retryStack",
+          hint: "Intelligent retry with backoff",
+        },
+        {
+          value: "qualityGate" as StackId,
+          label: "qualityGate",
+          hint: "Model call budgets + validation",
+        },
+      ],
+    },
+  });
+
+  if (p.isCancel(value)) {
+    p.cancel("Setup cancelled.");
+    return null;
+  }
+
+  return { ...state, stacks: value as StackId[] };
 }
 
 /**
