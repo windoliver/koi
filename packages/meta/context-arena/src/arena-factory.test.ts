@@ -240,11 +240,11 @@ describe("createContextArena memory wiring", () => {
       }),
     );
 
-    // squash + compactor + context-editing + hot-memory = 4
-    // (personalization is default-off and preference is explicitly false, so no user-model)
-    expect(bundle.middleware).toHaveLength(4);
+    // squash + compactor + context-editing + hot-memory + user-model = 5
+    // (personalization auto-enables with memoryFs; preference: false only disables drift detection)
+    expect(bundle.middleware).toHaveLength(5);
     const names = bundle.middleware.map((mw) => mw.name);
-    expect(names).not.toContain("user-model");
+    expect(names).toContain("user-model");
   });
 
   test("user-model middleware wired with classify callback", async () => {

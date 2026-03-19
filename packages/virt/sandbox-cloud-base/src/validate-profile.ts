@@ -65,12 +65,9 @@ export function detectUnsupportedProfileFields(
     details.push("resource limits (maxMemoryMb/maxPids/maxOpenFiles)");
   }
 
-  // Env: cloud adapters don't forward env to container
-  const hasEnv = profile.env !== undefined && Object.keys(profile.env).length > 0;
-
-  if (hasEnv) {
-    details.push("environment variables");
-  }
+  // Env: cloud adapters forward env per-command via the SDK's `envs` option.
+  // This is safe — no longer rejected.
+  const hasEnv = false;
 
   if (details.length === 0) {
     return undefined;

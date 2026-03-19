@@ -893,6 +893,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/lib/cli-commands": {
+      "name": "@koi/cli-commands",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/cli-render": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/lib/cli-render": {
       "name": "@koi/cli-render",
       "version": "0.0.0",
@@ -1184,6 +1195,7 @@
         "@koi/bootstrap": "workspace:*",
         "@koi/channel-agui": "workspace:*",
         "@koi/channel-cli": "workspace:*",
+        "@koi/cli-commands": "workspace:*",
         "@koi/cli-render": "workspace:*",
         "@koi/context": "workspace:*",
         "@koi/context-arena": "workspace:*",
@@ -1947,6 +1959,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
@@ -2204,6 +2217,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/channel-base": "workspace:*",
+        "@koi/cli-commands": "workspace:*",
+        "@koi/cli-render": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
       },
@@ -3838,6 +3853,8 @@
     "@koi/channels": ["@koi/channels@workspace:packages/meta/channels"],
 
     "@koi/cli": ["@koi/cli@workspace:packages/meta/cli"],
+
+    "@koi/cli-commands": ["@koi/cli-commands@workspace:packages/lib/cli-commands"],
 
     "@koi/cli-render": ["@koi/cli-render@workspace:packages/lib/cli-render"],
 

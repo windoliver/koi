@@ -353,4 +353,30 @@ describe("createCachedBridge", () => {
       expect(result.error.message).toContain("disposed");
     }
   });
+
+  // ---- Inflight failure recovery ----
+
+  test("inflight create failure allows retry", async () => {
+    let callCount = 0;
+    const instance = createMockInstance();
+    const adapter: SandboxAdapter = {
+      name: "flaky",
+      create: mock(() => {
+        callCount++;
+        if (callCount === 1) return Promise.reject(new Error("transient failure"));
+        return Promise.resolve(instance);
+      }),
+    };
+    const bridge = createCachedBridge({ adapter, profile });
+
+    // First call fails
+    const r1 = await bridge.execute("cmd", {}, 5000);
+    expect(r1.ok).toBe(false);
+
+    // Second call retries and succeeds (inflight was cleared)
+    const r2 = await bridge.execute("cmd", {}, 5000);
+    expect(r2.ok).toBe(true);
+
+    await bridge.dispose();
+  });
 });

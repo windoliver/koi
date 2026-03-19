@@ -5,8 +5,9 @@
  * behavior without actual terminal I/O.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { PassThrough } from "node:stream";
+import type { CliCommandDeps } from "@koi/cli-commands";
 import type { InboundMessage, OutboundMessage } from "@koi/core";
 import { testChannelAdapter } from "@koi/test-utils";
 import { createCliChannel } from "./cli-channel.js";
@@ -419,6 +420,81 @@ describe("createCliChannel", () => {
     await channel.disconnect();
   });
 
+  test("dark theme uses colored koi> prompt", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      theme: "dark",
+    });
+
+    await channel.connect();
+
+    const written = readStream(streams.output);
+    expect(written).toContain("koi>");
+
+    await channel.disconnect();
+  });
+
+  test("light theme uses colored koi> prompt", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      theme: "light",
+    });
+
+    await channel.connect();
+
+    const written = readStream(streams.output);
+    expect(written).toContain("koi>");
+
+    await channel.disconnect();
+  });
+
+  test("mono theme uses plain prompt", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      theme: "mono",
+    });
+
+    await channel.connect();
+
+    const written = readStream(streams.output);
+    expect(written).toContain("> ");
+    // Mono should not contain ANSI escape codes in prompt
+    expect(written).not.toContain("\x1b[36m");
+
+    await channel.disconnect();
+  });
+
+  test("prompt override takes precedence over theme default", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      theme: "dark",
+      prompt: "custom> ",
+    });
+
+    await channel.connect();
+
+    const written = readStream(streams.output);
+    expect(written).toContain("custom> ");
+
+    await channel.disconnect();
+  });
+
   test("does not implement sendStatus (backward-compatible)", () => {
     const streams = createMockStreams();
     activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
@@ -521,6 +597,181 @@ describe("createCliChannel", () => {
 
     // Should only receive one message, not duplicated
     expect(received).toHaveLength(1);
+
+    await channel.disconnect();
+  });
+});
+
+// ─── Slash Command Interception ─────────────────────────────────────
+
+function createMockCommandDeps(
+  overrides: Partial<CliCommandDeps> = {},
+): CliCommandDeps & { readonly written: () => string } {
+  const depOutput = new PassThrough();
+  return {
+    cancelStream: mock(() => {}),
+    listModels: mock(() => ["claude-sonnet-4-6"]),
+    currentModel: mock(() => "claude-sonnet-4-6"),
+    setModel: mock(() => ({ ok: true }) as const),
+    output: depOutput,
+    exit: mock(() => {}),
+    written() {
+      const chunks: Buffer[] = [];
+      let chunk: Buffer | null = depOutput.read() as Buffer | null;
+      while (chunk !== null) {
+        chunks.push(chunk);
+        chunk = depOutput.read() as Buffer | null;
+      }
+      return Buffer.concat(chunks).toString("utf-8");
+    },
+    ...overrides,
+  };
+}
+
+describe("slash command interception", () => {
+  test("slash command is intercepted and not forwarded to message handler", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const commandDeps = createMockCommandDeps({ output: streams.output });
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      commandDeps,
+    });
+
+    const received: InboundMessage[] = [];
+    channel.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    await channel.connect();
+    streams.input.write("/help\n");
+    await Bun.sleep(100);
+
+    // /help should NOT be forwarded as a message
+    expect(received).toHaveLength(0);
+
+    await channel.disconnect();
+  });
+
+  test("non-slash lines are forwarded as messages when commandDeps provided", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const commandDeps = createMockCommandDeps({ output: streams.output });
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      commandDeps,
+    });
+
+    const received: InboundMessage[] = [];
+    channel.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    await channel.connect();
+    streams.input.write("hello world\n");
+    await Bun.sleep(50);
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.content).toEqual([{ kind: "text", text: "hello world" }]);
+
+    await channel.disconnect();
+  });
+
+  test("unknown slash command writes error to output", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const commandDeps = createMockCommandDeps({ output: streams.output });
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      commandDeps,
+    });
+
+    channel.onMessage(async () => {});
+    await channel.connect();
+
+    streams.input.write("/foobar\n");
+    await Bun.sleep(100);
+
+    const written = readStream(streams.output);
+    expect(written).toContain("Unknown command");
+
+    await channel.disconnect();
+  });
+
+  test("slash interception disabled when no commandDeps provided", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    // No commandDeps — slash lines should be forwarded as messages
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+    });
+
+    const received: InboundMessage[] = [];
+    channel.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    await channel.connect();
+    streams.input.write("/help\n");
+    await Bun.sleep(50);
+
+    // Without commandDeps, /help is treated as a regular message
+    expect(received).toHaveLength(1);
+    expect(received[0]?.content).toEqual([{ kind: "text", text: "/help" }]);
+
+    await channel.disconnect();
+  });
+
+  test("/cancel calls cancelStream on commandDeps", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const commandDeps = createMockCommandDeps({ output: streams.output });
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      commandDeps,
+    });
+
+    channel.onMessage(async () => {});
+    await channel.connect();
+
+    streams.input.write("/cancel\n");
+    await Bun.sleep(100);
+
+    expect(commandDeps.cancelStream).toHaveBeenCalledTimes(1);
+
+    await channel.disconnect();
+  });
+
+  test("TUI-only command shows redirect message", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const commandDeps = createMockCommandDeps({ output: streams.output });
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+      commandDeps,
+    });
+
+    channel.onMessage(async () => {});
+    await channel.connect();
+
+    streams.input.write("/agents\n");
+    await Bun.sleep(100);
+
+    const written = readStream(streams.output);
+    expect(written).toContain("TUI panel command");
+    expect(written).toContain("koi tui");
 
     await channel.disconnect();
   });

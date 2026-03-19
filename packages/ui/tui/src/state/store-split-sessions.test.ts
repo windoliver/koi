@@ -22,7 +22,7 @@ describe("reduce — set_split_session", () => {
       agentId: "a1",
       session,
     });
-    expect(next.splitSessions["a1"]).toEqual(session);
+    expect(next.splitSessions.a1).toEqual(session);
   });
 
   test("updates an existing session", () => {
@@ -36,8 +36,8 @@ describe("reduce — set_split_session", () => {
       agentId: "a1",
       session: updated,
     });
-    expect(next.splitSessions["a1"]?.sessionId).toBe("s2");
-    expect(next.splitSessions["a1"]?.isStreaming).toBe(true);
+    expect(next.splitSessions.a1?.sessionId).toBe("s2");
+    expect(next.splitSessions.a1?.isStreaming).toBe(true);
   });
 
   test("preserves other sessions", () => {
@@ -51,8 +51,8 @@ describe("reduce — set_split_session", () => {
       session: makeSession("a2", "s2"),
     });
     expect(Object.keys(next.splitSessions)).toHaveLength(2);
-    expect(next.splitSessions["a1"]).toEqual(makeSession("a1", "s1"));
-    expect(next.splitSessions["a2"]).toEqual(makeSession("a2", "s2"));
+    expect(next.splitSessions.a1).toEqual(makeSession("a1", "s1"));
+    expect(next.splitSessions.a2).toEqual(makeSession("a2", "s2"));
   });
 });
 
@@ -69,8 +69,8 @@ describe("reduce — remove_split_session", () => {
       kind: "remove_split_session",
       agentId: "a1",
     });
-    expect(next.splitSessions["a1"]).toBeUndefined();
-    expect(next.splitSessions["a2"]).toEqual(makeSession("a2", "s2"));
+    expect(next.splitSessions.a1).toBeUndefined();
+    expect(next.splitSessions.a2).toEqual(makeSession("a2", "s2"));
   });
 
   test("no-ops on missing agent id", () => {
@@ -96,9 +96,9 @@ describe("reduce — append_split_tokens", () => {
       agentId: "a1",
       text: " world",
     });
-    expect(next.splitSessions["a1"]?.pendingText).toBe("Hello world");
+    expect(next.splitSessions.a1?.pendingText).toBe("Hello world");
     // Other session untouched
-    expect(next.splitSessions["a2"]?.pendingText).toBe("");
+    expect(next.splitSessions.a2?.pendingText).toBe("");
   });
 
   test("no-ops on missing agent id", () => {
@@ -123,7 +123,7 @@ describe("reduce — flush_split_tokens", () => {
       kind: "flush_split_tokens",
       agentId: "a1",
     });
-    const session = next.splitSessions["a1"];
+    const session = next.splitSessions.a1;
     expect(session?.pendingText).toBe("");
     expect(session?.messages).toHaveLength(1);
     expect(session?.messages[0]?.kind).toBe("assistant");

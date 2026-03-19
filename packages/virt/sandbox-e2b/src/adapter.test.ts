@@ -159,4 +159,75 @@ describe("createE2bAdapter", () => {
       }),
     ).rejects.toThrow("E2B adapter cannot enforce");
   });
+
+  // ---- findOrCreate persistence tests ----
+
+  test("findOrCreate is absent when client lacks findSandboxByScope", () => {
+    const client = createMockClient();
+    const result = createE2bAdapter({ apiKey: "test-key", client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.findOrCreate).toBeUndefined();
+  });
+
+  test("findOrCreate finds and resumes sandbox by scope", async () => {
+    const resumedSdk = createMockSdk();
+    const client: E2bClient = {
+      createSandbox: mock(() => Promise.resolve(createMockSdk())),
+      findSandboxByScope: mock(() => Promise.resolve(resumedSdk)),
+    };
+    const result = createE2bAdapter({ apiKey: "test-key", client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.findOrCreate).toBeDefined();
+
+    const instance = await result.value.findOrCreate?.("my-scope", {
+      filesystem: {},
+      network: { allow: true },
+      resources: {},
+    });
+
+    expect(client.findSandboxByScope).toHaveBeenCalledWith("my-scope");
+    expect(client.createSandbox).not.toHaveBeenCalled();
+    expect(instance).toBeDefined();
+  });
+
+  test("findOrCreate creates fresh with scope metadata on lookup failure", async () => {
+    const freshSdk = createMockSdk();
+    const client: E2bClient = {
+      createSandbox: mock(() => Promise.resolve(freshSdk)),
+      findSandboxByScope: mock(() => Promise.reject(new Error("not found"))),
+    };
+    const result = createE2bAdapter({ apiKey: "test-key", client });
+    if (!result.ok) return;
+
+    await result.value.findOrCreate?.("my-scope", {
+      filesystem: {},
+      network: { allow: true },
+      resources: {},
+    });
+
+    expect(client.createSandbox).toHaveBeenCalledTimes(1);
+    expect(client.createSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { "koi.sandbox.scope": "my-scope" } }),
+    );
+  });
+
+  test("detach calls sdk.pause when available", async () => {
+    const pauseFn = mock(() => Promise.resolve());
+    const sdk: E2bSdkSandbox = { ...createMockSdk(), pause: pauseFn };
+    const client = createMockClient(sdk);
+    const result = createE2bAdapter({ apiKey: "test-key", client });
+    if (!result.ok) return;
+
+    const instance = await result.value.create({
+      filesystem: {},
+      network: { allow: true },
+      resources: {},
+    });
+
+    expect(instance.detach).toBeDefined();
+    await instance.detach?.();
+    expect(pauseFn).toHaveBeenCalledTimes(1);
+  });
 });

@@ -1,17 +1,19 @@
 /**
  * @koi/sandbox-cloud-base — Shared utilities for cloud sandbox adapters (L0u)
  *
- * Provides: destroy guard, cached bridge, error classification, output truncation,
- * and test fixtures for all cloud sandbox backends.
+ * Provides: instance guard, cached bridge, error classification, output truncation,
+ * cloud adapter factory, and test fixtures for all cloud sandbox backends.
  */
 
 // Bridge — SandboxAdapter → SandboxExecutor with TTL keep-alive
 export type { BridgeConfig, CachedExecutor } from "./bridge.js";
 export { createCachedBridge } from "./bridge.js";
-
 // Error classification — cloud errors → SandboxErrorCode
 export type { ClassifiedError } from "./classify-error.js";
 export { classifyCloudError } from "./classify-error.js";
+// Cloud adapter factory — generic scaffolding for cloud sandbox adapters
+export type { CloudAdapterSpec } from "./cloud-adapter.js";
+export { createCloudAdapter } from "./cloud-adapter.js";
 
 // Cloud instance factory — shared exec/readFile/writeFile/destroy
 export type {
@@ -21,9 +23,9 @@ export type {
 } from "./cloud-instance.js";
 export { createCloudInstance } from "./cloud-instance.js";
 
-// Destroy guard — prevents method calls after destroy()
-export type { DestroyGuard } from "./guard.js";
-export { createDestroyGuard } from "./guard.js";
+// Instance guard — prevents method calls after detach/destroy (tri-state)
+export type { DestroyGuard, InstanceGuard } from "./guard.js";
+export { createDestroyGuard, createInstanceGuard } from "./guard.js";
 // Line reader — NDJSON-over-pipe with backpressure caps
 export type { LineReaderOptions } from "./line-reader.js";
 export {
@@ -33,6 +35,10 @@ export {
 } from "./line-reader.js";
 // Nexus FUSE mount — post-creation Nexus VFS mounting
 export { mountNexusFuse } from "./nexus-mount.js";
+
+// Sandbox admin — persistent sandbox listing and GC contract
+export type { PersistentSandboxInfo, SandboxAdmin } from "./sandbox-admin.js";
+
 // Shell escaping — safe command interpolation for cloud SDKs
 export { shellEscape, shellJoin } from "./shell-escape.js";
 // Test fixtures — shared profiles and streaming helpers

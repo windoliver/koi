@@ -236,6 +236,32 @@ describe("createCloudInstance", () => {
 
     expect(() => instance.writeFile("/tmp/test", new Uint8Array())).toThrow("destroy");
   });
+
+  test("detach is exposed when config.detach is provided", () => {
+    const config = createMockConfig();
+    const detachFn = mock(() => Promise.resolve());
+    const instance = createCloudInstance({ ...config, detach: detachFn });
+    expect(instance.detach).toBeDefined();
+  });
+
+  test("detach is not exposed when config.detach is undefined", () => {
+    const config = createMockConfig();
+    const instance = createCloudInstance(config);
+    expect(instance.detach).toBeUndefined();
+  });
+
+  test("methods throw after detach", async () => {
+    const config = createMockConfig();
+    const detachFn = mock(() => Promise.resolve());
+    const instance = createCloudInstance({ ...config, detach: detachFn });
+
+    await instance.detach?.();
+
+    expect(detachFn).toHaveBeenCalledTimes(1);
+    expect(() => instance.exec("cmd", [], {})).toThrow("detach");
+    expect(() => instance.readFile("/tmp/test")).toThrow("detach");
+    expect(() => instance.writeFile("/tmp/test", new Uint8Array())).toThrow("detach");
+  });
 });
 
 // ---------------------------------------------------------------------------

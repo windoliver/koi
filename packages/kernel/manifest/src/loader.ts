@@ -32,6 +32,8 @@ const KNOWN_FIELDS = [
   "user",
   "deploy",
   "scope",
+  "preset",
+  "storage",
 ] as const;
 
 /**

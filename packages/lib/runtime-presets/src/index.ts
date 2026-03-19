@@ -5,6 +5,7 @@
 export { ADDON_IDS, ADDONS } from "./addons.js";
 export { getPreset, PRESET_IDS, resolveAddons, resolveRuntimePreset } from "./resolve.js";
 export type {
+  AceStoreBackend,
   AddOn,
   NexusMode,
   NodeMode,
@@ -13,4 +14,5 @@ export type {
   PresetStacks,
   RuntimePreset,
   TemporalMode,
+  ThreadStoreBackend,
 } from "./types.js";

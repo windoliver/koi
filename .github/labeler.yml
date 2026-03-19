@@ -20,6 +20,7 @@
     - any-glob-to-any-file:
       - "packages/**/acp-protocol/**"
       - "packages/**/channel-base/**"
+      - "packages/**/cli-commands/**"
       - "packages/**/cli-render/**"
       - "packages/**/crypto-utils/**"
       - "packages/**/crystallize/**"
@@ -104,6 +105,7 @@
       - "!packages/**/channel-base/**"
       - "!packages/**/channels/**"
       - "!packages/**/cli/**"
+      - "!packages/**/cli-commands/**"
       - "!packages/**/cli-render/**"
       - "!packages/**/context-arena/**"
       - "!packages/**/core/**"

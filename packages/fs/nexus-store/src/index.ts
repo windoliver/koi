@@ -13,6 +13,17 @@
  *   import { createNexusMemoryBackend } from "@koi/nexus-store/memory.js"
  */
 
+export type {
+  NexusAceStoreConfig,
+  NexusPlaybookStore,
+  NexusStructuredPlaybookStore,
+  NexusTrajectoryStore,
+} from "./ace.js";
+export {
+  createNexusPlaybookStore,
+  createNexusStructuredPlaybookStore,
+  createNexusTrajectoryStore,
+} from "./ace.js";
 export type { NexusEventBackendConfig } from "./events.js";
 export { createNexusEventBackend } from "./events.js";
 export type { NexusForgeStoreConfig } from "./forge.js";

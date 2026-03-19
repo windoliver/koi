@@ -34,11 +34,21 @@ export interface DockerCreateOpts {
   readonly pidsLimit?: number;
   readonly binds?: readonly string[];
   readonly capAdd?: readonly string[];
+  /** Labels to attach to the container (used for scope-based lookup). */
+  readonly labels?: Readonly<Record<string, string>> | undefined;
 }
 
 /** Injectable Docker client interface for testing. */
 export interface DockerClient {
   readonly createContainer: (opts: DockerCreateOpts) => Promise<DockerContainer>;
+  /** Find an existing container by labels. Returns undefined if not found. */
+  readonly findContainer?:
+    | ((labels: Readonly<Record<string, string>>) => Promise<DockerContainer | undefined>)
+    | undefined;
+  /** Inspect container state. Returns a string like "running", "exited", "dead". */
+  readonly inspectState?: ((id: string) => Promise<string>) | undefined;
+  /** Start a stopped container. */
+  readonly startContainer?: ((id: string) => Promise<void>) | undefined;
 }
 
 /** Docker adapter configuration. */

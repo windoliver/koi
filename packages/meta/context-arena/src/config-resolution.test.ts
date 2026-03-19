@@ -84,14 +84,31 @@ describe("resolveContextArenaConfig", () => {
     ).toThrow("contextWindowSize must be a finite positive number");
   });
 
-  test("personalizationEnabled defaults to false", () => {
+  test("personalizationEnabled defaults to false when no memoryFs", () => {
     const resolved = resolveContextArenaConfig(baseConfig());
     expect(resolved.personalizationEnabled).toBe(false);
+  });
+
+  test("personalizationEnabled auto-enables when memoryFs configured", () => {
+    const resolved = resolveContextArenaConfig(
+      baseConfig({ memoryFs: { config: { baseDir: "/tmp/test" } } }),
+    );
+    expect(resolved.personalizationEnabled).toBe(true);
   });
 
   test("personalizationEnabled true when personalization.enabled is true", () => {
     const resolved = resolveContextArenaConfig(baseConfig({ personalization: { enabled: true } }));
     expect(resolved.personalizationEnabled).toBe(true);
+  });
+
+  test("personalizationEnabled false when explicitly disabled even with memoryFs", () => {
+    const resolved = resolveContextArenaConfig(
+      baseConfig({
+        memoryFs: { config: { baseDir: "/tmp/test" } },
+        personalization: { enabled: false },
+      }),
+    );
+    expect(resolved.personalizationEnabled).toBe(false);
   });
 
   test("personalization defaults resolve correctly", () => {

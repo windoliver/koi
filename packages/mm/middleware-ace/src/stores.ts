@@ -1,8 +1,16 @@
 /**
- * Store interfaces and in-memory implementations for ACE middleware.
+ * Store interfaces and implementations for ACE middleware.
+ *
+ * Provides in-memory (testing) and SQLite (production) backends.
+ * Shared CRUD logic is extracted into createMapStore<T> to avoid
+ * duplication across store types (Decision 5A).
  */
 
 import type { Playbook, StructuredPlaybook, TrajectoryEntry } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Interfaces
+// ---------------------------------------------------------------------------
 
 /** TrajectoryStore — append-heavy, per-session trajectory storage. */
 export interface TrajectoryStore {
@@ -35,32 +43,66 @@ export interface StructuredPlaybookStore {
   readonly remove: (id: string) => Promise<boolean>;
 }
 
-/** Creates an in-memory StructuredPlaybookStore for testing and reference. */
-export function createInMemoryStructuredPlaybookStore(): StructuredPlaybookStore {
-  const playbooks = new Map<string, StructuredPlaybook>();
+// ---------------------------------------------------------------------------
+// Generic map-backed store (Decision 5A — DRY helper)
+// ---------------------------------------------------------------------------
+
+interface HasId {
+  readonly id: string;
+}
+
+interface MapStore<T extends HasId> {
+  readonly get: (id: string) => Promise<T | undefined>;
+  readonly save: (item: T) => Promise<void>;
+  readonly remove: (id: string) => Promise<boolean>;
+  readonly values: () => readonly T[];
+}
+
+/** Shared get/save/remove backed by a Map. Avoids duplication across store types. */
+function createMapStore<T extends HasId>(): MapStore<T> {
+  const items = new Map<string, T>();
 
   return {
-    async get(id: string): Promise<StructuredPlaybook | undefined> {
-      return playbooks.get(id);
+    async get(id: string): Promise<T | undefined> {
+      return items.get(id);
     },
+
+    async save(item: T): Promise<void> {
+      items.set(item.id, item);
+    },
+
+    async remove(id: string): Promise<boolean> {
+      return items.delete(id);
+    },
+
+    values(): readonly T[] {
+      return [...items.values()];
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// In-memory implementations
+// ---------------------------------------------------------------------------
+
+/** Creates an in-memory StructuredPlaybookStore for testing and reference. */
+export function createInMemoryStructuredPlaybookStore(): StructuredPlaybookStore {
+  const store = createMapStore<StructuredPlaybook>();
+
+  return {
+    get: store.get,
+    save: store.save,
+    remove: store.remove,
 
     async list(options?: {
       readonly tags?: readonly string[];
     }): Promise<readonly StructuredPlaybook[]> {
-      const all = [...playbooks.values()];
+      const all = store.values();
       const tags = options?.tags;
       if (tags !== undefined && tags.length > 0) {
         return all.filter((pb) => tags.some((tag) => pb.tags.includes(tag)));
       }
       return all;
-    },
-
-    async save(playbook: StructuredPlaybook): Promise<void> {
-      playbooks.set(playbook.id, playbook);
-    },
-
-    async remove(id: string): Promise<boolean> {
-      return playbooks.delete(id);
     },
   };
 }
@@ -92,18 +134,18 @@ export function createInMemoryTrajectoryStore(): TrajectoryStore {
 
 /** Creates an in-memory PlaybookStore for testing and reference. */
 export function createInMemoryPlaybookStore(): PlaybookStore {
-  const playbooks = new Map<string, Playbook>();
+  const store = createMapStore<Playbook>();
 
   return {
-    async get(id: string): Promise<Playbook | undefined> {
-      return playbooks.get(id);
-    },
+    get: store.get,
+    save: store.save,
+    remove: store.remove,
 
     async list(options?: {
       readonly tags?: readonly string[];
       readonly minConfidence?: number;
     }): Promise<readonly Playbook[]> {
-      const all = [...playbooks.values()];
+      const all = store.values();
       return all.filter((pb) => {
         if (options?.minConfidence !== undefined && pb.confidence < options.minConfidence) {
           return false;
@@ -113,14 +155,6 @@ export function createInMemoryPlaybookStore(): PlaybookStore {
         }
         return true;
       });
-    },
-
-    async save(playbook: Playbook): Promise<void> {
-      playbooks.set(playbook.id, playbook);
-    },
-
-    async remove(id: string): Promise<boolean> {
-      return playbooks.delete(id);
     },
   };
 }

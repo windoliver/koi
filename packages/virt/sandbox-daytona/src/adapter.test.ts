@@ -141,4 +141,73 @@ describe("createDaytonaAdapter", () => {
       }),
     ).rejects.toThrow("Daytona adapter cannot enforce");
   });
+
+  // ---- findOrCreate persistence tests ----
+
+  test("findOrCreate is absent when client lacks findSandbox", () => {
+    const result = createDaytonaAdapter({ apiKey: "key", client: createMockClient() });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.findOrCreate).toBeUndefined();
+  });
+
+  test("findOrCreate reuses existing sandbox", async () => {
+    const existingSdk = createMockSdk();
+    const client: DaytonaClient = {
+      createSandbox: mock(() => Promise.resolve(createMockSdk())),
+      findSandbox: mock(() => Promise.resolve(existingSdk)),
+    };
+    const result = createDaytonaAdapter({ apiKey: "key", client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.findOrCreate).toBeDefined();
+
+    const instance = await result.value.findOrCreate?.("my-scope", {
+      filesystem: {},
+      network: { allow: true },
+      resources: {},
+    });
+
+    expect(client.findSandbox).toHaveBeenCalledWith("my-scope");
+    expect(client.createSandbox).not.toHaveBeenCalled();
+    expect(instance).toBeDefined();
+  });
+
+  test("findOrCreate creates fresh with scope metadata when not found", async () => {
+    const freshSdk = createMockSdk();
+    const client: DaytonaClient = {
+      createSandbox: mock(() => Promise.resolve(freshSdk)),
+      findSandbox: mock(() => Promise.resolve(undefined)),
+    };
+    const result = createDaytonaAdapter({ apiKey: "key", client });
+    if (!result.ok) return;
+
+    await result.value.findOrCreate?.("my-scope", {
+      filesystem: {},
+      network: { allow: true },
+      resources: {},
+    });
+
+    expect(client.createSandbox).toHaveBeenCalledTimes(1);
+    expect(client.createSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { "koi.sandbox.scope": "my-scope" } }),
+    );
+  });
+
+  test("detach calls sdk.close", async () => {
+    const sdk = createMockSdk();
+    const client = createMockClient(sdk);
+    const result = createDaytonaAdapter({ apiKey: "key", client });
+    if (!result.ok) return;
+
+    const instance = await result.value.create({
+      filesystem: {},
+      network: { allow: true },
+      resources: {},
+    });
+
+    expect(instance.detach).toBeDefined();
+    await instance.detach?.();
+    expect(sdk.close).toHaveBeenCalledTimes(1);
+  });
 });

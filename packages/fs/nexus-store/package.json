@@ -9,6 +9,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./ace": {
+      "types": "./dist/ace.d.ts",
+      "import": "./dist/ace.js"
+    },
     "./forge": {
       "types": "./dist/forge.d.ts",
       "import": "./dist/forge.js"

@@ -90,7 +90,7 @@ describe("detectUnsupportedProfileFields", () => {
     expect(result?.resources).toBe(true);
   });
 
-  test("detects environment variables", () => {
+  test("accepts environment variables (forwarded per-command)", () => {
     const profile: SandboxProfile = {
       filesystem: {},
       network: { allow: true },
@@ -98,8 +98,7 @@ describe("detectUnsupportedProfileFields", () => {
       env: { NODE_ENV: "production" },
     };
     const result = detectUnsupportedProfileFields(profile);
-    expect(result).toBeDefined();
-    expect(result?.env).toBe(true);
+    expect(result).toBeUndefined();
   });
 
   test("detects multiple unsupported fields", () => {
@@ -114,8 +113,8 @@ describe("detectUnsupportedProfileFields", () => {
     expect(result?.filesystem).toBe(true);
     expect(result?.network).toBe(true);
     expect(result?.resources).toBe(true);
-    expect(result?.env).toBe(true);
-    expect(result?.details.length).toBe(4);
+    expect(result?.env).toBe(false);
+    expect(result?.details.length).toBe(3);
   });
 });
 

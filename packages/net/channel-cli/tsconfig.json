@@ -11,6 +11,12 @@
     },
     {
       "path": "../../fs/resolve"
+    },
+    {
+      "path": "../../lib/cli-commands"
+    },
+    {
+      "path": "../../lib/cli-render"
     }
   ]
 }

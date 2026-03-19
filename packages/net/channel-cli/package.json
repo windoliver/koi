@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@koi/channel-base": "workspace:*",
+    "@koi/cli-commands": "workspace:*",
+    "@koi/cli-render": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/resolve": "workspace:*"
   },

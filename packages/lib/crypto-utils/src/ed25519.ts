@@ -83,7 +83,12 @@ export function verifyEd25519(payload: string, publicKeyDer: string, signature: 
       format: "der" as const,
       type: "spki" as const,
     };
-    return verify(null, new Uint8Array(Buffer.from(payload, "utf-8")), publicKey, new Uint8Array(Buffer.from(signature, "base64")));
+    return verify(
+      null,
+      new Uint8Array(Buffer.from(payload, "utf-8")),
+      publicKey,
+      new Uint8Array(Buffer.from(signature, "base64")),
+    );
   } catch {
     // Malformed key material or signature — treat as invalid
     return false;

@@ -70,9 +70,11 @@ export function createEscalationGate(
 ): EscalationGate {
   // Support both old positional args and new options object
   const opts: EscalationGateOptions | undefined =
-    signalOrOptions === undefined ? undefined
-    : signalOrOptions instanceof AbortSignal ? { signal: signalOrOptions as AbortSignal }
-    : signalOrOptions as EscalationGateOptions;
+    signalOrOptions === undefined
+      ? undefined
+      : signalOrOptions instanceof AbortSignal
+        ? { signal: signalOrOptions as AbortSignal }
+        : (signalOrOptions as EscalationGateOptions);
   const signal: AbortSignal | undefined = opts?.signal;
   const resolvedTimeoutMs: number | undefined = opts?.timeoutMs ?? timeoutMs;
   const correlationToken: string | undefined = opts?.correlationToken;
