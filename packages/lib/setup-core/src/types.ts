@@ -99,4 +99,4 @@ export const KNOWN_MODELS = [
 export const KNOWN_CHANNELS = ["cli", "telegram", "slack", "discord"] as const;
 
 /** Known preset types. */
-export const KNOWN_PRESETS = ["local", "demo", "mesh"] as const;
+export const KNOWN_PRESETS = ["local", "demo", "mesh", "sqlite"] as const;

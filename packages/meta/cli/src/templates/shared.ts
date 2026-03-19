@@ -119,6 +119,12 @@ export function generateManifestYaml(state: WizardState): string {
     additional.push('    - name: "@koi/tools-context-hub"');
   }
 
+  if (state.preset === "sqlite") {
+    additional.push("");
+    additional.push("storage:");
+    additional.push("  driver: sqlite");
+  }
+
   additional.push("");
   additional.push("context:");
   additional.push("  bootstrap: true");

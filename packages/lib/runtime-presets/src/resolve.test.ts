@@ -22,11 +22,18 @@ describe("getPreset", () => {
     expect(preset.services.gateway).toBe(true);
     expect(preset.services.node).toBe("full");
   });
+
+  test("returns sqlite preset for 'sqlite'", () => {
+    const preset = getPreset("sqlite");
+    expect(preset.id).toBe("sqlite");
+    expect(preset.nexusMode).toBe("embed-lite");
+    expect(preset.manifestOverrides?.storage).toEqual({ driver: "sqlite" });
+  });
 });
 
 describe("PRESET_IDS", () => {
-  test("contains all three preset IDs", () => {
-    expect(PRESET_IDS).toEqual(["local", "demo", "mesh"]);
+  test("contains all preset IDs", () => {
+    expect(PRESET_IDS).toEqual(["local", "demo", "mesh", "sqlite"]);
   });
 });
 

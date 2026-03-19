@@ -9,6 +9,7 @@ import { ADDONS } from "./addons.js";
 import { DEMO_PRESET } from "./presets/demo.js";
 import { LOCAL_PRESET } from "./presets/local.js";
 import { MESH_PRESET } from "./presets/mesh.js";
+import { SQLITE_PRESET } from "./presets/sqlite.js";
 import type { AddOn, PresetId, RuntimePreset } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -19,10 +20,11 @@ const PRESET_REGISTRY: Readonly<Record<PresetId, RuntimePreset>> = {
   local: LOCAL_PRESET,
   demo: DEMO_PRESET,
   mesh: MESH_PRESET,
+  sqlite: SQLITE_PRESET,
 } as const;
 
 /** All known preset IDs (for validation and CLI help). */
-export const PRESET_IDS: readonly PresetId[] = ["local", "demo", "mesh"] as const;
+export const PRESET_IDS: readonly PresetId[] = ["local", "demo", "mesh", "sqlite"] as const;
 
 // ---------------------------------------------------------------------------
 // Resolution
@@ -48,6 +50,7 @@ export function resolveRuntimePreset(
     local: LOCAL_PRESET,
     demo: DEMO_PRESET,
     mesh: MESH_PRESET,
+    sqlite: SQLITE_PRESET,
   };
 
   const config: DeepPartial<RuntimePreset> & { readonly preset?: PresetId } = {

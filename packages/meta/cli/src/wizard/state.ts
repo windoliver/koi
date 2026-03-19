@@ -29,7 +29,7 @@ export interface WizardState {
   readonly channels: readonly ChannelName[];
   readonly directory: string;
   readonly koiCommand: string;
-  /** Runtime preset (local, demo, mesh). */
+  /** Runtime preset (local, demo, mesh, sqlite). */
   readonly preset: PresetName;
   /** Add-on IDs selected via --with flag. */
   readonly addons: readonly string[];
