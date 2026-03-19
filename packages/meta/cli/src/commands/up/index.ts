@@ -1001,6 +1001,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
             });
           }
         }
+        // Route response back to the originating channel (e.g. Telegram, Slack)
+        // so non-CLI channels receive the agent's reply.
+        if (ch.name !== "cli" && deltas.length > 0) {
+          await ch.send({
+            content: [{ kind: "text", text: deltas.join("") }],
+            threadId: inbound.threadId,
+          });
+        }
         await persistChatExchangeSafely(
           workspaceRoot,
           persistAgentId,
