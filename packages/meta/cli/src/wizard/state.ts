@@ -31,6 +31,10 @@ export const STACK_IDS = [
   "contextArena",
   "contextHub",
   "ace",
+  "goalStack",
+  "forge",
+  "autoHarness",
+  "governance",
 ] as const;
 export type StackId = (typeof STACK_IDS)[number];
 

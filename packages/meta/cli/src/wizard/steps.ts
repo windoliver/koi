@@ -263,6 +263,10 @@ export async function selectStacks(state: WizardState, flags: InitFlags): Promis
     "contextArena",
     "contextHub",
     "ace",
+    "goalStack",
+    "forge",
+    "autoHarness",
+    "governance",
   ];
 
   if (flags.yes) {
@@ -305,6 +309,30 @@ export async function selectStacks(state: WizardState, flags: InitFlags): Promis
           value: "ace" as StackId,
           label: "ace",
           hint: "Adaptive Continuous Enhancement (SQLite)",
+        },
+      ],
+      "Intelligence (verified)": [
+        {
+          value: "goalStack" as StackId,
+          label: "goalStack",
+          hint: "Goal/subgoal decomposition",
+        },
+        {
+          value: "forge" as StackId,
+          label: "forge",
+          hint: "Synthesis harness system",
+        },
+        {
+          value: "autoHarness" as StackId,
+          label: "autoHarness",
+          hint: "Automated synthesis on demand",
+        },
+      ],
+      "Security (verified)": [
+        {
+          value: "governance" as StackId,
+          label: "governance",
+          hint: "Policy/governance enforcement",
         },
       ],
     },
