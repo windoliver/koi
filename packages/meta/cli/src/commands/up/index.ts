@@ -1136,14 +1136,26 @@ export async function runUp(flags: UpFlags): Promise<void> {
       const expanded = expandLabeledBlocks(msg);
       const input: EngineInput = { kind: "messages", messages: expanded };
       const deltas: string[] = [];
+      let turnCount = 0;
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);
-        if (event.kind === "done" && adminBridge !== undefined) {
-          adminBridge.updateMetrics({
-            turns: event.output.metrics.turns,
-            totalTokens: event.output.metrics.totalTokens,
-          });
+        if (event.kind === "error") {
+          process.stderr.write(`error: model call failed: ${event.message}\n`);
         }
+        if (event.kind === "done") {
+          turnCount = event.output.metrics.turns;
+          if (adminBridge !== undefined) {
+            adminBridge.updateMetrics({
+              turns: event.output.metrics.turns,
+              totalTokens: event.output.metrics.totalTokens,
+            });
+          }
+        }
+      }
+      if (turnCount === 0 && deltas.length === 0) {
+        process.stderr.write(
+          "warn: model returned empty response (0 turns, 0 tokens). Check OPENROUTER_API_KEY and model availability.\n",
+        );
       }
       await persistChatExchangeSafely(
         workspaceRoot,
@@ -1157,6 +1169,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
           () => {},
         );
       }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`error: chat dispatch failed: ${message}\n`);
     } finally {
       processing = false;
     }
