@@ -185,8 +185,26 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       return mapNotFoundError(result);
     }
 
-    // Nexus may return raw content string or a structured FileReadResult
-    const content = typeof result.value === "string" ? result.value : result.value.content;
+    // Nexus may return:
+    //   - raw string
+    //   - { content: string } (FileReadResult)
+    //   - { __type__: "bytes", data: "base64..." } (binary content)
+    const raw = result.value;
+    let content: string;
+    if (typeof raw === "string") {
+      content = raw;
+    } else if (typeof raw === "object" && raw !== null) {
+      const obj = raw as unknown as Record<string, unknown>;
+      if (obj.__type__ === "bytes" && typeof obj.data === "string") {
+        content = Buffer.from(obj.data, "base64").toString("utf-8");
+      } else if (typeof obj.content === "string") {
+        content = obj.content;
+      } else {
+        content = JSON.stringify(raw, null, 2);
+      }
+    } else {
+      content = String(raw);
+    }
     return {
       ok: true,
       value: {
