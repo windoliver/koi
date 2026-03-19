@@ -247,6 +247,59 @@ export async function selectChannels(state: WizardState, flags: InitFlags): Prom
   return { ...state, channels: value as ChannelName[] };
 }
 
+/** Channel-specific environment variable keys. */
+const CHANNEL_TOKEN_KEYS: Readonly<
+  Record<Exclude<ChannelName, "cli">, readonly { readonly key: string; readonly label: string }[]>
+> = {
+  telegram: [{ key: "TELEGRAM_BOT_TOKEN", label: "Telegram bot token (from @BotFather)" }],
+  slack: [
+    { key: "SLACK_BOT_TOKEN", label: "Slack bot token" },
+    { key: "SLACK_APP_TOKEN", label: "Slack app token" },
+  ],
+  discord: [
+    { key: "DISCORD_BOT_TOKEN", label: "Discord bot token" },
+    { key: "DISCORD_APPLICATION_ID", label: "Discord application ID" },
+  ],
+} as const;
+
+/**
+ * Prompts for channel-specific tokens (e.g. Telegram bot token).
+ * Only shown for non-CLI channels that require credentials.
+ */
+export async function enterChannelTokens(
+  state: WizardState,
+  flags: InitFlags,
+): Promise<StepResult> {
+  const nonCliChannels = state.channels.filter(
+    (c): c is Exclude<ChannelName, "cli"> => c !== "cli",
+  );
+  if (nonCliChannels.length === 0) return state;
+  if (flags.yes) return state;
+
+  const tokens: Record<string, string> = { ...state.channelTokens };
+
+  for (const channel of nonCliChannels) {
+    const entries = CHANNEL_TOKEN_KEYS[channel];
+    for (const entry of entries) {
+      // Skip if already set in environment
+      if (process.env[entry.key] !== undefined && process.env[entry.key] !== "") continue;
+
+      const value = await p.password({ message: `${entry.label} (${entry.key})` });
+
+      if (p.isCancel(value)) {
+        p.cancel("Setup cancelled.");
+        return null;
+      }
+
+      if (value.trim().length > 0) {
+        tokens[entry.key] = value.trim();
+      }
+    }
+  }
+
+  return { ...state, channelTokens: tokens };
+}
+
 /**
  * Selects L3 middleware stacks to enable. Only shown for the sqlite preset.
  * Uses grouped multiselect so stacks are organized by test phase.

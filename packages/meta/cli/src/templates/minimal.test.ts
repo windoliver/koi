@@ -17,6 +17,7 @@ const STATE: WizardState = {
   dataSources: [],
   apiKey: undefined,
   stacks: [],
+  channelTokens: {},
 };
 
 describe("generateMinimal", () => {

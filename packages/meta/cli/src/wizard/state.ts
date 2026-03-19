@@ -59,6 +59,8 @@ export interface WizardState {
   readonly apiKey: string | undefined;
   /** L3 stacks selected for the sqlite preset. */
   readonly stacks: readonly StackId[];
+  /** Channel-specific tokens entered during init (env key → value). */
+  readonly channelTokens: Readonly<Record<string, string>>;
 }
 
 export const DEFAULT_STATE: WizardState = {
@@ -76,4 +78,5 @@ export const DEFAULT_STATE: WizardState = {
   dataSources: [],
   apiKey: undefined,
   stacks: [],
+  channelTokens: {},
 } as const;

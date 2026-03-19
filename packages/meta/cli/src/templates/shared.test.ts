@@ -24,6 +24,7 @@ const STATE: WizardState = {
   dataSources: [],
   apiKey: undefined,
   stacks: [],
+  channelTokens: {},
 };
 
 describe("generateManifestYaml", () => {
@@ -222,6 +223,7 @@ const DEMO_STATE: WizardState = {
   dataSources: [],
   apiKey: undefined,
   stacks: [],
+  channelTokens: {},
 };
 
 describe("generateDemoManifestYaml", () => {

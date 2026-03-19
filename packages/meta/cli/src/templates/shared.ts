@@ -235,7 +235,8 @@ function generateEnvCore(state: WizardState, options: EnvCoreOptions): string[] 
   for (const { channel, envKeys } of selectedChannelEnvKeys) {
     lines.push(`# ${channel[0]?.toUpperCase() ?? ""}${channel.slice(1)} channel`);
     for (const envKey of envKeys) {
-      lines.push(`${envKey}=`);
+      const entered = state.channelTokens[envKey];
+      lines.push(`${envKey}=${entered ?? ""}`);
     }
     lines.push("");
   }
