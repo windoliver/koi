@@ -10,6 +10,7 @@ import {
   isDemoFlags,
   isDeployFlags,
   isDoctorFlags,
+  isForgeFlags,
   isInitFlags,
   isLogsFlags,
   isReplayFlags,
@@ -85,6 +86,14 @@ const COMMANDS: readonly CommandEntry[] = [
       return runSessions(f as Parameters<typeof runSessions>[0]);
     },
     description: "koi sessions [list]    List chat sessions",
+  },
+  {
+    match: isForgeFlags,
+    run: async (f) => {
+      const { runForge } = await import("./commands/forge.js");
+      return runForge(f as Parameters<typeof runForge>[0]);
+    },
+    description: "koi forge <cmd>        Manage community bricks",
   },
   {
     match: isDeployFlags,

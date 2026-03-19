@@ -381,6 +381,31 @@ describe("createForgeComponentProvider", () => {
       expect(c1).not.toBe(c2);
     });
 
+    test("newly saved brick appears in next attach after notify", async () => {
+      const store = createInMemoryForgeStore();
+      const notifier = createMemoryStoreChangeNotifier();
+      const provider = createForgeComponentProvider({
+        store,
+        executor: createMockExecutor(),
+        notifier,
+      });
+
+      // First attach — empty store, no tool components
+      const result1 = await provider.attach(MOCK_AGENT);
+      const c1 = isAttachResult(result1) ? result1.components : result1;
+      expect(c1.size).toBe(0);
+
+      // Save a tool brick to store, then notify
+      const tool = createTestToolArtifact({ id: brickId("chain-1"), name: "chain-tool" });
+      await store.save(tool);
+      notifier.notify({ kind: "saved", brickId: brickId("chain-1") });
+
+      // Second attach — should include the new tool
+      const result2 = await provider.attach(MOCK_AGENT);
+      const c2 = isAttachResult(result2) ? result2.components : result2;
+      expect(c2.has(toolToken("chain-tool") as string)).toBe(true);
+    });
+
     test("dispose unsubscribes from notifier", async () => {
       const tool = createTestToolArtifact({ id: brickId("nd-1"), name: "dispose-tool" });
       const store = await seedStore([tool]);

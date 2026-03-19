@@ -6,6 +6,7 @@ import type { ScanCategory, ScanRule } from "../types.js";
 import { dangerousApisRule } from "./dangerous-apis.js";
 import { exfiltrationRule } from "./exfiltration.js";
 import { filesystemAbuseRule } from "./filesystem-abuse.js";
+import { nlInjectionRule } from "./nl-injection.js";
 import { obfuscationRule } from "./obfuscation.js";
 import { promptInjectionRule } from "./prompt-injection.js";
 import { prototypePollutionRule } from "./prototype-pollution.js";
@@ -25,6 +26,9 @@ const ALL_RULES: readonly ScanRule[] = [
 /** Text-based rules run on full markdown in scanSkill(), not on code blocks. */
 const TEXT_RULES: readonly ScanRule[] = [promptInjectionRule];
 
+/** Server-side only rules — disabled locally, enabled in community registry publish gate. */
+const SERVER_RULES: readonly ScanRule[] = [nlInjectionRule];
+
 export function getBuiltinRules(): readonly ScanRule[] {
   return ALL_RULES;
 }
@@ -37,4 +41,9 @@ const ALL_AND_TEXT_RULES: readonly ScanRule[] = [...ALL_RULES, ...TEXT_RULES];
 
 export function getRulesByCategory(category: ScanCategory): readonly ScanRule[] {
   return ALL_AND_TEXT_RULES.filter((r) => r.category === category);
+}
+
+/** Server-side rules for community registry publish gate. */
+export function getServerRules(): readonly ScanRule[] {
+  return SERVER_RULES;
 }

@@ -1,0 +1,11 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../kernel/core" },
+    { "path": "../../lib/errors" },
+    { "path": "../../forge/forge-integrity" },
+    { "path": "../../fs/skill-scanner" }
+  ]
+}

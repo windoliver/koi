@@ -1,6 +1,6 @@
 {
-  "name": "@koi/forge-integrity",
-  "description": "Verify provenance, sign attestations, and serialize SLSA v1.0 predicates",
+  "name": "@koi/registry-remote",
+  "description": "Remote HTTP registry client for community brick marketplace",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,10 +18,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/forge-types": "workspace:*",
-    "@koi/hash": "workspace:*"
-  },
-  "devDependencies": {
-    "@koi/test-utils": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/forge-types": "workspace:*"
   }
 }

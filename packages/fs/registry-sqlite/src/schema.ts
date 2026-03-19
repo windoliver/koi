@@ -12,7 +12,7 @@ import type { Database } from "bun:sqlite";
 // Schema version
 // ---------------------------------------------------------------------------
 
-const LATEST_VERSION = 1;
+const LATEST_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // V1 DDL
@@ -122,6 +122,15 @@ CREATE INDEX IF NOT EXISTS idx_versions_lookup
 `;
 
 // ---------------------------------------------------------------------------
+// V2 DDL — add namespace column to bricks
+// ---------------------------------------------------------------------------
+
+const V2_UP = `
+ALTER TABLE bricks ADD COLUMN namespace TEXT;
+CREATE INDEX IF NOT EXISTS idx_bricks_namespace ON bricks(namespace);
+`;
+
+// ---------------------------------------------------------------------------
 // Migration runner
 // ---------------------------------------------------------------------------
 
@@ -134,6 +143,9 @@ export function applyRegistryMigrations(db: Database): void {
   db.transaction(() => {
     if (currentVersion < 1) {
       db.exec(V1_UP);
+    }
+    if (currentVersion < 2) {
+      db.exec(V2_UP);
     }
     db.exec(`PRAGMA user_version = ${LATEST_VERSION}`);
   })();

@@ -70,6 +70,11 @@ function buildBrickFilter(db: Database, query: BrickSearchQuery): FilterClause |
     params.push(query.kind);
   }
 
+  if (query.namespace !== undefined) {
+    parts.push("b.namespace = ?");
+    params.push(query.namespace);
+  }
+
   if (query.tags !== undefined && query.tags.length > 0) {
     const placeholders = query.tags.map(() => "?").join(", ");
     parts.push(
@@ -147,7 +152,7 @@ export function createSqliteBrickRegistry(config: RegistrySqliteConfig): SqliteB
           isUpdate = true;
           db.run(
             `UPDATE bricks SET brick_id = ?, description = ?, scope = ?, sandbox = ?,
-             lifecycle = ?, version = ?, usage_count = ?, created_at = ?, data = ?
+             lifecycle = ?, version = ?, usage_count = ?, created_at = ?, data = ?, namespace = ?
              WHERE rowid = ?`,
             [
               brick.id,
@@ -159,6 +164,7 @@ export function createSqliteBrickRegistry(config: RegistrySqliteConfig): SqliteB
               brick.usageCount,
               now,
               data,
+              brick.namespace ?? null,
               existing.rowid,
             ],
           );
@@ -174,8 +180,8 @@ export function createSqliteBrickRegistry(config: RegistrySqliteConfig): SqliteB
         } else {
           db.run(
             `INSERT INTO bricks (brick_id, kind, name, description, scope, sandbox,
-             lifecycle, version, usage_count, created_at, data)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             lifecycle, version, usage_count, created_at, data, namespace)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               brick.id,
               brick.kind,
@@ -188,6 +194,7 @@ export function createSqliteBrickRegistry(config: RegistrySqliteConfig): SqliteB
               brick.usageCount,
               now,
               data,
+              brick.namespace ?? null,
             ],
           );
           const inserted = db
@@ -247,7 +254,23 @@ export function createSqliteBrickRegistry(config: RegistrySqliteConfig): SqliteB
   // Contract: get
   // -------------------------------------------------------------------------
 
-  const get = (kind: BrickKind, name: string): Result<BrickArtifact, KoiError> => {
+  const get = (
+    kind: BrickKind,
+    name: string,
+    namespace?: string,
+  ): Result<BrickArtifact, KoiError> => {
+    if (namespace !== undefined) {
+      const row = db
+        .query<{ data: string }, [string, string, string]>(
+          "SELECT data FROM bricks WHERE kind = ? AND name = ? AND namespace = ?",
+        )
+        .get(kind, name, namespace);
+      if (row === null) {
+        return { ok: false, error: notFound(`${kind}:${namespace}/${name}`) };
+      }
+      return { ok: true, value: JSON.parse(row.data) as BrickArtifact };
+    }
+
     const row = db
       .query<{ data: string }, [string, string]>(
         "SELECT data FROM bricks WHERE kind = ? AND name = ?",

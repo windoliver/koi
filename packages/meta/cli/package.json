@@ -38,6 +38,10 @@
     "@koi/deploy": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/forge": "workspace:*",
+    "@koi/forge-integrity": "workspace:*",
+    "@koi/forge-tools": "workspace:*",
+    "@koi/nexus-store": "workspace:*",
+    "@koi/registry-remote": "workspace:*",
     "@koi/engine-external": "workspace:*",
     "@koi/engine-loop": "workspace:*",
     "@koi/channel-agui": "workspace:*",
@@ -88,7 +92,6 @@
     "@koi/tools-context-hub": "workspace:*",
     "@koi/demo-packs": "workspace:*",
     "@koi/nexus-client": "workspace:*",
-    "@koi/nexus-store": "workspace:*",
     "@koi/temporal": "workspace:*"
   }
 }
