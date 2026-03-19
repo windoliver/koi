@@ -4,7 +4,7 @@
  * Mirrors the filesystem loader's three-level strategy:
  * - metadata: trust artifact fields directly (name, description, tags)
  * - body: parse artifact.content via parseSkillMd() + security scan
- * - bundled: body + map artifact.files to scripts/references
+ * - bundled: body + map artifact.files to scripts/references/assets
  *
  * Load once from ForgeStore, cache full artifact, expose progressively.
  */
@@ -14,6 +14,7 @@ import type { ScanFinding } from "@koi/skill-scanner";
 import { createScanner } from "@koi/skill-scanner";
 import { parseSkillMd } from "./parse.js";
 import type {
+  SkillAsset,
   SkillBodyEntry,
   SkillBundledEntry,
   SkillEntry,
@@ -184,8 +185,9 @@ export async function loadForgeSkillBody(
 }
 
 /**
- * Load forged skill at bundled level — body + map artifact.files to scripts/references.
- * Convention: file keys starting with "scripts/" → SkillScript, "references/" → SkillReference.
+ * Load forged skill at bundled level — body + map artifact.files to scripts/references/assets.
+ * Convention: file keys starting with "scripts/" → SkillScript, "references/" → SkillReference,
+ * "assets/" → SkillAsset.
  */
 export async function loadForgeSkillBundled(
   brickId: BrickId,
@@ -201,6 +203,7 @@ export async function loadForgeSkillBundled(
   const artifact = cacheResult.value;
   const scripts: SkillScript[] = [];
   const references: SkillReference[] = [];
+  const assets: SkillAsset[] = [];
 
   if (artifact.files !== undefined) {
     for (const [key, content] of Object.entries(artifact.files)) {
@@ -208,6 +211,8 @@ export async function loadForgeSkillBundled(
         scripts.push({ filename: key.slice("scripts/".length), content });
       } else if (key.startsWith("references/")) {
         references.push({ filename: key.slice("references/".length), content });
+      } else if (key.startsWith("assets/")) {
+        assets.push({ filename: key.slice("assets/".length), content });
       }
     }
   }
@@ -220,6 +225,7 @@ export async function loadForgeSkillBundled(
       level: "bundled",
       scripts,
       references,
+      assets,
     },
   };
 }

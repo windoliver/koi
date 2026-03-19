@@ -63,14 +63,16 @@ describe("end-to-end pipeline", () => {
     }
   });
 
-  test("bundled loader includes scripts and references", async () => {
+  test("bundled loader includes scripts, references, and assets", async () => {
     const result = await loadSkillBundled(resolve(FIXTURES, "valid-skill"));
     expect(result.ok).toBe(true);
     if (result.ok) {
       const scriptNames = result.value.scripts.map((s) => s.filename);
       const refNames = result.value.references.map((r) => r.filename);
+      const assetNames = (result.value.assets ?? []).map((a) => a.filename);
       expect(scriptNames).toContain("helper.sh");
       expect(refNames).toContain("example.md");
+      expect(assetNames).toContain("report-template.md");
     }
   });
 
