@@ -15,8 +15,10 @@ import type { Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
+import type { CliCommandDeps } from "@koi/cli-commands";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineInput } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { DashboardEvent } from "@koi/dashboard-types";
@@ -238,7 +240,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
 
   // 6. ASSEMBLE: Use resolved engine or fall back to pi adapter
-  const adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
+  // let justified: adapter is recreated when /model switches to a different model
+  let adapter = resolved.value.engine ?? createPiAdapter({ model: manifest.model.name });
+  const hasCustomEngine = resolved.value.engine !== undefined;
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
   // Resolve bootstrap sources if configured, then merge with explicit sources
@@ -283,7 +287,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // let justified: mutable ref set when adminBridge is created
   let emitDashboardEvent: ((event: DashboardEvent) => void) | undefined;
 
-  const { runtime } = await createForgeConfiguredKoi({
+  // let justified: runtime is recreated when /model switches to a different model
+  let { runtime } = await createForgeConfiguredKoi({
     manifest,
     adapter,
     middleware: composed.middleware,
@@ -299,20 +304,287 @@ export async function runStart(flags: StartFlags): Promise<void> {
       : {}),
   });
 
-  // 6b. Set up channels — use resolved channels or fall back to CLI channel
-  const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
+  // 6b. Set up AbortController early — needed by commandDeps for /cancel
+  const controller = new AbortController();
+  let shuttingDown = false; // let: mutated by signal handler
+  // let justified: per-run abort controller for /cancel without full shutdown
+  let cancelCurrentRun: (() => void) | undefined;
+
+  function shutdown(): void {
+    if (shuttingDown) {
+      // Second signal — force exit immediately
+      process.stderr.write("\nForce exit.\n");
+      process.exit(1);
+    }
+    shuttingDown = true;
+    process.stderr.write("\nShutting down...\n");
+    controller.abort();
+  }
+
+  process.on("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+
+  // 6c. Set up channels — use resolved channels or fall back to CLI channel with slash commands
+  // Admin deps use closures that late-bind to adminBridge (set up in 6d below).
+  // let justified: conditionally set inside try/catch, read by closures + cleanup
+  let adminBridge: AdminPanelBridgeResult | undefined;
+  // let justified: conditionally set when --admin, disposed at cleanup
+  let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
+
+  // let justified: mutable model name — /model updates it and rebuilds the runtime.
+  let activeModelName = modelName;
+  // let justified: mutable active agent target — /attach switches it.
+  // When undefined, messages go to the primary runtime. When set to an agentId,
+  // messages route through the dispatched agent's chat handler.
+  let activeDispatchedAgentId: string | undefined;
+  // let justified: set to true while model-switch runtime rebuild is in progress
+  let switchingModel = false;
+
+  /** Rebuild the engine adapter + runtime for a new model name. */
+  async function rebuildRuntimeForModel(newModel: string): Promise<void> {
+    switchingModel = true;
+    try {
+      // Build the new runtime BEFORE disposing the old one — if construction
+      // fails, the previous runtime remains intact and usable.
+      const newAdapter = createPiAdapter({ model: newModel });
+      const rebuilt = await createForgeConfiguredKoi({
+        manifest,
+        adapter: newAdapter,
+        middleware: composed.middleware,
+        providers: composed.providers,
+        extensions,
+        ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
+        ...(flags.admin
+          ? {
+              onDashboardEvent: (event: DashboardEvent) => {
+                emitDashboardEvent?.(event);
+              },
+            }
+          : {}),
+      });
+      // New runtime is good — now dispose the old one and swap
+      const oldRuntime = runtime;
+      runtime = rebuilt.runtime;
+      adapter = newAdapter;
+      activeModelName = newModel;
+      await oldRuntime.dispose();
+    } finally {
+      switchingModel = false;
+    }
+  }
+
+  const commandDeps: CliCommandDeps = {
+    cancelStream: () => {
+      cancelCurrentRun?.();
+    },
+    listModels: () => {
+      // Return well-known models for the active provider to enable dynamic tab completion.
+      // The manifest model's provider prefix (e.g., "anthropic:") determines the catalog.
+      const colonIdx = activeModelName.indexOf(":");
+      const provider = colonIdx !== -1 ? activeModelName.slice(0, colonIdx) : "";
+      const KNOWN_MODELS: Readonly<Record<string, readonly string[]>> = {
+        anthropic: [
+          "anthropic:claude-opus-4-6",
+          "anthropic:claude-sonnet-4-6",
+          "anthropic:claude-haiku-4-5-20251001",
+        ],
+        openai: [
+          "openai:gpt-4.1",
+          "openai:gpt-4.1-mini",
+          "openai:gpt-4.1-nano",
+          "openai:o3",
+          "openai:o4-mini",
+        ],
+        google: ["google:gemini-2.5-pro", "google:gemini-2.5-flash"],
+      };
+      const providerModels = KNOWN_MODELS[provider] ?? [];
+      // Include the active model if not already in the list
+      if (!providerModels.includes(activeModelName)) {
+        return [activeModelName, ...providerModels];
+      }
+      return [...providerModels];
+    },
+    currentModel: () => activeModelName,
+    setModel: async (name: string) => {
+      if (hasCustomEngine) {
+        return {
+          ok: false,
+          message: "Model switching is not supported with custom engine adapters",
+        } as const;
+      }
+      try {
+        await rebuildRuntimeForModel(name);
+        return { ok: true } as const;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, message: `Failed to switch model: ${msg}` } as const;
+      }
+    },
+    output: process.stdout,
+    exit: () => {
+      shutdown();
+    },
+    // Admin-only deps: closures capture adminBridge/adminDispatcher set up later.
+    // Before admin is initialized, these return unavailable/empty results.
+    ...(flags.admin
+      ? {
+          getStatus: async () => {
+            if (adminBridge === undefined) return "Admin server starting...";
+            const target =
+              activeDispatchedAgentId !== undefined
+                ? ` (attached: ${activeDispatchedAgentId})`
+                : "";
+            return `Agent: ${manifest.name} — model: ${activeModelName}${target}`;
+          },
+          listAgents: async () => {
+            if (adminBridge === undefined) return [];
+            const agents = await adminBridge.dataSource.listAgents();
+            return agents.map((a) => ({
+              name: a.name,
+              agentId: a.agentId,
+              state: a.state,
+            }));
+          },
+          attachAgent: async (name: string) => {
+            if (adminDispatcher === undefined) {
+              return { ok: false, message: "Agent dispatch not available yet" } as const;
+            }
+            // Find agent by name in dispatched agents
+            for (const [id, agent] of adminDispatcher.dispatched) {
+              if (agent.name.toLowerCase() === name.toLowerCase()) {
+                activeDispatchedAgentId = id;
+                return { ok: true } as const;
+              }
+            }
+            // "primary" or the manifest agent name returns to the primary runtime
+            if (
+              name.toLowerCase() === "primary" ||
+              name.toLowerCase() === manifest.name.toLowerCase()
+            ) {
+              activeDispatchedAgentId = undefined;
+              return { ok: true } as const;
+            }
+            const names = [...adminDispatcher.dispatched.values()].map((a) => a.name);
+            return {
+              ok: false,
+              message: `Agent not found: ${name}. Available: ${["primary", ...names].join(", ")}`,
+            } as const;
+          },
+          listSessions: async () => {
+            // Read session chat logs from the local workspace filesystem
+            const agentDirName = adminBridge?.agentId ?? manifest.name;
+            const chatDir = join(startWorkspaceRoot, "agents", agentDirName, "session", "chat");
+            try {
+              const entries = await readdir(chatDir);
+              const jsonlFiles = entries.filter((f) => f.endsWith(".jsonl"));
+              // Stat files in parallel to get real timestamps
+              const results = await Promise.all(
+                jsonlFiles.map(async (f) => {
+                  try {
+                    const fileStat = await stat(join(chatDir, f));
+                    return {
+                      sessionId: f.replace(".jsonl", ""),
+                      agentName: manifest.name,
+                      startedAt: fileStat.mtimeMs,
+                    };
+                  } catch {
+                    return {
+                      sessionId: f.replace(".jsonl", ""),
+                      agentName: manifest.name,
+                      startedAt: 0,
+                    };
+                  }
+                }),
+              );
+              return results;
+            } catch {
+              return [];
+            }
+          },
+        }
+      : {}),
+    // Forge deps: closures capture forgeBootstrap which is already set up above.
+    ...(forgeBootstrap !== undefined
+      ? {
+          forgeSearch: async (query: string) => {
+            const result = await forgeBootstrap.store.search({ text: query, limit: 10 });
+            if (!result.ok) return [];
+            return result.value.map((b) => ({
+              id: b.id,
+              name: b.name,
+              description: b.description ?? "",
+              kind: b.kind,
+            }));
+          },
+          forgeInstall: async (id: string) => {
+            const bid = brickId(id);
+            const loadResult = await forgeBootstrap.store.load(bid);
+            if (!loadResult.ok) {
+              return { ok: false, message: `Brick not found: ${id}` } as const;
+            }
+            // Activate the brick — sets lifecycle to "active" so the forge runtime
+            // picks it up via its store watch listener. The tool becomes available
+            // to the agent on the next turn without re-assembly.
+            const activateResult = await forgeBootstrap.store.update(bid, {
+              lifecycle: "active",
+            });
+            if (!activateResult.ok) {
+              return {
+                ok: false,
+                message: `Failed to activate: ${activateResult.error.message}`,
+              } as const;
+            }
+            return { ok: true } as const;
+          },
+          forgeInspect: async (id: string) => {
+            const loadResult = await forgeBootstrap.store.load(brickId(id));
+            if (!loadResult.ok) return `Brick not found: ${id}`;
+            const brick = loadResult.value;
+            return [
+              `Name: ${brick.name}`,
+              `Kind: ${brick.kind}`,
+              `Description: ${brick.description ?? "(none)"}`,
+              ...(brick.tags !== undefined && brick.tags.length > 0
+                ? [`Tags: ${brick.tags.join(", ")}`]
+                : []),
+            ].join("\n");
+          },
+        }
+      : {}),
+  };
+
+  // Inject commandDeps into CLI channels — whether manifest-resolved or default.
+  // Manifest-resolved CLI channels are created by the descriptor without commandDeps,
+  // so we replace them with a fresh instance that carries slash command support.
+  const resolvedChannels = resolved.value.channels;
+  const cliManifestOptions = (manifest.channels ?? []).find(
+    (c) => c.name === "@koi/channel-cli" || c.name === "cli",
+  )?.options as Readonly<Record<string, unknown>> | undefined;
+  const channels: readonly ChannelAdapter[] =
+    resolvedChannels !== undefined
+      ? resolvedChannels.map((ch) => {
+          if (ch.name === "cli") {
+            return createCliChannel({
+              commandDeps,
+              ...(typeof cliManifestOptions?.theme === "string"
+                ? { theme: cliManifestOptions.theme }
+                : {}),
+              ...(typeof cliManifestOptions?.prompt === "string"
+                ? { prompt: cliManifestOptions.prompt }
+                : {}),
+            });
+          }
+          return ch;
+        })
+      : [createCliChannel({ commandDeps })];
   for (const ch of channels) {
     await ch.connect();
   }
 
-  // 6c. Optional admin panel server (--admin flag)
+  // 6d. Optional admin panel server (--admin flag)
   const DEFAULT_ADMIN_PORT = 3100;
   // let justified: conditionally set inside try/catch, called at cleanup
   let stopAdmin: (() => void) | undefined;
-  // let justified: conditionally set when --admin, read in REPL loop for metrics
-  let adminBridge: AdminPanelBridgeResult | undefined;
-  // let justified: conditionally set when --admin, disposed at cleanup
-  let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
 
   // let justified: conditionally set when --temporal-url, disposed at cleanup
   let temporalAdmin: Awaited<ReturnType<typeof resolveTemporalOrWarn>>;
@@ -428,25 +700,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // so the TUI/session-picker can read back shared chat logs at the same path.
   const persistAgentId = adminBridge?.agentId ?? manifest.name;
 
-  // 7. Set up AbortController for graceful shutdown
-  const controller = new AbortController();
-  let shuttingDown = false;
-
-  function shutdown(): void {
-    if (shuttingDown) {
-      // Second signal — force exit immediately
-      process.stderr.write("\nForce exit.\n");
-      process.exit(1);
-    }
-    shuttingDown = true;
-    process.stderr.write("\nShutting down...\n");
-    controller.abort();
-  }
-
-  process.on("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
-
-  // 8. Print startup info
+  // 7. Print startup info
   if (flags.verbose) {
     process.stderr.write(`Agent: ${manifest.name} v${manifest.version}\n`);
     process.stderr.write(`Engine: ${engineName}\n`);
@@ -502,7 +756,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
 
       if (text.trim() === "") return;
 
-      if (processing) {
+      if (processing || switchingModel) {
         process.stderr.write("(busy — please wait for the current response)\n");
         return;
       }
@@ -512,25 +766,77 @@ export async function runStart(flags: StartFlags): Promise<void> {
       currentStartSessionId = `start:${manifest.name}:${String(startSessionCounter)}`;
       const input: EngineInput = { kind: "text", text };
 
+      // Per-run cancel: /cancel aborts this flag, not the entire process
+      let runCancelled = false; // let: mutated by cancelCurrentRun closure
+      cancelCurrentRun = () => {
+        runCancelled = true;
+      };
+
       try {
-        const deltas: string[] = [];
-        for await (const event of runtime.run(input)) {
-          if (controller.signal.aborted) break;
-          renderEvent(event, { verbose: flags.verbose });
-          if (event.kind === "text_delta") deltas.push(event.delta);
-          if (event.kind === "done" && adminBridge !== undefined) {
-            const m = event.output.metrics;
-            adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+        // Route to dispatched agent if /attach switched the target
+        if (activeDispatchedAgentId !== undefined && adminDispatcher !== undefined) {
+          const handler = adminDispatcher.getChatHandler(activeDispatchedAgentId);
+          if (handler !== undefined) {
+            // Send proper AG-UI RunAgentInput request
+            const threadId = `thread-${Date.now().toString(36)}`;
+            const runId = `run-${Date.now().toString(36)}`;
+            const body = JSON.stringify({
+              threadId,
+              runId,
+              messages: [{ id: `msg-${Date.now().toString(36)}`, role: "user", content: text }],
+              tools: [],
+              context: [],
+            });
+            const response = await handler(
+              new Request("http://local/chat", {
+                method: "POST",
+                body,
+                headers: { "content-type": "application/json" },
+              }),
+            );
+            // Parse SSE stream to extract text deltas
+            const sseText = await response.text();
+            for (const line of sseText.split("\n")) {
+              if (!line.startsWith("data: ")) continue;
+              try {
+                const event = JSON.parse(line.slice(6)) as {
+                  readonly type: string;
+                  readonly delta?: string;
+                };
+                if (event.type === "TEXT_MESSAGE_CONTENT" && event.delta !== undefined) {
+                  process.stdout.write(event.delta);
+                }
+              } catch {
+                // Skip malformed SSE lines
+              }
+            }
+            process.stdout.write("\n");
+          } else {
+            process.stderr.write(
+              `Agent ${activeDispatchedAgentId} is no longer available. Reverting to primary.\n`,
+            );
+            activeDispatchedAgentId = undefined;
           }
+        } else {
+          const deltas: string[] = [];
+          for await (const event of runtime.run(input)) {
+            if (controller.signal.aborted || runCancelled) break;
+            renderEvent(event, { verbose: flags.verbose });
+            if (event.kind === "text_delta") deltas.push(event.delta);
+            if (event.kind === "done" && adminBridge !== undefined) {
+              const m = event.output.metrics;
+              adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+            }
+          }
+          // Persist to shared chat log (best-effort, warns on failure)
+          await persistChatExchangeSafely(
+            startWorkspaceRoot,
+            persistAgentId,
+            currentStartSessionId,
+            text,
+            deltas.join(""),
+          );
         }
-        // Persist to shared chat log (best-effort, warns on failure)
-        await persistChatExchangeSafely(
-          startWorkspaceRoot,
-          persistAgentId,
-          currentStartSessionId,
-          text,
-          deltas.join(""),
-        );
       } catch (error: unknown) {
         if (!controller.signal.aborted) {
           const message = error instanceof Error ? error.message : String(error);
@@ -538,6 +844,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
         }
       } finally {
         processing = false;
+        cancelCurrentRun = undefined;
       }
     }),
   );
