@@ -62,7 +62,7 @@ export interface SkillBundledEntry extends SkillEntryBase {
   readonly body: string;
   readonly scripts: readonly SkillScript[];
   readonly references: readonly SkillReference[];
-  readonly assets: readonly SkillAsset[];
+  readonly assets?: readonly SkillAsset[];
 }
 
 /** Discriminated union of all progressive loading levels. */

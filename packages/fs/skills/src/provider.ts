@@ -65,7 +65,7 @@ function assembleBundledContent(entry: SkillBundledEntry): string {
     parts.push(`## References\n\n${refSections}`);
   }
 
-  if (entry.assets.length > 0) {
+  if (entry.assets !== undefined && entry.assets.length > 0) {
     const assetSections = entry.assets.map((a) => `### ${a.filename}\n\n${a.content}`).join("\n\n");
     parts.push(`## Assets\n\n${assetSections}`);
   }
