@@ -86,6 +86,7 @@ export interface SessionInfo {
   readonly sessionId: string;
   readonly connectedAt: number;
   readonly agentName: string;
+  readonly agentId?: string | undefined;
   readonly path: string;
 }
 
@@ -103,16 +104,23 @@ export function parseSessionRecord(content: string): Omit<SessionInfo, "path"> |
 
     const connectedAt = typeof record.connectedAt === "number" ? record.connectedAt : Date.now();
 
+    // Try direct agentName first (TUI-written records), then manifestSnapshot (engine records)
     let agentName = "unknown";
-    const manifest = record.manifestSnapshot;
-    if (typeof manifest === "object" && manifest !== null) {
-      const name = (manifest as Record<string, unknown>).name;
-      if (typeof name === "string") {
-        agentName = name;
+    if (typeof record.agentName === "string") {
+      agentName = record.agentName;
+    } else {
+      const manifest = record.manifestSnapshot;
+      if (typeof manifest === "object" && manifest !== null) {
+        const name = (manifest as Record<string, unknown>).name;
+        if (typeof name === "string") {
+          agentName = name;
+        }
       }
     }
 
-    return { sessionId, connectedAt, agentName };
+    const agentId = typeof record.agentId === "string" ? record.agentId : undefined;
+
+    return { sessionId, connectedAt, agentName, agentId };
   } catch {
     return null;
   }

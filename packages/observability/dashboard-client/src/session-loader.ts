@@ -28,14 +28,18 @@ export async function loadSavedSession(
     client.fsRead(chatPath),
   ]);
 
+  // fsRead may return string or { content } object depending on backend
+  const extractContent = (raw: unknown): string => {
+    if (typeof raw === "string") return raw;
+    if (typeof raw === "object" && raw !== null && "content" in raw) {
+      return String((raw as Record<string, unknown>).content);
+    }
+    return "";
+  };
   const logContent = tuiResult.ok
-    ? typeof tuiResult.value === "string"
-      ? tuiResult.value
-      : ""
+    ? extractContent(tuiResult.value)
     : chatResult.ok
-      ? typeof chatResult.value === "string"
-        ? chatResult.value
-        : ""
+      ? extractContent(chatResult.value)
       : "";
 
   return parseTuiChatLog(logContent);

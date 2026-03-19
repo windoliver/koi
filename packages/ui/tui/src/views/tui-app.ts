@@ -194,6 +194,17 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const label = agent !== undefined ? `${agent.name} (${agent.state})` : agentId;
     addLifecycleMessage(`Attached to agent ${label}`);
     fetchRecentAgentActivity(client, store, agentId).catch(() => {});
+
+    // Write session record at namespace root so it persists across koi-up restarts.
+    // Each koi-up gets a new agentId (cli:koi-demo:{timestamp}), so per-agentId paths
+    // would be invisible to future sessions.
+    const record = JSON.stringify({
+      sessionId,
+      agentId,
+      agentName: agent?.name ?? agentId,
+      connectedAt: Date.now(),
+    });
+    client.fsWrite(`/session/records/${sessionId}.json`, record).catch(() => {});
   }
 
   function sendChatMessage(text: string): void {
@@ -313,13 +324,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
     const agents = store.getState().agents;
 
-    // Parallel: fetch all agent session lists concurrently
-    const listResults = await Promise.all(
-      agents.map(async (agent) => {
-        const result = await client.fsList(`/agents/${agent.agentId}/session/records`);
-        return { agent, result };
-      }),
-    );
+    // Fetch sessions from namespace-root /session/records/ (shared across koi-up restarts)
+    // plus per-agent paths for backward compatibility
+    const rootResult = await client.fsList("/session/records");
+    const listResults = [
+      ...(rootResult.ok ? [{ agent: agents[0], result: rootResult }] : []),
+      ...(await Promise.all(
+        agents.map(async (agent) => {
+          const result = await client.fsList(`/agents/${agent.agentId}/session/records`);
+          return { agent, result };
+        }),
+      )),
+    ];
 
     // Parallel: fetch all session files concurrently
     const fileReads: Promise<SessionPickerEntry | null>[] = [];
@@ -330,12 +346,19 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         fileReads.push(
           client.fsRead(file.path).then((readResult) => {
             if (!readResult.ok) return null;
-            const content = typeof readResult.value === "string" ? readResult.value : "";
+            // fsRead may return string or { content } object
+            const raw = readResult.value as unknown;
+            const content =
+              typeof raw === "string"
+                ? raw
+                : typeof raw === "object" && raw !== null && "content" in raw
+                  ? String((raw as Record<string, unknown>).content)
+                  : "";
             const parsed = parseSessionRecord(content);
             if (parsed === null) return null;
             return {
               sessionId: parsed.sessionId,
-              agentId: agent.agentId,
+              agentId: parsed.agentId ?? agent?.agentId ?? "",
               agentName: parsed.agentName,
               connectedAt: parsed.connectedAt,
               messageCount: 0,
