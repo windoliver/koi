@@ -256,7 +256,14 @@ export async function selectStacks(state: WizardState, flags: InitFlags): Promis
     return state;
   }
 
-  const verified: StackId[] = ["toolStack", "retryStack", "qualityGate"];
+  const verified: StackId[] = [
+    "toolStack",
+    "retryStack",
+    "qualityGate",
+    "contextArena",
+    "contextHub",
+    "ace",
+  ];
 
   if (flags.yes) {
     return { ...state, stacks: verified };
@@ -281,6 +288,23 @@ export async function selectStacks(state: WizardState, flags: InitFlags): Promis
           value: "qualityGate" as StackId,
           label: "qualityGate",
           hint: "Model call budgets + validation",
+        },
+      ],
+      "Persistence (verified)": [
+        {
+          value: "contextArena" as StackId,
+          label: "contextArena",
+          hint: "Multi-turn conversation persistence (SQLite)",
+        },
+        {
+          value: "contextHub" as StackId,
+          label: "contextHub",
+          hint: "chub_search + chub_get tools",
+        },
+        {
+          value: "ace" as StackId,
+          label: "ace",
+          hint: "Adaptive Continuous Enhancement (SQLite)",
         },
       ],
     },
