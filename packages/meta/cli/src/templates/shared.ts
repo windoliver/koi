@@ -288,7 +288,9 @@ export function generateBootstrapInstructions(state: WizardState): string {
   const lines: string[] = [];
   lines.push(`# ${state.name}`);
   lines.push("");
-  lines.push(`You are "${state.name}", a Koi agent. Always identify yourself by this name.`);
+  lines.push(
+    `You are "${state.name}". ${state.description}. Always identify yourself by this name.`,
+  );
   lines.push("");
   lines.push(`Goal: ${state.description}`);
   lines.push("");
