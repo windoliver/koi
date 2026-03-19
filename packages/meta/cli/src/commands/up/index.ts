@@ -234,14 +234,12 @@ async function createVfsBackend(
         ...nexusFs,
         list: async (path, options) => {
           const result = await nexusFs.list(path, options);
-          if (!result.ok || path !== "/") return result;
-          return {
-            ok: true,
-            value: {
-              ...result.value,
-              entries: result.value.entries.filter((e) => e.path !== "/agents"),
-            },
-          };
+          if (!result.ok) return result;
+          // Filter internal paths from VFS listing
+          const hidden = new Set(["/agents", "/session/records"]);
+          const filtered = result.value.entries.filter((e) => !hidden.has(e.path));
+          if (filtered.length === result.value.entries.length) return result;
+          return { ok: true, value: { ...result.value, entries: filtered } };
         },
       };
       return { fs: filteredFs, backend: "nexus" };
@@ -1184,7 +1182,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
           currentSessionId,
           text,
           deltas.join(""),
-        ).catch(() => {});
+        ).catch((e: unknown) => {
+          process.stderr.write(
+            `warn: Nexus chat persist failed: ${e instanceof Error ? e.message : String(e)}\n`,
+          );
+        });
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1246,7 +1248,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
             currentSessionId,
             text,
             deltas.join(""),
-          ).catch(() => {});
+          ).catch((e: unknown) => {
+            process.stderr.write(
+              `warn: Nexus chat persist failed: ${e instanceof Error ? e.message : String(e)}\n`,
+            );
+          });
         }
       } catch (error: unknown) {
         if (!controller.signal.aborted) {
