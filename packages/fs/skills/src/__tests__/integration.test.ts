@@ -69,7 +69,7 @@ describe("end-to-end pipeline", () => {
     if (result.ok) {
       const scriptNames = result.value.scripts.map((s) => s.filename);
       const refNames = result.value.references.map((r) => r.filename);
-      const assetNames = result.value.assets.map((a) => a.filename);
+      const assetNames = (result.value.assets ?? []).map((a) => a.filename);
       expect(scriptNames).toContain("helper.sh");
       expect(refNames).toContain("example.md");
       expect(assetNames).toContain("report-template.md");

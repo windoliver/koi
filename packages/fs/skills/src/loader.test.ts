@@ -89,8 +89,8 @@ describe("loadSkillBundled", () => {
       expect(result.value.scripts.some((s) => s.filename === "helper.sh")).toBe(true);
       expect(result.value.references.length).toBeGreaterThanOrEqual(1);
       expect(result.value.references.some((r) => r.filename === "example.md")).toBe(true);
-      expect(result.value.assets.length).toBeGreaterThanOrEqual(1);
-      expect(result.value.assets.some((a) => a.filename === "report-template.md")).toBe(true);
+      expect(result.value.assets?.length).toBeGreaterThanOrEqual(1);
+      expect(result.value.assets?.some((a) => a.filename === "report-template.md")).toBe(true);
     }
   });
 
@@ -101,7 +101,7 @@ describe("loadSkillBundled", () => {
       expect(result.value.level).toBe("bundled");
       expect(result.value.scripts).toHaveLength(0);
       expect(result.value.references).toHaveLength(0);
-      expect(result.value.assets).toHaveLength(0);
+      expect(result.value.assets ?? []).toHaveLength(0);
     }
   });
 });

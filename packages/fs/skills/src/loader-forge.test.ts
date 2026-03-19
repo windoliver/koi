@@ -211,9 +211,9 @@ describe("loadForgeSkillBundled", () => {
     expect(result.value.scripts[0]?.content).toContain("echo hello");
     expect(result.value.references).toHaveLength(1);
     expect(result.value.references[0]?.filename).toBe("guide.md");
-    expect(result.value.assets).toHaveLength(1);
-    expect(result.value.assets[0]?.filename).toBe("report-template.md");
-    expect(result.value.assets[0]?.content).toContain("{{summary}}");
+    expect(result.value.assets ?? []).toHaveLength(1);
+    expect(result.value.assets?.[0]?.filename).toBe("report-template.md");
+    expect(result.value.assets?.[0]?.content).toContain("{{summary}}");
   });
 
   test("returns empty scripts/references/assets when artifact has no files", async () => {
@@ -227,7 +227,7 @@ describe("loadForgeSkillBundled", () => {
 
     expect(result.value.scripts).toHaveLength(0);
     expect(result.value.references).toHaveLength(0);
-    expect(result.value.assets).toHaveLength(0);
+    expect(result.value.assets ?? []).toHaveLength(0);
   });
 });
 
