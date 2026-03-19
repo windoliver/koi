@@ -873,7 +873,12 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   });
 
-  const unsubscribers = channels.map((ch) =>
+  // When TUI is attached, skip CLI channel's onMessage — TUI handles chat
+  // via the AG-UI bridge. The CLI readline on stdin conflicts with TUI's
+  // raw-mode keyboard handling, causing spurious "agent is busy" errors.
+  const subscribedChannels = tuiAttached ? channels.filter((ch) => ch.name !== "cli") : channels;
+
+  const unsubscribers = subscribedChannels.map((ch) =>
     ch.onMessage(async (inbound) => {
       const text = extractTextFromBlocks(inbound.content);
       if (text.trim() === "") return;
