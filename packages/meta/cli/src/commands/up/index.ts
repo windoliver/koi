@@ -924,14 +924,18 @@ export async function runUp(flags: UpFlags): Promise<void> {
   process.on("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
-  let processing = false;
+  // Separate concurrency guards for TUI (AG-UI bridge) and channel handlers.
+  // This allows TUI and channels (Telegram, Slack, etc.) to process messages
+  // independently without blocking each other with "agent is busy" errors.
+  let tuiProcessing = false;
+  let channelProcessing = false;
 
   chatBridge.wireDispatch(async (msg) => {
-    if (processing) {
+    if (tuiProcessing) {
       process.stderr.write("[dispatch] BLOCKED: agent is busy\n");
       throw new Error("Agent is busy processing another request");
     }
-    processing = true;
+    tuiProcessing = true;
     try {
       const text = extractTextFromBlocks(msg.content);
       if (text.trim() === "") return;
@@ -958,25 +962,23 @@ export async function runUp(flags: UpFlags): Promise<void> {
         deltas.join(""),
       );
     } finally {
-      processing = false;
+      tuiProcessing = false;
     }
   });
 
-  // When TUI is attached, skip channel onMessage handlers — TUI handles
-  // chat via the AG-UI bridge. Channel handlers share a `processing` flag
-  // that conflicts with the TUI dispatch, causing "agent is busy" errors.
-  // Channels remain connected for outbound sends but don't process inbound.
-  const subscribedChannels = tuiAttached ? [] : channels;
+  // When TUI is attached, skip CLI channel (stdin conflicts with TUI raw mode)
+  // but keep other channels (Telegram, Slack, etc.) for inbound message handling.
+  const subscribedChannels = tuiAttached ? channels.filter((ch) => ch.name !== "cli") : channels;
 
   const unsubscribers = subscribedChannels.map((ch) =>
     ch.onMessage(async (inbound) => {
       const text = extractTextFromBlocks(inbound.content);
       if (text.trim() === "") return;
-      if (processing) {
+      if (channelProcessing) {
         output.warn("still processing previous message, please wait");
         return;
       }
-      processing = true;
+      channelProcessing = true;
       // On first turn of a resumed session, keep the original thread key
       // so conversation middleware loads the existing history.
       const isResumedFirstTurn = flags.resume !== undefined && currentUpThreadKey === flags.resume;
@@ -1022,7 +1024,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
           output.error(message);
         }
       } finally {
-        processing = false;
+        channelProcessing = false;
       }
     }),
   );
