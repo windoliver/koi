@@ -10,6 +10,14 @@ export interface ProvisionedAgent {
   readonly role: string;
 }
 
+/** Active storage backend label for the startup banner. */
+export interface StorageBackendInfo {
+  readonly threads: "nexus" | "sqlite" | "memory";
+  readonly ace: "nexus" | "sqlite" | "memory";
+  readonly forge: "nexus" | "memory";
+  readonly vfs: "nexus" | "local";
+}
+
 export interface BannerInfo {
   readonly agentName: string;
   readonly presetId: PresetId;
@@ -24,4 +32,5 @@ export interface BannerInfo {
   readonly provisionedAgents: readonly ProvisionedAgent[];
   readonly discoveredSources: readonly { readonly name: string; readonly protocol: string }[];
   readonly prompts: readonly string[];
+  readonly storage?: StorageBackendInfo | undefined;
 }

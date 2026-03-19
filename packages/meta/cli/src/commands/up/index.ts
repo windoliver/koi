@@ -214,7 +214,10 @@ async function createVfsBackend(
   workspaceRoot: string,
   nexusBaseUrl: string | undefined,
   agentName: string,
-): Promise<import("@koi/core").FileSystemBackend> {
+): Promise<{
+  readonly fs: import("@koi/core").FileSystemBackend;
+  readonly backend: "nexus" | "local";
+}> {
   if (nexusBaseUrl !== undefined) {
     try {
       const { createNexusFileSystem } = await import("@koi/filesystem-nexus");
@@ -224,18 +227,21 @@ async function createVfsBackend(
         baseUrl: nexusBaseUrl,
         ...(apiKey !== undefined ? { apiKey } : {}),
       });
-      return createNexusFileSystem({ client, basePath: `agents/${agentName}` });
+      return {
+        fs: createNexusFileSystem({ client, basePath: `agents/${agentName}` }),
+        backend: "nexus",
+      };
     } catch {
       // Fall back to local if Nexus filesystem package is unavailable
     }
   }
-  return createLocalFileSystem(workspaceRoot);
+  return { fs: createLocalFileSystem(workspaceRoot), backend: "local" };
 }
 
 /** Persist chat to Nexus (best-effort, non-fatal). */
 async function persistChatToNexus(
   client: {
-    readonly rpc: <T>(m: string, p: Record<string, unknown>) => Promise<{ readonly ok: boolean }>;
+    readonly rpc: <_T>(m: string, p: Record<string, unknown>) => Promise<{ readonly ok: boolean }>;
   },
   agentName: string,
   threadId: string,
@@ -254,6 +260,16 @@ async function persistChatToNexus(
   ].join("\n");
   const content = existing.length > 0 ? `${existing}\n${entries}\n` : `${entries}\n`;
   await client.rpc<null>("write", { path, content });
+}
+
+/** Infer actual store backend from config + Nexus availability. */
+function inferBackend(
+  configured: "nexus" | "sqlite" | "memory" | undefined,
+  nexusBaseUrl: string | undefined,
+): "nexus" | "sqlite" | "memory" {
+  if (configured === "nexus" && nexusBaseUrl !== undefined) return "nexus";
+  if (configured === "nexus") return "sqlite"; // Nexus requested but unavailable → fallback
+  return configured ?? "memory";
 }
 
 /** Kill any stale process holding a port so the current `up` can bind. */
@@ -428,6 +444,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
   }
   let currentSessionId = flags.resume ?? `up:${manifest.name}:${String(sessionCounter)}`;
 
+  // Track which storage backends are actually active (for banner)
+  const activeStorage = {
+    threads: "memory",
+    ace: "memory",
+    forge: "memory",
+    vfs: "local",
+  } as Record<string, string>;
+
   // Pre-create auto-harness when preset enables it and forge is enabled.
   // The same store is shared with forge bootstrap so synthesized bricks
   // land in the active forge system.
@@ -447,6 +471,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
             apiKey: process.env.NEXUS_API_KEY ?? "",
             basePath: `agents/${manifest.name}/bricks`,
           });
+          activeStorage.forge = "nexus";
         } catch {
           preForgeStore = createInMemoryForgeStore();
         }
@@ -603,7 +628,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     try {
       // For nexus backend, create a dedicated thread snapshot store
       let nexusSnapshotStore: import("@koi/core").ThreadSnapshotStore | undefined;
-      if (preset.stacks.threadStoreBackend === "nexus" && nexus.baseUrl !== undefined) {
+      if (nexus.baseUrl !== undefined) {
         try {
           const { createNexusSnapshotStore } = await import("@koi/nexus-store");
           nexusSnapshotStore = createNexusSnapshotStore({
@@ -611,17 +636,17 @@ export async function runUp(flags: UpFlags): Promise<void> {
             apiKey: process.env.NEXUS_API_KEY ?? "",
             basePath: `agents/${manifest.name}/threads`,
           });
+          activeStorage.threads = "nexus";
         } catch {
-          // Fall back to SQLite if Nexus store creation fails
+          activeStorage.threads = "sqlite";
         }
       }
 
       const arenaResult = createContextArenaConfigForUp({
         summarizer: resolved.value.model,
         manifestName: manifest.name,
-        ...(preset.stacks.threadStoreBackend !== undefined
-          ? { threadStoreBackend: preset.stacks.threadStoreBackend }
-          : {}),
+        threadStoreBackend:
+          nexus.baseUrl !== undefined ? "nexus" : (preset.stacks.threadStoreBackend ?? "memory"),
         dataDir: resolve(workspaceRoot, ".koi", "data"),
         ...(nexusSnapshotStore !== undefined ? { nexusSnapshotStore } : {}),
         getMessages: () => currentUpMessages,
@@ -660,8 +685,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
   }
 
   // Activate L3 stacks based on preset flags
+  // Upgrade store backends to Nexus when Nexus is available
+  const effectiveStacks = {
+    ...preset.stacks,
+    ...(nexus.baseUrl !== undefined
+      ? { threadStoreBackend: "nexus" as const, aceStoreBackend: "nexus" as const }
+      : {}),
+  };
   const activatedStacks = await activatePresetStacks({
-    stacks: preset.stacks,
+    stacks: effectiveStacks,
     forgeBootstrap:
       forgeBootstrap !== undefined
         ? { store: forgeBootstrap.store, runtime: forgeBootstrap.runtime }
@@ -840,7 +872,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
       model: modelName,
       channels: channelNames,
       skills: skillNames,
-      fileSystem: await createVfsBackend(workspaceRoot, nexus.baseUrl, manifest.name),
+      fileSystem: await (async () => {
+        const vfs = await createVfsBackend(workspaceRoot, nexus.baseUrl, manifest.name);
+        activeStorage.vfs = vfs.backend;
+        return vfs.fs;
+      })(),
       discoveredSources: discoveredSourceSummaries,
       dataSourceDescriptors: discoveredDescriptors,
       ...(dataSourceExecutorFn !== undefined ? { dataSourceExecutor: dataSourceExecutorFn } : {}),
@@ -958,6 +994,18 @@ export async function runUp(flags: UpFlags): Promise<void> {
     provisionedAgents,
     discoveredSources: discoveredSourceNames,
     prompts: seedResult.prompts,
+    storage: {
+      threads:
+        nexus.baseUrl !== undefined
+          ? "nexus"
+          : inferBackend(preset.stacks.threadStoreBackend, nexus.baseUrl),
+      ace:
+        nexus.baseUrl !== undefined
+          ? "nexus"
+          : inferBackend(preset.stacks.aceStoreBackend, nexus.baseUrl),
+      forge: activeStorage.forge as "nexus" | "memory",
+      vfs: activeStorage.vfs as "nexus" | "local",
+    },
   });
 
   if (flags.resume !== undefined) {
