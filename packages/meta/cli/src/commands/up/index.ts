@@ -1114,6 +1114,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     await Promise.all(nonCli.map((ch) => ch.connect()));
     output.info("Operator console attached.\n");
   } else {
+    await Promise.all(channels.map((ch) => ch.connect()));
     output.info("Type a message or Ctrl+C to stop.\n");
   }
 
