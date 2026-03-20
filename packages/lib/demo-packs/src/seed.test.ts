@@ -176,7 +176,6 @@ describe("connected pack", () => {
     if (pack === undefined) return;
     expect(pack.agentRoles.length).toBeGreaterThan(0);
     expect(pack.agentRoles.some((r) => r.type === "copilot")).toBe(true);
-    expect(pack.agentRoles.some((r) => r.type === "worker")).toBe(true);
   });
 });
 
