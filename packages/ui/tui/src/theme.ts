@@ -9,17 +9,24 @@ import type { ConnectionStatus } from "./state/types.js";
 
 // ─── Color Constants ─────────────────────────────────────────────────
 
-/** Koi brand colors. */
+/** Koi Deep Water palette. */
 export const COLORS = {
   cyan: "#00CCCC",
-  green: "#00FF00",
-  yellow: "#FFFF00",
-  red: "#FF0000",
+  green: "#22C55E",
+  yellow: "#EAB308",
+  red: "#EF4444",
   blue: "#0088FF",
   magenta: "#FF00FF",
-  white: "#FFFFFF",
-  dim: "#888888",
+  white: "#E2E8F0",
+  dim: "#8899AA",
   bg: "#001122",
+  accent: "#FAF3DE",
+  bgElevated: "#0D1B2A",
+  bgSurface: "#1B2838",
+  bgHover: "#2E3D4E",
+  fgDim: "#4A5568",
+  border: "#2E3D4E",
+  borderSubtle: "#1B2838",
 } as const;
 
 // ─── Status Indicators ──────────────────────────────────────────────
@@ -55,6 +62,6 @@ export function agentStateColor(
     case "suspended":
       return COLORS.magenta;
     case "terminated":
-      return COLORS.dim;
+      return COLORS.fgDim;
   }
 }
