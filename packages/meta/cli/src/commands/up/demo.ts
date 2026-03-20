@@ -32,19 +32,14 @@ export async function seedDemoPackIfNeeded(
     const markerPath = join(workspaceRoot, ".koi", ".demo-seeded");
     try {
       await readFile(markerPath, "utf-8");
-      // Already seeded — still return prompts and run seed to get brick views
-      const { getPack, runSeed } = await import("@koi/demo-packs");
+      // Already seeded — return prompts and static brick/forge views without re-writing to Nexus
+      const { getPack } = await import("@koi/demo-packs");
       const pack = getPack(demoPack);
-      // Re-run seed to get seeded brick views (idempotent writes to Nexus)
-      if (nexusClient !== undefined && pack !== undefined) {
-        const result = await runSeed(demoPack, { nexusClient, agentName, workspaceRoot, verbose });
-        return {
-          prompts: pack.prompts,
-          seededBricks: result.seededBricks ?? [],
-          seededForgeEvents: result.seededForgeEvents ?? [],
-        };
-      }
-      return { prompts: pack?.prompts ?? [], seededBricks: [], seededForgeEvents: [] };
+      return {
+        prompts: pack?.prompts ?? [],
+        seededBricks: pack?.staticViews?.seededBricks ?? [],
+        seededForgeEvents: pack?.staticViews?.seededForgeEvents ?? [],
+      };
     } catch {
       // Marker doesn't exist — proceed with seeding
     }

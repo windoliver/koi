@@ -245,6 +245,18 @@ export const SELF_IMPROVEMENT_PACK: DemoPack = {
     },
   ],
   seed: seedSelfImprovement,
+  staticViews: {
+    seededBricks: BRICK_METADATA.map((entry) => ({
+      brickId: entry.value.brickId as string,
+      name: entry.value.name as string,
+      status: entry.value.status as SeededBrickView["status"],
+      fitness: entry.value.fitness as number,
+      sampleCount: entry.value.sampleCount as number,
+      createdAt: entry.value.createdAt as number,
+      lastUpdatedAt: entry.value.lastUpdatedAt as number,
+    })),
+    seededForgeEvents: FORGE_EVENTS.map((entry) => entry.value),
+  },
   prompts: [
     "Show me the forge activity.",
     "What bricks have been created?",

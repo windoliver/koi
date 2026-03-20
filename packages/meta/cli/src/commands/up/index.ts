@@ -284,7 +284,11 @@ async function persistChatToNexus(
     JSON.stringify({ kind: "assistant", text: assistantText, timestamp: Date.now() }),
   ].join("\n");
   const content = existing.length > 0 ? `${existing}\n${entries}\n` : `${entries}\n`;
-  await client.rpc<null>("write", { path, content });
+  const writeResult = await client.rpc<null>("write", { path, content });
+  if (!writeResult.ok) {
+    const err = (writeResult as { readonly error?: { readonly message?: string } }).error;
+    throw new Error(`Nexus write failed: ${err?.message ?? "unknown"}`);
+  }
 }
 
 /** Probe nexus.yaml for an already-running Nexus instance. Returns URL+key if healthy. */
@@ -880,11 +884,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 8b. Demo pack seed (before admin so seeded bricks are available for forge view)
   const demoPack = await extractDemoPack(manifestPath);
-  let demoNexusClient: import("@koi/nexus-client").NexusClient | undefined;
-  if (demoPack !== undefined && nexus.baseUrl !== undefined) {
+  let nexusClient: import("@koi/nexus-client").NexusClient | undefined;
+  if (nexus.baseUrl !== undefined) {
     const { createNexusClient } = await import("@koi/nexus-client");
     const apiKey = process.env.NEXUS_API_KEY;
-    demoNexusClient = createNexusClient({
+    nexusClient = createNexusClient({
       baseUrl: nexus.baseUrl,
       ...(apiKey !== undefined ? { apiKey } : {}),
     });
@@ -893,7 +897,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     demoPack,
     workspaceRoot,
     manifest.name,
-    demoNexusClient,
+    nexusClient,
     flags.verbose,
   );
 
@@ -1184,9 +1188,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
         text,
         deltas.join(""),
       );
-      if (demoNexusClient !== undefined) {
+      if (nexusClient !== undefined) {
         persistChatToNexus(
-          demoNexusClient,
+          nexusClient,
           manifest.name,
           currentSessionId,
           text,
@@ -1258,9 +1262,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
           text,
           deltas.join(""),
         );
-        if (demoNexusClient !== undefined) {
+        if (nexusClient !== undefined) {
           persistChatToNexus(
-            demoNexusClient,
+            nexusClient,
             manifest.name,
             currentSessionId,
             text,
