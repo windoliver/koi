@@ -84,6 +84,7 @@ function mapKeyEventToSequence(key: KeyEvent, paletteActive?: boolean): string |
   if (key.ctrl) {
     switch (key.name) {
       case "c": return "\x03";
+      case "n": return "\x0E";
       case "p": return "\x10";
       case "r": return "\x12";
       case "o": return "\x0F";

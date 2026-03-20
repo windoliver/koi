@@ -14,6 +14,7 @@ function makeSession(overrides: Partial<SessionPickerEntry> = {}): SessionPicker
     agentName: "test-agent",
     connectedAt: Date.now() - 120_000,
     messageCount: 15,
+    preview: "",
     ...overrides,
   };
 }
@@ -115,7 +116,7 @@ describe("SessionPickerView", () => {
 
     await settle(renderOnce);
     const frame = captureCharFrame();
-    expect(frame).toContain("42 messages");
+    expect(frame).toContain("42 msgs");
   });
 
   test("calls onSelect when session is selected", async () => {

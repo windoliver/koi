@@ -80,6 +80,7 @@ export interface KeyboardCallbacks {
   readonly logsCycleLevel: () => void;
   readonly logsBack: () => void;
   readonly openSessionPicker: () => void;
+  readonly newSession: () => void;
 }
 
 /**
@@ -129,6 +130,12 @@ export function createKeyboardHandler(
     // Ctrl+F — toggle nexus files view
     if (sequence === "\x06") {
       callbacks.toggleNexus();
+      return true;
+    }
+
+    // Ctrl+N — new session with current/first agent
+    if (sequence === "\x0E") {
+      callbacks.newSession();
       return true;
     }
 

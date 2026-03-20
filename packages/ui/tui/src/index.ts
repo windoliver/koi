@@ -37,12 +37,15 @@ export type {
   SSEStreamOptions,
 } from "@koi/dashboard-client";
 export {
+  buildReadableSessionPath,
+  buildRootSessionPath,
   buildSessionPath,
   CHAT_SESSION_PREFIX,
   consumeSSEStream,
   createAdminClient,
   createDebounce,
   createReconnectingStream,
+  deriveSessionSlug,
   ENGINE_SESSION_PREFIX,
   loadSavedSession,
   parseSessionRecord,

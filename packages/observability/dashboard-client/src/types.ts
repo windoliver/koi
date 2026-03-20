@@ -88,6 +88,8 @@ export interface SessionInfo {
   readonly agentName: string;
   readonly agentId?: string | undefined;
   readonly path: string;
+  /** Path to the session chat log file (human-readable name). */
+  readonly logPath?: string | undefined;
 }
 
 /** Parse a SessionRecord JSON file to extract session metadata. */
@@ -119,8 +121,9 @@ export function parseSessionRecord(content: string): Omit<SessionInfo, "path"> |
     }
 
     const agentId = typeof record.agentId === "string" ? record.agentId : undefined;
+    const logPath = typeof record.logPath === "string" ? record.logPath : undefined;
 
-    return { sessionId, connectedAt, agentName, agentId };
+    return { sessionId, connectedAt, agentName, agentId, logPath };
   } catch {
     return null;
   }
