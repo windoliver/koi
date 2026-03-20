@@ -194,6 +194,17 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     const label = agent !== undefined ? `${agent.name} (${agent.state})` : agentId;
     addLifecycleMessage(`Attached to agent ${label}`);
     fetchRecentAgentActivity(client, store, agentId).catch(() => {});
+
+    // Write session record at namespace root so it persists across koi-up restarts.
+    // Each koi-up gets a new agentId (cli:koi-demo:{timestamp}), so per-agentId paths
+    // would be invisible to future sessions.
+    const record = JSON.stringify({
+      sessionId,
+      agentId,
+      agentName: agent?.name ?? agentId,
+      connectedAt: Date.now(),
+    });
+    client.fsWrite(`/session/records/${sessionId}.json`, record).catch(() => {});
   }
 
   function sendChatMessage(text: string): void {
@@ -313,41 +324,105 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
     const agents = store.getState().agents;
 
-    // Parallel: fetch all agent session lists concurrently
-    const listResults = await Promise.all(
-      agents.map(async (agent) => {
-        const result = await client.fsList(`/agents/${agent.agentId}/session/records`);
-        return { agent, result };
-      }),
-    );
+    const extractContent = (raw: unknown): string => {
+      if (typeof raw === "string") return raw;
+      if (typeof raw === "object" && raw !== null && "content" in raw) {
+        return String((raw as Record<string, unknown>).content);
+      }
+      return "";
+    };
 
-    // Parallel: fetch all session files concurrently
+    // Fetch sessions from namespace-root /session/records/ (shared across koi-up restarts)
+    // plus per-agent paths for backward compatibility
+    const rootResult = await client.fsList("/session/records");
+    const listResults = [
+      ...(rootResult.ok ? [{ agent: agents[0], result: rootResult }] : []),
+      ...(await Promise.all(
+        agents.map(async (agent) => {
+          const result = await client.fsList(`/agents/${agent.agentId}/session/records`);
+          return { agent, result };
+        }),
+      )),
+    ];
+
+    // Parallel: fetch all session record files concurrently
     const fileReads: Promise<SessionPickerEntry | null>[] = [];
     for (const { agent, result } of listResults) {
       if (!result.ok) continue;
       for (const file of result.value) {
         if (file.isDirectory || !file.name.endsWith(".json")) continue;
         fileReads.push(
-          client.fsRead(file.path).then((readResult) => {
+          client.fsRead(file.path).then(async (readResult) => {
             if (!readResult.ok) return null;
-            const content = typeof readResult.value === "string" ? readResult.value : "";
+            const content = extractContent(readResult.value as unknown);
             const parsed = parseSessionRecord(content);
             if (parsed === null) return null;
+
+            const entryAgentId = parsed.agentId ?? agent?.agentId ?? "";
+
+            // Read session log to get actual message count and preview.
+            // Try logPath from record first (human-readable name), then fallback paths.
+            const logPaths = [
+              ...(parsed.logPath !== undefined ? [parsed.logPath] : []),
+              `/session/chat/${parsed.sessionId}.jsonl`,
+              `/agents/${entryAgentId}/session/chat/${parsed.sessionId}.jsonl`,
+              `/session/tui/${parsed.sessionId}.jsonl`,
+            ];
+            let logContent = "";
+            for (const lp of logPaths) {
+              const logResult = await client.fsRead(lp);
+              if (logResult.ok) {
+                logContent = extractContent(logResult.value as unknown);
+                break;
+              }
+            }
+            const lines = logContent.split("\n").filter((l) => l.trim() !== "");
+
+            // Count only user + assistant messages (not lifecycle noise)
+            let chatCount = 0;
+            let preview = "";
+            for (const line of lines) {
+              try {
+                const msg = JSON.parse(line) as { readonly kind?: string; readonly text?: string };
+                if (msg.kind === "user" || msg.kind === "assistant") {
+                  chatCount++;
+                  if (preview === "" && msg.kind === "user" && typeof msg.text === "string") {
+                    preview = msg.text.length > 60 ? `${msg.text.slice(0, 57)}...` : msg.text;
+                  }
+                }
+              } catch {
+                // skip malformed lines
+              }
+            }
+
             return {
               sessionId: parsed.sessionId,
-              agentId: agent.agentId,
+              agentId: entryAgentId,
               agentName: parsed.agentName,
               connectedAt: parsed.connectedAt,
-              messageCount: 0,
+              messageCount: chatCount,
+              preview,
+              logPath: parsed.logPath,
             };
           }),
         );
       }
     }
 
-    const entries = (await Promise.all(fileReads)).filter(
+    const allEntries = (await Promise.all(fileReads)).filter(
       (e): e is SessionPickerEntry => e !== null,
     );
+
+    // Dedup by sessionId (same session may appear at both namespace-root and per-agent paths)
+    const seen = new Set<string>();
+    const entries: SessionPickerEntry[] = [];
+    for (const entry of allEntries) {
+      if (!seen.has(entry.sessionId)) {
+        seen.add(entry.sessionId);
+        entries.push(entry);
+      }
+    }
+
     entries.sort((a, b) => b.connectedAt - a.connectedAt);
     store.dispatch({ kind: "set_session_picker", entries, loading: false });
   }
@@ -355,10 +430,23 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
   function handleSessionSelect(sessionId: string): void {
     const entry = store.getState().sessionPickerEntries.find((s) => s.sessionId === sessionId);
     if (entry === undefined) return;
-    restoreSession(store, client, entry.agentId, sessionId)
-      .then((count) =>
-        addLifecycleMessage(`Restored session ${sessionId} (${String(count)} messages)`),
-      )
+
+    // Use saved agentId for loading (data lives at old per-agent path),
+    // then update session to current agent so chat/persist use the live agent.
+    const currentAgent = store.getState().agents[0];
+    const currentAgentId = currentAgent?.agentId ?? entry.agentId;
+
+    restoreSession(store, client, entry.agentId, sessionId, entry.logPath)
+      .then(() => {
+        // Rewrite session agentId to current agent so sendChatMessage targets the live agent
+        const session = store.getState().activeSession;
+        if (session !== null && session.agentId !== currentAgentId) {
+          store.dispatch({
+            kind: "set_session",
+            session: { ...session, agentId: currentAgentId },
+          });
+        }
+      })
       .catch(() => addLifecycleMessage(`Failed to restore session ${sessionId}`));
   }
 
@@ -701,6 +789,17 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     logsBack: () => {
       store.dispatch({ kind: "set_view", view: "service" });
+    },
+    openSessionPicker: () => {
+      openSessionPicker().catch(() => {});
+    },
+    newSession: () => {
+      const agents = store.getState().agents;
+      const agent = agents[0];
+      if (agent !== undefined) {
+        debouncedPersist.flush();
+        openAgentConsole(agent.agentId);
+      }
     },
   });
 

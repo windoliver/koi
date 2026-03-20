@@ -1211,6 +1211,7 @@
         "@koi/engine-external": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/filesystem-nexus": "workspace:*",
         "@koi/forge": "workspace:*",
         "@koi/forge-integrity": "workspace:*",
         "@koi/forge-tools": "workspace:*",

@@ -50,9 +50,10 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
   }));
 
   // Seed memory entries (department summaries + org metadata)
+  // Paths must match SEGMENTS.memory = "memory/entities" with .json suffix
   const memoryEntries: readonly BatchWriteEntry[] = [
     {
-      path: `/agents/${ctx.agentName}/memory/herb/org-overview`,
+      path: `/agents/${ctx.agentName}/memory/entities/herb-org-overview.json`,
       data: {
         company: "HERB",
         totalEmployees: HERB_EMPLOYEES.length,
@@ -62,7 +63,7 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
       },
     },
     {
-      path: `/agents/${ctx.agentName}/memory/herb/customer-tiers`,
+      path: `/agents/${ctx.agentName}/memory/entities/herb-customer-tiers.json`,
       data: {
         enterprise: HERB_CUSTOMERS.filter((c) => c.tier === "enterprise").length,
         business: HERB_CUSTOMERS.filter((c) => c.tier === "business").length,
@@ -70,7 +71,7 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
       },
     },
     {
-      path: `/agents/${ctx.agentName}/memory/herb/product-categories`,
+      path: `/agents/${ctx.agentName}/memory/entities/herb-product-categories.json`,
       data: {
         platform: HERB_PRODUCTS.filter((p) => p.category === "platform").length,
         addon: HERB_PRODUCTS.filter((p) => p.category === "add-on").length,
@@ -164,22 +165,9 @@ export const CONNECTED_PACK: DemoPack = {
       reuse: true,
       description: "HERB business assistant — employee lookup, customer analytics, product catalog",
     },
-    {
-      name: "analytics-helper",
-      type: "copilot",
-      lifecycle: "copilot",
-      reuse: true,
-      description:
-        "Analytics specialist — runs deep queries on customer churn risk, revenue segmentation, and employee distribution",
-    },
-    {
-      name: "data-worker",
-      type: "worker",
-      lifecycle: "worker",
-      reuse: false,
-      description:
-        "Background worker that enriches customer records and computes derived metrics when primary requests analysis",
-    },
+    // Companion agents (analytics-helper, data-worker) are disabled for single-agent demo.
+    // They burn tokens at startup doing autonomous search_forge calls with no inter-agent
+    // communication wired. Re-enable when mesh/gateway multi-agent is ready.
   ],
   seed: seedConnected,
   prompts: [

@@ -56,6 +56,7 @@ export async function createGlobalBackends(
       : createNexusSearch({
           baseUrl,
           apiKey,
+          timeoutMs: 30_000,
           ...(fetchFn !== undefined ? { fetchFn } : {}),
           ...(typeof overrides.search === "object" ? overrides.search : {}),
         });

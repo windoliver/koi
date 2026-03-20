@@ -49,7 +49,13 @@ export async function handleFsList(
     const status = result.error.code === "NOT_FOUND" ? 404 : 500;
     return errorResponse(result.error.code, result.error.message, status);
   }
-  return jsonResponse(result.value);
+  // Map FileListEntry → FsEntry (add name + isDirectory for dashboard clients)
+  const mapped = result.value.entries.map((entry) => ({
+    ...entry,
+    name: entry.path.split("/").pop() ?? entry.path,
+    isDirectory: entry.kind === "directory",
+  }));
+  return jsonResponse(mapped);
 }
 
 export async function handleFsRead(

@@ -29,9 +29,9 @@ export const DEMO_PRESET: RuntimePreset = {
     qualityGate: true,
     contextHub: true,
     contextArena: true,
-    threadStoreBackend: "sqlite",
+    threadStoreBackend: "nexus",
     ace: true,
-    aceStoreBackend: "sqlite",
+    aceStoreBackend: "nexus",
   },
   manifestOverrides: {
     autonomous: { enabled: true },

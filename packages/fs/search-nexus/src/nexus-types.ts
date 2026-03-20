@@ -16,9 +16,9 @@ export interface NexusSearchHit {
 }
 
 export interface NexusQueryResponse {
-  readonly hits: readonly NexusSearchHit[];
+  readonly results: readonly NexusSearchHit[];
   readonly total: number;
-  readonly has_more: boolean;
+  readonly has_more?: boolean;
   readonly cursor?: string;
 }
 

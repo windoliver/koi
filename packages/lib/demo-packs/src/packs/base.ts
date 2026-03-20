@@ -4,6 +4,8 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { BatchWriteEntry } from "@koi/nexus-client";
+import { batchWrite } from "@koi/nexus-client";
 import type { DemoPack, SeedContext, SeedResult } from "../types.js";
 
 /** HERB business assistant personality for demo mode. */
@@ -58,14 +60,34 @@ async function seedBase(ctx: SeedContext): Promise<SeedResult> {
     // File already exists — don't overwrite
   });
 
-  const counts: Record<string, number> = { files: 2 };
-  const summary = ["Bootstrap files ready in .koi/"];
+  // Seed SOUL.md and INSTRUCTIONS.md to Nexus agent namespace root
+  const nexusEntries: readonly BatchWriteEntry[] = [
+    {
+      path: `/agents/${ctx.agentName}/SOUL.md`,
+      data: SOUL_MD,
+    },
+    {
+      path: `/agents/${ctx.agentName}/INSTRUCTIONS.md`,
+      data: instructions,
+    },
+  ];
+  const nexusResult = await batchWrite(ctx.nexusClient, nexusEntries);
+  const nexusCount = nexusResult.ok ? nexusResult.value.succeeded : 0;
+
+  const counts: Record<string, number> = { files: 2, nexus: nexusCount };
+  const summary = ["Bootstrap files ready in .koi/" + (nexusCount > 0 ? " and Nexus" : "")];
 
   if (ctx.verbose) {
     summary.push(`  wrote ${instructionsPath}`);
     summary.push(`  wrote ${soulPath}`);
+    if (nexusCount > 0) {
+      summary.push(`  seeded ${String(nexusCount)} files to Nexus agent namespace`);
+    } else {
+      summary.push("  warn: Nexus seeding failed — SOUL.md/INSTRUCTIONS.md not in VFS");
+    }
   }
 
+  // Local file bootstrap is primary; Nexus seeding is best-effort
   return { ok: true, counts, summary };
 }
 

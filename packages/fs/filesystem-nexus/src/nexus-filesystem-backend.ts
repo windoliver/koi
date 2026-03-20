@@ -12,6 +12,7 @@ import type {
   FileEdit,
   FileEditOptions,
   FileEditResult,
+  FileListEntry,
   FileListOptions,
   FileListResult,
   FileReadOptions,
@@ -90,11 +91,13 @@ function computeFullPath(basePath: string, userPath: string): Result<string, Koi
     if (part !== "" && part !== ".") return acc.concat(part);
     return acc;
   }, []);
-  const result = resolved.join("/");
+  // Nexus NFS expects paths with leading slash
+  const result = `/${resolved.join("/")}`;
 
   // Ensure result stays within basePath boundary
-  const baseWithSlash = basePath.endsWith("/") ? basePath : `${basePath}/`;
-  if (result !== basePath && !result.startsWith(baseWithSlash)) {
+  const normalizedBase = `/${basePath}`;
+  const baseWithSlash = normalizedBase.endsWith("/") ? normalizedBase : `${normalizedBase}/`;
+  if (result !== normalizedBase && !result.startsWith(baseWithSlash)) {
     return {
       ok: false,
       error: {
@@ -135,13 +138,15 @@ function mapNotFoundError<T>(result: {
 
 /** Strip basePath prefix from a full path, returning the user-relative path. */
 function stripBasePath(base: string, fullPath: string): string {
+  // Normalize: basePath may lack leading slash but Nexus paths always have one
+  const normalizedBase = base.startsWith("/") ? base : `/${base}`;
   // Exact match: path IS the base directory
-  if (fullPath === base) {
+  if (fullPath === normalizedBase) {
     return "/";
   }
   // Path-boundary check: ensure base is followed by "/" to prevent
   // sibling-prefix collisions (e.g. base="/fs" must not match "/fspath/a.txt")
-  const baseWithSlash = base.endsWith("/") ? base : `${base}/`;
+  const baseWithSlash = normalizedBase.endsWith("/") ? normalizedBase : `${normalizedBase}/`;
   if (fullPath.startsWith(baseWithSlash)) {
     return `/${fullPath.slice(baseWithSlash.length)}`;
   }
@@ -182,8 +187,26 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       return mapNotFoundError(result);
     }
 
-    // Nexus may return raw content string or a structured FileReadResult
-    const content = typeof result.value === "string" ? result.value : result.value.content;
+    // Nexus may return:
+    //   - raw string
+    //   - { content: string } (FileReadResult)
+    //   - { __type__: "bytes", data: "base64..." } (binary content)
+    const raw = result.value;
+    let content: string;
+    if (typeof raw === "string") {
+      content = raw;
+    } else if (typeof raw === "object" && raw !== null) {
+      const obj = raw as unknown as Record<string, unknown>;
+      if (obj.__type__ === "bytes" && typeof obj.data === "string") {
+        content = Buffer.from(obj.data, "base64").toString("utf-8");
+      } else if (typeof obj.content === "string") {
+        content = obj.content;
+      } else {
+        content = JSON.stringify(raw, null, 2);
+      }
+    } else {
+      content = String(raw);
+    }
     return {
       ok: true,
       value: {
@@ -256,16 +279,62 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     const fullPathResult = computeFullPath(basePath, path);
     if (!fullPathResult.ok) return fullPathResult;
 
-    const result = await client.rpc<FileListResult>("list", {
-      path: fullPathResult.value,
-      ...(options?.recursive !== undefined ? { recursive: options.recursive } : {}),
-      ...(options?.glob !== undefined ? { glob: options.glob } : {}),
-    });
+    // Nexus RPC may return either:
+    //   { entries: FileListEntry[], truncated } (structured)
+    //   { files: string[] }                     (flat path list)
+    const result = await client.rpc<FileListResult | { readonly files: readonly string[] }>(
+      "list",
+      {
+        path: fullPathResult.value,
+        ...(options?.recursive !== undefined ? { recursive: options.recursive } : {}),
+        ...(options?.glob !== undefined ? { glob: options.glob } : {}),
+      },
+    );
 
     if (!result.ok) return result;
 
-    // Remap paths: strip basePath prefix so callers see user-relative paths
-    const entries = result.value.entries.map((entry) => ({
+    const raw = result.value;
+
+    // Handle flat file list from Nexus: derive directory entries from path prefixes
+    if ("files" in raw && Array.isArray(raw.files)) {
+      const prefix = fullPathResult.value.replace(/^\/+/, "");
+      const prefixWithSlash = prefix.length > 0 ? `${prefix}/` : "";
+      const seen = new Set<string>();
+      const entries: FileListEntry[] = [];
+
+      for (const file of raw.files) {
+        const normalized = file.replace(/^\/+/, "");
+        const relative =
+          prefixWithSlash.length > 0 && normalized.startsWith(prefixWithSlash)
+            ? normalized.slice(prefixWithSlash.length)
+            : normalized;
+        if (relative.length === 0) continue;
+        const slashIdx = relative.indexOf("/");
+        if (slashIdx === -1) {
+          // Immediate child — use extension heuristic to detect directories
+          // Nexus list returns both files and directory names as flat strings
+          const hasExt = relative.lastIndexOf(".") > 0;
+          const kind = hasExt ? ("file" as const) : ("directory" as const);
+          if (!seen.has(relative)) {
+            seen.add(relative);
+            entries.push({ path: `${path === "/" ? "" : path}/${relative}`, kind });
+          }
+        } else {
+          // Nested path — extract top-level directory
+          const dirName = relative.slice(0, slashIdx);
+          if (!seen.has(dirName)) {
+            seen.add(dirName);
+            entries.push({ path: `${path === "/" ? "" : path}/${dirName}`, kind: "directory" });
+          }
+        }
+      }
+
+      return { ok: true, value: { entries, truncated: false } };
+    }
+
+    // Structured response — remap paths to strip basePath prefix
+    const structured = raw as FileListResult;
+    const entries = structured.entries.map((entry) => ({
       ...entry,
       path: stripBasePath(basePath, entry.path),
     }));
@@ -274,7 +343,7 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
       ok: true,
       value: {
         entries,
-        truncated: result.value.truncated,
+        truncated: structured.truncated,
       },
     };
   }
@@ -283,9 +352,11 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     pattern: string,
     options?: FileSearchOptions,
   ): Promise<Result<FileSearchResult, KoiError>> {
+    // Normalize basePath with leading slash to match how paths are stored in Nexus
+    const searchBase = basePath.startsWith("/") ? basePath : `/${basePath}`;
     const result = await client.rpc<FileSearchResult>("search", {
       pattern,
-      basePath,
+      basePath: searchBase,
       ...(options?.glob !== undefined ? { glob: options.glob } : {}),
       ...(options?.maxResults !== undefined ? { maxResults: options.maxResults } : {}),
       ...(options?.caseSensitive !== undefined ? { caseSensitive: options.caseSensitive } : {}),

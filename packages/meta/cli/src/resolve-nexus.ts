@@ -11,6 +11,8 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ComponentProvider, KoiMiddleware } from "@koi/core";
 import type { Indexer, Retriever } from "@koi/search-provider";
 
@@ -42,9 +44,14 @@ export interface NexusResolution {
 export function runNexusBuildIfNeeded(nexusBuild: boolean, nexusSource: string | undefined): void {
   if (!nexusBuild || nexusSource === undefined) return;
 
-  process.stderr.write(`Running uv sync in ${nexusSource}...\n`);
+  // Expand tilde — spawnSync doesn't run through a shell
+  const resolved = nexusSource.startsWith("~/")
+    ? join(homedir(), nexusSource.slice(2))
+    : nexusSource;
+
+  process.stderr.write(`Running uv sync in ${resolved}...\n`);
   const result = spawnSync("uv", ["sync"], {
-    cwd: nexusSource,
+    cwd: resolved,
     stdio: "inherit",
   });
 

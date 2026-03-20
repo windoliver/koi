@@ -22,7 +22,7 @@ import { createForgeTool } from "./shared.js";
 const VALID_ORDER_BY = new Set(["fitness", "recency", "usage"]);
 
 /** Over-fetch multiplier for retriever results to compensate for post-filtering. */
-const DEFAULT_OVER_FETCH_MULTIPLIER = 3;
+const DEFAULT_OVER_FETCH_MULTIPLIER = 2;
 
 // ---------------------------------------------------------------------------
 // Zod input schema (replaces unsafe `as ForgeQuery` cast)

@@ -27,11 +27,17 @@ function formatTimeAgo(timestamp: number): string {
 }
 
 function sessionsToOptions(sessions: readonly SessionPickerEntry[]): readonly SelectOption[] {
-  return sessions.map((s) => ({
-    name: s.agentName,
-    description: `${formatTimeAgo(s.connectedAt)} | ${String(s.messageCount)} messages`,
-    value: s.sessionId,
-  }));
+  return sessions.map((s) => {
+    const parts = [`${formatTimeAgo(s.connectedAt)} | ${String(s.messageCount)} msgs`];
+    if (s.preview !== "") {
+      parts.push(`"${s.preview}"`);
+    }
+    return {
+      name: s.agentName,
+      description: parts.join("  "),
+      value: s.sessionId,
+    };
+  });
 }
 
 /** Session picker view with selectable session entries. */

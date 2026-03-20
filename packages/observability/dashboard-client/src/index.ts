@@ -49,7 +49,13 @@ export { createDebounce } from "./debounce.js";
 export { decodePtyChunks } from "./pty-decode.js";
 
 // Session loading
-export { buildSessionPath, loadSavedSession } from "./session-loader.js";
+export {
+  buildReadableSessionPath,
+  buildRootSessionPath,
+  buildSessionPath,
+  deriveSessionSlug,
+  loadSavedSession,
+} from "./session-loader.js";
 // Types
 export type {
   ChatMessage,

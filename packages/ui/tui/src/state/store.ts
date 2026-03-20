@@ -675,6 +675,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
           ...state.nexusBrowser,
           entries: action.entries,
           path: action.path,
+          selectedIndex: 0,
           loading: false,
         },
       };

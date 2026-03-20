@@ -42,7 +42,7 @@ import { printBanner } from "./banner.js";
 import { createInteractiveConsent } from "./consent.js";
 import { buildDemoManifestOverrides, provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
 import { runDetach } from "./detach.js";
-import { mapNexusModeToProfile, startNexusStack, stopNexusStack } from "./nexus.js";
+import { mapNexusModeToProfile, startNexusStack } from "./nexus.js";
 import { runPreflight } from "./preflight.js";
 import { extractDemoPack, extractStacks, inferPresetId } from "./preset.js";
 import { activatePresetStacks } from "./stacks.js";
@@ -209,6 +209,151 @@ function createProbeCallback(
     ]);
 }
 
+/** Create the VFS backend — Nexus agent namespace when available, local fallback. */
+async function createVfsBackend(
+  workspaceRoot: string,
+  nexusBaseUrl: string | undefined,
+  agentName: string,
+): Promise<{
+  readonly fs: import("@koi/core").FileSystemBackend;
+  readonly backend: "nexus" | "local";
+}> {
+  if (nexusBaseUrl !== undefined) {
+    try {
+      const { createNexusFileSystem } = await import("@koi/filesystem-nexus");
+      const { createNexusClient } = await import("@koi/nexus-client");
+      const apiKey = process.env.NEXUS_API_KEY;
+      const client = createNexusClient({
+        baseUrl: nexusBaseUrl,
+        ...(apiKey !== undefined ? { apiKey } : {}),
+      });
+      const nexusFs = createNexusFileSystem({ client, basePath: `agents/${agentName}` });
+      // Filter out /agents subfolder from root — it contains per-session runtime
+      // instances (cli:koi-demo:{timestamp}) that are internal state, not user data.
+      const filteredFs: import("@koi/core").FileSystemBackend = {
+        ...nexusFs,
+        list: async (path, options) => {
+          const result = await nexusFs.list(path, options);
+          if (!result.ok) return result;
+          // Filter internal paths from VFS listing
+          const hidden = new Set(["/agents", "/session/records"]);
+          const filtered = result.value.entries.filter((e) => !hidden.has(e.path));
+          if (filtered.length === result.value.entries.length) return result;
+          return { ok: true, value: { ...result.value, entries: filtered } };
+        },
+      };
+      return { fs: filteredFs, backend: "nexus" };
+    } catch {
+      // Fall back to local if Nexus filesystem package is unavailable
+    }
+  }
+  return { fs: createLocalFileSystem(workspaceRoot), backend: "local" };
+}
+
+/** Persist chat to Nexus (best-effort, non-fatal). */
+async function persistChatToNexus(
+  client: {
+    readonly rpc: <_T>(m: string, p: Record<string, unknown>) => Promise<{ readonly ok: boolean }>;
+  },
+  agentName: string,
+  sessionId: string,
+  userText: string,
+  assistantText: string,
+): Promise<void> {
+  const path = `/agents/${agentName}/session/chat/${sessionId}.jsonl`;
+  // Read existing content, append new entries
+  const readResult = (await client.rpc<unknown>("read", { path })) as {
+    readonly ok: boolean;
+    readonly value?: unknown;
+  };
+  let existing = "";
+  if (readResult.ok && readResult.value !== undefined) {
+    const raw = readResult.value;
+    // Nexus returns { __type__: "bytes", data: "base64..." }
+    if (typeof raw === "string") {
+      existing = raw;
+    } else if (typeof raw === "object" && raw !== null) {
+      const obj = raw as Record<string, unknown>;
+      if (obj.__type__ === "bytes" && typeof obj.data === "string") {
+        existing = Buffer.from(obj.data, "base64").toString("utf-8");
+      }
+    }
+  }
+  const entries = [
+    JSON.stringify({ kind: "user", text: userText, timestamp: Date.now() }),
+    JSON.stringify({ kind: "assistant", text: assistantText, timestamp: Date.now() }),
+  ].join("\n");
+  const content = existing.length > 0 ? `${existing}\n${entries}\n` : `${entries}\n`;
+  await client.rpc<null>("write", { path, content });
+}
+
+/** Probe nexus.yaml for an already-running Nexus instance. Returns URL+key if healthy. */
+async function probeExistingNexus(
+  workspaceRoot: string,
+): Promise<{ readonly baseUrl: string; readonly apiKey: string } | undefined> {
+  try {
+    const { join } = await import("node:path");
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(join(workspaceRoot, "nexus.yaml"), "utf-8");
+
+    // Parse YAML manually (just need ports.http and api_key)
+    const httpPortMatch = /^\s*http:\s*(\d+)/m.exec(raw);
+    const apiKeyMatch = /^api_key:\s*(.+)/m.exec(raw);
+    if (httpPortMatch === null || apiKeyMatch === null) return undefined;
+
+    const port = httpPortMatch[1];
+    const apiKey = apiKeyMatch[1]?.trim() ?? "";
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    // Health check — timeout 2s
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const resp = await fetch(`${baseUrl}/api/v2/search/health`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (resp.ok) {
+      const body = (await resp.json()) as Record<string, unknown>;
+      if (body.status === "healthy") {
+        return { baseUrl, apiKey };
+      }
+    }
+  } catch {
+    // nexus.yaml missing, unreadable, or Nexus not responding — start fresh
+  }
+  return undefined;
+}
+
+/** Infer actual store backend from config + Nexus availability. */
+function inferBackend(
+  configured: "nexus" | "sqlite" | "memory" | undefined,
+  nexusBaseUrl: string | undefined,
+): "nexus" | "sqlite" | "memory" {
+  if (configured === "nexus" && nexusBaseUrl !== undefined) return "nexus";
+  if (configured === "nexus") return "sqlite"; // Nexus requested but unavailable → fallback
+  return configured ?? "memory";
+}
+
+/** Kill any stale process holding a port so the current `up` can bind. */
+async function freePort(port: number): Promise<void> {
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync("lsof", ["-i", `:${String(port)}`, "-t"], { encoding: "utf-8" });
+    const pids = (result.stdout ?? "").trim().split("\n").filter(Boolean);
+    for (const pid of pids) {
+      if (pid !== String(process.pid)) {
+        process.kill(Number(pid), "SIGTERM");
+      }
+    }
+    // Brief wait for port release
+    if (pids.length > 0) await new Promise((r) => setTimeout(r, 500));
+  } catch {
+    // Non-fatal — Bun.serve will fail with a clear error if port is still busy
+  }
+}
+
 export async function runUp(flags: UpFlags): Promise<void> {
   // 0. DETACH
   if (flags.detach) {
@@ -293,27 +438,37 @@ export async function runUp(flags: UpFlags): Promise<void> {
   );
 
   // 5. NEXUS + SUBSYSTEMS (before forge, so search backends are available)
-  // Nexus auto-start (embed-auth)
+  // Nexus: try reusing existing instance from nexus.yaml before starting a new one
   let nexusBaseUrl = flags.nexusUrl ?? manifest.nexus?.url ?? process.env.NEXUS_URL;
   let nexusStartedByUs = false;
   if (nexusBaseUrl === undefined && preset.nexusMode === "embed-auth") {
-    output.spinner.start("Starting Nexus...");
-    const nexusResult = await timer.time("nexus-up", () =>
-      startNexusStack(workspaceRoot, presetId, flags.verbose, {
-        build: flags.nexusBuild || undefined,
-        sourceDir: flags.nexusSource,
-        port: flags.nexusPort,
-        portStrategy: "auto",
-      }),
-    );
-    if (nexusResult !== undefined) {
-      nexusBaseUrl = nexusResult.baseUrl;
-      nexusStartedByUs = true;
-      if (nexusResult.apiKey !== undefined && process.env.NEXUS_API_KEY === undefined) {
-        process.env.NEXUS_API_KEY = nexusResult.apiKey;
+    // Probe nexus.yaml for a running instance
+    const existing = await probeExistingNexus(workspaceRoot);
+    if (existing !== undefined) {
+      nexusBaseUrl = existing.baseUrl;
+      if (process.env.NEXUS_API_KEY === undefined) {
+        process.env.NEXUS_API_KEY = existing.apiKey;
       }
+      output.info(`Nexus: reusing existing instance at ${existing.baseUrl}`);
+    } else {
+      output.spinner.start("Starting Nexus...");
+      const nexusResult = await timer.time("nexus-up", () =>
+        startNexusStack(workspaceRoot, presetId, flags.verbose, {
+          build: flags.nexusBuild || undefined,
+          sourceDir: flags.nexusSource,
+          port: flags.nexusPort,
+          portStrategy: "auto",
+        }),
+      );
+      if (nexusResult !== undefined) {
+        nexusBaseUrl = nexusResult.baseUrl;
+        nexusStartedByUs = true;
+        if (nexusResult.apiKey !== undefined && process.env.NEXUS_API_KEY === undefined) {
+          process.env.NEXUS_API_KEY = nexusResult.apiKey;
+        }
+      }
+      output.spinner.stop(undefined);
     }
-    output.spinner.stop(undefined);
   }
 
   // Temporal auto-start
@@ -363,6 +518,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
   }
   let currentSessionId = flags.resume ?? `up:${manifest.name}:${String(sessionCounter)}`;
 
+  // Track which storage backends are actually active (for banner)
+  const activeStorage = {
+    threads: "memory",
+    ace: "memory",
+    forge: "memory",
+    vfs: "local",
+  } as Record<string, string>;
+
   // Pre-create auto-harness when preset enables it and forge is enabled.
   // The same store is shared with forge bootstrap so synthesized bricks
   // land in the active forge system.
@@ -372,7 +535,23 @@ export async function runUp(flags: UpFlags): Promise<void> {
     try {
       const { createInMemoryForgeStore } = await import("@koi/forge");
       const { createAutoHarnessStack } = await import("@koi/auto-harness");
-      const preForgeStore = createInMemoryForgeStore();
+      // Use Nexus-backed forge store when available, fall back to in-memory
+      let preForgeStore: import("@koi/core").ForgeStore;
+      if (nexus.baseUrl !== undefined) {
+        try {
+          const { createNexusForgeStore } = await import("@koi/nexus-store");
+          preForgeStore = createNexusForgeStore({
+            baseUrl: nexus.baseUrl,
+            apiKey: process.env.NEXUS_API_KEY ?? "",
+            basePath: `agents/${manifest.name}/bricks`,
+          });
+          activeStorage.forge = "nexus";
+        } catch {
+          preForgeStore = createInMemoryForgeStore();
+        }
+      } else {
+        preForgeStore = createInMemoryForgeStore();
+      }
       const harnessStack = createAutoHarnessStack({
         forgeStore: preForgeStore,
         generate: async () => "",
@@ -420,7 +599,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     if (autonomous !== undefined) await autonomous.dispose();
     if (temporalAdmin !== undefined) await temporalAdmin.dispose();
     if (nexus.dispose !== undefined) await nexus.dispose();
-    if (nexusStartedByUs) await stopNexusStack(workspaceRoot, flags.verbose);
+    // Nexus containers persist — don't stop on error exit either.
     if (temporalEmbedHandle !== undefined) await temporalEmbedHandle.dispose();
     process.exit(EXIT_CONFIG);
   }
@@ -523,7 +702,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     try {
       // For nexus backend, create a dedicated thread snapshot store
       let nexusSnapshotStore: import("@koi/core").ThreadSnapshotStore | undefined;
-      if (preset.stacks.threadStoreBackend === "nexus" && nexus.baseUrl !== undefined) {
+      if (nexus.baseUrl !== undefined) {
         try {
           const { createNexusSnapshotStore } = await import("@koi/nexus-store");
           nexusSnapshotStore = createNexusSnapshotStore({
@@ -531,17 +710,17 @@ export async function runUp(flags: UpFlags): Promise<void> {
             apiKey: process.env.NEXUS_API_KEY ?? "",
             basePath: `agents/${manifest.name}/threads`,
           });
+          activeStorage.threads = "nexus";
         } catch {
-          // Fall back to SQLite if Nexus store creation fails
+          activeStorage.threads = "sqlite";
         }
       }
 
       const arenaResult = createContextArenaConfigForUp({
         summarizer: resolved.value.model,
         manifestName: manifest.name,
-        ...(preset.stacks.threadStoreBackend !== undefined
-          ? { threadStoreBackend: preset.stacks.threadStoreBackend }
-          : {}),
+        threadStoreBackend:
+          nexus.baseUrl !== undefined ? "nexus" : (preset.stacks.threadStoreBackend ?? "memory"),
         dataDir: resolve(workspaceRoot, ".koi", "data"),
         ...(nexusSnapshotStore !== undefined ? { nexusSnapshotStore } : {}),
         getMessages: () => currentUpMessages,
@@ -580,8 +759,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
   }
 
   // Activate L3 stacks based on preset flags
+  // Upgrade store backends to Nexus when Nexus is available
+  const effectiveStacks = {
+    ...preset.stacks,
+    ...(nexus.baseUrl !== undefined
+      ? { threadStoreBackend: "nexus" as const, aceStoreBackend: "nexus" as const }
+      : {}),
+  };
   const activatedStacks = await activatePresetStacks({
-    stacks: preset.stacks,
+    stacks: effectiveStacks,
     forgeBootstrap:
       forgeBootstrap !== undefined
         ? { store: forgeBootstrap.store, runtime: forgeBootstrap.runtime }
@@ -629,9 +815,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   output.spinner.stop(undefined);
   output.success("Runtime assembled");
 
-  // 8. Connect channels (parallel)
+  // 8. Prepare channels (connected after TUI decision in step 12b)
   const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
-  await Promise.all(channels.map((ch) => ch.connect()));
 
   // 8b. Gateway + Node (conditional on preset services)
   const DEFAULT_GATEWAY_PORT = 4100;
@@ -712,8 +897,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
     flags.verbose,
   );
 
-  // 9. ADMIN
+  // 9. ADMIN — kill stale processes on required ports before binding
   const DEFAULT_ADMIN_PORT = 3100;
+  await freePort(DEFAULT_ADMIN_PORT);
   let stopAdmin: (() => void) | undefined;
   let adminBridge: AdminPanelBridgeResult | undefined;
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
@@ -760,7 +946,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
       model: modelName,
       channels: channelNames,
       skills: skillNames,
-      fileSystem: createLocalFileSystem(workspaceRoot),
+      fileSystem: await (async () => {
+        const vfs = await createVfsBackend(workspaceRoot, nexus.baseUrl, manifest.name);
+        activeStorage.vfs = vfs.backend;
+        return vfs.fs;
+      })(),
       discoveredSources: discoveredSourceSummaries,
       dataSourceDescriptors: discoveredDescriptors,
       ...(dataSourceExecutorFn !== undefined ? { dataSourceExecutor: dataSourceExecutorFn } : {}),
@@ -846,6 +1036,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 10. Health server
   const DEFAULT_HEALTH_PORT = 9100;
+  await freePort(DEFAULT_HEALTH_PORT);
   let stopHealth: (() => void) | undefined;
   try {
     const { createHealthServer } = await import("@koi/deploy");
@@ -877,6 +1068,18 @@ export async function runUp(flags: UpFlags): Promise<void> {
     provisionedAgents,
     discoveredSources: discoveredSourceNames,
     prompts: seedResult.prompts,
+    storage: {
+      threads:
+        nexus.baseUrl !== undefined
+          ? "nexus"
+          : inferBackend(preset.stacks.threadStoreBackend, nexus.baseUrl),
+      ace:
+        nexus.baseUrl !== undefined
+          ? "nexus"
+          : inferBackend(preset.stacks.aceStoreBackend, nexus.baseUrl),
+      forge: activeStorage.forge as "nexus" | "memory",
+      vfs: activeStorage.vfs as "nexus" | "local",
+    },
   });
 
   if (flags.resume !== undefined) {
@@ -901,7 +1104,10 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
+  // 12b. Connect channels — skip CLI when TUI owns stdin/stdout
   if (tuiAttached) {
+    const nonCli = channels.filter((ch) => ch.name !== "cli");
+    await Promise.all(nonCli.map((ch) => ch.connect()));
     output.info("Operator console attached.\n");
   } else {
     output.info("Type a message or Ctrl+C to stop.\n");
@@ -945,14 +1151,31 @@ export async function runUp(flags: UpFlags): Promise<void> {
       const expanded = expandLabeledBlocks(msg);
       const input: EngineInput = { kind: "messages", messages: expanded };
       const deltas: string[] = [];
+      let turnCount = 0;
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);
-        if (event.kind === "done" && adminBridge !== undefined) {
-          adminBridge.updateMetrics({
-            turns: event.output.metrics.turns,
-            totalTokens: event.output.metrics.totalTokens,
-          });
+        if (event.kind === "done") {
+          if (event.output.stopReason === "error") {
+            const errMsg =
+              event.output.metadata !== undefined &&
+              typeof (event.output.metadata as Record<string, unknown>).errorMessage === "string"
+                ? ((event.output.metadata as Record<string, unknown>).errorMessage as string)
+                : "unknown error";
+            process.stderr.write(`error: model call failed: ${errMsg}\n`);
+          }
+          turnCount = event.output.metrics.turns;
+          if (adminBridge !== undefined) {
+            adminBridge.updateMetrics({
+              turns: event.output.metrics.turns,
+              totalTokens: event.output.metrics.totalTokens,
+            });
+          }
         }
+      }
+      if (turnCount === 0 && deltas.length === 0) {
+        process.stderr.write(
+          "warn: model returned empty response (0 turns, 0 tokens). Check OPENROUTER_API_KEY and model availability.\n",
+        );
       }
       await persistChatExchangeSafely(
         workspaceRoot,
@@ -961,6 +1184,22 @@ export async function runUp(flags: UpFlags): Promise<void> {
         text,
         deltas.join(""),
       );
+      if (demoNexusClient !== undefined) {
+        persistChatToNexus(
+          demoNexusClient,
+          manifest.name,
+          currentSessionId,
+          text,
+          deltas.join(""),
+        ).catch((e: unknown) => {
+          process.stderr.write(
+            `warn: Nexus chat persist failed: ${e instanceof Error ? e.message : String(e)}\n`,
+          );
+        });
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`error: chat dispatch failed: ${message}\n`);
     } finally {
       tuiProcessing = false;
     }
@@ -1019,6 +1258,19 @@ export async function runUp(flags: UpFlags): Promise<void> {
           text,
           deltas.join(""),
         );
+        if (demoNexusClient !== undefined) {
+          persistChatToNexus(
+            demoNexusClient,
+            manifest.name,
+            currentSessionId,
+            text,
+            deltas.join(""),
+          ).catch((e: unknown) => {
+            process.stderr.write(
+              `warn: Nexus chat persist failed: ${e instanceof Error ? e.message : String(e)}\n`,
+            );
+          });
+        }
       } catch (error: unknown) {
         if (!controller.signal.aborted) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1054,7 +1306,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   forgeBootstrap?.dispose();
   if (sandboxBridge !== undefined) await sandboxBridge.dispose();
   if (nexus.dispose !== undefined) await nexus.dispose();
-  if (nexusStartedByUs) await stopNexusStack(workspaceRoot, flags.verbose);
+  // Nexus containers are NOT stopped on quit — they persist data across sessions.
+  // Use `nexus down` or `docker compose down` to explicitly stop them.
 
   output.info("Goodbye.");
 }

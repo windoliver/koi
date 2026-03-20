@@ -86,7 +86,10 @@ export interface SessionInfo {
   readonly sessionId: string;
   readonly connectedAt: number;
   readonly agentName: string;
+  readonly agentId?: string | undefined;
   readonly path: string;
+  /** Path to the session chat log file (human-readable name). */
+  readonly logPath?: string | undefined;
 }
 
 /** Parse a SessionRecord JSON file to extract session metadata. */
@@ -103,16 +106,24 @@ export function parseSessionRecord(content: string): Omit<SessionInfo, "path"> |
 
     const connectedAt = typeof record.connectedAt === "number" ? record.connectedAt : Date.now();
 
+    // Try direct agentName first (TUI-written records), then manifestSnapshot (engine records)
     let agentName = "unknown";
-    const manifest = record.manifestSnapshot;
-    if (typeof manifest === "object" && manifest !== null) {
-      const name = (manifest as Record<string, unknown>).name;
-      if (typeof name === "string") {
-        agentName = name;
+    if (typeof record.agentName === "string") {
+      agentName = record.agentName;
+    } else {
+      const manifest = record.manifestSnapshot;
+      if (typeof manifest === "object" && manifest !== null) {
+        const name = (manifest as Record<string, unknown>).name;
+        if (typeof name === "string") {
+          agentName = name;
+        }
       }
     }
 
-    return { sessionId, connectedAt, agentName };
+    const agentId = typeof record.agentId === "string" ? record.agentId : undefined;
+    const logPath = typeof record.logPath === "string" ? record.logPath : undefined;
+
+    return { sessionId, connectedAt, agentName, agentId, logPath };
   } catch {
     return null;
   }

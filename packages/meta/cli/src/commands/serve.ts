@@ -379,9 +379,22 @@ export async function runServe(flags: ServeFlags): Promise<void> {
               const deltas: string[] = [];
               for await (const event of runtime.run(input)) {
                 if (event.kind === "text_delta") deltas.push(event.delta);
-                if (event.kind === "done" && adminBridge !== undefined) {
-                  const m = event.output.metrics;
-                  adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+                if (event.kind === "done") {
+                  if (adminBridge !== undefined) {
+                    const m = event.output.metrics;
+                    adminBridge.updateMetrics({ turns: m.turns, totalTokens: m.totalTokens });
+                  }
+                  // Surface engine errors so the AG-UI stream gets RUN_ERROR, not silent RUN_FINISHED
+                  if (event.output.stopReason === "error") {
+                    const errMsg =
+                      event.output.metadata !== undefined &&
+                      typeof (event.output.metadata as Record<string, unknown>).errorMessage ===
+                        "string"
+                        ? ((event.output.metadata as Record<string, unknown>)
+                            .errorMessage as string)
+                        : "Engine error (no details)";
+                    throw new Error(errMsg);
+                  }
                 }
               }
               // Persist to shared chat log (best-effort, warns on failure)

@@ -155,6 +155,10 @@ export interface SessionPickerEntry {
   readonly agentName: string;
   readonly connectedAt: number;
   readonly messageCount: number;
+  /** First user message snippet for distinguishing sessions. */
+  readonly preview: string;
+  /** Path to the session log file (for restore). */
+  readonly logPath?: string | undefined;
 }
 
 /** Forge brick summary for TUI display. */

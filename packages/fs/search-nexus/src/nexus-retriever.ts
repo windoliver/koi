@@ -64,14 +64,15 @@ export function createNexusRetriever(
       }
 
       const data = parsed.value;
-      const results = data.hits.map(mapNexusResult);
+      const results = data.results.map(mapNexusResult);
+      const hasMore = data.has_more ?? data.results.length < data.total;
 
       return {
         ok: true,
         value: {
           results,
           total: data.total,
-          hasMore: data.has_more,
+          hasMore,
           ...(data.cursor !== undefined ? { cursor: data.cursor } : {}),
         },
       };

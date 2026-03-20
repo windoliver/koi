@@ -324,9 +324,9 @@ describe("search_forge — retriever path", () => {
     if (result.ok) {
       expect(result.value.length).toBe(2);
     }
-    // Retriever should have been called with limit * 3 = 6
+    // Retriever should have been called with limit * DEFAULT_OVER_FETCH_MULTIPLIER (2) = 4
     const retrieveCall = (retriever.retrieve as ReturnType<typeof mock>).mock.calls[0];
-    expect(retrieveCall?.[0]?.limit).toBe(6);
+    expect(retrieveCall?.[0]?.limit).toBe(4);
   });
 
   test("falls back to store on retriever error", async () => {

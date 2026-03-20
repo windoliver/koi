@@ -45,6 +45,14 @@ export function printBanner(info: BannerInfo): void {
     err.write(`  ${green("\u2713")} Browser admin at ${cyan("http://localhost:3100/admin")}\n`);
   }
 
+  if (info.storage !== undefined) {
+    const s = info.storage;
+    const tag = (v: string): string => (v === "nexus" ? cyan(v) : v);
+    err.write(
+      `  ${green("\u2713")} Storage: threads=${tag(s.threads)} ace=${tag(s.ace)} forge=${tag(s.forge)} vfs=${tag(s.vfs)}\n`,
+    );
+  }
+
   if (info.prompts.length > 0) {
     err.write("\n");
     err.write("Try:\n");

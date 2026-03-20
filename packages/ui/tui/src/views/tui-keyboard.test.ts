@@ -218,6 +218,12 @@ function makeCallbacks(): KeyboardCallbacks & {
     logsBack: () => {
       mutableCalls.push("logsBack");
     },
+    openSessionPicker: () => {
+      mutableCalls.push("openSessionPicker");
+    },
+    newSession: () => {
+      mutableCalls.push("newSession");
+    },
   };
 }
 

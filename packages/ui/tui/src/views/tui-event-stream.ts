@@ -484,7 +484,16 @@ export function nexusBrowserNavigate(
     deps.client
       .fsRead(path)
       .then((r) => {
-        if (r.ok) deps.store.dispatch({ kind: "set_nexus_browser_content", content: r.value });
+        if (!r.ok) return;
+        // fsRead returns { content, editable } but client types it as string
+        const raw = r.value as unknown;
+        const text =
+          typeof raw === "string"
+            ? raw
+            : typeof raw === "object" && raw !== null && "content" in raw
+              ? String((raw as Record<string, unknown>).content)
+              : String(raw);
+        deps.store.dispatch({ kind: "set_nexus_browser_content", content: text });
       })
       .catch(() => {});
   }
