@@ -51,8 +51,8 @@ describe("deepMerge", () => {
   });
 
   test("adds override keys absent from base", () => {
-    const base = { a: 1 };
-    const result = deepMerge(base, { b: 2 } as Partial<typeof base>);
+    const base: Record<string, number> = { a: 1 };
+    const result = deepMerge(base, { b: 2 });
     expect(result).toEqual({ a: 1, b: 2 });
   });
 
