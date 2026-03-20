@@ -82,6 +82,18 @@ export interface DataSourceManifestEntry {
   readonly allowedHosts?: readonly string[] | undefined;
 }
 
+/**
+ * Sandbox execution environment config in the manifest.
+ *
+ * The `provider` field selects the sandbox backend (e.g. "docker", "e2b",
+ * "daytona"). Remaining fields are provider-specific and validated at
+ * runtime by `createCloudSandbox()`.
+ */
+export interface SandboxManifestConfig {
+  readonly provider: string;
+  readonly [key: string]: unknown;
+}
+
 export interface ManifestExtensions {
   readonly engine?: unknown;
   readonly schedule?: unknown;
@@ -93,6 +105,7 @@ export interface ManifestExtensions {
   readonly deploy?: DeployConfig | undefined;
   readonly scope?: ManifestScopeConfig | undefined;
   readonly nexus?: NexusManifestConfig | undefined;
+  readonly sandbox?: SandboxManifestConfig | undefined;
   readonly dataSources?: readonly DataSourceManifestEntry[] | undefined;
 }
 

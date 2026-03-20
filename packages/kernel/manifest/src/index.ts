@@ -23,5 +23,6 @@ export type {
   ManifestMemoryScope,
   ManifestScopeConfig,
   ManifestWarning,
+  SandboxManifestConfig,
   SoulUserConfig,
 } from "./types.js";

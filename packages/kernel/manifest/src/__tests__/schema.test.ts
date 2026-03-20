@@ -724,6 +724,62 @@ describe("rawManifestSchema — template expression rejection", () => {
 });
 
 // ---------------------------------------------------------------------------
+// sandbox field
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — sandbox", () => {
+  test("accepts sandbox with provider only", () => {
+    const result = parse({ sandbox: { provider: "docker" } });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const data = result.data as Record<string, unknown>;
+      const sandbox = data.sandbox as Record<string, unknown>;
+      expect(sandbox.provider).toBe("docker");
+    }
+  });
+
+  test("accepts sandbox with provider-specific fields (passthrough)", () => {
+    const result = parse({
+      sandbox: {
+        provider: "docker",
+        image: "python:3.12-slim",
+        socketPath: "/var/run/docker.sock",
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const data = result.data as Record<string, unknown>;
+      const sandbox = data.sandbox as Record<string, unknown>;
+      expect(sandbox.provider).toBe("docker");
+      expect(sandbox.image).toBe("python:3.12-slim");
+      expect(sandbox.socketPath).toBe("/var/run/docker.sock");
+    }
+  });
+
+  test("accepts sandbox with e2b provider and apiKey", () => {
+    expect(
+      parse({ sandbox: { provider: "e2b", apiKey: "sk-e2b-test", template: "base" } }).success,
+    ).toBe(true);
+  });
+
+  test("rejects sandbox without provider field", () => {
+    expect(parse({ sandbox: { image: "python:3.12-slim" } }).success).toBe(false);
+  });
+
+  test("rejects sandbox with empty provider string", () => {
+    expect(parse({ sandbox: { provider: "" } }).success).toBe(false);
+  });
+
+  test("rejects sandbox as string", () => {
+    expect(parse({ sandbox: "docker" }).success).toBe(false);
+  });
+
+  test("optional — missing sandbox is fine", () => {
+    expect(parse({}).success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // zodToKoiError
 // ---------------------------------------------------------------------------
 

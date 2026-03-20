@@ -348,8 +348,12 @@ export function generateDemoManifestYaml(state: WizardState): string {
   additional.push('    - name: "@koi/tools-context-hub"');
   additional.push("");
 
-  additional.push("forge:");
-  additional.push("  enabled: true");
+  additional.push("# Sandbox execution environment for execute_code tool.");
+  additional.push("# Uncomment and configure a provider to enable multi-language code execution.");
+  additional.push("# sandbox:");
+  additional.push("#   provider: docker          # docker | e2b | daytona | cloudflare | vercel");
+  additional.push('#   image: "python:3.12-slim" # Docker image (docker provider only)');
+  additional.push("# See @koi/sandbox-stack docs for provider-specific config.");
   additional.push("");
 
   if (state.demoPack !== undefined) {

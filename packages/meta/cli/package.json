@@ -88,6 +88,7 @@
     "@koi/quality-gate": "workspace:*",
     "@koi/retry-stack": "workspace:*",
     "@koi/runtime-presets": "workspace:*",
+    "@koi/sandbox-stack": "workspace:*",
     "@koi/tool-stack": "workspace:*",
     "@koi/tools-context-hub": "workspace:*",
     "@koi/demo-packs": "workspace:*",

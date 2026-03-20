@@ -112,6 +112,12 @@ interface RawDelegation {
   readonly namespaceMode?: "copy" | "clean" | "shared" | undefined;
 }
 
+/** Sandbox execution environment config in the manifest. */
+interface RawSandbox {
+  readonly provider: string;
+  readonly [key: string]: unknown;
+}
+
 /** The raw parsed YAML structure before transformation. */
 export interface RawManifest {
   readonly name: string;
@@ -148,6 +154,7 @@ export interface RawManifest {
     | { readonly kind: "on_demand" }
     | undefined;
   readonly nexus?: { readonly url?: string | undefined } | undefined;
+  readonly sandbox?: RawSandbox | undefined;
   readonly dataSources?:
     | readonly {
         readonly name: string;
@@ -494,6 +501,21 @@ const dataSourceEntrySchema = z.object({
 /** Optional array of data source entries. */
 const dataSourcesSchema = z.array(dataSourceEntrySchema).optional();
 
+// ── Sandbox schema ──
+
+/**
+ * Sandbox execution environment config.
+ *
+ * Shape-only validation: requires `provider` string, passes through
+ * provider-specific fields. Full provider validation happens at runtime
+ * in `createCloudSandbox()` (L3).
+ */
+const sandboxSchema = z
+  .object({
+    provider: z.string().min(1),
+  })
+  .passthrough();
+
 // ── Raw manifest schema ──
 
 /**
@@ -527,6 +549,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     degeneracy: degeneracySchema.optional(),
     delivery: deliveryPolicySchema.optional(),
     nexus: nexusSchema.optional(),
+    sandbox: sandboxSchema.optional(),
     dataSources: dataSourcesSchema,
   })
   .passthrough();

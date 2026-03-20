@@ -21,6 +21,7 @@ export default defineConfig({
     "@koi/context-arena",
     "@koi/goal-stack",
     "@koi/quality-gate",
+    "@koi/sandbox-stack",
     "@koi/gateway-stack",
     "@koi/gateway",
     "@koi/node-stack",

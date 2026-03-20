@@ -781,6 +781,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     ...(nexusBaseUrl !== undefined ? { nexusBaseUrl } : {}),
     ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
     agentName: manifest.name,
+    ...(manifest.sandbox !== undefined ? { sandboxConfig: manifest.sandbox } : {}),
   });
 
   const composed = composeRuntimeMiddleware({

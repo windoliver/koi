@@ -32,6 +32,7 @@ export const DEMO_PRESET: RuntimePreset = {
     threadStoreBackend: "nexus",
     ace: true,
     aceStoreBackend: "nexus",
+    codeExecutor: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },

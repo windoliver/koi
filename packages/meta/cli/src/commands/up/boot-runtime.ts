@@ -199,6 +199,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
         ? { store: forgeBootstrap.store, runtime: forgeBootstrap.runtime }
         : undefined,
     verbose,
+    ...(manifest.sandbox !== undefined ? { sandboxConfig: manifest.sandbox } : {}),
   });
 
   const composed = composeRuntimeMiddleware({

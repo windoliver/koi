@@ -73,6 +73,10 @@ export interface PresetStacks {
   readonly ace?: boolean;
   /** Backend for ACE trajectory/playbook stores. Default: "memory". */
   readonly aceStoreBackend?: AceStoreBackend;
+  /** Enable WASM code executor (execute_script tool). Zero infrastructure required. */
+  readonly codeExecutor?: boolean;
+  /** Enable sandbox stack (execute_code tool). Requires manifest `sandbox` config. */
+  readonly sandboxStack?: boolean;
 }
 
 /** A complete runtime preset definition. */
