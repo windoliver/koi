@@ -50,10 +50,10 @@ describe("deepMerge", () => {
     expect(result).toEqual({ nested: null });
   });
 
-  test("does not add keys absent from base", () => {
+  test("adds override keys absent from base", () => {
     const base = { a: 1 };
     const result = deepMerge(base, { b: 2 } as Partial<typeof base>);
-    expect(result).toEqual({ a: 1 });
+    expect(result).toEqual({ a: 1, b: 2 });
   });
 
   test("returns a new reference even with no overrides", () => {
