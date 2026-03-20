@@ -138,13 +138,15 @@ function mapNotFoundError<T>(result: {
 
 /** Strip basePath prefix from a full path, returning the user-relative path. */
 function stripBasePath(base: string, fullPath: string): string {
+  // Normalize: basePath may lack leading slash but Nexus paths always have one
+  const normalizedBase = base.startsWith("/") ? base : `/${base}`;
   // Exact match: path IS the base directory
-  if (fullPath === base) {
+  if (fullPath === normalizedBase) {
     return "/";
   }
   // Path-boundary check: ensure base is followed by "/" to prevent
   // sibling-prefix collisions (e.g. base="/fs" must not match "/fspath/a.txt")
-  const baseWithSlash = base.endsWith("/") ? base : `${base}/`;
+  const baseWithSlash = normalizedBase.endsWith("/") ? normalizedBase : `${normalizedBase}/`;
   if (fullPath.startsWith(baseWithSlash)) {
     return `/${fullPath.slice(baseWithSlash.length)}`;
   }
@@ -350,9 +352,11 @@ export function createNexusFileSystem(config: NexusFileSystemConfig): FileSystem
     pattern: string,
     options?: FileSearchOptions,
   ): Promise<Result<FileSearchResult, KoiError>> {
+    // Normalize basePath with leading slash to match how paths are stored in Nexus
+    const searchBase = basePath.startsWith("/") ? basePath : `/${basePath}`;
     const result = await client.rpc<FileSearchResult>("search", {
       pattern,
-      basePath,
+      basePath: searchBase,
       ...(options?.glob !== undefined ? { glob: options.glob } : {}),
       ...(options?.maxResults !== undefined ? { maxResults: options.maxResults } : {}),
       ...(options?.caseSensitive !== undefined ? { caseSensitive: options.caseSensitive } : {}),

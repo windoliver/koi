@@ -22,7 +22,18 @@ export function validateNexusFileSystemConfig(
     };
   }
 
-  if (config.basePath !== undefined && config.basePath !== "") {
+  if (config.basePath !== undefined) {
+    // Empty basePath is invalid — would expose entire Nexus namespace
+    if (config.basePath === "") {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "NexusFileSystemConfig.basePath must not be empty (omit for default)",
+          retryable: RETRYABLE_DEFAULTS.VALIDATION,
+        },
+      };
+    }
     // NexusPath convention: no leading slash, no ".." (#922)
     if (config.basePath.includes("..")) {
       return {
