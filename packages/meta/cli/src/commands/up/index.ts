@@ -1150,10 +1150,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
       let turnCount = 0;
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);
-        if (event.kind === "error") {
-          process.stderr.write(`error: model call failed: ${event.message}\n`);
-        }
         if (event.kind === "done") {
+          if (event.output.stopReason === "error") {
+            const errMsg =
+              event.output.metadata !== undefined &&
+              typeof (event.output.metadata as Record<string, unknown>).errorMessage === "string"
+                ? ((event.output.metadata as Record<string, unknown>).errorMessage as string)
+                : "unknown error";
+            process.stderr.write(`error: model call failed: ${errMsg}\n`);
+          }
           turnCount = event.output.metrics.turns;
           if (adminBridge !== undefined) {
             adminBridge.updateMetrics({
