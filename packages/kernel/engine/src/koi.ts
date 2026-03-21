@@ -114,10 +114,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   agent.setTransitionValidator(composed.validateTransition);
 
   // --- 3. Compose middleware chain: guard middleware + user middleware, phase-sorted ---
-  const allMiddleware: readonly KoiMiddleware[] = resolveActiveMiddleware([
-    ...composed.guardMiddleware,
-    ...middleware,
-  ]);
+  const { sorted: allMiddleware, provenanceHints: staticProvenanceHints } = resolveActiveMiddleware(
+    [...composed.guardMiddleware, ...middleware],
+  );
 
   // --- 3b. Create debug instrumentation if enabled ---
   const debugInstrumentation: DebugInstrumentation | undefined =
@@ -252,12 +251,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       dynamicMw: readonly KoiMiddleware[] | undefined,
       terminals: TerminalHandlers,
     ): void {
-      const sorted = resolveActiveMiddleware(
+      const { sorted, provenanceHints } = resolveActiveMiddleware(
         allMiddleware,
         forgedMw ?? undefined,
         dynamicMw ?? undefined,
       );
-      const chains = recomposeChains(sorted, terminals, debugInstrumentation);
+      const chains = recomposeChains(sorted, terminals, debugInstrumentation, provenanceHints);
       activeToolChain = chains.toolChain;
       activeModelChain = chains.modelChain;
       activeStreamChain = chains.streamChain;
@@ -411,7 +410,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         );
 
         // Initial chain composition (allMiddleware is already phase-sorted)
-        const initialChains = recomposeChains(allMiddleware, cachedTerminals, debugInstrumentation);
+        const initialChains = recomposeChains(
+          allMiddleware,
+          cachedTerminals,
+          debugInstrumentation,
+          staticProvenanceHints,
+        );
         activeToolChain = initialChains.toolChain;
         activeModelChain = initialChains.modelChain;
         activeStreamChain = initialChains.streamChain;

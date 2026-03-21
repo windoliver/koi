@@ -6,7 +6,12 @@
  */
 
 // composition
-export type { CapabilityInjectionConfig, RecomposedChains, TerminalHandlers } from "./compose.js";
+export type {
+  CapabilityInjectionConfig,
+  RecomposedChains,
+  ResolvedMiddleware,
+  TerminalHandlers,
+} from "./compose.js";
 export {
   collectCapabilities,
   composeModelChain,

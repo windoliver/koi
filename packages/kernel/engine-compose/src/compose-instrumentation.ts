@@ -227,6 +227,12 @@ export function createDebugInstrumentation(
   const lastUsedTurnMap = new Map<string, number>();
   /** Tracks which middleware names belong to concurrent observe phase. */
   const concurrentSet = new Set<string>();
+  /** Tracks phase per middleware name (for inventory). */
+  const phaseTracker = new Map<string, string>();
+  /** Tracks priority per middleware name (for inventory). */
+  const priorityTracker = new Map<string, number>();
+  /** Tracks which hooks each middleware implements (for inventory). */
+  const hooksTracker = new Map<string, Set<string>>();
 
   function wrapEntries<Req, Res>(
     entries: readonly InstrumentableEntry<Req, Res>[],
@@ -235,15 +241,25 @@ export function createDebugInstrumentation(
     phaseMap: ReadonlyMap<string, string>,
     priorityMap: ReadonlyMap<string, number>,
   ): readonly InstrumentableEntry<Req, Res>[] {
-    // Populate the shared provenance map
+    // Populate the shared tracking maps
     for (const [name, source] of provMap) {
       provenanceMap.set(name, source);
+    }
+    for (const [name, phase] of phaseMap) {
+      phaseTracker.set(name, phase);
+    }
+    for (const [name, prio] of priorityMap) {
+      priorityTracker.set(name, prio);
     }
 
     return entries.map((entry) => {
       const source = provMap.get(entry.name) ?? "static";
       const phase = phaseMap.get(entry.name) ?? "resolve";
       const priority = priorityMap.get(entry.name) ?? 500;
+      // Track hooks per middleware
+      const hookSet = hooksTracker.get(entry.name) ?? new Set<string>();
+      hookSet.add(hookLabel);
+      hooksTracker.set(entry.name, hookSet);
       // Concurrent observers get "secondary" tier, everything else is "critical"
       const isConcurrent = phase === "observe" && priority >= 900;
       if (isConcurrent) concurrentSet.add(entry.name);
@@ -407,6 +423,9 @@ export function createDebugInstrumentation(
       category: "middleware" as const,
       enabled: true,
       source,
+      ...(phaseTracker.has(name) ? { phase: phaseTracker.get(name) } : {}),
+      ...(priorityTracker.has(name) ? { priority: priorityTracker.get(name) } : {}),
+      ...(hooksTracker.has(name) ? { hooks: [...(hooksTracker.get(name) ?? [])] } : {}),
       ...(lastUsedTurnMap.has(name) ? { lastUsedTurn: lastUsedTurnMap.get(name) } : {}),
       ...(concurrentSet.has(name) ? { concurrent: true } : {}),
     }));

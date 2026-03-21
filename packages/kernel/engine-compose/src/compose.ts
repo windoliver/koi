@@ -56,23 +56,36 @@ export function sortMiddlewareByPhase(
 // Middleware merging + chain recomposition
 // ---------------------------------------------------------------------------
 
+/** Result of resolveActiveMiddleware — sorted middleware + provenance hints. */
+export interface ResolvedMiddleware {
+  readonly sorted: readonly KoiMiddleware[];
+  readonly provenanceHints: ReadonlyMap<string, MiddlewareSource>;
+}
+
 /**
  * Merge static, forged, and dynamic middleware into a single phase-sorted array.
+ * Returns provenance hints mapping each middleware name to its source.
  * Callers are responsible for identity-check gating (only call when sources change).
  */
 export function resolveActiveMiddleware(
   staticMiddleware: readonly KoiMiddleware[],
   forgedMiddleware?: readonly KoiMiddleware[],
   dynamicMiddleware?: readonly KoiMiddleware[],
-): readonly KoiMiddleware[] {
-  if (forgedMiddleware === undefined && dynamicMiddleware === undefined) {
-    return sortMiddlewareByPhase(staticMiddleware);
-  }
-  return sortMiddlewareByPhase([
-    ...staticMiddleware,
-    ...(forgedMiddleware ?? []),
-    ...(dynamicMiddleware ?? []),
-  ]);
+): ResolvedMiddleware {
+  const hints = new Map<string, MiddlewareSource>();
+  for (const mw of staticMiddleware) hints.set(mw.name, "static");
+  for (const mw of forgedMiddleware ?? []) hints.set(mw.name, "forged");
+  for (const mw of dynamicMiddleware ?? []) hints.set(mw.name, "dynamic");
+
+  const sorted =
+    forgedMiddleware === undefined && dynamicMiddleware === undefined
+      ? sortMiddlewareByPhase(staticMiddleware)
+      : sortMiddlewareByPhase([
+          ...staticMiddleware,
+          ...(forgedMiddleware ?? []),
+          ...(dynamicMiddleware ?? []),
+        ]);
+  return { sorted, provenanceHints: hints };
 }
 
 /** Terminal handler references returned by recomposeChains. */
@@ -98,12 +111,28 @@ export function recomposeChains(
   sortedMiddleware: readonly KoiMiddleware[],
   terminals: TerminalHandlers,
   instrumentation?: DebugInstrumentation,
+  provenanceHints?: ReadonlyMap<string, MiddlewareSource>,
 ): RecomposedChains {
-  const toolChain = composeToolChain(sortedMiddleware, terminals.toolHandler, instrumentation);
-  const modelChain = composeModelChain(sortedMiddleware, terminals.modelHandler, instrumentation);
+  const toolChain = composeToolChain(
+    sortedMiddleware,
+    terminals.toolHandler,
+    instrumentation,
+    provenanceHints,
+  );
+  const modelChain = composeModelChain(
+    sortedMiddleware,
+    terminals.modelHandler,
+    instrumentation,
+    provenanceHints,
+  );
   const streamChain =
     terminals.modelStreamHandler !== undefined
-      ? composeModelStreamChain(sortedMiddleware, terminals.modelStreamHandler, instrumentation)
+      ? composeModelStreamChain(
+          sortedMiddleware,
+          terminals.modelStreamHandler,
+          instrumentation,
+          provenanceHints,
+        )
       : undefined;
   return { toolChain, modelChain, streamChain };
 }
@@ -114,9 +143,13 @@ export function recomposeChains(
 
 /**
  * Build provenance, phase, and priority maps from middleware array.
- * Used by compose functions to pass metadata to instrumentation wrappers.
+ * Uses the provenanceHints map (populated by resolveActiveMiddleware) to
+ * correctly label each middleware as static/forged/dynamic.
  */
-function buildInstrumentationMaps(middleware: readonly KoiMiddleware[]): {
+function buildInstrumentationMaps(
+  middleware: readonly KoiMiddleware[],
+  provenanceHints: ReadonlyMap<string, MiddlewareSource>,
+): {
   readonly provenanceMap: ReadonlyMap<string, MiddlewareSource>;
   readonly phaseMap: ReadonlyMap<string, string>;
   readonly priorityMap: ReadonlyMap<string, number>;
@@ -125,7 +158,7 @@ function buildInstrumentationMaps(middleware: readonly KoiMiddleware[]): {
   const phaseMap = new Map<string, string>();
   const priorityMap = new Map<string, number>();
   for (const mw of middleware) {
-    provenanceMap.set(mw.name, "static");
+    provenanceMap.set(mw.name, provenanceHints.get(mw.name) ?? "static");
     phaseMap.set(mw.name, mw.phase ?? "resolve");
     priorityMap.set(mw.name, mw.priority ?? 500);
   }
@@ -138,8 +171,12 @@ function applyInstrumentationToEntries<Req, Res>(
   hookLabel: string,
   middleware: readonly KoiMiddleware[],
   instrumentation: DebugInstrumentation,
+  provenanceHints: ReadonlyMap<string, MiddlewareSource>,
 ): readonly OnionEntry<Req, Res>[] {
-  const { provenanceMap, phaseMap, priorityMap } = buildInstrumentationMaps(middleware);
+  const { provenanceMap, phaseMap, priorityMap } = buildInstrumentationMaps(
+    middleware,
+    provenanceHints,
+  );
   return instrumentation.wrapEntries(entries, hookLabel, provenanceMap, phaseMap, priorityMap);
 }
 
@@ -242,6 +279,7 @@ export function composeModelChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelHandler,
   instrumentation?: DebugInstrumentation,
+  provenanceHints?: ReadonlyMap<string, MiddlewareSource>,
 ): (ctx: TurnContext, request: ModelRequest) => Promise<ModelResponse> {
   const regularEntries: OnionEntry<ModelRequest, Promise<ModelResponse>>[] = [];
   const concurrentObservers: KoiMiddleware[] = [];
@@ -258,7 +296,13 @@ export function composeModelChain(
   // Apply instrumentation wrappers when enabled
   const entries =
     instrumentation !== undefined
-      ? applyInstrumentationToEntries(regularEntries, "wrapModelCall", middleware, instrumentation)
+      ? applyInstrumentationToEntries(
+          regularEntries,
+          "wrapModelCall",
+          middleware,
+          instrumentation,
+          provenanceHints ?? new Map(),
+        )
       : regularEntries;
 
   // Wrap external terminal to match (req, ctx) signature
@@ -294,6 +338,7 @@ export function composeModelStreamChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelStreamHandler,
   instrumentation?: DebugInstrumentation,
+  provenanceHints?: ReadonlyMap<string, MiddlewareSource>,
 ): (ctx: TurnContext, request: ModelRequest) => AsyncIterable<ModelChunk> {
   // Streams: all middleware runs sequentially (including concurrent observers).
   // Concurrent observe is only meaningful for request/response (model call, tool call),
@@ -307,7 +352,13 @@ export function composeModelStreamChain(
 
   const entries =
     instrumentation !== undefined
-      ? applyInstrumentationToEntries(rawEntries, "wrapModelStream", middleware, instrumentation)
+      ? applyInstrumentationToEntries(
+          rawEntries,
+          "wrapModelStream",
+          middleware,
+          instrumentation,
+          provenanceHints ?? new Map(),
+        )
       : rawEntries;
 
   const wrappedTerminal = (req: ModelRequest, _ctx: TurnContext): AsyncIterable<ModelChunk> =>
@@ -321,6 +372,7 @@ export function composeToolChain(
   middleware: readonly KoiMiddleware[],
   terminal: ToolHandler,
   instrumentation?: DebugInstrumentation,
+  provenanceHints?: ReadonlyMap<string, MiddlewareSource>,
 ): (ctx: TurnContext, request: ToolRequest) => Promise<ToolResponse> {
   const regularEntries: OnionEntry<ToolRequest, Promise<ToolResponse>>[] = [];
   const concurrentObservers: KoiMiddleware[] = [];
@@ -337,7 +389,13 @@ export function composeToolChain(
   // Apply instrumentation wrappers when enabled
   const entries =
     instrumentation !== undefined
-      ? applyInstrumentationToEntries(regularEntries, "wrapToolCall", middleware, instrumentation)
+      ? applyInstrumentationToEntries(
+          regularEntries,
+          "wrapToolCall",
+          middleware,
+          instrumentation,
+          provenanceHints ?? new Map(),
+        )
       : regularEntries;
 
   const wrappedTerminal = (req: ToolRequest, _ctx: TurnContext): Promise<ToolResponse> =>

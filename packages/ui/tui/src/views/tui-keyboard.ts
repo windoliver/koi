@@ -81,6 +81,7 @@ export interface KeyboardCallbacks {
   readonly logsBack: () => void;
   readonly openSessionPicker: () => void;
   readonly newSession: () => void;
+  readonly refetchDebugTrace: () => void;
 }
 
 /**
@@ -160,6 +161,7 @@ export function createKeyboardHandler(
           kind: "select_debug_turn",
           turnIndex: store.getState().debugView.selectedTurnIndex + 1,
         });
+        callbacks.refetchDebugTrace();
         return true;
       }
       if (sequence === "p") {
@@ -167,6 +169,7 @@ export function createKeyboardHandler(
           kind: "select_debug_turn",
           turnIndex: Math.max(0, store.getState().debugView.selectedTurnIndex - 1),
         });
+        callbacks.refetchDebugTrace();
         return true;
       }
       if (sequence === "\t") {
