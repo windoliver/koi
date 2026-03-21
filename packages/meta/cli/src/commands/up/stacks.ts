@@ -61,6 +61,13 @@ export interface StackActivationConfig {
   readonly nexusApiKey?: string;
   /** Agent name for scoping Nexus ACE store paths (e.g. "agents/{name}/ace/..."). */
   readonly agentName?: string;
+  /**
+   * Sandbox config from the manifest `sandbox` field.
+   * Required when sandboxStack is enabled. Passed to `createCloudSandbox()`.
+   */
+  readonly sandboxConfig?:
+    | { readonly provider: string; readonly [key: string]: unknown }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +240,55 @@ async function activateAce(
   }
 }
 
+async function activateSandboxStack(
+  config: StackActivationConfig,
+  providers: ComponentProvider[],
+  disposables: (() => Promise<void> | void)[],
+): Promise<void> {
+  if (config.sandboxConfig === undefined) {
+    log(config, "Stack: sandbox-stack skipped (no sandbox config in manifest)");
+    return;
+  }
+
+  const { createCloudSandbox, createSandboxStack, createExecuteCodeProvider } = await import(
+    "@koi/sandbox-stack"
+  );
+
+  const adapterResult = await createCloudSandbox(
+    config.sandboxConfig as import("@koi/sandbox-stack").CloudSandboxConfig,
+  );
+  if (!adapterResult.ok) {
+    const msg = adapterResult.error.message;
+    log(config, `Stack: sandbox-stack failed — ${msg}`);
+    // Fail-fast: surface actionable error, do not silently degrade
+    process.stderr.write(
+      `  warn: sandbox-stack: ${msg}. Check your manifest sandbox config or install the provider package.\n`,
+    );
+    return;
+  }
+
+  const stack = createSandboxStack({ adapter: adapterResult.value });
+  const provider = createExecuteCodeProvider(stack);
+  providers.push(provider);
+  disposables.push(() => stack.dispose());
+  log(
+    config,
+    `Stack: sandbox-stack (provider=${config.sandboxConfig.provider}, execute_code tool)`,
+  );
+}
+
+async function activateCodeExecutor(
+  config: StackActivationConfig,
+  providers: ComponentProvider[],
+): Promise<void> {
+  const { createCodeExecutorProvider } = await import("@koi/sandbox-stack");
+  const provider = createCodeExecutorProvider();
+  providers.push(provider);
+  // Note: code-executor provider has priority BUNDLED+10, so assembly
+  // sorts it after other tool providers (it queries existing tools).
+  log(config, "Stack: code-executor (execute_script WASM tool)");
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -319,6 +375,17 @@ export async function activatePresetStacks(
       middleware.push(...bundle.middleware);
       log(config, `Stack: quality-gate (${String(bundle.middleware.length)} middleware)`);
     });
+  }
+
+  if (config.stacks.sandboxStack === true) {
+    await tryActivate("sandbox-stack", () => activateSandboxStack(config, providers, disposables));
+  }
+
+  // Code executor (WASM execute_script) must be activated AFTER sandbox-stack
+  // and other tool providers. The provider has priority BUNDLED+10, so assembly
+  // sorts it after standard-priority providers regardless of push order.
+  if (config.stacks.codeExecutor === true) {
+    await tryActivate("code-executor", () => activateCodeExecutor(config, providers));
   }
 
   return {

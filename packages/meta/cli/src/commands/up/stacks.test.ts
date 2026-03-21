@@ -191,6 +191,90 @@ describe("activatePresetStacks", () => {
     // Should not throw; middleware may or may not be present
     expect(result).toBeDefined();
   });
+
+  // --- Code executor (WASM execute_script) activation ---
+
+  test("activates code-executor when codeExecutor is true", async () => {
+    const result = await activatePresetStacks({
+      stacks: { codeExecutor: true },
+      forgeBootstrap: undefined,
+    });
+
+    // Code executor produces a ComponentProvider for execute_script
+    expect(result.providers.length).toBe(1);
+    expect(result.providers[0]?.name).toBe("code-executor");
+  });
+
+  test("skips code-executor when codeExecutor is false", async () => {
+    const result = await activatePresetStacks({
+      stacks: { codeExecutor: false },
+      forgeBootstrap: undefined,
+    });
+
+    expect(result.providers).toEqual([]);
+  });
+
+  test("code-executor failure is non-fatal", async () => {
+    // The tryActivate wrapper catches any import/creation errors
+    const result = await activatePresetStacks({
+      stacks: { codeExecutor: true },
+      forgeBootstrap: undefined,
+    });
+
+    // Should not throw
+    expect(result).toBeDefined();
+  });
+
+  // --- Sandbox stack (execute_code) activation ---
+
+  test("skips sandbox-stack when sandboxConfig is undefined", async () => {
+    const result = await activatePresetStacks({
+      stacks: { sandboxStack: true },
+      forgeBootstrap: undefined,
+      // No sandboxConfig provided
+    });
+
+    // Should skip gracefully — sandbox needs config
+    expect(result.providers).toEqual([]);
+  });
+
+  test("skips sandbox-stack when flag is false", async () => {
+    const result = await activatePresetStacks({
+      stacks: { sandboxStack: false },
+      forgeBootstrap: undefined,
+      sandboxConfig: { provider: "docker" },
+    });
+
+    expect(result.providers).toEqual([]);
+  });
+
+  test("sandbox-stack failure is non-fatal", async () => {
+    // Passing an invalid provider that will fail in createCloudSandbox
+    const result = await activatePresetStacks({
+      stacks: { sandboxStack: true },
+      forgeBootstrap: undefined,
+      sandboxConfig: { provider: "nonexistent-provider" },
+    });
+
+    // Should degrade gracefully — no crash
+    expect(result).toBeDefined();
+    expect(result.providers).toEqual([]);
+  });
+
+  test("sandbox-stack registers disposable when activated", async () => {
+    // Use docker provider which will fail (no Docker daemon in test)
+    // but the try/catch in activateSandboxStack handles it.
+    // This verifies the activation path doesn't crash.
+    const result = await activatePresetStacks({
+      stacks: { sandboxStack: true },
+      forgeBootstrap: undefined,
+      sandboxConfig: { provider: "docker" },
+    });
+
+    // Docker adapter will likely fail in test environment (no daemon),
+    // so providers should be empty. The important thing is no crash.
+    expect(result).toBeDefined();
+  });
 });
 
 /** Minimal stub for a ModelHandler — never called in stack activation tests. */

@@ -192,13 +192,21 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   // 6. Activate preset stacks + compose middleware
   // ------------------------------------------------------------------
   progress("stacks", "Activating preset stacks");
+  // Auto-enable sandboxStack when the manifest declares a sandbox config,
+  // so operators don't need a preset that explicitly sets sandboxStack: true.
+  const effectiveStacks =
+    manifest.codeSandbox !== undefined
+      ? { ...preset.stacks, sandboxStack: true as const }
+      : preset.stacks;
+
   const activatedStacks = await activatePresetStacks({
-    stacks: preset.stacks,
+    stacks: effectiveStacks,
     forgeBootstrap:
       forgeBootstrap !== undefined
         ? { store: forgeBootstrap.store, runtime: forgeBootstrap.runtime }
         : undefined,
     verbose,
+    ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
   });
 
   const composed = composeRuntimeMiddleware({

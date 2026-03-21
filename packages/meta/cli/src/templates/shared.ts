@@ -351,8 +351,12 @@ export function generateDemoManifestYaml(state: WizardState): string {
   additional.push('    - name: "@koi/tool-browser"');
   additional.push("");
 
-  additional.push("forge:");
-  additional.push("  enabled: true");
+  additional.push("# Code-execution sandbox for the execute_code tool.");
+  additional.push("# Uncomment and configure a provider to enable multi-language code execution.");
+  additional.push("# codeSandbox:");
+  additional.push("#   provider: docker          # docker | e2b | daytona | cloudflare | vercel");
+  additional.push('#   image: "python:3.12-slim" # Docker image (docker provider only)');
+  additional.push("# See @koi/sandbox-stack docs for provider-specific config.");
   additional.push("");
 
   if (state.demoPack !== undefined) {

@@ -82,6 +82,21 @@ export interface DataSourceManifestEntry {
   readonly allowedHosts?: readonly string[] | undefined;
 }
 
+/**
+ * Code-execution sandbox config in the manifest.
+ *
+ * Distinct from the agent-spawn `sandbox` field in L0 `AgentManifest` —
+ * this configures the `execute_code` tool's backend, not child-agent isolation.
+ *
+ * The `provider` field selects the sandbox backend (e.g. "docker", "e2b",
+ * "daytona"). Remaining fields are provider-specific and validated at
+ * runtime by `createCloudSandbox()`.
+ */
+export interface CodeSandboxManifestConfig {
+  readonly provider: string;
+  readonly [key: string]: unknown;
+}
+
 export interface ManifestExtensions {
   readonly engine?: unknown;
   readonly schedule?: unknown;
@@ -93,6 +108,7 @@ export interface ManifestExtensions {
   readonly deploy?: DeployConfig | undefined;
   readonly scope?: ManifestScopeConfig | undefined;
   readonly nexus?: NexusManifestConfig | undefined;
+  readonly codeSandbox?: CodeSandboxManifestConfig | undefined;
   readonly dataSources?: readonly DataSourceManifestEntry[] | undefined;
 }
 

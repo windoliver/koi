@@ -861,6 +861,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
     ...(nexus.baseUrl !== undefined
       ? { threadStoreBackend: "nexus" as const, aceStoreBackend: "nexus" as const }
       : {}),
+    // Auto-enable sandboxStack when the manifest declares a sandbox config
+    ...(manifest.codeSandbox !== undefined ? { sandboxStack: true as const } : {}),
   };
   const activatedStacks = await activatePresetStacks({
     stacks: effectiveStacks,
@@ -877,6 +879,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     ...(nexusBaseUrl !== undefined ? { nexusBaseUrl } : {}),
     ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
     agentName: manifest.name,
+    ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
   });
 
   // Resolve manifest tools (tools.koi section) into ComponentProviders

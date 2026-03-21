@@ -278,6 +278,19 @@ describe("generateDemoManifestYaml", () => {
     expect(yaml).toContain("herb-products");
     expect(yaml).toContain("protocol: nexus");
   });
+
+  test("includes commented-out sandbox example", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    expect(yaml).toContain("# codeSandbox:");
+    expect(yaml).toContain("#   provider: docker");
+  });
+
+  test("does not contain duplicate forge block", () => {
+    const yaml = generateDemoManifestYaml(DEMO_STATE);
+    // Count occurrences of "forge:" at the start of a line (not indented)
+    const forgeMatches = yaml.match(/^forge:/gm);
+    expect(forgeMatches?.length).toBe(1);
+  });
 });
 
 describe("generateDemoEnvFile", () => {

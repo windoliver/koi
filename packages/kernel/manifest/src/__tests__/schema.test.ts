@@ -724,6 +724,62 @@ describe("rawManifestSchema — template expression rejection", () => {
 });
 
 // ---------------------------------------------------------------------------
+// codeSandbox field
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — codeSandbox", () => {
+  test("accepts codeSandbox with provider only", () => {
+    const result = parse({ codeSandbox: { provider: "docker" } });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const data = result.data as Record<string, unknown>;
+      const codeSandbox = data.codeSandbox as Record<string, unknown>;
+      expect(codeSandbox.provider).toBe("docker");
+    }
+  });
+
+  test("accepts codeSandbox with provider-specific fields (passthrough)", () => {
+    const result = parse({
+      codeSandbox: {
+        provider: "docker",
+        image: "python:3.12-slim",
+        socketPath: "/var/run/docker.sock",
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const data = result.data as Record<string, unknown>;
+      const codeSandbox = data.codeSandbox as Record<string, unknown>;
+      expect(codeSandbox.provider).toBe("docker");
+      expect(codeSandbox.image).toBe("python:3.12-slim");
+      expect(codeSandbox.socketPath).toBe("/var/run/docker.sock");
+    }
+  });
+
+  test("accepts codeSandbox with e2b provider and apiKey", () => {
+    expect(
+      parse({ codeSandbox: { provider: "e2b", apiKey: "sk-e2b-test", template: "base" } }).success,
+    ).toBe(true);
+  });
+
+  test("rejects codeSandbox without provider field", () => {
+    expect(parse({ codeSandbox: { image: "python:3.12-slim" } }).success).toBe(false);
+  });
+
+  test("rejects codeSandbox with empty provider string", () => {
+    expect(parse({ codeSandbox: { provider: "" } }).success).toBe(false);
+  });
+
+  test("rejects codeSandbox as string", () => {
+    expect(parse({ codeSandbox: "docker" }).success).toBe(false);
+  });
+
+  test("optional — missing codeSandbox is fine", () => {
+    expect(parse({}).success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // zodToKoiError
 // ---------------------------------------------------------------------------
 
