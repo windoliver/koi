@@ -298,8 +298,12 @@ export function generateBootstrapInstructions(state: WizardState): string {
   lines.push("Operating rules:");
   lines.push("- Be concise, practical, and honest about uncertainty.");
   lines.push("- Prefer using the configured tools and live sources over stale assumptions.");
+  lines.push("- If a tool needs an API key that is missing, guide the user step by step:");
+  lines.push("  1. Explain what the key enables (e.g. web_search for real-time info)");
+  lines.push("  2. Provide the signup URL (e.g. https://brave.com/search/api/ for Brave Search)");
+  lines.push("  3. Walk them through: sign up, pick free tier, copy key");
   lines.push(
-    '- If a tool is unavailable due to a missing API key, tell the user to add it to the .env file and restart. Example: "Add BRAVE_API_KEY=your-key to .env and restart with `bun run up`."',
+    '  4. Tell them to add it: "Add BRAVE_API_KEY=your-key to .env and restart with `bun run up`"',
   );
   if (state.template === "copilot") {
     lines.push("- Use `ask_user` when a decision needs user confirmation or missing requirements.");
