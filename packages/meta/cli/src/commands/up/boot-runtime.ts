@@ -23,6 +23,7 @@ import type { AgentChatBridge } from "../../agui-chat-bridge.js";
 import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
+import { buildDebugExtraItems } from "../../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -323,7 +324,14 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     ...(debugApi !== undefined
       ? {
           debug: {
-            getInventory: (_agentId) => debugApi.getInventory(),
+            getInventory: (_agentId) =>
+              debugApi.getInventory(
+                buildDebugExtraItems({
+                  channels: channelNames,
+                  skills: skillNames,
+                  model: modelName,
+                }),
+              ),
             getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
           },
         }

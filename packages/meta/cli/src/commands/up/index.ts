@@ -25,6 +25,7 @@ import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
 import { createContextArenaConfigForUp } from "../../context-arena-config.js";
+import { buildDebugExtraItems } from "../../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -1089,7 +1090,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
       ...(debugApi !== undefined
         ? {
             debug: {
-              getInventory: (_agentId) => debugApi.getInventory(),
+              getInventory: (_agentId) =>
+                debugApi.getInventory(
+                  buildDebugExtraItems({
+                    channels: channelNames,
+                    skills: skillNames,
+                    model: modelName,
+                  }),
+                ),
               getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
             },
           }

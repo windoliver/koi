@@ -35,6 +35,7 @@ import type { ServeFlags } from "../args.js";
 import { bootstrapForgeOrWarn } from "../bootstrap-forge.js";
 import { createChatRouter } from "../chat-router.js";
 import { composeRuntimeMiddleware } from "../compose-middleware.js";
+import { buildDebugExtraItems } from "../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -343,7 +344,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       ...(debugApi !== undefined
         ? {
             debug: {
-              getInventory: (_agentId) => debugApi.getInventory(),
+              getInventory: (_agentId) =>
+                debugApi.getInventory(
+                  buildDebugExtraItems({
+                    channels: channelNames,
+                    skills: skillNames,
+                    model: modelName,
+                  }),
+                ),
               getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
             },
           }

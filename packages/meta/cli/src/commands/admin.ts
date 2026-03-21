@@ -24,6 +24,7 @@ import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { AdminFlags } from "../args.js";
 import { createChatRouter } from "../chat-router.js";
+import { buildDebugExtraItems } from "../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -458,7 +459,14 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     ...(runtimeDebugApi !== undefined
       ? {
           debug: {
-            getInventory: (_agentId: unknown) => runtimeDebugApi?.getInventory(),
+            getInventory: (_agentId: unknown) =>
+              runtimeDebugApi?.getInventory(
+                buildDebugExtraItems({
+                  channels: channelNames,
+                  skills: skillNames,
+                  model: manifest.model.name,
+                }),
+              ),
             getTrace: (_agentId: unknown, turnIndex: number) =>
               runtimeDebugApi?.getTrace(turnIndex),
           },
