@@ -1279,6 +1279,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
         for await (const event of runtime.run(input)) {
           if (event.kind === "text_delta") deltas.push(event.delta);
           if (event.kind === "done") {
+            if (event.output.stopReason === "error") {
+              const errMeta = event.output.metadata as Record<string, unknown> | undefined;
+              const errDetail =
+                errMeta !== undefined && typeof errMeta.errorMessage === "string"
+                  ? errMeta.errorMessage
+                  : "unknown error";
+              process.stderr.write(`error: model call failed on retry: ${errDetail}\n`);
+            }
             turnCount = event.output.metrics.turns;
             if (adminBridge !== undefined) {
               adminBridge.updateMetrics({
@@ -1290,7 +1298,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
         }
         if (turnCount === 0 && deltas.length === 0) {
           process.stderr.write(
-            "warn: model returned empty response (0 turns, 0 tokens). Check API key and model availability.\n",
+            "warn: model returned empty response after retry. Try starting a fresh session.\n",
           );
         }
       }
