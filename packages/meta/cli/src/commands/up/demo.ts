@@ -57,12 +57,26 @@ export async function seedDemoPackIfNeeded(
       return EMPTY_RESULT;
     }
 
-    const result = await runSeed(demoPack, {
+    // Retry seeding once if all counts are zero — Nexus may pass health check
+    // but not be ready for batch writes immediately after container startup.
+    let result = await runSeed(demoPack, {
       nexusClient,
       agentName,
       workspaceRoot,
       verbose,
     });
+
+    const allZero = result.summary.every((line) => /:\s*0\//.test(line));
+    if (allZero && result.summary.length > 0) {
+      if (verbose) process.stderr.write("  Retrying seed (Nexus may still be initializing)...\n");
+      await new Promise((r) => setTimeout(r, 3000));
+      result = await runSeed(demoPack, {
+        nexusClient,
+        agentName,
+        workspaceRoot,
+        verbose,
+      });
+    }
 
     for (const line of result.summary) {
       process.stderr.write(`  ${line}\n`);
