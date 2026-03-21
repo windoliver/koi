@@ -48,6 +48,87 @@ import { extractDemoPack, extractStacks, inferPresetId } from "./preset.js";
 import { activatePresetStacks } from "./stacks.js";
 import { startTemporalEmbed } from "./temporal.js";
 
+/**
+ * Known manifest tool packages and their dynamic import + provider factory.
+ * Each entry maps a package name to a function that creates a ComponentProvider.
+ */
+const TOOL_FACTORIES: Readonly<
+  Record<string, (verbose: boolean) => Promise<import("@koi/core").ComponentProvider | undefined>>
+> = {
+  "@koi/tools-web": async (verbose) => {
+    try {
+      const { createWebProvider, createWebExecutor } = await import("@koi/tools-web");
+      const braveKey = process.env.BRAVE_API_KEY;
+      // Build search function from Brave if API key is available
+      let searchFn: ((query: string) => Promise<unknown>) | undefined;
+      if (braveKey !== undefined && braveKey !== "") {
+        try {
+          const mod = await import("@koi/search-brave").catch(() => undefined);
+          if (mod !== undefined) {
+            const search = mod.createBraveSearch({ apiKey: braveKey });
+            searchFn = search;
+          }
+        } catch {
+          // search-brave not available — web_fetch still works
+        }
+      }
+      const executor = createWebExecutor(searchFn !== undefined ? { searchFn } : {});
+      const provider = createWebProvider({ executor });
+      if (verbose) process.stderr.write("  Tool: @koi/tools-web (web_fetch, web_search)\n");
+      return provider;
+    } catch {
+      return undefined;
+    }
+  },
+  "@koi/tool-ask-user": async (verbose) => {
+    try {
+      const { createAskUserProvider } = await import("@koi/tool-ask-user");
+      const provider = createAskUserProvider({});
+      if (verbose) process.stderr.write("  Tool: @koi/tool-ask-user\n");
+      return provider;
+    } catch {
+      return undefined;
+    }
+  },
+  "@koi/tool-exec": async (verbose) => {
+    try {
+      const { createExecProvider } = await import("@koi/tool-exec");
+      const provider = createExecProvider({});
+      if (verbose) process.stderr.write("  Tool: @koi/tool-exec\n");
+      return provider;
+    } catch {
+      return undefined;
+    }
+  },
+  "@koi/tools-context-hub": async () => {
+    // Context-hub tools are already provided by the contextHub stack activation.
+    // Skip to avoid duplicate registration.
+    return undefined;
+  },
+};
+
+/**
+ * Resolves manifest tools (declared under tools.koi in koi.yaml) into
+ * ComponentProviders by dynamically importing known tool packages.
+ */
+async function resolveManifestTools(
+  manifest: import("@koi/core").AgentManifest,
+  verbose: boolean,
+): Promise<readonly import("@koi/core").ComponentProvider[]> {
+  const tools = manifest.tools ?? [];
+  const providers: import("@koi/core").ComponentProvider[] = [];
+
+  for (const tool of tools) {
+    const factory = TOOL_FACTORIES[tool.name];
+    if (factory !== undefined) {
+      const provider = await factory(verbose);
+      if (provider !== undefined) providers.push(provider);
+    }
+  }
+
+  return providers;
+}
+
 const LABEL_RE = /^\[(user|assistant|system)\]:\s*/;
 
 /**
@@ -787,6 +868,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
     agentName: manifest.name,
   });
 
+  // Resolve manifest tools (tools.koi section) into ComponentProviders
+  const manifestToolProviders = await resolveManifestTools(manifest, flags.verbose);
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -796,7 +880,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     dataSourceProvider,
     dataSourceTools,
     presetMiddleware: activatedStacks.middleware,
-    presetProviders: activatedStacks.providers,
+    presetProviders: [...activatedStacks.providers, ...manifestToolProviders],
   });
 
   // Late-binding event sink for forge/monitor SSE events

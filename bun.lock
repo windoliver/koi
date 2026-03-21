@@ -1251,15 +1251,20 @@
         "@koi/runtime-presets": "workspace:*",
         "@koi/sandbox": "workspace:*",
         "@koi/sandbox-ipc": "workspace:*",
+        "@koi/search-brave": "workspace:*",
         "@koi/search-provider": "workspace:*",
         "@koi/setup-core": "workspace:*",
         "@koi/shutdown": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/soul": "workspace:*",
         "@koi/temporal": "workspace:*",
+        "@koi/tool-ask-user": "workspace:*",
+        "@koi/tool-exec": "workspace:*",
         "@koi/tool-stack": "workspace:*",
         "@koi/tools-context-hub": "workspace:*",
+        "@koi/tools-web": "workspace:*",
         "@koi/tui": "workspace:*",
+        "@temporalio/client": "1.15.0",
       },
     },
     "packages/meta/context-arena": {
@@ -3209,6 +3214,7 @@
   },
   "trustedDependencies": [
     "esbuild",
+    "lefthook",
   ],
   "packages": {
     "@adiwajshing/keyed-db": ["@adiwajshing/keyed-db@0.2.4", "", {}, "sha512-yprSnAtj80/VKuDqRcFFLDYltoNV8tChNwFfIgcf6PGD4sjzWIBgs08pRuTqGH5mk5wgL6PBRSsMCZqtZwzFEw=="],
