@@ -137,6 +137,8 @@ async function scaffoldNexusConfig(koiPreset: string, targetDir: string): Promis
       process.stderr.write("  Nexus config: nexus.yaml created\n");
       // Sync the Nexus API key from nexus.yaml into .env so they match
       await syncNexusApiKey(targetDir);
+      // Work around Nexus ReBAC audit bug by disabling strict audit mode
+      await patchNexusComposeAudit(targetDir);
     } else {
       // NOT_FOUND means nexus binary missing — expected during dev
       if (result.error.code === "NOT_FOUND") {
@@ -172,6 +174,35 @@ async function syncNexusApiKey(targetDir: string): Promise<void> {
     await writeFile(envPath, updated, "utf-8");
   } catch {
     // Non-fatal — key mismatch will surface as 401 at runtime
+  }
+}
+
+/**
+ * Patches the Nexus Docker Compose file to disable strict audit mode.
+ * Works around a ReBAC path resolution bug in nexus-ai-fs where internal
+ * metastore keys (ns:rebac:file) fail the absolute path check in the
+ * audit hook, blocking all writes.
+ */
+async function patchNexusComposeAudit(targetDir: string): Promise<void> {
+  try {
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    // Find the compose file path from nexus.yaml
+    const nexusYaml = await readFile(join(targetDir, "nexus.yaml"), "utf-8");
+    const match = /^compose_file:\s*(\S+)/m.exec(nexusYaml);
+    const composePath = match?.[1] ?? join(targetDir, "nexus-stack.yml");
+    const content = await readFile(composePath, "utf-8");
+    if (content.includes("NEXUS_AUDIT_STRICT_MODE")) return;
+
+    // Insert NEXUS_AUDIT_STRICT_MODE: "false" after the NEXUS_PORT line
+    const patched = content.replace(
+      /^(\s+NEXUS_PORT:\s*"?\d+"?)/m,
+      `$1\n      NEXUS_AUDIT_STRICT_MODE: "false"`,
+    );
+    await writeFile(composePath, patched, "utf-8");
+  } catch {
+    // Non-fatal
   }
 }
 
