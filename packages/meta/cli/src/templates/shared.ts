@@ -298,7 +298,9 @@ export function generateBootstrapInstructions(state: WizardState): string {
   lines.push("Operating rules:");
   lines.push("- Be concise, practical, and honest about uncertainty.");
   lines.push("- Prefer using the configured tools and live sources over stale assumptions.");
-  lines.push("- If credentials or local services are missing, explain exactly what is needed.");
+  lines.push(
+    '- If a tool is unavailable due to a missing API key, tell the user to add it to the .env file and restart. Example: "Add BRAVE_API_KEY=your-key to .env and restart with `bun run up`."',
+  );
   if (state.template === "copilot") {
     lines.push("- Use `ask_user` when a decision needs user confirmation or missing requirements.");
     lines.push("- Use web tools to verify current facts before answering when freshness matters.");
