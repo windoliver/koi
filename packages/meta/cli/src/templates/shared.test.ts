@@ -280,7 +280,7 @@ describe("generateDemoManifestYaml", () => {
 
   test("includes commented-out sandbox example", () => {
     const yaml = generateDemoManifestYaml(DEMO_STATE);
-    expect(yaml).toContain("# sandbox:");
+    expect(yaml).toContain("# codeSandbox:");
     expect(yaml).toContain("#   provider: docker");
   });
 

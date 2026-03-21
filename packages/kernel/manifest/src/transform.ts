@@ -42,7 +42,7 @@ const EXTENSION_FIELDS = [
   "user",
   "scope",
   "nexus",
-  "sandbox",
+  "codeSandbox",
   "dataSources",
 ] as const;
 

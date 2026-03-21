@@ -74,13 +74,16 @@ interface DataSourceManifestEntry {
     readonly allowedHosts?: readonly string[] | undefined;
 }
 /**
- * Sandbox execution environment config in the manifest.
+ * Code-execution sandbox config in the manifest.
+ *
+ * Distinct from the agent-spawn \`sandbox\` field in L0 \`AgentManifest\` —
+ * this configures the \`execute_code\` tool's backend, not child-agent isolation.
  *
  * The \`provider\` field selects the sandbox backend (e.g. "docker", "e2b",
  * "daytona"). Remaining fields are provider-specific and validated at
  * runtime by \`createCloudSandbox()\`.
  */
-interface SandboxManifestConfig {
+interface CodeSandboxManifestConfig {
     readonly provider: string;
     readonly [key: string]: unknown;
 }
@@ -95,7 +98,7 @@ interface ManifestExtensions {
     readonly deploy?: DeployConfig | undefined;
     readonly scope?: ManifestScopeConfig | undefined;
     readonly nexus?: NexusManifestConfig | undefined;
-    readonly sandbox?: SandboxManifestConfig | undefined;
+    readonly codeSandbox?: CodeSandboxManifestConfig | undefined;
     readonly dataSources?: readonly DataSourceManifestEntry[] | undefined;
 }
 /**
@@ -151,6 +154,6 @@ declare function loadManifest(filePath: string, env?: Readonly<Record<string, st
  */
 declare function loadManifestFromString(yaml: string, env?: Readonly<Record<string, string | undefined>>): Result<LoadResult, KoiError>;
 
-export { type DataSourceManifestEntry, type DeployConfig, type LoadResult, type LoadedManifest, type ManifestBrowserScope, type ManifestCredentialsScope, type ManifestFileSystemScope, type ManifestMemoryScope, type ManifestScopeConfig, type ManifestWarning, type SandboxManifestConfig, type SoulUserConfig, getEngineName, loadManifest, loadManifestFromString };
+export { type CodeSandboxManifestConfig, type DataSourceManifestEntry, type DeployConfig, type LoadResult, type LoadedManifest, type ManifestBrowserScope, type ManifestCredentialsScope, type ManifestFileSystemScope, type ManifestMemoryScope, type ManifestScopeConfig, type ManifestWarning, type SoulUserConfig, getEngineName, loadManifest, loadManifestFromString };
 "
 `;

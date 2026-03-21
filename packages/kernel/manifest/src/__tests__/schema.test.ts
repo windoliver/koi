@@ -724,23 +724,23 @@ describe("rawManifestSchema — template expression rejection", () => {
 });
 
 // ---------------------------------------------------------------------------
-// sandbox field
+// codeSandbox field
 // ---------------------------------------------------------------------------
 
-describe("rawManifestSchema — sandbox", () => {
-  test("accepts sandbox with provider only", () => {
-    const result = parse({ sandbox: { provider: "docker" } });
+describe("rawManifestSchema — codeSandbox", () => {
+  test("accepts codeSandbox with provider only", () => {
+    const result = parse({ codeSandbox: { provider: "docker" } });
     expect(result.success).toBe(true);
     if (result.success) {
       const data = result.data as Record<string, unknown>;
-      const sandbox = data.sandbox as Record<string, unknown>;
-      expect(sandbox.provider).toBe("docker");
+      const codeSandbox = data.codeSandbox as Record<string, unknown>;
+      expect(codeSandbox.provider).toBe("docker");
     }
   });
 
-  test("accepts sandbox with provider-specific fields (passthrough)", () => {
+  test("accepts codeSandbox with provider-specific fields (passthrough)", () => {
     const result = parse({
-      sandbox: {
+      codeSandbox: {
         provider: "docker",
         image: "python:3.12-slim",
         socketPath: "/var/run/docker.sock",
@@ -749,32 +749,32 @@ describe("rawManifestSchema — sandbox", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       const data = result.data as Record<string, unknown>;
-      const sandbox = data.sandbox as Record<string, unknown>;
-      expect(sandbox.provider).toBe("docker");
-      expect(sandbox.image).toBe("python:3.12-slim");
-      expect(sandbox.socketPath).toBe("/var/run/docker.sock");
+      const codeSandbox = data.codeSandbox as Record<string, unknown>;
+      expect(codeSandbox.provider).toBe("docker");
+      expect(codeSandbox.image).toBe("python:3.12-slim");
+      expect(codeSandbox.socketPath).toBe("/var/run/docker.sock");
     }
   });
 
-  test("accepts sandbox with e2b provider and apiKey", () => {
+  test("accepts codeSandbox with e2b provider and apiKey", () => {
     expect(
-      parse({ sandbox: { provider: "e2b", apiKey: "sk-e2b-test", template: "base" } }).success,
+      parse({ codeSandbox: { provider: "e2b", apiKey: "sk-e2b-test", template: "base" } }).success,
     ).toBe(true);
   });
 
-  test("rejects sandbox without provider field", () => {
-    expect(parse({ sandbox: { image: "python:3.12-slim" } }).success).toBe(false);
+  test("rejects codeSandbox without provider field", () => {
+    expect(parse({ codeSandbox: { image: "python:3.12-slim" } }).success).toBe(false);
   });
 
-  test("rejects sandbox with empty provider string", () => {
-    expect(parse({ sandbox: { provider: "" } }).success).toBe(false);
+  test("rejects codeSandbox with empty provider string", () => {
+    expect(parse({ codeSandbox: { provider: "" } }).success).toBe(false);
   });
 
-  test("rejects sandbox as string", () => {
-    expect(parse({ sandbox: "docker" }).success).toBe(false);
+  test("rejects codeSandbox as string", () => {
+    expect(parse({ codeSandbox: "docker" }).success).toBe(false);
   });
 
-  test("optional — missing sandbox is fine", () => {
+  test("optional — missing codeSandbox is fine", () => {
     expect(parse({}).success).toBe(true);
   });
 });

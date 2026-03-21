@@ -195,7 +195,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   // Auto-enable sandboxStack when the manifest declares a sandbox config,
   // so operators don't need a preset that explicitly sets sandboxStack: true.
   const effectiveStacks =
-    manifest.sandbox !== undefined
+    manifest.codeSandbox !== undefined
       ? { ...preset.stacks, sandboxStack: true as const }
       : preset.stacks;
 
@@ -206,7 +206,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
         ? { store: forgeBootstrap.store, runtime: forgeBootstrap.runtime }
         : undefined,
     verbose,
-    ...(manifest.sandbox !== undefined ? { sandboxConfig: manifest.sandbox } : {}),
+    ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
   });
 
   const composed = composeRuntimeMiddleware({

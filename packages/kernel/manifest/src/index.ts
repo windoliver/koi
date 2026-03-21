@@ -13,6 +13,7 @@ export { loadManifest, loadManifestFromString } from "./loader.js";
 
 // Types
 export type {
+  CodeSandboxManifestConfig,
   DataSourceManifestEntry,
   DeployConfig,
   LoadedManifest,
@@ -23,6 +24,5 @@ export type {
   ManifestMemoryScope,
   ManifestScopeConfig,
   ManifestWarning,
-  SandboxManifestConfig,
   SoulUserConfig,
 } from "./types.js";
