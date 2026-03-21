@@ -102,6 +102,21 @@ const TOOL_FACTORIES: Readonly<
       return undefined;
     }
   },
+  "@koi/tool-browser": async (verbose) => {
+    try {
+      const { createBrowserProvider } = await import("@koi/tool-browser");
+      const { createPlaywrightBrowserDriver } = await import("@koi/browser-playwright");
+      const driver = await createPlaywrightBrowserDriver({ headless: true, stealth: true });
+      const provider = createBrowserProvider({ backend: driver });
+      if (verbose)
+        process.stderr.write(
+          "  Tool: @koi/tool-browser (browser_navigate, browser_snapshot, ...)\n",
+        );
+      return provider;
+    } catch {
+      return undefined;
+    }
+  },
   "@koi/tools-context-hub": async () => {
     // Context-hub tools are already provided by the contextHub stack activation.
     // Skip to avoid duplicate registration.
