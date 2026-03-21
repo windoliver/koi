@@ -17,7 +17,7 @@
 import { agentId } from "@koi/core";
 import type { CommandDispatcher, RuntimeViewDataSource } from "@koi/dashboard-types";
 import type { RouteParams } from "../router.js";
-import { errorResponse, jsonResponse } from "../router.js";
+import { errorResponse, jsonResponse, validateRequiredParam } from "../router.js";
 
 export async function handleProcessTree(
   _req: Request,
@@ -190,4 +190,41 @@ export async function handleListGovernanceQueue(
     return errorResponse(result.error.code, result.error.message, 500);
   }
   return jsonResponse(result.value);
+}
+
+export async function handleDebugInventory(
+  _req: Request,
+  params: RouteParams,
+  runtimeViews: RuntimeViewDataSource,
+): Promise<Response> {
+  if (runtimeViews.debug === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Debug instrumentation not enabled", 501);
+  }
+  const id = validateRequiredParam(params, "id", "agent ID");
+  if (id instanceof Response) return id;
+  const inventory = await runtimeViews.debug.getInventory(agentId(id));
+  return jsonResponse(inventory);
+}
+
+export async function handleDebugTrace(
+  _req: Request,
+  params: RouteParams,
+  runtimeViews: RuntimeViewDataSource,
+): Promise<Response> {
+  if (runtimeViews.debug === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Debug instrumentation not enabled", 501);
+  }
+  const id = validateRequiredParam(params, "id", "agent ID");
+  if (id instanceof Response) return id;
+  const turn = validateRequiredParam(params, "turn", "turn index");
+  if (turn instanceof Response) return turn;
+  const turnIndex = parseInt(turn, 10);
+  if (Number.isNaN(turnIndex) || turnIndex < 0) {
+    return errorResponse("VALIDATION", "Turn index must be a non-negative integer", 400);
+  }
+  const trace = await runtimeViews.debug.getTrace(agentId(id), turnIndex);
+  if (trace === undefined) {
+    return errorResponse("NOT_FOUND", `No trace for turn ${turn} (may have been evicted)`, 404);
+  }
+  return jsonResponse(trace);
 }

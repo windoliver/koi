@@ -196,6 +196,10 @@ export function dispatchCommand(commandId: string, deps: CommandDeps): boolean {
       deps.store.dispatch({ kind: "set_view", view: "governance" });
       return true;
 
+    case "debug":
+      deps.store.dispatch({ kind: "set_view", view: "debug" });
+      return true;
+
     case "delegation":
       deps.store.dispatch({ kind: "set_view", view: "delegation" });
       return true;

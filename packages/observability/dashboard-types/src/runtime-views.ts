@@ -57,6 +57,14 @@ export interface MiddlewareEntry {
   readonly name: string;
   readonly phase: "intercept" | "observe" | "resolve";
   readonly enabled: boolean;
+  /** Middleware priority within its phase tier (lower = outer onion layer). */
+  readonly priority?: number | undefined;
+  /** Which hooks this middleware implements (e.g., ["wrapModelCall", "wrapToolCall"]). */
+  readonly hooks?: readonly string[] | undefined;
+  /** Whether this middleware runs concurrently in the observe phase. */
+  readonly concurrent?: boolean | undefined;
+  /** How this middleware was injected: static (manifest), forged, or dynamic. */
+  readonly source?: "static" | "forged" | "dynamic" | undefined;
 }
 
 export interface MiddlewareChain {
@@ -250,6 +258,47 @@ export interface ForgeStats {
 }
 
 // ---------------------------------------------------------------------------
+// Debug views (instrumentation)
+// ---------------------------------------------------------------------------
+
+export interface DebugSpanResponse {
+  readonly name: string;
+  readonly hook: string;
+  readonly durationMs: number;
+  readonly source: string;
+  readonly phase: string;
+  readonly priority: number;
+  readonly nextCalled: boolean;
+  readonly error?: string | undefined;
+  readonly children?: readonly DebugSpanResponse[] | undefined;
+}
+
+export interface DebugTurnTraceResponse {
+  readonly turnIndex: number;
+  readonly totalDurationMs: number;
+  readonly spans: readonly DebugSpanResponse[];
+  readonly timestamp: number;
+}
+
+export interface DebugInventoryItemResponse {
+  readonly name: string;
+  readonly category: string;
+  readonly enabled: boolean;
+  readonly source: string;
+  readonly hooks?: readonly string[] | undefined;
+  readonly phase?: string | undefined;
+  readonly priority?: number | undefined;
+  readonly concurrent?: boolean | undefined;
+  readonly lastUsedTurn?: number | undefined;
+}
+
+export interface DebugInventoryResponse {
+  readonly agentId: string;
+  readonly items: readonly DebugInventoryItemResponse[];
+  readonly timestamp: number;
+}
+
+// ---------------------------------------------------------------------------
 // Data source interface
 // ---------------------------------------------------------------------------
 
@@ -293,4 +342,16 @@ export interface RuntimeViewDataSource {
     readonly getStats: () => ForgeStats | Promise<ForgeStats>;
     readonly listRecentEvents: () => Promise<readonly ForgeDashboardEvent[]>;
   };
+
+  readonly debug?:
+    | {
+        readonly getInventory: (
+          agentId: AgentId,
+        ) => DebugInventoryResponse | Promise<DebugInventoryResponse>;
+        readonly getTrace: (
+          agentId: AgentId,
+          turnIndex: number,
+        ) => DebugTurnTraceResponse | undefined | Promise<DebugTurnTraceResponse | undefined>;
+      }
+    | undefined;
 }

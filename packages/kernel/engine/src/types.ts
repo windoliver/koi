@@ -32,7 +32,15 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
-import type { IterationLimits, LoopDetectionConfig, SpawnPolicy } from "@koi/engine-compose";
+import type {
+  DebugInstrumentationConfig,
+  DebugInventory,
+  DebugInventoryItem,
+  DebugTurnTrace,
+  IterationLimits,
+  LoopDetectionConfig,
+  SpawnPolicy,
+} from "@koi/engine-compose";
 import type { GovernanceConfig } from "@koi/engine-reconcile";
 import type { AssemblyConflict } from "./agent-entity.js";
 
@@ -126,6 +134,8 @@ export interface CreateKoiOptions {
   readonly channelId?: string;
   /** Process group to assign this agent to. Recorded in the registry entry and ProcessId. */
   readonly groupId?: AgentGroupId | undefined;
+  /** Debug instrumentation configuration. When enabled, records per-middleware timing spans. */
+  readonly debug?: DebugInstrumentationConfig | undefined;
 }
 
 export interface KoiRuntime {
@@ -137,6 +147,15 @@ export interface KoiRuntime {
   readonly run: (input: EngineInput) => AsyncIterable<EngineEvent>;
   /** Dispose the runtime and release resources. */
   readonly dispose: () => Promise<void>;
+  /** Debug instrumentation accessors. Only present when `debug.enabled` is true. */
+  readonly debug?:
+    | {
+        /** Get the trace for a specific turn. Returns undefined if not found. */
+        readonly getTrace: (turnIndex: number) => DebugTurnTrace | undefined;
+        /** Build a snapshot of all registered middleware, tools, and other components. */
+        readonly getInventory: (extraItems?: readonly DebugInventoryItem[]) => DebugInventory;
+      }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------

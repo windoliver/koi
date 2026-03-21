@@ -24,6 +24,7 @@ import { ConsentView } from "./consent-view.js";
 import { ConsoleView } from "./console-view.js";
 import { CostView } from "./cost-view.js";
 import { DataSourcesView } from "./data-sources-view.js";
+import { DebugView } from "./debug-view.js";
 import { DelegationView } from "./delegation-view.js";
 import { DoctorView } from "./doctor-view.js";
 import { EngineStepView } from "./engine-step-view.js";
@@ -461,6 +462,9 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         )}
         {view === "agentprocfs" && (
           <AgentProcfsView agentProcfsView={state.agentProcfsView} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+        {view === "debug" && (
+          <DebugView debugView={state.debugView} focused={true} zoomLevel={state.zoomLevel} />
         )}
         {view === "delegation" && (
           <DelegationView delegationView={state.delegationView} focused={true} zoomLevel={state.zoomLevel} />

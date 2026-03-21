@@ -145,6 +145,32 @@ export function createKeyboardHandler(
       return true;
     }
 
+    // Debug view — 1/2 panel switch, n/p turn navigation (before tab keys)
+    if (view === "debug") {
+      if (sequence === "1") {
+        store.dispatch({ kind: "set_debug_panel", panel: "inventory" });
+        return true;
+      }
+      if (sequence === "2") {
+        store.dispatch({ kind: "set_debug_panel", panel: "waterfall" });
+        return true;
+      }
+      if (sequence === "n") {
+        store.dispatch({
+          kind: "select_debug_turn",
+          turnIndex: store.getState().debugView.selectedTurnIndex + 1,
+        });
+        return true;
+      }
+      if (sequence === "p") {
+        store.dispatch({
+          kind: "select_debug_turn",
+          turnIndex: Math.max(0, store.getState().debugView.selectedTurnIndex - 1),
+        });
+        return true;
+      }
+    }
+
     // 1-5 — switch primary tabs (Agents, Console, Forge, Sources, Sessions)
     const TAB_KEYS: Readonly<Record<string, string>> = {
       "1": "agents",
@@ -564,6 +590,7 @@ export function createKeyboardHandler(
       "processtree",
       "agentprocfs",
       "cost",
+      "debug",
       "delegation",
       "handoffs",
       "mailbox",

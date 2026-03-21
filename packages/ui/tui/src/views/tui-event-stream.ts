@@ -35,6 +35,7 @@ export function viewToDomainKey(view: TuiView): string | null {
     processtree: "processtree",
     agentprocfs: "agentprocfs",
     cost: "cost",
+    debug: "debug",
     delegation: "delegation",
     handoffs: "handoffs",
     mailbox: "mailbox",
@@ -82,6 +83,8 @@ export function getDomainScrollOffset(state: TuiState, domain: string): number {
       return state.mailboxView.scrollOffset;
     case "scratchpad":
       return state.scratchpadView.scrollOffset;
+    case "debug":
+      return state.debugView.scrollOffset;
     default:
       return 0;
   }
@@ -297,6 +300,27 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
         })
         .catch(() => {});
       break;
+    case "debug": {
+      const sess5 = store.getState().activeSession;
+      if (sess5 !== null) {
+        store.dispatch({ kind: "set_debug_loading", loading: true });
+        client
+          .getDebugInventory(sess5.agentId)
+          .then((r) => {
+            if (r.ok) store.dispatch({ kind: "set_debug_inventory", items: r.value.items });
+          })
+          .catch(() => {});
+        const turnIndex = store.getState().debugView.selectedTurnIndex;
+        client
+          .getDebugTrace(sess5.agentId, turnIndex)
+          .then((r) => {
+            if (r.ok) store.dispatch({ kind: "set_debug_trace", trace: r.value });
+            else store.dispatch({ kind: "set_debug_trace", trace: null });
+          })
+          .catch(() => {});
+      }
+      break;
+    }
     case "governance":
       client
         .listGovernanceQueue()

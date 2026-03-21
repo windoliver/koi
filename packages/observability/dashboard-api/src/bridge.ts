@@ -71,6 +71,8 @@ export interface BridgeOptions {
     | undefined;
   /** Optional forge view data source for self-improvement observability. */
   readonly forge?: RuntimeViewDataSource["forge"] | undefined;
+  /** Optional debug instrumentation data source for the debug view. */
+  readonly debug?: RuntimeViewDataSource["debug"] | undefined;
   /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
   readonly orchestrationCommands?:
     | Pick<
@@ -548,6 +550,7 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       ? { harness: options.orchestration.harness }
       : {}),
     ...(options.forge !== undefined ? { forge: options.forge } : {}),
+    ...(options.debug !== undefined ? { debug: options.debug } : {}),
   };
 
   // Command dispatcher for the single-agent bridge.

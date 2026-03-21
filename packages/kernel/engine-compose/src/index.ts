@@ -20,6 +20,17 @@ export {
   runTurnHooks,
   sortMiddlewareByPhase,
 } from "./compose.js";
+// instrumentation
+export type {
+  DebugInstrumentation,
+  DebugInstrumentationConfig,
+  DebugInventory,
+  DebugInventoryItem,
+  DebugSpan,
+  DebugTurnTrace,
+  MiddlewareSource,
+} from "./compose-instrumentation.js";
+export { createDebugInstrumentation } from "./compose-instrumentation.js";
 // extension composer
 export type {
   ComposedExtensions,

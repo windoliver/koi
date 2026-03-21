@@ -84,6 +84,8 @@ import {
 import { handleSkills } from "./routes/skills.js";
 import {
   handleAgentProcfs,
+  handleDebugInventory,
+  handleDebugTrace,
   handleForgeBricks,
   handleForgeEvents,
   handleForgeStats,
@@ -349,6 +351,20 @@ export function createDashboardHandler(
         method: "GET",
         pattern: "/view/forge/events",
         handler: (req, params) => handleForgeEvents(req, params, runtimeViews),
+      },
+    );
+
+    // Debug views (instrumentation)
+    routes.push(
+      {
+        method: "GET",
+        pattern: "/view/debug/:id/inventory",
+        handler: (req, params) => handleDebugInventory(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/debug/:id/trace/:turn",
+        handler: (req, params) => handleDebugTrace(req, params, runtimeViews),
       },
     );
 

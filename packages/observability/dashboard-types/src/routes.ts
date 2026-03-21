@@ -59,6 +59,10 @@ export const ADMIN_ROUTES = {
   forgeStats: { method: "GET", path: "/view/forge/stats" },
   forgeEvents: { method: "GET", path: "/view/forge/events" },
 
+  // ─── Debug Views ─────────────────────────────────────────────
+  debugInventory: { method: "GET" as const, path: "/view/debug/:id/inventory" },
+  debugTrace: { method: "GET" as const, path: "/view/debug/:id/trace/:turn" },
+
   // ─── Temporal Orchestration ────────────────────────────────────
   temporalHealth: { method: "GET", path: "/view/temporal/health" },
   temporalWorkflows: { method: "GET", path: "/view/temporal/workflows" },

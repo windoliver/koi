@@ -649,6 +649,94 @@ describe("reduce — apply_monitor_event", () => {
   });
 });
 
+describe("reduce — debug view actions", () => {
+  test("set_debug_inventory updates inventory and clears loading", () => {
+    const state: TuiState = {
+      ...BASE_STATE,
+      debugView: { ...BASE_STATE.debugView, loading: true },
+    };
+    const items = [
+      { name: "mw-a", category: "middleware", enabled: true, source: "static" },
+      { name: "my-tool", category: "tool", enabled: true, source: "operator" },
+    ] as const;
+    const next = reduce(state, { kind: "set_debug_inventory", items });
+    expect(next.debugView.inventory).toEqual(items);
+    expect(next.debugView.loading).toBe(false);
+  });
+
+  test("set_debug_panel switches active panel", () => {
+    const next = reduce(BASE_STATE, { kind: "set_debug_panel", panel: "waterfall" });
+    expect(next.debugView.activePanel).toBe("waterfall");
+  });
+
+  test("set_debug_panel switches back to inventory", () => {
+    const state: TuiState = {
+      ...BASE_STATE,
+      debugView: { ...BASE_STATE.debugView, activePanel: "waterfall" },
+    };
+    const next = reduce(state, { kind: "set_debug_panel", panel: "inventory" });
+    expect(next.debugView.activePanel).toBe("inventory");
+  });
+
+  test("select_debug_turn updates selectedTurnIndex", () => {
+    const next = reduce(BASE_STATE, { kind: "select_debug_turn", turnIndex: 5 });
+    expect(next.debugView.selectedTurnIndex).toBe(5);
+  });
+
+  test("select_debug_turn clamps negative to 0", () => {
+    const next = reduce(BASE_STATE, { kind: "select_debug_turn", turnIndex: -3 });
+    expect(next.debugView.selectedTurnIndex).toBe(0);
+  });
+
+  test("set_debug_trace updates trace and clears loading", () => {
+    const state: TuiState = {
+      ...BASE_STATE,
+      debugView: { ...BASE_STATE.debugView, loading: true },
+    };
+    const trace = {
+      turnIndex: 0,
+      totalDurationMs: 42,
+      spans: [
+        {
+          name: "mw-a",
+          hook: "wrapModelCall",
+          durationMs: 42,
+          source: "static",
+          phase: "resolve",
+          priority: 500,
+          nextCalled: true,
+        },
+      ],
+      timestamp: Date.now(),
+    };
+    const next = reduce(state, { kind: "set_debug_trace", trace });
+    expect(next.debugView.trace).toEqual(trace);
+    expect(next.debugView.loading).toBe(false);
+  });
+
+  test("set_debug_trace clears trace with null", () => {
+    const state: TuiState = {
+      ...BASE_STATE,
+      debugView: {
+        ...BASE_STATE.debugView,
+        trace: {
+          turnIndex: 0,
+          totalDurationMs: 10,
+          spans: [],
+          timestamp: Date.now(),
+        },
+      },
+    };
+    const next = reduce(state, { kind: "set_debug_trace", trace: null });
+    expect(next.debugView.trace).toBeNull();
+  });
+
+  test("set_debug_loading updates loading flag", () => {
+    const next = reduce(BASE_STATE, { kind: "set_debug_loading", loading: true });
+    expect(next.debugView.loading).toBe(true);
+  });
+});
+
 describe("reduce — set_view forge", () => {
   test("switches to forge view", () => {
     const next = reduce(BASE_STATE, { kind: "set_view", view: "forge" });

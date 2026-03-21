@@ -1,0 +1,224 @@
+/**
+ * Debug view — two-panel display showing package inventory and per-turn
+ * timing trace waterfall. Toggled via /debug command.
+ */
+
+import React from "react";
+import { PanelChrome } from "../components/panel-chrome.js";
+import type { DebugViewState } from "../state/domain-types.js";
+import { COLORS } from "../theme.js";
+import type {
+  DebugInventoryItemResponse,
+  DebugSpanResponse,
+  DebugTurnTraceResponse,
+} from "@koi/dashboard-types";
+
+export interface DebugViewProps {
+  readonly debugView: DebugViewState;
+  readonly focused: boolean;
+  readonly zoomLevel?: "normal" | "half" | "full" | undefined;
+}
+
+// ─── Hook abbreviations ──────────────────────────────────────────────
+
+const HOOK_ABBREV: Readonly<Record<string, string>> = {
+  wrapModelCall: "mc",
+  wrapToolCall: "tc",
+  wrapModelStream: "ms",
+  onBeforeTurn: "bt",
+  onAfterTurn: "at",
+  onSessionStart: "ss",
+  onSessionEnd: "se",
+};
+
+function abbreviateHook(hook: string): string {
+  return HOOK_ABBREV[hook] ?? hook.slice(0, 2);
+}
+
+// ─── Formatting helpers ──────────────────────────────────────────────
+
+function formatDuration(ms: number): string {
+  if (ms < 1) return `${(ms * 1000).toFixed(0)}\u00B5s`;
+  if (ms < 1000) return `${ms.toFixed(1)}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+function categoryColor(category: string): string {
+  switch (category) {
+    case "middleware":
+      return COLORS.cyan;
+    case "tool":
+      return COLORS.green;
+    case "skill":
+      return COLORS.yellow;
+    case "channel":
+      return COLORS.blue;
+    case "engine":
+      return COLORS.magenta;
+    default:
+      return COLORS.dim;
+  }
+}
+
+function sourceLabel(source: string): string {
+  switch (source) {
+    case "static":
+      return "static";
+    case "forged":
+      return "forged \u2726";
+    case "dynamic":
+      return "dynamic";
+    case "operator":
+      return "operator";
+    case "manifest":
+      return "manifest";
+    default:
+      return source;
+  }
+}
+
+// ─── Inventory Panel ─────────────────────────────────────────────────
+
+const InventoryPanel = React.memo(function InventoryPanel(props: {
+  readonly items: readonly DebugInventoryItemResponse[];
+}): React.ReactNode {
+  const { items } = props;
+
+  // Group by category
+  const groups = new Map<string, readonly DebugInventoryItemResponse[]>();
+  for (const item of items) {
+    const prev = groups.get(item.category) ?? [];
+    groups.set(item.category, [...prev, item]);
+  }
+
+  const categoryOrder = ["middleware", "tool", "skill", "channel", "engine"];
+
+  return (
+    <box flexDirection="column">
+      {categoryOrder.map((cat) => {
+        const catItems = groups.get(cat);
+        if (catItems === undefined || catItems.length === 0) return null;
+        return (
+          <box key={cat} flexDirection="column" marginBottom={1}>
+            <text fg={categoryColor(cat)}>
+              <b>{`  ${cat.toUpperCase()} (${String(catItems.length)})`}</b>
+            </text>
+            {catItems.map((item) => (
+              <text key={item.name} fg={COLORS.white}>
+                {`  \u25CF ${item.name.padEnd(24)} ${(item.phase ?? "").padEnd(10)} ${String(item.priority ?? "").padEnd(5)} ${sourceLabel(item.source).padEnd(12)} ${(item.hooks ?? []).map(abbreviateHook).join(" ")}`}
+              </text>
+            ))}
+          </box>
+        );
+      })}
+    </box>
+  );
+});
+
+// ─── Waterfall Panel ─────────────────────────────────────────────────
+
+function WaterfallSpan(props: {
+  readonly span: DebugSpanResponse;
+  readonly maxDuration: number;
+  readonly indent: number;
+}): React.ReactNode {
+  const { span, maxDuration, indent } = props;
+  const barWidth =
+    maxDuration > 0 ? Math.max(1, Math.round((span.durationMs / maxDuration) * 30)) : 1;
+  const bar = "\u2588".repeat(barWidth);
+  const prefix = indent > 0 ? "  ".repeat(indent - 1) + "\u251C\u2500 " : "";
+  const errorSuffix = span.error !== undefined ? ` [err: ${span.error}]` : "";
+  const fg =
+    span.error !== undefined ? COLORS.red : span.nextCalled ? COLORS.green : COLORS.dim;
+  const padLen = Math.max(1, 22 - indent * 2);
+
+  return (
+    <box flexDirection="column">
+      <text fg={fg}>
+        {`  ${prefix}${span.name.padEnd(padLen)} ${bar} ${formatDuration(span.durationMs)}${errorSuffix}`}
+      </text>
+      {span.children?.map((child, i) => (
+        <WaterfallSpan
+          key={`${child.name}-${child.hook}-${String(i)}`}
+          span={child}
+          maxDuration={maxDuration}
+          indent={indent + 1}
+        />
+      ))}
+    </box>
+  );
+}
+
+function WaterfallPanel(props: {
+  readonly trace: DebugTurnTraceResponse;
+}): React.ReactNode {
+  const { trace } = props;
+  const maxDuration = Math.max(...trace.spans.map((s) => s.durationMs), 1);
+
+  return (
+    <box flexDirection="column">
+      <text fg={COLORS.cyan}>
+        <b>{`  Turn #${String(trace.turnIndex)} \u2014 ${formatDuration(trace.totalDurationMs)} total`}</b>
+      </text>
+      <text fg={COLORS.dim}>{""}</text>
+      {trace.spans.map((span, i) => (
+        <WaterfallSpan
+          key={`${span.name}-${span.hook}-${String(i)}`}
+          span={span}
+          maxDuration={maxDuration}
+          indent={0}
+        />
+      ))}
+    </box>
+  );
+}
+
+// ─── Keyboard hint bar ───────────────────────────────────────────────
+
+function DebugHintBar(): React.ReactNode {
+  return (
+    <text fg={COLORS.dim}>
+      {"\n  [1] Inventory  [2] Waterfall  [n/p] Turn  [j/k] Scroll"}
+    </text>
+  );
+}
+
+// ─── Main Debug View ─────────────────────────────────────────────────
+
+export function DebugView(props: DebugViewProps): React.ReactNode {
+  const { inventory, trace, loading, activePanel, selectedTurnIndex } =
+    props.debugView;
+
+  if (activePanel === "inventory") {
+    return (
+      <PanelChrome
+        title="Debug \u2014 Inventory"
+        count={inventory?.length ?? 0}
+        focused={props.focused}
+        zoomLevel={props.zoomLevel}
+        loading={loading}
+        isEmpty={inventory === null && !loading}
+        emptyMessage="No debug data available."
+        emptyHint="Enable debug mode and select an agent."
+      >
+        {inventory !== null && <InventoryPanel items={inventory} />}
+        <DebugHintBar />
+      </PanelChrome>
+    );
+  }
+
+  return (
+    <PanelChrome
+      title={`Debug \u2014 Turn #${String(selectedTurnIndex)} Waterfall`}
+      focused={props.focused}
+      zoomLevel={props.zoomLevel}
+      loading={loading}
+      isEmpty={trace === null && !loading}
+      emptyMessage={`No trace for turn #${String(selectedTurnIndex)}.`}
+      emptyHint="Run a query to generate trace data, or press [n/p] to navigate turns."
+    >
+      {trace !== null && <WaterfallPanel trace={trace} />}
+      <DebugHintBar />
+    </PanelChrome>
+  );
+}

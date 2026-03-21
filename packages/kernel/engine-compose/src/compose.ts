@@ -23,6 +23,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { CHARS_PER_TOKEN } from "@koi/token-estimator";
+import type { DebugInstrumentation, MiddlewareSource } from "./compose-instrumentation.js";
 
 // ---------------------------------------------------------------------------
 // Phase-aware middleware sorting
@@ -96,14 +97,50 @@ export interface TerminalHandlers {
 export function recomposeChains(
   sortedMiddleware: readonly KoiMiddleware[],
   terminals: TerminalHandlers,
+  instrumentation?: DebugInstrumentation,
 ): RecomposedChains {
-  const toolChain = composeToolChain(sortedMiddleware, terminals.toolHandler);
-  const modelChain = composeModelChain(sortedMiddleware, terminals.modelHandler);
+  const toolChain = composeToolChain(sortedMiddleware, terminals.toolHandler, instrumentation);
+  const modelChain = composeModelChain(sortedMiddleware, terminals.modelHandler, instrumentation);
   const streamChain =
     terminals.modelStreamHandler !== undefined
-      ? composeModelStreamChain(sortedMiddleware, terminals.modelStreamHandler)
+      ? composeModelStreamChain(sortedMiddleware, terminals.modelStreamHandler, instrumentation)
       : undefined;
   return { toolChain, modelChain, streamChain };
+}
+
+// ---------------------------------------------------------------------------
+// Instrumentation helpers — build provenance/phase/priority maps
+// ---------------------------------------------------------------------------
+
+/**
+ * Build provenance, phase, and priority maps from middleware array.
+ * Used by compose functions to pass metadata to instrumentation wrappers.
+ */
+function buildInstrumentationMaps(middleware: readonly KoiMiddleware[]): {
+  readonly provenanceMap: ReadonlyMap<string, MiddlewareSource>;
+  readonly phaseMap: ReadonlyMap<string, string>;
+  readonly priorityMap: ReadonlyMap<string, number>;
+} {
+  const provenanceMap = new Map<string, MiddlewareSource>();
+  const phaseMap = new Map<string, string>();
+  const priorityMap = new Map<string, number>();
+  for (const mw of middleware) {
+    provenanceMap.set(mw.name, "static");
+    phaseMap.set(mw.name, mw.phase ?? "resolve");
+    priorityMap.set(mw.name, mw.priority ?? 500);
+  }
+  return { provenanceMap, phaseMap, priorityMap };
+}
+
+/** Apply instrumentation wrappers to onion entries. */
+function applyInstrumentationToEntries<Req, Res>(
+  entries: readonly OnionEntry<Req, Res>[],
+  hookLabel: string,
+  middleware: readonly KoiMiddleware[],
+  instrumentation: DebugInstrumentation,
+): readonly OnionEntry<Req, Res>[] {
+  const { provenanceMap, phaseMap, priorityMap } = buildInstrumentationMaps(middleware);
+  return instrumentation.wrapEntries(entries, hookLabel, provenanceMap, phaseMap, priorityMap);
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +241,7 @@ function wrapAsyncIterableWithErrorReset<T>(
 export function composeModelChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelHandler,
+  instrumentation?: DebugInstrumentation,
 ): (ctx: TurnContext, request: ModelRequest) => Promise<ModelResponse> {
   const regularEntries: OnionEntry<ModelRequest, Promise<ModelResponse>>[] = [];
   const concurrentObservers: KoiMiddleware[] = [];
@@ -217,12 +255,18 @@ export function composeModelChain(
     }
   }
 
+  // Apply instrumentation wrappers when enabled
+  const entries =
+    instrumentation !== undefined
+      ? applyInstrumentationToEntries(regularEntries, "wrapModelCall", middleware, instrumentation)
+      : regularEntries;
+
   // Wrap external terminal to match (req, ctx) signature
   const wrappedTerminal = (req: ModelRequest, _ctx: TurnContext): Promise<ModelResponse> =>
     terminal(req);
 
   if (concurrentObservers.length === 0) {
-    return composeOnion(regularEntries, "wrapModelCall", wrappedTerminal, (result, resetGuard) => {
+    return composeOnion(entries, "wrapModelCall", wrappedTerminal, (result, resetGuard) => {
       void result.catch(() => {
         resetGuard();
       });
@@ -234,11 +278,11 @@ export function composeModelChain(
   // ctx flows through composeOnion's dispatch closure — no shared mutable state, no WeakMap.
   const observingTerminal = (req: ModelRequest, ctx: TurnContext): Promise<ModelResponse> => {
     const result = terminal(req);
-    fireConcurrentModelObservers(concurrentObservers, ctx, req, result);
+    fireConcurrentObservers(concurrentObservers, (mw) => mw.wrapModelCall, ctx, req, result);
     return result;
   };
 
-  return composeOnion(regularEntries, "wrapModelCall", observingTerminal, (result, resetGuard) => {
+  return composeOnion(entries, "wrapModelCall", observingTerminal, (result, resetGuard) => {
     void result.catch(() => {
       resetGuard();
     });
@@ -249,16 +293,23 @@ export function composeModelChain(
 export function composeModelStreamChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelStreamHandler,
+  instrumentation?: DebugInstrumentation,
 ): (ctx: TurnContext, request: ModelRequest) => AsyncIterable<ModelChunk> {
   // Streams: all middleware runs sequentially (including concurrent observers).
   // Concurrent observe is only meaningful for request/response (model call, tool call),
   // not for streams — observers can't inspect chunks from an empty async iterable.
-  const entries: OnionEntry<ModelRequest, AsyncIterable<ModelChunk>>[] = [];
+  const rawEntries: OnionEntry<ModelRequest, AsyncIterable<ModelChunk>>[] = [];
   for (const mw of middleware) {
     if (mw.wrapModelStream !== undefined) {
-      entries.push({ name: mw.name, hook: mw.wrapModelStream });
+      rawEntries.push({ name: mw.name, hook: mw.wrapModelStream });
     }
   }
+
+  const entries =
+    instrumentation !== undefined
+      ? applyInstrumentationToEntries(rawEntries, "wrapModelStream", middleware, instrumentation)
+      : rawEntries;
+
   const wrappedTerminal = (req: ModelRequest, _ctx: TurnContext): AsyncIterable<ModelChunk> =>
     terminal(req);
   return composeOnion(entries, "wrapModelStream", wrappedTerminal, (result, resetGuard) => {
@@ -269,6 +320,7 @@ export function composeModelStreamChain(
 export function composeToolChain(
   middleware: readonly KoiMiddleware[],
   terminal: ToolHandler,
+  instrumentation?: DebugInstrumentation,
 ): (ctx: TurnContext, request: ToolRequest) => Promise<ToolResponse> {
   const regularEntries: OnionEntry<ToolRequest, Promise<ToolResponse>>[] = [];
   const concurrentObservers: KoiMiddleware[] = [];
@@ -282,20 +334,26 @@ export function composeToolChain(
     }
   }
 
+  // Apply instrumentation wrappers when enabled
+  const entries =
+    instrumentation !== undefined
+      ? applyInstrumentationToEntries(regularEntries, "wrapToolCall", middleware, instrumentation)
+      : regularEntries;
+
   const wrappedTerminal = (req: ToolRequest, _ctx: TurnContext): Promise<ToolResponse> =>
     terminal(req);
 
   if (concurrentObservers.length === 0) {
-    return composeOnion(regularEntries, "wrapToolCall", wrappedTerminal);
+    return composeOnion(entries, "wrapToolCall", wrappedTerminal);
   }
 
   const observingTerminal = (req: ToolRequest, ctx: TurnContext): Promise<ToolResponse> => {
     const result = terminal(req);
-    fireConcurrentToolObservers(concurrentObservers, ctx, req, result);
+    fireConcurrentObservers(concurrentObservers, (mw) => mw.wrapToolCall, ctx, req, result);
     return result;
   };
 
-  return composeOnion(regularEntries, "wrapToolCall", observingTerminal);
+  return composeOnion(entries, "wrapToolCall", observingTerminal);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,46 +361,37 @@ export function composeToolChain(
 // ---------------------------------------------------------------------------
 
 /**
- * Fire concurrent model-call observers alongside the terminal result.
+ * Fire concurrent observers alongside the terminal result.
  * Called from the observing terminal wrapper, so observers see the
  * post-rewrite request (after intercept/resolve middleware).
- * Observer errors are silently swallowed — they're observe-only.
+ * Observer errors are logged as warnings — they're observe-only.
  */
-function fireConcurrentModelObservers(
+function fireConcurrentObservers<Req, Res>(
   observers: readonly KoiMiddleware[],
+  hookAccessor: (
+    mw: KoiMiddleware,
+  ) => ((ctx: TurnContext, req: Req, next: (r: Req) => Promise<Res>) => Promise<Res>) | undefined,
   ctx: TurnContext,
-  request: ModelRequest,
-  mainResult: Promise<ModelResponse>,
+  request: Req,
+  mainResult: Promise<Res>,
 ): void {
   for (const mw of observers) {
-    if (mw.wrapModelCall === undefined) continue;
-    const next = (): Promise<ModelResponse> => mainResult;
+    const hook = hookAccessor(mw);
+    if (hook === undefined) continue;
+    const next = (): Promise<Res> => mainResult;
     try {
-      const observerPromise = mw.wrapModelCall(ctx, request, next);
-      void observerPromise.catch(() => {});
-    } catch (_observeError: unknown) {
-      // Synchronous throw in observer — swallow
-    }
-  }
-}
-
-/**
- * Fire concurrent tool-call observers alongside the main chain result.
- */
-function fireConcurrentToolObservers(
-  observers: readonly KoiMiddleware[],
-  ctx: TurnContext,
-  request: ToolRequest,
-  mainResult: Promise<ToolResponse>,
-): void {
-  for (const mw of observers) {
-    if (mw.wrapToolCall === undefined) continue;
-    const next = (): Promise<ToolResponse> => mainResult;
-    try {
-      const observerPromise = mw.wrapToolCall(ctx, request, next);
-      void observerPromise.catch(() => {});
-    } catch (_observeError: unknown) {
-      // Synchronous throw in observer — swallow
+      const observerPromise = hook(ctx, request, next);
+      void observerPromise.catch((e: unknown) => {
+        console.warn(
+          `[compose] Concurrent observer "${mw.name}" rejected:`,
+          e instanceof Error ? e.message : e,
+        );
+      });
+    } catch (observeError: unknown) {
+      console.warn(
+        `[compose] Concurrent observer "${mw.name}" threw synchronously:`,
+        observeError instanceof Error ? observeError.message : observeError,
+      );
     }
   }
 }

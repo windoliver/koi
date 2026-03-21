@@ -15,6 +15,8 @@ import type {
   DashboardChannelSummary,
   DashboardSkillSummary,
   DashboardSystemMetrics,
+  DebugInventoryItemResponse,
+  DebugTurnTraceResponse,
   DelegationSummary,
   GatewayDashboardEvent,
   GatewayTopology,
@@ -217,6 +219,16 @@ export interface NexusBrowserState {
   readonly loading: boolean;
 }
 
+/** Debug view — package inventory + per-turn trace waterfall. */
+export interface DebugViewState {
+  readonly inventory: readonly DebugInventoryItemResponse[] | null;
+  readonly trace: DebugTurnTraceResponse | null;
+  readonly selectedTurnIndex: number;
+  readonly scrollOffset: number;
+  readonly loading: boolean;
+  readonly activePanel: "inventory" | "waterfall";
+}
+
 // ─── Capabilities ─────────────────────────────────────────────────────
 
 /** Server capabilities — which subsystems are available. */
@@ -328,4 +340,15 @@ export function createInitialMailboxView(): MailboxViewState {
 
 export function createInitialNexusBrowser(): NexusBrowserState {
   return { entries: [], path: "/", selectedIndex: 0, fileContent: null, loading: false };
+}
+
+export function createInitialDebugView(): DebugViewState {
+  return {
+    inventory: null,
+    trace: null,
+    selectedTurnIndex: 0,
+    scrollOffset: 0,
+    loading: false,
+    activePanel: "inventory",
+  };
 }

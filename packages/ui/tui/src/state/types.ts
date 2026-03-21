@@ -34,6 +34,7 @@ import type {
   AgentProcfsViewState,
   ChannelsViewState,
   CostViewState,
+  DebugViewState,
   DelegationViewState,
   GatewayViewState,
   GovernancePendingApproval,
@@ -58,6 +59,7 @@ import {
   createInitialAgentProcfsView,
   createInitialChannelsView,
   createInitialCostView,
+  createInitialDebugView,
   createInitialDelegationView,
   createInitialGatewayView,
   createInitialGovernanceView,
@@ -108,6 +110,7 @@ export type TuiView =
   | "console"
   | "cost"
   | "datasources"
+  | "debug"
   | "delegation"
   | "doctor"
   | "engine"
@@ -333,6 +336,7 @@ export interface TuiState {
   readonly harnessView: HarnessViewState;
   readonly governanceView: GovernanceViewState;
   readonly costView: CostViewState;
+  readonly debugView: DebugViewState;
   readonly middlewareView: MiddlewareViewState;
   readonly processTreeView: ProcessTreeViewState;
   readonly agentProcfsView: AgentProcfsViewState;
@@ -422,6 +426,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     harnessView: createInitialHarnessView(),
     governanceView: createInitialGovernanceView(),
     costView: createInitialCostView(),
+    debugView: createInitialDebugView(),
     middlewareView: createInitialMiddlewareView(),
     processTreeView: createInitialProcessTreeView(),
     agentProcfsView: createInitialAgentProcfsView(),
@@ -697,7 +702,19 @@ export type TuiAction =
     }
   | { readonly kind: "set_nexus_browser_content"; readonly content: string | null }
   | { readonly kind: "set_nexus_browser_loading"; readonly loading: boolean }
-  | { readonly kind: "select_nexus_browser_entry"; readonly index: number };
+  | { readonly kind: "select_nexus_browser_entry"; readonly index: number }
+  // ─── Debug view actions ─────────────────────────────────────────────
+  | {
+      readonly kind: "set_debug_inventory";
+      readonly items: readonly import("@koi/dashboard-types").DebugInventoryItemResponse[];
+    }
+  | {
+      readonly kind: "set_debug_trace";
+      readonly trace: import("@koi/dashboard-types").DebugTurnTraceResponse | null;
+    }
+  | { readonly kind: "set_debug_loading"; readonly loading: boolean }
+  | { readonly kind: "select_debug_turn"; readonly turnIndex: number }
+  | { readonly kind: "set_debug_panel"; readonly panel: "inventory" | "waterfall" };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;
