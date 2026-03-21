@@ -71,8 +71,8 @@ export async function batchWrite(
   let failed = 0;
 
   for (let i = 0; i < entries.length; i += concurrency) {
-    // Brief pause between batches to avoid Nexus rate limit buildup
-    if (i > 0) await new Promise((r) => setTimeout(r, 100));
+    // Pause between batches only when previous batch had failures (rate limit hit)
+    if (i > 0 && failed > 0) await new Promise((r) => setTimeout(r, 200));
     const batch = entries.slice(i, i + concurrency);
     const batchResults = await Promise.all(batch.map((entry) => writeWithRetry(client, entry)));
 
