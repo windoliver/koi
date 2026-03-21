@@ -4,12 +4,17 @@
  * Writes multiple entries in parallel with a configurable concurrency limit.
  * Returns succeeded/failed counts. Individual write failures do not abort
  * the entire batch — the helper always attempts every entry.
+ *
+ * Retryable errors (e.g. HTTP 429 rate limit) are retried with exponential
+ * backoff up to MAX_RETRIES times before being counted as failed.
  */
 
 import type { KoiError, Result } from "@koi/core";
 import type { NexusClient } from "./types.js";
 
-const DEFAULT_BATCH_CONCURRENCY = 10;
+const DEFAULT_BATCH_CONCURRENCY = 5;
+const MAX_RETRIES = 4;
+const INITIAL_BACKOFF_MS = 300;
 
 /** A single entry to write via Nexus. */
 export interface BatchWriteEntry {
@@ -24,10 +29,36 @@ export interface BatchWriteResult {
 }
 
 /**
+ * Writes a single entry with retry and exponential backoff for retryable errors.
+ */
+async function writeWithRetry(
+  client: NexusClient,
+  entry: BatchWriteEntry,
+): Promise<Result<void, KoiError>> {
+  const content = typeof entry.data === "string" ? entry.data : JSON.stringify(entry.data);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const result = await client.rpc<void>("write", { path: entry.path, content });
+    if (result.ok) return result;
+    // Retry if error is retryable and we have attempts left
+    if (result.error.retryable === true && attempt < MAX_RETRIES) {
+      await new Promise((r) => setTimeout(r, INITIAL_BACKOFF_MS * 2 ** attempt));
+      continue;
+    }
+    return result;
+  }
+  // Unreachable, but satisfies TypeScript
+  return {
+    ok: false,
+    error: { code: "EXTERNAL", message: "max retries exceeded", retryable: false },
+  };
+}
+
+/**
  * Write multiple Nexus entries in bounded-concurrency batches.
  *
  * Unlike {@link batchRead}, individual write failures are tallied rather than
  * propagated — every entry is attempted regardless of per-item errors.
+ * Retryable errors (HTTP 429) are retried with exponential backoff.
  */
 export async function batchWrite(
   client: NexusClient,
@@ -41,18 +72,7 @@ export async function batchWrite(
 
   for (let i = 0; i < entries.length; i += concurrency) {
     const batch = entries.slice(i, i + concurrency);
-    const batchResults = await Promise.all(
-      batch.map(async (entry) => {
-        // Nexus write expects `content` (string), not `data` (object).
-        // Serialize objects to JSON; pass strings as-is.
-        const content = typeof entry.data === "string" ? entry.data : JSON.stringify(entry.data);
-        const result = await client.rpc<void>("write", {
-          path: entry.path,
-          content,
-        });
-        return result;
-      }),
-    );
+    const batchResults = await Promise.all(batch.map((entry) => writeWithRetry(client, entry)));
 
     for (const result of batchResults) {
       if (result.ok) {

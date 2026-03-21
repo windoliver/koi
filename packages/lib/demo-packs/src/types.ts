@@ -77,4 +77,11 @@ export interface DemoPack {
   readonly seed: (ctx: SeedContext) => Promise<SeedResult>;
   /** Known-good prompts to suggest after seeding. */
   readonly prompts: readonly string[];
+  /** Static brick/forge views for already-seeded restarts (avoids re-writing to Nexus). */
+  readonly staticViews?:
+    | {
+        readonly seededBricks: readonly SeededBrickView[];
+        readonly seededForgeEvents: readonly Readonly<Record<string, unknown>>[];
+      }
+    | undefined;
 }

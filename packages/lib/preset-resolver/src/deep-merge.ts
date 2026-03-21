@@ -36,5 +36,12 @@ export function deepMerge<T extends Record<string, unknown>>(base: T, override: 
     }
   }
 
+  // Copy override keys not present in base (e.g. stacks overrides into empty {})
+  for (const key of Object.keys(override)) {
+    if (!(key in result)) {
+      result[key] = (override as Record<string, unknown>)[key];
+    }
+  }
+
   return result as T;
 }

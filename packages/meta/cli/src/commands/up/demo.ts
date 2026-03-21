@@ -32,19 +32,14 @@ export async function seedDemoPackIfNeeded(
     const markerPath = join(workspaceRoot, ".koi", ".demo-seeded");
     try {
       await readFile(markerPath, "utf-8");
-      // Already seeded — still return prompts and run seed to get brick views
-      const { getPack, runSeed } = await import("@koi/demo-packs");
+      // Already seeded — return prompts and static brick/forge views without re-writing to Nexus
+      const { getPack } = await import("@koi/demo-packs");
       const pack = getPack(demoPack);
-      // Re-run seed to get seeded brick views (idempotent writes to Nexus)
-      if (nexusClient !== undefined && pack !== undefined) {
-        const result = await runSeed(demoPack, { nexusClient, agentName, workspaceRoot, verbose });
-        return {
-          prompts: pack.prompts,
-          seededBricks: result.seededBricks ?? [],
-          seededForgeEvents: result.seededForgeEvents ?? [],
-        };
-      }
-      return { prompts: pack?.prompts ?? [], seededBricks: [], seededForgeEvents: [] };
+      return {
+        prompts: pack?.prompts ?? [],
+        seededBricks: pack?.staticViews?.seededBricks ?? [],
+        seededForgeEvents: pack?.staticViews?.seededForgeEvents ?? [],
+      };
     } catch {
       // Marker doesn't exist — proceed with seeding
     }
@@ -62,12 +57,26 @@ export async function seedDemoPackIfNeeded(
       return EMPTY_RESULT;
     }
 
-    const result = await runSeed(demoPack, {
+    // Retry seeding once if all counts are zero — Nexus may pass health check
+    // but not be ready for batch writes immediately after container startup.
+    let result = await runSeed(demoPack, {
       nexusClient,
       agentName,
       workspaceRoot,
       verbose,
     });
+
+    const allZero = result.summary.every((line) => /:\s*0\//.test(line));
+    if (allZero && result.summary.length > 0) {
+      if (verbose) process.stderr.write("  Retrying seed (Nexus may still be initializing)...\n");
+      await new Promise((r) => setTimeout(r, 3000));
+      result = await runSeed(demoPack, {
+        nexusClient,
+        agentName,
+        workspaceRoot,
+        verbose,
+      });
+    }
 
     for (const line of result.summary) {
       process.stderr.write(`  ${line}\n`);

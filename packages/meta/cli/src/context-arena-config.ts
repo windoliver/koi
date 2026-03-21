@@ -5,6 +5,7 @@
  * based on preset configuration (Decision 1A, 2A).
  */
 
+import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ContextArenaConfig } from "@koi/context-arena";
 import type { InboundMessage, SessionId, ThreadSnapshotStore } from "@koi/core";
@@ -77,6 +78,7 @@ export function createContextArenaConfigForUp(
       break;
     }
     case "sqlite": {
+      mkdirSync(dataDir, { recursive: true });
       const dbPath = resolve(dataDir, "threads.db");
       store = createSqliteSnapshotChainStore(dbPath);
       break;
@@ -86,6 +88,7 @@ export function createContextArenaConfigForUp(
       if (input.nexusSnapshotStore !== undefined) {
         store = input.nexusSnapshotStore;
       } else {
+        mkdirSync(dataDir, { recursive: true });
         const dbPath = resolve(dataDir, "threads.db");
         store = createSqliteSnapshotChainStore(dbPath);
       }

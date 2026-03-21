@@ -48,6 +48,98 @@ import { extractDemoPack, extractStacks, inferPresetId } from "./preset.js";
 import { activatePresetStacks } from "./stacks.js";
 import { startTemporalEmbed } from "./temporal.js";
 
+/**
+ * Known manifest tool packages and their dynamic import + provider factory.
+ * Each entry maps a package name to a function that creates a ComponentProvider.
+ */
+const TOOL_FACTORIES: Readonly<
+  Record<string, (verbose: boolean) => Promise<import("@koi/core").ComponentProvider | undefined>>
+> = {
+  "@koi/tools-web": async (verbose) => {
+    try {
+      const { createWebProvider, createWebExecutor } = await import("@koi/tools-web");
+      const braveKey = process.env.BRAVE_API_KEY;
+      // Build search provider from Brave if API key is available
+      const config: Record<string, unknown> = {};
+      if (braveKey !== undefined && braveKey !== "") {
+        try {
+          const mod = await import("@koi/search-brave").catch(() => undefined);
+          if (mod !== undefined) {
+            config.searchProvider = mod.createBraveSearch({ apiKey: braveKey });
+          }
+        } catch {
+          // search-brave not available — web_fetch still works
+        }
+      }
+      const executor = createWebExecutor(config as Parameters<typeof createWebExecutor>[0]);
+      const provider = createWebProvider({ executor });
+      if (verbose) process.stderr.write("  Tool: @koi/tools-web (web_fetch, web_search)\n");
+      return provider;
+    } catch {
+      return undefined;
+    }
+  },
+  "@koi/tool-ask-user": async () => {
+    // ask_user requires an ElicitationHandler wired to the TUI/channel.
+    // Skip in manifest resolution — it's provided by the engine adapter when available.
+    return undefined;
+  },
+  "@koi/tool-exec": async (verbose) => {
+    try {
+      const { createExecProvider } = await import("@koi/tool-exec");
+      const { createWasmSandboxExecutor } = await import("@koi/sandbox-wasm");
+      const executor = createWasmSandboxExecutor();
+      const provider = createExecProvider({ executor });
+      if (verbose) process.stderr.write("  Tool: @koi/tool-exec (wasm sandbox)\n");
+      return provider;
+    } catch {
+      return undefined;
+    }
+  },
+  "@koi/tool-browser": async (verbose) => {
+    try {
+      const { createBrowserProvider } = await import("@koi/tool-browser");
+      const { createPlaywrightBrowserDriver } = await import("@koi/browser-playwright");
+      const driver = await createPlaywrightBrowserDriver({ headless: true, stealth: true });
+      const provider = createBrowserProvider({ backend: driver });
+      if (verbose)
+        process.stderr.write(
+          "  Tool: @koi/tool-browser (browser_navigate, browser_snapshot, ...)\n",
+        );
+      return provider;
+    } catch {
+      return undefined;
+    }
+  },
+  "@koi/tools-context-hub": async () => {
+    // Context-hub tools are already provided by the contextHub stack activation.
+    // Skip to avoid duplicate registration.
+    return undefined;
+  },
+};
+
+/**
+ * Resolves manifest tools (declared under tools.koi in koi.yaml) into
+ * ComponentProviders by dynamically importing known tool packages.
+ */
+async function resolveManifestTools(
+  manifest: import("@koi/core").AgentManifest,
+  verbose: boolean,
+): Promise<readonly import("@koi/core").ComponentProvider[]> {
+  const tools = manifest.tools ?? [];
+  const providers: import("@koi/core").ComponentProvider[] = [];
+
+  for (const tool of tools) {
+    const factory = TOOL_FACTORIES[tool.name];
+    if (factory !== undefined) {
+      const provider = await factory(verbose);
+      if (provider !== undefined) providers.push(provider);
+    }
+  }
+
+  return providers;
+}
+
 const LABEL_RE = /^\[(user|assistant|system)\]:\s*/;
 
 /**
@@ -284,7 +376,11 @@ async function persistChatToNexus(
     JSON.stringify({ kind: "assistant", text: assistantText, timestamp: Date.now() }),
   ].join("\n");
   const content = existing.length > 0 ? `${existing}\n${entries}\n` : `${entries}\n`;
-  await client.rpc<null>("write", { path, content });
+  const writeResult = await client.rpc<null>("write", { path, content });
+  if (!writeResult.ok) {
+    const err = (writeResult as { readonly error?: { readonly message?: string } }).error;
+    throw new Error(`Nexus write failed: ${err?.message ?? "unknown"}`);
+  }
 }
 
 /** Probe nexus.yaml for an already-running Nexus instance. Returns URL+key if healthy. */
@@ -786,6 +882,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
     ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
   });
 
+  // Resolve manifest tools (tools.koi section) into ComponentProviders
+  const manifestToolProviders = await resolveManifestTools(manifest, flags.verbose);
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -795,7 +894,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     dataSourceProvider,
     dataSourceTools,
     presetMiddleware: activatedStacks.middleware,
-    presetProviders: activatedStacks.providers,
+    presetProviders: [...activatedStacks.providers, ...manifestToolProviders],
   });
 
   // Late-binding event sink for forge/monitor SSE events
@@ -883,11 +982,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 8b. Demo pack seed (before admin so seeded bricks are available for forge view)
   const demoPack = await extractDemoPack(manifestPath);
-  let demoNexusClient: import("@koi/nexus-client").NexusClient | undefined;
-  if (demoPack !== undefined && nexus.baseUrl !== undefined) {
+  let nexusClient: import("@koi/nexus-client").NexusClient | undefined;
+  if (nexus.baseUrl !== undefined) {
     const { createNexusClient } = await import("@koi/nexus-client");
     const apiKey = process.env.NEXUS_API_KEY;
-    demoNexusClient = createNexusClient({
+    nexusClient = createNexusClient({
       baseUrl: nexus.baseUrl,
       ...(apiKey !== undefined ? { apiKey } : {}),
     });
@@ -896,7 +995,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     demoPack,
     workspaceRoot,
     manifest.name,
-    demoNexusClient,
+    nexusClient,
     flags.verbose,
   );
 
@@ -1099,6 +1198,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       const { createTuiApp } = await import("@koi/tui");
       tuiApp = createTuiApp({
         adminUrl: `http://localhost:${String(DEFAULT_ADMIN_PORT)}/admin/api`,
+        ...(flags.resume !== undefined ? { initialSessionId: currentSessionId } : {}),
       });
       await tuiApp.start();
       tuiAttached = true;
@@ -1113,6 +1213,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     await Promise.all(nonCli.map((ch) => ch.connect()));
     output.info("Operator console attached.\n");
   } else {
+    await Promise.all(channels.map((ch) => ch.connect()));
     output.info("Type a message or Ctrl+C to stop.\n");
   }
 
@@ -1175,10 +1276,34 @@ export async function runUp(flags: UpFlags): Promise<void> {
           }
         }
       }
+      // Retry once on empty model response (transient API errors / rate limits)
       if (turnCount === 0 && deltas.length === 0) {
-        process.stderr.write(
-          "warn: model returned empty response (0 turns, 0 tokens). Check OPENROUTER_API_KEY and model availability.\n",
-        );
+        await new Promise((r) => setTimeout(r, 2000));
+        for await (const event of runtime.run(input)) {
+          if (event.kind === "text_delta") deltas.push(event.delta);
+          if (event.kind === "done") {
+            if (event.output.stopReason === "error") {
+              const errMeta = event.output.metadata as Record<string, unknown> | undefined;
+              const errDetail =
+                errMeta !== undefined && typeof errMeta.errorMessage === "string"
+                  ? errMeta.errorMessage
+                  : "unknown error";
+              process.stderr.write(`error: model call failed on retry: ${errDetail}\n`);
+            }
+            turnCount = event.output.metrics.turns;
+            if (adminBridge !== undefined) {
+              adminBridge.updateMetrics({
+                turns: event.output.metrics.turns,
+                totalTokens: event.output.metrics.totalTokens,
+              });
+            }
+          }
+        }
+        if (turnCount === 0 && deltas.length === 0) {
+          process.stderr.write(
+            "warn: model returned empty response after retry. Try starting a fresh session.\n",
+          );
+        }
       }
       await persistChatExchangeSafely(
         workspaceRoot,
@@ -1187,9 +1312,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
         text,
         deltas.join(""),
       );
-      if (demoNexusClient !== undefined) {
+      if (nexusClient !== undefined) {
         persistChatToNexus(
-          demoNexusClient,
+          nexusClient,
           manifest.name,
           currentSessionId,
           text,
@@ -1261,9 +1386,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
           text,
           deltas.join(""),
         );
-        if (demoNexusClient !== undefined) {
+        if (nexusClient !== undefined) {
           persistChatToNexus(
-            demoNexusClient,
+            nexusClient,
             manifest.name,
             currentSessionId,
             text,
