@@ -358,7 +358,6 @@ export function generateDemoManifestYaml(state: WizardState): string {
   additional.push('#   image: "python:3.12-slim" # Docker image (docker provider only)');
   additional.push("# See @koi/sandbox-stack docs for provider-specific config.");
   additional.push("");
-
   if (state.demoPack !== undefined) {
     additional.push("demo:");
     additional.push(`  pack: ${state.demoPack}`);
