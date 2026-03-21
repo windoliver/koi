@@ -1251,6 +1251,7 @@
         "@koi/runtime-presets": "workspace:*",
         "@koi/sandbox": "workspace:*",
         "@koi/sandbox-ipc": "workspace:*",
+        "@koi/sandbox-wasm": "workspace:*",
         "@koi/search-brave": "workspace:*",
         "@koi/search-provider": "workspace:*",
         "@koi/setup-core": "workspace:*",

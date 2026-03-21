@@ -93,8 +93,10 @@ const TOOL_FACTORIES: Readonly<
   "@koi/tool-exec": async (verbose) => {
     try {
       const { createExecProvider } = await import("@koi/tool-exec");
-      const provider = createExecProvider({});
-      if (verbose) process.stderr.write("  Tool: @koi/tool-exec\n");
+      const { createWasmSandboxExecutor } = await import("@koi/sandbox-wasm");
+      const executor = createWasmSandboxExecutor();
+      const provider = createExecProvider({ executor });
+      if (verbose) process.stderr.write("  Tool: @koi/tool-exec (wasm sandbox)\n");
       return provider;
     } catch {
       return undefined;
@@ -1262,10 +1264,26 @@ export async function runUp(flags: UpFlags): Promise<void> {
           }
         }
       }
+      // Retry once on empty model response (transient API errors / rate limits)
       if (turnCount === 0 && deltas.length === 0) {
-        process.stderr.write(
-          "warn: model returned empty response (0 turns, 0 tokens). Check OPENROUTER_API_KEY and model availability.\n",
-        );
+        await new Promise((r) => setTimeout(r, 2000));
+        for await (const event of runtime.run(input)) {
+          if (event.kind === "text_delta") deltas.push(event.delta);
+          if (event.kind === "done") {
+            turnCount = event.output.metrics.turns;
+            if (adminBridge !== undefined) {
+              adminBridge.updateMetrics({
+                turns: event.output.metrics.turns,
+                totalTokens: event.output.metrics.totalTokens,
+              });
+            }
+          }
+        }
+        if (turnCount === 0 && deltas.length === 0) {
+          process.stderr.write(
+            "warn: model returned empty response (0 turns, 0 tokens). Check API key and model availability.\n",
+          );
+        }
       }
       await persistChatExchangeSafely(
         workspaceRoot,
