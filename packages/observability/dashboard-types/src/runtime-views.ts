@@ -47,6 +47,8 @@ export interface AgentProcfs {
   readonly lastActivityAt: number;
   readonly parentId?: AgentId;
   readonly childCount: number;
+  readonly tools?: readonly { readonly name: string; readonly origin: string }[] | undefined;
+  readonly skills?: readonly { readonly name: string; readonly source: string }[] | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +273,26 @@ export interface DebugSpanResponse {
   readonly nextCalled: boolean;
   readonly error?: string | undefined;
   readonly children?: readonly DebugSpanResponse[] | undefined;
+  readonly tier?: string | undefined;
+}
+
+export interface ResolverSpanResponse {
+  readonly toolId: string;
+  readonly source: string;
+  readonly durationMs: number;
+}
+
+export interface ChannelIOSpanResponse {
+  readonly direction: string;
+  readonly kind: string;
+  readonly durationMs: number;
+}
+
+export interface ForgeRefreshSpanResponse {
+  readonly descriptorsChanged: boolean;
+  readonly descriptorCount: number;
+  readonly middlewareRecomposed: boolean;
+  readonly timestamp: number;
 }
 
 export interface DebugTurnTraceResponse {
@@ -278,6 +300,9 @@ export interface DebugTurnTraceResponse {
   readonly totalDurationMs: number;
   readonly spans: readonly DebugSpanResponse[];
   readonly timestamp: number;
+  readonly resolverSpans?: readonly ResolverSpanResponse[] | undefined;
+  readonly channelSpans?: readonly ChannelIOSpanResponse[] | undefined;
+  readonly forgeSpans?: readonly ForgeRefreshSpanResponse[] | undefined;
 }
 
 export interface DebugInventoryItemResponse {

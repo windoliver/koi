@@ -714,7 +714,9 @@ export type TuiAction =
     }
   | { readonly kind: "set_debug_loading"; readonly loading: boolean }
   | { readonly kind: "select_debug_turn"; readonly turnIndex: number }
-  | { readonly kind: "set_debug_panel"; readonly panel: "inventory" | "waterfall" };
+  | { readonly kind: "set_debug_panel"; readonly panel: "inventory" | "waterfall" }
+  | { readonly kind: "cycle_debug_visibility" }
+  | { readonly kind: "highlight_debug_middleware"; readonly name: string | null };
 
 /** Maximum messages kept in session memory (sliding window). */
 export const MAX_SESSION_MESSAGES = 500;

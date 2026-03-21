@@ -1,6 +1,9 @@
 /**
  * Debug view — two-panel display showing package inventory and per-turn
  * timing trace waterfall. Toggled via /debug command.
+ *
+ * Features: resolver traces, channel I/O traces, forge refresh traces,
+ * lifecycle badges, visibility tier filtering, cross-panel highlighting.
  */
 
 import React from "react";
@@ -77,12 +80,25 @@ function sourceLabel(source: string): string {
   }
 }
 
+/** Lifecycle badge: active this turn vs. idle. */
+function lifecycleBadge(
+  item: DebugInventoryItemResponse,
+  currentTurn: number,
+): string {
+  if (item.lastUsedTurn !== undefined && item.lastUsedTurn >= currentTurn - 1) {
+    return "\u25C6"; // filled diamond — active
+  }
+  return "\u25CF"; // filled circle — idle
+}
+
 // ─── Inventory Panel ─────────────────────────────────────────────────
 
 const InventoryPanel = React.memo(function InventoryPanel(props: {
   readonly items: readonly DebugInventoryItemResponse[];
+  readonly selectedTurnIndex: number;
+  readonly highlightedMiddleware: string | null;
 }): React.ReactNode {
-  const { items } = props;
+  const { items, selectedTurnIndex, highlightedMiddleware } = props;
 
   // Group by category
   const groups = new Map<string, readonly DebugInventoryItemResponse[]>();
@@ -103,11 +119,16 @@ const InventoryPanel = React.memo(function InventoryPanel(props: {
             <text fg={categoryColor(cat)}>
               <b>{`  ${cat.toUpperCase()} (${String(catItems.length)})`}</b>
             </text>
-            {catItems.map((item) => (
-              <text key={item.name} fg={COLORS.white}>
-                {`  \u25CF ${item.name.padEnd(24)} ${(item.phase ?? "").padEnd(10)} ${String(item.priority ?? "").padEnd(5)} ${sourceLabel(item.source).padEnd(12)} ${(item.hooks ?? []).map(abbreviateHook).join(" ")}`}
-              </text>
-            ))}
+            {catItems.map((item) => {
+              const isHighlighted = highlightedMiddleware === item.name;
+              const fg = isHighlighted ? COLORS.accent : COLORS.white;
+              const badge = lifecycleBadge(item, selectedTurnIndex);
+              return (
+                <text key={item.name} fg={fg}>
+                  {`  ${badge} ${item.name.padEnd(24)} ${(item.phase ?? "").padEnd(10)} ${String(item.priority ?? "").padEnd(5)} ${sourceLabel(item.source).padEnd(12)} ${(item.hooks ?? []).map(abbreviateHook).join(" ")}`}
+                </text>
+              );
+            })}
           </box>
         );
       })}
@@ -151,9 +172,19 @@ function WaterfallSpan(props: {
 
 function WaterfallPanel(props: {
   readonly trace: DebugTurnTraceResponse;
+  readonly visibilityTier: string;
 }): React.ReactNode {
-  const { trace } = props;
-  const maxDuration = Math.max(...trace.spans.map((s) => s.durationMs), 1);
+  const { trace, visibilityTier } = props;
+
+  // Filter spans by visibility tier
+  const visibleSpans = trace.spans.filter((s) => {
+    if (visibilityTier === "all") return true;
+    if (visibilityTier === "secondary") return s.tier !== "all";
+    // "critical": show critical + untagged spans
+    return s.tier === "critical" || s.tier === undefined;
+  });
+
+  const maxDuration = Math.max(...visibleSpans.map((s) => s.durationMs), 1);
 
   return (
     <box flexDirection="column">
@@ -161,7 +192,7 @@ function WaterfallPanel(props: {
         <b>{`  Turn #${String(trace.turnIndex)} \u2014 ${formatDuration(trace.totalDurationMs)} total`}</b>
       </text>
       <text fg={COLORS.dim}>{""}</text>
-      {trace.spans.map((span, i) => (
+      {visibleSpans.map((span, i) => (
         <WaterfallSpan
           key={`${span.name}-${span.hook}-${String(i)}`}
           span={span}
@@ -169,6 +200,39 @@ function WaterfallPanel(props: {
           indent={0}
         />
       ))}
+      {/* Resolver spans */}
+      {trace.resolverSpans !== undefined && trace.resolverSpans.length > 0 && (
+        <box flexDirection="column" marginTop={1}>
+          <text fg={COLORS.blue}>{"  RESOLVER"}</text>
+          {trace.resolverSpans.map((r, i) => (
+            <text key={`resolve-${String(i)}`} fg={r.source === "miss" ? COLORS.red : COLORS.green}>
+              {`  ${r.source === "miss" ? "\u2717" : "\u2713"} ${r.toolId.padEnd(24)} ${r.source.padEnd(10)} ${formatDuration(r.durationMs)}`}
+            </text>
+          ))}
+        </box>
+      )}
+      {/* Channel I/O spans */}
+      {trace.channelSpans !== undefined && trace.channelSpans.length > 0 && (
+        <box flexDirection="column" marginTop={1}>
+          <text fg={COLORS.blue}>{"  CHANNEL I/O"}</text>
+          {trace.channelSpans.map((c, i) => (
+            <text key={`channel-${String(i)}`} fg={COLORS.cyan}>
+              {`  ${c.direction === "out" ? "\u2192" : "\u2190"} ${c.kind.padEnd(16)} ${formatDuration(c.durationMs)}`}
+            </text>
+          ))}
+        </box>
+      )}
+      {/* Forge refresh */}
+      {trace.forgeSpans !== undefined && trace.forgeSpans.length > 0 && (
+        <box flexDirection="column" marginTop={1}>
+          <text fg={COLORS.magenta}>{"  FORGE REFRESH"}</text>
+          {trace.forgeSpans.map((f, i) => (
+            <text key={`forge-${String(i)}`} fg={COLORS.dim}>
+              {`  descriptors: ${String(f.descriptorCount)}${f.descriptorsChanged ? " (changed)" : ""} | middleware: ${f.middlewareRecomposed ? "recomposed" : "unchanged"}`}
+            </text>
+          ))}
+        </box>
+      )}
     </box>
   );
 }
@@ -178,7 +242,7 @@ function WaterfallPanel(props: {
 function DebugHintBar(): React.ReactNode {
   return (
     <text fg={COLORS.dim}>
-      {"\n  [1] Inventory  [2] Waterfall  [n/p] Turn  [j/k] Scroll"}
+      {"\n  [1] Inventory  [2] Waterfall  [n/p] Turn  [j/k] Scroll  [Tab] Tier"}
     </text>
   );
 }
@@ -186,8 +250,15 @@ function DebugHintBar(): React.ReactNode {
 // ─── Main Debug View ─────────────────────────────────────────────────
 
 export function DebugView(props: DebugViewProps): React.ReactNode {
-  const { inventory, trace, loading, activePanel, selectedTurnIndex } =
-    props.debugView;
+  const {
+    inventory,
+    trace,
+    loading,
+    activePanel,
+    selectedTurnIndex,
+    visibilityTier,
+    highlightedMiddleware,
+  } = props.debugView;
 
   if (activePanel === "inventory") {
     return (
@@ -201,7 +272,13 @@ export function DebugView(props: DebugViewProps): React.ReactNode {
         emptyMessage="No debug data available."
         emptyHint="Enable debug mode and select an agent."
       >
-        {inventory !== null && <InventoryPanel items={inventory} />}
+        {inventory !== null && (
+          <InventoryPanel
+            items={inventory}
+            selectedTurnIndex={selectedTurnIndex}
+            highlightedMiddleware={highlightedMiddleware}
+          />
+        )}
         <DebugHintBar />
       </PanelChrome>
     );
@@ -209,7 +286,7 @@ export function DebugView(props: DebugViewProps): React.ReactNode {
 
   return (
     <PanelChrome
-      title={`Debug \u2014 Turn #${String(selectedTurnIndex)} Waterfall`}
+      title={`Debug \u2014 Turn #${String(selectedTurnIndex)} Waterfall [${visibilityTier}]`}
       focused={props.focused}
       zoomLevel={props.zoomLevel}
       loading={loading}
@@ -217,7 +294,9 @@ export function DebugView(props: DebugViewProps): React.ReactNode {
       emptyMessage={`No trace for turn #${String(selectedTurnIndex)}.`}
       emptyHint="Run a query to generate trace data, or press [n/p] to navigate turns."
     >
-      {trace !== null && <WaterfallPanel trace={trace} />}
+      {trace !== null && (
+        <WaterfallPanel trace={trace} visibilityTier={visibilityTier} />
+      )}
       <DebugHintBar />
     </PanelChrome>
   );

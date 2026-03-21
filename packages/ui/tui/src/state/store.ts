@@ -715,6 +715,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       };
     case "set_debug_panel":
       return { ...state, debugView: { ...state.debugView, activePanel: action.panel } };
+    case "cycle_debug_visibility": {
+      const TIERS = ["critical", "secondary", "all"] as const;
+      const idx = TIERS.indexOf(state.debugView.visibilityTier);
+      const next = TIERS[(idx + 1) % TIERS.length] ?? "critical";
+      return { ...state, debugView: { ...state.debugView, visibilityTier: next } };
+    }
+    case "highlight_debug_middleware":
+      return {
+        ...state,
+        debugView: { ...state.debugView, highlightedMiddleware: action.name },
+      };
 
     case "scroll_domain_view": {
       const { domain, offset } = action;

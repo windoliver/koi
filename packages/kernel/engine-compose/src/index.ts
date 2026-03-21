@@ -22,13 +22,17 @@ export {
 } from "./compose.js";
 // instrumentation
 export type {
+  ChannelIOSpan,
   DebugInstrumentation,
   DebugInstrumentationConfig,
   DebugInventory,
   DebugInventoryItem,
   DebugSpan,
   DebugTurnTrace,
+  ForgeRefreshSpan,
   MiddlewareSource,
+  ResolverSpan,
+  VisibilityTier,
 } from "./compose-instrumentation.js";
 export { createDebugInstrumentation } from "./compose-instrumentation.js";
 // extension composer

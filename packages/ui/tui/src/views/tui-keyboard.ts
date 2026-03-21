@@ -145,7 +145,7 @@ export function createKeyboardHandler(
       return true;
     }
 
-    // Debug view — 1/2 panel switch, n/p turn navigation (before tab keys)
+    // Debug view — 1/2 panel switch, n/p turn navigation, Tab tier cycle, Enter link
     if (view === "debug") {
       if (sequence === "1") {
         store.dispatch({ kind: "set_debug_panel", panel: "inventory" });
@@ -167,6 +167,20 @@ export function createKeyboardHandler(
           kind: "select_debug_turn",
           turnIndex: Math.max(0, store.getState().debugView.selectedTurnIndex - 1),
         });
+        return true;
+      }
+      if (sequence === "\t") {
+        store.dispatch({ kind: "cycle_debug_visibility" });
+        return true;
+      }
+      // Enter in waterfall panel — highlight the span at current scroll offset
+      if (sequence === "\r") {
+        const debugState = store.getState().debugView;
+        if (debugState.activePanel === "waterfall" && debugState.trace !== null) {
+          const spanAtOffset = debugState.trace.spans[debugState.scrollOffset];
+          const name = spanAtOffset?.name ?? null;
+          store.dispatch({ kind: "highlight_debug_middleware", name });
+        }
         return true;
       }
     }

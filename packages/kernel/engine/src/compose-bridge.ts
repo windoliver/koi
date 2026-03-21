@@ -18,7 +18,11 @@ import type {
   ToolHandler,
   TurnContext,
 } from "@koi/core";
-import type { CapabilityInjectionConfig, TerminalHandlers } from "@koi/engine-compose";
+import type {
+  CapabilityInjectionConfig,
+  DebugInstrumentation,
+  TerminalHandlers,
+} from "@koi/engine-compose";
 import {
   composeModelChain,
   composeModelStreamChain,
@@ -42,22 +46,42 @@ export function createTerminalHandlers(
   rawModelTerminal: ModelHandler,
   rawToolTerminal: ToolHandler,
   rawModelStreamTerminal?: ModelStreamHandler,
+  debugInstrumentation?: DebugInstrumentation,
+  getTurnIndex?: () => number,
 ): TerminalHandlers {
   const modelHandler: ModelHandler = async (request) => {
     agent.transition({ kind: "wait", reason: "model_call" });
+    const ioStart = performance.now();
     try {
       return await rawModelTerminal(request);
     } finally {
       agent.transition({ kind: "resume" });
+      if (debugInstrumentation !== undefined && getTurnIndex !== undefined) {
+        debugInstrumentation.recordChannelIO({
+          direction: "out",
+          kind: "model_call",
+          durationMs: performance.now() - ioStart,
+          turnIndex: getTurnIndex(),
+        });
+      }
     }
   };
 
   const toolHandler: ToolHandler = async (request) => {
     agent.transition({ kind: "wait", reason: "tool_call" });
+    const ioStart = performance.now();
     try {
       return await rawToolTerminal(request);
     } finally {
       agent.transition({ kind: "resume" });
+      if (debugInstrumentation !== undefined && getTurnIndex !== undefined) {
+        debugInstrumentation.recordChannelIO({
+          direction: "out",
+          kind: "tool_call",
+          durationMs: performance.now() - ioStart,
+          turnIndex: getTurnIndex(),
+        });
+      }
     }
   };
 
@@ -67,11 +91,20 @@ export function createTerminalHandlers(
 
   const modelStreamHandler: ModelStreamHandler = (request) => {
     let finished = false;
+    const streamStart = performance.now();
 
     function resume(): void {
       if (!finished) {
         finished = true;
         agent.transition({ kind: "resume" });
+        if (debugInstrumentation !== undefined && getTurnIndex !== undefined) {
+          debugInstrumentation.recordChannelIO({
+            direction: "out",
+            kind: "model_stream",
+            durationMs: performance.now() - streamStart,
+            turnIndex: getTurnIndex(),
+          });
+        }
       }
     }
 

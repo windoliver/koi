@@ -13,6 +13,27 @@ import type { TurnContext } from "@koi/core";
 
 export type MiddlewareSource = "static" | "forged" | "dynamic";
 
+export type VisibilityTier = "critical" | "secondary" | "all";
+
+export interface ResolverSpan {
+  readonly toolId: string;
+  readonly source: "forged" | "entity" | "miss";
+  readonly durationMs: number;
+}
+
+export interface ChannelIOSpan {
+  readonly direction: "in" | "out";
+  readonly kind: "model_call" | "tool_call" | "model_stream";
+  readonly durationMs: number;
+}
+
+export interface ForgeRefreshSpan {
+  readonly descriptorsChanged: boolean;
+  readonly descriptorCount: number;
+  readonly middlewareRecomposed: boolean;
+  readonly timestamp: number;
+}
+
 export interface DebugSpan {
   readonly name: string;
   readonly hook: string;
@@ -23,6 +44,7 @@ export interface DebugSpan {
   readonly nextCalled: boolean;
   readonly error?: string | undefined;
   readonly children?: readonly DebugSpan[] | undefined;
+  readonly tier?: VisibilityTier | undefined;
 }
 
 export interface DebugTurnTrace {
@@ -30,6 +52,9 @@ export interface DebugTurnTrace {
   readonly totalDurationMs: number;
   readonly spans: readonly DebugSpan[];
   readonly timestamp: number;
+  readonly resolverSpans?: readonly ResolverSpan[] | undefined;
+  readonly channelSpans?: readonly ChannelIOSpan[] | undefined;
+  readonly forgeSpans?: readonly ForgeRefreshSpan[] | undefined;
 }
 
 export interface DebugInventoryItem {
@@ -68,6 +93,7 @@ interface RawSpan {
   readonly priority: number;
   readonly nextCalled: boolean;
   readonly error?: string | undefined;
+  readonly tier?: VisibilityTier | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +129,12 @@ export interface DebugInstrumentation {
   ) => DebugInventory;
   /** Get the provenance map (populated during wrapEntries). */
   readonly provenanceMap: Map<string, MiddlewareSource>;
+  /** Record a resolver span (tool resolution timing). */
+  readonly recordResolve: (event: ResolverSpan & { readonly turnIndex: number }) => void;
+  /** Record a channel I/O span (model/tool call timing). */
+  readonly recordChannelIO: (event: ChannelIOSpan & { readonly turnIndex: number }) => void;
+  /** Record a forge refresh span (descriptor/middleware refresh timing). */
+  readonly recordForgeRefresh: (event: ForgeRefreshSpan & { readonly turnIndex: number }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +219,14 @@ export function createDebugInstrumentation(
   const bufferSize = config.bufferSize ?? DEFAULT_BUFFER_SIZE;
   const traceBuffer = createDebugRingBuffer<DebugTurnTrace>(bufferSize);
   const spanAccumulators = new Map<number, RawSpan[]>();
+  const resolverAccumulators = new Map<number, ResolverSpan[]>();
+  const channelAccumulators = new Map<number, ChannelIOSpan[]>();
+  const forgeAccumulators = new Map<number, ForgeRefreshSpan[]>();
   const provenanceMap = new Map<string, MiddlewareSource>();
+  /** Tracks which middleware name was last used on which turn. */
+  const lastUsedTurnMap = new Map<string, number>();
+  /** Tracks which middleware names belong to concurrent observe phase. */
+  const concurrentSet = new Set<string>();
 
   function wrapEntries<Req, Res>(
     entries: readonly InstrumentableEntry<Req, Res>[],
@@ -205,6 +244,10 @@ export function createDebugInstrumentation(
       const source = provMap.get(entry.name) ?? "static";
       const phase = phaseMap.get(entry.name) ?? "resolve";
       const priority = priorityMap.get(entry.name) ?? 500;
+      // Concurrent observers get "secondary" tier, everything else is "critical"
+      const isConcurrent = phase === "observe" && priority >= 900;
+      if (isConcurrent) concurrentSet.add(entry.name);
+      const tier: VisibilityTier = isConcurrent ? "secondary" : "critical";
 
       const wrappedHook = (ctx: TurnContext, req: Req, next: (r: Req) => Res): Res => {
         const start = performance.now();
@@ -214,6 +257,10 @@ export function createDebugInstrumentation(
           nextCalled = true;
           return next(r);
         };
+
+        // Track last used turn for lifecycle badges
+        lastUsedTurnMap.set(entry.name, ctx.turnIndex);
+
         try {
           const result = entry.hook(ctx, req, trackedNext);
           if (isPromiseLike(result)) {
@@ -227,6 +274,7 @@ export function createDebugInstrumentation(
                   phase,
                   priority,
                   nextCalled,
+                  tier,
                 });
                 return resolved;
               },
@@ -240,6 +288,7 @@ export function createDebugInstrumentation(
                   priority,
                   nextCalled,
                   error: err instanceof Error ? err.message : String(err),
+                  tier,
                 });
                 throw err;
               },
@@ -254,6 +303,7 @@ export function createDebugInstrumentation(
             phase,
             priority,
             nextCalled,
+            tier,
           });
           return result;
         } catch (e: unknown) {
@@ -266,6 +316,7 @@ export function createDebugInstrumentation(
             priority,
             nextCalled,
             error: e instanceof Error ? e.message : String(e),
+            tier,
           });
           throw e;
         }
@@ -275,9 +326,48 @@ export function createDebugInstrumentation(
     });
   }
 
+  function recordResolve(event: ResolverSpan & { readonly turnIndex: number }): void {
+    const { turnIndex, ...span } = event;
+    const existing = resolverAccumulators.get(turnIndex);
+    if (existing !== undefined) {
+      existing.push(span);
+    } else {
+      resolverAccumulators.set(turnIndex, [span]);
+    }
+  }
+
+  function recordChannelIO(event: ChannelIOSpan & { readonly turnIndex: number }): void {
+    const { turnIndex, ...span } = event;
+    const existing = channelAccumulators.get(turnIndex);
+    if (existing !== undefined) {
+      existing.push(span);
+    } else {
+      channelAccumulators.set(turnIndex, [span]);
+    }
+  }
+
+  function recordForgeRefresh(event: ForgeRefreshSpan & { readonly turnIndex: number }): void {
+    const { turnIndex, ...span } = event;
+    const existing = forgeAccumulators.get(turnIndex);
+    if (existing !== undefined) {
+      existing.push(span);
+    } else {
+      forgeAccumulators.set(turnIndex, [span]);
+    }
+  }
+
   function onTurnEnd(turnIndex: number): void {
     const rawSpans = spanAccumulators.get(turnIndex);
     spanAccumulators.delete(turnIndex);
+
+    const resolverSpans = resolverAccumulators.get(turnIndex);
+    resolverAccumulators.delete(turnIndex);
+
+    const channelSpans = channelAccumulators.get(turnIndex);
+    channelAccumulators.delete(turnIndex);
+
+    const forgeSpans = forgeAccumulators.get(turnIndex);
+    forgeAccumulators.delete(turnIndex);
 
     const spans: readonly DebugSpan[] = (rawSpans ?? []).map((s) => ({
       name: s.name,
@@ -288,6 +378,7 @@ export function createDebugInstrumentation(
       priority: s.priority,
       nextCalled: s.nextCalled,
       ...(s.error !== undefined ? { error: s.error } : {}),
+      ...(s.tier !== undefined ? { tier: s.tier } : {}),
     }));
 
     const totalDurationMs = spans.reduce((sum, s) => sum + s.durationMs, 0);
@@ -297,6 +388,9 @@ export function createDebugInstrumentation(
       totalDurationMs,
       spans,
       timestamp: Date.now(),
+      ...(resolverSpans !== undefined && resolverSpans.length > 0 ? { resolverSpans } : {}),
+      ...(channelSpans !== undefined && channelSpans.length > 0 ? { channelSpans } : {}),
+      ...(forgeSpans !== undefined && forgeSpans.length > 0 ? { forgeSpans } : {}),
     });
   }
 
@@ -313,6 +407,8 @@ export function createDebugInstrumentation(
       category: "middleware" as const,
       enabled: true,
       source,
+      ...(lastUsedTurnMap.has(name) ? { lastUsedTurn: lastUsedTurnMap.get(name) } : {}),
+      ...(concurrentSet.has(name) ? { concurrent: true } : {}),
     }));
 
     return {
@@ -328,5 +424,8 @@ export function createDebugInstrumentation(
     getTrace,
     buildInventory,
     provenanceMap,
+    recordResolve,
+    recordChannelIO,
+    recordForgeRefresh,
   };
 }

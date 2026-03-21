@@ -219,6 +219,9 @@ export interface NexusBrowserState {
   readonly loading: boolean;
 }
 
+/** Visibility tier for debug span filtering. */
+export type DebugVisibilityTier = "critical" | "secondary" | "all";
+
 /** Debug view — package inventory + per-turn trace waterfall. */
 export interface DebugViewState {
   readonly inventory: readonly DebugInventoryItemResponse[] | null;
@@ -227,6 +230,8 @@ export interface DebugViewState {
   readonly scrollOffset: number;
   readonly loading: boolean;
   readonly activePanel: "inventory" | "waterfall";
+  readonly visibilityTier: DebugVisibilityTier;
+  readonly highlightedMiddleware: string | null;
 }
 
 // ─── Capabilities ─────────────────────────────────────────────────────
@@ -350,5 +355,7 @@ export function createInitialDebugView(): DebugViewState {
     scrollOffset: 0,
     loading: false,
     activePanel: "inventory",
+    visibilityTier: "critical",
+    highlightedMiddleware: null,
   };
 }

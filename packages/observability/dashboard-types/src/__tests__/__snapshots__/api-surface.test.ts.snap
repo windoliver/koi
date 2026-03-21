@@ -573,6 +573,14 @@ interface AgentProcfs {
     readonly lastActivityAt: number;
     readonly parentId?: AgentId;
     readonly childCount: number;
+    readonly tools?: readonly {
+        readonly name: string;
+        readonly origin: string;
+    }[] | undefined;
+    readonly skills?: readonly {
+        readonly name: string;
+        readonly source: string;
+    }[] | undefined;
 }
 interface MiddlewareEntry {
     readonly name: string;
@@ -745,12 +753,32 @@ interface DebugSpanResponse {
     readonly nextCalled: boolean;
     readonly error?: string | undefined;
     readonly children?: readonly DebugSpanResponse[] | undefined;
+    readonly tier?: string | undefined;
+}
+interface ResolverSpanResponse {
+    readonly toolId: string;
+    readonly source: string;
+    readonly durationMs: number;
+}
+interface ChannelIOSpanResponse {
+    readonly direction: string;
+    readonly kind: string;
+    readonly durationMs: number;
+}
+interface ForgeRefreshSpanResponse {
+    readonly descriptorsChanged: boolean;
+    readonly descriptorCount: number;
+    readonly middlewareRecomposed: boolean;
+    readonly timestamp: number;
 }
 interface DebugTurnTraceResponse {
     readonly turnIndex: number;
     readonly totalDurationMs: number;
     readonly spans: readonly DebugSpanResponse[];
     readonly timestamp: number;
+    readonly resolverSpans?: readonly ResolverSpanResponse[] | undefined;
+    readonly channelSpans?: readonly ChannelIOSpanResponse[] | undefined;
+    readonly forgeSpans?: readonly ForgeRefreshSpanResponse[] | undefined;
 }
 interface DebugInventoryItemResponse {
     readonly name: string;
@@ -1359,6 +1387,6 @@ type AdminRoutes = typeof ADMIN_ROUTES;
  */
 declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
 
-export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DebugInventoryItemResponse, type DebugInventoryResponse, type DebugSpanResponse, type DebugTurnTraceResponse, type DelegationSummary, type DemoPackSummary, type DetailedStatusResponse, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type GovernancePendingItem, type HandoffSummary, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type LogDashboardEvent, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type PortStatus, type ProcessTreeNode, type ProcessTreeSnapshot, type PtyOutputDashboardEvent, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type ScratchpadEntryDetail, type ScratchpadEntrySummary, type SkillDashboardEvent, type SubsystemStatus, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isLogEvent, isMonitorEvent, isNexusEvent, isPtyOutputEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChannelIOSpanResponse, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DebugInventoryItemResponse, type DebugInventoryResponse, type DebugSpanResponse, type DebugTurnTraceResponse, type DelegationSummary, type DemoPackSummary, type DetailedStatusResponse, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeRefreshSpanResponse, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type GovernancePendingItem, type HandoffSummary, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type LogDashboardEvent, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type PortStatus, type ProcessTreeNode, type ProcessTreeSnapshot, type PtyOutputDashboardEvent, type ResolverSpanResponse, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type ScratchpadEntryDetail, type ScratchpadEntrySummary, type SkillDashboardEvent, type SubsystemStatus, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isLogEvent, isMonitorEvent, isNexusEvent, isPtyOutputEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
 "
 `;

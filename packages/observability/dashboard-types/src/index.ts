@@ -114,6 +114,7 @@ export { ADMIN_ROUTES, interpolatePath } from "./routes.js";
 // Runtime views
 export type {
   AgentProcfs,
+  ChannelIOSpanResponse,
   CheckpointEntry,
   CronSchedule,
   DebugInventoryItemResponse,
@@ -121,6 +122,7 @@ export type {
   DebugSpanResponse,
   DebugTurnTraceResponse,
   ForgeBrickView,
+  ForgeRefreshSpanResponse,
   ForgeStats,
   GatewayConnection,
   GatewayTopology,
@@ -129,6 +131,7 @@ export type {
   MiddlewareEntry,
   ProcessTreeNode,
   ProcessTreeSnapshot,
+  ResolverSpanResponse,
   RuntimeViewDataSource,
   SchedulerDeadLetterEntry,
   SchedulerStats,

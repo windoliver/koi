@@ -73,6 +73,14 @@ export interface BridgeOptions {
   readonly forge?: RuntimeViewDataSource["forge"] | undefined;
   /** Optional debug instrumentation data source for the debug view. */
   readonly debug?: RuntimeViewDataSource["debug"] | undefined;
+  /** Tool inventory for AgentProcfs (name + origin). */
+  readonly toolInventory?:
+    | readonly { readonly name: string; readonly origin: string }[]
+    | undefined;
+  /** Skill inventory for AgentProcfs (name + source). */
+  readonly skillInventory?:
+    | readonly { readonly name: string; readonly source: string }[]
+    | undefined;
   /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
   readonly orchestrationCommands?:
     | Pick<
@@ -512,6 +520,8 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
         startedAt,
         lastActivityAt: Date.now(),
         childCount: 0,
+        ...(options.toolInventory !== undefined ? { tools: options.toolInventory } : {}),
+        ...(options.skillInventory !== undefined ? { skills: options.skillInventory } : {}),
       };
     },
 
