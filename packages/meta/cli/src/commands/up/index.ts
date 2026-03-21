@@ -59,20 +59,19 @@ const TOOL_FACTORIES: Readonly<
     try {
       const { createWebProvider, createWebExecutor } = await import("@koi/tools-web");
       const braveKey = process.env.BRAVE_API_KEY;
-      // Build search function from Brave if API key is available
-      let searchFn: ((query: string) => Promise<unknown>) | undefined;
+      // Build search provider from Brave if API key is available
+      const config: Record<string, unknown> = {};
       if (braveKey !== undefined && braveKey !== "") {
         try {
           const mod = await import("@koi/search-brave").catch(() => undefined);
           if (mod !== undefined) {
-            const search = mod.createBraveSearch({ apiKey: braveKey });
-            searchFn = search;
+            config.searchProvider = mod.createBraveSearch({ apiKey: braveKey });
           }
         } catch {
           // search-brave not available — web_fetch still works
         }
       }
-      const executor = createWebExecutor(searchFn !== undefined ? { searchFn } : {});
+      const executor = createWebExecutor(config as Parameters<typeof createWebExecutor>[0]);
       const provider = createWebProvider({ executor });
       if (verbose) process.stderr.write("  Tool: @koi/tools-web (web_fetch, web_search)\n");
       return provider;
@@ -80,15 +79,10 @@ const TOOL_FACTORIES: Readonly<
       return undefined;
     }
   },
-  "@koi/tool-ask-user": async (verbose) => {
-    try {
-      const { createAskUserProvider } = await import("@koi/tool-ask-user");
-      const provider = createAskUserProvider({});
-      if (verbose) process.stderr.write("  Tool: @koi/tool-ask-user\n");
-      return provider;
-    } catch {
-      return undefined;
-    }
+  "@koi/tool-ask-user": async () => {
+    // ask_user requires an ElicitationHandler wired to the TUI/channel.
+    // Skip in manifest resolution — it's provided by the engine adapter when available.
+    return undefined;
   },
   "@koi/tool-exec": async (verbose) => {
     try {
