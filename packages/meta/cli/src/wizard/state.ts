@@ -61,8 +61,6 @@ export interface WizardState {
   readonly stacks: readonly StackId[];
   /** Channel-specific tokens entered during init (env key → value). */
   readonly channelTokens: Readonly<Record<string, string>>;
-  /** Tool/skill API keys entered during init (env key → value). */
-  readonly toolTokens: Readonly<Record<string, string>>;
 }
 
 export const DEFAULT_STATE: WizardState = {
@@ -81,5 +79,4 @@ export const DEFAULT_STATE: WizardState = {
   apiKey: undefined,
   stacks: [],
   channelTokens: {},
-  toolTokens: {},
 } as const;

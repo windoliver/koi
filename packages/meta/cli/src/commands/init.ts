@@ -22,7 +22,6 @@ import {
   enterChannelTokens,
   enterDescription,
   enterName,
-  enterToolTokens,
   selectChannels,
   selectDataSources,
   selectEngine,
@@ -72,7 +71,6 @@ export async function runInit(flags: InitFlags): Promise<void> {
     selectEngine,
     selectChannels,
     enterChannelTokens,
-    enterToolTokens,
     selectStacks,
     selectDataSources,
   ];

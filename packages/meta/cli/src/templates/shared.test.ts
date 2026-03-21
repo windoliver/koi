@@ -25,7 +25,6 @@ const STATE: WizardState = {
   apiKey: undefined,
   stacks: [],
   channelTokens: {},
-  toolTokens: {},
 };
 
 describe("generateManifestYaml", () => {
@@ -225,7 +224,6 @@ const DEMO_STATE: WizardState = {
   apiKey: undefined,
   stacks: [],
   channelTokens: {},
-  toolTokens: {},
 };
 
 describe("generateDemoManifestYaml", () => {
