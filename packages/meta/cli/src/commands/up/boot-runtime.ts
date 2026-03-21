@@ -236,6 +236,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     providers: composed.providers,
     extensions: [],
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
+    debug: { enabled: true },
     onDashboardEvent: (event: DashboardEvent) => {
       emitDashboardEvent?.(event);
     },
@@ -304,6 +305,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     },
   });
 
+  const debugApi = runtime.debug;
   const adminBridge: AdminPanelBridgeResult = createAdminPanelBridge({
     agentName: manifest.name,
     agentType: manifest.lifecycle ?? "copilot",
@@ -317,6 +319,14 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     },
     ...(orch.hasAny
       ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
+      : {}),
+    ...(debugApi !== undefined
+      ? {
+          debug: {
+            getInventory: (_agentId) => debugApi.getInventory(),
+            getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+          },
+        }
       : {}),
   });
 

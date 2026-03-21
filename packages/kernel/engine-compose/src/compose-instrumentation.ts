@@ -207,6 +207,62 @@ function recordSpan(accumulators: Map<number, RawSpan[]>, turnIndex: number, spa
 }
 
 // ---------------------------------------------------------------------------
+// Span tree builder — groups flat spans by hook into a hierarchy
+// ---------------------------------------------------------------------------
+
+/**
+ * Group raw spans by their hook label to create parent/child nesting.
+ *
+ * Each unique hook (e.g., "wrapModelCall", "wrapToolCall") becomes a parent
+ * span whose children are the individual middleware spans for that hook.
+ */
+function buildSpanTree(rawSpans: readonly RawSpan[]): readonly DebugSpan[] {
+  // Group by hook label, preserving insertion order
+  const groups = new Map<string, RawSpan[]>();
+  for (const span of rawSpans) {
+    const list = groups.get(span.hook);
+    if (list !== undefined) {
+      list.push(span);
+    } else {
+      groups.set(span.hook, [span]);
+    }
+  }
+
+  const result: DebugSpan[] = [];
+
+  for (const [hookLabel, spans] of groups) {
+    const children: readonly DebugSpan[] = spans.map((s) => ({
+      name: s.name,
+      hook: s.hook,
+      durationMs: s.durationMs,
+      source: s.source,
+      phase: s.phase,
+      priority: s.priority,
+      nextCalled: s.nextCalled,
+      ...(s.error !== undefined ? { error: s.error } : {}),
+      ...(s.tier !== undefined ? { tier: s.tier } : {}),
+    }));
+
+    const totalMs = spans.reduce((sum, s) => sum + s.durationMs, 0);
+
+    // Create parent span that groups all middleware for this hook
+    result.push({
+      name: hookLabel,
+      hook: hookLabel,
+      durationMs: totalMs,
+      source: "static",
+      phase: "resolve",
+      priority: 0,
+      nextCalled: true,
+      tier: "critical",
+      children,
+    });
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -385,17 +441,7 @@ export function createDebugInstrumentation(
     const forgeSpans = forgeAccumulators.get(turnIndex);
     forgeAccumulators.delete(turnIndex);
 
-    const spans: readonly DebugSpan[] = (rawSpans ?? []).map((s) => ({
-      name: s.name,
-      hook: s.hook,
-      durationMs: s.durationMs,
-      source: s.source,
-      phase: s.phase,
-      priority: s.priority,
-      nextCalled: s.nextCalled,
-      ...(s.error !== undefined ? { error: s.error } : {}),
-      ...(s.tier !== undefined ? { tier: s.tier } : {}),
-    }));
+    const spans = buildSpanTree(rawSpans ?? []);
 
     const totalDurationMs = spans.reduce((sum, s) => sum + s.durationMs, 0);
 

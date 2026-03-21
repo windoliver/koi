@@ -17,6 +17,7 @@ import type { DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { DashboardEvent } from "@koi/dashboard-types";
 import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
+import type { KoiRuntime } from "@koi/engine";
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import { createAgentDispatcher } from "../agent-dispatcher.js";
@@ -355,6 +356,8 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   let runtimeDispose: (() => Promise<void>) | undefined;
   // let justified: captured from embedded runtime for chat dispatch
   let runtimeRef: { readonly run: (input: EngineInput) => AsyncIterable<EngineEvent> } | undefined;
+  // let justified: captured from embedded runtime for debug bridge wiring
+  let runtimeDebugApi: KoiRuntime["debug"];
 
   // Late-binding event sink for forge/monitor SSE events
   // let justified: mutable ref set when admin bridge is created
@@ -386,6 +389,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
         ],
         providers: [...(autonomous?.providers ?? [])],
         extensions: [],
+        debug: { enabled: true },
         onDashboardEvent: (event: DashboardEvent) => {
           emitDashboardEvent?.(event);
         },
@@ -399,6 +403,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       });
       runtimeDispose = () => runtime.dispose();
       runtimeRef = runtime;
+      runtimeDebugApi = runtime.debug;
 
       if (flags.verbose) {
         process.stderr.write("Embedded agent runtime: active\n");
@@ -448,6 +453,15 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       ? {
           orchestration: orch.orchestration,
           orchestrationCommands: orch.orchestrationCommands,
+        }
+      : {}),
+    ...(runtimeDebugApi !== undefined
+      ? {
+          debug: {
+            getInventory: (_agentId: unknown) => runtimeDebugApi?.getInventory(),
+            getTrace: (_agentId: unknown, turnIndex: number) =>
+              runtimeDebugApi?.getTrace(turnIndex),
+          },
         }
       : {}),
   });

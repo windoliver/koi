@@ -909,6 +909,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       providers: composed.providers,
       extensions,
       ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
+      debug: { enabled: true },
       onDashboardEvent: (event: DashboardEvent) => {
         emitDashboardEvent?.(event);
       },
@@ -1042,6 +1043,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     });
     adminDispatcher = dispatcher;
 
+    const debugApi = runtime.debug;
     adminBridge = createAdminPanelBridge({
       agentName: manifest.name,
       agentType: manifest.lifecycle ?? "copilot",
@@ -1084,6 +1086,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
               ),
             }
           : {}),
+      ...(debugApi !== undefined
+        ? {
+            debug: {
+              getInventory: (_agentId) => debugApi.getInventory(),
+              getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+            },
+          }
+        : {}),
     });
 
     // Wire forge/monitor SSE event sink now that the bridge exists

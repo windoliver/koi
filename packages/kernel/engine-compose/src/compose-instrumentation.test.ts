@@ -56,8 +56,12 @@ describe("createDebugInstrumentation", () => {
       const trace1 = instrumentation.getTrace(1);
       expect(trace1).toBeDefined();
       expect(trace1?.turnIndex).toBe(1);
+      // Top-level: one parent span per hook group ("wrapModelCall")
       expect(trace1?.spans).toHaveLength(1);
-      expect(trace1?.spans[0]?.name).toBe("mw-a");
+      expect(trace1?.spans[0]?.name).toBe("wrapModelCall");
+      // Children contain the actual middleware spans
+      expect(trace1?.spans[0]?.children).toHaveLength(1);
+      expect(trace1?.spans[0]?.children?.[0]?.name).toBe("mw-a");
     });
 
     test("evicts oldest when buffer is full", () => {
@@ -182,10 +186,14 @@ describe("createDebugInstrumentation", () => {
 
       const trace = instrumentation.getTrace(0);
       expect(trace).toBeDefined();
-      expect(trace?.spans).toHaveLength(2);
+      // Top-level: one parent span for "wrapModelCall" group
+      expect(trace?.spans).toHaveLength(1);
+      // Children contain the individual middleware spans
+      const children = trace?.spans[0]?.children ?? [];
+      expect(children).toHaveLength(2);
 
-      const callsNextSpan = trace?.spans.find((s) => s.name === "calls-next");
-      const skipsNextSpan = trace?.spans.find((s) => s.name === "skips-next");
+      const callsNextSpan = children.find((s) => s.name === "calls-next");
+      const skipsNextSpan = children.find((s) => s.name === "skips-next");
       expect(callsNextSpan?.nextCalled).toBe(true);
       expect(skipsNextSpan?.nextCalled).toBe(false);
     });
@@ -223,8 +231,11 @@ describe("createDebugInstrumentation", () => {
 
       const trace = instrumentation.getTrace(0);
       expect(trace).toBeDefined();
+      // Top-level: one parent span for "wrapModelCall" group
       expect(trace?.spans).toHaveLength(1);
-      expect(trace?.spans[0]?.error).toBe("hook exploded");
+      // Error is on the child middleware span
+      expect(trace?.spans[0]?.children).toHaveLength(1);
+      expect(trace?.spans[0]?.children?.[0]?.error).toBe("hook exploded");
     });
 
     test("records error when async hook rejects", async () => {
@@ -264,7 +275,8 @@ describe("createDebugInstrumentation", () => {
 
       const trace = instrumentation.getTrace(0);
       expect(trace).toBeDefined();
-      expect(trace?.spans[0]?.error).toBe("async boom");
+      // Error is on the child middleware span inside the group
+      expect(trace?.spans[0]?.children?.[0]?.error).toBe("async boom");
     });
   });
 
