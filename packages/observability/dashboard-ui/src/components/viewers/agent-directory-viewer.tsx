@@ -110,7 +110,7 @@ export function AgentDirectoryViewer({
         {agent !== undefined && (
           <>
             <ProcessStateBadge state={agent.state} />
-            <span className="rounded bg-[var(--color-primary)]/10 px-2 py-0.5 text-xs text-[var(--color-primary)]">
+            <span className="rounded bg-[var(--color-primary)]/10 px-2 py-0.5 font-mono text-xs font-medium uppercase tracking-wider text-[var(--color-primary)]">
               {agent.agentType}
             </span>
           </>

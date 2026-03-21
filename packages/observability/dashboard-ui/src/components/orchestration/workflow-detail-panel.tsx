@@ -263,7 +263,7 @@ export function WorkflowDetailPanel({
             {/* State Refs (when available) */}
             {detail.stateRefs !== undefined && (
               <div>
-                <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted,#888)]">
+                <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted,#888)]">
                   State
                 </span>
                 <div className="mt-1">

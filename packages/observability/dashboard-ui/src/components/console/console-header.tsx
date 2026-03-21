@@ -52,7 +52,7 @@ export const ConsoleHeader = memo(function ConsoleHeader({
         <>
           <CircleDot className={`h-3 w-3 ${stateColor(agent.state, agentTerminated)}`} />
           <span className="text-sm font-medium">{agent.name}</span>
-          <span className="rounded bg-[var(--color-primary)]/10 px-2 py-0.5 text-xs text-[var(--color-primary)]">
+          <span className="rounded bg-[var(--color-primary)]/10 px-2 py-0.5 font-mono text-xs font-medium uppercase tracking-wider text-[var(--color-primary)]">
             {agentTerminated ? "terminated" : agent.state}
           </span>
           {agent.model !== undefined && (

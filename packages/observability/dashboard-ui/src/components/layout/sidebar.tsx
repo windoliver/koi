@@ -53,7 +53,7 @@ export function Sidebar(): React.ReactElement {
           {/* Panel */}
           <aside className="relative z-10 flex w-64 flex-col border-r border-[var(--color-border)] bg-[var(--color-card)] p-4">
             <div className="mb-4 flex items-center justify-between">
-              <span className="text-lg font-semibold tracking-tight">Koi</span>
+              <span className="text-lg font-bold tracking-tight" style={{ fontFamily: "var(--font-display)" }}>Koi</span>
               <button
                 type="button"
                 className="rounded p-1 text-[var(--color-muted)] hover:text-[var(--color-foreground)]"
@@ -79,10 +79,10 @@ function SidebarContent({
   return (
     <>
       {!collapsed && (
-        <div className="mb-6 text-lg font-semibold tracking-tight">Koi</div>
+        <div className="mb-6 text-lg font-bold tracking-tight" style={{ fontFamily: "var(--font-display)" }}>Koi</div>
       )}
       {collapsed && (
-        <div className="mb-6 text-lg font-semibold tracking-tight">K</div>
+        <div className="mb-6 text-lg font-bold tracking-tight" style={{ fontFamily: "var(--font-display)" }}>K</div>
       )}
       <SidebarNav collapsed={collapsed} />
     </>
