@@ -18,6 +18,7 @@ const STATE: WizardState = {
   apiKey: undefined,
   stacks: [],
   channelTokens: {},
+  toolTokens: {},
 };
 
 describe("generateCopilot", () => {

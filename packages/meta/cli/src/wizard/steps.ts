@@ -300,6 +300,49 @@ export async function enterChannelTokens(
   return { ...state, channelTokens: tokens };
 }
 
+/** Optional API keys for tools/skills. Prompted when the template includes these tools. */
+const TOOL_TOKEN_KEYS: Readonly<
+  Record<string, readonly { readonly key: string; readonly label: string; readonly hint: string }[]>
+> = {
+  copilot: [
+    {
+      key: "BRAVE_API_KEY",
+      label: "Brave Search API key (enables web_search)",
+      hint: "Free at https://brave.com/search/api/",
+    },
+  ],
+} as const;
+
+/**
+ * Prompts for optional tool/skill API keys based on the selected template.
+ * Keys are written to .env so tools work out of the box.
+ */
+export async function enterToolTokens(state: WizardState, flags: InitFlags): Promise<StepResult> {
+  const entries = TOOL_TOKEN_KEYS[state.template];
+  if (entries === undefined || entries.length === 0) return state;
+  if (flags.yes) return state;
+
+  const tokens: Record<string, string> = { ...state.toolTokens };
+
+  for (const entry of entries) {
+    // Skip if already set in environment
+    if (process.env[entry.key] !== undefined && process.env[entry.key] !== "") continue;
+
+    const value = await p.password({ message: `${entry.label} (optional, ${entry.hint})` });
+
+    if (p.isCancel(value)) {
+      p.cancel("Setup cancelled.");
+      return null;
+    }
+
+    if (value.trim().length > 0) {
+      tokens[entry.key] = value.trim();
+    }
+  }
+
+  return { ...state, toolTokens: tokens };
+}
+
 /**
  * Selects L3 middleware stacks to enable. Only shown for the sqlite preset.
  * Uses grouped multiselect so stacks are organized by test phase.

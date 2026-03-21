@@ -257,8 +257,9 @@ export function generateEnvFile(state: WizardState): string {
   const additional: string[] = [];
 
   if (state.template === "copilot") {
+    const braveKey = state.toolTokens.BRAVE_API_KEY;
     additional.push("# Optional: enable web_search via Brave Search");
-    additional.push("# BRAVE_API_KEY=");
+    additional.push(braveKey !== undefined ? `BRAVE_API_KEY=${braveKey}` : "# BRAVE_API_KEY=");
     additional.push("");
   }
 
