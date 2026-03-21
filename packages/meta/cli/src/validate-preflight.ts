@@ -45,9 +45,22 @@ const CHANNEL_ENV_REQUIREMENTS: Readonly<
 // Manifest shape (minimal subset needed for validation)
 // ---------------------------------------------------------------------------
 
+/** Optional env keys for manifest tools. Warned when tool is declared but key is missing. */
+const TOOL_ENV_HINTS: Readonly<
+  Record<string, readonly { readonly key: string; readonly hint: string }[]>
+> = {
+  "@koi/tools-web": [
+    {
+      key: "BRAVE_API_KEY",
+      hint: "web_search disabled without it (free at https://brave.com/search/api/)",
+    },
+  ],
+};
+
 interface ManifestSubset {
   readonly model: { readonly name: string };
   readonly channels?: readonly { readonly name: string }[] | undefined;
+  readonly tools?: readonly { readonly name: string }[] | undefined;
   readonly nexus?: { readonly url?: string | undefined } | undefined;
 }
 
@@ -109,6 +122,23 @@ export async function validateManifestPrerequisites(
           severity: "warning",
           code: "MISSING_CHANNEL_TOKEN",
           message: `Channel "${channel.name}" requires ${req.key} (${req.label})`,
+        });
+      }
+    }
+  }
+
+  // 2b. Check tool API keys (optional — warnings only)
+  const tools = manifest.tools ?? [];
+  for (const tool of tools) {
+    const hints = TOOL_ENV_HINTS[tool.name];
+    if (hints === undefined) continue;
+    for (const hint of hints) {
+      const value = env[hint.key];
+      if (value === undefined || value.trim() === "") {
+        issues.push({
+          severity: "warning",
+          code: "MISSING_TOOL_API_KEY",
+          message: `Tool "${tool.name}": ${hint.key} not set — ${hint.hint}`,
         });
       }
     }
