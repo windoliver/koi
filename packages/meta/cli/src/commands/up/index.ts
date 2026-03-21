@@ -765,6 +765,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
     ...(nexus.baseUrl !== undefined
       ? { threadStoreBackend: "nexus" as const, aceStoreBackend: "nexus" as const }
       : {}),
+    // Auto-enable sandboxStack when the manifest declares a sandbox config
+    ...(manifest.sandbox !== undefined ? { sandboxStack: true as const } : {}),
   };
   const activatedStacks = await activatePresetStacks({
     stacks: effectiveStacks,
