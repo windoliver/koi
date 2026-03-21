@@ -135,6 +135,10 @@ async function scaffoldNexusConfig(koiPreset: string, targetDir: string): Promis
     const result = await nexusInit(koiPreset, { cwd: targetDir });
     if (result.ok) {
       process.stderr.write("  Nexus config: nexus.yaml created\n");
+      // Sync the Nexus API key from nexus.yaml into .env so they match
+      await syncNexusApiKey(targetDir);
+      // Work around Nexus ReBAC audit bug by disabling strict audit mode
+      await patchNexusComposeAudit(targetDir);
     } else {
       // NOT_FOUND means nexus binary missing — expected during dev
       if (result.error.code === "NOT_FOUND") {
@@ -147,6 +151,58 @@ async function scaffoldNexusConfig(koiPreset: string, targetDir: string): Promis
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`  warn: nexus init failed: ${message}\n`);
+  }
+}
+
+/**
+ * Reads the api_key from nexus.yaml and updates NEXUS_API_KEY in .env
+ * so both files use the same key.
+ */
+async function syncNexusApiKey(targetDir: string): Promise<void> {
+  try {
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    const nexusYaml = await readFile(join(targetDir, "nexus.yaml"), "utf-8");
+    const match = /^api_key:\s*(\S+)/m.exec(nexusYaml);
+    if (match?.[1] === undefined) return;
+
+    const nexusKey = match[1];
+    const envPath = join(targetDir, ".env");
+    const envContent = await readFile(envPath, "utf-8");
+    const updated = envContent.replace(/^NEXUS_API_KEY=.*/m, `NEXUS_API_KEY=${nexusKey}`);
+    await writeFile(envPath, updated, "utf-8");
+  } catch {
+    // Non-fatal — key mismatch will surface as 401 at runtime
+  }
+}
+
+/**
+ * Patches the Nexus Docker Compose file to disable strict audit mode.
+ * Works around a ReBAC path resolution bug in nexus-ai-fs where internal
+ * metastore keys (ns:rebac:file) fail the absolute path check in the
+ * audit hook, blocking all writes.
+ */
+async function patchNexusComposeAudit(targetDir: string): Promise<void> {
+  try {
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    // Find the compose file path from nexus.yaml
+    const nexusYaml = await readFile(join(targetDir, "nexus.yaml"), "utf-8");
+    const match = /^compose_file:\s*(\S+)/m.exec(nexusYaml);
+    const composePath = match?.[1] ?? join(targetDir, "nexus-stack.yml");
+    const content = await readFile(composePath, "utf-8");
+    if (content.includes("NEXUS_AUDIT_STRICT_MODE")) return;
+
+    // Insert NEXUS_AUDIT_STRICT_MODE: "false" after the NEXUS_PORT line
+    const patched = content.replace(
+      /^(\s+NEXUS_PORT:\s*"?\d+"?)/m,
+      `$1\n      NEXUS_AUDIT_STRICT_MODE: "false"`,
+    );
+    await writeFile(composePath, patched, "utf-8");
+  } catch {
+    // Non-fatal
   }
 }
 

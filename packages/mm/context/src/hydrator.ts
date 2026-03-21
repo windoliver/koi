@@ -484,9 +484,9 @@ export function createContextHydrator(options: ContextHydratorOptions): ContextH
     },
 
     async onSessionStart() {
-      if (state.hydration !== undefined) {
-        throw new Error("Context already hydrated — cannot re-hydrate in same session");
-      }
+      // Allow re-hydration when user re-enters console (e.g. TUI Escape → Enter)
+      // by resetting stale hydration state from the previous session.
+      state.hydration = undefined;
       const result = await hydrate(config, agent, estimator, resolvers, compactor);
       state.hydration = toCache(result);
     },

@@ -108,15 +108,14 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
     },
   ];
 
-  // Parallel batch writes across all categories
-  const [empResult, custResult, prodResult, qaResult, memResult, dsResult] = await Promise.all([
-    batchWrite(ctx.nexusClient, employeeEntries),
-    batchWrite(ctx.nexusClient, customerEntries),
-    batchWrite(ctx.nexusClient, productEntries),
-    batchWrite(ctx.nexusClient, qaEntries),
-    batchWrite(ctx.nexusClient, memoryEntries),
-    batchWrite(ctx.nexusClient, dsEntries),
-  ]);
+  // Sequential batch writes to avoid Nexus rate limits (HTTP 429).
+  // Small batches first (fast), large batches last (benefit from warmed connection).
+  const dsResult = await batchWrite(ctx.nexusClient, dsEntries);
+  const memResult = await batchWrite(ctx.nexusClient, memoryEntries);
+  const qaResult = await batchWrite(ctx.nexusClient, qaEntries);
+  const prodResult = await batchWrite(ctx.nexusClient, productEntries);
+  const custResult = await batchWrite(ctx.nexusClient, customerEntries);
+  const empResult = await batchWrite(ctx.nexusClient, employeeEntries);
 
   // Tally results
   const empCount = empResult.ok ? empResult.value.succeeded : 0;

@@ -117,6 +117,8 @@ export function generateManifestYaml(state: WizardState): string {
     additional.push('    - name: "@koi/tool-ask-user"');
     additional.push('    - name: "@koi/tools-web"');
     additional.push('    - name: "@koi/tools-context-hub"');
+    additional.push('    - name: "@koi/tool-exec"');
+    additional.push('    - name: "@koi/tool-browser"');
   }
 
   if (state.preset === "sqlite") {
@@ -346,6 +348,7 @@ export function generateDemoManifestYaml(state: WizardState): string {
   additional.push('    - name: "@koi/tools-web"');
   additional.push('    - name: "@koi/tool-exec"');
   additional.push('    - name: "@koi/tools-context-hub"');
+  additional.push('    - name: "@koi/tool-browser"');
   additional.push("");
 
   additional.push("forge:");

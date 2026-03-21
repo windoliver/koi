@@ -135,8 +135,8 @@ describe("createContextHydrator — single-source-exceeds-budget (10A)", () => {
   });
 });
 
-describe("createContextHydrator — freeze-on-first-hydrate (1A)", () => {
-  test("calling onSessionStart twice throws", async () => {
+describe("createContextHydrator — re-hydration on session restart", () => {
+  test("calling onSessionStart twice re-hydrates without error", async () => {
     const agent = createMockAgent();
     const config: ContextManifestConfig = {
       sources: [{ kind: "text", text: "hi" }],
@@ -150,14 +150,15 @@ describe("createContextHydrator — freeze-on-first-hydrate (1A)", () => {
       metadata: {},
     });
 
-    await expect(
-      mw.onSessionStart?.({
-        agentId: "a",
-        sessionId: sessionId("s"),
-        runId: runId("r"),
-        metadata: {},
-      }),
-    ).rejects.toThrow("Context already hydrated");
+    // Second call should succeed (re-hydrate for new session)
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s2"),
+      runId: runId("r2"),
+      metadata: {},
+    });
+
+    expect(mw.getHydrationResult?.()).toBeDefined();
   });
 });
 
