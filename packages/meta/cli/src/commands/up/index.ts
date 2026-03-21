@@ -1100,6 +1100,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       const { createTuiApp } = await import("@koi/tui");
       tuiApp = createTuiApp({
         adminUrl: `http://localhost:${String(DEFAULT_ADMIN_PORT)}/admin/api`,
+        ...(flags.resume !== undefined ? { initialSessionId: currentSessionId } : {}),
       });
       await tuiApp.start();
       tuiAttached = true;
