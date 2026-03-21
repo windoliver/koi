@@ -50,6 +50,8 @@ function categoryColor(category: string): string {
   switch (category) {
     case "middleware":
       return COLORS.cyan;
+    case "subsystem":
+      return COLORS.cyan;
     case "tool":
       return COLORS.green;
     case "skill":
@@ -107,7 +109,7 @@ const InventoryPanel = React.memo(function InventoryPanel(props: {
     groups.set(item.category, [...prev, item]);
   }
 
-  const categoryOrder = ["middleware", "tool", "skill", "channel", "engine"];
+  const categoryOrder = ["middleware", "tool", "skill", "channel", "engine", "subsystem"];
 
   return (
     <box flexDirection="column">

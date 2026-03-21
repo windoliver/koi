@@ -25,7 +25,7 @@ import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
 import { createContextArenaConfigForUp } from "../../context-arena-config.js";
-import { buildDebugExtraItems } from "../../debug-inventory-items.js";
+import { buildDebugExtraItems, collectActiveSubsystems } from "../../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -1096,6 +1096,19 @@ export async function runUp(flags: UpFlags): Promise<void> {
                     channels: channelNames,
                     skills: skillNames,
                     model: modelName,
+                    engineAdapter: adapter.engineId,
+                    tools: manifest.tools,
+                    subsystems: collectActiveSubsystems({
+                      nexusEnabled: nexusBaseUrl !== undefined,
+                      forgeEnabled: forgeBootstrap !== undefined,
+                      contextArenaEnabled: contextArenaConfig !== undefined,
+                      autonomousEnabled: autonomous !== undefined,
+                      gatewayEnabled: stopGateway !== undefined,
+                      schedulerEnabled: autonomous?.harness !== undefined,
+                      harnessEnabled: autonomous?.harness !== undefined,
+                      temporalEnabled: temporalAdmin !== undefined,
+                      sandboxEnabled: sandboxBridge !== undefined,
+                    }),
                   }),
                 ),
               getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),

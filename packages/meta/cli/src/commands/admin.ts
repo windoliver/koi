@@ -24,7 +24,7 @@ import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { AdminFlags } from "../args.js";
 import { createChatRouter } from "../chat-router.js";
-import { buildDebugExtraItems } from "../debug-inventory-items.js";
+import { buildDebugExtraItems, collectActiveSubsystems } from "../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -465,6 +465,11 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
                   channels: channelNames,
                   skills: skillNames,
                   model: manifest.model.name,
+                  tools: manifest.tools,
+                  subsystems: collectActiveSubsystems({
+                    autonomousEnabled: autonomous !== undefined,
+                    temporalEnabled: temporal !== undefined,
+                  }),
                 }),
               ),
             getTrace: (_agentId: unknown, turnIndex: number) =>

@@ -35,7 +35,7 @@ import type { ServeFlags } from "../args.js";
 import { bootstrapForgeOrWarn } from "../bootstrap-forge.js";
 import { createChatRouter } from "../chat-router.js";
 import { composeRuntimeMiddleware } from "../compose-middleware.js";
-import { buildDebugExtraItems } from "../debug-inventory-items.js";
+import { buildDebugExtraItems, collectActiveSubsystems } from "../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -350,6 +350,15 @@ export async function runServe(flags: ServeFlags): Promise<void> {
                     channels: channelNames,
                     skills: skillNames,
                     model: modelName,
+                    engineAdapter: adapter.engineId,
+                    tools: manifest.tools,
+                    subsystems: collectActiveSubsystems({
+                      nexusEnabled: nexus.middlewares !== undefined && nexus.middlewares.length > 0,
+                      forgeEnabled: forgeBootstrap !== undefined,
+                      autonomousEnabled: autonomous !== undefined,
+                      sandboxEnabled: sandboxBridge !== undefined,
+                      temporalEnabled: temporalAdmin !== undefined,
+                    }),
                   }),
                 ),
               getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),

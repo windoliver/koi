@@ -59,7 +59,7 @@ export interface DebugTurnTrace {
 
 export interface DebugInventoryItem {
   readonly name: string;
-  readonly category: "middleware" | "tool" | "skill" | "channel" | "engine";
+  readonly category: "middleware" | "tool" | "skill" | "channel" | "engine" | "subsystem";
   readonly enabled: boolean;
   readonly source: MiddlewareSource | "operator" | "manifest";
   readonly hooks?: readonly string[] | undefined;

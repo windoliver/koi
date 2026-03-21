@@ -23,7 +23,7 @@ import type { AgentChatBridge } from "../../agui-chat-bridge.js";
 import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
-import { buildDebugExtraItems } from "../../debug-inventory-items.js";
+import { buildDebugExtraItems, collectActiveSubsystems } from "../../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -330,6 +330,14 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
                   channels: channelNames,
                   skills: skillNames,
                   model: modelName,
+                  engineAdapter: adapter.engineId,
+                  tools: manifest.tools,
+                  subsystems: collectActiveSubsystems({
+                    nexusEnabled: nexus.middlewares !== undefined && nexus.middlewares.length > 0,
+                    forgeEnabled: forgeBootstrap !== undefined,
+                    autonomousEnabled: autonomous !== undefined,
+                    sandboxEnabled: sandboxBridge !== undefined,
+                  }),
                 }),
               ),
             getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
