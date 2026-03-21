@@ -20,8 +20,8 @@ import { TaskNodeDetailPanel } from "./task-node-detail-panel.js";
 
 const STATUS_COLORS: Readonly<Record<string, { readonly bg: string; readonly border: string }>> = {
   completed: { bg: "#166534", border: "#22c55e" },
-  running: { bg: "#1e3a5f", border: "#3b82f6" },
-  pending: { bg: "#374151", border: "#6b7280" },
+  running: { bg: "#0D1B2A", border: "#00CCCC" },
+  pending: { bg: "#1B2838", border: "#8899AA" },
   failed: { bg: "#7f1d1d", border: "#ef4444" },
 } as const;
 
@@ -42,7 +42,7 @@ interface TaskNodeData {
   readonly assignedTo?: string | undefined;
 }
 
-const DEFAULT_COLORS = { bg: "#374151", border: "#6b7280" } as const;
+const DEFAULT_COLORS = { bg: "#1B2838", border: "#8899AA" } as const;
 
 const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskNodeData>): React.ReactElement {
   const colors = STATUS_COLORS[data.status] ?? DEFAULT_COLORS;
