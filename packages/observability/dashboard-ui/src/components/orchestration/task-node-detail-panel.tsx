@@ -75,7 +75,7 @@ export function TaskNodeDetailPanel({
         {/* Result */}
         {node.result !== undefined && (
           <div className="mt-3">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted,#888)]">
+            <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted,#888)]">
               Result
             </span>
             <pre className="mt-1 rounded bg-[var(--color-card,#1e1e2e)] p-2 text-[10px] text-[var(--color-foreground,#cdd6f4)] overflow-x-auto">

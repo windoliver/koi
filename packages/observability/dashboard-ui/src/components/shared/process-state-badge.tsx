@@ -27,7 +27,7 @@ export function ProcessStateBadge({
   const config = STATE_CONFIG[state] ?? DEFAULT_CONFIG;
 
   return (
-    <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${config.text}`}>
+    <span className={`inline-flex items-center gap-1.5 font-mono text-xs font-medium uppercase tracking-wider ${config.text}`}>
       <span className={`inline-block h-2 w-2 rounded-full ${config.dot}`} />
       {state}
     </span>

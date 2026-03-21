@@ -24,13 +24,13 @@ export function StatCard({ label, value, icon: Icon, trend }: StatCardProps): Re
   return (
     <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
       <div className="flex items-center justify-between">
-        <span className="text-xs text-[var(--color-muted)]">{label}</span>
+        <span className="font-mono text-xs uppercase tracking-wider text-[var(--color-muted)]">{label}</span>
         {Icon !== undefined && (
           <Icon className="h-4 w-4 text-[var(--color-muted)]" />
         )}
       </div>
       <div className="mt-2 flex items-baseline gap-2">
-        <span className="text-2xl font-semibold text-[var(--color-foreground)]">{value}</span>
+        <span className="text-2xl font-bold tracking-tight text-[var(--color-foreground)]" style={{ fontFamily: "var(--font-display)" }}>{value}</span>
         {trendConfig !== undefined && (
           <trendConfig.Icon className={`h-4 w-4 ${trendConfig.color}`} />
         )}

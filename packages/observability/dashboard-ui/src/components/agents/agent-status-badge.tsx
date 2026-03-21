@@ -25,7 +25,7 @@ export function AgentStatusBadge({
 
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${style.bg} ${style.text}`}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 font-mono text-xs font-medium uppercase tracking-wider ${style.bg} ${style.text}`}
     >
       {state}
     </span>

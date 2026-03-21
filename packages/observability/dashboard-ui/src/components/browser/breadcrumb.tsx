@@ -32,7 +32,7 @@ export function Breadcrumb(): React.ReactElement {
   const segments = pathSegments(selectedPath);
 
   return (
-    <div className="flex items-center gap-0.5 overflow-x-auto px-3 py-2 text-xs">
+    <div className="flex items-center gap-0.5 overflow-x-auto px-3 py-2 font-mono text-xs">
       <button
         type="button"
         onClick={() => select(null)}

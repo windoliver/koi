@@ -96,7 +96,7 @@ export function DataTable({
             {columns.map((col) => (
               <th
                 key={col.key}
-                className={`px-3 py-2 text-left text-xs font-medium text-[var(--color-muted)] ${
+                className={`px-3 py-2 text-left font-mono text-xs font-medium uppercase tracking-wider text-[var(--color-muted)] ${
                   col.sortable === true ? "cursor-pointer select-none hover:text-[var(--color-foreground)]" : ""
                 }`}
                 onClick={col.sortable === true ? () => { handleSort(col.key); } : undefined}
