@@ -263,7 +263,9 @@ async function computeDirectorySize(dir: string): Promise<number> {
   // let justified: totalSize is accumulated across entries
   let totalSize = 0;
   try {
-    const entries: readonly string[] = await readdir(dir, { recursive: true });
+    const entries = (await readdir(dir, {
+      recursive: true,
+    } as unknown as Parameters<typeof readdir>[1])) as unknown as readonly string[];
     for (const entry of entries) {
       try {
         const entryStat = await stat(join(dir, entry));
