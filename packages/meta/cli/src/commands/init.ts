@@ -135,6 +135,8 @@ async function scaffoldNexusConfig(koiPreset: string, targetDir: string): Promis
     const result = await nexusInit(koiPreset, { cwd: targetDir });
     if (result.ok) {
       process.stderr.write("  Nexus config: nexus.yaml created\n");
+      // Sync the Nexus API key from nexus.yaml into .env so they match
+      await syncNexusApiKey(targetDir);
     } else {
       // NOT_FOUND means nexus binary missing — expected during dev
       if (result.error.code === "NOT_FOUND") {
@@ -147,6 +149,29 @@ async function scaffoldNexusConfig(koiPreset: string, targetDir: string): Promis
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`  warn: nexus init failed: ${message}\n`);
+  }
+}
+
+/**
+ * Reads the api_key from nexus.yaml and updates NEXUS_API_KEY in .env
+ * so both files use the same key.
+ */
+async function syncNexusApiKey(targetDir: string): Promise<void> {
+  try {
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    const nexusYaml = await readFile(join(targetDir, "nexus.yaml"), "utf-8");
+    const match = /^api_key:\s*(\S+)/m.exec(nexusYaml);
+    if (match?.[1] === undefined) return;
+
+    const nexusKey = match[1];
+    const envPath = join(targetDir, ".env");
+    const envContent = await readFile(envPath, "utf-8");
+    const updated = envContent.replace(/^NEXUS_API_KEY=.*/m, `NEXUS_API_KEY=${nexusKey}`);
+    await writeFile(envPath, updated, "utf-8");
+  } catch {
+    // Non-fatal — key mismatch will surface as 401 at runtime
   }
 }
 
