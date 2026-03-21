@@ -12,9 +12,9 @@
 import type { KoiError, Result } from "@koi/core";
 import type { NexusClient } from "./types.js";
 
-const DEFAULT_BATCH_CONCURRENCY = 10;
-const MAX_RETRIES = 3;
-const INITIAL_BACKOFF_MS = 500;
+const DEFAULT_BATCH_CONCURRENCY = 5;
+const MAX_RETRIES = 4;
+const INITIAL_BACKOFF_MS = 300;
 
 /** A single entry to write via Nexus. */
 export interface BatchWriteEntry {
