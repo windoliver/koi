@@ -677,7 +677,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const sandboxBridge = forgeResult?.sandboxBridge;
 
   const { createAgentChatBridge } = await import("../../agui-chat-bridge.js");
-  const chatBridge: AgentChatBridge = createAgentChatBridge();
+  const chatBridge: AgentChatBridge = createAgentChatBridge({ mode: "stateful" });
 
   // 6. RESOLVE agent + subsystems
   output.spinner.start("Resolving agent...");

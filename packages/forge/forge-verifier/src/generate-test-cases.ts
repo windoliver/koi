@@ -379,34 +379,29 @@ function generateCoercionTraps(schema: Readonly<Record<string, unknown>>): reado
   const type = getSchemaType(schema);
   const cases: TestCase[] = [];
 
+  // Coercion traps pass wrong types to test that the tool handles them
+  // without crashing. No shouldThrow — the tool may coerce, return wrong
+  // output, or throw; all are acceptable. The trap only verifies no crash.
   switch (type) {
     case "number":
     case "integer":
-      // String where number expected
       cases.push({ name: "auto:coercion_string_for_number", input: "1" });
-      // Boolean where number expected
       cases.push({ name: "auto:coercion_boolean_for_number", input: true });
       break;
     case "string":
-      // Number where string expected
       cases.push({ name: "auto:coercion_number_for_string", input: 123 });
       break;
     case "boolean":
-      // Number 0 where boolean expected
       cases.push({ name: "auto:coercion_zero_for_boolean", input: 0 });
-      // String "true" where boolean expected
       cases.push({ name: "auto:coercion_string_for_boolean", input: "true" });
       break;
     case "array":
-      // Object where array expected
       cases.push({ name: "auto:coercion_object_for_array", input: {} });
-      // String where array expected
       cases.push({ name: "auto:coercion_string_for_array", input: "[]" });
       break;
     case "object": {
-      // Array where object expected
       cases.push({ name: "auto:coercion_array_for_object", input: [] });
-      // Per-property coercion traps
+      // Per-property coercion — tool may coerce silently, no shouldThrow
       const props = getProperties(schema);
       if (props !== undefined) {
         for (const [key, propSchema] of Object.entries(props)) {
