@@ -249,12 +249,13 @@ describe("generateDemoManifestYaml", () => {
     expect(yaml).toContain('soul: ".koi/SOUL.md"');
   });
 
-  test("includes tools block with tool-exec", () => {
+  test("includes tools block with all verified tools", () => {
     const yaml = generateDemoManifestYaml(DEMO_STATE);
     expect(yaml).toContain("tools:");
     expect(yaml).toContain("@koi/tool-ask-user");
     expect(yaml).toContain("@koi/tools-web");
     expect(yaml).toContain("@koi/tool-exec");
+    expect(yaml).toContain("@koi/tool-browser");
   });
 
   test("includes demo pack", () => {
