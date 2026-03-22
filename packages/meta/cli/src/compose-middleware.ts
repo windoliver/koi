@@ -138,7 +138,7 @@ export function composeRuntimeMiddleware(input: MiddlewareCompositionInput): Com
 
   // Manifest-resolved middleware
   if (input.resolved.length > 0) {
-    builder.addStack("manifest-middleware", "Manifest Middleware", "manifest", true, [
+    builder.addStack("manifest-middleware", "Manifest Middleware", "manifest", "active", [
       {
         id: "@koi/manifest",
         kind: "middleware",
@@ -148,16 +148,23 @@ export function composeRuntimeMiddleware(input: MiddlewareCompositionInput): Com
     ]);
   }
 
-  // Preset stacks (passed from activatePresetStacks)
+  // Preset stacks + bootstrap contributions (passed from activatePresetStacks + bootstrap functions)
   if (input.presetContributions !== undefined) {
     for (const stack of input.presetContributions) {
-      builder.addStack(stack.id, stack.label, stack.source, stack.enabled, stack.packages);
+      builder.addStack(
+        stack.id,
+        stack.label,
+        stack.source,
+        stack.status,
+        stack.packages,
+        stack.reason,
+      );
     }
   }
 
   // Extra middleware
   if (input.extra !== undefined && input.extra.length > 0) {
-    builder.addStack("extra", "Extra Middleware", "runtime", true, [
+    builder.addStack("extra", "Extra Middleware", "runtime", "active", [
       {
         id: "@koi/extra",
         kind: "middleware",
@@ -167,72 +174,9 @@ export function composeRuntimeMiddleware(input: MiddlewareCompositionInput): Com
     ]);
   }
 
-  // Nexus
-  if (input.nexus.middlewares.length > 0 || input.nexus.providers.length > 0) {
-    const nexusPkgs: PackageContribution[] = [];
-    if (input.nexus.middlewares.length > 0) {
-      nexusPkgs.push({
-        id: "@koi/nexus",
-        kind: "middleware",
-        source: "static",
-        middlewareNames: input.nexus.middlewares.map((m) => m.name),
-      });
-    }
-    if (input.nexus.providers.length > 0) {
-      nexusPkgs.push({
-        id: "@koi/nexus",
-        kind: "provider",
-        source: "static",
-        providerNames: input.nexus.providers.map((p) => p.name),
-      });
-    }
-    builder.addStack("nexus", "Nexus", "runtime", true, nexusPkgs);
-  }
-
-  // Forge
-  if (input.forge !== undefined) {
-    const forgePkgs: PackageContribution[] = [
-      {
-        id: "@koi/forge",
-        kind: "middleware",
-        source: "static",
-        middlewareNames: input.forge.middlewares.map((m) => m.name),
-      },
-      {
-        id: "@koi/forge",
-        kind: "provider",
-        source: "static",
-        providerNames: [input.forge.provider.name, input.forge.forgeToolsProvider.name],
-      },
-    ];
-    builder.addStack("forge", "Forge", "runtime", true, forgePkgs);
-  }
-
-  // Autonomous
-  if (input.autonomous !== undefined) {
-    const autoPkgs: PackageContribution[] = [];
-    if (input.autonomous.middleware.length > 0) {
-      autoPkgs.push({
-        id: "@koi/autonomous",
-        kind: "middleware",
-        source: "static",
-        middlewareNames: input.autonomous.middleware.map((m) => m.name),
-      });
-    }
-    if (input.autonomous.providers.length > 0) {
-      autoPkgs.push({
-        id: "@koi/autonomous",
-        kind: "provider",
-        source: "static",
-        providerNames: input.autonomous.providers.map((p) => p.name),
-      });
-    }
-    builder.addStack("autonomous", "Autonomous", "runtime", true, autoPkgs);
-  }
-
   // Chat bridge
   if (input.chatBridge !== undefined) {
-    builder.addStack("agui-bridge", "AG-UI Chat Bridge", "runtime", true, [
+    builder.addStack("agui-bridge", "AG-UI Chat Bridge", "runtime", "active", [
       {
         id: "@koi/agui-bridge",
         kind: "middleware",
@@ -264,7 +208,7 @@ export function composeRuntimeMiddleware(input: MiddlewareCompositionInput): Com
         toolNames: input.dataSourceTools.map((t) => t.descriptor.name),
       });
     }
-    builder.addStack("data-sources", "Data Sources", "runtime", true, dsPkgs);
+    builder.addStack("data-sources", "Data Sources", "runtime", "active", dsPkgs);
   }
 
   return { middleware, providers, contributions: builder.build() };

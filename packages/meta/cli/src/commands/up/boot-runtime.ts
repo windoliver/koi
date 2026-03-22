@@ -150,14 +150,14 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   progress("forge", "Bootstrapping forge");
   const currentSessionId = `up:${manifest.name}:0`;
 
-  const forgeResult = await bootstrapForgeOrWarn(
+  const forgeResolution = await bootstrapForgeOrWarn(
     manifest,
     () => currentSessionId,
     verbose,
     undefined,
   );
-  const forgeBootstrap = forgeResult?.bootstrap;
-  const sandboxBridge = forgeResult?.sandboxBridge;
+  const forgeBootstrap = forgeResolution.result?.bootstrap;
+  const sandboxBridge = forgeResolution.result?.sandboxBridge;
 
   // ------------------------------------------------------------------
   // 4. AG-UI chat bridge
@@ -186,10 +186,12 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   const embedProfile = mapNexusModeToProfile(preset.nexusMode);
 
   progress("subsystems", "Resolving subsystems");
-  const [nexus, autonomous] = await Promise.all([
+  const [nexusResolution, autonomousResolution] = await Promise.all([
     resolveNexusOrWarn(nexusBaseUrl, manifest.nexus?.url, verbose, embedProfile, undefined),
     resolveAutonomousOrWarn(manifest, verbose),
   ]);
+  const nexus = nexusResolution.state;
+  const autonomous = autonomousResolution.result;
 
   // ------------------------------------------------------------------
   // 6. Activate preset stacks + compose middleware

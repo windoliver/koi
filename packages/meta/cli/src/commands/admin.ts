@@ -347,7 +347,8 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
 
   // 2b. Resolve all orchestration sources
   const temporal = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
-  const autonomous = await resolveAutonomousOrWarn(manifest, flags.verbose);
+  const autonomousResolution = await resolveAutonomousOrWarn(manifest, flags.verbose);
+  const autonomous = autonomousResolution.result;
 
   // 3. Try to boot embedded agent runtime for live orchestration + ECS scan.
   //    Falls back to manifest-only mode if resolution fails (e.g., missing API keys).

@@ -132,6 +132,21 @@ export async function bootstrapForgeOrWarn(
       ...(search !== undefined ? { retriever: search.retriever, indexer: search.indexer } : {}),
     });
 
+    if (bootstrap === undefined) {
+      return {
+        result: undefined,
+        contribution: {
+          id: "forge",
+          label: "Forge",
+          enabled: false,
+          source: "manifest",
+          status: "failed",
+          reason: "forge bootstrap returned undefined",
+          packages: [],
+        },
+      };
+    }
+
     if (verbose) {
       process.stderr.write("Forge: enabled\n");
     }

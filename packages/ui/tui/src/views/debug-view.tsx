@@ -267,17 +267,38 @@ function PackageItem(props: {
   );
 }
 
+/** Status badge and color for a contribution stack. */
+function statusBadge(stack: StackContributionResponse): {
+  readonly mark: string;
+  readonly fg: string;
+} {
+  const status = stack.status ?? (stack.enabled ? "active" : "skipped");
+  switch (status) {
+    case "active":
+      return { mark: "\u25C6", fg: COLORS.green };
+    case "degraded":
+      return { mark: "\u25D0", fg: COLORS.yellow };
+    case "skipped":
+      return { mark: "\u25CB", fg: COLORS.dim };
+    case "failed":
+      return { mark: "\u2717", fg: COLORS.red };
+    default:
+      return { mark: "\u25CB", fg: COLORS.dim };
+  }
+}
+
 function StackSection(props: {
   readonly stack: StackContributionResponse;
 }): React.ReactNode {
   const { stack } = props;
-  const enabledMark = stack.enabled ? "\u25C6" : "\u25CB";
-  const fg = stack.enabled ? COLORS.white : COLORS.dim;
+  const { mark, fg } = statusBadge(stack);
+  const reasonSuffix =
+    stack.reason !== undefined ? ` \u2014 ${stack.reason}` : "";
 
   return (
     <box flexDirection="column" marginBottom={1}>
       <text fg={fg}>
-        <b>{`  ${enabledMark} ${stack.label} (${stack.source})`}</b>
+        <b>{`  ${mark} ${stack.label} (${stack.source})${reasonSuffix}`}</b>
       </text>
       {stack.packages.map((pkg, i) => (
         <PackageItem key={`${pkg.id}-${String(i)}`} pkg={pkg} />

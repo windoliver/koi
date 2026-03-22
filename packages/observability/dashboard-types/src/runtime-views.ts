@@ -339,6 +339,8 @@ export interface StackContributionResponse {
   readonly label: string;
   readonly enabled: boolean;
   readonly source: string;
+  readonly status?: string | undefined;
+  readonly reason?: string | undefined;
   readonly packages: readonly PackageContributionResponse[];
 }
 

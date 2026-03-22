@@ -99,7 +99,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const healthPort = flags.port ?? deployConfig?.port ?? 9100;
 
   // 4. Resolve Nexus + autonomous in parallel (before forge, so search backends are available)
-  const [nexus, autonomous] = await Promise.all([
+  const [nexusResolution, autonomousResolution] = await Promise.all([
     resolveNexusOrWarn(
       flags.nexusUrl,
       manifest.nexus?.url,
@@ -109,20 +109,22 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     ),
     resolveAutonomousOrWarn(manifest, flags.verbose),
   ]);
+  const nexus = nexusResolution.state;
+  const autonomous = autonomousResolution.result;
 
   // 4b. Bootstrap forge system (before resolution, so forgeStore is available)
   // let justified: tracks current session key for forge counter scoping
   let currentServeSessionId = `serve:${manifest.name}:default`;
 
-  const forgeResult = await bootstrapForgeOrWarn(
+  const forgeResolution = await bootstrapForgeOrWarn(
     manifest,
     () => currentServeSessionId,
     flags.verbose,
     undefined,
     nexus.search,
   );
-  const forgeBootstrap = forgeResult?.bootstrap;
-  const sandboxBridge = forgeResult?.sandboxBridge;
+  const forgeBootstrap = forgeResolution.result?.bootstrap;
+  const sandboxBridge = forgeResolution.result?.sandboxBridge;
 
   // 4c. Create AG-UI chat bridge for admin chat endpoint (loaded lazily)
   let chatBridge: AgentChatBridge | undefined;

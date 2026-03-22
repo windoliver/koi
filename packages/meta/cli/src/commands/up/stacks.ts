@@ -314,12 +314,14 @@ export async function activatePresetStacks(
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (config.verbose) process.stderr.write(`  warn: ${name} failed: ${message}\n`);
-      // Record as disabled contribution so the debug view shows what failed and why
+      // Record as failed contribution so the debug view shows what failed and why
       contributions.push({
         id: name,
         label: name,
         enabled: false,
         source: "runtime",
+        status: "failed",
+        reason: message,
         packages: [{ id: name, kind: "subsystem", source: "static", notes: [message] }],
       });
     }
@@ -334,6 +336,7 @@ export async function activatePresetStacks(
         label: "Tool Stack",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: [
           {
             id: "@koi/tool-stack",
@@ -355,6 +358,7 @@ export async function activatePresetStacks(
         label: "Retry Stack",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: [
           {
             id: "@koi/retry-stack",
@@ -377,6 +381,7 @@ export async function activatePresetStacks(
         label: "Auto Harness",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: [
           {
             id: "@koi/auto-harness",
@@ -397,6 +402,7 @@ export async function activatePresetStacks(
             label: "Auto Harness",
             enabled: true,
             source: "runtime",
+            status: "active",
             packages: [
               {
                 id: "@koi/auto-harness",
@@ -443,6 +449,7 @@ export async function activatePresetStacks(
         label: "Governance",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: pkgs,
       });
     }
@@ -457,6 +464,7 @@ export async function activatePresetStacks(
         label: "Context Hub",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: [
           {
             id: "@koi/tools-context-hub",
@@ -496,6 +504,7 @@ export async function activatePresetStacks(
         label: "Context Arena",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: pkgs,
       });
     }
@@ -510,6 +519,7 @@ export async function activatePresetStacks(
         label: "ACE",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: [
           {
             id: "@koi/middleware-ace",
@@ -555,6 +565,7 @@ export async function activatePresetStacks(
         label: "Goal Stack",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: pkgs,
       });
     }
@@ -577,6 +588,7 @@ export async function activatePresetStacks(
         label: "Quality Gate",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: [
           {
             id: "@koi/quality-gate",
@@ -598,6 +610,7 @@ export async function activatePresetStacks(
         label: "Sandbox Stack",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: [
           {
             id: "@koi/sandbox-stack",
@@ -622,6 +635,7 @@ export async function activatePresetStacks(
         label: "Code Executor",
         enabled: true,
         source: "runtime",
+        status: "active",
         packages: [
           {
             id: "@koi/sandbox-stack",

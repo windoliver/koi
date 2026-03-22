@@ -20,6 +20,8 @@ export interface StackContribution {
   readonly label: string;
   readonly enabled: boolean;
   readonly source: "manifest" | "operator" | "runtime";
+  readonly status: "active" | "degraded" | "failed" | "skipped";
+  readonly reason?: string | undefined;
   readonly packages: readonly PackageContribution[];
 }
 
@@ -43,8 +45,9 @@ export interface ContributionBuilder {
     id: string,
     label: string,
     source: StackContribution["source"],
-    enabled: boolean,
+    status: StackContribution["status"],
     packages: readonly PackageContribution[],
+    reason?: string,
   ) => void;
   readonly build: () => RuntimeContributionGraph;
 }
@@ -52,8 +55,17 @@ export interface ContributionBuilder {
 export function createContributionBuilder(): ContributionBuilder {
   const stacks: StackContribution[] = [];
   return {
-    addStack(id, label, source, enabled, packages): void {
-      stacks.push({ id, label, enabled, source, packages });
+    addStack(id, label, source, status, packages, reason): void {
+      const enabled = status === "active" || status === "degraded";
+      stacks.push({
+        id,
+        label,
+        enabled,
+        source,
+        status,
+        ...(reason !== undefined ? { reason } : {}),
+        packages,
+      });
     },
     build(): RuntimeContributionGraph {
       return { stacks: [...stacks], generatedAt: Date.now() };
@@ -84,6 +96,7 @@ export function addPostCompositionContributions(
       label: "Channels",
       enabled: true,
       source: "manifest",
+      status: "active",
       packages: [
         {
           id: "@koi/channels",
@@ -100,6 +113,7 @@ export function addPostCompositionContributions(
     label: "Engine",
     enabled: true,
     source: "manifest",
+    status: "active",
     packages: [
       {
         id: engineAdapterId,
