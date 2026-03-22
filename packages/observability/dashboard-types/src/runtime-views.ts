@@ -264,6 +264,8 @@ export interface ForgeStats {
 // ---------------------------------------------------------------------------
 
 export interface DebugSpanResponse {
+  /** Stable identity for cross-referencing with inventory. */
+  readonly debugId?: string | undefined;
   readonly name: string;
   readonly hook: string;
   readonly durationMs: number;

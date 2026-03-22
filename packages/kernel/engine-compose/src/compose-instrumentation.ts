@@ -35,6 +35,9 @@ export interface ForgeRefreshSpan {
 }
 
 export interface DebugSpan {
+  /** Stable identity for cross-referencing (e.g., "wrapModelCall:0:koi:session-repair"). */
+  readonly debugId: string;
+  /** Human-readable middleware name for display. */
   readonly name: string;
   readonly hook: string;
   readonly durationMs: number;
@@ -58,6 +61,8 @@ export interface DebugTurnTrace {
 }
 
 export interface DebugInventoryItem {
+  /** Stable identity for cross-referencing with waterfall spans. */
+  readonly debugId?: string | undefined;
   readonly name: string;
   readonly category: "middleware" | "tool" | "skill" | "channel" | "engine" | "subsystem";
   readonly enabled: boolean;
@@ -85,6 +90,7 @@ export interface DebugInstrumentationConfig {
 // ---------------------------------------------------------------------------
 
 interface RawSpan {
+  readonly debugId: string;
   readonly name: string;
   readonly hook: string;
   readonly durationMs: number;
@@ -232,6 +238,7 @@ function buildSpanTree(rawSpans: readonly RawSpan[]): readonly DebugSpan[] {
 
   for (const [hookLabel, spans] of groups) {
     const children: readonly DebugSpan[] = spans.map((s) => ({
+      debugId: s.debugId,
       name: s.name,
       hook: s.hook,
       durationMs: s.durationMs,
@@ -247,6 +254,7 @@ function buildSpanTree(rawSpans: readonly RawSpan[]): readonly DebugSpan[] {
 
     // Create parent span that groups all middleware for this hook
     result.push({
+      debugId: `group:${hookLabel}`,
       name: hookLabel,
       hook: hookLabel,
       durationMs: totalMs,
@@ -308,17 +316,23 @@ export function createDebugInstrumentation(
       priorityTracker.set(name, prio);
     }
 
-    return entries.map((entry) => {
+    return entries.map((entry, index) => {
+      // Stable debug identity: hook + position + name. Avoids name collisions across stacks.
+      const debugId = `${hookLabel}:${String(index)}:${entry.name}`;
       const source = provMap.get(entry.name) ?? "static";
       const phase = phaseMap.get(entry.name) ?? "resolve";
       const priority = priorityMap.get(entry.name) ?? 500;
-      // Track hooks per middleware
-      const hookSet = hooksTracker.get(entry.name) ?? new Set<string>();
+      // Track hooks per middleware (keyed by debugId to avoid collisions)
+      const hookSet = hooksTracker.get(debugId) ?? new Set<string>();
       hookSet.add(hookLabel);
-      hooksTracker.set(entry.name, hookSet);
+      hooksTracker.set(debugId, hookSet);
+      // Also track by name for backward compat with inventory display
+      const hookSetByName = hooksTracker.get(entry.name) ?? new Set<string>();
+      hookSetByName.add(hookLabel);
+      hooksTracker.set(entry.name, hookSetByName);
       // Concurrent observers get "secondary" tier, everything else is "critical"
       const isConcurrent = phase === "observe" && priority >= 900;
-      if (isConcurrent) concurrentSet.add(entry.name);
+      if (isConcurrent) concurrentSet.add(debugId);
       const tier: VisibilityTier = isConcurrent ? "secondary" : "critical";
 
       const wrappedHook = (ctx: TurnContext, req: Req, next: (r: Req) => Res): Res => {
@@ -330,7 +344,8 @@ export function createDebugInstrumentation(
           return next(r);
         };
 
-        // Track last used turn for lifecycle badges
+        // Track last used turn for lifecycle badges (keyed by debugId)
+        lastUsedTurnMap.set(debugId, ctx.turnIndex);
         lastUsedTurnMap.set(entry.name, ctx.turnIndex);
 
         try {
@@ -339,6 +354,7 @@ export function createDebugInstrumentation(
             return (result as PromiseLike<unknown>).then(
               (resolved) => {
                 recordSpan(spanAccumulators, ctx.turnIndex, {
+                  debugId,
                   name: entry.name,
                   hook: hookLabel,
                   durationMs: performance.now() - start,
@@ -352,6 +368,7 @@ export function createDebugInstrumentation(
               },
               (err: unknown) => {
                 recordSpan(spanAccumulators, ctx.turnIndex, {
+                  debugId,
                   name: entry.name,
                   hook: hookLabel,
                   durationMs: performance.now() - start,
@@ -368,6 +385,7 @@ export function createDebugInstrumentation(
           }
           // Sync result
           recordSpan(spanAccumulators, ctx.turnIndex, {
+            debugId,
             name: entry.name,
             hook: hookLabel,
             durationMs: performance.now() - start,
@@ -380,6 +398,7 @@ export function createDebugInstrumentation(
           return result;
         } catch (e: unknown) {
           recordSpan(spanAccumulators, ctx.turnIndex, {
+            debugId,
             name: entry.name,
             hook: hookLabel,
             durationMs: performance.now() - start,
