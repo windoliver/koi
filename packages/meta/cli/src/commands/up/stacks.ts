@@ -416,6 +416,17 @@ export async function activatePresetStacks(
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         if (config.verbose) process.stderr.write(`  warn: auto-harness failed: ${message}\n`);
+        contributions.push({
+          id: "auto-harness",
+          label: "Auto Harness",
+          enabled: false,
+          source: "runtime",
+          status: "failed",
+          reason: message,
+          packages: [
+            { id: "@koi/auto-harness", kind: "subsystem", source: "static", notes: [message] },
+          ],
+        });
       }
     }
   }

@@ -283,6 +283,11 @@ export async function runStart(flags: StartFlags): Promise<void> {
     chatBridge,
     dataSourceProvider,
     dataSourceTools,
+    presetContributions: [
+      nexusResolution.contribution,
+      forgeResolution.contribution,
+      autonomousResolution.contribution,
+    ],
   });
 
   // Late-binding event sink for forge/monitor SSE events.

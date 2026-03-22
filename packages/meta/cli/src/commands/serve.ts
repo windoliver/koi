@@ -247,6 +247,11 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     extraProviders: arenaProviders,
     dataSourceProvider,
     dataSourceTools,
+    presetContributions: [
+      nexusResolution.contribution,
+      forgeResolution.contribution,
+      autonomousResolution.contribution,
+    ],
   });
 
   // Late-binding event sink for forge/monitor SSE events
