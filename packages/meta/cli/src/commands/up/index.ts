@@ -116,6 +116,17 @@ const TOOL_FACTORIES: Readonly<
     // Skip to avoid duplicate registration.
     return undefined;
   },
+  "@koi/tools-github": async (verbose) => {
+    try {
+      const { createGithubProvider, createGhExecutor } = await import("@koi/tools-github");
+      const executor = createGhExecutor();
+      const provider = createGithubProvider({ executor });
+      if (verbose) process.stderr.write("  Tool: @koi/tools-github (pr_create, pr_status, ...)\n");
+      return provider;
+    } catch {
+      return undefined;
+    }
+  },
 };
 
 /**

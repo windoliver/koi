@@ -1252,6 +1252,7 @@
         "@koi/runtime-presets": "workspace:*",
         "@koi/sandbox": "workspace:*",
         "@koi/sandbox-ipc": "workspace:*",
+        "@koi/sandbox-stack": "workspace:*",
         "@koi/sandbox-wasm": "workspace:*",
         "@koi/search-brave": "workspace:*",
         "@koi/search-provider": "workspace:*",
@@ -1265,6 +1266,7 @@
         "@koi/tool-exec": "workspace:*",
         "@koi/tool-stack": "workspace:*",
         "@koi/tools-context-hub": "workspace:*",
+        "@koi/tools-github": "workspace:*",
         "@koi/tools-web": "workspace:*",
         "@koi/tui": "workspace:*",
         "@temporalio/client": "1.15.0",
@@ -3217,7 +3219,6 @@
   },
   "trustedDependencies": [
     "esbuild",
-    "lefthook",
   ],
   "packages": {
     "@adiwajshing/keyed-db": ["@adiwajshing/keyed-db@0.2.4", "", {}, "sha512-yprSnAtj80/VKuDqRcFFLDYltoNV8tChNwFfIgcf6PGD4sjzWIBgs08pRuTqGH5mk5wgL6PBRSsMCZqtZwzFEw=="],
