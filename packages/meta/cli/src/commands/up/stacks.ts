@@ -314,6 +314,14 @@ export async function activatePresetStacks(
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (config.verbose) process.stderr.write(`  warn: ${name} failed: ${message}\n`);
+      // Record as disabled contribution so the debug view shows what failed and why
+      contributions.push({
+        id: name,
+        label: name,
+        enabled: false,
+        source: "runtime",
+        packages: [{ id: name, kind: "subsystem", source: "static", notes: [message] }],
+      });
     }
   };
 
