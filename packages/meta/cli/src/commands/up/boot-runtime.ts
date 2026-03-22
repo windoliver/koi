@@ -338,8 +338,11 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     ...(debugApi !== undefined
       ? {
           debug: {
-            getInventory: (_agentId) =>
-              debugApi.getInventory(
+            getInventory: (requestedAgentId) => {
+              if (requestedAgentId !== runtime.agent.pid.id) {
+                return { agentId: String(requestedAgentId), items: [], timestamp: Date.now() };
+              }
+              return debugApi.getInventory(
                 buildDebugExtraItems({
                   channels: channelNames,
                   skills: skillNames,
@@ -353,8 +356,12 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
                     sandboxEnabled: sandboxBridge !== undefined,
                   }),
                 }),
-              ),
-            getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+              );
+            },
+            getTrace: (requestedAgentId, turnIndex) => {
+              if (requestedAgentId !== runtime.agent.pid.id) return undefined;
+              return debugApi.getTrace(turnIndex);
+            },
             getContributions: () => fullContributions,
           },
         }

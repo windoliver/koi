@@ -1134,8 +1134,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
       ...(debugApi !== undefined
         ? {
             debug: {
-              getInventory: (_agentId) =>
-                debugApi.getInventory(
+              getInventory: (requestedAgentId) => {
+                // Only serve debug data for the primary agent — dispatched workers
+                // have their own runtimes not wired to this bridge.
+                const primaryId = runtime.agent.pid.id;
+                if (requestedAgentId !== primaryId) {
+                  return { agentId: String(requestedAgentId), items: [], timestamp: Date.now() };
+                }
+                return debugApi.getInventory(
                   buildDebugExtraItems({
                     channels: channelNames,
                     skills: skillNames,
@@ -1154,8 +1160,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
                       sandboxEnabled: sandboxBridge !== undefined,
                     }),
                   }),
-                ),
-              getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+                );
+              },
+              getTrace: (requestedAgentId, turnIndex) => {
+                const primaryId = runtime.agent.pid.id;
+                if (requestedAgentId !== primaryId) return undefined;
+                return debugApi.getTrace(turnIndex);
+              },
               getContributions: () =>
                 addPostCompositionContributions(
                   composed.contributions,
