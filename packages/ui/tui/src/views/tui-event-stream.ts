@@ -307,7 +307,22 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
         client
           .getDebugInventory(sess5.agentId)
           .then((r) => {
-            if (r.ok) store.dispatch({ kind: "set_debug_inventory", items: r.value.items });
+            if (r.ok) {
+              store.dispatch({ kind: "set_debug_inventory", items: r.value.items });
+              // Only fetch contributions when inventory has data (primary agent).
+              // Non-primary agents get empty inventory, so contributions would be misleading.
+              if (r.value.items.length > 0) {
+                client
+                  .getDebugContributions()
+                  .then((cr) => {
+                    if (cr.ok)
+                      store.dispatch({ kind: "set_debug_contributions", contributions: cr.value });
+                  })
+                  .catch(() => {});
+              } else {
+                store.dispatch({ kind: "set_debug_contributions", contributions: null });
+              }
+            }
           })
           .catch(() => {});
         const turnIndex = store.getState().debugView.selectedTurnIndex;
@@ -316,12 +331,6 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
           .then((r) => {
             if (r.ok) store.dispatch({ kind: "set_debug_trace", trace: r.value });
             else store.dispatch({ kind: "set_debug_trace", trace: null });
-          })
-          .catch(() => {});
-        client
-          .getDebugContributions()
-          .then((r) => {
-            if (r.ok) store.dispatch({ kind: "set_debug_contributions", contributions: r.value });
           })
           .catch(() => {});
       }

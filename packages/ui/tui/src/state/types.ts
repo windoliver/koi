@@ -710,7 +710,7 @@ export type TuiAction =
     }
   | {
       readonly kind: "set_debug_contributions";
-      readonly contributions: import("@koi/dashboard-types").ContributionGraphResponse;
+      readonly contributions: import("@koi/dashboard-types").ContributionGraphResponse | null;
     }
   | {
       readonly kind: "set_debug_trace";
