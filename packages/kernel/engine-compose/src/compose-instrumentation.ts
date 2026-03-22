@@ -287,16 +287,19 @@ export function createDebugInstrumentation(
   const channelAccumulators = new Map<number, ChannelIOSpan[]>();
   const forgeAccumulators = new Map<number, ForgeRefreshSpan[]>();
   const provenanceMap = new Map<string, MiddlewareSource>();
-  /** Tracks which middleware name was last used on which turn. */
-  const lastUsedTurnMap = new Map<string, number>();
-  /** Tracks which middleware names belong to concurrent observe phase. */
-  const concurrentSet = new Set<string>();
-  /** Tracks phase per middleware name (for inventory). */
-  const phaseTracker = new Map<string, string>();
-  /** Tracks priority per middleware name (for inventory). */
-  const priorityTracker = new Map<string, number>();
-  /** Tracks which hooks each middleware implements (for inventory). */
-  const hooksTracker = new Map<string, Set<string>>();
+
+  /** Per-entry inventory record keyed by debugId — avoids name collisions. */
+  interface MwRecord {
+    readonly debugId: string;
+    readonly name: string;
+    source: MiddlewareSource;
+    phase: string;
+    priority: number;
+    concurrent: boolean;
+    lastUsedTurn: number | undefined;
+    readonly hooks: Set<string>;
+  }
+  const mwRecords = new Map<string, MwRecord>();
 
   function wrapEntries<Req, Res>(
     entries: readonly InstrumentableEntry<Req, Res>[],
@@ -305,15 +308,9 @@ export function createDebugInstrumentation(
     phaseMap: ReadonlyMap<string, string>,
     priorityMap: ReadonlyMap<string, number>,
   ): readonly InstrumentableEntry<Req, Res>[] {
-    // Populate the shared tracking maps
+    // Populate the shared provenance map (by name — for compose-layer use)
     for (const [name, source] of provMap) {
       provenanceMap.set(name, source);
-    }
-    for (const [name, phase] of phaseMap) {
-      phaseTracker.set(name, phase);
-    }
-    for (const [name, prio] of priorityMap) {
-      priorityTracker.set(name, prio);
     }
 
     return entries.map((entry, index) => {
@@ -322,17 +319,30 @@ export function createDebugInstrumentation(
       const source = provMap.get(entry.name) ?? "static";
       const phase = phaseMap.get(entry.name) ?? "resolve";
       const priority = priorityMap.get(entry.name) ?? 500;
-      // Track hooks per middleware (keyed by debugId to avoid collisions)
-      const hookSet = hooksTracker.get(debugId) ?? new Set<string>();
-      hookSet.add(hookLabel);
-      hooksTracker.set(debugId, hookSet);
-      // Also track by name for backward compat with inventory display
-      const hookSetByName = hooksTracker.get(entry.name) ?? new Set<string>();
-      hookSetByName.add(hookLabel);
-      hooksTracker.set(entry.name, hookSetByName);
+      // Track per-entry record (keyed by debugId to avoid name collisions)
+      const existing = mwRecords.get(debugId);
+      if (existing !== undefined) {
+        existing.hooks.add(hookLabel);
+      } else {
+        const hooks = new Set<string>();
+        hooks.add(hookLabel);
+        mwRecords.set(debugId, {
+          debugId,
+          name: entry.name,
+          source,
+          phase,
+          priority,
+          concurrent: false,
+          lastUsedTurn: undefined,
+          hooks,
+        });
+      }
       // Concurrent observers get "secondary" tier, everything else is "critical"
       const isConcurrent = phase === "observe" && priority >= 900;
-      if (isConcurrent) concurrentSet.add(debugId);
+      if (isConcurrent) {
+        const rec = mwRecords.get(debugId);
+        if (rec !== undefined) rec.concurrent = true;
+      }
       const tier: VisibilityTier = isConcurrent ? "secondary" : "critical";
 
       const wrappedHook = (ctx: TurnContext, req: Req, next: (r: Req) => Res): Res => {
@@ -345,8 +355,8 @@ export function createDebugInstrumentation(
         };
 
         // Track last used turn for lifecycle badges (keyed by debugId)
-        lastUsedTurnMap.set(debugId, ctx.turnIndex);
-        lastUsedTurnMap.set(entry.name, ctx.turnIndex);
+        const mwRec = mwRecords.get(debugId);
+        if (mwRec !== undefined) mwRec.lastUsedTurn = ctx.turnIndex;
 
         try {
           const result = entry.hook(ctx, req, trackedNext);
@@ -483,16 +493,17 @@ export function createDebugInstrumentation(
     agentId: string,
     extraItems: readonly DebugInventoryItem[],
   ): DebugInventory {
-    const mwItems: readonly DebugInventoryItem[] = [...provenanceMap].map(([name, source]) => ({
-      name,
+    const mwItems: readonly DebugInventoryItem[] = [...mwRecords.values()].map((rec) => ({
+      debugId: rec.debugId,
+      name: rec.name,
       category: "middleware" as const,
       enabled: true,
-      source,
-      ...(phaseTracker.has(name) ? { phase: phaseTracker.get(name) } : {}),
-      ...(priorityTracker.has(name) ? { priority: priorityTracker.get(name) } : {}),
-      ...(hooksTracker.has(name) ? { hooks: [...(hooksTracker.get(name) ?? [])] } : {}),
-      ...(lastUsedTurnMap.has(name) ? { lastUsedTurn: lastUsedTurnMap.get(name) } : {}),
-      ...(concurrentSet.has(name) ? { concurrent: true } : {}),
+      source: rec.source,
+      phase: rec.phase,
+      priority: rec.priority,
+      hooks: [...rec.hooks],
+      ...(rec.lastUsedTurn !== undefined ? { lastUsedTurn: rec.lastUsedTurn } : {}),
+      ...(rec.concurrent ? { concurrent: true } : {}),
     }));
 
     return {

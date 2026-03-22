@@ -176,12 +176,21 @@ export function createKeyboardHandler(
         store.dispatch({ kind: "cycle_debug_visibility" });
         return true;
       }
-      // Enter in waterfall panel — highlight the span at current scroll offset
+      // Enter in waterfall panel — highlight the middleware at current scroll offset
       if (sequence === "\r") {
         const debugState = store.getState().debugView;
         if (debugState.activePanel === "waterfall" && debugState.trace !== null) {
-          const spanAtOffset = debugState.trace.spans[debugState.scrollOffset];
-          const name = spanAtOffset?.name ?? null;
+          // Flatten the span tree to match the rendered row order
+          const flatNames: string[] = [];
+          for (const span of debugState.trace.spans) {
+            flatNames.push(span.name);
+            if (span.children !== undefined) {
+              for (const child of span.children) {
+                flatNames.push(child.name);
+              }
+            }
+          }
+          const name = flatNames[debugState.scrollOffset] ?? null;
           store.dispatch({ kind: "highlight_debug_middleware", name });
         }
         return true;

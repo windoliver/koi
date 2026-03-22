@@ -246,8 +246,9 @@ function WaterfallPanel(props: {
 
 function PackageItem(props: {
   readonly pkg: PackageContributionResponse;
+  readonly highlightedMiddleware?: string | null | undefined;
 }): React.ReactNode {
-  const { pkg } = props;
+  const { pkg, highlightedMiddleware } = props;
   const kindBadge = pkg.kind.slice(0, 4).toUpperCase();
   const names: readonly string[] = [
     ...(pkg.middlewareNames ?? []),
@@ -259,9 +260,14 @@ function PackageItem(props: {
   const notesStr = pkg.notes !== undefined && pkg.notes.length > 0
     ? ` (${pkg.notes.join(", ")})`
     : "";
+  // Highlight if any middleware name matches the cross-panel selection
+  const isHighlighted = highlightedMiddleware !== null
+    && highlightedMiddleware !== undefined
+    && names.includes(highlightedMiddleware);
+  const fg = isHighlighted ? COLORS.accent : categoryColor(pkg.kind);
 
   return (
-    <text fg={categoryColor(pkg.kind)}>
+    <text fg={fg}>
       {`      [${kindBadge}] ${pkg.id} ${nameStr}${notesStr}`}
     </text>
   );
@@ -289,8 +295,9 @@ function statusBadge(stack: StackContributionResponse): {
 
 function StackSection(props: {
   readonly stack: StackContributionResponse;
+  readonly highlightedMiddleware?: string | null | undefined;
 }): React.ReactNode {
-  const { stack } = props;
+  const { stack, highlightedMiddleware } = props;
   const { mark, fg } = statusBadge(stack);
   const reasonSuffix =
     stack.reason !== undefined ? ` \u2014 ${stack.reason}` : "";
@@ -301,7 +308,7 @@ function StackSection(props: {
         <b>{`  ${mark} ${stack.label} (${stack.source})${reasonSuffix}`}</b>
       </text>
       {stack.packages.map((pkg, i) => (
-        <PackageItem key={`${pkg.id}-${String(i)}`} pkg={pkg} />
+        <PackageItem key={`${pkg.id}-${String(i)}`} pkg={pkg} highlightedMiddleware={highlightedMiddleware} />
       ))}
     </box>
   );
@@ -309,8 +316,9 @@ function StackSection(props: {
 
 const ContributionTreePanel = React.memo(function ContributionTreePanel(props: {
   readonly contributions: ContributionGraphResponse;
+  readonly highlightedMiddleware?: string | null | undefined;
 }): React.ReactNode {
-  const { contributions } = props;
+  const { contributions, highlightedMiddleware } = props;
 
   return (
     <box flexDirection="column">
@@ -319,7 +327,7 @@ const ContributionTreePanel = React.memo(function ContributionTreePanel(props: {
       </text>
       <text fg={COLORS.dim}>{""}</text>
       {contributions.stacks.map((stack) => (
-        <StackSection key={stack.id} stack={stack} />
+        <StackSection key={stack.id} stack={stack} highlightedMiddleware={highlightedMiddleware} />
       ))}
     </box>
   );
@@ -362,7 +370,7 @@ export function DebugView(props: DebugViewProps): React.ReactNode {
         emptyHint="Enable debug mode and select an agent."
       >
         {contributions !== null && (
-          <ContributionTreePanel contributions={contributions} />
+          <ContributionTreePanel contributions={contributions} highlightedMiddleware={highlightedMiddleware} />
         )}
         {inventory !== null && contributions === null && (
           <InventoryPanel
