@@ -256,6 +256,7 @@ describe("generateDemoManifestYaml", () => {
     expect(yaml).toContain("@koi/tools-web");
     expect(yaml).toContain("@koi/tool-exec");
     expect(yaml).toContain("@koi/tool-browser");
+    expect(yaml).toContain("@koi/tools-github");
   });
 
   test("includes demo pack", () => {

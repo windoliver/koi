@@ -100,6 +100,7 @@
     "@koi/tool-exec": "workspace:*",
     "@koi/tool-stack": "workspace:*",
     "@koi/tools-context-hub": "workspace:*",
+    "@koi/tools-github": "workspace:*",
     "@koi/tools-web": "workspace:*",
     "@koi/tui": "workspace:*",
     "@temporalio/client": "1.15.0"

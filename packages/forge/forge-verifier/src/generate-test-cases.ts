@@ -400,8 +400,9 @@ function generateCoercionTraps(schema: Readonly<Record<string, unknown>>): reado
       cases.push({ name: "auto:coercion_string_for_array", input: "[]" });
       break;
     case "object": {
-      cases.push({ name: "auto:coercion_array_for_object", input: [] });
-      // Per-property coercion — tool may coerce silently, no shouldThrow
+      // Skip top-level array-for-object trap: passing [] to a tool expecting
+      // { prop: T } always produces undefined property access → NaN/crash.
+      // Per-property coercion traps (wrong type for one field) are more useful.
       const props = getProperties(schema);
       if (props !== undefined) {
         for (const [key, propSchema] of Object.entries(props)) {

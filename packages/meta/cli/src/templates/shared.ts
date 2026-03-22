@@ -119,6 +119,7 @@ export function generateManifestYaml(state: WizardState): string {
     additional.push('    - name: "@koi/tools-context-hub"');
     additional.push('    - name: "@koi/tool-exec"');
     additional.push('    - name: "@koi/tool-browser"');
+    additional.push('    - name: "@koi/tools-github"');
   }
 
   if (state.preset === "sqlite") {
@@ -349,6 +350,7 @@ export function generateDemoManifestYaml(state: WizardState): string {
   additional.push('    - name: "@koi/tool-exec"');
   additional.push('    - name: "@koi/tools-context-hub"');
   additional.push('    - name: "@koi/tool-browser"');
+  additional.push('    - name: "@koi/tools-github"');
   additional.push("");
 
   additional.push("# Code-execution sandbox for the execute_code tool.");
