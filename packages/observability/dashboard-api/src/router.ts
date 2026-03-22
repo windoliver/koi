@@ -73,7 +73,7 @@ export function createRouter(routes: readonly Route[]): Router {
         const name = route.paramNames[i];
         const value = m[i + 1];
         if (name !== undefined && value !== undefined) {
-          params[name] = value;
+          params[name] = decodeURIComponent(value);
         }
       }
       return { handler: route.handler, params };

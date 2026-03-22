@@ -573,15 +573,28 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       : {}),
     ...(options.forge !== undefined ? { forge: options.forge } : {}),
     ...(options.debug !== undefined
-      ? {
-          debug: {
-            getInventory: options.debug.getInventory,
-            getTrace: options.debug.getTrace,
-            ...(options.debug.getContributions !== undefined
-              ? { getContributions: options.debug.getContributions }
-              : {}),
-          },
-        }
+      ? (() => {
+          const dbg = options.debug;
+          return {
+            debug: {
+              // Guard: only serve debug data for the primary agent.
+              // Non-primary agents (dispatched workers) get empty results.
+              getInventory: (id: AgentId) => {
+                if (id !== primaryAgentId) {
+                  return { agentId: String(id), items: [], timestamp: Date.now() };
+                }
+                return dbg.getInventory(id);
+              },
+              getTrace: (id: AgentId, turnIndex: number) => {
+                if (id !== primaryAgentId) return undefined;
+                return dbg.getTrace(id, turnIndex);
+              },
+              ...(dbg.getContributions !== undefined
+                ? { getContributions: dbg.getContributions }
+                : {}),
+            },
+          };
+        })()
       : {}),
   };
 

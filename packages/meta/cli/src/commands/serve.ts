@@ -352,11 +352,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       ...(debugApi !== undefined
         ? {
             debug: {
-              getInventory: (requestedAgentId) => {
-                if (requestedAgentId !== runtime.agent.pid.id) {
-                  return { agentId: String(requestedAgentId), items: [], timestamp: Date.now() };
-                }
-                return debugApi.getInventory(
+              getInventory: (_agentId) =>
+                debugApi.getInventory(
                   buildDebugExtraItems({
                     channels: channelNames,
                     skills: skillNames,
@@ -371,12 +368,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
                       temporalEnabled: temporalAdmin !== undefined,
                     }),
                   }),
-                );
-              },
-              getTrace: (requestedAgentId, turnIndex) => {
-                if (requestedAgentId !== runtime.agent.pid.id) return undefined;
-                return debugApi.getTrace(turnIndex);
-              },
+                ),
+              getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
               getContributions: () =>
                 addPostCompositionContributions(
                   composed.contributions,

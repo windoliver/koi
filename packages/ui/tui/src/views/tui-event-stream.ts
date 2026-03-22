@@ -301,11 +301,12 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
         .catch(() => {});
       break;
     case "debug": {
-      const sess5 = store.getState().activeSession;
-      if (sess5 !== null) {
+      const state5 = store.getState();
+      const debugAgentId = state5.activeSession?.agentId ?? state5.agents[0]?.agentId;
+      if (debugAgentId !== undefined) {
         store.dispatch({ kind: "set_debug_loading", loading: true });
         client
-          .getDebugInventory(sess5.agentId)
+          .getDebugInventory(debugAgentId)
           .then((r) => {
             if (r.ok) {
               store.dispatch({ kind: "set_debug_inventory", items: r.value.items });
@@ -327,7 +328,7 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
           .catch(() => {});
         const turnIndex = store.getState().debugView.selectedTurnIndex;
         client
-          .getDebugTrace(sess5.agentId, turnIndex)
+          .getDebugTrace(debugAgentId, turnIndex)
           .then((r) => {
             if (r.ok) store.dispatch({ kind: "set_debug_trace", trace: r.value });
             else store.dispatch({ kind: "set_debug_trace", trace: null });
