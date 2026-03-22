@@ -1228,6 +1228,33 @@ export async function runUp(flags: UpFlags): Promise<void> {
     output.info("Type a message or Ctrl+C to stop.\n");
   }
 
+  // 12c. Scheduler — activate cron schedule from manifest
+  let schedulerCron: { stop: () => void } | undefined;
+  const scheduleExpr = (manifest as unknown as Record<string, unknown>).schedule as
+    | string
+    | undefined;
+  if (scheduleExpr !== undefined && scheduleExpr.trim() !== "") {
+    try {
+      const { Cron } = await import("croner");
+      const cronJob = new Cron(scheduleExpr, async () => {
+        try {
+          for await (const event of runtime.run({ kind: "text", text: "scheduled run" })) {
+            if (event.kind === "text_delta" && !tuiAttached) {
+              process.stderr.write(event.delta);
+            }
+          }
+        } catch {
+          // Non-fatal — next cron tick will retry
+        }
+      });
+      schedulerCron = { stop: () => cronJob.stop() };
+      output.info(`Scheduler: ${scheduleExpr}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      output.warn(`scheduler failed: ${message}`);
+    }
+  }
+
   // 13. REPL + shutdown
   const controller = new AbortController();
   let shuttingDown = false;
@@ -1428,6 +1455,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // Cleanup
   process.removeListener("SIGINT", shutdown);
   process.removeListener("SIGTERM", shutdown);
+  if (schedulerCron !== undefined) schedulerCron.stop();
   if (tuiApp !== undefined) await tuiApp.stop();
   for (const unsub of unsubscribers) unsub();
   for (const ch of channels) await ch.disconnect();

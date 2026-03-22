@@ -103,6 +103,7 @@
     "@koi/tools-github": "workspace:*",
     "@koi/tools-web": "workspace:*",
     "@koi/tui": "workspace:*",
-    "@temporalio/client": "1.15.0"
+    "@temporalio/client": "1.15.0",
+    "croner": "9.0.0"
   }
 }
