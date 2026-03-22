@@ -360,6 +360,8 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   let runtimeRef: { readonly run: (input: EngineInput) => AsyncIterable<EngineEvent> } | undefined;
   // let justified: captured from embedded runtime for debug bridge wiring
   let runtimeDebugApi: KoiRuntime["debug"];
+  // let justified: captured from embedded runtime for agent ID guard
+  let runtimeAgentId: import("@koi/core").AgentId | undefined;
 
   // Late-binding event sink for forge/monitor SSE events
   // let justified: mutable ref set when admin bridge is created
@@ -406,6 +408,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       runtimeDispose = () => runtime.dispose();
       runtimeRef = runtime;
       runtimeDebugApi = runtime.debug;
+      runtimeAgentId = runtime.agent.pid.id;
 
       if (flags.verbose) {
         process.stderr.write("Embedded agent runtime: active\n");
@@ -460,8 +463,11 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
     ...(runtimeDebugApi !== undefined
       ? {
           debug: {
-            getInventory: (_agentId: unknown) =>
-              runtimeDebugApi?.getInventory(
+            getInventory: (requestedAgentId) => {
+              if (runtimeAgentId !== undefined && requestedAgentId !== runtimeAgentId) {
+                return { agentId: String(requestedAgentId), items: [], timestamp: Date.now() };
+              }
+              return runtimeDebugApi?.getInventory(
                 buildDebugExtraItems({
                   channels: channelNames,
                   skills: skillNames,
@@ -472,9 +478,13 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
                     temporalEnabled: temporal !== undefined,
                   }),
                 }),
-              ),
-            getTrace: (_agentId: unknown, turnIndex: number) =>
-              runtimeDebugApi?.getTrace(turnIndex),
+              );
+            },
+            getTrace: (requestedAgentId, turnIndex) => {
+              if (runtimeAgentId !== undefined && requestedAgentId !== runtimeAgentId)
+                return undefined;
+              return runtimeDebugApi?.getTrace(turnIndex);
+            },
           },
         }
       : {}),
