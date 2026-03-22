@@ -19,6 +19,7 @@ const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   console: "Type message  Enter:send  Esc:back  Ctrl+P:commands",
   cost: "j/k:scroll  Esc:back  Ctrl+P:commands",
   datasources: "↑↓:navigate  [a] approve  [s] schema  Esc:back",
+  debug: "[1] inventory  [2] waterfall  [n/p] turn  j/k:scroll  Esc:back",
   delegation: "j/k:scroll  Esc:back  Ctrl+P:commands",
   doctor: "Esc:back",
   engine: "Enter:confirm  s:skip  Esc:back",

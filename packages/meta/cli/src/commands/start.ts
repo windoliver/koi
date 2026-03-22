@@ -32,6 +32,8 @@ import type { StartFlags } from "../args.js";
 import { bootstrapForgeOrWarn } from "../bootstrap-forge.js";
 import { createChatRouter } from "../chat-router.js";
 import { composeRuntimeMiddleware } from "../compose-middleware.js";
+import { addPostCompositionContributions } from "../contribution-graph.js";
+import { buildDebugExtraItems, collectActiveSubsystems } from "../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -182,7 +184,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
 
   // 4. Resolve Nexus + autonomous in parallel (before forge, so search backends are available)
-  const [nexus, autonomous] = await Promise.all([
+  const [nexusResolution, autonomousResolution] = await Promise.all([
     resolveNexusOrWarn(
       flags.nexusUrl,
       manifest.nexus?.url,
@@ -192,6 +194,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
     ),
     resolveAutonomousOrWarn(manifest, flags.verbose),
   ]);
+  const nexus = nexusResolution.state;
+  const autonomous = autonomousResolution.result;
 
   // 4b. Bootstrap forge system (before resolution, so forgeStore is available)
   // let justified: tracks current session ID for forge counter scoping
@@ -199,15 +203,15 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // let justified: incremented per REPL message to generate unique session IDs
   let startSessionCounter = 0;
 
-  const forgeResult = await bootstrapForgeOrWarn(
+  const forgeResolution = await bootstrapForgeOrWarn(
     manifest,
     () => currentStartSessionId,
     flags.verbose,
     undefined,
     nexus.search,
   );
-  const forgeBootstrap = forgeResult?.bootstrap;
-  const sandboxBridge = forgeResult?.sandboxBridge;
+  const forgeBootstrap = forgeResolution.result?.bootstrap;
+  const sandboxBridge = forgeResolution.result?.sandboxBridge;
 
   // 4c. Create AG-UI chat bridge for admin chat endpoint (loaded lazily)
   let chatBridge: AgentChatBridge | undefined;
@@ -279,6 +283,11 @@ export async function runStart(flags: StartFlags): Promise<void> {
     chatBridge,
     dataSourceProvider,
     dataSourceTools,
+    presetContributions: [
+      nexusResolution.contribution,
+      forgeResolution.contribution,
+      autonomousResolution.contribution,
+    ],
   });
 
   // Late-binding event sink for forge/monitor SSE events.
@@ -297,6 +306,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
     ...(flags.admin
       ? {
+          debug: { enabled: true },
           onDashboardEvent: (event: DashboardEvent) => {
             emitDashboardEvent?.(event);
           },
@@ -356,6 +366,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
         ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
         ...(flags.admin
           ? {
+              debug: { enabled: true },
               onDashboardEvent: (event: DashboardEvent) => {
                 emitDashboardEvent?.(event);
               },
@@ -631,6 +642,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
       });
       adminDispatcher = dispatcher;
 
+      const debugApi = runtime.debug;
       adminBridge = createAdminPanelBridge({
         agentName: manifest.name,
         agentType: manifest.lifecycle ?? "copilot",
@@ -646,6 +658,38 @@ export async function runStart(flags: StartFlags): Promise<void> {
           ? {
               orchestration: orch.orchestration,
               orchestrationCommands: orch.orchestrationCommands,
+            }
+          : {}),
+        ...(debugApi !== undefined
+          ? {
+              debug: {
+                getInventory: (_agentId) =>
+                  debugApi.getInventory(
+                    buildDebugExtraItems({
+                      channels: channelNames,
+                      skills: skillNames,
+                      model: modelName,
+                      engineAdapter: adapter.engineId,
+                      tools: manifest.tools,
+                      subsystems: collectActiveSubsystems({
+                        nexusEnabled:
+                          nexus.middlewares !== undefined && nexus.middlewares.length > 0,
+                        forgeEnabled: forgeBootstrap !== undefined,
+                        autonomousEnabled: autonomous !== undefined,
+                        sandboxEnabled: sandboxBridge !== undefined,
+                        temporalEnabled: temporalAdmin !== undefined,
+                      }),
+                    }),
+                  ),
+                getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+                getContributions: () =>
+                  addPostCompositionContributions(
+                    composed.contributions,
+                    channelNames,
+                    adapter.engineId,
+                    modelName,
+                  ),
+              },
             }
           : {}),
       });

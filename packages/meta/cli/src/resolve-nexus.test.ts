@@ -103,16 +103,23 @@ describe("resolveNexusStack — URL priority", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveNexusOrWarn — graceful fallback", () => {
-  test("returns Nexus state on success", async () => {
-    const result = await resolveNexusOrWarn("http://localhost:2026", undefined, false);
+  test("returns Nexus state and active contribution on success", async () => {
+    const { state, contribution } = await resolveNexusOrWarn(
+      "http://localhost:2026",
+      undefined,
+      false,
+    );
 
-    expect(result.middlewares).toEqual([]);
-    expect(result.providers).toEqual([]);
-    expect(result.dispose).toBeDefined();
-    expect(result.baseUrl).toBe("http://localhost:2026");
+    expect(state.middlewares).toEqual([]);
+    expect(state.providers).toEqual([]);
+    expect(state.dispose).toBeDefined();
+    expect(state.baseUrl).toBe("http://localhost:2026");
+    expect(contribution.status).toBe("active");
+    expect(contribution.enabled).toBe(true);
+    expect(contribution.id).toBe("nexus");
   });
 
-  test("returns empty defaults on failure", async () => {
+  test("returns empty defaults and failed contribution on error", async () => {
     mockCreateNexusStack.mockImplementationOnce(async () => {
       throw new Error("connection refused");
     });
@@ -125,12 +132,20 @@ describe("resolveNexusOrWarn — graceful fallback", () => {
     }) as typeof process.stderr.write;
 
     try {
-      const result = await resolveNexusOrWarn(undefined, undefined, false);
+      // Pass a URL so the function does not short-circuit to "skipped"
+      const { state, contribution } = await resolveNexusOrWarn(
+        "http://localhost:2026",
+        undefined,
+        false,
+      );
 
-      expect(result.middlewares).toEqual([]);
-      expect(result.providers).toEqual([]);
-      expect(result.dispose).toBeUndefined();
-      expect(result.baseUrl).toBeUndefined();
+      expect(state.middlewares).toEqual([]);
+      expect(state.providers).toEqual([]);
+      expect(state.dispose).toBeUndefined();
+      expect(state.baseUrl).toBeUndefined();
+      expect(contribution.status).toBe("failed");
+      expect(contribution.reason).toBe("connection refused");
+      expect(contribution.enabled).toBe(false);
 
       const output = stderrChunks.join("");
       expect(output).toContain("warn: Nexus initialization failed");
@@ -138,6 +153,16 @@ describe("resolveNexusOrWarn — graceful fallback", () => {
     } finally {
       process.stderr.write = original;
     }
+  });
+
+  test("returns skipped contribution when no URL configured", async () => {
+    const { state, contribution } = await resolveNexusOrWarn(undefined, undefined, false);
+
+    expect(state.middlewares).toEqual([]);
+    expect(state.baseUrl).toBeUndefined();
+    expect(contribution.status).toBe("skipped");
+    expect(contribution.reason).toBe("No Nexus URL configured");
+    expect(contribution.enabled).toBe(false);
   });
 
   test("logs baseUrl in verbose mode", async () => {

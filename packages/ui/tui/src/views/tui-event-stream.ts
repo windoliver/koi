@@ -35,6 +35,7 @@ export function viewToDomainKey(view: TuiView): string | null {
     processtree: "processtree",
     agentprocfs: "agentprocfs",
     cost: "cost",
+    debug: "debug",
     delegation: "delegation",
     handoffs: "handoffs",
     mailbox: "mailbox",
@@ -82,6 +83,8 @@ export function getDomainScrollOffset(state: TuiState, domain: string): number {
       return state.mailboxView.scrollOffset;
     case "scratchpad":
       return state.scratchpadView.scrollOffset;
+    case "debug":
+      return state.debugView.scrollOffset;
     default:
       return 0;
   }
@@ -297,6 +300,43 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
         })
         .catch(() => {});
       break;
+    case "debug": {
+      const state5 = store.getState();
+      const debugAgentId = state5.activeSession?.agentId ?? state5.agents[0]?.agentId;
+      if (debugAgentId !== undefined) {
+        store.dispatch({ kind: "set_debug_loading", loading: true });
+        client
+          .getDebugInventory(debugAgentId)
+          .then((r) => {
+            if (r.ok) {
+              store.dispatch({ kind: "set_debug_inventory", items: r.value.items });
+              // Only fetch contributions when inventory has data (primary agent).
+              // Non-primary agents get empty inventory, so contributions would be misleading.
+              if (r.value.items.length > 0) {
+                client
+                  .getDebugContributions()
+                  .then((cr) => {
+                    if (cr.ok)
+                      store.dispatch({ kind: "set_debug_contributions", contributions: cr.value });
+                  })
+                  .catch(() => {});
+              } else {
+                store.dispatch({ kind: "set_debug_contributions", contributions: null });
+              }
+            }
+          })
+          .catch(() => {});
+        const turnIndex = store.getState().debugView.selectedTurnIndex;
+        client
+          .getDebugTrace(debugAgentId, turnIndex)
+          .then((r) => {
+            if (r.ok) store.dispatch({ kind: "set_debug_trace", trace: r.value });
+            else store.dispatch({ kind: "set_debug_trace", trace: null });
+          })
+          .catch(() => {});
+      }
+      break;
+    }
     case "governance":
       client
         .listGovernanceQueue()

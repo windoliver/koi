@@ -176,12 +176,21 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
         durationMs,
       };
 
-      // Find parent IDs from current head
-      const headResult = await store.head(chainId);
-      const parentIds =
-        headResult.ok && headResult.value !== undefined ? [headResult.value.nodeId] : [];
+      try {
+        // Find parent IDs from current head
+        const headResult = await store.head(chainId);
+        const parentIds =
+          headResult.ok && headResult.value !== undefined ? [headResult.value.nodeId] : [];
 
-      await store.put(chainId, turnTrace, parentIds);
+        await store.put(chainId, turnTrace, parentIds);
+      } catch (e: unknown) {
+        // Degraded mode: trace data lost for this turn, but agent continues.
+        // Observability must never crash the observed system.
+        console.warn(
+          `[event-trace] Failed to persist turn trace (turn ${String(ctx.turnIndex)}):`,
+          e instanceof Error ? e.message : e,
+        );
+      }
     },
   };
 

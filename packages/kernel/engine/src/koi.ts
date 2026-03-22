@@ -18,10 +18,8 @@ import type {
   InboxItem,
   KoiMiddleware,
   ModelChunk,
-  ModelHandler,
   ModelRequest,
   ModelResponse,
-  ModelStreamHandler,
   RunId,
   SessionContext,
   SessionId,
@@ -33,8 +31,10 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { INBOX, runId, sessionId, toolToken } from "@koi/core";
+import type { DebugInstrumentation, TerminalHandlers } from "@koi/engine-compose";
 import {
   composeExtensions,
+  createDebugInstrumentation,
   createDefaultGuardExtension,
   injectCapabilities,
   recomposeChains,
@@ -114,10 +114,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   agent.setTransitionValidator(composed.validateTransition);
 
   // --- 3. Compose middleware chain: guard middleware + user middleware, phase-sorted ---
-  const allMiddleware: readonly KoiMiddleware[] = resolveActiveMiddleware([
-    ...composed.guardMiddleware,
-    ...middleware,
-  ]);
+  const { sorted: allMiddleware, provenanceHints: staticProvenanceHints } = resolveActiveMiddleware(
+    [...composed.guardMiddleware, ...middleware],
+  );
+
+  // --- 3b. Create debug instrumentation if enabled ---
+  const debugInstrumentation: DebugInstrumentation | undefined =
+    options.debug?.enabled === true ? createDebugInstrumentation(options.debug) : undefined;
 
   // Runtime warning for JS consumers that omit describeCapabilities (TS catches at compile time)
   for (const mw of allMiddleware) {
@@ -130,10 +133,22 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   }
 
   // --- 4. Default tool terminal (forge first, then entity fallback) ---
+  // let justified: mutable turn counter needed by defaultToolTerminal for debug instrumentation
+  let outerCurrentTurnIndex = 0;
+
   const defaultToolTerminal = async (request: ToolRequest): Promise<ToolResponse> => {
     // Forge-first: forged tools shadow entity tools (Agent-forged > Bundled)
-    const tool: Tool | undefined =
-      (await forge?.resolveTool(request.toolId)) ?? agent.component(toolToken(request.toolId));
+    const resolveStart = performance.now();
+    const fromForge = forge !== undefined ? await forge.resolveTool(request.toolId) : undefined;
+    const tool: Tool | undefined = fromForge ?? agent.component(toolToken(request.toolId));
+    const resolveMs = performance.now() - resolveStart;
+
+    debugInstrumentation?.recordResolve({
+      toolId: request.toolId,
+      source: fromForge !== undefined ? "forged" : tool !== undefined ? "entity" : "miss",
+      durationMs: resolveMs,
+      turnIndex: outerCurrentTurnIndex,
+    });
 
     if (tool === undefined) {
       throw KoiRuntimeError.from("NOT_FOUND", `Tool not found: "${request.toolId}"`, {
@@ -158,6 +173,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     const sessionStartedAt = Date.now();
     // let justified: mutable turn counter incremented on turn_end
     let currentTurnIndex = 0;
+    // Sync the outer mutable ref so defaultToolTerminal can read it
+    outerCurrentTurnIndex = 0;
     let sessionStarted = false;
 
     // AbortSignal: compose caller signal with internal controller
@@ -196,13 +213,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let previousDynamicMw: readonly KoiMiddleware[] | undefined;
 
     // let justified: cached terminals created once at session start, reused across turns
-    let cachedTerminals:
-      | {
-          readonly modelHandler: ModelHandler;
-          readonly toolHandler: ToolHandler;
-          readonly modelStreamHandler?: ModelStreamHandler;
-        }
-      | undefined;
+    let cachedTerminals: TerminalHandlers | undefined;
 
     // let justified: previous forge middleware ref for identity-based skip
     let previousForgedMw: readonly KoiMiddleware[] | undefined;
@@ -234,30 +245,52 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
     }
 
+    /** Re-compose chains when dynamic sources change. Updates mutable chain refs in-place. */
+    function applyRecomposition(
+      forgedMw: readonly KoiMiddleware[] | undefined,
+      dynamicMw: readonly KoiMiddleware[] | undefined,
+      terminals: TerminalHandlers,
+    ): void {
+      const { sorted, provenanceHints } = resolveActiveMiddleware(
+        allMiddleware,
+        forgedMw ?? undefined,
+        dynamicMw ?? undefined,
+      );
+      const chains = recomposeChains(sorted, terminals, debugInstrumentation, provenanceHints);
+      activeToolChain = chains.toolChain;
+      activeModelChain = chains.modelChain;
+      activeStreamChain = chains.streamChain;
+    }
+
     /** Refresh forged descriptors and re-compose middleware if forge runtime is provided. */
-    async function refreshForgeState(terminals: {
-      readonly modelHandler: ModelHandler;
-      readonly toolHandler: ToolHandler;
-      readonly modelStreamHandler?: ModelStreamHandler;
-    }): Promise<void> {
+    async function refreshForgeState(terminals: TerminalHandlers): Promise<void> {
       if (forge === undefined) return;
 
       // Refresh forged tool descriptors
+      const prevDescCount = forgedDescriptorsCache.length;
       forgedDescriptorsCache = await forge.toolDescriptors();
+      const newDescCount = forgedDescriptorsCache.length;
       toolsAccessor?.updateForged(forgedDescriptorsCache);
 
       // Re-compose middleware chains only when forged middleware actually changed
+      // let justified: mutable flag tracking whether middleware was recomposed this refresh
+      let middlewareRecomposed = false;
       if (forge.middleware !== undefined) {
         const forgedMw = await forge.middleware();
         if (forgedMw !== previousForgedMw) {
+          middlewareRecomposed = true;
           previousForgedMw = forgedMw;
-          const sorted = resolveActiveMiddleware(allMiddleware, forgedMw);
-          const chains = recomposeChains(sorted, terminals);
-          activeToolChain = chains.toolChain;
-          activeModelChain = chains.modelChain;
-          activeStreamChain = chains.streamChain;
+          applyRecomposition(forgedMw, previousDynamicMw ?? undefined, terminals);
         }
       }
+
+      debugInstrumentation?.recordForgeRefresh({
+        descriptorsChanged: newDescCount !== prevDescCount,
+        descriptorCount: newDescCount,
+        middlewareRecomposed,
+        timestamp: Date.now(),
+        turnIndex: currentTurnIndex,
+      });
     }
 
     let adapterIterator: AsyncIterator<EngineEvent> | undefined;
@@ -372,10 +405,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           rawModelTerminal,
           rawToolTerminal,
           rawModelStreamTerminal,
+          debugInstrumentation,
+          () => currentTurnIndex,
         );
 
         // Initial chain composition (allMiddleware is already phase-sorted)
-        const initialChains = recomposeChains(allMiddleware, cachedTerminals);
+        const initialChains = recomposeChains(
+          allMiddleware,
+          cachedTerminals,
+          debugInstrumentation,
+          staticProvenanceHints,
+        );
         activeToolChain = initialChains.toolChain;
         activeModelChain = initialChains.modelChain;
         activeStreamChain = initialChains.streamChain;
@@ -586,15 +626,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             const dynamicMw = options.dynamicMiddleware();
             if (dynamicMw !== previousDynamicMw) {
               previousDynamicMw = dynamicMw;
-              const sorted = resolveActiveMiddleware(
-                allMiddleware,
+              applyRecomposition(
                 previousForgedMw ?? undefined,
                 dynamicMw ?? undefined,
+                cachedTerminals,
               );
-              const chains = recomposeChains(sorted, cachedTerminals);
-              activeToolChain = chains.toolChain;
-              activeModelChain = chains.modelChain;
-              activeStreamChain = chains.streamChain;
             }
           }
 
@@ -636,6 +672,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
             if (event.kind === "turn_end") {
               currentTurnIndex = event.turnIndex + 1;
+              outerCurrentTurnIndex = currentTurnIndex;
               pendingForgeRefresh = true;
               const turnEndCtx = createTurnContext({
                 session: sessionCtx,
@@ -646,6 +683,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 sendStatus: options.sendStatus,
               });
               await runTurnHooks(allMiddleware, "onAfterTurn", turnEndCtx);
+              debugInstrumentation?.onTurnEnd(event.turnIndex);
               yield event;
               break; // → next turn in outer loop
             }
@@ -854,6 +892,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       disposed = true;
       await adapter.dispose?.();
     },
+
+    ...(debugInstrumentation !== undefined
+      ? {
+          debug: {
+            getTrace: (turnIndex: number) => debugInstrumentation.getTrace(turnIndex),
+            getInventory: (extraItems) =>
+              debugInstrumentation.buildInventory(pid.id, extraItems ?? []),
+          },
+        }
+      : {}),
   };
 
   return runtime;

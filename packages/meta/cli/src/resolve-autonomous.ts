@@ -22,6 +22,7 @@ import type {
 } from "@koi/core";
 import { agentId, harnessId } from "@koi/core";
 import type { HarnessAdminClientLike } from "@koi/dashboard-api";
+import type { StackContribution } from "./contribution-graph.js";
 
 // ---------------------------------------------------------------------------
 // Result
@@ -36,6 +37,12 @@ export interface AutonomousResult {
   readonly providers: readonly ComponentProvider[];
   /** Dispose autonomous agent (scheduler first, then harness). */
   readonly dispose: () => Promise<void>;
+}
+
+/** Autonomous resolution result bundled with contribution metadata. */
+export interface AutonomousResolutionWithContribution {
+  readonly result: AutonomousResult | undefined;
+  readonly contribution: StackContribution;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,8 +191,21 @@ export async function resolveAutonomousOrWarn(
     readonly name: string;
   },
   verbose?: boolean,
-): Promise<AutonomousResult | undefined> {
-  if (!isAutonomousEnabled(manifest)) return undefined;
+): Promise<AutonomousResolutionWithContribution> {
+  if (!isAutonomousEnabled(manifest)) {
+    return {
+      result: undefined,
+      contribution: {
+        id: "autonomous",
+        label: "Autonomous",
+        enabled: false,
+        source: "runtime",
+        status: "skipped",
+        reason: "autonomous.enabled not set",
+        packages: [],
+      },
+    };
+  }
 
   try {
     // Lazy imports — only loaded when autonomous mode is enabled
@@ -223,7 +243,7 @@ export async function resolveAutonomousOrWarn(
       process.stderr.write("Autonomous mode: enabled (in-memory stores)\n");
     }
 
-    return {
+    const autonomousResult: AutonomousResult = {
       harness: mapHarnessToAdminClient(harness),
       middleware: agent.middleware(),
       providers: agent.providers(),
@@ -232,9 +252,73 @@ export async function resolveAutonomousOrWarn(
         sessionPersistence.close();
       },
     };
+
+    const packages: StackContribution["packages"][number][] = [];
+    if (autonomousResult.middleware.length > 0) {
+      packages.push({
+        id: "@koi/autonomous",
+        kind: "middleware",
+        source: "static",
+        middlewareNames: autonomousResult.middleware.map((m) => m.name),
+      });
+    }
+    if (autonomousResult.providers.length > 0) {
+      packages.push({
+        id: "@koi/autonomous",
+        kind: "provider",
+        source: "static",
+        providerNames: autonomousResult.providers.map((p) => p.name),
+      });
+    }
+    // Sub-packages
+    packages.push(
+      {
+        id: "@koi/long-running",
+        kind: "subsystem",
+        source: "static",
+        notes: ["harness lifecycle"],
+      },
+      {
+        id: "@koi/harness-scheduler",
+        kind: "subsystem",
+        source: "static",
+        notes: ["task scheduling"],
+      },
+      {
+        id: "@koi/snapshot-chain-store",
+        kind: "subsystem",
+        source: "static",
+        notes: ["session persistence"],
+      },
+    );
+
+    return {
+      result: autonomousResult,
+      contribution: {
+        id: "autonomous",
+        label: "Autonomous",
+        enabled: true,
+        source: "runtime",
+        status: "active",
+        packages,
+      },
+    };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(`warn: autonomous mode failed to initialize: ${msg}\n`);
-    return undefined;
+    return {
+      result: undefined,
+      contribution: {
+        id: "autonomous",
+        label: "Autonomous",
+        enabled: false,
+        source: "runtime",
+        status: "failed",
+        reason: msg,
+        packages: [
+          { id: "@koi/autonomous", kind: "subsystem", source: "static", notes: ["not available"] },
+        ],
+      },
+    };
   }
 }

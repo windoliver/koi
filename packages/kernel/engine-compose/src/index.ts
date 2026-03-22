@@ -6,7 +6,12 @@
  */
 
 // composition
-export type { CapabilityInjectionConfig, RecomposedChains, TerminalHandlers } from "./compose.js";
+export type {
+  CapabilityInjectionConfig,
+  RecomposedChains,
+  ResolvedMiddleware,
+  TerminalHandlers,
+} from "./compose.js";
 export {
   collectCapabilities,
   composeModelChain,
@@ -20,6 +25,21 @@ export {
   runTurnHooks,
   sortMiddlewareByPhase,
 } from "./compose.js";
+// instrumentation
+export type {
+  ChannelIOSpan,
+  DebugInstrumentation,
+  DebugInstrumentationConfig,
+  DebugInventory,
+  DebugInventoryItem,
+  DebugSpan,
+  DebugTurnTrace,
+  ForgeRefreshSpan,
+  MiddlewareSource,
+  ResolverSpan,
+  VisibilityTier,
+} from "./compose-instrumentation.js";
+export { createDebugInstrumentation } from "./compose-instrumentation.js";
 // extension composer
 export type {
   ComposedExtensions,

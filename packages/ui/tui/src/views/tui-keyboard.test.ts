@@ -224,6 +224,9 @@ function makeCallbacks(): KeyboardCallbacks & {
     newSession: () => {
       mutableCalls.push("newSession");
     },
+    refetchDebugTrace: () => {
+      mutableCalls.push("refetchDebugTrace");
+    },
   };
 }
 

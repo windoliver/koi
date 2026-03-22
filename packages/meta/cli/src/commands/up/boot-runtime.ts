@@ -23,6 +23,9 @@ import type { AgentChatBridge } from "../../agui-chat-bridge.js";
 import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
+import type { RuntimeContributionGraph } from "../../contribution-graph.js";
+import { addPostCompositionContributions } from "../../contribution-graph.js";
+import { buildDebugExtraItems, collectActiveSubsystems } from "../../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -147,14 +150,14 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   progress("forge", "Bootstrapping forge");
   const currentSessionId = `up:${manifest.name}:0`;
 
-  const forgeResult = await bootstrapForgeOrWarn(
+  const forgeResolution = await bootstrapForgeOrWarn(
     manifest,
     () => currentSessionId,
     verbose,
     undefined,
   );
-  const forgeBootstrap = forgeResult?.bootstrap;
-  const sandboxBridge = forgeResult?.sandboxBridge;
+  const forgeBootstrap = forgeResolution.result?.bootstrap;
+  const sandboxBridge = forgeResolution.result?.sandboxBridge;
 
   // ------------------------------------------------------------------
   // 4. AG-UI chat bridge
@@ -183,10 +186,12 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   const embedProfile = mapNexusModeToProfile(preset.nexusMode);
 
   progress("subsystems", "Resolving subsystems");
-  const [nexus, autonomous] = await Promise.all([
+  const [nexusResolution, autonomousResolution] = await Promise.all([
     resolveNexusOrWarn(nexusBaseUrl, manifest.nexus?.url, verbose, embedProfile, undefined),
     resolveAutonomousOrWarn(manifest, verbose),
   ]);
+  const nexus = nexusResolution.state;
+  const autonomous = autonomousResolution.result;
 
   // ------------------------------------------------------------------
   // 6. Activate preset stacks + compose middleware
@@ -219,6 +224,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     dataSourceTools: [],
     presetMiddleware: activatedStacks.middleware,
     presetProviders: activatedStacks.providers,
+    presetContributions: activatedStacks.contributions,
   });
 
   // Late-binding event sink for forge/monitor SSE events
@@ -236,6 +242,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     providers: composed.providers,
     extensions: [],
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
+    debug: { enabled: true },
     onDashboardEvent: (event: DashboardEvent) => {
       emitDashboardEvent?.(event);
     },
@@ -304,6 +311,16 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     },
   });
 
+  const debugApi = runtime.debug;
+
+  // Build full contribution graph snapshot for the debug API
+  const fullContributions: RuntimeContributionGraph = addPostCompositionContributions(
+    composed.contributions,
+    channelNames,
+    adapter.engineId,
+    modelName,
+  );
+
   const adminBridge: AdminPanelBridgeResult = createAdminPanelBridge({
     agentName: manifest.name,
     agentType: manifest.lifecycle ?? "copilot",
@@ -317,6 +334,30 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     },
     ...(orch.hasAny
       ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
+      : {}),
+    ...(debugApi !== undefined
+      ? {
+          debug: {
+            getInventory: (_agentId) =>
+              debugApi.getInventory(
+                buildDebugExtraItems({
+                  channels: channelNames,
+                  skills: skillNames,
+                  model: modelName,
+                  engineAdapter: adapter.engineId,
+                  tools: manifest.tools,
+                  subsystems: collectActiveSubsystems({
+                    nexusEnabled: nexus.middlewares !== undefined && nexus.middlewares.length > 0,
+                    forgeEnabled: forgeBootstrap !== undefined,
+                    autonomousEnabled: autonomous !== undefined,
+                    sandboxEnabled: sandboxBridge !== undefined,
+                  }),
+                }),
+              ),
+            getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+            getContributions: () => fullContributions,
+          },
+        }
       : {}),
   });
 

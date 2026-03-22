@@ -17,12 +17,14 @@ import type { DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { DashboardEvent } from "@koi/dashboard-types";
 import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
+import type { KoiRuntime } from "@koi/engine";
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import { createAgentDispatcher } from "../agent-dispatcher.js";
 import type { AgentChatBridge } from "../agui-chat-bridge.js";
 import type { AdminFlags } from "../args.js";
 import { createChatRouter } from "../chat-router.js";
+import { buildDebugExtraItems, collectActiveSubsystems } from "../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -345,7 +347,8 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
 
   // 2b. Resolve all orchestration sources
   const temporal = await resolveTemporalOrWarn(flags.temporalUrl, flags.verbose);
-  const autonomous = await resolveAutonomousOrWarn(manifest, flags.verbose);
+  const autonomousResolution = await resolveAutonomousOrWarn(manifest, flags.verbose);
+  const autonomous = autonomousResolution.result;
 
   // 3. Try to boot embedded agent runtime for live orchestration + ECS scan.
   //    Falls back to manifest-only mode if resolution fails (e.g., missing API keys).
@@ -355,6 +358,8 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
   let runtimeDispose: (() => Promise<void>) | undefined;
   // let justified: captured from embedded runtime for chat dispatch
   let runtimeRef: { readonly run: (input: EngineInput) => AsyncIterable<EngineEvent> } | undefined;
+  // let justified: captured from embedded runtime for debug bridge wiring
+  let runtimeDebugApi: KoiRuntime["debug"];
 
   // Late-binding event sink for forge/monitor SSE events
   // let justified: mutable ref set when admin bridge is created
@@ -386,6 +391,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
         ],
         providers: [...(autonomous?.providers ?? [])],
         extensions: [],
+        debug: { enabled: true },
         onDashboardEvent: (event: DashboardEvent) => {
           emitDashboardEvent?.(event);
         },
@@ -399,6 +405,7 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       });
       runtimeDispose = () => runtime.dispose();
       runtimeRef = runtime;
+      runtimeDebugApi = runtime.debug;
 
       if (flags.verbose) {
         process.stderr.write("Embedded agent runtime: active\n");
@@ -448,6 +455,26 @@ export async function runAdmin(flags: AdminFlags): Promise<void> {
       ? {
           orchestration: orch.orchestration,
           orchestrationCommands: orch.orchestrationCommands,
+        }
+      : {}),
+    ...(runtimeDebugApi !== undefined
+      ? {
+          debug: {
+            getInventory: (_agentId) =>
+              runtimeDebugApi?.getInventory(
+                buildDebugExtraItems({
+                  channels: channelNames,
+                  skills: skillNames,
+                  model: manifest.model.name,
+                  tools: manifest.tools,
+                  subsystems: collectActiveSubsystems({
+                    autonomousEnabled: autonomous !== undefined,
+                    temporalEnabled: temporal !== undefined,
+                  }),
+                }),
+              ),
+            getTrace: (_agentId, turnIndex) => runtimeDebugApi?.getTrace(turnIndex),
+          },
         }
       : {}),
   });

@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ComponentProvider, KoiMiddleware } from "@koi/core";
 import type { Indexer, Retriever } from "@koi/search-provider";
+import type { StackContribution } from "./contribution-graph.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -127,6 +128,12 @@ export interface NexusResolvedState {
   readonly search?: { readonly retriever: Retriever; readonly indexer: Indexer } | undefined;
 }
 
+/** Resolution result bundling state and contribution metadata. */
+export interface NexusResolutionWithContribution {
+  readonly state: NexusResolvedState;
+  readonly contribution: StackContribution;
+}
+
 /**
  * Resolves Nexus stack with graceful fallback.
  *
@@ -139,16 +146,92 @@ export async function resolveNexusOrWarn(
   verbose: boolean,
   embedProfile?: string | undefined,
   nexusSource?: string | undefined,
-): Promise<NexusResolvedState> {
+): Promise<NexusResolutionWithContribution> {
+  // Priority: CLI flag > env var > manifest nexus.url
+  const configuredUrl = nexusUrl ?? process.env.NEXUS_URL ?? manifestNexusUrl;
+
+  // No URL configured and no embed mode → skip
+  if (configuredUrl === undefined && embedProfile === undefined) {
+    return {
+      state: EMPTY_NEXUS,
+      contribution: {
+        id: "nexus",
+        label: "Nexus",
+        enabled: false,
+        source: "runtime",
+        status: "skipped",
+        reason: "No Nexus URL configured",
+        packages: [],
+      },
+    };
+  }
+
   try {
     const nexus = await resolveNexusStack(nexusUrl, manifestNexusUrl, embedProfile, nexusSource);
     if (verbose) {
       process.stderr.write(`Nexus: ${nexus.baseUrl}\n`);
     }
-    return nexus;
+
+    const packages: StackContribution["packages"][number][] = [];
+    if (nexus.middlewares.length > 0) {
+      packages.push({
+        id: "@koi/nexus",
+        kind: "middleware",
+        source: "static",
+        middlewareNames: nexus.middlewares.map((m) => m.name),
+      });
+    }
+    if (nexus.providers.length > 0) {
+      packages.push({
+        id: "@koi/nexus",
+        kind: "provider",
+        source: "static",
+        providerNames: nexus.providers.map((p) => p.name),
+      });
+    }
+    // Nexus sub-packages
+    packages.push({
+      id: "@koi/nexus-client",
+      kind: "subsystem",
+      source: "static",
+      notes: [`baseUrl: ${nexus.baseUrl}`],
+    });
+    if (nexus.search !== undefined) {
+      packages.push({
+        id: "@koi/nexus-search",
+        kind: "subsystem",
+        source: "static",
+        notes: ["retriever + indexer"],
+      });
+    }
+
+    return {
+      state: nexus,
+      contribution: {
+        id: "nexus",
+        label: "Nexus",
+        enabled: true,
+        source: "runtime",
+        status: "active",
+        packages,
+      },
+    };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`warn: Nexus initialization failed: ${message}\n`);
-    return EMPTY_NEXUS;
+    return {
+      state: EMPTY_NEXUS,
+      contribution: {
+        id: "nexus",
+        label: "Nexus",
+        enabled: false,
+        source: "runtime",
+        status: "failed",
+        reason: message,
+        packages: [
+          { id: "@koi/nexus", kind: "subsystem", source: "static", notes: ["not available"] },
+        ],
+      },
+    };
   }
 }

@@ -64,17 +64,19 @@ describe("concurrent observe — composeModelChain", () => {
   });
 
   test("returns next() result without waiting for slow observer", async () => {
-    let observerStarted = false;
     let observerFinished = false;
+    let resolveObserver: (() => void) | undefined;
+    const observerGate = new Promise<void>((r) => {
+      resolveObserver = r;
+    });
 
     const slowObserver: KoiMiddleware = {
       name: "slow-observer",
       phase: "observe",
       concurrent: true,
       async wrapModelCall(_ctx, _req, next) {
-        observerStarted = true;
         const result = await next(_req);
-        await new Promise((r) => setTimeout(r, 200));
+        await observerGate;
         observerFinished = true;
         return result;
       },
@@ -86,12 +88,13 @@ describe("concurrent observe — composeModelChain", () => {
 
     const result = await chain(STUB_CTX, modelRequest());
     expect(result.content).toBe("ok");
-    expect(observerStarted).toBe(true);
     // Observer hasn't finished yet — main chain returned immediately
     expect(observerFinished).toBe(false);
 
-    // Wait for observer to finish
-    await new Promise((r) => setTimeout(r, 300));
+    // Release the observer and let it complete
+    resolveObserver?.();
+    await Promise.resolve();
+    await Promise.resolve();
     expect(observerFinished).toBe(true);
   });
 
@@ -174,8 +177,9 @@ describe("concurrent observe — composeModelChain", () => {
 
     await chain(STUB_CTX, modelRequest());
 
-    // Allow microtasks to settle
-    await new Promise((r) => setTimeout(r, 10));
+    // Flush microtasks
+    await Promise.resolve();
+    await Promise.resolve();
     expect(fired).toContain("obs-1");
     expect(fired).toContain("obs-2");
     expect(fired).toContain("obs-3");
@@ -197,7 +201,7 @@ describe("concurrent observe — composeModelChain", () => {
 
     const terminal = mock(async () => {
       // Simulate async work so calls overlap
-      await new Promise((r) => setTimeout(r, 10));
+      await Promise.resolve();
       return STUB_MODEL_RESPONSE;
     });
 
@@ -215,8 +219,9 @@ describe("concurrent observe — composeModelChain", () => {
     expect(resultA.content).toBe("ok");
     expect(resultB.content).toBe("ok");
 
-    // Allow observers to settle
-    await new Promise((r) => setTimeout(r, 20));
+    // Flush microtasks
+    await Promise.resolve();
+    await Promise.resolve();
 
     // Each observer should see its own context — NOT both seeing "B"
     expect(observedContexts.sort()).toEqual(["A", "B"]);
@@ -250,7 +255,9 @@ describe("concurrent observe — composeModelChain", () => {
     const chain = composeModelChain([cloningMiddleware, observer], terminal);
 
     await chain(STUB_CTX, modelRequest());
-    await new Promise((r) => setTimeout(r, 10));
+    // Flush microtasks
+    await Promise.resolve();
+    await Promise.resolve();
 
     // Observer must fire despite the request being cloned by upstream middleware
     expect(observerFired).toBe(true);

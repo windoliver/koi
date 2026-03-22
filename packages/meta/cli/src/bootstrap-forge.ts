@@ -7,6 +7,7 @@ import type { SandboxExecutor } from "@koi/core";
 import type { createForgeBootstrap } from "@koi/forge";
 import type { SandboxBridge } from "@koi/sandbox-ipc";
 import type { Indexer, Retriever } from "@koi/search-provider";
+import type { StackContribution } from "./contribution-graph.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +18,12 @@ export interface ForgeBootstrapResult {
   readonly bootstrap: ReturnType<typeof createForgeBootstrap>;
   /** The sandbox bridge (for cleanup). Undefined when sandbox was unavailable. */
   readonly sandboxBridge: SandboxBridge | undefined;
+}
+
+/** Forge bootstrap result bundled with contribution metadata. */
+export interface ForgeBootstrapWithContribution {
+  readonly result: ForgeBootstrapResult | undefined;
+  readonly contribution: StackContribution;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,71 +54,182 @@ export async function bootstrapForgeOrWarn(
   verbose?: boolean,
   autoHarness?: AutoHarnessOutputs | undefined,
   search?: { readonly retriever: Retriever; readonly indexer: Indexer } | undefined,
-): Promise<ForgeBootstrapResult | undefined> {
-  if (!isForgeEnabled(manifest)) return undefined;
-
-  // Lazy imports — only loaded when forge is enabled
-  const [
-    { createForgeBootstrap: createBootstrap },
-    { createSandboxBridge, bridgeToExecutor },
-    { createSandboxCommand, restrictiveProfile },
-  ] = await Promise.all([import("@koi/forge"), import("@koi/sandbox-ipc"), import("@koi/sandbox")]);
-
-  let sandboxBridge: SandboxBridge | undefined;
-  let forgeExecutor: SandboxExecutor;
-
-  try {
-    const bridge = await createSandboxBridge({
-      config: {
-        profile: restrictiveProfile(),
-        buildCommand: createSandboxCommand,
+): Promise<ForgeBootstrapWithContribution> {
+  if (!isForgeEnabled(manifest)) {
+    return {
+      result: undefined,
+      contribution: {
+        id: "forge",
+        label: "Forge",
+        enabled: false,
+        source: "manifest",
+        status: "skipped",
+        reason: "forge.enabled not set",
+        packages: [],
       },
-    });
-    sandboxBridge = bridge;
-    forgeExecutor = bridgeToExecutor(bridge);
-  } catch {
-    process.stderr.write("warn: sandbox unavailable, forged tool execution disabled\n");
-    forgeExecutor = {
-      execute: async () => ({
-        ok: false as const,
-        error: {
-          code: "PERMISSION" as const,
-          message:
-            "Sandbox executor not configured — forged tool execution is not available in this CLI session",
-          durationMs: 0,
-        },
-      }),
     };
   }
 
-  const bootstrap = createBootstrap({
-    executor: forgeExecutor,
-    forgeConfig: { enabled: true },
-    resolveSessionId,
-    onError: (err: unknown) => {
-      // Only log forge bootstrap errors in verbose mode — in TUI mode these
-      // raw stderr writes corrupt the alternate screen display.
-      if (verbose === true) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
-      }
-    },
-    ...(autoHarness !== undefined
-      ? {
-          store: autoHarness.store,
-          synthesizeHarness: autoHarness.synthesizeHarness,
-          maxSynthesesPerSession: autoHarness.maxSynthesesPerSession,
-          policyCacheHandle: autoHarness.policyCacheHandle,
+  try {
+    // Lazy imports — only loaded when forge is enabled
+    const [
+      { createForgeBootstrap: createBootstrap },
+      { createSandboxBridge, bridgeToExecutor },
+      { createSandboxCommand, restrictiveProfile },
+    ] = await Promise.all([
+      import("@koi/forge"),
+      import("@koi/sandbox-ipc"),
+      import("@koi/sandbox"),
+    ]);
+
+    let sandboxBridge: SandboxBridge | undefined;
+    let forgeExecutor: SandboxExecutor;
+
+    try {
+      const bridge = await createSandboxBridge({
+        config: {
+          profile: restrictiveProfile(),
+          buildCommand: createSandboxCommand,
+        },
+      });
+      sandboxBridge = bridge;
+      forgeExecutor = bridgeToExecutor(bridge);
+    } catch {
+      process.stderr.write("warn: sandbox unavailable, forged tool execution disabled\n");
+      forgeExecutor = {
+        execute: async () => ({
+          ok: false as const,
+          error: {
+            code: "PERMISSION" as const,
+            message:
+              "Sandbox executor not configured — forged tool execution is not available in this CLI session",
+            durationMs: 0,
+          },
+        }),
+      };
+    }
+
+    const bootstrap = createBootstrap({
+      executor: forgeExecutor,
+      forgeConfig: { enabled: true },
+      resolveSessionId,
+      onError: (err: unknown) => {
+        // Only log forge bootstrap errors in verbose mode — in TUI mode these
+        // raw stderr writes corrupt the alternate screen display.
+        if (verbose === true) {
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`warn: forge bootstrap failed: ${msg}\n`);
         }
-      : {}),
-    ...(search !== undefined ? { retriever: search.retriever, indexer: search.indexer } : {}),
-  });
+      },
+      ...(autoHarness !== undefined
+        ? {
+            store: autoHarness.store,
+            synthesizeHarness: autoHarness.synthesizeHarness,
+            maxSynthesesPerSession: autoHarness.maxSynthesesPerSession,
+            policyCacheHandle: autoHarness.policyCacheHandle,
+          }
+        : {}),
+      ...(search !== undefined ? { retriever: search.retriever, indexer: search.indexer } : {}),
+    });
 
-  if (verbose) {
-    process.stderr.write("Forge: enabled\n");
+    if (bootstrap === undefined) {
+      return {
+        result: undefined,
+        contribution: {
+          id: "forge",
+          label: "Forge",
+          enabled: false,
+          source: "manifest",
+          status: "failed",
+          reason: "forge bootstrap returned undefined",
+          packages: [],
+        },
+      };
+    }
+
+    if (verbose) {
+      process.stderr.write("Forge: enabled\n");
+    }
+
+    const forgeResult: ForgeBootstrapResult = { bootstrap, sandboxBridge };
+    return {
+      result: forgeResult,
+      contribution: {
+        id: "forge",
+        label: "Forge",
+        enabled: true,
+        source: "manifest",
+        status: "active",
+        packages: [
+          ...(bootstrap.middlewares.length > 0
+            ? [
+                {
+                  id: "@koi/forge" as const,
+                  kind: "middleware" as const,
+                  source: "static" as const,
+                  middlewareNames: bootstrap.middlewares.map((m) => m.name),
+                },
+              ]
+            : []),
+          {
+            id: "@koi/forge",
+            kind: "provider",
+            source: "static",
+            providerNames: [bootstrap.provider.name],
+            notes: ["forge component provider"],
+          },
+          {
+            id: "@koi/forge-tools",
+            kind: "provider",
+            source: "static",
+            providerNames: [bootstrap.forgeToolsProvider.name],
+            notes: ["forge_create, forge_test, forge_verify, forge_promote, forge_update"],
+          },
+          {
+            id: "@koi/forge-store",
+            kind: "subsystem",
+            source: "static",
+            notes: ["artifact persistence"],
+          },
+          {
+            id: "@koi/forge-runtime",
+            kind: "subsystem",
+            source: "static",
+            notes: ["self-improvement engine"],
+          },
+          {
+            id: "@koi/sandbox-bridge",
+            kind: "subsystem",
+            source: "static",
+            notes: [
+              sandboxBridge !== undefined
+                ? "active"
+                : "unavailable — forged tool execution disabled",
+            ],
+          },
+        ],
+      },
+    };
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (verbose === true) {
+      process.stderr.write(`warn: forge bootstrap failed: ${errorMessage}\n`);
+    }
+    return {
+      result: undefined,
+      contribution: {
+        id: "forge",
+        label: "Forge",
+        enabled: false,
+        source: "manifest",
+        status: "failed",
+        reason: errorMessage,
+        packages: [
+          { id: "@koi/forge", kind: "subsystem", source: "static", notes: ["not available"] },
+        ],
+      },
+    };
   }
-
-  return { bootstrap, sandboxBridge };
 }
 
 // ---------------------------------------------------------------------------

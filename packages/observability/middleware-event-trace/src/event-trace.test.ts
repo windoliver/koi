@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type {
   ChainId,
   KoiMiddleware,
@@ -386,6 +386,106 @@ describe("createEventTraceMiddleware", () => {
 
       // After cleanup, index returns 0 (no state)
       expect(handle.currentEventIndex(SID)).toBe(0);
+    });
+  });
+
+  describe("degraded-mode store errors", () => {
+    test("continues when store.head rejects", async () => {
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      const failingStore: SnapshotChainStore<TurnTrace> = {
+        ...store,
+        head: () => Promise.reject(new Error("head failure")),
+      };
+
+      const failHandle = createEventTraceMiddleware({
+        store: failingStore,
+        chainId: cid,
+        clock: () => tick,
+      });
+
+      const ctx = turnCtx(0);
+      const next = createMockModelHandler();
+      const h = hooks(failHandle.middleware);
+
+      await h.onSessionStart(sessionCtx());
+      await h.onBeforeTurn(ctx);
+      await h.wrapModelCall(ctx, { messages: [] }, next);
+      await h.onAfterTurn(ctx);
+
+      expect(warnSpy).toHaveBeenCalled();
+      const warnMsg = warnSpy.mock.calls[0]?.[0];
+      expect(typeof warnMsg === "string" && warnMsg.includes("[event-trace]")).toBe(true);
+
+      warnSpy.mockRestore();
+    });
+
+    test("continues when store.put rejects", async () => {
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      const failingStore: SnapshotChainStore<TurnTrace> = {
+        ...store,
+        put: () => Promise.reject(new Error("put failure")),
+      };
+
+      const failHandle = createEventTraceMiddleware({
+        store: failingStore,
+        chainId: cid,
+        clock: () => tick,
+      });
+
+      const ctx = turnCtx(0);
+      const next = createMockModelHandler();
+      const h = hooks(failHandle.middleware);
+
+      await h.onSessionStart(sessionCtx());
+      await h.onBeforeTurn(ctx);
+      await h.wrapModelCall(ctx, { messages: [] }, next);
+      await h.onAfterTurn(ctx);
+
+      expect(warnSpy).toHaveBeenCalled();
+      const warnMsg = warnSpy.mock.calls[0]?.[0];
+      expect(typeof warnMsg === "string" && warnMsg.includes("[event-trace]")).toBe(true);
+
+      warnSpy.mockRestore();
+    });
+
+    test("continues when both head and put reject", async () => {
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      const failingStore: SnapshotChainStore<TurnTrace> = {
+        ...store,
+        head: () => Promise.reject(new Error("head failure")),
+        put: () => Promise.reject(new Error("put failure")),
+      };
+
+      const failHandle = createEventTraceMiddleware({
+        store: failingStore,
+        chainId: cid,
+        clock: () => tick,
+      });
+
+      const next = createMockModelHandler();
+      const h = hooks(failHandle.middleware);
+
+      await h.onSessionStart(sessionCtx());
+
+      // Turn 0 — both head and put fail
+      const ctx0 = turnCtx(0);
+      await h.onBeforeTurn(ctx0);
+      await h.wrapModelCall(ctx0, { messages: [] }, next);
+      await h.onAfterTurn(ctx0);
+
+      // Turn 1 — agent can still process the next turn
+      const ctx1 = turnCtx(1);
+      await h.onBeforeTurn(ctx1);
+      await h.wrapModelCall(ctx1, { messages: [] }, next);
+      await h.onAfterTurn(ctx1);
+
+      // Both turns should have triggered warnings
+      expect(warnSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      warnSpy.mockRestore();
     });
   });
 

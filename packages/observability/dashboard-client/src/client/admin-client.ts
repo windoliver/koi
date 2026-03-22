@@ -17,6 +17,8 @@ import type {
   DashboardSkillSummary,
   DashboardSystemMetrics,
   DataSourceSummary,
+  DebugInventoryResponse,
+  DebugTurnTraceResponse,
   DelegationSummary,
   DemoPackSummary,
   DetailedStatusResponse,
@@ -199,6 +201,18 @@ export interface AdminClient {
     decision: "approved" | "rejected",
     reason?: string,
   ) => Promise<ClientResult<null>>;
+  // ─── Debug ──────────────────────────────────────────────────
+  /** Fetch debug inventory for an agent. */
+  readonly getDebugInventory: (agentId: string) => Promise<ClientResult<DebugInventoryResponse>>;
+  /** Fetch debug trace for a specific turn. */
+  readonly getDebugTrace: (
+    agentId: string,
+    turnIndex: number,
+  ) => Promise<ClientResult<DebugTurnTraceResponse>>;
+  /** Fetch contribution graph for the runtime. */
+  readonly getDebugContributions: () => Promise<
+    ClientResult<import("@koi/dashboard-types").ContributionGraphResponse>
+  >;
   // ─── Forge Brick Lifecycle ────────────────────────────────────
   /** Promote a brick. */
   readonly promoteBrick: (brickId: string) => Promise<ClientResult<null>>;
@@ -397,6 +411,22 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
       request<readonly import("@koi/dashboard-types").ForgeDashboardEvent[]>(
         "GET",
         ADMIN_ROUTES.forgeEvents.path,
+      ),
+
+    // ─── Debug ──────────────────────────────────────────────────────
+    getDebugInventory: (aid) =>
+      request<DebugInventoryResponse>("GET", ADMIN_ROUTES.debugInventory.path, { id: aid }),
+
+    getDebugTrace: (aid, turnIndex) =>
+      request<DebugTurnTraceResponse>("GET", ADMIN_ROUTES.debugTrace.path, {
+        id: aid,
+        turn: String(turnIndex),
+      }),
+
+    getDebugContributions: () =>
+      request<import("@koi/dashboard-types").ContributionGraphResponse>(
+        "GET",
+        ADMIN_ROUTES.debugContributions.path,
       ),
 
     // ─── Temporal orchestration ────────────────────────────────────

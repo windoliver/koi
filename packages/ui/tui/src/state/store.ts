@@ -695,6 +695,43 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         },
       };
 
+    // ─── Debug view actions ───────────────────────────────────────────
+    case "set_debug_inventory":
+      return {
+        ...state,
+        debugView: { ...state.debugView, inventory: action.items, loading: false },
+      };
+    case "set_debug_contributions":
+      return {
+        ...state,
+        debugView: { ...state.debugView, contributions: action.contributions },
+      };
+    case "set_debug_trace":
+      return {
+        ...state,
+        debugView: { ...state.debugView, trace: action.trace, loading: false },
+      };
+    case "set_debug_loading":
+      return { ...state, debugView: { ...state.debugView, loading: action.loading } };
+    case "select_debug_turn":
+      return {
+        ...state,
+        debugView: { ...state.debugView, selectedTurnIndex: Math.max(0, action.turnIndex) },
+      };
+    case "set_debug_panel":
+      return { ...state, debugView: { ...state.debugView, activePanel: action.panel } };
+    case "cycle_debug_visibility": {
+      const TIERS = ["critical", "secondary", "all"] as const;
+      const idx = TIERS.indexOf(state.debugView.visibilityTier);
+      const next = TIERS[(idx + 1) % TIERS.length] ?? "critical";
+      return { ...state, debugView: { ...state.debugView, visibilityTier: next } };
+    }
+    case "highlight_debug_middleware":
+      return {
+        ...state,
+        debugView: { ...state.debugView, highlightedMiddleware: action.name },
+      };
+
     case "scroll_domain_view": {
       const { domain, offset } = action;
       switch (domain) {
@@ -781,6 +818,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
           return {
             ...state,
             mailboxView: { ...state.mailboxView, scrollOffset: Math.max(0, offset) },
+          };
+        case "debug":
+          return {
+            ...state,
+            debugView: { ...state.debugView, scrollOffset: Math.max(0, offset) },
           };
         default:
           return state;

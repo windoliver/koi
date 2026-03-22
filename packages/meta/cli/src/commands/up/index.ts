@@ -25,6 +25,9 @@ import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
 import { createContextArenaConfigForUp } from "../../context-arena-config.js";
+import type { StackContribution } from "../../contribution-graph.js";
+import { addPostCompositionContributions } from "../../contribution-graph.js";
+import { buildDebugExtraItems, collectActiveSubsystems } from "../../debug-inventory-items.js";
 import {
   createLocalFileSystem,
   extractTextFromBlocks,
@@ -594,21 +597,54 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // Resolve subsystems in parallel
   output.spinner.start("Resolving subsystems...");
-  const [nexus, autonomous, temporalAdmin] = await timer.time("subsystems", () =>
-    Promise.all([
-      resolveNexusOrWarn(
-        nexusBaseUrl,
-        manifest.nexus?.url,
-        flags.verbose,
-        embedProfile,
-        flags.nexusSource,
-      ),
-      resolveAutonomousOrWarn(manifest, flags.verbose),
-      temporalUrl !== undefined
-        ? resolveTemporalOrWarn(temporalUrl, flags.verbose)
-        : Promise.resolve(undefined),
-    ]),
+  const [nexusResolution, autonomousResolution, temporalAdmin] = await timer.time(
+    "subsystems",
+    () =>
+      Promise.all([
+        resolveNexusOrWarn(
+          nexusBaseUrl,
+          manifest.nexus?.url,
+          flags.verbose,
+          embedProfile,
+          flags.nexusSource,
+        ),
+        resolveAutonomousOrWarn(manifest, flags.verbose),
+        temporalUrl !== undefined
+          ? resolveTemporalOrWarn(temporalUrl, flags.verbose)
+          : Promise.resolve(undefined),
+      ]),
   );
+  const nexus = nexusResolution.state;
+  const autonomous = autonomousResolution.result;
+
+  // Temporal contribution (inline — temporal resolution doesn't have its own bootstrap fn)
+  const temporalContribution: StackContribution =
+    temporalAdmin !== undefined
+      ? {
+          id: "temporal",
+          label: "Temporal",
+          enabled: true,
+          source: "runtime",
+          status: "active",
+          packages: [
+            {
+              id: "@koi/temporal",
+              kind: "subsystem",
+              source: "static",
+              notes: [`url: ${temporalUrl ?? "unknown"}`],
+            },
+          ],
+        }
+      : {
+          id: "temporal",
+          label: "Temporal",
+          enabled: false,
+          source: "runtime",
+          status: "skipped",
+          reason: "temporal not configured",
+          packages: [],
+        };
+
   output.spinner.stop(undefined);
   output.success("Subsystems resolved");
 
@@ -675,7 +711,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
-  const forgeResult = await timer.time("forge", () =>
+  const forgeResolution = await timer.time("forge", () =>
     bootstrapForgeOrWarn(
       manifest,
       () => currentSessionId,
@@ -684,8 +720,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
       nexus.search,
     ),
   );
-  const forgeBootstrap = forgeResult?.bootstrap;
-  const sandboxBridge = forgeResult?.sandboxBridge;
+  const forgeBootstrap = forgeResolution.result?.bootstrap;
+  const sandboxBridge = forgeResolution.result?.sandboxBridge;
 
   const { createAgentChatBridge } = await import("../../agui-chat-bridge.js");
   const chatBridge: AgentChatBridge = createAgentChatBridge({ mode: "stateful" });
@@ -896,6 +932,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // Resolve manifest tools (tools.koi section) into ComponentProviders
   const manifestToolProviders = await resolveManifestTools(manifest, flags.verbose);
 
+  // Aggregate bootstrap contributions from all subsystems
+  const bootstrapContributions: readonly StackContribution[] = [
+    nexusResolution.contribution,
+    forgeResolution.contribution,
+    autonomousResolution.contribution,
+    temporalContribution,
+  ];
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -906,6 +950,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     dataSourceTools,
     presetMiddleware: activatedStacks.middleware,
     presetProviders: [...activatedStacks.providers, ...manifestToolProviders],
+    presetContributions: [...activatedStacks.contributions, ...bootstrapContributions],
   });
 
   // Late-binding event sink for forge/monitor SSE events
@@ -920,6 +965,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       providers: composed.providers,
       extensions,
       ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
+      debug: { enabled: true },
       onDashboardEvent: (event: DashboardEvent) => {
         emitDashboardEvent?.(event);
       },
@@ -1053,6 +1099,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     });
     adminDispatcher = dispatcher;
 
+    const debugApi = runtime.debug;
     adminBridge = createAdminPanelBridge({
       agentName: manifest.name,
       agentType: manifest.lifecycle ?? "copilot",
@@ -1095,6 +1142,41 @@ export async function runUp(flags: UpFlags): Promise<void> {
               ),
             }
           : {}),
+      ...(debugApi !== undefined
+        ? {
+            debug: {
+              getInventory: (_agentId) =>
+                debugApi.getInventory(
+                  buildDebugExtraItems({
+                    channels: channelNames,
+                    skills: skillNames,
+                    model: modelName,
+                    engineAdapter: adapter.engineId,
+                    tools: manifest.tools,
+                    subsystems: collectActiveSubsystems({
+                      nexusEnabled: nexusBaseUrl !== undefined,
+                      forgeEnabled: forgeBootstrap !== undefined,
+                      contextArenaEnabled: contextArenaConfig !== undefined,
+                      autonomousEnabled: autonomous !== undefined,
+                      gatewayEnabled: stopGateway !== undefined,
+                      schedulerEnabled: autonomous?.harness !== undefined,
+                      harnessEnabled: autonomous?.harness !== undefined,
+                      temporalEnabled: temporalAdmin !== undefined,
+                      sandboxEnabled: sandboxBridge !== undefined,
+                    }),
+                  }),
+                ),
+              getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+              getContributions: () =>
+                addPostCompositionContributions(
+                  composed.contributions,
+                  channelNames,
+                  adapter.engineId,
+                  modelName,
+                ),
+            },
+          }
+        : {}),
     });
 
     // Wire forge/monitor SSE event sink now that the bridge exists

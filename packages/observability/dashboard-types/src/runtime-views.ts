@@ -47,6 +47,8 @@ export interface AgentProcfs {
   readonly lastActivityAt: number;
   readonly parentId?: AgentId;
   readonly childCount: number;
+  readonly tools?: readonly { readonly name: string; readonly origin: string }[] | undefined;
+  readonly skills?: readonly { readonly name: string; readonly source: string }[] | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +59,14 @@ export interface MiddlewareEntry {
   readonly name: string;
   readonly phase: "intercept" | "observe" | "resolve";
   readonly enabled: boolean;
+  /** Middleware priority within its phase tier (lower = outer onion layer). */
+  readonly priority?: number | undefined;
+  /** Which hooks this middleware implements (e.g., ["wrapModelCall", "wrapToolCall"]). */
+  readonly hooks?: readonly string[] | undefined;
+  /** Whether this middleware runs concurrently in the observe phase. */
+  readonly concurrent?: boolean | undefined;
+  /** How this middleware was injected: static (manifest), forged, or dynamic. */
+  readonly source?: "static" | "forged" | "dynamic" | undefined;
 }
 
 export interface MiddlewareChain {
@@ -250,6 +260,102 @@ export interface ForgeStats {
 }
 
 // ---------------------------------------------------------------------------
+// Debug views (instrumentation)
+// ---------------------------------------------------------------------------
+
+export interface DebugSpanResponse {
+  /** Stable identity for cross-referencing with inventory. */
+  readonly debugId?: string | undefined;
+  readonly name: string;
+  readonly hook: string;
+  readonly durationMs: number;
+  readonly source: string;
+  readonly phase: string;
+  readonly priority: number;
+  readonly nextCalled: boolean;
+  readonly error?: string | undefined;
+  readonly children?: readonly DebugSpanResponse[] | undefined;
+  readonly tier?: string | undefined;
+}
+
+export interface ResolverSpanResponse {
+  readonly toolId: string;
+  readonly source: string;
+  readonly durationMs: number;
+}
+
+export interface ChannelIOSpanResponse {
+  readonly direction: string;
+  readonly kind: string;
+  readonly durationMs: number;
+}
+
+export interface ForgeRefreshSpanResponse {
+  readonly descriptorsChanged: boolean;
+  readonly descriptorCount: number;
+  readonly middlewareRecomposed: boolean;
+  readonly timestamp: number;
+}
+
+export interface DebugTurnTraceResponse {
+  readonly turnIndex: number;
+  readonly totalDurationMs: number;
+  readonly spans: readonly DebugSpanResponse[];
+  readonly timestamp: number;
+  readonly resolverSpans?: readonly ResolverSpanResponse[] | undefined;
+  readonly channelSpans?: readonly ChannelIOSpanResponse[] | undefined;
+  readonly forgeSpans?: readonly ForgeRefreshSpanResponse[] | undefined;
+}
+
+export interface DebugInventoryItemResponse {
+  readonly name: string;
+  readonly category: string;
+  readonly enabled: boolean;
+  readonly source: string;
+  readonly hooks?: readonly string[] | undefined;
+  readonly phase?: string | undefined;
+  readonly priority?: number | undefined;
+  readonly concurrent?: boolean | undefined;
+  readonly lastUsedTurn?: number | undefined;
+}
+
+export interface DebugInventoryResponse {
+  readonly agentId: string;
+  readonly items: readonly DebugInventoryItemResponse[];
+  readonly timestamp: number;
+}
+
+// ---------------------------------------------------------------------------
+// Contribution graph (debug view — structured package tree)
+// ---------------------------------------------------------------------------
+
+export interface ContributionGraphResponse {
+  readonly stacks: readonly StackContributionResponse[];
+  readonly generatedAt: number;
+}
+
+export interface StackContributionResponse {
+  readonly id: string;
+  readonly label: string;
+  readonly enabled: boolean;
+  readonly source: string;
+  readonly status?: string | undefined;
+  readonly reason?: string | undefined;
+  readonly packages: readonly PackageContributionResponse[];
+}
+
+export interface PackageContributionResponse {
+  readonly id: string;
+  readonly kind: string;
+  readonly source: string;
+  readonly middlewareNames?: readonly string[] | undefined;
+  readonly providerNames?: readonly string[] | undefined;
+  readonly toolNames?: readonly string[] | undefined;
+  readonly channelNames?: readonly string[] | undefined;
+  readonly notes?: readonly string[] | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Data source interface
 // ---------------------------------------------------------------------------
 
@@ -293,4 +399,19 @@ export interface RuntimeViewDataSource {
     readonly getStats: () => ForgeStats | Promise<ForgeStats>;
     readonly listRecentEvents: () => Promise<readonly ForgeDashboardEvent[]>;
   };
+
+  readonly debug?:
+    | {
+        readonly getInventory: (
+          agentId: AgentId,
+        ) => DebugInventoryResponse | Promise<DebugInventoryResponse>;
+        readonly getTrace: (
+          agentId: AgentId,
+          turnIndex: number,
+        ) => DebugTurnTraceResponse | undefined | Promise<DebugTurnTraceResponse | undefined>;
+        readonly getContributions?: () =>
+          | ContributionGraphResponse
+          | Promise<ContributionGraphResponse>;
+      }
+    | undefined;
 }

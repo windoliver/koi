@@ -81,6 +81,7 @@ export interface KeyboardCallbacks {
   readonly logsBack: () => void;
   readonly openSessionPicker: () => void;
   readonly newSession: () => void;
+  readonly refetchDebugTrace: () => void;
 }
 
 /**
@@ -143,6 +144,57 @@ export function createKeyboardHandler(
     if (sequence === "+") {
       store.dispatch({ kind: "cycle_zoom" });
       return true;
+    }
+
+    // Debug view — 1/2 panel switch, n/p turn navigation, Tab tier cycle, Enter link
+    if (view === "debug") {
+      if (sequence === "1") {
+        store.dispatch({ kind: "set_debug_panel", panel: "inventory" });
+        return true;
+      }
+      if (sequence === "2") {
+        store.dispatch({ kind: "set_debug_panel", panel: "waterfall" });
+        return true;
+      }
+      if (sequence === "n") {
+        store.dispatch({
+          kind: "select_debug_turn",
+          turnIndex: store.getState().debugView.selectedTurnIndex + 1,
+        });
+        callbacks.refetchDebugTrace();
+        return true;
+      }
+      if (sequence === "p") {
+        store.dispatch({
+          kind: "select_debug_turn",
+          turnIndex: Math.max(0, store.getState().debugView.selectedTurnIndex - 1),
+        });
+        callbacks.refetchDebugTrace();
+        return true;
+      }
+      if (sequence === "\t") {
+        store.dispatch({ kind: "cycle_debug_visibility" });
+        return true;
+      }
+      // Enter in waterfall panel — highlight the middleware at current scroll offset
+      if (sequence === "\r") {
+        const debugState = store.getState().debugView;
+        if (debugState.activePanel === "waterfall" && debugState.trace !== null) {
+          // Flatten the span tree to match the rendered row order
+          const flatNames: string[] = [];
+          for (const span of debugState.trace.spans) {
+            flatNames.push(span.name);
+            if (span.children !== undefined) {
+              for (const child of span.children) {
+                flatNames.push(child.name);
+              }
+            }
+          }
+          const name = flatNames[debugState.scrollOffset] ?? null;
+          store.dispatch({ kind: "highlight_debug_middleware", name });
+        }
+        return true;
+      }
     }
 
     // 1-5 — switch primary tabs (Agents, Console, Forge, Sources, Sessions)
@@ -564,6 +616,7 @@ export function createKeyboardHandler(
       "processtree",
       "agentprocfs",
       "cost",
+      "debug",
       "delegation",
       "handoffs",
       "mailbox",

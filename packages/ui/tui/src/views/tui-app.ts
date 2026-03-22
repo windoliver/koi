@@ -801,6 +801,22 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         openAgentConsole(agent.agentId);
       }
     },
+    refetchDebugTrace: () => {
+      const sess = store.getState().activeSession;
+      if (sess !== null) {
+        const turnIndex = store.getState().debugView.selectedTurnIndex;
+        store.dispatch({ kind: "set_debug_loading", loading: true });
+        client
+          .getDebugTrace(sess.agentId as string, turnIndex)
+          .then((r) => {
+            if (r.ok) store.dispatch({ kind: "set_debug_trace", trace: r.value });
+            else store.dispatch({ kind: "set_debug_trace", trace: null });
+          })
+          .catch(() => {
+            store.dispatch({ kind: "set_debug_loading", loading: false });
+          });
+      }
+    },
   });
 
   function handleConsoleInput(text: string): void {

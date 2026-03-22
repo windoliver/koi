@@ -71,6 +71,22 @@ export interface BridgeOptions {
     | undefined;
   /** Optional forge view data source for self-improvement observability. */
   readonly forge?: RuntimeViewDataSource["forge"] | undefined;
+  /** Optional debug instrumentation data source for the debug view (includes optional contributions). */
+  readonly debug?:
+    | {
+        readonly getInventory: NonNullable<RuntimeViewDataSource["debug"]>["getInventory"];
+        readonly getTrace: NonNullable<RuntimeViewDataSource["debug"]>["getTrace"];
+        readonly getContributions?: NonNullable<RuntimeViewDataSource["debug"]>["getContributions"];
+      }
+    | undefined;
+  /** Tool inventory for AgentProcfs (name + origin). */
+  readonly toolInventory?:
+    | readonly { readonly name: string; readonly origin: string }[]
+    | undefined;
+  /** Skill inventory for AgentProcfs (name + source). */
+  readonly skillInventory?:
+    | readonly { readonly name: string; readonly source: string }[]
+    | undefined;
   /** Optional orchestration commands (e.g. from temporal-admin-adapter). */
   readonly orchestrationCommands?:
     | Pick<
@@ -360,7 +376,13 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
           },
         };
       }
-      const source = currentSources[idx]!;
+      const source = currentSources[idx];
+      if (source === undefined) {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: "Source not found", retryable: false },
+        };
+      }
       if (source.status === "approved") {
         return { ok: true, value: undefined };
       }
@@ -510,6 +532,8 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
         startedAt,
         lastActivityAt: Date.now(),
         childCount: 0,
+        ...(options.toolInventory !== undefined ? { tools: options.toolInventory } : {}),
+        ...(options.skillInventory !== undefined ? { skills: options.skillInventory } : {}),
       };
     },
 
@@ -548,6 +572,30 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       ? { harness: options.orchestration.harness }
       : {}),
     ...(options.forge !== undefined ? { forge: options.forge } : {}),
+    ...(options.debug !== undefined
+      ? (() => {
+          const dbg = options.debug;
+          return {
+            debug: {
+              // Guard: only serve debug data for the primary agent.
+              // Non-primary agents (dispatched workers) get empty results.
+              getInventory: (id: AgentId) => {
+                if (id !== primaryAgentId) {
+                  return { agentId: String(id), items: [], timestamp: Date.now() };
+                }
+                return dbg.getInventory(id);
+              },
+              getTrace: (id: AgentId, turnIndex: number) => {
+                if (id !== primaryAgentId) return undefined;
+                return dbg.getTrace(id, turnIndex);
+              },
+              ...(dbg.getContributions !== undefined
+                ? { getContributions: dbg.getContributions }
+                : {}),
+            },
+          };
+        })()
+      : {}),
   };
 
   // Command dispatcher for the single-agent bridge.

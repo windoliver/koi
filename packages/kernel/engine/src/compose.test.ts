@@ -1747,7 +1747,7 @@ describe("resolveActiveMiddleware", () => {
   }
 
   test("returns phase-sorted array for static-only input", () => {
-    const result = resolveActiveMiddleware([
+    const { sorted: result } = resolveActiveMiddleware([
       mw("obs", "observe", 100),
       mw("int", "intercept", 900),
     ]);
@@ -1757,7 +1757,10 @@ describe("resolveActiveMiddleware", () => {
   });
 
   test("merges static + forged, phase-sorted", () => {
-    const result = resolveActiveMiddleware([mw("static", "observe")], [mw("forged", "intercept")]);
+    const { sorted: result } = resolveActiveMiddleware(
+      [mw("static", "observe")],
+      [mw("forged", "intercept")],
+    );
 
     expect(result).toHaveLength(2);
     expect(result[0]?.name).toBe("forged");
@@ -1765,7 +1768,7 @@ describe("resolveActiveMiddleware", () => {
   });
 
   test("merges static + forged + dynamic, phase-sorted", () => {
-    const result = resolveActiveMiddleware(
+    const { sorted: result } = resolveActiveMiddleware(
       [mw("static", "resolve")],
       [mw("forged", "observe")],
       [mw("dynamic", "intercept")],
@@ -1779,8 +1782,8 @@ describe("resolveActiveMiddleware", () => {
 
   test("empty forged/dynamic treated as absent", () => {
     const static_ = [mw("a"), mw("b")];
-    const resultWithUndef = resolveActiveMiddleware(static_);
-    const resultWithEmpty = resolveActiveMiddleware(static_, [], []);
+    const { sorted: resultWithUndef } = resolveActiveMiddleware(static_);
+    const { sorted: resultWithEmpty } = resolveActiveMiddleware(static_, [], []);
 
     expect(resultWithUndef).toHaveLength(2);
     expect(resultWithEmpty).toHaveLength(2);
@@ -1796,7 +1799,7 @@ describe("resolveActiveMiddleware", () => {
   });
 
   test("intercept middleware always before observe regardless of priority", () => {
-    const result = resolveActiveMiddleware([
+    const { sorted: result } = resolveActiveMiddleware([
       mw("obs-low", "observe", 1),
       mw("int-high", "intercept", 999),
     ]);
