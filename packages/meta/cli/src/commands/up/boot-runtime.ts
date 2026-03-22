@@ -23,6 +23,8 @@ import type { AgentChatBridge } from "../../agui-chat-bridge.js";
 import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
+import type { RuntimeContributionGraph } from "../../contribution-graph.js";
+import { addPostCompositionContributions } from "../../contribution-graph.js";
 import { buildDebugExtraItems, collectActiveSubsystems } from "../../debug-inventory-items.js";
 import {
   createLocalFileSystem,
@@ -220,6 +222,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     dataSourceTools: [],
     presetMiddleware: activatedStacks.middleware,
     presetProviders: activatedStacks.providers,
+    presetContributions: activatedStacks.contributions,
   });
 
   // Late-binding event sink for forge/monitor SSE events
@@ -307,6 +310,15 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   });
 
   const debugApi = runtime.debug;
+
+  // Build full contribution graph snapshot for the debug API
+  const fullContributions: RuntimeContributionGraph = addPostCompositionContributions(
+    composed.contributions,
+    channelNames,
+    adapter.engineId,
+    modelName,
+  );
+
   const adminBridge: AdminPanelBridgeResult = createAdminPanelBridge({
     agentName: manifest.name,
     agentType: manifest.lifecycle ?? "copilot",
@@ -341,6 +353,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
                 }),
               ),
             getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+            getContributions: () => fullContributions,
           },
         }
       : {}),

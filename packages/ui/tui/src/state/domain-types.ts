@@ -11,6 +11,7 @@ import type {
   AgentProcfs,
   ChannelDashboardEvent,
   CheckpointEntry,
+  ContributionGraphResponse,
   CronSchedule,
   DashboardChannelSummary,
   DashboardSkillSummary,
@@ -225,6 +226,7 @@ export type DebugVisibilityTier = "critical" | "secondary" | "all";
 /** Debug view — package inventory + per-turn trace waterfall. */
 export interface DebugViewState {
   readonly inventory: readonly DebugInventoryItemResponse[] | null;
+  readonly contributions: ContributionGraphResponse | null;
   readonly trace: DebugTurnTraceResponse | null;
   readonly selectedTurnIndex: number;
   readonly scrollOffset: number;
@@ -350,6 +352,7 @@ export function createInitialNexusBrowser(): NexusBrowserState {
 export function createInitialDebugView(): DebugViewState {
   return {
     inventory: null,
+    contributions: null,
     trace: null,
     selectedTurnIndex: 0,
     scrollOffset: 0,

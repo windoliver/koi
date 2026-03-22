@@ -84,6 +84,7 @@ import {
 import { handleSkills } from "./routes/skills.js";
 import {
   handleAgentProcfs,
+  handleDebugContributions,
   handleDebugInventory,
   handleDebugTrace,
   handleForgeBricks,
@@ -355,7 +356,13 @@ export function createDashboardHandler(
     );
 
     // Debug views (instrumentation)
+    // Note: /contributions must come before /:id/ routes to avoid `:id` matching "contributions"
     routes.push(
+      {
+        method: "GET",
+        pattern: "/view/debug/contributions",
+        handler: (req, params) => handleDebugContributions(req, params, runtimeViews),
+      },
       {
         method: "GET",
         pattern: "/view/debug/:id/inventory",

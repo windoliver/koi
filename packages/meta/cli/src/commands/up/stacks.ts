@@ -8,6 +8,7 @@
 
 import type { ComponentProvider, KoiMiddleware } from "@koi/core";
 import type { PresetStacks } from "@koi/runtime-presets";
+import type { PackageContribution, StackContribution } from "../../contribution-graph.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +18,7 @@ export interface ActivatedStacks {
   readonly middleware: readonly KoiMiddleware[];
   readonly providers: readonly ComponentProvider[];
   readonly disposables: readonly (() => Promise<void> | void)[];
+  readonly contributions: readonly StackContribution[];
   /**
    * Auto-harness outputs for forge synthesis wiring.
    * When present, `synthesizeHarness` should be passed to the forge
@@ -302,6 +304,7 @@ export async function activatePresetStacks(
   const middleware: KoiMiddleware[] = [];
   const providers: ComponentProvider[] = [];
   const disposables: (() => Promise<void> | void)[] = [];
+  const contributions: StackContribution[] = [];
   // let justified: captured from auto-harness activation for forge wiring
   let autoHarnessResult: ActivatedStacks["autoHarness"];
 
@@ -315,11 +318,45 @@ export async function activatePresetStacks(
   };
 
   if (config.stacks.toolStack === true) {
+    const before = middleware.length;
     await tryActivate("tool-stack", () => activateToolStack(config, middleware));
+    if (middleware.length > before) {
+      contributions.push({
+        id: "tool-stack",
+        label: "Tool Stack",
+        enabled: true,
+        source: "runtime",
+        packages: [
+          {
+            id: "@koi/tool-stack",
+            kind: "middleware",
+            source: "static",
+            middlewareNames: middleware.slice(before).map((m) => m.name),
+          },
+        ],
+      });
+    }
   }
 
   if (config.stacks.retryStack === true) {
+    const before = middleware.length;
     await tryActivate("retry-stack", () => activateRetryStack(config, middleware));
+    if (middleware.length > before) {
+      contributions.push({
+        id: "retry-stack",
+        label: "Retry Stack",
+        enabled: true,
+        source: "runtime",
+        packages: [
+          {
+            id: "@koi/retry-stack",
+            kind: "middleware",
+            source: "static",
+            middlewareNames: middleware.slice(before).map((m) => m.name),
+          },
+        ],
+      });
+    }
   }
 
   if (config.stacks.autoHarness === true) {
@@ -327,9 +364,41 @@ export async function activatePresetStacks(
       // Use the pre-created instance (already wired into forge bootstrap)
       middleware.push(config.preCreatedAutoHarness.policyCacheMiddleware);
       log(config, "Stack: auto-harness (pre-created, policy cache active)");
+      contributions.push({
+        id: "auto-harness",
+        label: "Auto Harness",
+        enabled: true,
+        source: "runtime",
+        packages: [
+          {
+            id: "@koi/auto-harness",
+            kind: "middleware",
+            source: "static",
+            middlewareNames: [config.preCreatedAutoHarness.policyCacheMiddleware.name],
+            notes: ["pre-created"],
+          },
+        ],
+      });
     } else {
       try {
+        const before = middleware.length;
         autoHarnessResult = await activateAutoHarness(config, middleware);
+        if (middleware.length > before) {
+          contributions.push({
+            id: "auto-harness",
+            label: "Auto Harness",
+            enabled: true,
+            source: "runtime",
+            packages: [
+              {
+                id: "@koi/auto-harness",
+                kind: "middleware",
+                source: "static",
+                middlewareNames: middleware.slice(before).map((m) => m.name),
+              },
+            ],
+          });
+        }
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         if (config.verbose) process.stderr.write(`  warn: auto-harness failed: ${message}\n`);
@@ -338,24 +407,116 @@ export async function activatePresetStacks(
   }
 
   if (config.stacks.governance === true) {
+    const mwBefore = middleware.length;
+    const provBefore = providers.length;
     await tryActivate("governance", () =>
       activateGovernance(config, middleware, providers, disposables),
     );
+    if (middleware.length > mwBefore || providers.length > provBefore) {
+      const pkgs: PackageContribution[] = [];
+      if (middleware.length > mwBefore) {
+        pkgs.push({
+          id: "@koi/governance",
+          kind: "middleware",
+          source: "static",
+          middlewareNames: middleware.slice(mwBefore).map((m) => m.name),
+        });
+      }
+      if (providers.length > provBefore) {
+        pkgs.push({
+          id: "@koi/governance",
+          kind: "provider",
+          source: "static",
+          providerNames: providers.slice(provBefore).map((p) => p.name),
+        });
+      }
+      contributions.push({
+        id: "governance",
+        label: "Governance",
+        enabled: true,
+        source: "runtime",
+        packages: pkgs,
+      });
+    }
   }
 
   if (config.stacks.contextHub === true) {
+    const before = providers.length;
     await tryActivate("context-hub", () => activateContextHub(config, providers));
+    if (providers.length > before) {
+      contributions.push({
+        id: "context-hub",
+        label: "Context Hub",
+        enabled: true,
+        source: "runtime",
+        packages: [
+          {
+            id: "@koi/tools-context-hub",
+            kind: "provider",
+            source: "static",
+            providerNames: providers.slice(before).map((p) => p.name),
+          },
+        ],
+      });
+    }
   }
 
   if (config.stacks.contextArena === true) {
+    const mwBefore = middleware.length;
+    const provBefore = providers.length;
     await tryActivate("context-arena", () => activateContextArena(config, middleware, providers));
+    if (middleware.length > mwBefore || providers.length > provBefore) {
+      const pkgs: PackageContribution[] = [];
+      if (middleware.length > mwBefore) {
+        pkgs.push({
+          id: "@koi/context-arena",
+          kind: "middleware",
+          source: "static",
+          middlewareNames: middleware.slice(mwBefore).map((m) => m.name),
+        });
+      }
+      if (providers.length > provBefore) {
+        pkgs.push({
+          id: "@koi/context-arena",
+          kind: "provider",
+          source: "static",
+          providerNames: providers.slice(provBefore).map((p) => p.name),
+        });
+      }
+      contributions.push({
+        id: "context-arena",
+        label: "Context Arena",
+        enabled: true,
+        source: "runtime",
+        packages: pkgs,
+      });
+    }
   }
 
   if (config.stacks.ace === true) {
+    const before = middleware.length;
     await tryActivate("ace", () => activateAce(config, middleware));
+    if (middleware.length > before) {
+      contributions.push({
+        id: "ace",
+        label: "ACE",
+        enabled: true,
+        source: "runtime",
+        packages: [
+          {
+            id: "@koi/middleware-ace",
+            kind: "middleware",
+            source: "static",
+            middlewareNames: middleware.slice(before).map((m) => m.name),
+          },
+        ],
+      });
+    }
   }
 
   if (config.stacks.goalStack === true) {
+    const mwBefore = middleware.length;
+    const provBefore = providers.length;
     await tryActivate("goal-stack", async () => {
       const { createGoalStack } = await import("@koi/goal-stack");
       const bundle = createGoalStack({});
@@ -363,9 +524,36 @@ export async function activatePresetStacks(
       providers.push(...bundle.providers);
       log(config, `Stack: goal-stack (${String(bundle.middlewares.length)} middleware)`);
     });
+    if (middleware.length > mwBefore || providers.length > provBefore) {
+      const pkgs: PackageContribution[] = [];
+      if (middleware.length > mwBefore) {
+        pkgs.push({
+          id: "@koi/goal-stack",
+          kind: "middleware",
+          source: "static",
+          middlewareNames: middleware.slice(mwBefore).map((m) => m.name),
+        });
+      }
+      if (providers.length > provBefore) {
+        pkgs.push({
+          id: "@koi/goal-stack",
+          kind: "provider",
+          source: "static",
+          providerNames: providers.slice(provBefore).map((p) => p.name),
+        });
+      }
+      contributions.push({
+        id: "goal-stack",
+        label: "Goal Stack",
+        enabled: true,
+        source: "runtime",
+        packages: pkgs,
+      });
+    }
   }
 
   if (config.stacks.qualityGate === true) {
+    const before = middleware.length;
     await tryActivate("quality-gate", async () => {
       const { createQualityGate } = await import("@koi/quality-gate");
       // Use "light" preset — no per-session model call budget.
@@ -375,23 +563,75 @@ export async function activatePresetStacks(
       middleware.push(...bundle.middleware);
       log(config, `Stack: quality-gate (${String(bundle.middleware.length)} middleware)`);
     });
+    if (middleware.length > before) {
+      contributions.push({
+        id: "quality-gate",
+        label: "Quality Gate",
+        enabled: true,
+        source: "runtime",
+        packages: [
+          {
+            id: "@koi/quality-gate",
+            kind: "middleware",
+            source: "static",
+            middlewareNames: middleware.slice(before).map((m) => m.name),
+          },
+        ],
+      });
+    }
   }
 
   if (config.stacks.sandboxStack === true) {
+    const before = providers.length;
     await tryActivate("sandbox-stack", () => activateSandboxStack(config, providers, disposables));
+    if (providers.length > before) {
+      contributions.push({
+        id: "sandbox-stack",
+        label: "Sandbox Stack",
+        enabled: true,
+        source: "runtime",
+        packages: [
+          {
+            id: "@koi/sandbox-stack",
+            kind: "provider",
+            source: "static",
+            providerNames: providers.slice(before).map((p) => p.name),
+          },
+        ],
+      });
+    }
   }
 
   // Code executor (WASM execute_script) must be activated AFTER sandbox-stack
   // and other tool providers. The provider has priority BUNDLED+10, so assembly
   // sorts it after standard-priority providers regardless of push order.
   if (config.stacks.codeExecutor === true) {
+    const before = providers.length;
     await tryActivate("code-executor", () => activateCodeExecutor(config, providers));
+    if (providers.length > before) {
+      contributions.push({
+        id: "code-executor",
+        label: "Code Executor",
+        enabled: true,
+        source: "runtime",
+        packages: [
+          {
+            id: "@koi/sandbox-stack",
+            kind: "provider",
+            source: "static",
+            providerNames: providers.slice(before).map((p) => p.name),
+            notes: ["WASM execute_script"],
+          },
+        ],
+      });
+    }
   }
 
   return {
     middleware,
     providers,
     disposables,
+    contributions,
     ...(autoHarnessResult !== undefined ? { autoHarness: autoHarnessResult } : {}),
   };
 }

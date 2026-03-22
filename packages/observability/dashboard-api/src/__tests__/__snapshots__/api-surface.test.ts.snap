@@ -364,8 +364,12 @@ interface BridgeOptions {
     } | undefined;
     /** Optional forge view data source for self-improvement observability. */
     readonly forge?: RuntimeViewDataSource["forge"] | undefined;
-    /** Optional debug instrumentation data source for the debug view. */
-    readonly debug?: RuntimeViewDataSource["debug"] | undefined;
+    /** Optional debug instrumentation data source for the debug view (includes optional contributions). */
+    readonly debug?: {
+        readonly getInventory: NonNullable<RuntimeViewDataSource["debug"]>["getInventory"];
+        readonly getTrace: NonNullable<RuntimeViewDataSource["debug"]>["getTrace"];
+        readonly getContributions?: NonNullable<RuntimeViewDataSource["debug"]>["getContributions"];
+    } | undefined;
     /** Tool inventory for AgentProcfs (name + origin). */
     readonly toolInventory?: readonly {
         readonly name: string;

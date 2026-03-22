@@ -11,9 +11,12 @@ import { PanelChrome } from "../components/panel-chrome.js";
 import type { DebugViewState } from "../state/domain-types.js";
 import { COLORS } from "../theme.js";
 import type {
+  ContributionGraphResponse,
   DebugInventoryItemResponse,
   DebugSpanResponse,
   DebugTurnTraceResponse,
+  PackageContributionResponse,
+  StackContributionResponse,
 } from "@koi/dashboard-types";
 
 export interface DebugViewProps {
@@ -239,6 +242,68 @@ function WaterfallPanel(props: {
   );
 }
 
+// ─── Contribution Tree Panel ────────────────────────────────────────
+
+function PackageItem(props: {
+  readonly pkg: PackageContributionResponse;
+}): React.ReactNode {
+  const { pkg } = props;
+  const kindBadge = pkg.kind.slice(0, 4).toUpperCase();
+  const names: readonly string[] = [
+    ...(pkg.middlewareNames ?? []),
+    ...(pkg.providerNames ?? []),
+    ...(pkg.toolNames ?? []),
+    ...(pkg.channelNames ?? []),
+  ];
+  const nameStr = names.length > 0 ? names.join(", ") : "";
+  const notesStr = pkg.notes !== undefined && pkg.notes.length > 0
+    ? ` (${pkg.notes.join(", ")})`
+    : "";
+
+  return (
+    <text fg={categoryColor(pkg.kind)}>
+      {`      [${kindBadge}] ${pkg.id} ${nameStr}${notesStr}`}
+    </text>
+  );
+}
+
+function StackSection(props: {
+  readonly stack: StackContributionResponse;
+}): React.ReactNode {
+  const { stack } = props;
+  const enabledMark = stack.enabled ? "\u25C6" : "\u25CB";
+  const fg = stack.enabled ? COLORS.white : COLORS.dim;
+
+  return (
+    <box flexDirection="column" marginBottom={1}>
+      <text fg={fg}>
+        <b>{`  ${enabledMark} ${stack.label} (${stack.source})`}</b>
+      </text>
+      {stack.packages.map((pkg, i) => (
+        <PackageItem key={`${pkg.id}-${String(i)}`} pkg={pkg} />
+      ))}
+    </box>
+  );
+}
+
+const ContributionTreePanel = React.memo(function ContributionTreePanel(props: {
+  readonly contributions: ContributionGraphResponse;
+}): React.ReactNode {
+  const { contributions } = props;
+
+  return (
+    <box flexDirection="column">
+      <text fg={COLORS.cyan}>
+        <b>{`  CONTRIBUTION GRAPH (${String(contributions.stacks.length)} stacks)`}</b>
+      </text>
+      <text fg={COLORS.dim}>{""}</text>
+      {contributions.stacks.map((stack) => (
+        <StackSection key={stack.id} stack={stack} />
+      ))}
+    </box>
+  );
+});
+
 // ─── Keyboard hint bar ───────────────────────────────────────────────
 
 function DebugHintBar(): React.ReactNode {
@@ -254,6 +319,7 @@ function DebugHintBar(): React.ReactNode {
 export function DebugView(props: DebugViewProps): React.ReactNode {
   const {
     inventory,
+    contributions,
     trace,
     loading,
     activePanel,
@@ -270,11 +336,14 @@ export function DebugView(props: DebugViewProps): React.ReactNode {
         focused={props.focused}
         zoomLevel={props.zoomLevel}
         loading={loading}
-        isEmpty={inventory === null && !loading}
+        isEmpty={inventory === null && contributions === null && !loading}
         emptyMessage="No debug data available."
         emptyHint="Enable debug mode and select an agent."
       >
-        {inventory !== null && (
+        {contributions !== null && (
+          <ContributionTreePanel contributions={contributions} />
+        )}
+        {inventory !== null && contributions === null && (
           <InventoryPanel
             items={inventory}
             selectedTurnIndex={selectedTurnIndex}

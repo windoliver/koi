@@ -9,6 +9,12 @@ import type { ComponentProvider, KoiMiddleware, Tool } from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
 import type { createForgeBootstrap } from "@koi/forge";
 import type { AgentChatBridge } from "./agui-chat-bridge.js";
+import type {
+  PackageContribution,
+  RuntimeContributionGraph,
+  StackContribution,
+} from "./contribution-graph.js";
+import { createContributionBuilder } from "./contribution-graph.js";
 import type { AutonomousResult } from "./resolve-autonomous.js";
 import type { NexusResolvedState } from "./resolve-nexus.js";
 
@@ -39,11 +45,18 @@ export interface MiddlewareCompositionInput {
   readonly presetMiddleware?: readonly KoiMiddleware[];
   /** Preset-activated providers (from activatePresetStacks). */
   readonly presetProviders?: readonly ComponentProvider[];
+  /** Preset stack contributions (from activatePresetStacks). */
+  readonly presetContributions?: readonly StackContribution[];
 }
 
-export interface ComposedMiddleware {
+/** Minimal middleware + providers bundle (no contribution tracking). */
+export interface SubsystemComposed {
   readonly middleware: readonly KoiMiddleware[];
   readonly providers: readonly ComponentProvider[];
+}
+
+export interface ComposedMiddleware extends SubsystemComposed {
+  readonly contributions: RuntimeContributionGraph;
 }
 
 /** Subsystem middleware/provider collection input. */
@@ -62,7 +75,7 @@ export interface SubsystemMiddlewareDeps {
  * autonomous). Used by both `composeRuntimeMiddleware` and the dispatcher
  * to avoid duplicating array construction.
  */
-export function collectSubsystemMiddleware(deps: SubsystemMiddlewareDeps): ComposedMiddleware {
+export function collectSubsystemMiddleware(deps: SubsystemMiddlewareDeps): SubsystemComposed {
   const middleware: readonly KoiMiddleware[] = [
     ...deps.nexus.middlewares,
     ...(deps.forge?.middlewares ?? []),
@@ -120,5 +133,139 @@ export function composeRuntimeMiddleware(input: MiddlewareCompositionInput): Com
     ...subsystem.providers,
   ];
 
-  return { middleware, providers };
+  // Build contribution graph
+  const builder = createContributionBuilder();
+
+  // Manifest-resolved middleware
+  if (input.resolved.length > 0) {
+    builder.addStack("manifest-middleware", "Manifest Middleware", "manifest", true, [
+      {
+        id: "@koi/manifest",
+        kind: "middleware",
+        source: "manifest",
+        middlewareNames: input.resolved.map((m) => m.name),
+      },
+    ]);
+  }
+
+  // Preset stacks (passed from activatePresetStacks)
+  if (input.presetContributions !== undefined) {
+    for (const stack of input.presetContributions) {
+      builder.addStack(stack.id, stack.label, stack.source, stack.enabled, stack.packages);
+    }
+  }
+
+  // Extra middleware
+  if (input.extra !== undefined && input.extra.length > 0) {
+    builder.addStack("extra", "Extra Middleware", "runtime", true, [
+      {
+        id: "@koi/extra",
+        kind: "middleware",
+        source: "static",
+        middlewareNames: input.extra.map((m) => m.name),
+      },
+    ]);
+  }
+
+  // Nexus
+  if (input.nexus.middlewares.length > 0 || input.nexus.providers.length > 0) {
+    const nexusPkgs: PackageContribution[] = [];
+    if (input.nexus.middlewares.length > 0) {
+      nexusPkgs.push({
+        id: "@koi/nexus",
+        kind: "middleware",
+        source: "static",
+        middlewareNames: input.nexus.middlewares.map((m) => m.name),
+      });
+    }
+    if (input.nexus.providers.length > 0) {
+      nexusPkgs.push({
+        id: "@koi/nexus",
+        kind: "provider",
+        source: "static",
+        providerNames: input.nexus.providers.map((p) => p.name),
+      });
+    }
+    builder.addStack("nexus", "Nexus", "runtime", true, nexusPkgs);
+  }
+
+  // Forge
+  if (input.forge !== undefined) {
+    const forgePkgs: PackageContribution[] = [
+      {
+        id: "@koi/forge",
+        kind: "middleware",
+        source: "static",
+        middlewareNames: input.forge.middlewares.map((m) => m.name),
+      },
+      {
+        id: "@koi/forge",
+        kind: "provider",
+        source: "static",
+        providerNames: [input.forge.provider.name, input.forge.forgeToolsProvider.name],
+      },
+    ];
+    builder.addStack("forge", "Forge", "runtime", true, forgePkgs);
+  }
+
+  // Autonomous
+  if (input.autonomous !== undefined) {
+    const autoPkgs: PackageContribution[] = [];
+    if (input.autonomous.middleware.length > 0) {
+      autoPkgs.push({
+        id: "@koi/autonomous",
+        kind: "middleware",
+        source: "static",
+        middlewareNames: input.autonomous.middleware.map((m) => m.name),
+      });
+    }
+    if (input.autonomous.providers.length > 0) {
+      autoPkgs.push({
+        id: "@koi/autonomous",
+        kind: "provider",
+        source: "static",
+        providerNames: input.autonomous.providers.map((p) => p.name),
+      });
+    }
+    builder.addStack("autonomous", "Autonomous", "runtime", true, autoPkgs);
+  }
+
+  // Chat bridge
+  if (input.chatBridge !== undefined) {
+    builder.addStack("agui-bridge", "AG-UI Chat Bridge", "runtime", true, [
+      {
+        id: "@koi/agui-bridge",
+        kind: "middleware",
+        source: "static",
+        middlewareNames: [input.chatBridge.middleware.name],
+      },
+    ]);
+  }
+
+  // Data sources
+  if (
+    input.dataSourceProvider !== undefined ||
+    (input.dataSourceTools !== undefined && input.dataSourceTools.length > 0)
+  ) {
+    const dsPkgs: PackageContribution[] = [];
+    if (input.dataSourceProvider !== undefined) {
+      dsPkgs.push({
+        id: "@koi/data-source-stack",
+        kind: "provider",
+        source: "static",
+        providerNames: [input.dataSourceProvider.name],
+      });
+    }
+    if (input.dataSourceTools !== undefined && input.dataSourceTools.length > 0) {
+      dsPkgs.push({
+        id: "@koi/data-source-stack",
+        kind: "tool",
+        source: "static",
+        toolNames: input.dataSourceTools.map((t) => t.descriptor.name),
+      });
+    }
+    builder.addStack("data-sources", "Data Sources", "runtime", true, dsPkgs);
+  }
+
+  return { middleware, providers, contributions: builder.build() };
 }

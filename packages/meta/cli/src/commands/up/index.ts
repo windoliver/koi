@@ -25,6 +25,7 @@ import { bootstrapForgeOrWarn } from "../../bootstrap-forge.js";
 import { createChatRouter } from "../../chat-router.js";
 import { collectSubsystemMiddleware, composeRuntimeMiddleware } from "../../compose-middleware.js";
 import { createContextArenaConfigForUp } from "../../context-arena-config.js";
+import { addPostCompositionContributions } from "../../contribution-graph.js";
 import { buildDebugExtraItems, collectActiveSubsystems } from "../../debug-inventory-items.js";
 import {
   createLocalFileSystem,
@@ -896,6 +897,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     dataSourceTools,
     presetMiddleware: activatedStacks.middleware,
     presetProviders: [...activatedStacks.providers, ...manifestToolProviders],
+    presetContributions: activatedStacks.contributions,
   });
 
   // Late-binding event sink for forge/monitor SSE events
@@ -1112,6 +1114,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
                   }),
                 ),
               getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+              getContributions: () =>
+                addPostCompositionContributions(
+                  composed.contributions,
+                  channelNames,
+                  adapter.engineId,
+                  modelName,
+                ),
             },
           }
         : {}),

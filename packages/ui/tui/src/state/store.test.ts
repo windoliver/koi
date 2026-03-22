@@ -664,6 +664,26 @@ describe("reduce — debug view actions", () => {
     expect(next.debugView.loading).toBe(false);
   });
 
+  test("set_debug_contributions updates contributions", () => {
+    const contributions = {
+      stacks: [
+        {
+          id: "nexus",
+          label: "Nexus",
+          enabled: true,
+          source: "runtime",
+          packages: [
+            { id: "@koi/nexus", kind: "middleware", source: "static", middlewareNames: ["auth"] },
+          ],
+        },
+      ],
+      generatedAt: 1234567890,
+    } as const;
+    const next = reduce(BASE_STATE, { kind: "set_debug_contributions", contributions });
+    expect(next.debugView.contributions).toEqual(contributions);
+    expect(next.debugView.contributions?.stacks).toHaveLength(1);
+  });
+
   test("set_debug_panel switches active panel", () => {
     const next = reduce(BASE_STATE, { kind: "set_debug_panel", panel: "waterfall" });
     expect(next.debugView.activePanel).toBe("waterfall");

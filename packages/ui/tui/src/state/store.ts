@@ -701,6 +701,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         ...state,
         debugView: { ...state.debugView, inventory: action.items, loading: false },
       };
+    case "set_debug_contributions":
+      return {
+        ...state,
+        debugView: { ...state.debugView, contributions: action.contributions },
+      };
     case "set_debug_trace":
       return {
         ...state,

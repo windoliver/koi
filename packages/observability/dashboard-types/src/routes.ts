@@ -62,6 +62,7 @@ export const ADMIN_ROUTES = {
   // ─── Debug Views ─────────────────────────────────────────────
   debugInventory: { method: "GET" as const, path: "/view/debug/:id/inventory" },
   debugTrace: { method: "GET" as const, path: "/view/debug/:id/trace/:turn" },
+  debugContributions: { method: "GET" as const, path: "/view/debug/contributions" },
 
   // ─── Temporal Orchestration ────────────────────────────────────
   temporalHealth: { method: "GET", path: "/view/temporal/health" },

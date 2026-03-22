@@ -318,6 +318,12 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
             else store.dispatch({ kind: "set_debug_trace", trace: null });
           })
           .catch(() => {});
+        client
+          .getDebugContributions()
+          .then((r) => {
+            if (r.ok) store.dispatch({ kind: "set_debug_contributions", contributions: r.value });
+          })
+          .catch(() => {});
       }
       break;
     }

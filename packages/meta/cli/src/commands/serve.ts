@@ -35,6 +35,7 @@ import type { ServeFlags } from "../args.js";
 import { bootstrapForgeOrWarn } from "../bootstrap-forge.js";
 import { createChatRouter } from "../chat-router.js";
 import { composeRuntimeMiddleware } from "../compose-middleware.js";
+import { addPostCompositionContributions } from "../contribution-graph.js";
 import { buildDebugExtraItems, collectActiveSubsystems } from "../debug-inventory-items.js";
 import {
   createLocalFileSystem,
@@ -362,6 +363,13 @@ export async function runServe(flags: ServeFlags): Promise<void> {
                   }),
                 ),
               getTrace: (_agentId, turnIndex) => debugApi.getTrace(turnIndex),
+              getContributions: () =>
+                addPostCompositionContributions(
+                  composed.contributions,
+                  channelNames,
+                  adapter.engineId,
+                  modelName,
+                ),
             },
           }
         : {}),

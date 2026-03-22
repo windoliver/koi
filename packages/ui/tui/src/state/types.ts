@@ -709,6 +709,10 @@ export type TuiAction =
       readonly items: readonly import("@koi/dashboard-types").DebugInventoryItemResponse[];
     }
   | {
+      readonly kind: "set_debug_contributions";
+      readonly contributions: import("@koi/dashboard-types").ContributionGraphResponse;
+    }
+  | {
       readonly kind: "set_debug_trace";
       readonly trace: import("@koi/dashboard-types").DebugTurnTraceResponse | null;
     }

@@ -228,3 +228,18 @@ export async function handleDebugTrace(
   }
   return jsonResponse(trace);
 }
+
+export async function handleDebugContributions(
+  _req: Request,
+  _params: RouteParams,
+  runtimeViews: RuntimeViewDataSource,
+): Promise<Response> {
+  if (runtimeViews.debug === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Debug instrumentation not enabled", 501);
+  }
+  if (runtimeViews.debug.getContributions === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Contribution graph not available", 501);
+  }
+  const contributions = await runtimeViews.debug.getContributions();
+  return jsonResponse(contributions);
+}

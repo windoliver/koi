@@ -324,6 +324,34 @@ export interface DebugInventoryResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Contribution graph (debug view — structured package tree)
+// ---------------------------------------------------------------------------
+
+export interface ContributionGraphResponse {
+  readonly stacks: readonly StackContributionResponse[];
+  readonly generatedAt: number;
+}
+
+export interface StackContributionResponse {
+  readonly id: string;
+  readonly label: string;
+  readonly enabled: boolean;
+  readonly source: string;
+  readonly packages: readonly PackageContributionResponse[];
+}
+
+export interface PackageContributionResponse {
+  readonly id: string;
+  readonly kind: string;
+  readonly source: string;
+  readonly middlewareNames?: readonly string[] | undefined;
+  readonly providerNames?: readonly string[] | undefined;
+  readonly toolNames?: readonly string[] | undefined;
+  readonly channelNames?: readonly string[] | undefined;
+  readonly notes?: readonly string[] | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Data source interface
 // ---------------------------------------------------------------------------
 
@@ -377,6 +405,9 @@ export interface RuntimeViewDataSource {
           agentId: AgentId,
           turnIndex: number,
         ) => DebugTurnTraceResponse | undefined | Promise<DebugTurnTraceResponse | undefined>;
+        readonly getContributions?: () =>
+          | ContributionGraphResponse
+          | Promise<ContributionGraphResponse>;
       }
     | undefined;
 }

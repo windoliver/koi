@@ -209,6 +209,10 @@ export interface AdminClient {
     agentId: string,
     turnIndex: number,
   ) => Promise<ClientResult<DebugTurnTraceResponse>>;
+  /** Fetch contribution graph for the runtime. */
+  readonly getDebugContributions: () => Promise<
+    ClientResult<import("@koi/dashboard-types").ContributionGraphResponse>
+  >;
   // ─── Forge Brick Lifecycle ────────────────────────────────────
   /** Promote a brick. */
   readonly promoteBrick: (brickId: string) => Promise<ClientResult<null>>;
@@ -418,6 +422,12 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
         id: aid,
         turn: String(turnIndex),
       }),
+
+    getDebugContributions: () =>
+      request<import("@koi/dashboard-types").ContributionGraphResponse>(
+        "GET",
+        ADMIN_ROUTES.debugContributions.path,
+      ),
 
     // ─── Temporal orchestration ────────────────────────────────────
     getTemporalHealth: () => request<TemporalHealth>("GET", ADMIN_ROUTES.temporalHealth.path),

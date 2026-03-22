@@ -71,8 +71,14 @@ export interface BridgeOptions {
     | undefined;
   /** Optional forge view data source for self-improvement observability. */
   readonly forge?: RuntimeViewDataSource["forge"] | undefined;
-  /** Optional debug instrumentation data source for the debug view. */
-  readonly debug?: RuntimeViewDataSource["debug"] | undefined;
+  /** Optional debug instrumentation data source for the debug view (includes optional contributions). */
+  readonly debug?:
+    | {
+        readonly getInventory: NonNullable<RuntimeViewDataSource["debug"]>["getInventory"];
+        readonly getTrace: NonNullable<RuntimeViewDataSource["debug"]>["getTrace"];
+        readonly getContributions?: NonNullable<RuntimeViewDataSource["debug"]>["getContributions"];
+      }
+    | undefined;
   /** Tool inventory for AgentProcfs (name + origin). */
   readonly toolInventory?:
     | readonly { readonly name: string; readonly origin: string }[]
@@ -370,7 +376,13 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
           },
         };
       }
-      const source = currentSources[idx]!;
+      const source = currentSources[idx];
+      if (source === undefined) {
+        return {
+          ok: false,
+          error: { code: "NOT_FOUND", message: "Source not found", retryable: false },
+        };
+      }
       if (source.status === "approved") {
         return { ok: true, value: undefined };
       }
@@ -560,7 +572,17 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       ? { harness: options.orchestration.harness }
       : {}),
     ...(options.forge !== undefined ? { forge: options.forge } : {}),
-    ...(options.debug !== undefined ? { debug: options.debug } : {}),
+    ...(options.debug !== undefined
+      ? {
+          debug: {
+            getInventory: options.debug.getInventory,
+            getTrace: options.debug.getTrace,
+            ...(options.debug.getContributions !== undefined
+              ? { getContributions: options.debug.getContributions }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   // Command dispatcher for the single-agent bridge.
