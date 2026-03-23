@@ -13,9 +13,10 @@ export function readStringMeta(
   return typeof value === "string" ? value : undefined;
 }
 
-/** Check if a message is eligible for merging (no callId, not pinned, not synthetic). */
+/** Check if a message is eligible for merging (no callId, not pinned, not synthetic, not tool). */
 export function isMergeable(msg: InboundMessage): boolean {
   if (readStringMeta(msg.metadata, "callId") !== undefined) return false;
+  if (msg.senderId === "tool") return false;
   if (msg.pinned === true) return false;
   if (msg.metadata?.synthetic === true) return false;
   return true;

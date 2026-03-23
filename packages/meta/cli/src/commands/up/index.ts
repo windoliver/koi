@@ -1038,7 +1038,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   }
 
   // 8b. Demo pack seed (before admin so seeded bricks are available for forge view)
-  const demoPack = await extractDemoPack(manifestPath);
+  const demoPack = (await extractDemoPack(manifestPath)) ?? preset.demoPack;
   let nexusClient: import("@koi/nexus-client").NexusClient | undefined;
   if (nexus.baseUrl !== undefined) {
     const { createNexusClient } = await import("@koi/nexus-client");
@@ -1319,6 +1319,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     try {
       const { Cron } = await import("croner");
       const cronJob = new Cron(scheduleExpr, async () => {
+        if (tuiProcessing || channelProcessing) return; // skip if agent is busy
         try {
           for await (const event of runtime.run({ kind: "text", text: "scheduled run" })) {
             if (event.kind === "text_delta" && !tuiAttached) {
@@ -1380,11 +1381,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
         if (event.kind === "text_delta") deltas.push(event.delta);
         if (event.kind === "done") {
           if (event.output.stopReason === "error") {
+            const errMeta = event.output.metadata as Record<string, unknown> | undefined;
             const errMsg =
-              event.output.metadata !== undefined &&
-              typeof (event.output.metadata as Record<string, unknown>).errorMessage === "string"
-                ? ((event.output.metadata as Record<string, unknown>).errorMessage as string)
-                : "unknown error";
+              errMeta !== undefined && typeof errMeta.errorMessage === "string"
+                ? errMeta.errorMessage
+                : errMeta !== undefined && typeof errMeta.error === "string"
+                  ? errMeta.error
+                  : "unknown error";
             process.stderr.write(`error: model call failed: ${errMsg}\n`);
           }
           turnCount = event.output.metrics.turns;

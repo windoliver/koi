@@ -88,12 +88,20 @@ export function createNexusSnapshotStore<T>(
       return r;
     }
     try {
-      return { ok: true, value: JSON.parse(r.value) as ChainMeta };
-    } catch (e: unknown) {
-      return {
-        ok: false,
-        error: wrapNexusError("INTERNAL", `Failed to parse chain meta for ${cid}`, e),
-      };
+      const parsed: unknown = typeof r.value === "string" ? JSON.parse(r.value) : r.value;
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        "nodeIds" in parsed &&
+        Array.isArray((parsed as ChainMeta).nodeIds)
+      ) {
+        return { ok: true, value: parsed as ChainMeta };
+      }
+      // Data doesn't match ChainMeta shape — treat as empty
+      return { ok: true, value: EMPTY_META };
+    } catch {
+      // Corrupted or incompatible meta — treat as empty to avoid blocking persistence
+      return { ok: true, value: EMPTY_META };
     }
   }
 
