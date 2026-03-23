@@ -184,6 +184,22 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   };
 
   if (deployment.mode === "polling") {
+    // grammY requires listeners to be registered BEFORE bot.start().
+    // channel-base calls onPlatformEvent AFTER platformConnect, so we register
+    // grammY listeners eagerly here and forward events to the handler once set.
+    // let justified: handler set by onPlatformEvent after connect
+    let eventHandler: ((ctx: Context) => void) | undefined;
+    // let justified: active flag gates dispatching; cleared on unsubscribe
+    let handlerActive = true;
+
+    // Register grammY listeners immediately (before bot.start)
+    bot.on("message", (ctx) => {
+      if (handlerActive && eventHandler !== undefined) eventHandler(ctx);
+    });
+    bot.on("callback_query", (ctx) => {
+      if (handlerActive && eventHandler !== undefined) eventHandler(ctx);
+    });
+
     const base = createChannelAdapter<Context>({
       name: "telegram",
       capabilities: TELEGRAM_CAPABILITIES,
@@ -193,11 +209,13 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
         // starting the polling loop. This gives connect() a clean "ready" signal.
         await bot.init();
         // bot.start() never resolves — run as background loop (fire-and-forget).
+        // Listeners are already registered above, so messages are dispatched immediately.
         void bot.start();
       },
 
       platformDisconnect: async () => {
         stopTyping();
+        handlerActive = false;
         await bot.stop();
       },
 
@@ -206,17 +224,12 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       },
 
       onPlatformEvent: (handler) => {
-        // let justified: active flag gates dispatching; cleared on unsubscribe
-        // to prevent duplicate dispatch across reconnect cycles (grammY does not
-        // support removing individual listeners).
-        let active = true;
-        const guard = (ctx: Context): void => {
-          if (active) handler(ctx);
-        };
-        bot.on("message", guard);
-        bot.on("callback_query", guard);
+        // Wire handler to the eagerly-registered grammY listeners
+        eventHandler = handler;
+        handlerActive = true;
         return () => {
-          active = false;
+          handlerActive = false;
+          eventHandler = undefined;
         };
       },
 
