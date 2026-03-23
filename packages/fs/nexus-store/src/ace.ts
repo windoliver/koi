@@ -151,9 +151,20 @@ async function deleteJson(client: NexusClient, path: string): Promise<boolean> {
 }
 
 async function globPaths(client: NexusClient, pattern: string): Promise<readonly string[]> {
-  const r = await client.rpc<readonly string[]>("glob", { pattern });
+  const r = await client.rpc<unknown>("glob", { pattern });
   if (!r.ok) return [];
-  return r.value;
+  const v = r.value;
+  // Nexus glob returns { matches: string[] } — unwrap if needed
+  if (Array.isArray(v)) return v as readonly string[];
+  if (
+    v !== null &&
+    typeof v === "object" &&
+    "matches" in v &&
+    Array.isArray((v as { matches: unknown }).matches)
+  ) {
+    return (v as { matches: readonly string[] }).matches;
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------
