@@ -548,7 +548,7 @@ export async function activatePresetStacks(
     const provBefore = providers.length;
     await tryActivate("goal-stack", async () => {
       const { createGoalStack } = await import("@koi/goal-stack");
-      const bundle = createGoalStack({ preset: "minimal" });
+      const bundle = createGoalStack({});
       middleware.push(...bundle.middlewares);
       providers.push(...bundle.providers);
       log(config, `Stack: goal-stack (${String(bundle.middlewares.length)} middleware)`);
