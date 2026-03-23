@@ -35,6 +35,10 @@ const KNOWN_FIELDS = [
   "preset",
   "storage",
   "stacks",
+  "autonomous",
+  "demo",
+  "dataSources",
+  "codeSandbox",
 ] as const;
 
 /**
