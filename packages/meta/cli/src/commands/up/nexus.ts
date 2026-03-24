@@ -56,11 +56,35 @@ export async function startNexusStack(
   }
 }
 
-/** Stops the Nexus stack via `nexus down`. Best-effort, logs warnings. */
+/**
+ * Pauses the Nexus stack via `nexus stop` (keeps containers for fast resume).
+ * Best-effort, logs warnings.
+ */
 export async function stopNexusStack(workspaceRoot: string, verbose: boolean): Promise<void> {
   try {
+    const { nexusStop } = await import("@koi/nexus-embed");
+    const result = await nexusStop({ cwd: workspaceRoot, verbose });
+    if (!result.ok) {
+      process.stderr.write(`warn: nexus stop failed: ${result.error.message}\n`);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`warn: Nexus shutdown failed: ${message}\n`);
+  }
+}
+
+/**
+ * Destroys the Nexus stack via `nexus down` (removes containers + optionally volumes).
+ * Use for full cleanup only — prefer `stopNexusStack()` for normal shutdown.
+ */
+export async function destroyNexusStack(
+  workspaceRoot: string,
+  verbose: boolean,
+  volumes?: boolean,
+): Promise<void> {
+  try {
     const { nexusDown } = await import("@koi/nexus-embed");
-    const result = await nexusDown({ cwd: workspaceRoot, verbose });
+    const result = await nexusDown({ cwd: workspaceRoot, verbose, volumes });
     if (!result.ok) {
       process.stderr.write(`warn: nexus down failed: ${result.error.message}\n`);
     }

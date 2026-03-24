@@ -10,8 +10,9 @@
  * 6. Save connection state + PID
  */
 
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { checkBinaryAvailable, resolveNexusBinary } from "./binary-resolver.js";
 import {
@@ -24,6 +25,19 @@ import { pollHealth, probeHealth } from "./health-check.js";
 import { cleanStalePid, isProcessAlive, readPid, removePid, writePid } from "./pid-manager.js";
 import type { ConnectionState, EmbedConfig, EmbedResult } from "./types.js";
 
+/**
+ * Derive a per-workspace data directory to isolate parallel worktrees.
+ *
+ * Hashes the absolute `cwd` path (MD5, first 8 hex chars) to produce a
+ * stable subdirectory under `~/.koi/nexus/`. This mirrors the Nexus CLI's
+ * own project isolation pattern (`nexus-{md5(data_dir)[:8]}`).
+ */
+export function deriveDataDir(cwd: string): string {
+  const absPath = resolve(cwd);
+  const hash = createHash("md5").update(absPath).digest("hex").slice(0, 8);
+  return join(homedir(), DEFAULT_DATA_DIR_NAME, hash);
+}
+
 /** Ensure a Nexus server is running locally, spawning one if needed. */
 export async function ensureNexusRunning(
   config?: EmbedConfig | undefined,
@@ -31,7 +45,8 @@ export async function ensureNexusRunning(
   const port = config?.port ?? DEFAULT_PORT;
   const host = config?.host ?? DEFAULT_HOST;
   const profile = config?.profile ?? process.env.NEXUS_EMBED_PROFILE ?? DEFAULT_PROFILE;
-  const dataDir = config?.dataDir ?? join(homedir(), DEFAULT_DATA_DIR_NAME);
+  const cwd = config?.cwd ?? process.cwd();
+  const dataDir = config?.dataDir ?? deriveDataDir(cwd);
   const fetchFn = config?.fetch;
   const spawnFn = config?.spawn;
 

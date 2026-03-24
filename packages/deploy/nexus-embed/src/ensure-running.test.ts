@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { writeConnectionState } from "./connection-store.js";
-import { ensureNexusRunning } from "./ensure-running.js";
+import { DEFAULT_DATA_DIR_NAME } from "./constants.js";
+import { deriveDataDir, ensureNexusRunning } from "./ensure-running.js";
 import { writePid } from "./pid-manager.js";
 import type { ConnectionState, FetchFn, SpawnFn } from "./types.js";
 
@@ -45,6 +46,49 @@ function createMockSpawn(pid = 42): {
   };
   return { spawn, calls };
 }
+
+// ---------------------------------------------------------------------------
+// deriveDataDir
+// ---------------------------------------------------------------------------
+
+describe("deriveDataDir", () => {
+  test("produces deterministic path from cwd", () => {
+    const dir1 = deriveDataDir("/some/workspace/path");
+    const dir2 = deriveDataDir("/some/workspace/path");
+    expect(dir1).toBe(dir2);
+  });
+
+  test("produces different paths for different cwds", () => {
+    const dir1 = deriveDataDir("/workspace/a");
+    const dir2 = deriveDataDir("/workspace/b");
+    expect(dir1).not.toBe(dir2);
+  });
+
+  test("produces path under ~/.koi/nexus/", () => {
+    const dir = deriveDataDir("/some/workspace");
+    expect(dir.startsWith(join(homedir(), DEFAULT_DATA_DIR_NAME))).toBe(true);
+  });
+
+  test("hash is 8 chars", () => {
+    const dir = deriveDataDir("/some/workspace");
+    const hash = dir.split("/").pop();
+    expect(hash).toBeDefined();
+    expect(hash?.length).toBe(8);
+    // MD5 hex chars only
+    expect(hash).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  test("resolves relative paths to absolute before hashing", () => {
+    // Both should produce the same result since resolve() makes them absolute
+    const dir1 = deriveDataDir(".");
+    const dir2 = deriveDataDir(resolve("."));
+    expect(dir1).toBe(dir2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ensureNexusRunning
+// ---------------------------------------------------------------------------
 
 describe("ensureNexusRunning", () => {
   let tempDir: string;

@@ -83,6 +83,8 @@ export interface StopFlags extends BaseFlags {
   readonly command: "stop";
   readonly manifest: string | undefined;
   readonly nexus: boolean;
+  /** Destroy Nexus containers instead of pausing (passes `nexus down` instead of `nexus stop`). */
+  readonly nexusDestroy: boolean;
 }
 
 export interface LogsFlags extends BaseFlags {
@@ -388,6 +390,7 @@ export function parseStopFlags(rest: readonly string[]): StopFlags {
     options: {
       manifest: { type: "string" },
       nexus: { type: "boolean", default: false },
+      "nexus-destroy": { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -400,6 +403,7 @@ export function parseStopFlags(rest: readonly string[]): StopFlags {
     directory: positionalManifest,
     manifest: (values.manifest as string | undefined) ?? positionalManifest,
     nexus: (values.nexus as boolean | undefined) ?? false,
+    nexusDestroy: (values["nexus-destroy"] as boolean | undefined) ?? false,
   };
 }
 
