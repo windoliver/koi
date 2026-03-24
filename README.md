@@ -13,6 +13,7 @@
   <img src="https://img.shields.io/badge/TypeScript-Strict-blue?logo=typescript" alt="TypeScript Strict" />
   <img src="https://img.shields.io/badge/Runtime-Bun%201.3-f9f1e1?logo=bun" alt="Bun 1.3" />
   <img src="https://img.shields.io/badge/PRs-Welcome-brightgreen" alt="PRs Welcome" />
+[![Hypercommit](https://img.shields.io/badge/Hypercommit-DB2475)](https://hypercommit.com/koi)
 </p>
 
 <p align="center">
