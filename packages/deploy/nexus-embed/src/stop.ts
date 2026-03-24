@@ -4,11 +4,9 @@
  * Reads PID from file, sends SIGTERM, waits for exit, and cleans up state files.
  */
 
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { removeConnectionState } from "./connection-store.js";
-import { DEFAULT_DATA_DIR_NAME } from "./constants.js";
+import { deriveDataDir } from "./ensure-running.js";
 import { isNexusProcess, isProcessAlive, readPid, removePid } from "./pid-manager.js";
 
 /** Maximum time to wait for daemon to exit after SIGTERM (ms). */
@@ -20,8 +18,10 @@ const STOP_POLL_INTERVAL_MS = 100;
 /** Stop the embed Nexus daemon, wait for exit, and clean up state files. */
 export async function stopEmbedNexus(config?: {
   readonly dataDir?: string | undefined;
+  /** Working directory (used to derive per-workspace dataDir when dataDir is not set). Default: process.cwd(). */
+  readonly cwd?: string | undefined;
 }): Promise<Result<{ readonly pid: number; readonly wasRunning: boolean }, KoiError>> {
-  const dataDir = config?.dataDir ?? join(homedir(), DEFAULT_DATA_DIR_NAME);
+  const dataDir = config?.dataDir ?? deriveDataDir(config?.cwd ?? process.cwd());
   const pid = readPid(dataDir);
 
   if (pid === undefined) {

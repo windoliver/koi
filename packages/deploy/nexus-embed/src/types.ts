@@ -21,8 +21,14 @@ export interface EmbedConfig {
   readonly port?: number | undefined;
   /** Nexus deployment profile. Default: "lite". Override: NEXUS_EMBED_PROFILE env var. */
   readonly profile?: string | undefined;
-  /** Data directory for connection state. Default: ~/.koi/nexus/. */
+  /**
+   * Data directory for connection state.
+   * Default: derived from `cwd` as `~/.koi/nexus/{md5(cwd)[:8]}/`
+   * to isolate parallel worktrees. If set explicitly, used as-is.
+   */
   readonly dataDir?: string | undefined;
+  /** Working directory (used to derive per-workspace dataDir). Default: process.cwd(). */
+  readonly cwd?: string | undefined;
   /** Host to bind Nexus to. Default: "127.0.0.1". */
   readonly host?: string | undefined;
   /** Injectable spawn for testing. Default: Bun.spawn. */
@@ -50,4 +56,25 @@ export interface ConnectionState {
   readonly host: string;
   readonly profile: string;
   readonly startedAt: string;
+}
+
+/**
+ * Runtime state written by `nexus up` to `{data_dir}/.state.json`.
+ *
+ * This is the authoritative source for resolved ports and API key
+ * after startup — `nexus.yaml` may contain defaults that were overridden
+ * during port conflict resolution.
+ */
+export interface NexusRuntimeState {
+  readonly ports: {
+    readonly http?: number;
+    readonly grpc?: number;
+    readonly [k: string]: number | undefined;
+  };
+  readonly api_key?: string | undefined;
+  readonly project_name?: string | undefined;
+  readonly build_mode?: string | undefined;
+  readonly image_used?: string | undefined;
+  readonly started_at?: string | undefined;
+  readonly version?: number | undefined;
 }

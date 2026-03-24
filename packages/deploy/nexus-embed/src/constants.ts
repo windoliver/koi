@@ -34,3 +34,6 @@ export const CONNECTION_STATE_FILE = "embed.json";
 
 /** Filename for PID file. */
 export const PID_FILE = "nexus.pid";
+
+/** Filename for Nexus runtime state (written by `nexus up` into data_dir). */
+export const STATE_JSON_FILE = ".state.json";

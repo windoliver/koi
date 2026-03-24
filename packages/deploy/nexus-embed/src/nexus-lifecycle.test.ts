@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { nexusDown, nexusInit, nexusUp } from "./nexus-lifecycle.js";
+import { nexusDown, nexusInit, nexusStop, nexusUp, readRuntimeState } from "./nexus-lifecycle.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -185,6 +185,26 @@ describe("nexusUp config search", () => {
 // nexusDown
 // ---------------------------------------------------------------------------
 
+describe("nexusStop", () => {
+  test("returns error when nexus binary is unavailable", async () => {
+    const saved = process.env.NEXUS_COMMAND;
+    process.env.NEXUS_COMMAND = "/nonexistent/nexus-fake-binary";
+    try {
+      const result = await nexusStop({ cwd: tempDir });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("NOT_FOUND");
+      }
+    } finally {
+      if (saved !== undefined) {
+        process.env.NEXUS_COMMAND = saved;
+      } else {
+        delete process.env.NEXUS_COMMAND;
+      }
+    }
+  });
+});
+
 describe("nexusDown", () => {
   test("returns error when nexus binary is unavailable", async () => {
     const saved = process.env.NEXUS_COMMAND;
@@ -202,5 +222,67 @@ describe("nexusDown", () => {
         delete process.env.NEXUS_COMMAND;
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readRuntimeState
+// ---------------------------------------------------------------------------
+
+describe("readRuntimeState", () => {
+  test("returns undefined when nexus.yaml is missing", () => {
+    const result = readRuntimeState(tempDir);
+    expect(result).toBeUndefined();
+  });
+
+  test("returns undefined when nexus.yaml has no data_dir", () => {
+    writeFileSync(join(tempDir, "nexus.yaml"), "preset: demo\n");
+    const result = readRuntimeState(tempDir);
+    expect(result).toBeUndefined();
+  });
+
+  test("returns undefined when .state.json is missing", () => {
+    const dataDir = join(tempDir, "nexus-data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(tempDir, "nexus.yaml"), `data_dir: ${dataDir}\n`);
+    const result = readRuntimeState(tempDir);
+    expect(result).toBeUndefined();
+  });
+
+  test("reads ports and api_key from .state.json", () => {
+    const dataDir = join(tempDir, "nexus-data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(tempDir, "nexus.yaml"), `data_dir: ${dataDir}\n`);
+    writeFileSync(
+      join(dataDir, ".state.json"),
+      JSON.stringify({
+        ports: { http: 12345, grpc: 12346 },
+        api_key: "sk-test-key",
+        project_name: "nexus-abcd1234",
+      }),
+    );
+    const result = readRuntimeState(tempDir);
+    expect(result).toBeDefined();
+    expect(result?.ports.http).toBe(12345);
+    expect(result?.api_key).toBe("sk-test-key");
+    expect(result?.project_name).toBe("nexus-abcd1234");
+  });
+
+  test("returns undefined for invalid .state.json", () => {
+    const dataDir = join(tempDir, "nexus-data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(tempDir, "nexus.yaml"), `data_dir: ${dataDir}\n`);
+    writeFileSync(join(dataDir, ".state.json"), "not json");
+    const result = readRuntimeState(tempDir);
+    expect(result).toBeUndefined();
+  });
+
+  test("returns undefined when .state.json has no ports object", () => {
+    const dataDir = join(tempDir, "nexus-data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(tempDir, "nexus.yaml"), `data_dir: ${dataDir}\n`);
+    writeFileSync(join(dataDir, ".state.json"), JSON.stringify({ api_key: "sk-test" }));
+    const result = readRuntimeState(tempDir);
+    expect(result).toBeUndefined();
   });
 });

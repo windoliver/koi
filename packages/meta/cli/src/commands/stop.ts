@@ -16,7 +16,7 @@ import type { StopFlags } from "../args.js";
 export async function runStop(flags: StopFlags): Promise<void> {
   // Stop embed Nexus daemon if requested (does not require a manifest)
   if (flags.nexus) {
-    await stopNexusEmbed();
+    await stopNexusEmbed(flags.nexusDestroy);
   }
 
   // Service stop requires a manifest
@@ -51,27 +51,47 @@ export async function runStop(flags: StopFlags): Promise<void> {
   }
 }
 
-async function stopNexusEmbed(): Promise<void> {
+async function stopNexusEmbed(destroy?: boolean): Promise<void> {
   try {
-    // Prefer nexus down (Docker Compose lifecycle), fall back to legacy PID stop
-    const { nexusDown } = await import("@koi/nexus-embed");
-    const result = await nexusDown();
-    if (result.ok) {
-      process.stderr.write("Nexus stack stopped.\n");
-    } else {
-      // Fall back to legacy stop if nexus CLI unavailable
-      const { stopEmbedNexus } = await import("@koi/nexus-embed");
-      const legacyResult = await stopEmbedNexus();
-      if (legacyResult.ok) {
-        process.stderr.write(
-          `Nexus embed daemon stopped (PID ${String(legacyResult.value.pid)}).\n`,
-        );
+    if (destroy) {
+      // Full cleanup: remove containers (and optionally volumes)
+      const { nexusDown } = await import("@koi/nexus-embed");
+      const result = await nexusDown();
+      if (result.ok) {
+        process.stderr.write("Nexus stack destroyed.\n");
       } else {
-        process.stderr.write(`Nexus: ${legacyResult.error.message}\n`);
+        // Fall back to legacy stop if nexus CLI unavailable
+        await legacyStop();
+      }
+    } else {
+      // Default: pause containers for fast resume on next `koi up`
+      const { nexusStop } = await import("@koi/nexus-embed");
+      const result = await nexusStop();
+      if (result.ok) {
+        process.stderr.write("Nexus stack paused (resume with `koi up`).\n");
+      } else {
+        // Fall back to nexus down, then legacy PID stop
+        const { nexusDown } = await import("@koi/nexus-embed");
+        const downResult = await nexusDown();
+        if (downResult.ok) {
+          process.stderr.write("Nexus stack stopped.\n");
+        } else {
+          await legacyStop();
+        }
       }
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`Failed to stop Nexus: ${message}\n`);
+  }
+}
+
+async function legacyStop(): Promise<void> {
+  const { stopEmbedNexus } = await import("@koi/nexus-embed");
+  const legacyResult = await stopEmbedNexus();
+  if (legacyResult.ok) {
+    process.stderr.write(`Nexus embed daemon stopped (PID ${String(legacyResult.value.pid)}).\n`);
+  } else {
+    process.stderr.write(`Nexus: ${legacyResult.error.message}\n`);
   }
 }

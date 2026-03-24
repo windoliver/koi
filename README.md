@@ -325,7 +325,7 @@ context:
 | `koi demo <init\|list\|reset>` | Manage demo data |
 | `koi deploy [manifest]` | Install as OS service (launchd/systemd) |
 | `koi status [manifest]` | Check service status |
-| `koi stop [manifest]` | Stop the service |
+| `koi stop [manifest]` | Stop the service (pauses Nexus for fast resume) |
 | `koi logs [manifest]` | View service logs |
 | `koi doctor [manifest]` | Diagnose service health |
 | `koi replay` | Replay agent state at a specific turn |
@@ -374,7 +374,9 @@ When any URL is provided, no local Nexus is started.
 
 **`--nexus-build --nexus-source <dir>`** rebuilds the Nexus Docker image from source instead of pulling from GHCR. Point `--nexus-source` to the nexus repo root (uses `<dir>/docker-compose.yml` which has the `build:` directive).
 
-**Port handling**: Nexus auto-resolves port conflicts by default (`--port-strategy=auto`). If port 2026 is taken, it picks the next free port and persists it to `nexus.yaml`. Use `--nexus-port` only when you want a specific port.
+**Port handling**: Nexus auto-resolves port conflicts by default (`--port-strategy=auto`). If port 2026 is taken, it picks the next free port and persists it to `nexus.yaml`. Use `--nexus-port` only when you want a specific port. Parallel worktrees get isolated Nexus instances automatically — each workspace derives a unique Docker Compose project with deterministic ports from the `data_dir` hash.
+
+**Lifecycle**: `koi stop --nexus` pauses Nexus containers (fast resume on next `koi up`). Use `koi stop --nexus --nexus-destroy` to fully remove containers and volumes.
 
 ### `koi serve`
 
