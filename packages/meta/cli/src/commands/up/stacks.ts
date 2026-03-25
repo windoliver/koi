@@ -204,6 +204,7 @@ async function activateGovernance(
         groups: (await import("@koi/middleware-permissions")).DEFAULT_GROUPS,
       }),
       approvalHandler,
+      approvalTimeoutMs: 300_000, // 5 minutes — operator needs time to navigate to governance view
     },
     execApprovals: {
       rules: {
