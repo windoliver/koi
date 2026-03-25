@@ -12,6 +12,7 @@ import type {
   ChannelDashboardEvent,
   CheckpointEntry,
   ContributionGraphResponse,
+  CostSnapshot,
   CronSchedule,
   DashboardChannelSummary,
   DashboardSkillSummary,
@@ -155,9 +156,11 @@ export interface GovernanceViolation {
   readonly timestamp: number;
 }
 
-/** Cost view — computed from agent metrics. */
+/** Cost view — budget, cascade breakdown, circuit breaker. */
 export interface CostViewState {
   readonly scrollOffset: number;
+  readonly snapshot: CostSnapshot | null;
+  readonly loading: boolean;
 }
 
 /** Middleware view — fetched middleware chain for an agent. */
@@ -314,7 +317,7 @@ export function createInitialGovernanceView(): GovernanceViewState {
 }
 
 export function createInitialCostView(): CostViewState {
-  return { scrollOffset: 0 };
+  return { scrollOffset: 0, snapshot: null, loading: false };
 }
 
 export function createInitialMiddlewareView(): MiddlewareViewState {

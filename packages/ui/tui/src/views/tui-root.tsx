@@ -452,7 +452,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           <GovernanceView governanceView={state.governanceView} focused={true} zoomLevel={state.zoomLevel} />
         )}
         {view === "cost" && (
-          <CostView costView={state.costView} agents={state.agents} focused={true} zoomLevel={state.zoomLevel} />
+          <CostView costView={state.costView} focused={true} zoomLevel={state.zoomLevel} />
         )}
         {view === "middleware" && (
           <MiddlewareView middlewareView={state.middlewareView} focused={true} zoomLevel={state.zoomLevel} />

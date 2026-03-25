@@ -77,7 +77,9 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
   // Health endpoints
   const healthPort = manifest.deploy?.port ?? 9100;
   const healthUrl = `http://localhost:${String(healthPort)}/health`;
-  const adminUrl = "http://localhost:3100/admin/api";
+  // Try the default port and common fallback ports
+  const adminPort = await detectAdminPort();
+  const adminUrl = `http://localhost:${String(adminPort)}/admin/api`;
 
   const nexusUrl = manifest.nexus?.url ?? process.env.NEXUS_URL ?? "http://127.0.0.1:2026";
   const nexusHealthUrl = `${nexusUrl}/health`;
@@ -223,6 +225,21 @@ async function fetchLiveChannels(adminUrl: string): Promise<readonly LiveChannel
   } catch {
     return undefined;
   }
+}
+
+/** Scan ports 3100-3109 to find the running admin API. */
+async function detectAdminPort(): Promise<number> {
+  for (let port = 3100; port < 3110; port++) {
+    try {
+      const res = await fetch(`http://localhost:${String(port)}/admin/api/health`, {
+        signal: AbortSignal.timeout(500),
+      });
+      if (res.status === 200) return port;
+    } catch {
+      // Port not responding, try next
+    }
+  }
+  return 3100; // Default fallback
 }
 
 async function probeEndpoint(url: string): Promise<boolean> {

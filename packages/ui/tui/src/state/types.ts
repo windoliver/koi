@@ -8,6 +8,7 @@
 import type {
   AgentProcfs,
   CheckpointEntry,
+  CostSnapshot,
   CronSchedule,
   DashboardAgentSummary,
   DashboardChannelSummary,
@@ -646,6 +647,8 @@ export type TuiAction =
   | { readonly kind: "set_taskboard_snapshot"; readonly snapshot: TaskBoardSnapshot }
   | { readonly kind: "set_harness_status"; readonly status: HarnessStatus }
   | { readonly kind: "set_harness_checkpoints"; readonly checkpoints: readonly CheckpointEntry[] }
+  | { readonly kind: "set_cost_snapshot"; readonly snapshot: CostSnapshot }
+  | { readonly kind: "set_cost_loading"; readonly loading: boolean }
   | { readonly kind: "set_middleware_chain"; readonly chain: MiddlewareChain }
   | { readonly kind: "set_middleware_loading"; readonly loading: boolean }
   | { readonly kind: "set_process_tree"; readonly snapshot: ProcessTreeSnapshot }

@@ -113,10 +113,15 @@ export type { AdminRoutes, HttpMethod, RouteDefinition } from "./routes.js";
 export { ADMIN_ROUTES, interpolatePath } from "./routes.js";
 // Runtime views
 export type {
+  AgentCostEntry,
   AgentProcfs,
+  BudgetSummary,
+  CascadeTierSummary,
   ChannelIOSpanResponse,
   CheckpointEntry,
+  CircuitBreakerSummary,
   ContributionGraphResponse,
+  CostSnapshot,
   CronSchedule,
   DebugInventoryItemResponse,
   DebugInventoryResponse,

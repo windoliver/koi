@@ -12,10 +12,11 @@ import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineInput, InboundMessage } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
-import type { DashboardEvent } from "@koi/dashboard-types";
+import type { AgentCostEntry, CostSnapshot, DashboardEvent } from "@koi/dashboard-types";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
+import { createDefaultCostCalculator } from "@koi/middleware-pay";
 import { resolveRuntimePreset } from "@koi/runtime-presets";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import { createAgentDispatcher } from "../../agent-dispatcher.js";
@@ -940,6 +941,12 @@ export async function runUp(flags: UpFlags): Promise<void> {
     temporalContribution,
   ];
 
+  // Cost tracking — reads from engine metrics on each turn
+  const SESSION_BUDGET = 2.0;
+  const costCalculator = createDefaultCostCalculator();
+  // let justified: accumulated real cost from engine metrics, updated on each turn completion
+  let totalCostUsd = 0;
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -1063,6 +1070,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   let adminBridge: AdminPanelBridgeResult | undefined;
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
   let adminReady = false;
+  // let justified: mutable port, may be incremented if DEFAULT_ADMIN_PORT is busy
+  let boundPort = DEFAULT_ADMIN_PORT;
 
   try {
     const channelNames = channels.map((ch) => ch.name);
@@ -1106,6 +1115,31 @@ export async function runUp(flags: UpFlags): Promise<void> {
       model: modelName,
       channels: channelNames,
       skills: skillNames,
+      cost: {
+        async getSnapshot(): Promise<CostSnapshot> {
+          const totalCost = totalCostUsd;
+          const agents: readonly AgentCostEntry[] = [
+            {
+              agentId: "" as import("@koi/core").AgentId,
+              name: manifest.name,
+              model: modelName,
+              turns: 0,
+              costUsd: totalCost,
+              budgetUsed: totalCost,
+              budgetLimit: SESSION_BUDGET,
+            },
+          ];
+          return {
+            sessionBudget: { used: totalCost, limit: SESSION_BUDGET },
+            dailyBudget: { used: totalCost, limit: 10.0 },
+            monthlyBudget: { used: totalCost, limit: 50.0 },
+            agents,
+            cascade: { tiers: [], savingsUsd: 0, baselineModel: "sonnet" },
+            circuitBreaker: { state: "CLOSED", failures: 0, threshold: 5, windowMs: 60_000 },
+            timestamp: Date.now(),
+          };
+        },
+      },
       fileSystem: await (async () => {
         const vfs = await createVfsBackend(workspaceRoot, nexus.baseUrl, manifest.name);
         activeStorage.vfs = vfs.backend;
@@ -1194,22 +1228,45 @@ export async function runUp(flags: UpFlags): Promise<void> {
       { cors: true, ...(assetsDir !== undefined ? { assetsDir } : {}) },
     );
 
-    const server = await timer.time("admin", async () =>
-      Bun.serve({
-        port: DEFAULT_ADMIN_PORT,
-        // SSE streams for AG-UI chat can take 30-120s for LLM responses.
-        // Default idleTimeout of 10s kills them prematurely.
-        idleTimeout: 255,
-        async fetch(req: Request): Promise<Response> {
-          const adminResponse = await dashboardResult.handler(req);
-          if (adminResponse !== null) return adminResponse;
-          return new Response("Not Found", { status: 404 });
-        },
-      }),
-    );
+    // Try up to 10 ports starting from DEFAULT_ADMIN_PORT to handle stale processes
+    let server: ReturnType<typeof Bun.serve> | undefined;
+    boundPort = DEFAULT_ADMIN_PORT;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        server = await timer.time("admin", async () =>
+          Bun.serve({
+            port: boundPort,
+            idleTimeout: 255,
+            async fetch(req: Request): Promise<Response> {
+              const adminResponse = await dashboardResult.handler(req);
+              if (adminResponse !== null) return adminResponse;
+              return new Response("Not Found", { status: 404 });
+            },
+          }),
+        );
+        break;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "";
+        if (
+          msg.includes("EADDRINUSE") ||
+          msg.includes("address already in use") ||
+          msg.includes("port")
+        ) {
+          boundPort = DEFAULT_ADMIN_PORT + attempt + 1;
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (server === undefined) {
+      throw new Error(`Ports ${String(DEFAULT_ADMIN_PORT)}-${String(boundPort)} all in use`);
+    }
+    if (boundPort !== DEFAULT_ADMIN_PORT) {
+      output.info(`Port ${String(DEFAULT_ADMIN_PORT)} busy → using ${String(boundPort)}`);
+    }
 
     stopAdmin = () => {
-      server.stop(true);
+      server!.stop(true);
       dashboardResult.dispose();
     };
     adminReady = true;
@@ -1258,6 +1315,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     channels,
     nexusBaseUrl: nexus.baseUrl,
     adminReady,
+    adminPort: boundPort,
     temporalAdmin,
     temporalUrl,
     provisionedAgents,
@@ -1290,7 +1348,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     try {
       const { createTuiApp } = await import("@koi/tui");
       tuiApp = createTuiApp({
-        adminUrl: `http://localhost:${String(DEFAULT_ADMIN_PORT)}/admin/api`,
+        adminUrl: `http://localhost:${String(boundPort)}/admin/api`,
         ...(flags.resume !== undefined ? { initialSessionId: currentSessionId } : {}),
       });
       await tuiApp.start();
@@ -1396,6 +1454,17 @@ export async function runUp(flags: UpFlags): Promise<void> {
               turns: event.output.metrics.turns,
               totalTokens: event.output.metrics.totalTokens,
             });
+            // Accumulate real cost (costUsd is per-run, not cumulative)
+            const m = event.output.metrics as unknown as Record<string, unknown>;
+            if (typeof m.costUsd === "number") {
+              totalCostUsd += m.costUsd;
+            } else {
+              totalCostUsd += costCalculator.calculate(
+                modelName,
+                event.output.metrics.inputTokens ?? 0,
+                event.output.metrics.outputTokens ?? 0,
+              );
+            }
           }
         }
       }
@@ -1492,6 +1561,17 @@ export async function runUp(flags: UpFlags): Promise<void> {
               turns: event.output.metrics.turns,
               totalTokens: event.output.metrics.totalTokens,
             });
+            // Accumulate real cost (costUsd is per-run, not cumulative)
+            const m = event.output.metrics as unknown as Record<string, unknown>;
+            if (typeof m.costUsd === "number") {
+              totalCostUsd += m.costUsd;
+            } else {
+              totalCostUsd += costCalculator.calculate(
+                modelName,
+                event.output.metrics.inputTokens ?? 0,
+                event.output.metrics.outputTokens ?? 0,
+              );
+            }
           }
         }
         // Route response back to the originating channel (e.g. Telegram, Slack)

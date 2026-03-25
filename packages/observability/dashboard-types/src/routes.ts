@@ -54,6 +54,9 @@ export const ADMIN_ROUTES = {
   middlewareChain: { method: "GET", path: "/view/middleware/:id" },
   gatewayTopology: { method: "GET", path: "/view/gateway/topology" },
 
+  // ─── Cost Views ────────────────────────────────────────────────
+  costSnapshot: { method: "GET", path: "/view/cost/snapshot" },
+
   // ─── Forge Views ───────────────────────────────────────────────
   forgeBricks: { method: "GET", path: "/view/forge/bricks" },
   forgeStats: { method: "GET", path: "/view/forge/stats" },
