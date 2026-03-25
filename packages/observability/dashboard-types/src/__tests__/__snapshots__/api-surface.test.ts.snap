@@ -821,6 +821,45 @@ interface PackageContributionResponse {
     readonly channelNames?: readonly string[] | undefined;
     readonly notes?: readonly string[] | undefined;
 }
+interface BudgetSummary {
+    readonly used: number;
+    readonly limit: number;
+}
+interface AgentCostEntry {
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly model: string;
+    readonly turns: number;
+    readonly costUsd: number;
+    readonly budgetUsed: number;
+    readonly budgetLimit: number;
+}
+interface CascadeTierSummary {
+    readonly model: string;
+    readonly calls: number;
+    readonly costUsd: number;
+    readonly percentOfCalls: number;
+    readonly label: string;
+}
+interface CircuitBreakerSummary {
+    readonly state: "CLOSED" | "HALF_OPEN" | "OPEN";
+    readonly failures: number;
+    readonly threshold: number;
+    readonly windowMs: number;
+}
+interface CostSnapshot {
+    readonly sessionBudget: BudgetSummary;
+    readonly dailyBudget: BudgetSummary;
+    readonly monthlyBudget: BudgetSummary;
+    readonly agents: readonly AgentCostEntry[];
+    readonly cascade: {
+        readonly tiers: readonly CascadeTierSummary[];
+        readonly savingsUsd: number;
+        readonly baselineModel: string;
+    };
+    readonly circuitBreaker: CircuitBreakerSummary;
+    readonly timestamp: number;
+}
 interface RuntimeViewDataSource {
     readonly getProcessTree: () => ProcessTreeSnapshot | Promise<ProcessTreeSnapshot>;
     readonly getAgentProcfs: (agentId: AgentId) => AgentProcfs | undefined | Promise<AgentProcfs | undefined>;
@@ -848,6 +887,9 @@ interface RuntimeViewDataSource {
         readonly listBricks: () => Promise<readonly ForgeBrickView[]>;
         readonly getStats: () => ForgeStats | Promise<ForgeStats>;
         readonly listRecentEvents: () => Promise<readonly ForgeDashboardEvent[]>;
+    };
+    readonly cost?: {
+        readonly getSnapshot: () => CostSnapshot | Promise<CostSnapshot>;
     };
     readonly debug?: {
         readonly getInventory: (agentId: AgentId) => DebugInventoryResponse | Promise<DebugInventoryResponse>;
@@ -1201,6 +1243,10 @@ declare const ADMIN_ROUTES: {
         readonly method: "GET";
         readonly path: "/view/gateway/topology";
     };
+    readonly costSnapshot: {
+        readonly method: "GET";
+        readonly path: "/view/cost/snapshot";
+    };
     readonly forgeBricks: {
         readonly method: "GET";
         readonly path: "/view/forge/bricks";
@@ -1417,6 +1463,6 @@ type AdminRoutes = typeof ADMIN_ROUTES;
  */
 declare function interpolatePath(path: string, params: Readonly<Record<string, string>>): string;
 
-export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type ChannelDashboardEvent, type ChannelIOSpanResponse, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CommandDispatcher, type ContributionGraphResponse, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DebugInventoryItemResponse, type DebugInventoryResponse, type DebugSpanResponse, type DebugTurnTraceResponse, type DelegationSummary, type DemoPackSummary, type DetailedStatusResponse, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeRefreshSpanResponse, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type GovernancePendingItem, type HandoffSummary, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type LogDashboardEvent, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type PackageContributionResponse, type PortStatus, type ProcessTreeNode, type ProcessTreeSnapshot, type PtyOutputDashboardEvent, type ResolverSpanResponse, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type ScratchpadEntryDetail, type ScratchpadEntrySummary, type SkillDashboardEvent, type StackContributionResponse, type SubsystemStatus, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isLogEvent, isMonitorEvent, isNexusEvent, isPtyOutputEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
+export { ADMIN_ROUTES, type AdminPanelConfig, type AdminPanelDataSources, type AdminRoutes, type AgentCostEntry, type AgentDashboardEvent, type AgentMessage, type AgentProcfs, type AguiEvent, type AguiEventType, type ApiError, type ApiResult, type BudgetSummary, type CascadeTierSummary, type ChannelDashboardEvent, type ChannelIOSpanResponse, type ChatHistoryMessage, type ChatRunInput, type CheckpointEntry, type CircuitBreakerSummary, type CommandDispatcher, type ContributionGraphResponse, type CostSnapshot, type CronSchedule, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSchemaColumn, type DashboardSchemaTable, type DashboardSkillSummary, type DashboardSystemMetrics, type DashboardVerificationStage, type DataSourceDashboardEvent, type DataSourceDetail, type DataSourceFitnessSummary, type DataSourceSummary, type DebugInventoryItemResponse, type DebugInventoryResponse, type DebugSpanResponse, type DebugTurnTraceResponse, type DelegationSummary, type DemoPackSummary, type DetailedStatusResponse, type DispatchAgentRequest, type DispatchAgentResponse, type ForgeBrickView, type ForgeDashboardEvent, type ForgeRefreshSpanResponse, type ForgeStats, type GatewayConnection, type GatewayDashboardEvent, type GatewayTopology, type GovernancePendingItem, type HandoffSummary, type HarnessDashboardEvent, type HarnessStatus, type HttpMethod, type LogDashboardEvent, type MiddlewareChain, type MiddlewareEntry, type MonitorDashboardEvent, type NexusDashboardEvent, type PackageContributionResponse, type PortStatus, type ProcessTreeNode, type ProcessTreeSnapshot, type PtyOutputDashboardEvent, type ResolverSpanResponse, type RouteDefinition, type RuntimeViewDataSource, SAVED_VIEWS, type SSEEvent, SSEParser, type SSEStreamOptions, type SavedViewDefinition, type SchedulerDashboardEvent, type SchedulerDeadLetterEntry, type SchedulerStats, type SchedulerTaskSummary, type ScratchpadEntryDetail, type ScratchpadEntrySummary, type SkillDashboardEvent, type StackContributionResponse, type SubsystemStatus, type SystemDashboardEvent, type TaskBoardDashboardEvent, type TaskBoardEdge, type TaskBoardNode, type TaskBoardSnapshot, type TemporalDashboardEvent, type TemporalHealth, type TimelineEvent, type WorkflowDetail, type WorkflowSummary, consumeSSEStream, interpolatePath, isAgentEvent, isChannelEvent, isDashboardEvent, isDataSourceEvent, isForgeEvent, isGatewayEvent, isHarnessEvent, isLogEvent, isMonitorEvent, isNexusEvent, isPtyOutputEvent, isSchedulerEvent, isSkillEvent, isSystemEvent, isTaskBoardEvent, isTemporalEvent, parseAguiEvent };
 "
 `;

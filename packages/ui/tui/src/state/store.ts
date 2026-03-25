@@ -540,6 +540,18 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_harness_checkpoints":
       return { ...state, harnessView: { ...state.harnessView, checkpoints: action.checkpoints } };
 
+    case "set_cost_snapshot":
+      return {
+        ...state,
+        costView: { ...state.costView, snapshot: action.snapshot, loading: false },
+      };
+
+    case "set_cost_loading":
+      return {
+        ...state,
+        costView: { ...state.costView, loading: action.loading },
+      };
+
     case "set_middleware_chain":
       return {
         ...state,

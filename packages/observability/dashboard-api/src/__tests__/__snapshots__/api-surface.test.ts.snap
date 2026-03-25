@@ -364,6 +364,8 @@ interface BridgeOptions {
     } | undefined;
     /** Optional forge view data source for self-improvement observability. */
     readonly forge?: RuntimeViewDataSource["forge"] | undefined;
+    /** Optional cost data source for the cost view (budget, cascade, circuit breaker). */
+    readonly cost?: RuntimeViewDataSource["cost"] | undefined;
     /** Optional debug instrumentation data source for the debug view (includes optional contributions). */
     readonly debug?: {
         readonly getInventory: NonNullable<RuntimeViewDataSource["debug"]>["getInventory"];

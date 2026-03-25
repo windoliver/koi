@@ -160,6 +160,22 @@ export async function handleHarnessCheckpoints(
 }
 
 // ---------------------------------------------------------------------------
+// Cost views
+// ---------------------------------------------------------------------------
+
+export async function handleCostSnapshot(
+  _req: Request,
+  _params: RouteParams,
+  runtimeViews: RuntimeViewDataSource,
+): Promise<Response> {
+  if (runtimeViews.cost === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Cost tracking not configured", 501);
+  }
+  const snapshot = await runtimeViews.cost.getSnapshot();
+  return jsonResponse(snapshot);
+}
+
+// ---------------------------------------------------------------------------
 // Orchestration commands
 // ---------------------------------------------------------------------------
 

@@ -13,10 +13,11 @@ import { createCliChannel } from "@koi/channel-cli";
 import type { ChannelAdapter, EngineInput, InboundMessage } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
-import type { DashboardEvent } from "@koi/dashboard-types";
+import type { AgentCostEntry, CostSnapshot, DashboardEvent } from "@koi/dashboard-types";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeConfiguredKoi } from "@koi/forge";
 import { loadManifest } from "@koi/manifest";
+import { createDefaultCostCalculator } from "@koi/middleware-pay";
 import { resolveRuntimePreset } from "@koi/runtime-presets";
 import { createAgentDispatcher } from "../../agent-dispatcher.js";
 import type { AgentChatBridge } from "../../agui-chat-bridge.js";
@@ -214,6 +215,14 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
   });
 
+  // ------------------------------------------------------------------
+  // 6b. Cost tracking — reads from engine metrics on each turn
+  // ------------------------------------------------------------------
+  const SESSION_BUDGET = 2.0;
+  const costCalculator = createDefaultCostCalculator();
+  // let justified: accumulated real cost from engine metrics, updated on each turn completion
+  let totalCostUsd = 0;
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -332,6 +341,31 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     onTerminateAgent: async (id) => {
       await dispatcher.terminateAgent(id);
     },
+    cost: {
+      async getSnapshot(): Promise<CostSnapshot> {
+        const totalCost = totalCostUsd;
+        const agents: readonly AgentCostEntry[] = [
+          {
+            agentId: "" as import("@koi/core").AgentId,
+            name: manifest.name,
+            model: modelName,
+            turns: 0,
+            costUsd: totalCost,
+            budgetUsed: totalCost,
+            budgetLimit: SESSION_BUDGET,
+          },
+        ];
+        return {
+          sessionBudget: { used: totalCost, limit: SESSION_BUDGET },
+          dailyBudget: { used: totalCost, limit: 10.0 },
+          monthlyBudget: { used: totalCost, limit: 50.0 },
+          agents,
+          cascade: { tiers: [], savingsUsd: 0, baselineModel: "sonnet" },
+          circuitBreaker: { state: "CLOSED", failures: 0, threshold: 5, windowMs: 60_000 },
+          timestamp: Date.now(),
+        };
+      },
+    },
     ...(orch.hasAny
       ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
       : {}),
@@ -376,15 +410,42 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     { cors: true, ...(assetsDir !== undefined ? { assetsDir } : {}) },
   );
 
-  const server = Bun.serve({
-    port: adminPort,
-    idleTimeout: 255,
-    async fetch(req: Request): Promise<Response> {
-      const adminResponse = await dashboardResult.handler(req);
-      if (adminResponse !== null) return adminResponse;
-      return new Response("Not Found", { status: 404 });
-    },
-  });
+  // Try up to 10 ports starting from adminPort to handle stale processes
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  let actualPort = adminPort;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      server = Bun.serve({
+        port: actualPort,
+        idleTimeout: 255,
+        async fetch(req: Request): Promise<Response> {
+          const adminResponse = await dashboardResult.handler(req);
+          if (adminResponse !== null) return adminResponse;
+          return new Response("Not Found", { status: 404 });
+        },
+      });
+      break;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "";
+      if (
+        msg.includes("EADDRINUSE") ||
+        msg.includes("address already in use") ||
+        msg.includes("port")
+      ) {
+        actualPort = adminPort + attempt + 1;
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (server === undefined) {
+    throw new Error(
+      `Failed to start admin server: ports ${String(adminPort)}-${String(actualPort)} all in use`,
+    );
+  }
+  if (actualPort !== adminPort) {
+    progress("port", `Port ${String(adminPort)} busy, using ${String(actualPort)} instead`);
+  }
 
   // ------------------------------------------------------------------
   // 11. Provision demo agents
@@ -422,6 +483,18 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
             turns: event.output.metrics.turns,
             totalTokens: event.output.metrics.totalTokens,
           });
+          // Capture real cost from engine metrics (populated by pi adapter from provider usage)
+          const metrics = event.output.metrics as unknown as Record<string, unknown>;
+          if (typeof metrics.costUsd === "number") {
+            totalCostUsd = metrics.costUsd;
+          } else {
+            // Fallback: estimate from token counts
+            totalCostUsd = costCalculator.calculate(
+              modelName,
+              event.output.metrics.inputTokens ?? 0,
+              event.output.metrics.outputTokens ?? 0,
+            );
+          }
         }
       }
       await persistChatExchangeSafely(
@@ -438,7 +511,7 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
 
   progress("ready", "Runtime is ready");
 
-  const adminUrl = `http://localhost:${String(adminPort)}/admin/api`;
+  const adminUrl = `http://localhost:${String(actualPort)}/admin/api`;
 
   // ------------------------------------------------------------------
   // Dispose — tear down everything in reverse order

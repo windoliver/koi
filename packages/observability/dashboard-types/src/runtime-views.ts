@@ -356,6 +356,54 @@ export interface PackageContributionResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Cost snapshot — budget, cascade, circuit breaker summary
+// ---------------------------------------------------------------------------
+
+export interface BudgetSummary {
+  readonly used: number;
+  readonly limit: number;
+}
+
+export interface AgentCostEntry {
+  readonly agentId: AgentId;
+  readonly name: string;
+  readonly model: string;
+  readonly turns: number;
+  readonly costUsd: number;
+  readonly budgetUsed: number;
+  readonly budgetLimit: number;
+}
+
+export interface CascadeTierSummary {
+  readonly model: string;
+  readonly calls: number;
+  readonly costUsd: number;
+  readonly percentOfCalls: number;
+  readonly label: string;
+}
+
+export interface CircuitBreakerSummary {
+  readonly state: "CLOSED" | "HALF_OPEN" | "OPEN";
+  readonly failures: number;
+  readonly threshold: number;
+  readonly windowMs: number;
+}
+
+export interface CostSnapshot {
+  readonly sessionBudget: BudgetSummary;
+  readonly dailyBudget: BudgetSummary;
+  readonly monthlyBudget: BudgetSummary;
+  readonly agents: readonly AgentCostEntry[];
+  readonly cascade: {
+    readonly tiers: readonly CascadeTierSummary[];
+    readonly savingsUsd: number;
+    readonly baselineModel: string;
+  };
+  readonly circuitBreaker: CircuitBreakerSummary;
+  readonly timestamp: number;
+}
+
+// ---------------------------------------------------------------------------
 // Data source interface
 // ---------------------------------------------------------------------------
 
@@ -398,6 +446,10 @@ export interface RuntimeViewDataSource {
     readonly listBricks: () => Promise<readonly ForgeBrickView[]>;
     readonly getStats: () => ForgeStats | Promise<ForgeStats>;
     readonly listRecentEvents: () => Promise<readonly ForgeDashboardEvent[]>;
+  };
+
+  readonly cost?: {
+    readonly getSnapshot: () => CostSnapshot | Promise<CostSnapshot>;
   };
 
   readonly debug?:

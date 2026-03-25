@@ -52,6 +52,7 @@ import type { DashboardCapabilities } from "./routes/health.js";
 import { handleHealth } from "./routes/health.js";
 import { handleMetrics } from "./routes/metrics.js";
 import {
+  handleCostSnapshot,
   handleDeleteSchedule,
   handleHarnessCheckpoints,
   handleHarnessStatus,
@@ -426,6 +427,11 @@ export function createDashboardHandler(
         method: "GET",
         pattern: "/view/harness/checkpoints",
         handler: (req, params) => handleHarnessCheckpoints(req, params, runtimeViews),
+      },
+      {
+        method: "GET",
+        pattern: "/view/cost/snapshot",
+        handler: (req, params) => handleCostSnapshot(req, params, runtimeViews),
       },
     );
   }

@@ -10,6 +10,7 @@ import type {
   AgentProcfs,
   ApiResult,
   CheckpointEntry,
+  CostSnapshot,
   CronSchedule,
   DashboardAgentDetail,
   DashboardAgentSummary,
@@ -124,6 +125,8 @@ export interface AdminClient {
   /** Trigger a server-side rescan for new data sources. */
   readonly rescanDataSources: () => Promise<ClientResult<readonly DataSourceSummary[]>>;
   // ─── Runtime views ───────────────────────────────────────────────
+  /** Fetch cost snapshot (budget, cascade, circuit breaker). */
+  readonly getCostSnapshot: () => Promise<ClientResult<CostSnapshot>>;
   /** Fetch middleware chain for an agent. */
   readonly getMiddlewareChain: (agentId: string) => Promise<ClientResult<MiddlewareChain>>;
   /** Fetch gateway topology. */
@@ -398,6 +401,8 @@ export function createAdminClient(config: AdminClientConfig): AdminClient {
       request<readonly DataSourceSummary[]>("POST", ADMIN_ROUTES.rescanDataSources.path),
 
     // ─── Runtime views ─────────────────────────────────────────────
+    getCostSnapshot: () => request<CostSnapshot>("GET", ADMIN_ROUTES.costSnapshot.path),
+
     getMiddlewareChain: (agentId) =>
       request<MiddlewareChain>("GET", ADMIN_ROUTES.middlewareChain.path, { id: agentId }),
 

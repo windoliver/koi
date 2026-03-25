@@ -1063,6 +1063,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   let adminBridge: AdminPanelBridgeResult | undefined;
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
   let adminReady = false;
+  // let justified: mutable port, may be incremented if DEFAULT_ADMIN_PORT is busy
+  let boundPort = DEFAULT_ADMIN_PORT;
 
   try {
     const channelNames = channels.map((ch) => ch.name);
@@ -1194,22 +1196,45 @@ export async function runUp(flags: UpFlags): Promise<void> {
       { cors: true, ...(assetsDir !== undefined ? { assetsDir } : {}) },
     );
 
-    const server = await timer.time("admin", async () =>
-      Bun.serve({
-        port: DEFAULT_ADMIN_PORT,
-        // SSE streams for AG-UI chat can take 30-120s for LLM responses.
-        // Default idleTimeout of 10s kills them prematurely.
-        idleTimeout: 255,
-        async fetch(req: Request): Promise<Response> {
-          const adminResponse = await dashboardResult.handler(req);
-          if (adminResponse !== null) return adminResponse;
-          return new Response("Not Found", { status: 404 });
-        },
-      }),
-    );
+    // Try up to 10 ports starting from DEFAULT_ADMIN_PORT to handle stale processes
+    let server: ReturnType<typeof Bun.serve> | undefined;
+    boundPort = DEFAULT_ADMIN_PORT;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        server = await timer.time("admin", async () =>
+          Bun.serve({
+            port: boundPort,
+            idleTimeout: 255,
+            async fetch(req: Request): Promise<Response> {
+              const adminResponse = await dashboardResult.handler(req);
+              if (adminResponse !== null) return adminResponse;
+              return new Response("Not Found", { status: 404 });
+            },
+          }),
+        );
+        break;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "";
+        if (
+          msg.includes("EADDRINUSE") ||
+          msg.includes("address already in use") ||
+          msg.includes("port")
+        ) {
+          boundPort = DEFAULT_ADMIN_PORT + attempt + 1;
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (server === undefined) {
+      throw new Error(`Ports ${String(DEFAULT_ADMIN_PORT)}-${String(boundPort)} all in use`);
+    }
+    if (boundPort !== DEFAULT_ADMIN_PORT) {
+      output.info(`Port ${String(DEFAULT_ADMIN_PORT)} busy → using ${String(boundPort)}`);
+    }
 
     stopAdmin = () => {
-      server.stop(true);
+      server!.stop(true);
       dashboardResult.dispose();
     };
     adminReady = true;
@@ -1290,7 +1315,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     try {
       const { createTuiApp } = await import("@koi/tui");
       tuiApp = createTuiApp({
-        adminUrl: `http://localhost:${String(DEFAULT_ADMIN_PORT)}/admin/api`,
+        adminUrl: `http://localhost:${String(boundPort)}/admin/api`,
         ...(flags.resume !== undefined ? { initialSessionId: currentSessionId } : {}),
       });
       await tuiApp.start();

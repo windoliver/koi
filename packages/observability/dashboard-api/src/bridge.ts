@@ -22,8 +22,10 @@ import type {
 } from "@koi/core";
 import { agentId } from "@koi/core";
 import type {
+  AgentCostEntry,
   AgentProcfs,
   CommandDispatcher,
+  CostSnapshot,
   DashboardAgentDetail,
   DashboardAgentSummary,
   DashboardChannelSummary,
@@ -71,6 +73,8 @@ export interface BridgeOptions {
     | undefined;
   /** Optional forge view data source for self-improvement observability. */
   readonly forge?: RuntimeViewDataSource["forge"] | undefined;
+  /** Optional cost data source for the cost view (budget, cascade, circuit breaker). */
+  readonly cost?: RuntimeViewDataSource["cost"] | undefined;
   /** Optional debug instrumentation data source for the debug view (includes optional contributions). */
   readonly debug?:
     | {
@@ -572,6 +576,55 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       ? { harness: options.orchestration.harness }
       : {}),
     ...(options.forge !== undefined ? { forge: options.forge } : {}),
+    // Cost view: use external source if provided, otherwise auto-compute from bridge state
+    cost: options.cost ?? {
+      getSnapshot(): CostSnapshot {
+        const modelName = options.model ?? "unknown";
+        // Rough per-token rates (USD) — same as createDefaultCostCalculator defaults
+        const INPUT_RATE = 0.000003;
+        const OUTPUT_RATE = 0.000015;
+        // Estimate 80% input, 20% output for token split
+        const inputTokens = Math.round(currentTokenCount * 0.8);
+        const outputTokens = currentTokenCount - inputTokens;
+        const primaryCost = inputTokens * INPUT_RATE + outputTokens * OUTPUT_RATE;
+        const DEFAULT_BUDGET = 2.0;
+
+        const agents: readonly AgentCostEntry[] = [
+          {
+            agentId: primaryAgentId,
+            name: options.agentName,
+            model: modelName,
+            turns: currentTurns,
+            costUsd: primaryCost,
+            budgetUsed: primaryCost,
+            budgetLimit: DEFAULT_BUDGET,
+          },
+          ...[...dispatchedAgents.values()].map(
+            (d): AgentCostEntry => ({
+              agentId: d.entry.agentId,
+              name: d.entry.name,
+              model: d.entry.model ?? modelName,
+              turns: 0,
+              costUsd: 0,
+              budgetUsed: 0,
+              budgetLimit: DEFAULT_BUDGET,
+            }),
+          ),
+        ];
+
+        const totalCost = agents.reduce((sum, a) => sum + a.costUsd, 0);
+
+        return {
+          sessionBudget: { used: totalCost, limit: 2.0 },
+          dailyBudget: { used: totalCost, limit: 10.0 },
+          monthlyBudget: { used: totalCost, limit: 50.0 },
+          agents,
+          cascade: { tiers: [], savingsUsd: 0, baselineModel: "sonnet" },
+          circuitBreaker: { state: "CLOSED", failures: 0, threshold: 5, windowMs: 60_000 },
+          timestamp: Date.now(),
+        };
+      },
+    },
     ...(options.debug !== undefined
       ? (() => {
           const dbg = options.debug;

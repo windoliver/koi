@@ -200,6 +200,18 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
         })
         .catch(() => {});
       break;
+    case "cost":
+      store.dispatch({ kind: "set_cost_loading", loading: true });
+      client
+        .getCostSnapshot()
+        .then((r) => {
+          if (r.ok) store.dispatch({ kind: "set_cost_snapshot", snapshot: r.value });
+          else store.dispatch({ kind: "set_cost_loading", loading: false });
+        })
+        .catch(() => {
+          store.dispatch({ kind: "set_cost_loading", loading: false });
+        });
+      break;
     case "middleware": {
       const sess = store.getState().activeSession;
       if (sess !== null) {

@@ -11,7 +11,7 @@ export const LOCAL_PRESET: RuntimePreset = {
   nexusMode: "embed-lite",
   services: {
     adminApi: true,
-    tui: false,
+    tui: true,
     nexus: true,
     temporal: "disabled",
     gateway: false,
