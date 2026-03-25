@@ -1048,6 +1048,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       ...(apiKey !== undefined ? { apiKey } : {}),
     });
   }
+  if (demoPack !== undefined) {
+    output.spinner.start("Seeding demo data");
+  }
   const seedResult = await seedDemoPackIfNeeded(
     demoPack,
     workspaceRoot,
@@ -1055,6 +1058,12 @@ export async function runUp(flags: UpFlags): Promise<void> {
     nexusClient,
     flags.verbose,
   );
+  if (demoPack !== undefined) {
+    output.spinner.stop(undefined);
+    if (seedResult.prompts.length > 0) {
+      output.success("Demo data seeded");
+    }
+  }
 
   // 9. ADMIN — kill stale processes on required ports before binding
   const DEFAULT_ADMIN_PORT = 3100;
