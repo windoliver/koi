@@ -150,34 +150,48 @@ async function activateGovernance(
   >();
   let nextId = 0;
 
-  // Bridge: permissions middleware "ask" tier → pending queue → admin API.
-  // When a tool matches an "ask" pattern (e.g. group:runtime), the permissions
-  // middleware calls approvalHandler.requestApproval(), which blocks until the
-  // operator approves/denies via the TUI governance view.
-  const approvalHandler: import("@koi/middleware-permissions").ApprovalHandler = {
-    requestApproval: (toolId, input, _reason) => {
-      const id = `gov-${String(++nextId)}-${Date.now()}`;
-      return new Promise((resolve) => {
-        pendingQueue.set(id, {
-          item: {
-            id,
-            agentId: "primary",
-            requestKind: toolId,
-            payload: input as Readonly<Record<string, unknown>>,
-            timestamp: Date.now(),
-          },
-          resolve: (decision) => {
-            pendingQueue.delete(id);
-            resolve(decision === "approved");
-          },
-        });
+  // Shared helper: push a tool call into the pending queue and block until operator decides.
+  function enqueue(
+    toolId: string,
+    agentId: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): Promise<boolean> {
+    const id = `gov-${String(++nextId)}-${Date.now()}`;
+    return new Promise((resolve) => {
+      pendingQueue.set(id, {
+        item: { id, agentId, requestKind: toolId, payload, timestamp: Date.now() },
+        resolve: (decision) => {
+          pendingQueue.delete(id);
+          resolve(decision === "approved");
+        },
       });
-    },
+    });
+  }
+
+  // Bridge: permissions middleware "ask" tier → pending queue → admin API.
+  const approvalHandler: import("@koi/middleware-permissions").ApprovalHandler = {
+    requestApproval: (toolId, input, _reason) =>
+      enqueue(toolId, "primary", input as Readonly<Record<string, unknown>>),
   };
 
-  // Full governance stack with preset-resolved config.
-  // "standard" preset: fs_read/web/browser/lsp allowed, fs_delete denied,
-  // runtime tools ask for approval — plus PII, redaction, sanitize, scope, agent-monitor.
+  // Bridge: exec-approvals "ask" tier → pending queue → admin API.
+  const onAsk: import("@koi/exec-approvals").ExecApprovalsConfig["onAsk"] = async (req) => {
+    const approved = await enqueue(
+      req.toolId,
+      req.agentId ?? "primary",
+      req.input as Readonly<Record<string, unknown>>,
+    );
+    return approved
+      ? { kind: "allow_once" as const }
+      : { kind: "deny_once" as const, reason: "Denied by operator" };
+  };
+
+  // Full governance stack with Nexus-backed audit + all standard middleware.
+  // "standard" preset resolves: permissions, pii, redaction, sanitize, agent-monitor, scope.
+  // We add: exec-approvals (with onAsk bridge), audit (Nexus-backed), governance-backend.
+  const nexusUrl = config.nexusBaseUrl;
+  const nexusApiKey = config.nexusApiKey;
+
   const bundle = createGovernanceStack({
     preset: "standard",
     permissions: {
@@ -190,6 +204,26 @@ async function activateGovernance(
       }),
       approvalHandler,
     },
+    execApprovals: {
+      rules: {
+        allow: ["group:fs_read", "group:web", "group:browser"],
+        deny: ["group:fs_delete"],
+        ask: ["group:runtime"],
+      },
+      onAsk,
+    },
+    governanceBackend: {
+      backend: (await import("@koi/governance-memory")).createGovernanceMemoryBackend({}),
+    },
+    ...(nexusUrl !== undefined && nexusApiKey !== undefined
+      ? {
+          auditBackend: {
+            kind: "nexus" as const,
+            baseUrl: nexusUrl,
+            apiKey: nexusApiKey,
+          },
+        }
+      : {}),
   });
   middleware.push(...bundle.middlewares);
   providers.push(...bundle.providers);
