@@ -517,6 +517,16 @@ export type TuiAction =
       readonly events: readonly ForgeDashboardEvent[];
     }
   | {
+      readonly kind: "hydrate_forge";
+      readonly bricks: readonly {
+        readonly brickId: string;
+        readonly name: string;
+        readonly status: string;
+        readonly fitness: number;
+      }[];
+      readonly events: readonly ForgeDashboardEvent[];
+    }
+  | {
       readonly kind: "apply_monitor_event";
       readonly event: MonitorDashboardEvent;
     }

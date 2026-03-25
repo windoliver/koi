@@ -335,6 +335,18 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "apply_forge_batch":
       return { ...state, ...applyForgeBatch(state, action.events) };
 
+    case "hydrate_forge": {
+      const bricks: Record<string, TuiBrickSummary> = {};
+      for (const brick of action.bricks) {
+        bricks[brick.brickId] = { name: brick.name, status: brick.status, fitness: brick.fitness };
+      }
+      const events =
+        action.events.length > MAX_FORGE_EVENTS
+          ? action.events.slice(-MAX_FORGE_EVENTS)
+          : action.events;
+      return { ...state, forgeBricks: bricks, forgeEvents: events };
+    }
+
     case "apply_monitor_event": {
       const combined = [...state.monitorEvents, action.event];
       return {
