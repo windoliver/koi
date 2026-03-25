@@ -445,7 +445,7 @@ export async function activatePresetStacks(
       await fn();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      if (config.verbose) process.stderr.write(`  warn: ${name} failed: ${message}\n`);
+      process.stderr.write(`  warn: ${name} failed: ${message}\n`);
       // Record as failed contribution so the debug view shows what failed and why
       contributions.push({
         id: name,
