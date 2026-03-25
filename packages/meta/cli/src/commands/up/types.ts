@@ -27,6 +27,7 @@ export interface BannerInfo {
   readonly channels: readonly ChannelAdapter[];
   readonly nexusBaseUrl: string | undefined;
   readonly adminReady: boolean;
+  readonly adminPort: number;
   readonly temporalAdmin: { readonly dispose: () => Promise<void> } | undefined;
   readonly temporalUrl: string | undefined;
   readonly provisionedAgents: readonly ProvisionedAgent[];

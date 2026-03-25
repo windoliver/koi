@@ -483,13 +483,13 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
             turns: event.output.metrics.turns,
             totalTokens: event.output.metrics.totalTokens,
           });
-          // Capture real cost from engine metrics (populated by pi adapter from provider usage)
+          // Accumulate real cost from engine metrics (costUsd is per-run, not cumulative)
           const metrics = event.output.metrics as unknown as Record<string, unknown>;
           if (typeof metrics.costUsd === "number") {
-            totalCostUsd = metrics.costUsd;
+            totalCostUsd += metrics.costUsd;
           } else {
-            // Fallback: estimate from token counts
-            totalCostUsd = costCalculator.calculate(
+            // Fallback: estimate from token counts for this run
+            totalCostUsd += costCalculator.calculate(
               modelName,
               event.output.metrics.inputTokens ?? 0,
               event.output.metrics.outputTokens ?? 0,

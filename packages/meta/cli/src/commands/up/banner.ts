@@ -39,10 +39,11 @@ export function printBanner(info: BannerInfo): void {
   }
 
   if (info.adminReady) {
+    const port = String(info.adminPort);
     err.write(
-      `  ${green("\u2713")} Admin API ready at ${cyan("http://localhost:3100/admin/api")}\n`,
+      `  ${green("\u2713")} Admin API ready at ${cyan(`http://localhost:${port}/admin/api`)}\n`,
     );
-    err.write(`  ${green("\u2713")} Browser admin at ${cyan("http://localhost:3100/admin")}\n`);
+    err.write(`  ${green("\u2713")} Browser admin at ${cyan(`http://localhost:${port}/admin`)}\n`);
   }
 
   if (info.storage !== undefined) {

@@ -36,6 +36,7 @@ const BASE_INFO: BannerInfo = {
   channels: [{ name: "cli" } as never],
   nexusBaseUrl: undefined,
   adminReady: false,
+  adminPort: 3100,
   temporalAdmin: undefined,
   temporalUrl: undefined,
   provisionedAgents: [],

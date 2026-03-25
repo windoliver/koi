@@ -12,10 +12,11 @@ import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineInput, InboundMessage } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
-import type { DashboardEvent } from "@koi/dashboard-types";
+import type { AgentCostEntry, CostSnapshot, DashboardEvent } from "@koi/dashboard-types";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createForgeConfiguredKoi } from "@koi/forge";
 import { getEngineName, loadManifest } from "@koi/manifest";
+import { createDefaultCostCalculator } from "@koi/middleware-pay";
 import { resolveRuntimePreset } from "@koi/runtime-presets";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import { createAgentDispatcher } from "../../agent-dispatcher.js";
@@ -940,6 +941,12 @@ export async function runUp(flags: UpFlags): Promise<void> {
     temporalContribution,
   ];
 
+  // Cost tracking — reads from engine metrics on each turn
+  const SESSION_BUDGET = 2.0;
+  const costCalculator = createDefaultCostCalculator();
+  // let justified: accumulated real cost from engine metrics, updated on each turn completion
+  let totalCostUsd = 0;
+
   const composed = composeRuntimeMiddleware({
     resolved: resolved.value.middleware,
     nexus,
@@ -1108,6 +1115,31 @@ export async function runUp(flags: UpFlags): Promise<void> {
       model: modelName,
       channels: channelNames,
       skills: skillNames,
+      cost: {
+        async getSnapshot(): Promise<CostSnapshot> {
+          const totalCost = totalCostUsd;
+          const agents: readonly AgentCostEntry[] = [
+            {
+              agentId: "" as import("@koi/core").AgentId,
+              name: manifest.name,
+              model: modelName,
+              turns: 0,
+              costUsd: totalCost,
+              budgetUsed: totalCost,
+              budgetLimit: SESSION_BUDGET,
+            },
+          ];
+          return {
+            sessionBudget: { used: totalCost, limit: SESSION_BUDGET },
+            dailyBudget: { used: totalCost, limit: 10.0 },
+            monthlyBudget: { used: totalCost, limit: 50.0 },
+            agents,
+            cascade: { tiers: [], savingsUsd: 0, baselineModel: "sonnet" },
+            circuitBreaker: { state: "CLOSED", failures: 0, threshold: 5, windowMs: 60_000 },
+            timestamp: Date.now(),
+          };
+        },
+      },
       fileSystem: await (async () => {
         const vfs = await createVfsBackend(workspaceRoot, nexus.baseUrl, manifest.name);
         activeStorage.vfs = vfs.backend;
@@ -1283,6 +1315,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     channels,
     nexusBaseUrl: nexus.baseUrl,
     adminReady,
+    adminPort: boundPort,
     temporalAdmin,
     temporalUrl,
     provisionedAgents,
@@ -1421,6 +1454,17 @@ export async function runUp(flags: UpFlags): Promise<void> {
               turns: event.output.metrics.turns,
               totalTokens: event.output.metrics.totalTokens,
             });
+            // Accumulate real cost (costUsd is per-run, not cumulative)
+            const m = event.output.metrics as unknown as Record<string, unknown>;
+            if (typeof m.costUsd === "number") {
+              totalCostUsd += m.costUsd;
+            } else {
+              totalCostUsd += costCalculator.calculate(
+                modelName,
+                event.output.metrics.inputTokens ?? 0,
+                event.output.metrics.outputTokens ?? 0,
+              );
+            }
           }
         }
       }
@@ -1517,6 +1561,17 @@ export async function runUp(flags: UpFlags): Promise<void> {
               turns: event.output.metrics.turns,
               totalTokens: event.output.metrics.totalTokens,
             });
+            // Accumulate real cost (costUsd is per-run, not cumulative)
+            const m = event.output.metrics as unknown as Record<string, unknown>;
+            if (typeof m.costUsd === "number") {
+              totalCostUsd += m.costUsd;
+            } else {
+              totalCostUsd += costCalculator.calculate(
+                modelName,
+                event.output.metrics.inputTokens ?? 0,
+                event.output.metrics.outputTokens ?? 0,
+              );
+            }
           }
         }
         // Route response back to the originating channel (e.g. Telegram, Slack)
