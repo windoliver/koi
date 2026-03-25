@@ -201,6 +201,7 @@ async function activateGovernance(
           deny: ["group:fs_delete"],
           ask: ["group:runtime"],
         },
+        groups: (await import("@koi/middleware-permissions")).DEFAULT_GROUPS,
       }),
       approvalHandler,
     },
