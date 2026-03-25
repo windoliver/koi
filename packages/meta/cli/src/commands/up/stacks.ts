@@ -241,6 +241,13 @@ async function activateGovernance(
   for (const d of bundle.disposables) {
     disposables.push(() => d[Symbol.dispose]());
   }
+  // On shutdown, reject all pending approval promises so the process can exit cleanly.
+  disposables.push(() => {
+    for (const entry of pendingQueue.values()) {
+      entry.resolve("rejected");
+    }
+    pendingQueue.clear();
+  });
   log(
     config,
     `Stack: governance (${String(bundle.middlewares.length)} middleware, preset: standard)`,
