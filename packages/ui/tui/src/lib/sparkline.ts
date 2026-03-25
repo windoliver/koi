@@ -45,10 +45,12 @@ export function computeTrend(values: readonly number[]): TrendDirection {
   let secondSum = 0;
 
   for (let i = 0; i < mid; i++) {
-    firstSum += values[i]!;
+    const v = values[i];
+    if (v !== undefined) firstSum += v;
   }
   for (let i = mid; i < values.length; i++) {
-    secondSum += values[i]!;
+    const v = values[i];
+    if (v !== undefined) secondSum += v;
   }
 
   const firstAvg = firstSum / mid;
