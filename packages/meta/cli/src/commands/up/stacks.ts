@@ -6,7 +6,8 @@
  * the cold-start minimal for presets that don't use them.
  */
 
-import type { ComponentProvider, KoiMiddleware } from "@koi/core";
+import type { ComponentProvider, KoiError, KoiMiddleware, Result } from "@koi/core";
+import type { GovernancePendingItem } from "@koi/dashboard-types";
 import type { PresetStacks } from "@koi/runtime-presets";
 import type { PackageContribution, StackContribution } from "../../contribution-graph.js";
 
@@ -33,6 +34,15 @@ export interface ActivatedStacks {
     ) => Promise<import("@koi/core").BrickArtifact | null>;
     readonly maxSynthesesPerSession: number;
     readonly policyCacheHandle: unknown;
+  };
+  /** Governance queue commands for the admin bridge (present when governance stack is active). */
+  readonly governanceCommands?: {
+    readonly listGovernanceQueue: () => Result<readonly GovernancePendingItem[], KoiError>;
+    readonly reviewGovernance: (
+      id: string,
+      decision: "approved" | "rejected",
+      reason?: string,
+    ) => Result<void, KoiError>;
   };
 }
 
@@ -125,15 +135,93 @@ async function activateGovernance(
   middleware: KoiMiddleware[],
   providers: ComponentProvider[],
   disposables: (() => Promise<void> | void)[],
-): Promise<void> {
+): Promise<ActivatedStacks["governanceCommands"]> {
   const { createGovernanceStack } = await import("@koi/governance");
-  const bundle = createGovernanceStack({});
+
+  // In-memory pending queue bridges exec-approvals onAsk to the admin API.
+  // When a tool call hits an "ask" rule, it lands here until the operator
+  // approves/denies via the TUI governance view.
+  const pendingQueue = new Map<
+    string,
+    {
+      readonly item: GovernancePendingItem;
+      readonly resolve: (decision: "approved" | "rejected") => void;
+    }
+  >();
+  let nextId = 0;
+
+  // Bridge: permissions middleware "ask" tier → pending queue → admin API.
+  // When a tool matches an "ask" pattern (e.g. group:runtime), the permissions
+  // middleware calls approvalHandler.requestApproval(), which blocks until the
+  // operator approves/denies via the TUI governance view.
+  const approvalHandler: import("@koi/middleware-permissions").ApprovalHandler = {
+    requestApproval: (toolId, input, _reason) => {
+      const id = `gov-${String(++nextId)}-${Date.now()}`;
+      return new Promise((resolve) => {
+        pendingQueue.set(id, {
+          item: {
+            id,
+            agentId: "primary",
+            requestKind: toolId,
+            payload: input as Readonly<Record<string, unknown>>,
+            timestamp: Date.now(),
+          },
+          resolve: (decision) => {
+            pendingQueue.delete(id);
+            resolve(decision === "approved");
+          },
+        });
+      });
+    },
+  };
+
+  // Full governance stack with preset-resolved config.
+  // "standard" preset: fs_read/web/browser/lsp allowed, fs_delete denied,
+  // runtime tools ask for approval — plus PII, redaction, sanitize, scope, agent-monitor.
+  const bundle = createGovernanceStack({
+    preset: "standard",
+    permissions: {
+      backend: (await import("@koi/middleware-permissions")).createPatternPermissionBackend({
+        rules: {
+          allow: ["group:fs_read", "group:web", "group:browser", "group:lsp"],
+          deny: ["group:fs_delete"],
+          ask: ["group:runtime"],
+        },
+      }),
+      approvalHandler,
+    },
+  });
   middleware.push(...bundle.middlewares);
   providers.push(...bundle.providers);
   for (const d of bundle.disposables) {
     disposables.push(() => d[Symbol.dispose]());
   }
-  log(config, `Stack: governance (${String(bundle.middlewares.length)} middleware)`);
+  log(
+    config,
+    `Stack: governance (${String(bundle.middlewares.length)} middleware, preset: standard)`,
+  );
+
+  return {
+    listGovernanceQueue: (): Result<readonly GovernancePendingItem[], KoiError> => ({
+      ok: true,
+      value: [...pendingQueue.values()].map((e) => e.item),
+    }),
+    reviewGovernance: (id: string, decision: "approved" | "rejected"): Result<void, KoiError> => {
+      const entry = pendingQueue.get(id);
+      if (entry === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Governance item ${id} not found`,
+            retryable: false,
+          },
+        };
+      }
+      entry.resolve(decision);
+      return { ok: true, value: undefined };
+    },
+  };
 }
 
 async function activateContextHub(
@@ -431,12 +519,13 @@ export async function activatePresetStacks(
     }
   }
 
+  let governanceCommands: ActivatedStacks["governanceCommands"];
   if (config.stacks.governance === true) {
     const mwBefore = middleware.length;
     const provBefore = providers.length;
-    await tryActivate("governance", () =>
-      activateGovernance(config, middleware, providers, disposables),
-    );
+    await tryActivate("governance", async () => {
+      governanceCommands = await activateGovernance(config, middleware, providers, disposables);
+    });
     if (middleware.length > mwBefore || providers.length > provBefore) {
       const pkgs: PackageContribution[] = [];
       if (middleware.length > mwBefore) {
@@ -666,5 +755,6 @@ export async function activatePresetStacks(
     disposables,
     contributions,
     ...(autoHarnessResult !== undefined ? { autoHarness: autoHarnessResult } : {}),
+    ...(governanceCommands !== undefined ? { governanceCommands } : {}),
   };
 }

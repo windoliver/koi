@@ -156,6 +156,7 @@ export function createDashboardHandler(
     runtimeViews: runtimeViews !== undefined,
     commands: commands !== undefined,
     dataSources: dataSource.listDataSources !== undefined,
+    governance: commands?.listGovernanceQueue !== undefined,
     orchestration: {
       temporal: runtimeViews?.temporal !== undefined,
       scheduler: runtimeViews?.scheduler !== undefined,

@@ -310,9 +310,15 @@ function buildToolResultMessages(
 // Streaming helpers
 // ---------------------------------------------------------------------------
 
+/** Mutable holder for capturing stream errors across generator boundaries. */
+interface StreamErrorHolder {
+  message?: string;
+}
+
 async function* streamModelAndCollect(
   streamHandler: ModelStreamHandler,
   request: ModelRequest,
+  errorHolder?: StreamErrorHolder,
 ): AsyncGenerator<
   | { readonly kind: "event"; readonly event: EngineEvent }
   | { readonly kind: "response"; readonly response: ModelResponse },
@@ -356,6 +362,13 @@ async function* streamModelAndCollect(
       case "done":
         finalResponse = chunk.response;
         break;
+      case "error":
+        // Capture streaming error message for the caller via the error holder
+        if (errorHolder !== undefined) {
+          errorHolder.message =
+            (chunk as { readonly message?: string }).message ?? "streaming error";
+        }
+        return; // Stop processing the stream
       // thinking_delta, usage — internal, not forwarded as EngineEvent
       default:
         break;
@@ -446,6 +459,7 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
       // let: accumulated immutably via reassignment each turn
       let metrics = createMetricsAccumulator();
       let stopReason: EngineStopReason = "completed";
+      let errorMessage: string | undefined;
 
       for (let turn = 0; turn < maxTurns; turn++) {
         if (disposed) {
@@ -468,7 +482,8 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
         let response: ModelResponse | undefined;
 
         if (modelStream !== undefined) {
-          for await (const item of streamModelAndCollect(modelStream, request)) {
+          const streamErrorHolder: StreamErrorHolder = {};
+          for await (const item of streamModelAndCollect(modelStream, request, streamErrorHolder)) {
             if (item.kind === "event") {
               yield item.event;
             } else {
@@ -477,6 +492,7 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
           }
           if (response === undefined) {
             stopReason = "error";
+            errorMessage = streamErrorHolder.message;
             metrics = incrementTurn(metrics);
             yield { kind: "turn_end" as const, turnIndex: turn };
             break;
@@ -558,6 +574,7 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
         content: finalContent,
         stopReason,
         metrics: finalizeMetrics(metrics),
+        ...(errorMessage !== undefined ? { metadata: { errorMessage } } : {}),
       };
 
       // Persist final conversation state for saveState()

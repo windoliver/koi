@@ -599,6 +599,18 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         },
       };
 
+    case "set_governance_pending_action":
+      return {
+        ...state,
+        governanceView: { ...state.governanceView, pendingAction: action.pendingAction },
+      };
+
+    case "set_governance_sanction_levels":
+      return {
+        ...state,
+        governanceView: { ...state.governanceView, sanctionLevels: action.levels },
+      };
+
     case "set_skills_list":
       return { ...state, skillsView: { ...state.skillsView, skills: action.skills } };
 

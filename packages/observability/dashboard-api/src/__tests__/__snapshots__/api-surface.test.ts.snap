@@ -404,6 +404,8 @@ interface BridgeOptions {
     readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
     /** Called when a dispatched agent is terminated — disposes the runtime. */
     readonly onTerminateAgent?: ((id: AgentId) => Promise<void> | void) | undefined;
+    /** Optional governance queue/review methods (from governance stack). */
+    readonly governanceCommands?: Pick<CommandDispatcher, "listGovernanceQueue" | "reviewGovernance"> | undefined;
 }
 /** Registration entry for a dispatched agent. */
 interface DispatchedAgentEntry {

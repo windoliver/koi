@@ -438,36 +438,83 @@ export function harnessPauseResume(deps: DomainActionDeps): void {
     .catch(() => {});
 }
 
-/** Governance approve — calls reviewGovernance API. */
+/** Governance approve — sets pending confirmation for the selected item. */
 export function governanceApprove(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
   if (item !== undefined) {
-    deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
-    deps.client
-      .reviewGovernance(item.id, "approved")
-      .then((r) => {
-        if (r.ok) deps.addLifecycleMessage(`Approved: ${item.action} on ${item.resource}`);
-        else deps.addLifecycleMessage(`Approve failed: ${r.error.kind}`);
-      })
-      .catch(() => {});
+    deps.store.dispatch({
+      kind: "set_governance_pending_action",
+      pendingAction: { kind: "approve", item },
+    });
   }
 }
 
-/** Governance deny — calls reviewGovernance API. */
+/** Governance deny — sets pending confirmation for the selected item. */
 export function governanceDeny(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
   if (item !== undefined) {
-    deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
-    deps.client
-      .reviewGovernance(item.id, "rejected")
-      .then((r) => {
-        if (r.ok) deps.addLifecycleMessage(`Denied: ${item.action} on ${item.resource}`);
-        else deps.addLifecycleMessage(`Deny failed: ${r.error.kind}`);
-      })
-      .catch(() => {});
+    deps.store.dispatch({
+      kind: "set_governance_pending_action",
+      pendingAction: { kind: "deny", item },
+    });
   }
+}
+
+/** Governance confirm — executes the pending action and refreshes the queue. */
+export function governanceConfirm(deps: DomainActionDeps): void {
+  const gv = deps.store.getState().governanceView;
+  const pending = gv.pendingAction;
+  if (pending === null) return;
+
+  const { kind, item } = pending;
+  const decision = kind === "approve" ? ("approved" as const) : ("rejected" as const);
+
+  deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
+  deps.store.dispatch({ kind: "set_governance_pending_action", pendingAction: null });
+
+  deps.client
+    .reviewGovernance(item.id, decision)
+    .then((r) => {
+      if (r.ok) {
+        const verb = kind === "approve" ? "Approved" : "Denied";
+        deps.addLifecycleMessage(`${verb}: ${item.action} on ${item.resource}`);
+      } else {
+        deps.addLifecycleMessage(
+          `${kind === "approve" ? "Approve" : "Deny"} failed: ${r.error.kind}`,
+        );
+      }
+      // Refresh the governance queue after action
+      return deps.client.listGovernanceQueue();
+    })
+    .then((r) => {
+      if (r?.ok) {
+        // Replace the pending approvals with the fresh queue
+        const current = deps.store.getState().governanceView;
+        const existingIds = new Set(current.pendingApprovals.map((a) => a.id));
+        for (const qi of r.value) {
+          if (!existingIds.has(qi.id)) {
+            deps.store.dispatch({
+              kind: "add_governance_approval",
+              approval: {
+                id: qi.id,
+                agentId: qi.agentId,
+                action: qi.requestKind,
+                resource: JSON.stringify(qi.payload).slice(0, 40),
+                timestamp: qi.timestamp,
+              },
+            });
+          }
+        }
+      }
+    })
+    .catch(() => {});
+}
+
+/** Governance cancel — clears pending confirmation. */
+export function governanceCancel(deps: DomainActionDeps): void {
+  deps.store.dispatch({ kind: "set_governance_pending_action", pendingAction: null });
 }
 
 /** Promote the selected forge brick via API. */

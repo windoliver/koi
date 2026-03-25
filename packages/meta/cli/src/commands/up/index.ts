@@ -1126,6 +1126,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       ...(orch.hasAny
         ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
         : {}),
+      ...(activatedStacks.governanceCommands !== undefined
+        ? { governanceCommands: activatedStacks.governanceCommands }
+        : {}),
       ...(forgeBootstrap !== undefined
         ? {
             forge: createForgeViewSource(

@@ -17,6 +17,7 @@ export const COLORS = {
   red: "#EF4444",
   blue: "#0088FF",
   magenta: "#FF00FF",
+  orange: "#F97316",
   white: "#E2E8F0",
   dim: "#8899AA",
   bg: "#001122",

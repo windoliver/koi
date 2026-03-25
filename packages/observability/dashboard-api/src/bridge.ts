@@ -127,6 +127,10 @@ export interface BridgeOptions {
   readonly dispatchAgent?: CommandDispatcher["dispatchAgent"] | undefined;
   /** Called when a dispatched agent is terminated — disposes the runtime. */
   readonly onTerminateAgent?: ((id: AgentId) => Promise<void> | void) | undefined;
+  /** Optional governance queue/review methods (from governance stack). */
+  readonly governanceCommands?:
+    | Pick<CommandDispatcher, "listGovernanceQueue" | "reviewGovernance">
+    | undefined;
 }
 
 /** Registration entry for a dispatched agent. */
@@ -785,6 +789,14 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
             timestamp: Date.now(),
           })),
         }
+      : {}),
+
+    // Governance queue commands
+    ...(options.governanceCommands?.listGovernanceQueue !== undefined
+      ? { listGovernanceQueue: options.governanceCommands.listGovernanceQueue }
+      : {}),
+    ...(options.governanceCommands?.reviewGovernance !== undefined
+      ? { reviewGovernance: options.governanceCommands.reviewGovernance }
       : {}),
   };
 

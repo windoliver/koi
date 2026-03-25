@@ -43,6 +43,8 @@ export interface KeyboardCallbacks {
   readonly governanceSelectPrev: () => void;
   readonly governanceApprove: () => void;
   readonly governanceDeny: () => void;
+  readonly governanceConfirm: () => void;
+  readonly governanceCancel: () => void;
   readonly forgeSelectNext: () => void;
   readonly forgeSelectPrev: () => void;
   readonly forgePromote: () => void;
@@ -534,8 +536,21 @@ export function createKeyboardHandler(
       }
     }
 
-    // Governance view — j/k navigate, a approve, d deny
+    // Governance view — j/k navigate, a approve, d deny, y/n confirm
     if (view === "governance") {
+      const hasPending = store.getState().governanceView.pendingAction !== null;
+      if (hasPending) {
+        if (sequence === "y") {
+          callbacks.governanceConfirm();
+          return true;
+        }
+        if (sequence === "n" || sequence === "\x1b") {
+          callbacks.governanceCancel();
+          return true;
+        }
+        // Block other keys while confirmation is active
+        return true;
+      }
       if (sequence === "j" || sequence === "\x1b[B") {
         callbacks.governanceSelectNext();
         return true;

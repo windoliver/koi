@@ -129,12 +129,26 @@ export interface HarnessViewState {
   readonly checkpoints: readonly CheckpointEntry[];
 }
 
+/** Per-agent sanction level entry. */
+export interface GovernanceAgentSanction {
+  readonly agentId: string;
+  readonly level: number;
+}
+
+/** Pending confirmation for a governance action. */
+export interface GovernancePendingAction {
+  readonly kind: "approve" | "deny";
+  readonly item: GovernancePendingApproval;
+}
+
 /** Governance view — pending approvals + violation log. */
 export interface GovernanceViewState {
   readonly pendingApprovals: readonly GovernancePendingApproval[];
   readonly violations: readonly GovernanceViolation[];
   readonly scrollOffset: number;
   readonly selectedIndex: number;
+  readonly pendingAction: GovernancePendingAction | null;
+  readonly sanctionLevels: readonly GovernanceAgentSanction[];
 }
 
 /** A pending governance approval item. */
@@ -310,7 +324,14 @@ export function createInitialHarnessView(): HarnessViewState {
 }
 
 export function createInitialGovernanceView(): GovernanceViewState {
-  return { pendingApprovals: [], violations: [], scrollOffset: 0, selectedIndex: 0 };
+  return {
+    pendingApprovals: [],
+    violations: [],
+    scrollOffset: 0,
+    selectedIndex: 0,
+    pendingAction: null,
+    sanctionLevels: [],
+  };
 }
 
 export function createInitialCostView(): CostViewState {
