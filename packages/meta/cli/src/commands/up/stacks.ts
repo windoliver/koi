@@ -213,7 +213,17 @@ async function activateGovernance(
       onAsk,
     },
     governanceBackend: {
-      backend: (await import("@koi/governance-memory")).createGovernanceMemoryBackend({}),
+      backend: (await import("@koi/governance-memory")).createGovernanceMemoryBackend({
+        rules: [
+          {
+            id: "permit-all",
+            effect: "permit" as const,
+            priority: 0,
+            condition: () => true,
+            message: "Default permit — governance-backend allows all requests",
+          },
+        ],
+      }),
     },
     ...(nexusUrl !== undefined && nexusApiKey !== undefined
       ? {

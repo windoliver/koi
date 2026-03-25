@@ -9,8 +9,13 @@ import type { ToolDescriptor } from "@koi/core/ecs";
 import type { EngineEvent, EngineInput } from "@koi/core/engine";
 import type { AgentMessage, AgentOptions, StreamFn } from "@mariozechner/pi-agent-core";
 import { Agent as PiAgent } from "@mariozechner/pi-agent-core";
-import type { Message, UserMessage } from "@mariozechner/pi-ai";
-import { getModel, streamSimple } from "@mariozechner/pi-ai";
+import type { Api, Message, Model, UserMessage } from "@mariozechner/pi-ai";
+import {
+  completeSimple,
+  createAssistantMessageEventStream,
+  getModel,
+  streamSimple,
+} from "@mariozechner/pi-ai";
 import { AsyncQueue, createEventSubscriber } from "./event-bridge.js";
 import { engineInputToHistory, engineInputToPrompt, PI_CAPABILITIES } from "./message-map.js";
 import { createMetricsAccumulator } from "./metrics.js";
@@ -18,6 +23,79 @@ import { createModelCallTerminal, createModelStreamTerminal } from "./model-term
 import { createBridgeStreamFn } from "./stream-bridge.js";
 import { wrapTool } from "./tool-bridge.js";
 import type { PiAdapterConfig, PiEngineAdapter } from "./types.js";
+
+/**
+ * Non-streaming wrapper for providers whose SSE streaming doesn't handle tool calls
+ * (e.g. OpenRouter). Uses pi-ai's generateSimple (non-streaming) and emits
+ * synthetic AssistantMessageEvents from the complete response.
+ */
+function createNonStreamingWrapper(_piModel: Model<Api>): StreamFn {
+  return (model, context, options) => {
+    const stream = createAssistantMessageEventStream();
+    void (async () => {
+      try {
+        const message = await completeSimple(model, context, options);
+        stream.push({ type: "start", partial: message });
+        // Emit text content
+        for (const block of message.content) {
+          if (block.type === "text") {
+            stream.push({
+              type: "text_delta",
+              contentIndex: 0,
+              delta: block.text,
+              partial: message,
+            });
+          }
+        }
+        // Emit tool calls
+        for (let i = 0; i < message.content.length; i++) {
+          const block = message.content[i];
+          if (block !== undefined && block.type === "toolCall") {
+            stream.push({ type: "toolcall_start", contentIndex: i, partial: message });
+            stream.push({
+              type: "toolcall_delta",
+              contentIndex: i,
+              delta: JSON.stringify(block.arguments),
+              partial: message,
+            });
+            stream.push({
+              type: "toolcall_end",
+              contentIndex: i,
+              toolCall: block,
+              partial: message,
+            } as unknown as Parameters<typeof stream.push>[0]);
+          }
+        }
+        stream.push({ type: "done", reason: "stop", message });
+        stream.end(message);
+      } catch (error: unknown) {
+        const errMessage = {
+          role: "assistant" as const,
+          content: [],
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: "error" as const,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          timestamp: Date.now(),
+        };
+        stream.push({ type: "error", reason: "error", error: errMessage } as unknown as Parameters<
+          typeof stream.push
+        >[0]);
+        stream.end(errMessage as unknown as Parameters<typeof stream.end>[0]);
+      }
+    })();
+    return stream;
+  };
+}
 
 /**
  * Parse a "provider:model-id" string into provider and model components.
@@ -75,9 +153,14 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
   const modelStreamTerminal = createModelStreamTerminal();
   const modelCallTerminal = createModelCallTerminal(modelStreamTerminal);
 
-  // The real streamSimple function (called by the model terminal)
-  const realStreamSimple: StreamFn = (model, context, options) =>
-    streamSimple(model, context, options);
+  // The real streamSimple function (called by the model terminal).
+  // For OpenRouter, pi-ai's SSE streaming doesn't handle tool_calls in the
+  // delta, causing tool-use responses to silently fail. Use a non-streaming
+  // wrapper that calls the API without streaming and emits synthetic events.
+  const realStreamSimple: StreamFn =
+    provider === "openrouter"
+      ? createNonStreamingWrapper(piModel)
+      : (model, context, options) => streamSimple(model, context, options);
 
   // Track the current active pi Agent for steer/followUp/abort
   // let justified: mutable ref needed for lifecycle delegation across stream() calls
