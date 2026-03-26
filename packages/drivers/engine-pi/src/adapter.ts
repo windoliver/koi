@@ -181,9 +181,15 @@ function createNonStreamingWrapper(_piModel: Model<Api>): StreamFn {
     const stream = createAssistantMessageEventStream();
     void (async () => {
       try {
-        // Try completeSimple first; fall back to raw fetch if it returns error
-        // (completeSimple misformats tool results for OpenRouter)
-        let message = await completeSimple(model, context, options);
+        // If messages contain toolResult, go straight to raw fetch —
+        // completeSimple misformats tool results for OpenRouter and returns error.
+        const hasToolResults = context.messages.some((m: Message) => m.role === "toolResult");
+        let message: import("@mariozechner/pi-ai").AssistantMessage;
+        if (hasToolResults) {
+          message = await openRouterRawFetch(model, context, options);
+        } else {
+          message = await completeSimple(model, context, options);
+        }
         if (message.stopReason === "error" || message.content.length === 0) {
           message = await openRouterRawFetch(model, context, options);
         }

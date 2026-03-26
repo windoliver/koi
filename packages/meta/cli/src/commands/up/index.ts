@@ -609,29 +609,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (nexusBaseUrl !== undefined) {
     const nexusWriteOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
     if (!nexusWriteOk) {
-      output.warn("Nexus unhealthy — running nexus down + nexus up...");
-      try {
-        const { nexusDown, nexusUp: nexusUpFn } = await import("@koi/nexus-embed");
-        await nexusDown({ cwd: workspaceRoot, verbose: flags.verbose });
-        const upResult = await nexusUpFn({
-          cwd: workspaceRoot,
-          koiPreset: presetId,
-          verbose: flags.verbose,
-          portStrategy: "auto",
-        });
-        if (upResult.ok) {
-          nexusBaseUrl = upResult.value.baseUrl;
-          if (upResult.value.apiKey !== undefined) {
-            process.env.NEXUS_API_KEY = upResult.value.apiKey;
-          }
-          output.success("Nexus recovered");
-        } else {
-          output.warn(`Nexus recovery failed: ${upResult.error.message}`);
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        output.warn(`Nexus recovery failed: ${msg}`);
-      }
+      output.warn("Nexus write check failed — Nexus-backed storage may not work");
+      output.warn("Run 'nexus down && nexus up' manually to fix, or restart Docker");
     }
   }
 
