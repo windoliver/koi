@@ -304,29 +304,16 @@ describe("createOpenRouterAdapter", () => {
   }, 10_000);
 });
 
-describe("stream method", () => {
-  test("yields text_delta and finish chunks from SSE stream", async () => {
-    const encoder = new TextEncoder();
-    const mockStream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n\n',
-          ),
-        );
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        controller.close();
+describe("stream method (non-streaming fetch+parse)", () => {
+  test("yields text_delta and finish chunks from JSON response", async () => {
+    mockFetch({
+      ok: true,
+      status: 200,
+      body: {
+        model: "anthropic/claude-sonnet-4",
+        choices: [{ message: { content: "Hello" }, finish_reason: "stop" }],
       },
     });
-
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: new Headers(),
-        body: mockStream,
-      }),
-    ) as unknown as typeof fetch;
 
     const adapter = createOpenRouterAdapter({ apiKey: "test-key" });
     const request: ModelRequest = {
@@ -349,14 +336,7 @@ describe("stream method", () => {
   });
 
   test("yields error chunk on non-ok response", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: false,
-        status: 429,
-        headers: new Headers(),
-        text: () => Promise.resolve("Rate limited"),
-      }),
-    ) as unknown as typeof fetch;
+    mockFetch({ ok: false, status: 429, body: "Rate limited" });
 
     const adapter = createOpenRouterAdapter({ apiKey: "test-key" });
     const request: ModelRequest = {
@@ -377,15 +357,12 @@ describe("stream method", () => {
     }
   });
 
-  test("yields error chunk when response body is null", async () => {
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: new Headers(),
-        body: null,
-      }),
-    ) as unknown as typeof fetch;
+  test("yields error chunk when choices array is empty", async () => {
+    mockFetch({
+      ok: true,
+      status: 200,
+      body: { model: "test", choices: [] },
+    });
 
     const adapter = createOpenRouterAdapter({ apiKey: "test-key" });
     const request: ModelRequest = {
@@ -402,32 +379,19 @@ describe("stream method", () => {
     expect(chunks).toHaveLength(1);
     expect(chunks[0]?.kind).toBe("error");
     if (chunks[0]?.kind === "error") {
-      expect(chunks[0].message).toContain("No response body");
+      expect(chunks[0].message).toContain("empty choices");
     }
   });
 
-  test("yields finish_reason from stream chunks", async () => {
-    const encoder = new TextEncoder();
-    const mockStream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode('data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}\n\n'),
-        );
-        controller.enqueue(
-          encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'),
-        );
-        controller.close();
+  test("yields finish_reason from JSON response", async () => {
+    mockFetch({
+      ok: true,
+      status: 200,
+      body: {
+        model: "test",
+        choices: [{ message: { content: "Hi" }, finish_reason: "stop" }],
       },
     });
-
-    globalThis.fetch = mock(() =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: new Headers(),
-        body: mockStream,
-      }),
-    ) as unknown as typeof fetch;
 
     const adapter = createOpenRouterAdapter({ apiKey: "test-key" });
     const request: ModelRequest = {
@@ -448,30 +412,26 @@ describe("stream method", () => {
     }
   });
 
-  test("yields error on idle timeout during stream", async () => {
-    // Build a stream that stalls until the AbortSignal fires, then rejects
-    globalThis.fetch = mock((_url: string, init?: RequestInit) => {
-      const signal = init?.signal;
-      const mockStream = new ReadableStream({
-        pull() {
-          // Return a promise that rejects when the signal aborts
-          return new Promise<void>((_resolve, reject) => {
-            signal?.addEventListener("abort", () => {
-              reject(new DOMException("The operation was aborted.", "AbortError"));
-            });
-          });
-        },
-      });
+  test("yields tool_call chunks from JSON response", async () => {
+    mockFetch({
+      ok: true,
+      status: 200,
+      body: {
+        model: "test",
+        choices: [
+          {
+            message: {
+              tool_calls: [
+                { id: "call_1", function: { name: "exec", arguments: '{"code":"2+2"}' } },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      },
+    });
 
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: new Headers(),
-        body: mockStream,
-      });
-    }) as unknown as typeof fetch;
-
-    const adapter = createOpenRouterAdapter({ apiKey: "test-key", timeoutMs: 100 });
+    const adapter = createOpenRouterAdapter({ apiKey: "test-key" });
     const request: ModelRequest = {
       messages: [
         { content: [{ kind: "text" as const, text: "hi" }], senderId: "user", timestamp: 0 },
@@ -483,10 +443,37 @@ describe("stream method", () => {
       chunks.push(chunk);
     }
 
-    expect(chunks.some((c) => c.kind === "error")).toBe(true);
-    const errorChunk = chunks.find((c) => c.kind === "error");
-    if (errorChunk?.kind === "error") {
-      expect(errorChunk.message).toContain("timeout");
+    const toolChunk = chunks.find((c) => c.kind === "tool_call");
+    expect(toolChunk).toBeDefined();
+    if (toolChunk?.kind === "tool_call") {
+      expect(toolChunk.toolName).toBe("exec");
+      expect(toolChunk.callId).toBe("call_1");
     }
-  }, 10_000);
+  });
+
+  test("passes abort signal to fetch", async () => {
+    mockFetch({
+      ok: true,
+      status: 200,
+      body: { model: "test", choices: [{ message: { content: "ok" }, finish_reason: "stop" }] },
+    });
+
+    const ac = new AbortController();
+    const adapter = createOpenRouterAdapter({ apiKey: "test-key" });
+    const request: ModelRequest = {
+      messages: [
+        { content: [{ kind: "text" as const, text: "hi" }], senderId: "user", timestamp: 0 },
+      ],
+      signal: ac.signal,
+    };
+
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of adapter.stream(request)) {
+      chunks.push(chunk);
+    }
+
+    // Verify signal was passed to fetch
+    const [, init] = getCallArgs();
+    expect(init.signal).toBe(ac.signal);
+  });
 });
