@@ -658,6 +658,10 @@ export type TuiAction =
       readonly approval: GovernancePendingApproval;
     }
   | { readonly kind: "remove_governance_approval"; readonly id: string }
+  | {
+      readonly kind: "set_governance_approvals";
+      readonly approvals: readonly GovernancePendingApproval[];
+    }
   | { readonly kind: "add_governance_violation"; readonly violation: GovernanceViolation }
   | { readonly kind: "select_governance_item"; readonly index: number }
   | {

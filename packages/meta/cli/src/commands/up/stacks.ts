@@ -183,26 +183,15 @@ async function activateGovernance(
   // Bridge: permissions middleware "ask" tier → pending queue → admin API.
   // Approval caching is handled by permissions.cache: true (keyed by agentId + toolId + serialized input).
   const approvalHandler: import("@koi/middleware-permissions").ApprovalHandler = {
-    requestApproval: async (toolId, input, _reason) => {
-      return enqueue(toolId, "primary", input as Readonly<Record<string, unknown>>);
+    requestApproval: async (toolId, input, _reason, agentId) => {
+      return enqueue(toolId, agentId ?? "unknown", input as Readonly<Record<string, unknown>>);
     },
-  };
-
-  // Bridge: exec-approvals "ask" tier → pending queue → admin API.
-  const onAsk: import("@koi/exec-approvals").ExecApprovalsConfig["onAsk"] = async (req) => {
-    const approved = await enqueue(
-      req.toolId,
-      req.agentId ?? "primary",
-      req.input as Readonly<Record<string, unknown>>,
-    );
-    return approved
-      ? { kind: "allow_once" as const }
-      : { kind: "deny_once" as const, reason: "Denied by operator" };
   };
 
   // Full governance stack with Nexus-backed audit + all standard middleware.
   // "standard" preset resolves: permissions, pii, redaction, sanitize, agent-monitor, scope.
-  // We add: exec-approvals (with onAsk bridge), audit (Nexus-backed), governance-backend.
+  // Permissions middleware handles tool approval via approvalHandler + cache.
+  // exec-approvals is NOT wired — permissions already covers the approval flow.
   const nexusUrl = config.nexusBaseUrl;
   const nexusApiKey = config.nexusApiKey;
 
@@ -220,15 +209,6 @@ async function activateGovernance(
       approvalHandler,
       approvalTimeoutMs: 300_000, // 5 minutes — operator needs time to navigate to governance view
       cache: true, // Cache approvals so the same tool doesn't need re-approval in the same session
-    },
-    // exec-approvals doesn't support group: patterns — use explicit tool names
-    execApprovals: {
-      rules: {
-        allow: ["*"],
-        deny: [],
-        ask: [],
-      },
-      onAsk,
     },
     governanceBackend: {
       backend: (await import("@koi/governance-memory")).createGovernanceMemoryBackend({

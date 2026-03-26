@@ -366,7 +366,12 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
       const ac = new AbortController();
       const approved = await Promise.race([
-        approvalHandler.requestApproval(request.toolId, request.input, decision.reason),
+        approvalHandler.requestApproval(
+          request.toolId,
+          request.input,
+          decision.reason,
+          ctx.session.agentId,
+        ),
         new Promise<never>((_, reject) => {
           const timerId = setTimeout(() => {
             reject(

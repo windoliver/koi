@@ -342,19 +342,17 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
         .listGovernanceQueue()
         .then((r) => {
           if (r.ok) {
-            // Merge queue items into governance view as pending approvals
-            for (const item of r.value) {
-              store.dispatch({
-                kind: "add_governance_approval",
-                approval: {
-                  id: item.id,
-                  agentId: item.agentId,
-                  action: item.requestKind,
-                  resource: JSON.stringify(item.payload).slice(0, 40),
-                  timestamp: item.timestamp,
-                },
-              });
-            }
+            // Replace the full list from server snapshot — reconciles removals
+            store.dispatch({
+              kind: "set_governance_approvals",
+              approvals: r.value.map((item) => ({
+                id: item.id,
+                agentId: item.agentId,
+                action: item.requestKind,
+                resource: JSON.stringify(item.payload).slice(0, 40),
+                timestamp: item.timestamp,
+              })),
+            });
           }
         })
         .catch(() => {});
