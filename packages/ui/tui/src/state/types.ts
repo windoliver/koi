@@ -38,7 +38,6 @@ import type {
   DelegationViewState,
   GatewayViewState,
   GovernanceAgentSanction,
-  GovernancePendingAction,
   GovernancePendingApproval,
   GovernanceViewState,
   GovernanceViolation,
@@ -661,10 +660,6 @@ export type TuiAction =
   | { readonly kind: "remove_governance_approval"; readonly id: string }
   | { readonly kind: "add_governance_violation"; readonly violation: GovernanceViolation }
   | { readonly kind: "select_governance_item"; readonly index: number }
-  | {
-      readonly kind: "set_governance_pending_action";
-      readonly pendingAction: GovernancePendingAction | null;
-    }
   | {
       readonly kind: "set_governance_sanction_levels";
       readonly levels: readonly GovernanceAgentSanction[];

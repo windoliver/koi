@@ -51,8 +51,6 @@ import {
   forwardAgentEventsToConsole as forwardAgentEventsHelper,
   getDomainScrollOffset,
   governanceApprove as govApproveFn,
-  governanceCancel as govCancelFn,
-  governanceConfirm as govConfirmFn,
   governanceDeny as govDenyFn,
   harnessPauseResume as harnessPrFn,
   schedulerRetryDlq as schedRetryFn,
@@ -666,12 +664,6 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     governanceDeny: () => {
       govDenyFn(domainDeps);
-    },
-    governanceConfirm: () => {
-      govConfirmFn(domainDeps);
-    },
-    governanceCancel: () => {
-      govCancelFn(domainDeps);
     },
     ...nvCb,
     presetSelect: () => {

@@ -1,8 +1,7 @@
 /**
  * Governance view — pending approval queue, violation log, and sanction levels.
  *
- * Keyboard: [a] approve, [d] deny, [i] inspect, Esc:back.
- * When confirmation is active: [y] confirm, [n] cancel.
+ * Keyboard: [a] approve, [d] deny, Esc:back.
  */
 
 import { PanelChrome } from "../components/panel-chrome.js";
@@ -60,7 +59,7 @@ function SanctionLevelsSection(props: {
 }
 
 export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
-  const { pendingApprovals, violations, scrollOffset, selectedIndex, pendingAction, sanctionLevels } =
+  const { pendingApprovals, violations, scrollOffset, selectedIndex, sanctionLevels } =
     props.governanceView;
   const VISIBLE_ROWS = 10;
   const visibleApprovals = pendingApprovals.slice(scrollOffset, scrollOffset + VISIBLE_ROWS);
@@ -86,15 +85,6 @@ export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
           {`${String(violations.length)} violations`}
         </text>
       </box>
-
-      {/* Confirmation bar */}
-      {pendingAction !== null && (
-        <box height={1} paddingLeft={1} marginTop={1}>
-          <text fg={COLORS.yellow}>
-            <b>{` ${pendingAction.kind === "approve" ? "Approve" : "Deny"} ${pendingAction.item.action} for ${pendingAction.item.agentId}? [y/n]`}</b>
-          </text>
-        </box>
-      )}
 
       {/* Pending approvals — card-style */}
       {pendingApprovals.length > 0 && (
@@ -152,18 +142,9 @@ export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
       {/* Keyboard hints */}
       {props.focused && (
         <box height={1} marginTop={1} flexDirection="row" paddingLeft={1}>
-          {pendingAction !== null ? (
-            <>
-              <text fg={COLORS.yellow}>{"[y] confirm  "}</text>
-              <text fg={COLORS.dim}>{"[n] cancel"}</text>
-            </>
-          ) : (
-            <>
-              <text fg={COLORS.green}>{"[a]pprove  "}</text>
-              <text fg={COLORS.red}>{"[d]eny  "}</text>
-              <text fg={COLORS.dim}>{"Esc:back"}</text>
-            </>
-          )}
+          <text fg={COLORS.green}>{"[a]pprove  "}</text>
+          <text fg={COLORS.red}>{"[d]eny  "}</text>
+          <text fg={COLORS.dim}>{"Esc:back"}</text>
         </box>
       )}
     </PanelChrome>

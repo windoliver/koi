@@ -43,8 +43,6 @@ export interface KeyboardCallbacks {
   readonly governanceSelectPrev: () => void;
   readonly governanceApprove: () => void;
   readonly governanceDeny: () => void;
-  readonly governanceConfirm: () => void;
-  readonly governanceCancel: () => void;
   readonly forgeSelectNext: () => void;
   readonly forgeSelectPrev: () => void;
   readonly forgePromote: () => void;

@@ -140,12 +140,6 @@ function makeCallbacks(): KeyboardCallbacks & {
     governanceDeny: () => {
       mutableCalls.push("governanceDeny");
     },
-    governanceConfirm: () => {
-      mutableCalls.push("governanceConfirm");
-    },
-    governanceCancel: () => {
-      mutableCalls.push("governanceCancel");
-    },
     forgeSelectNext: () => {
       mutableCalls.push("forgeSelectNext");
     },

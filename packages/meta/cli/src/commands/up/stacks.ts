@@ -180,17 +180,11 @@ async function activateGovernance(
     });
   }
 
-  // Track approved tools — once approved, auto-approve for the rest of the session
-  const approvedTools = new Set<string>();
-
   // Bridge: permissions middleware "ask" tier → pending queue → admin API.
+  // Approval caching is handled by permissions.cache: true (keyed by agentId + toolId + serialized input).
   const approvalHandler: import("@koi/middleware-permissions").ApprovalHandler = {
     requestApproval: async (toolId, input, _reason) => {
-      // Auto-approve if this tool was already approved in this session
-      if (approvedTools.has(toolId)) return true;
-      const approved = await enqueue(toolId, "primary", input as Readonly<Record<string, unknown>>);
-      if (approved) approvedTools.add(toolId);
-      return approved;
+      return enqueue(toolId, "primary", input as Readonly<Record<string, unknown>>);
     },
   };
 
