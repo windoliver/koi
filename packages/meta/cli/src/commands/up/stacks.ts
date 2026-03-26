@@ -210,6 +210,21 @@ async function activateGovernance(
       approvalTimeoutMs: 300_000, // 5 minutes — operator needs time to navigate to governance view
       cache: true, // Cache approvals so the same tool doesn't need re-approval in the same session
     },
+    // Sanitize: enable all built-in presets (prompt injection, control chars, HTML, zero-width).
+    // Standard preset has empty rules [] which makes sanitize a no-op — override with presets.
+    sanitize: {
+      presets: ["prompt-injection", "control-chars", "html-tags", "zero-width"],
+    },
+    // Agent monitor: set reasonable thresholds so anomaly detection actually fires.
+    // Standard preset has empty {} which means no thresholds — override with sensible defaults.
+    agentMonitor: {
+      thresholds: {
+        maxToolCallsPerTurn: 20,
+        maxErrorCallsPerSession: 10,
+        maxConsecutiveRepeatCalls: 5,
+        maxDeniedCallsPerSession: 3,
+      },
+    },
     governanceBackend: {
       backend: (await import("@koi/governance-memory")).createGovernanceMemoryBackend({
         rules: [
