@@ -20,6 +20,9 @@ export const LOCAL_PRESET: RuntimePreset = {
   defaultChannels: ["@koi/channel-cli"],
   defaultAddons: [],
   demoPack: undefined,
-  stacks: {},
+  stacks: {
+    filesystem: true,
+    rlmStack: true,
+  },
   manifestOverrides: {},
 } as const;
