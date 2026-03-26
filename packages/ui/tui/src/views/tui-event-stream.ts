@@ -438,27 +438,46 @@ export function harnessPauseResume(deps: DomainActionDeps): void {
     .catch(() => {});
 }
 
-/** Governance approve — sets pending confirmation for the selected item. */
+/** Governance approve — directly approves the selected item and returns to console. */
 export function governanceApprove(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
-  if (item !== undefined) {
-    deps.store.dispatch({
-      kind: "set_governance_pending_action",
-      pendingAction: { kind: "approve", item },
-    });
+  if (item === undefined) return;
+
+  deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
+  deps.client
+    .reviewGovernance(item.id, "approved")
+    .then((r) => {
+      if (r.ok) deps.addLifecycleMessage(`Approved: ${item.action} for ${item.agentId}`);
+      else deps.addLifecycleMessage(`Approve failed: ${r.error.kind}`);
+    })
+    .catch(() => {});
+
+  // Return to console after approval — check updated state
+  const after = deps.store.getState().governanceView.pendingApprovals;
+  if (after.length === 0) {
+    deps.store.dispatch({ kind: "set_view", view: "console" });
   }
 }
 
-/** Governance deny — sets pending confirmation for the selected item. */
+/** Governance deny — directly denies the selected item and returns to console. */
 export function governanceDeny(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
-  if (item !== undefined) {
-    deps.store.dispatch({
-      kind: "set_governance_pending_action",
-      pendingAction: { kind: "deny", item },
-    });
+  if (item === undefined) return;
+
+  deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
+  deps.client
+    .reviewGovernance(item.id, "rejected")
+    .then((r) => {
+      if (r.ok) deps.addLifecycleMessage(`Denied: ${item.action} for ${item.agentId}`);
+      else deps.addLifecycleMessage(`Deny failed: ${r.error.kind}`);
+    })
+    .catch(() => {});
+
+  const after = deps.store.getState().governanceView.pendingApprovals;
+  if (after.length === 0) {
+    deps.store.dispatch({ kind: "set_view", view: "console" });
   }
 }
 

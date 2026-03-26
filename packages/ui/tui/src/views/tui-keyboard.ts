@@ -536,21 +536,8 @@ export function createKeyboardHandler(
       }
     }
 
-    // Governance view — j/k navigate, a approve, d deny, y/n confirm
+    // Governance view — j/k navigate, a approve, d deny
     if (view === "governance") {
-      const hasPending = store.getState().governanceView.pendingAction !== null;
-      if (hasPending) {
-        if (sequence === "y") {
-          callbacks.governanceConfirm();
-          return true;
-        }
-        if (sequence === "n" || sequence === "\x1b") {
-          callbacks.governanceCancel();
-          return true;
-        }
-        // Block other keys while confirmation is active
-        return true;
-      }
       if (sequence === "j" || sequence === "\x1b[B") {
         callbacks.governanceSelectNext();
         return true;
