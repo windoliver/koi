@@ -9,7 +9,14 @@ import type { ToolDescriptor } from "@koi/core/ecs";
 import type { EngineEvent, EngineInput } from "@koi/core/engine";
 import type { AgentMessage, AgentOptions, StreamFn } from "@mariozechner/pi-agent-core";
 import { Agent as PiAgent } from "@mariozechner/pi-agent-core";
-import type { Api, Message, Model, UserMessage } from "@mariozechner/pi-ai";
+import type {
+  Api,
+  Context,
+  Message,
+  Model,
+  SimpleStreamOptions,
+  UserMessage,
+} from "@mariozechner/pi-ai";
 import {
   completeSimple,
   createAssistantMessageEventStream,
@@ -29,12 +36,157 @@ import type { PiAdapterConfig, PiEngineAdapter } from "./types.js";
  * (e.g. OpenRouter). Uses pi-ai's generateSimple (non-streaming) and emits
  * synthetic AssistantMessageEvents from the complete response.
  */
+/**
+ * Convert pi-ai messages to OpenAI format for raw fetch fallback.
+ * Handles toolCall/toolResult which completeSimple misformats for OpenRouter.
+ */
+function piMessagesToOpenAI(messages: readonly Message[]): readonly Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = [];
+  for (const msg of messages) {
+    const content = msg.content as unknown as readonly Record<string, unknown>[];
+    if (msg.role === "user") {
+      const text = (Array.isArray(content) ? content : [])
+        .filter((c) => c.type === "text")
+        .map((c) => String(c.text ?? ""))
+        .join("");
+      result.push({ role: "user", content: text || String(msg.content) });
+    } else if (msg.role === "assistant") {
+      const blocks = Array.isArray(content) ? content : [];
+      const text = blocks
+        .filter((c) => c.type === "text")
+        .map((c) => String(c.text ?? ""))
+        .join("");
+      const toolCalls = blocks.filter((c) => c.type === "toolCall");
+      const entry: Record<string, unknown> = { role: "assistant" };
+      if (text) entry.content = text;
+      if (toolCalls.length > 0) {
+        entry.tool_calls = toolCalls.map((tc) => ({
+          id: String(tc.id ?? ""),
+          type: "function",
+          function: { name: String(tc.name ?? ""), arguments: JSON.stringify(tc.arguments ?? {}) },
+        }));
+      }
+      result.push(entry);
+    } else if (msg.role === "toolResult") {
+      const blocks = Array.isArray(content) ? content : [];
+      const text = blocks
+        .filter((c) => c.type === "text")
+        .map((c) => String(c.text ?? ""))
+        .join("");
+      result.push({
+        role: "tool",
+        tool_call_id: String((msg as unknown as Record<string, unknown>).id ?? ""),
+        content: text,
+      });
+    }
+  }
+  return result;
+}
+
+/**
+ * Raw OpenRouter fetch — bypasses Pi SDK which misformats tool results.
+ * Returns an AssistantMessage-shaped object.
+ */
+async function openRouterRawFetch(
+  model: Model<Api>,
+  context: Context,
+  options?: SimpleStreamOptions,
+): Promise<import("@mariozechner/pi-ai").AssistantMessage> {
+  const apiKey = options?.apiKey ?? process.env.OPENROUTER_API_KEY ?? "";
+  const messages = piMessagesToOpenAI(context.messages);
+  const ctx = context as unknown as Record<string, unknown>;
+  const system = typeof ctx.system === "string" ? ctx.system : undefined;
+  const body: Record<string, unknown> = {
+    model: model.id,
+    messages: system ? [{ role: "system", content: system }, ...messages] : messages,
+  };
+  const tools = ctx.tools as readonly Record<string, unknown>[] | undefined;
+  if (tools && tools.length > 0) {
+    body.tools = tools.map((t) => ({
+      type: "function",
+      function: {
+        name: String(t.name ?? ""),
+        description: t.description,
+        parameters: t.parameters,
+      },
+    }));
+  }
+
+  const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+  const json = (await resp.json()) as {
+    readonly choices: readonly {
+      readonly message: {
+        readonly content?: string | null;
+        readonly tool_calls?: readonly {
+          readonly id: string;
+          readonly function: { readonly name: string; readonly arguments: string };
+        }[];
+      };
+      readonly finish_reason?: string;
+    }[];
+    readonly usage?: { readonly prompt_tokens: number; readonly completion_tokens: number };
+    readonly model: string;
+  };
+
+  const choice = json.choices[0];
+  const content: import("@mariozechner/pi-ai").AssistantMessage["content"] = [];
+  if (choice?.message.content) {
+    content.push({
+      type: "text",
+      text: choice.message.content,
+    } as import("@mariozechner/pi-ai").TextContent);
+  }
+  if (choice?.message.tool_calls) {
+    for (const tc of choice.message.tool_calls) {
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+      } catch {
+        /* empty */
+      }
+      content.push({
+        type: "toolCall",
+        id: tc.id,
+        name: tc.function.name,
+        arguments: args,
+      } as import("@mariozechner/pi-ai").ToolCall);
+    }
+  }
+
+  return {
+    role: "assistant",
+    content,
+    api: model.api,
+    provider: model.provider,
+    model: json.model ?? model.id,
+    usage: {
+      input: json.usage?.prompt_tokens ?? 0,
+      output: json.usage?.completion_tokens ?? 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: (json.usage?.prompt_tokens ?? 0) + (json.usage?.completion_tokens ?? 0),
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: choice?.finish_reason === "tool_calls" ? "tool_use" : "stop",
+    timestamp: Date.now(),
+  } as import("@mariozechner/pi-ai").AssistantMessage;
+}
+
 function createNonStreamingWrapper(_piModel: Model<Api>): StreamFn {
   return (model, context, options) => {
     const stream = createAssistantMessageEventStream();
     void (async () => {
       try {
-        const message = await completeSimple(model, context, options);
+        // Try completeSimple first; fall back to raw fetch if it returns error
+        // (completeSimple misformats tool results for OpenRouter)
+        let message = await completeSimple(model, context, options);
+        if (message.stopReason === "error" || message.content.length === 0) {
+          message = await openRouterRawFetch(model, context, options);
+        }
         stream.push({ type: "start", partial: message });
         // Emit text content
         for (const block of message.content) {
