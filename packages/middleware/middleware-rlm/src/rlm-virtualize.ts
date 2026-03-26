@@ -19,7 +19,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ContentBlock, InboundMessage } from "@koi/core";
+import type { ContentBlock, InboundMessage, JsonObject } from "@koi/core";
+import {
+  type AttachResult,
+  type ComponentProvider,
+  DEFAULT_UNSANDBOXED_POLICY,
+  type Tool,
+  type ToolDescriptor,
+} from "@koi/core/ecs";
 import type {
   CapabilityFragment,
   KoiMiddleware,
@@ -123,7 +130,10 @@ function generateStub(
     `Format: ${meta.format} | Size: ${String(meta.sizeBytes)} bytes (~${String(meta.estimatedTokens)} tokens) | Chunks: ${String(meta.totalChunks)}\n` +
     `File: ${filePath}\n` +
     `Preview: ${meta.preview}\n` +
-    `Use rlm_examine, rlm_chunk, rlm_input_info tools to access this content.`
+    `\n` +
+    `IMPORTANT: This content has been virtualized. The raw content is NOT available inline.\n` +
+    `You MUST use the rlm_examine tool to read it. Call rlm_examine with offset=0 and length=${String(meta.sizeBytes)} to read the full content.\n` +
+    `For large content, read in chunks: call rlm_input_info first, then rlm_examine with offset/length ranges.`
   );
 }
 
@@ -297,8 +307,14 @@ export function createRlmVirtualizeMiddleware(config?: RlmVirtualizeConfig): Koi
     const result: InboundMessage[] = [];
 
     for (const msg of messages) {
-      // Skip system messages
-      if (msg.senderId.startsWith("system:") || msg.senderId === "system") {
+      // Skip system messages and tool results — tool results represent data
+      // the model explicitly requested (including rlm_examine results).
+      // Re-virtualizing them would create an infinite loop.
+      if (
+        msg.senderId.startsWith("system:") ||
+        msg.senderId === "system" ||
+        msg.senderId === "tool"
+      ) {
         result.push(msg);
         continue;
       }
@@ -427,6 +443,47 @@ export function createRlmVirtualizeMiddleware(config?: RlmVirtualizeConfig): Koi
       }
 
       return response;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tool provider — registers RLM tools as entity tools so the engine adapter
+// includes them in its tool list. Execution is handled by the middleware's
+// wrapToolCall; the execute function here is a passthrough placeholder that
+// should never be called directly (middleware intercepts first).
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a ComponentProvider that registers rlm_examine, rlm_chunk,
+ * and rlm_input_info as entity tools.
+ *
+ * These tools need to be registered as entity tools (not just injected
+ * into ModelRequest.tools) so the engine adapter wraps them as executable
+ * tools. The actual dispatch is handled by the rlm-virtualize middleware's
+ * wrapToolCall — the execute function here is a fallback that returns an
+ * error if somehow called outside the middleware chain.
+ */
+export function createRlmToolsProvider(): ComponentProvider {
+  const tools: readonly Tool[] = ALL_VIRTUALIZE_DESCRIPTORS.map(
+    (desc): Tool => ({
+      descriptor: desc as ToolDescriptor,
+      origin: "primordial" as const,
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+      execute: async (_args: JsonObject): Promise<unknown> => {
+        return { error: `${desc.name} must be dispatched through the rlm-virtualize middleware.` };
+      },
+    }),
+  );
+
+  return {
+    name: "rlm-tools",
+    async attach(): Promise<AttachResult> {
+      const components = new Map<string, unknown>();
+      for (const tool of tools) {
+        components.set(`tool:${tool.descriptor.name}`, tool);
+      }
+      return { components, skipped: [] };
     },
   };
 }

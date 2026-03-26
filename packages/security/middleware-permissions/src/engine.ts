@@ -24,13 +24,22 @@ export interface PermissionRules {
  */
 export const DEFAULT_GROUPS: Readonly<Record<string, readonly string[]>> = {
   /** Filesystem — read + write + delete */
-  fs: ["fs:*"],
+  fs: ["fs:*", "fs_*"],
   /** Filesystem read-only subset */
-  fs_read: ["fs:read", "fs:stat", "fs:list", "fs:glob"],
+  fs_read: [
+    "fs:read",
+    "fs:stat",
+    "fs:list",
+    "fs:glob",
+    "fs_read",
+    "fs_stat",
+    "fs_list",
+    "fs_search",
+  ],
   /** Filesystem write subset */
-  fs_write: ["fs:write", "fs:create", "fs:mkdir"],
+  fs_write: ["fs:write", "fs:create", "fs:mkdir", "fs_write", "fs_create", "fs_edit", "fs_mkdir"],
   /** Filesystem destructive subset */
-  fs_delete: ["fs:delete", "fs:rm", "fs:rmdir"],
+  fs_delete: ["fs:delete", "fs:rm", "fs:rmdir", "fs_delete", "fs_rm", "fs_rmdir"],
   /** Shell / process execution */
   runtime: ["exec", "spawn", "bash", "shell"],
   /** HTTP / network calls */

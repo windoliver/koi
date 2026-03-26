@@ -14,7 +14,11 @@ import { getModel, streamSimple } from "@mariozechner/pi-ai";
 import { AsyncQueue, createEventSubscriber } from "./event-bridge.js";
 import { engineInputToHistory, engineInputToPrompt, PI_CAPABILITIES } from "./message-map.js";
 import { createMetricsAccumulator } from "./metrics.js";
-import { createModelCallTerminal, createModelStreamTerminal } from "./model-terminal.js";
+import {
+  clearLastKnownParams,
+  createModelCallTerminal,
+  createModelStreamTerminal,
+} from "./model-terminal.js";
 import { createBridgeStreamFn } from "./stream-bridge.js";
 import { wrapTool } from "./tool-bridge.js";
 import type { PiAdapterConfig, PiEngineAdapter } from "./types.js";
@@ -286,6 +290,9 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
         currentPiAgent.abort();
         currentPiAgent = undefined;
       }
+      // Clear session-scoped fallback to prevent leaking piParams
+      // (API key, abort signal, callBoundStream) into a later session.
+      clearLastKnownParams();
     },
   };
 }

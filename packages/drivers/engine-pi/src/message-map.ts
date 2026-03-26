@@ -82,15 +82,23 @@ export function inboundToPiMessage(msg: InboundMessage): Message {
   if (meta?.fromHistory === true) {
     // ThreadMessage.role was "assistant" → senderId was set to agentId
     // ThreadMessage.role was "tool" → senderId was set to "tool" (already caught above)
-    // ThreadMessage.role was "user" → senderId was set to userId or "user"
+    // ThreadMessage.role was "user" → senderId was set to userId (e.g., "user-42") or "user"
     // ThreadMessage.role was "system" → senderId was set to "system"
-    // So if fromHistory is true and senderId is not "user"/"system"/"tool" or "system:*",
-    // it must be an assistant message with agentId as senderId.
-    if (
+    //
+    // Use originalRole metadata (set by conversation middleware) when available
+    // to avoid misclassifying named users (e.g., "user-42") as assistant.
+    const originalRole = meta.originalRole;
+    if (typeof originalRole === "string") {
+      if (originalRole === "assistant") return inboundToAssistantMessage(msg);
+      // originalRole is "user"/"system"/"tool" → fall through to UserMessage
+    } else if (
       msg.senderId !== "user" &&
       msg.senderId !== "system" &&
-      !msg.senderId.startsWith("system:")
+      !msg.senderId.startsWith("system:") &&
+      !msg.senderId.startsWith("user")
     ) {
+      // Legacy path: no originalRole metadata.
+      // Heuristic: senderIds starting with "user" are user messages (e.g., "user-42").
       return inboundToAssistantMessage(msg);
     }
   }

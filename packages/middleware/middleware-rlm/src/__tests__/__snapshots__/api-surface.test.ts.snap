@@ -5,6 +5,7 @@ exports[`@koi/middleware-rlm API surface . has stable type surface 1`] = `
 import { JsonObject, KoiMiddleware, MiddlewareBundle } from '@koi/core';
 import { BrickDescriptor } from '@koi/resolve';
 import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
+import { ComponentProvider } from '@koi/core/ecs';
 
 /**
  * Types and configuration for @koi/middleware-rlm.
@@ -278,6 +279,80 @@ declare function createRlmBundle(config?: RlmMiddlewareConfig): MiddlewareBundle
 /** Tool name constant — used for both injection and interception. */
 declare const RLM_PROCESS_TOOL_NAME: "rlm_process";
 
-export { type ChunkDescriptor, DEFAULT_CHUNK_SIZE, DEFAULT_COMPACTION_THRESHOLD, DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_DEPTH, DEFAULT_MAX_CONCURRENCY, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_ITERATIONS, DEFAULT_PREVIEW_LENGTH, DEFAULT_PRIORITY, DEFAULT_TIME_BUDGET_MS, type InputFormat, type InputMetadata, MAX_BATCH_PROMPTS, MAX_EXAMINE_LENGTH, RLM_PROCESS_TOOL_NAME, type ReplLoopResult, type RlmEvent, type RlmMetrics, type RlmMiddlewareConfig, type RlmScriptResult, type RlmScriptRunConfig, type RlmScriptRunner, type RlmSpawnRequest, type RlmSpawnResult, type RlmStopReason, createRlmBundle, createRlmMiddleware, descriptor, validateRlmConfig };
+/**
+ * RLM auto-virtualization middleware.
+ *
+ * Transparently intercepts oversized content in model requests and tool
+ * responses, writing it to temp files and replacing it with compact stubs.
+ * Injects access tools (rlm_examine, rlm_chunk, rlm_input_info) so the
+ * model can read slices without the raw content entering its context window.
+ *
+ * Matches the ypi / RLM paper pattern: context is virtualized BEFORE the
+ * model sees it. The model's normal engine loop handles the rest — no
+ * separate REPL loop needed.
+ *
+ * Temp files persist on disk across session boundaries, enabling the
+ * autonomous harness to resume sessions with virtualized content intact.
+ *
+ * Priority 250: runs before model-router, so it can intercept content early.
+ */
+
+interface RlmVirtualizeConfig {
+    /** Token threshold for auto-virtualization. Default: 20,000. */
+    readonly virtualizeThreshold?: number | undefined;
+    /** Chunk size for InputStore. Default: 4,000. */
+    readonly chunkSize?: number | undefined;
+    /** Preview length for stubs. Default: 500. */
+    readonly previewLength?: number | undefined;
+    /** Middleware priority. Default: 250 (before model-router). */
+    readonly priority?: number | undefined;
+    /** Base directory for temp files. Default: os.tmpdir()/rlm. */
+    readonly tempDir?: string | undefined;
+    /** Audit event callback. Called when content is virtualized or evicted. */
+    readonly onAudit?: ((event: RlmAuditEvent) => void) | undefined;
+}
+type RlmAuditEvent = {
+    readonly kind: "virtualized";
+    readonly virtualId: string;
+    readonly source: string;
+    readonly format: string;
+    readonly sizeBytes: number;
+    readonly estimatedTokens: number;
+    readonly filePath: string;
+    readonly sessionId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "rehydrated";
+    readonly virtualId: string;
+    readonly filePath: string;
+    readonly sessionId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "evicted";
+    readonly virtualId: string;
+    readonly filePath: string;
+    readonly sessionId: string;
+    readonly timestamp: number;
+};
+/**
+ * Creates an auto-virtualization middleware.
+ *
+ * Scans model requests for oversized text content and tool outputs,
+ * writes them to temp files, and replaces with stubs + access tools.
+ */
+declare function createRlmVirtualizeMiddleware(config?: RlmVirtualizeConfig): KoiMiddleware$1;
+/**
+ * Creates a ComponentProvider that registers rlm_examine, rlm_chunk,
+ * and rlm_input_info as entity tools.
+ *
+ * These tools need to be registered as entity tools (not just injected
+ * into ModelRequest.tools) so the engine adapter wraps them as executable
+ * tools. The actual dispatch is handled by the rlm-virtualize middleware's
+ * wrapToolCall — the execute function here is a fallback that returns an
+ * error if somehow called outside the middleware chain.
+ */
+declare function createRlmToolsProvider(): ComponentProvider;
+
+export { type ChunkDescriptor, DEFAULT_CHUNK_SIZE, DEFAULT_COMPACTION_THRESHOLD, DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_DEPTH, DEFAULT_MAX_CONCURRENCY, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_ITERATIONS, DEFAULT_PREVIEW_LENGTH, DEFAULT_PRIORITY, DEFAULT_TIME_BUDGET_MS, type InputFormat, type InputMetadata, MAX_BATCH_PROMPTS, MAX_EXAMINE_LENGTH, RLM_PROCESS_TOOL_NAME, type ReplLoopResult, type RlmAuditEvent, type RlmEvent, type RlmMetrics, type RlmMiddlewareConfig, type RlmScriptResult, type RlmScriptRunConfig, type RlmScriptRunner, type RlmSpawnRequest, type RlmSpawnResult, type RlmStopReason, type RlmVirtualizeConfig, createRlmBundle, createRlmMiddleware, createRlmToolsProvider, createRlmVirtualizeMiddleware, descriptor, validateRlmConfig };
 "
 `;

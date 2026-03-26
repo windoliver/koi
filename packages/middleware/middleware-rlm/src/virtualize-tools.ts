@@ -36,8 +36,11 @@ export const RLM_INPUT_INFO_NAME = "rlm_input_info" as const;
 export const RLM_EXAMINE_DESCRIPTOR: RlmToolDescriptor = {
   name: RLM_EXAMINE_NAME,
   description:
-    `Read a slice of a virtualized input. Max ${String(MAX_EXAMINE_LENGTH)} chars per call. ` +
-    `Use storeId to target a specific virtualized input (defaults to most recent).`,
+    `Read a slice of virtualized content. Returns the raw text from offset to offset+length. ` +
+    `Max ${String(MAX_EXAMINE_LENGTH)} chars per call. ` +
+    `To read all content: set offset=0, length=<sizeBytes from stub>. ` +
+    `For large content, read incrementally with different offset values. ` +
+    `This is the ONLY way to access virtualized content — re-reading the file will return the same stub.`,
   inputSchema: {
     type: "object",
     properties: {
@@ -134,13 +137,23 @@ function isError(result: InputStore | RlmToolResult): result is RlmToolResult {
   return "isError" in result;
 }
 
+/** Parse a numeric arg that may arrive as a string (common with LLM tool calls). */
+function parseNumericArg(value: unknown, fallback: number): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return fallback;
+}
+
 export function dispatchExamine(registry: VirtualStoreRegistry, args: JsonObject): RlmToolResult {
   const storeOrError = resolveStore(registry, args);
   if (isError(storeOrError)) return storeOrError;
   const store = storeOrError;
 
-  const offset = typeof args.offset === "number" ? args.offset : 0;
-  const length = typeof args.length === "number" ? args.length : 2000;
+  const offset = parseNumericArg(args.offset, 0);
+  const length = parseNumericArg(args.length, 2000);
 
   if (offset < 0) return { output: "Error: offset must be >= 0.", isError: true };
   if (length > MAX_EXAMINE_LENGTH) {
@@ -158,8 +171,8 @@ export function dispatchChunk(registry: VirtualStoreRegistry, args: JsonObject):
   const store = storeOrError;
 
   const meta = store.metadata();
-  const start = typeof args.start_index === "number" ? args.start_index : 0;
-  const end = typeof args.end_index === "number" ? args.end_index : meta.totalChunks - 1;
+  const start = parseNumericArg(args.start_index, 0);
+  const end = parseNumericArg(args.end_index, meta.totalChunks - 1);
 
   if (start > end) return { output: "Error: start_index must be <= end_index.", isError: true };
 

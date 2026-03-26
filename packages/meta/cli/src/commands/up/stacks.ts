@@ -200,9 +200,20 @@ async function activateGovernance(
     permissions: {
       backend: (await import("@koi/middleware-permissions")).createPatternPermissionBackend({
         rules: {
-          allow: ["group:fs_read", "group:web", "group:browser", "group:lsp"],
-          deny: ["group:fs_delete"],
-          ask: ["group:runtime"],
+          allow: [
+            "group:fs_read",
+            "group:fs_write",
+            "group:web",
+            "group:browser",
+            "group:lsp",
+            "rlm_*",
+            "chub_*",
+            "ask_user",
+            "execute_code",
+            "execute_script",
+          ],
+          deny: ["group:fs_delete", "group:runtime"],
+          ask: [],
         },
         groups: (await import("@koi/middleware-permissions")).DEFAULT_GROUPS,
       }),
@@ -463,13 +474,18 @@ async function activateRlmStack(
   middleware: KoiMiddleware[],
   providers: ComponentProvider[],
 ): Promise<void> {
-  const { createRlmStackFromPreset } = await import("@koi/rlm-stack");
-  const { createRlmVirtualizeMiddleware } = await import("@koi/middleware-rlm");
+  const { createRlmVirtualizeMiddleware, createRlmToolsProvider } = await import(
+    "@koi/middleware-rlm"
+  );
   // Auto-virtualization middleware (priority 250, runs first)
   const virtualizeMiddleware = createRlmVirtualizeMiddleware({
-    virtualizeThreshold: 500, // ~2K chars — low for testing, raise in production
+    virtualizeThreshold: 500, // ~2K chars — triggers virtualization for moderate-sized content
   });
   middleware.push(virtualizeMiddleware);
+  // Register RLM tools as entity tools so the engine adapter includes them
+  // in its executable tool list. Middleware's wrapToolCall handles dispatch.
+  const toolsProvider = createRlmToolsProvider();
+  providers.push(toolsProvider);
   log(config, "Stack: rlm-stack (auto-virtualize + rlm_examine/chunk/input_info tools)");
 }
 
