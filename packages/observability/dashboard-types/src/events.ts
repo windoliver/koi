@@ -389,6 +389,17 @@ export interface LogDashboardEvent {
 // Union + batch envelope
 // ---------------------------------------------------------------------------
 
+/** Governance events — approval requests and decisions. */
+export type GovernanceDashboardEvent = {
+  readonly kind: "governance";
+  readonly subKind: "approval_required";
+  readonly approvalId: string;
+  readonly agentId: string;
+  readonly action: string;
+  readonly resource: string;
+  readonly timestamp: number;
+};
+
 export type DashboardEvent =
   | AgentDashboardEvent
   | SkillDashboardEvent
@@ -404,7 +415,8 @@ export type DashboardEvent =
   | ForgeDashboardEvent
   | MonitorDashboardEvent
   | PtyOutputDashboardEvent
-  | LogDashboardEvent;
+  | LogDashboardEvent
+  | GovernanceDashboardEvent;
 
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 export interface DashboardEventBatch {

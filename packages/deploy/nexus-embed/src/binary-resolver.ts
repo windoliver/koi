@@ -24,6 +24,27 @@ export async function checkBinaryAvailable(binaryParts: readonly string[]): Prom
   if (binary === undefined) return false;
 
   try {
+    // For "uv run nexus", verify the full command works — not just that "uv" exists.
+    // This catches PATH conflicts (e.g. Anaconda's `nexus` shadowing Koi's).
+    if (binary === "uv" && binaryParts.includes("nexus")) {
+      const proc = Bun.spawn([...binaryParts, "--version"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) {
+        const stderr = await new Response(proc.stderr).text();
+        if (stderr.includes("No module named") || stderr.includes("ModuleNotFoundError")) {
+          process.stderr.write(
+            "warn: 'uv run nexus' failed — a conflicting 'nexus' binary may be on your PATH.\n" +
+              "hint: Run 'pip uninstall nexus' or set NEXUS_COMMAND to override.\n",
+          );
+        }
+        return false;
+      }
+      return true;
+    }
+
     const proc = Bun.spawn(["which", binary], {
       stdout: "pipe",
       stderr: "ignore",

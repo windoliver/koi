@@ -1,7 +1,7 @@
 /**
- * Governance view — pending approval queue + violation log.
+ * Governance view — pending approval queue, violation log, and sanction levels.
  *
- * Keyboard: [a] approve, [d] deny, [m] modify.
+ * Keyboard: [a] approve, [d] deny, Esc:back.
  */
 
 import { PanelChrome } from "../components/panel-chrome.js";
@@ -16,7 +16,7 @@ export interface GovernanceViewProps {
 
 export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
   const { pendingApprovals, violations, scrollOffset, selectedIndex } = props.governanceView;
-  const VISIBLE_ROWS = 15;
+  const VISIBLE_ROWS = 10;
   const visibleApprovals = pendingApprovals.slice(scrollOffset, scrollOffset + VISIBLE_ROWS);
 
   return (
@@ -26,28 +26,46 @@ export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
       focused={props.focused}
       zoomLevel={props.zoomLevel}
       isEmpty={pendingApprovals.length === 0 && violations.length === 0}
-      emptyMessage="No governance items."
+      emptyMessage="All clear — no pending approvals or violations."
       emptyHint="Governance manages approval workflows and policy violations."
     >
-      {/* Pending approvals */}
+      {/* Header summary */}
+      <box height={1} flexDirection="row" paddingLeft={1}>
+        <text fg={COLORS.white}><b>{"Governance  "}</b></text>
+        <text fg={pendingApprovals.length > 0 ? COLORS.yellow : COLORS.dim}>
+          {`${String(pendingApprovals.length)} pending`}
+        </text>
+        <text fg={COLORS.dim}>{"  "}</text>
+        <text fg={violations.length > 0 ? COLORS.red : COLORS.dim}>
+          {`${String(violations.length)} violations`}
+        </text>
+      </box>
+
+      {/* Pending approvals — card-style */}
       {pendingApprovals.length > 0 && (
-        <box flexDirection="column">
+        <box flexDirection="column" marginTop={1}>
           <box height={1}>
-            <text fg={COLORS.cyan}><b>{` Pending Approvals (${String(pendingApprovals.length)})`}</b></text>
-          </box>
-          <box height={1}>
-            <text fg={COLORS.dim}>{" Agent        Action           Resource             Time"}</text>
+            <text fg={COLORS.cyan}><b>{" PENDING APPROVALS"}</b></text>
           </box>
           {visibleApprovals.map((item, i) => {
             const actualIdx = scrollOffset + i;
             const isSelected = actualIdx === selectedIndex;
-            const time = new Date(item.timestamp).toLocaleTimeString();
+            const pointer = isSelected ? " \u25B8" : "  ";
+            const itemColor = isSelected ? COLORS.cyan : COLORS.white;
             return (
-              <box key={item.id} height={1}>
-                <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
-                  {isSelected ? " >" : "  "}
-                  {`${item.agentId.padEnd(12).slice(0, 12)} ${item.action.padEnd(16).slice(0, 16)} ${item.resource.padEnd(20).slice(0, 20)} ${time}`}
-                </text>
+              <box key={item.id} flexDirection="column">
+                <box height={1}>
+                  <text fg={itemColor}>
+                    <b>{`${pointer} \u26A0\uFE0F ${item.agentId} wants ${item.action}`}</b>
+                  </text>
+                </box>
+                {isSelected && (
+                  <box flexDirection="column" paddingLeft={4}>
+                    <box height={1}>
+                      <text fg={COLORS.dim}>{`Resource: ${item.resource}`}</text>
+                    </box>
+                  </box>
+                )}
               </box>
             );
           })}
@@ -70,6 +88,15 @@ export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
               </box>
             );
           })}
+        </box>
+      )}
+
+      {/* Keyboard hints */}
+      {props.focused && (
+        <box height={1} marginTop={1} flexDirection="row" paddingLeft={1}>
+          <text fg={COLORS.green}>{"[a]pprove  "}</text>
+          <text fg={COLORS.red}>{"[d]eny  "}</text>
+          <text fg={COLORS.dim}>{"Esc:back"}</text>
         </box>
       )}
     </PanelChrome>

@@ -59,23 +59,38 @@ export async function seedDemoPackIfNeeded(
 
     // Retry seeding once if all counts are zero — Nexus may pass health check
     // but not be ready for batch writes immediately after container startup.
-    let result = await runSeed(demoPack, {
-      nexusClient,
-      agentName,
-      workspaceRoot,
-      verbose,
-    });
+    // Timeout after 30s to prevent silent hangs (e.g. Nexus auth failure).
+    const SEED_TIMEOUT_MS = 30_000;
+    let result = await Promise.race([
+      runSeed(demoPack, {
+        nexusClient,
+        agentName,
+        workspaceRoot,
+        verbose,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("Demo seed timed out after 30s — check Nexus connectivity")),
+          SEED_TIMEOUT_MS,
+        ),
+      ),
+    ]);
 
     const allZero = result.summary.every((line) => /:\s*0\//.test(line));
     if (allZero && result.summary.length > 0) {
       if (verbose) process.stderr.write("  Retrying seed (Nexus may still be initializing)...\n");
       await new Promise((r) => setTimeout(r, 3000));
-      result = await runSeed(demoPack, {
-        nexusClient,
-        agentName,
-        workspaceRoot,
-        verbose,
-      });
+      result = await Promise.race([
+        runSeed(demoPack, {
+          nexusClient,
+          agentName,
+          workspaceRoot,
+          verbose,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Demo seed retry timed out")), SEED_TIMEOUT_MS),
+        ),
+      ]);
     }
 
     for (const line of result.summary) {

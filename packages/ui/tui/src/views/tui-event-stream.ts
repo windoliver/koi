@@ -354,19 +354,17 @@ export function fetchDataForView(view: TuiView, deps: ViewDataFetchDeps): void {
         .listGovernanceQueue()
         .then((r) => {
           if (r.ok) {
-            // Merge queue items into governance view as pending approvals
-            for (const item of r.value) {
-              store.dispatch({
-                kind: "add_governance_approval",
-                approval: {
-                  id: item.id,
-                  agentId: item.agentId,
-                  action: item.requestKind,
-                  resource: JSON.stringify(item.payload).slice(0, 40),
-                  timestamp: item.timestamp,
-                },
-              });
-            }
+            // Replace the full list from server snapshot — reconciles removals
+            store.dispatch({
+              kind: "set_governance_approvals",
+              approvals: r.value.map((item) => ({
+                id: item.id,
+                agentId: item.agentId,
+                action: item.requestKind,
+                resource: JSON.stringify(item.payload).slice(0, 40),
+                timestamp: item.timestamp,
+              })),
+            });
           }
         })
         .catch(() => {});
@@ -450,36 +448,48 @@ export function harnessPauseResume(deps: DomainActionDeps): void {
     .catch(() => {});
 }
 
-/** Governance approve — calls reviewGovernance API. */
+/** Governance approve — sends approval, removes item + returns to console on success. */
 export function governanceApprove(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
-  if (item !== undefined) {
-    deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
-    deps.client
-      .reviewGovernance(item.id, "approved")
-      .then((r) => {
-        if (r.ok) deps.addLifecycleMessage(`Approved: ${item.action} on ${item.resource}`);
-        else deps.addLifecycleMessage(`Approve failed: ${r.error.kind}`);
-      })
-      .catch(() => {});
-  }
+  if (item === undefined) return;
+
+  deps.client
+    .reviewGovernance(item.id, "approved")
+    .then((r) => {
+      if (r.ok) {
+        deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
+        deps.addLifecycleMessage(`Approved: ${item.action} for ${item.agentId}`);
+        deps.store.dispatch({ kind: "set_view", view: "console" });
+      } else {
+        deps.addLifecycleMessage(`Approve failed: ${r.error.kind}`);
+      }
+    })
+    .catch(() => {
+      deps.addLifecycleMessage("Approve failed: network error");
+    });
 }
 
-/** Governance deny — calls reviewGovernance API. */
+/** Governance deny — sends denial, removes item + returns to console on success. */
 export function governanceDeny(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
-  if (item !== undefined) {
-    deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
-    deps.client
-      .reviewGovernance(item.id, "rejected")
-      .then((r) => {
-        if (r.ok) deps.addLifecycleMessage(`Denied: ${item.action} on ${item.resource}`);
-        else deps.addLifecycleMessage(`Deny failed: ${r.error.kind}`);
-      })
-      .catch(() => {});
-  }
+  if (item === undefined) return;
+
+  deps.client
+    .reviewGovernance(item.id, "rejected")
+    .then((r) => {
+      if (r.ok) {
+        deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
+        deps.addLifecycleMessage(`Denied: ${item.action} for ${item.agentId}`);
+        deps.store.dispatch({ kind: "set_view", view: "console" });
+      } else {
+        deps.addLifecycleMessage(`Deny failed: ${r.error.kind}`);
+      }
+    })
+    .catch(() => {
+      deps.addLifecycleMessage("Deny failed: network error");
+    });
 }
 
 /** Promote the selected forge brick via API. */
@@ -757,6 +767,24 @@ export function forwardAgentEventsToConsole(
           timestamp: evt.timestamp,
         },
       });
+      continue;
+    }
+    if (evt.kind === "governance" && evt.subKind === "approval_required") {
+      deps.store.dispatch({
+        kind: "add_governance_approval",
+        approval: {
+          id: evt.approvalId,
+          agentId: evt.agentId,
+          action: evt.action,
+          resource: evt.resource,
+          timestamp: evt.timestamp,
+        },
+      });
+      // Auto-switch to governance view immediately
+      if (deps.store.getState().view !== "governance") {
+        deps.store.dispatch({ kind: "set_view", view: "governance" });
+        deps.addLifecycleMessage(`⚠ Governance approval required — ${evt.action}`);
+      }
       continue;
     }
     if (isDataSourceEvent(evt)) {

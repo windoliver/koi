@@ -398,6 +398,30 @@ async function persistChatToNexus(
   }
 }
 
+/** Test Nexus write connectivity — returns true if a test write succeeds. */
+async function testNexusWrite(baseUrl: string, apiKey: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(`${baseUrl}/api/nfs/write`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({ path: "/.koi-health-check", content: new Date().toISOString() }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) return false;
+    // Nexus returns HTTP 200 even on JSON-RPC errors — check the body
+    const body = await resp.text();
+    return !body.includes('"error"');
+  } catch {
+    return false;
+  }
+}
+
 /** Probe nexus.yaml for an already-running Nexus instance. Returns URL+key if healthy. */
 async function probeExistingNexus(
   workspaceRoot: string,
@@ -579,6 +603,26 @@ export async function runUp(flags: UpFlags): Promise<void> {
         }
       }
       output.spinner.stop(undefined);
+    }
+  }
+
+  // Verify Nexus connectivity with a write test — auto-restart if unhealthy
+  if (nexusBaseUrl !== undefined) {
+    let nexusWriteOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
+    if (!nexusWriteOk) {
+      // Raft may need time to re-elect leader after container resume — retry for up to 30s
+      output.spinner.start("Waiting for Nexus Raft leader...");
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        nexusWriteOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
+        if (nexusWriteOk) break;
+      }
+      output.spinner.stop(undefined);
+      if (nexusWriteOk) {
+        output.success("Nexus ready");
+      } else {
+        output.warn("Nexus write check failed — storage may not work. Try: nexus down && nexus up");
+      }
     }
   }
 
@@ -1055,6 +1099,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       ...(apiKey !== undefined ? { apiKey } : {}),
     });
   }
+  if (demoPack !== undefined) {
+    output.spinner.start("Seeding demo data");
+  }
   const seedResult = await seedDemoPackIfNeeded(
     demoPack,
     workspaceRoot,
@@ -1062,6 +1109,12 @@ export async function runUp(flags: UpFlags): Promise<void> {
     nexusClient,
     flags.verbose,
   );
+  if (demoPack !== undefined) {
+    output.spinner.stop(undefined);
+    if (seedResult.prompts.length > 0) {
+      output.success("Demo data seeded");
+    }
+  }
 
   // 9. ADMIN — kill stale processes on required ports before binding
   const DEFAULT_ADMIN_PORT = 3100;
@@ -1160,6 +1213,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       ...(orch.hasAny
         ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
         : {}),
+      ...(activatedStacks.governanceCommands !== undefined
+        ? { governanceCommands: activatedStacks.governanceCommands }
+        : {}),
       ...(forgeBootstrap !== undefined
         ? {
             forge: createForgeViewSource(
@@ -1215,6 +1271,21 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
     // Wire forge/monitor SSE event sink now that the bridge exists
     emitDashboardEvent = adminBridge.emitEvent;
+
+    // Wire governance → SSE push: when a tool call is blocked, emit immediately
+    if (activatedStacks.governanceCommands?.setOnEnqueue) {
+      activatedStacks.governanceCommands.setOnEnqueue((item) => {
+        adminBridge?.emitEvent({
+          kind: "governance",
+          subKind: "approval_required",
+          approvalId: item.id,
+          agentId: item.agentId,
+          action: item.requestKind,
+          resource: JSON.stringify(item.payload).slice(0, 40),
+          timestamp: item.timestamp,
+        });
+      });
+    }
 
     const routingChatHandler = createChatRouter({
       primaryHandler: chatBridge.handler,

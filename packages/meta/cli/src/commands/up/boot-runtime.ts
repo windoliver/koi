@@ -369,6 +369,9 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
     ...(orch.hasAny
       ? { orchestration: orch.orchestration, orchestrationCommands: orch.orchestrationCommands }
       : {}),
+    ...(activatedStacks.governanceCommands !== undefined
+      ? { governanceCommands: activatedStacks.governanceCommands }
+      : {}),
     ...(debugApi !== undefined
       ? {
           debug: {

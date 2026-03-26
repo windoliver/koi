@@ -33,7 +33,7 @@ interface PatternBackendConfig {
     readonly groups?: Readonly<Record<string, readonly string[]>>;
 }
 interface ApprovalHandler {
-    readonly requestApproval: (toolId: string, input: JsonObject, reason: string) => Promise<boolean>;
+    readonly requestApproval: (toolId: string, input: JsonObject, reason: string, agentId?: string) => Promise<boolean>;
 }
 /**
  * Pattern-based permission backend.

@@ -1010,6 +1010,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
     refreshTimer = setInterval(() => {
       refreshAgents().catch(() => {});
+      // Governance events are pushed via SSE — no polling needed
     }, refreshIntervalMs);
     renderTui();
   }

@@ -75,7 +75,8 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
   const modelStreamTerminal = createModelStreamTerminal();
   const modelCallTerminal = createModelCallTerminal(modelStreamTerminal);
 
-  // The real streamSimple function (called by the model terminal)
+  // The real streamSimple function (called by the model terminal).
+  // pi-ai handles all providers natively including OpenRouter.
   const realStreamSimple: StreamFn = (model, context, options) =>
     streamSimple(model, context, options);
 
@@ -206,6 +207,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
       const prompt = engineInputToPrompt(input);
       void piAgent.prompt(prompt).catch((error: unknown) => {
         // If the agent loop fails, push an error event
+        const errMsg = error instanceof Error ? error.message : String(error);
         const finalMetrics = metrics.finalize();
         queue.push({
           kind: "done",
@@ -214,7 +216,8 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
             stopReason: "error",
             metrics: finalMetrics,
             metadata: {
-              error: error instanceof Error ? error.message : String(error),
+              error: errMsg,
+              errorMessage: errMsg,
             },
           },
         });

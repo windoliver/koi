@@ -1220,6 +1220,7 @@
         "@koi/gateway-stack": "workspace:*",
         "@koi/goal-stack": "workspace:*",
         "@koi/governance": "workspace:*",
+        "@koi/governance-memory": "workspace:*",
         "@koi/harness-scheduler": "workspace:*",
         "@koi/long-running": "workspace:*",
         "@koi/manifest": "workspace:*",

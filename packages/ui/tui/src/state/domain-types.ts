@@ -313,7 +313,12 @@ export function createInitialHarnessView(): HarnessViewState {
 }
 
 export function createInitialGovernanceView(): GovernanceViewState {
-  return { pendingApprovals: [], violations: [], scrollOffset: 0, selectedIndex: 0 };
+  return {
+    pendingApprovals: [],
+    violations: [],
+    scrollOffset: 0,
+    selectedIndex: 0,
+  };
 }
 
 export function createInitialCostView(): CostViewState {

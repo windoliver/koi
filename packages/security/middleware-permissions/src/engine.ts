@@ -56,7 +56,12 @@ export interface PatternBackendConfig {
 }
 
 export interface ApprovalHandler {
-  readonly requestApproval: (toolId: string, input: JsonObject, reason: string) => Promise<boolean>;
+  readonly requestApproval: (
+    toolId: string,
+    input: JsonObject,
+    reason: string,
+    agentId?: string,
+  ) => Promise<boolean>;
 }
 
 /**

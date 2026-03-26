@@ -166,14 +166,31 @@ export async function nexusUp(
   const savedApiKey = process.env.NEXUS_API_KEY;
   delete process.env.NEXUS_API_KEY;
 
-  // Run nexus up (blocks until healthy)
-  const upArgs: string[] = ["up"];
-  if (options?.sourceDir !== undefined) {
-    upArgs.push("--compose-file", join(options.sourceDir, "docker-compose.yml"));
+  // Fast resume: if .state.json exists from a previous run, use `nexus start`
+  // instead of `nexus up`. `nexus start` resumes paused containers without
+  // pulling images or re-resolving ports — much faster for repeat startups.
+  // Only fall through to `nexus up` for first-run or when --build is requested.
+  const existingState = readRuntimeState(cwd);
+  const canFastResume = existingState !== undefined && options?.build !== true && !autoInitialized;
+
+  let upResult: Result<void, KoiError>;
+  if (canFastResume) {
+    if (verbose) {
+      process.stderr.write(
+        `Nexus: reusing existing instance at http://${host}:${String(existingState.ports.http)}\n`,
+      );
+    }
+    upResult = await runNexusCommand(["start"], cwd, verbose, "nexus start", sourceDir);
+    // If start fails (e.g. containers were removed), fall through to full up
+    if (!upResult.ok) {
+      if (verbose) {
+        process.stderr.write("Nexus: fast resume failed, falling back to nexus up\n");
+      }
+      upResult = await runNexusFullUp(options, cwd, verbose, sourceDir);
+    }
+  } else {
+    upResult = await runNexusFullUp(options, cwd, verbose, sourceDir);
   }
-  if (options?.build === true) upArgs.push("--build");
-  if (options?.portStrategy !== undefined) upArgs.push("--port-strategy", options.portStrategy);
-  const upResult = await runNexusCommand(upArgs, cwd, verbose, "nexus up", sourceDir);
 
   // Restore the original env var (may be needed by other code)
   if (savedApiKey !== undefined) {
@@ -246,6 +263,22 @@ export async function nexusDown(
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+/** Run full `nexus up` with all flags (pull, build, port-strategy). */
+async function runNexusFullUp(
+  options: Parameters<typeof nexusUp>[0],
+  cwd: string,
+  verbose: boolean,
+  sourceDir: string | undefined,
+): Promise<Result<void, KoiError>> {
+  const upArgs: string[] = ["up"];
+  if (options?.sourceDir !== undefined) {
+    upArgs.push("--compose-file", join(options.sourceDir, "docker-compose.yml"));
+  }
+  if (options?.build === true) upArgs.push("--build");
+  if (options?.portStrategy !== undefined) upArgs.push("--port-strategy", options.portStrategy);
+  return runNexusCommand(upArgs, cwd, verbose, "nexus up", sourceDir);
+}
 
 /** Checks that the nexus binary is available on PATH. */
 async function ensureBinary(sourceDir?: string | undefined): Promise<Result<void, KoiError>> {

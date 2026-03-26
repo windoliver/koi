@@ -593,6 +593,19 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         governanceView: removeGovernanceApproval(state.governanceView, action.id),
       };
 
+    case "set_governance_approvals":
+      return {
+        ...state,
+        governanceView: {
+          ...state.governanceView,
+          pendingApprovals: action.approvals,
+          selectedIndex: Math.min(
+            state.governanceView.selectedIndex,
+            Math.max(0, action.approvals.length - 1),
+          ),
+        },
+      };
+
     case "add_governance_violation":
       return {
         ...state,

@@ -206,11 +206,13 @@ export function clampScroll(offset: number, itemCount: number, visibleRows: numb
   return Math.max(0, Math.min(offset, maxOffset));
 }
 
-/** Reduce governance approval addition. */
+/** Reduce governance approval addition (deduplicates by id). */
 export function addGovernanceApproval(
   state: GovernanceViewState,
   approval: GovernanceViewState["pendingApprovals"][number],
 ): GovernanceViewState {
+  // Skip if an item with this id already exists
+  if (state.pendingApprovals.some((a) => a.id === approval.id)) return state;
   return {
     ...state,
     pendingApprovals: [...state.pendingApprovals, approval],
