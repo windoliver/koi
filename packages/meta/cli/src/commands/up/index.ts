@@ -412,7 +412,10 @@ async function testNexusWrite(baseUrl: string, apiKey: string): Promise<boolean>
       signal: controller.signal,
     });
     clearTimeout(timeout);
-    return resp.ok;
+    if (!resp.ok) return false;
+    // Nexus returns HTTP 200 even on JSON-RPC errors — check the body
+    const body = await resp.text();
+    return !body.includes('"error"');
   } catch {
     return false;
   }
@@ -617,8 +620,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
             stderr: "pipe",
           });
           await proc.exited;
-          // Wait for healthy
-          await new Promise((r) => setTimeout(r, 5000));
+          // Wait for container to be healthy (Raft needs time to elect leader)
+          for (let attempt = 0; attempt < 6; attempt++) {
+            await new Promise((r) => setTimeout(r, 5000));
+            if (await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "")) break;
+          }
           const retryOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
           if (retryOk) {
             output.success("Nexus recovered after restart");
