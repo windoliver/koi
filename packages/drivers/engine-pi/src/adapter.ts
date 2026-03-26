@@ -40,6 +40,11 @@ import type { PiAdapterConfig, PiEngineAdapter } from "./types.js";
  * Convert pi-ai messages to OpenAI format for raw fetch fallback.
  * Handles toolCall/toolResult which completeSimple misformats for OpenRouter.
  */
+/** Sanitize tool call IDs to match OpenAI pattern: ^[a-zA-Z0-9_-]+$ */
+function sanitizeToolId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
 function piMessagesToOpenAI(messages: readonly Message[]): readonly Record<string, unknown>[] {
   const result: Record<string, unknown>[] = [];
   for (const msg of messages) {
@@ -61,7 +66,7 @@ function piMessagesToOpenAI(messages: readonly Message[]): readonly Record<strin
       if (text) entry.content = text;
       if (toolCalls.length > 0) {
         entry.tool_calls = toolCalls.map((tc) => ({
-          id: String(tc.id ?? ""),
+          id: sanitizeToolId(String(tc.id ?? "")),
           type: "function",
           function: { name: String(tc.name ?? ""), arguments: JSON.stringify(tc.arguments ?? {}) },
         }));
@@ -75,7 +80,7 @@ function piMessagesToOpenAI(messages: readonly Message[]): readonly Record<strin
         .join("");
       result.push({
         role: "tool",
-        tool_call_id: String((msg as unknown as Record<string, unknown>).id ?? ""),
+        tool_call_id: sanitizeToolId(String((msg as unknown as Record<string, unknown>).id ?? "")),
         content: text,
       });
     }
@@ -117,6 +122,27 @@ async function openRouterRawFetch(
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(body),
   });
+  if (!resp.ok) {
+    const errBody = await resp.text();
+    // Return empty response instead of parsing bad JSON
+    return {
+      role: "assistant",
+      content: [{ type: "text", text: `API error: ${errBody.slice(0, 100)}` }],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    } as import("@mariozechner/pi-ai").AssistantMessage;
+  }
   const json = (await resp.json()) as {
     readonly choices: readonly {
       readonly message: {
@@ -447,6 +473,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
       const prompt = engineInputToPrompt(input);
       void piAgent.prompt(prompt).catch((error: unknown) => {
         // If the agent loop fails, push an error event
+        const errMsg = error instanceof Error ? error.message : String(error);
         const finalMetrics = metrics.finalize();
         queue.push({
           kind: "done",
@@ -455,7 +482,8 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
             stopReason: "error",
             metrics: finalMetrics,
             metadata: {
-              error: error instanceof Error ? error.message : String(error),
+              error: errMsg,
+              errorMessage: errMsg,
             },
           },
         });
