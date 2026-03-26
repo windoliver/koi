@@ -397,6 +397,27 @@ async function persistChatToNexus(
   }
 }
 
+/** Test Nexus write connectivity — returns true if a test write succeeds. */
+async function testNexusWrite(baseUrl: string, apiKey: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(`${baseUrl}/api/nfs/write`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({ path: "/.koi-health-check", content: new Date().toISOString() }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Probe nexus.yaml for an already-running Nexus instance. Returns URL+key if healthy. */
 async function probeExistingNexus(
   workspaceRoot: string,
@@ -581,31 +602,33 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
-  // Verify Nexus connectivity with a write test — surface errors at startup, not at runtime
+  // Verify Nexus connectivity with a write test — auto-restart if unhealthy
   if (nexusBaseUrl !== undefined) {
-    try {
-      const apiKey = process.env.NEXUS_API_KEY ?? "";
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const resp = await fetch(`${nexusBaseUrl}/api/nfs/write`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
-        body: JSON.stringify({ path: "/.koi-health-check", content: new Date().toISOString() }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        output.warn(`Nexus write test failed (${String(resp.status)}): ${body.slice(0, 100)}`);
-        output.warn("Nexus-backed storage may not work — check Nexus health or restart containers");
+    const nexusWriteOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
+    if (!nexusWriteOk) {
+      output.warn("Nexus write test failed — restarting container...");
+      try {
+        const { readRuntimeState } = await import("@koi/nexus-embed");
+        const state = readRuntimeState(workspaceRoot);
+        if (state?.project_name) {
+          const containerName = `${state.project_name}-nexus-1`;
+          const proc = Bun.spawn(["docker", "restart", containerName], {
+            stdout: "ignore",
+            stderr: "pipe",
+          });
+          await proc.exited;
+          // Wait for healthy
+          await new Promise((r) => setTimeout(r, 5000));
+          const retryOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
+          if (retryOk) {
+            output.success("Nexus recovered after restart");
+          } else {
+            output.warn("Nexus still unhealthy after restart — storage may not work");
+          }
+        }
+      } catch {
+        output.warn("Could not auto-restart Nexus — storage may not work");
       }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      output.warn(`Nexus connectivity check failed: ${msg}`);
-      output.warn("Nexus-backed storage may not work — check Nexus health or restart containers");
     }
   }
 
