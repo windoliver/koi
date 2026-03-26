@@ -607,10 +607,21 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // Verify Nexus connectivity with a write test — auto-restart if unhealthy
   if (nexusBaseUrl !== undefined) {
-    const nexusWriteOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
+    let nexusWriteOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
     if (!nexusWriteOk) {
-      output.warn("Nexus write check failed — Nexus-backed storage may not work");
-      output.warn("Run 'nexus down && nexus up' manually to fix, or restart Docker");
+      // Raft may need time to re-elect leader after container resume — retry for up to 30s
+      output.spinner.start("Waiting for Nexus Raft leader...");
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        nexusWriteOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
+        if (nexusWriteOk) break;
+      }
+      output.spinner.stop(undefined);
+      if (nexusWriteOk) {
+        output.success("Nexus ready");
+      } else {
+        output.warn("Nexus write check failed — storage may not work. Try: nexus down && nexus up");
+      }
     }
   }
 
