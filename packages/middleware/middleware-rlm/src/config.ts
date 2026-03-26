@@ -92,8 +92,27 @@ export function validateRlmConfig(config: unknown): Result<RlmMiddlewareConfig, 
     return validationError("'depth' must be a non-negative number");
   }
 
+  if (
+    c.maxDepth !== undefined &&
+    (typeof c.maxDepth !== "number" || c.maxDepth < 0 || !Number.isInteger(c.maxDepth))
+  ) {
+    return validationError("'maxDepth' must be a non-negative integer");
+  }
+
   if (c.onEvent !== undefined && typeof c.onEvent !== "function") {
     return validationError("'onEvent' must be a function");
+  }
+
+  if (c.maxCostUsd !== undefined && !isFinitePositive(c.maxCostUsd)) {
+    return validationError("'maxCostUsd' must be a positive finite number");
+  }
+
+  if (c.costEstimator !== undefined && typeof c.costEstimator !== "function") {
+    return validationError("'costEstimator' must be a function");
+  }
+
+  if (c.parentContext !== undefined && typeof c.parentContext !== "string") {
+    return validationError("'parentContext' must be a string");
   }
 
   if (c.scriptRunner !== undefined) {

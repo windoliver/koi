@@ -353,6 +353,48 @@ describe("rlm_query tool", () => {
     expect(result.isError).toBe(true);
     expect(result.output).toContain("non-empty string");
   });
+
+  test("time budget exhausted returns error without spawning", async () => {
+    const tracker = createTokenTracker(100_000);
+    const spawnRlmChild = mock(async () => ({ answer: "ok", tokensUsed: 0 }));
+    const tool = createRlmQueryTool({
+      spawnRlmChild,
+      tracker,
+      depth: 0,
+      startTime: Date.now() - 120_000, // 2 minutes ago
+      timeBudgetMs: 60_000, // 1 minute budget (already exhausted)
+    });
+
+    const result = await tool.execute({ input: "sub-input" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("time budget exhausted");
+    expect(spawnRlmChild).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shared_context
+// ---------------------------------------------------------------------------
+
+describe("shared_context tool", () => {
+  test("returns message when no entries", () => {
+    const { createSharedContextTool } = require("./tools.js");
+    const tool = createSharedContextTool({ entries: () => [] });
+    const result = tool.execute();
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("No shared findings");
+  });
+
+  test("returns joined entries when present", () => {
+    const { createSharedContextTool } = require("./tools.js");
+    const tool = createSharedContextTool({
+      entries: () => ["Found API endpoint /users", "Found database schema"],
+    });
+    const result = tool.execute();
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("/users");
+    expect(result.output).toContain("database schema");
+  });
 });
 
 // ---------------------------------------------------------------------------

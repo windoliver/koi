@@ -31,6 +31,8 @@ export const MESH_PRESET: RuntimePreset = {
     threadStoreBackend: "nexus",
     ace: true,
     aceStoreBackend: "nexus",
+    filesystem: true,
+    rlmStack: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },

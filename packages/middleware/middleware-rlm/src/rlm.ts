@@ -49,8 +49,15 @@ export function createRlmMiddleware(config?: RlmMiddlewareConfig): KoiMiddleware
   // concurrent turns from overwriting each other's handler.
   const capturedHandlers = new Map<string, ModelHandler>();
 
+  const maxDepth = validated.maxDepth ?? 3;
+  const currentDepth = validated.depth ?? 0;
+
   /** Enrich a model request by injecting the rlm_process tool descriptor. */
   function enrichRequest(request: ModelRequest): ModelRequest {
+    // Strip rlm_process at max depth — structural enforcement (ypi pattern)
+    if (currentDepth >= maxDepth) {
+      return request;
+    }
     const tools =
       request.tools !== undefined
         ? [...request.tools, RLM_PROCESS_DESCRIPTOR]

@@ -200,9 +200,20 @@ async function activateGovernance(
     permissions: {
       backend: (await import("@koi/middleware-permissions")).createPatternPermissionBackend({
         rules: {
-          allow: ["group:fs_read", "group:web", "group:browser", "group:lsp"],
-          deny: ["group:fs_delete"],
-          ask: ["group:runtime"],
+          allow: [
+            "group:fs_read",
+            "group:fs_write",
+            "group:web",
+            "group:browser",
+            "group:lsp",
+            "rlm_*",
+            "chub_*",
+            "ask_user",
+            "execute_code",
+            "execute_script",
+          ],
+          deny: ["group:fs_delete", "group:runtime"],
+          ask: [],
         },
         groups: (await import("@koi/middleware-permissions")).DEFAULT_GROUPS,
       }),
@@ -444,6 +455,38 @@ async function activateCodeExecutor(
   // Note: code-executor provider has priority BUNDLED+10, so assembly
   // sorts it after other tool providers (it queries existing tools).
   log(config, "Stack: code-executor (execute_script WASM tool)");
+}
+
+async function activateFilesystem(
+  config: StackActivationConfig,
+  providers: ComponentProvider[],
+): Promise<void> {
+  const { createFileSystemProvider } = await import("@koi/filesystem");
+  const { createLocalFileSystem } = await import("../../local-filesystem.js");
+  const backend = createLocalFileSystem(process.cwd());
+  const provider = createFileSystemProvider({ backend });
+  providers.push(provider);
+  log(config, "Stack: filesystem (fs_read, fs_write, fs_edit, fs_list, fs_search)");
+}
+
+async function activateRlmStack(
+  config: StackActivationConfig,
+  middleware: KoiMiddleware[],
+  providers: ComponentProvider[],
+): Promise<void> {
+  const { createRlmVirtualizeMiddleware, createRlmToolsProvider } = await import(
+    "@koi/middleware-rlm"
+  );
+  // Auto-virtualization middleware (priority 250, runs first)
+  const virtualizeMiddleware = createRlmVirtualizeMiddleware({
+    virtualizeThreshold: 500, // ~2K chars — triggers virtualization for moderate-sized content
+  });
+  middleware.push(virtualizeMiddleware);
+  // Register RLM tools as entity tools so the engine adapter includes them
+  // in its executable tool list. Middleware's wrapToolCall handles dispatch.
+  const toolsProvider = createRlmToolsProvider();
+  providers.push(toolsProvider);
+  log(config, "Stack: rlm-stack (auto-virtualize + rlm_examine/chunk/input_info tools)");
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +855,63 @@ export async function activatePresetStacks(
             notes: ["WASM execute_script"],
           },
         ],
+      });
+    }
+  }
+
+  // Filesystem tools (fs_read, fs_write, fs_edit, fs_list, fs_search)
+  if (config.stacks.filesystem === true) {
+    const before = providers.length;
+    await tryActivate("filesystem", () => activateFilesystem(config, providers));
+    if (providers.length > before) {
+      contributions.push({
+        id: "filesystem",
+        label: "Filesystem",
+        enabled: true,
+        source: "runtime",
+        status: "active",
+        packages: [
+          {
+            id: "@koi/filesystem",
+            kind: "provider",
+            source: "static",
+            providerNames: providers.slice(before).map((p) => p.name),
+          },
+        ],
+      });
+    }
+  }
+
+  // RLM stack (rlm_process tool + middleware for large-input virtualization)
+  if (config.stacks.rlmStack === true) {
+    const beforeMw = middleware.length;
+    const beforeProv = providers.length;
+    await tryActivate("rlm-stack", () => activateRlmStack(config, middleware, providers));
+    if (middleware.length > beforeMw || providers.length > beforeProv) {
+      const packages: PackageContribution[] = [];
+      if (middleware.length > beforeMw) {
+        packages.push({
+          id: "@koi/rlm-stack",
+          kind: "middleware",
+          source: "static",
+          middlewareNames: middleware.slice(beforeMw).map((m) => m.name),
+        });
+      }
+      if (providers.length > beforeProv) {
+        packages.push({
+          id: "@koi/rlm-stack",
+          kind: "provider",
+          source: "static",
+          providerNames: providers.slice(beforeProv).map((p) => p.name),
+        });
+      }
+      contributions.push({
+        id: "rlm-stack",
+        label: "RLM Stack",
+        enabled: true,
+        source: "runtime",
+        status: "active",
+        packages,
       });
     }
   }

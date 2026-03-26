@@ -74,6 +74,40 @@ export function inboundToPiMessage(msg: InboundMessage): Message {
   if (msg.senderId === "tool") {
     return inboundToToolResultMessage(msg);
   }
+  // Conversation middleware stores assistant messages with agentId as senderId
+  // (e.g., "koi-demo", "agent-1"). Detect these via fromHistory metadata + role,
+  // or by checking that senderId is not a known user/system pattern.
+  // The metadata.fromHistory + original role is the most reliable signal.
+  const meta = msg.metadata as Record<string, unknown> | undefined;
+  if (meta?.fromHistory === true) {
+    // ThreadMessage.role was "assistant" → senderId was set to agentId
+    // ThreadMessage.role was "tool" → senderId was set to "tool" (already caught above)
+    // ThreadMessage.role was "user" → senderId was set to userId (e.g., "user-42") or "user"
+    // ThreadMessage.role was "system" → senderId was set to "system"
+    //
+    // Use originalRole metadata (set by conversation middleware) when available
+    // to avoid misclassifying named users (e.g., "user-42") as assistant.
+    const originalRole = meta.originalRole;
+    if (typeof originalRole === "string") {
+      if (originalRole === "assistant") return inboundToAssistantMessage(msg);
+      // originalRole is "user"/"system"/"tool" → fall through to UserMessage
+    } else {
+      // Legacy path: no originalRole metadata.
+      // Positive-match agent senderIds rather than excluding user patterns.
+      // Agent IDs in Koi follow "name" or "name-suffix" from the manifest —
+      // they're never UUIDs/emails. The conversation middleware sets senderId
+      // to the agentId for assistant messages. Match common agent ID patterns.
+      // Default to user (safe) if uncertain — misclassifying user as assistant
+      // is worse than the reverse.
+      const agentName = meta.agentId;
+      if (typeof agentName === "string" && msg.senderId === agentName) {
+        return inboundToAssistantMessage(msg);
+      }
+      // No agentId metadata and no originalRole → default to user (safe).
+      // This may misclassify assistant messages from very old history that
+      // lacks both metadata fields, but that's safer than the reverse.
+    }
+  }
   // "user", "system:compactor", or any other senderId → UserMessage
   return inboundToUserMessage(msg);
 }

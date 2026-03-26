@@ -50,8 +50,17 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
 
   /** Resolve and validate that a path is within the workspace root. */
   function safePath(path: string): Result<string, KoiError> {
-    const normalized = path.startsWith("/") ? path.slice(1) : path;
-    const resolved = resolve(root, normalized);
+    // Handle absolute paths that fall within the workspace root —
+    // models often send absolute paths even when told to use relative ones.
+    // Strip the root prefix to get the relative path, then resolve normally.
+    const stripped = path.startsWith(rootPrefix)
+      ? path.slice(rootPrefix.length)
+      : path.startsWith(`${root}/`)
+        ? path.slice(root.length + 1)
+        : path.startsWith("/")
+          ? path.slice(1)
+          : path;
+    const resolved = resolve(root, stripped);
     // Allow exact root or any child path (prefix includes trailing slash)
     if (resolved !== root && !resolved.startsWith(rootPrefix)) {
       return { ok: false, error: err("PERMISSION", `Path outside workspace: ${path}`) };

@@ -77,6 +77,10 @@ export interface PresetStacks {
   readonly codeExecutor?: boolean;
   /** Enable sandbox stack (execute_code tool). Requires manifest `sandbox` config. */
   readonly sandboxStack?: boolean;
+  /** Enable filesystem tools (fs_read, fs_write, fs_edit, fs_list, fs_search). */
+  readonly filesystem?: boolean;
+  /** Enable RLM stack (rlm_process tool for large-input virtualization). */
+  readonly rlmStack?: boolean;
 }
 
 /** A complete runtime preset definition. */

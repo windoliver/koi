@@ -67,6 +67,22 @@ interface ScriptRunnerConfig {
  */
 declare function createScriptRunner(config?: ScriptRunnerConfig): RlmScriptRunner;
 
-export { type RlmStackConfig, type ScriptRunnerConfig, createRlmStack, createScriptRunner };
+/**
+ * RLM stack preset tiers — light, standard, aggressive.
+ *
+ * Each tier configures the RLM middleware with different trade-offs
+ * between thoroughness and cost/latency.
+ */
+
+type RlmPresetTier = "light" | "standard" | "aggressive";
+/**
+ * Create an RLM stack bundle from a named preset tier.
+ *
+ * @param tier Preset tier: "light" (fast, cheap), "standard" (balanced), "aggressive" (thorough).
+ * @param overrides Optional config overrides applied on top of the preset.
+ */
+declare function createRlmStackFromPreset(tier?: RlmPresetTier, overrides?: Partial<RlmStackConfig>): MiddlewareBundle;
+
+export { type RlmPresetTier, type RlmStackConfig, type ScriptRunnerConfig, createRlmStack, createRlmStackFromPreset, createScriptRunner };
 "
 `;

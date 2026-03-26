@@ -22,6 +22,7 @@ export const DEFAULT_COMPACTION_THRESHOLD: number = 0.8;
 export const DEFAULT_CONTEXT_WINDOW_TOKENS: number = 100_000;
 export const DEFAULT_MAX_CONCURRENCY: number = 5;
 export const DEFAULT_DEPTH: number = 0;
+export const DEFAULT_MAX_DEPTH: number = 3;
 export const DEFAULT_PRIORITY: number = 300;
 export const DEFAULT_TIME_BUDGET_MS: number = 300_000; // 5 minutes
 
@@ -49,6 +50,10 @@ export interface RlmSpawnRequest {
   readonly remainingTokenBudget: number;
   /** Remaining wall-clock time in milliseconds. */
   readonly remainingTimeMs: number;
+  /** Parent context summary for fork mode (optional). */
+  readonly parentContext?: string | undefined;
+  /** Remaining cost budget in USD (optional, only when cost tracking is active). */
+  readonly remainingCostUsd?: number | undefined;
 }
 
 /**
@@ -131,7 +136,7 @@ export interface RlmScriptResult {
 // ---------------------------------------------------------------------------
 
 /** Stop reason for a completed REPL loop. */
-export type RlmStopReason = "completed" | "max_turns" | "interrupted" | "error";
+export type RlmStopReason = "completed" | "max_turns" | "interrupted" | "error" | "budget_exceeded";
 
 /** Aggregate metrics from a REPL loop run. */
 export interface RlmMetrics {
@@ -140,6 +145,8 @@ export interface RlmMetrics {
   readonly totalTokens: number;
   readonly turns: number;
   readonly durationMs: number;
+  /** Accumulated cost in USD (only set when costEstimator is configured). */
+  readonly costUsd?: number | undefined;
 }
 
 /** Result returned by a completed REPL loop. */
@@ -194,6 +201,8 @@ export interface RlmMiddlewareConfig {
   readonly spawnRlmChild?: ((req: RlmSpawnRequest) => Promise<RlmSpawnResult>) | undefined;
   /** Current recursion depth. Default: 0. */
   readonly depth?: number | undefined;
+  /** Maximum recursion depth. Default: 3. Tools are stripped at this depth. */
+  readonly maxDepth?: number | undefined;
   /** Event callback for observability. */
   readonly onEvent?: ((event: RlmEvent) => void) | undefined;
   /**
@@ -202,4 +211,22 @@ export interface RlmMiddlewareConfig {
    * Typically created by @koi/rlm-stack which wires @koi/code-executor.
    */
   readonly scriptRunner?: RlmScriptRunner | undefined;
+  /**
+   * Maximum cost in USD. When set with costEstimator, the REPL loop halts
+   * with "budget_exceeded" when cumulative cost reaches this ceiling.
+   * Opt-in — no effect when undefined.
+   */
+  readonly maxCostUsd?: number | undefined;
+  /**
+   * Sync cost estimator callback. Returns cost in USD for a model call.
+   * Required for maxCostUsd enforcement.
+   */
+  readonly costEstimator?:
+    | ((modelId: string, inputTokens: number, outputTokens: number) => number)
+    | undefined;
+  /**
+   * Parent context summary for fork mode. When set, injected into the
+   * REPL system prompt so the sub-agent inherits the parent's reasoning.
+   */
+  readonly parentContext?: string | undefined;
 }
