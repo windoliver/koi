@@ -14,4 +14,5 @@
 
 export { createRlmStack } from "./create-rlm-stack.js";
 export { createScriptRunner, type ScriptRunnerConfig } from "./create-script-runner.js";
+export { createRlmStackFromPreset, type RlmPresetTier } from "./presets.js";
 export type { RlmStackConfig } from "./types.js";

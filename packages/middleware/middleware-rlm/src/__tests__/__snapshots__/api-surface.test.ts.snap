@@ -44,6 +44,10 @@ interface RlmSpawnRequest {
     readonly remainingTokenBudget: number;
     /** Remaining wall-clock time in milliseconds. */
     readonly remainingTimeMs: number;
+    /** Parent context summary for fork mode (optional). */
+    readonly parentContext?: string | undefined;
+    /** Remaining cost budget in USD (optional, only when cost tracking is active). */
+    readonly remainingCostUsd?: number | undefined;
 }
 /**
  * Result returned by a child RLM agent spawn.
@@ -102,7 +106,7 @@ interface RlmScriptResult {
     readonly callCount: number;
 }
 /** Stop reason for a completed REPL loop. */
-type RlmStopReason = "completed" | "max_turns" | "interrupted" | "error";
+type RlmStopReason = "completed" | "max_turns" | "interrupted" | "error" | "budget_exceeded";
 /** Aggregate metrics from a REPL loop run. */
 interface RlmMetrics {
     readonly inputTokens: number;
@@ -110,6 +114,8 @@ interface RlmMetrics {
     readonly totalTokens: number;
     readonly turns: number;
     readonly durationMs: number;
+    /** Accumulated cost in USD (only set when costEstimator is configured). */
+    readonly costUsd?: number | undefined;
 }
 /** Result returned by a completed REPL loop. */
 interface ReplLoopResult {
@@ -172,6 +178,8 @@ interface RlmMiddlewareConfig {
     readonly spawnRlmChild?: ((req: RlmSpawnRequest) => Promise<RlmSpawnResult>) | undefined;
     /** Current recursion depth. Default: 0. */
     readonly depth?: number | undefined;
+    /** Maximum recursion depth. Default: 3. Tools are stripped at this depth. */
+    readonly maxDepth?: number | undefined;
     /** Event callback for observability. */
     readonly onEvent?: ((event: RlmEvent) => void) | undefined;
     /**
@@ -180,6 +188,22 @@ interface RlmMiddlewareConfig {
      * Typically created by @koi/rlm-stack which wires @koi/code-executor.
      */
     readonly scriptRunner?: RlmScriptRunner | undefined;
+    /**
+     * Maximum cost in USD. When set with costEstimator, the REPL loop halts
+     * with "budget_exceeded" when cumulative cost reaches this ceiling.
+     * Opt-in — no effect when undefined.
+     */
+    readonly maxCostUsd?: number | undefined;
+    /**
+     * Sync cost estimator callback. Returns cost in USD for a model call.
+     * Required for maxCostUsd enforcement.
+     */
+    readonly costEstimator?: ((modelId: string, inputTokens: number, outputTokens: number) => number) | undefined;
+    /**
+     * Parent context summary for fork mode. When set, injected into the
+     * REPL system prompt so the sub-agent inherits the parent's reasoning.
+     */
+    readonly parentContext?: string | undefined;
 }
 
 /**

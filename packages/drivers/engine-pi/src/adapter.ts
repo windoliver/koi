@@ -71,6 +71,15 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
     modelId as Parameters<typeof getModel>[1],
   );
 
+  if (piModel === undefined || piModel === null) {
+    throw new Error(
+      `Model "${config.model}" is not recognized by pi-ai. ` +
+        `Provider "${provider}" does not have model "${modelId}". ` +
+        `Check that the model ID matches the provider's format (e.g., ` +
+        `"openrouter:anthropic/claude-sonnet-4.6", not "openrouter:anthropic/claude-sonnet-4-5-20250929").`,
+    );
+  }
+
   // Create model terminals
   const modelStreamTerminal = createModelStreamTerminal();
   const modelCallTerminal = createModelCallTerminal(modelStreamTerminal);
@@ -106,14 +115,14 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
       }
 
       // Build the bridge streamFn that routes through middleware
-      const modelStream = callHandlers.modelStream;
-      if (!modelStream) {
+      const rawModelStream = callHandlers.modelStream;
+      if (!rawModelStream) {
         throw new Error(
           "PiEngineAdapter requires callHandlers.modelStream. " +
             "This should be provided by L1 when terminals.modelStream is defined.",
         );
       }
-      const bridgeStreamFn = createBridgeStreamFn(modelStream, realStreamSimple);
+      const bridgeStreamFn = createBridgeStreamFn(rawModelStream, realStreamSimple);
 
       // Wrap Koi tool descriptors as pi AgentTools, routing execution through middleware.
       // Build a reverse map from sanitized API names → original Koi names for event bridging.

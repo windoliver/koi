@@ -74,6 +74,26 @@ export function inboundToPiMessage(msg: InboundMessage): Message {
   if (msg.senderId === "tool") {
     return inboundToToolResultMessage(msg);
   }
+  // Conversation middleware stores assistant messages with agentId as senderId
+  // (e.g., "koi-demo", "agent-1"). Detect these via fromHistory metadata + role,
+  // or by checking that senderId is not a known user/system pattern.
+  // The metadata.fromHistory + original role is the most reliable signal.
+  const meta = msg.metadata as Record<string, unknown> | undefined;
+  if (meta?.fromHistory === true) {
+    // ThreadMessage.role was "assistant" → senderId was set to agentId
+    // ThreadMessage.role was "tool" → senderId was set to "tool" (already caught above)
+    // ThreadMessage.role was "user" → senderId was set to userId or "user"
+    // ThreadMessage.role was "system" → senderId was set to "system"
+    // So if fromHistory is true and senderId is not "user"/"system"/"tool" or "system:*",
+    // it must be an assistant message with agentId as senderId.
+    if (
+      msg.senderId !== "user" &&
+      msg.senderId !== "system" &&
+      !msg.senderId.startsWith("system:")
+    ) {
+      return inboundToAssistantMessage(msg);
+    }
+  }
   // "user", "system:compactor", or any other senderId → UserMessage
   return inboundToUserMessage(msg);
 }

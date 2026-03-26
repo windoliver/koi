@@ -116,4 +116,68 @@ describe("validateRlmConfig", () => {
       expect(result.error.message).toContain("run");
     }
   });
+
+  // --- New fields: maxDepth, maxCostUsd, costEstimator, parentContext ---
+
+  test("accepts valid maxDepth", () => {
+    const result = validateRlmConfig({ maxDepth: 3 });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects negative maxDepth", () => {
+    const result = validateRlmConfig({ maxDepth: -1 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("maxDepth");
+    }
+  });
+
+  test("rejects non-integer maxDepth", () => {
+    const result = validateRlmConfig({ maxDepth: 2.5 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("maxDepth");
+    }
+  });
+
+  test("accepts valid maxCostUsd", () => {
+    const result = validateRlmConfig({ maxCostUsd: 5.0 });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-positive maxCostUsd", () => {
+    const result = validateRlmConfig({ maxCostUsd: 0 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("maxCostUsd");
+    }
+  });
+
+  test("accepts valid costEstimator function", () => {
+    const result = validateRlmConfig({
+      costEstimator: () => 0.001,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-function costEstimator", () => {
+    const result = validateRlmConfig({ costEstimator: "not a function" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("costEstimator");
+    }
+  });
+
+  test("accepts valid parentContext", () => {
+    const result = validateRlmConfig({ parentContext: "Parent was analyzing API endpoints" });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-string parentContext", () => {
+    const result = validateRlmConfig({ parentContext: 42 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("parentContext");
+    }
+  });
 });

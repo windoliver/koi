@@ -81,15 +81,36 @@ export interface PiNativeParams {
 export const piParamsStore: Map<string, PiNativeParams> = new Map<string, PiNativeParams>();
 
 /**
+ * Session-scoped fallback for pi-native params.
+ * When middleware sub-calls (e.g., RLM REPL loop) invoke the model terminal
+ * without a nonce, fall back to the last known params from this session.
+ * This allows captured ModelHandlers to work through the pi terminal.
+ */
+// let: mutable singleton — updated on each nonce-based lookup
+let lastKnownParams: PiNativeParams | undefined;
+
+/** Clear the session fallback (call on session end). */
+export function clearLastKnownParams(): void {
+  lastKnownParams = undefined;
+}
+
+/**
  * Look up pi-native params by nonce from ModelRequest.metadata.
  * Auto-deletes the entry after retrieval (one-shot cleanup prevents memory leaks).
+ * Falls back to the last known params if no nonce is present (middleware sub-calls).
  */
 export function getPiParams(request: ModelRequest): PiNativeParams | undefined {
   const raw = request.metadata?.[PI_PARAMS_NONCE_KEY];
-  if (typeof raw !== "string") return undefined;
+  if (typeof raw !== "string") {
+    // No nonce — this is a middleware sub-call (e.g., RLM REPL loop).
+    // Fall back to the last known params from the session.
+    return lastKnownParams;
+  }
   const params = piParamsStore.get(raw);
   if (params !== undefined) {
     piParamsStore.delete(raw);
+    // Cache as session fallback for subsequent sub-calls
+    lastKnownParams = params;
   }
   return params;
 }
@@ -191,7 +212,9 @@ export function createModelStreamTerminal(): ModelStreamHandler {
     if (piParams.maxTokens !== undefined && request.maxTokens === undefined) {
       streamOptions.maxTokens = piParams.maxTokens;
     }
-    if (piParams.signal) streamOptions.signal = piParams.signal;
+    // Only pass signal if it's an actual AbortSignal — pi-agent-core may pass
+    // an empty object {} as signal, which causes fetch() to abort immediately.
+    if (piParams.signal instanceof AbortSignal) streamOptions.signal = piParams.signal;
     if (piParams.apiKey) streamOptions.apiKey = piParams.apiKey;
     if (piParams.reasoning) streamOptions.reasoning = piParams.reasoning;
 

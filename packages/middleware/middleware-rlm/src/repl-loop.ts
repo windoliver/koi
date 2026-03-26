@@ -11,8 +11,17 @@
 
 import type { InboundMessage, JsonObject, ModelHandler, ModelResponse } from "@koi/core";
 import { compactHistory, shouldCompact } from "./compaction.js";
+import { createCostTracker } from "./cost-tracker.js";
 import { createInputStore } from "./input-store.js";
+import {
+  addModelUsage,
+  createMetricsAccumulator,
+  finalizeMetrics,
+  incrementTurn,
+} from "./metrics.js";
+import { resolveConfig } from "./resolve-config.js";
 import { createSemaphore } from "./semaphore.js";
+import { createSharedLog } from "./shared-log.js";
 import { createTokenTracker } from "./token-tracker.js";
 import {
   createChunkTool,
@@ -22,26 +31,10 @@ import {
   createLlmQueryBatchedTool,
   createLlmQueryTool,
   createRlmQueryTool,
+  createSharedContextTool,
   getAllToolDescriptors,
 } from "./tools.js";
-import type {
-  ReplLoopResult,
-  RlmEvent,
-  RlmMetrics,
-  RlmMiddlewareConfig,
-  RlmStopReason,
-} from "./types.js";
-import {
-  DEFAULT_CHUNK_SIZE,
-  DEFAULT_COMPACTION_THRESHOLD,
-  DEFAULT_CONTEXT_WINDOW_TOKENS,
-  DEFAULT_DEPTH,
-  DEFAULT_MAX_CONCURRENCY,
-  DEFAULT_MAX_INPUT_BYTES,
-  DEFAULT_MAX_ITERATIONS,
-  DEFAULT_PREVIEW_LENGTH,
-  DEFAULT_TIME_BUDGET_MS,
-} from "./types.js";
+import type { ReplLoopResult, RlmEvent, RlmMiddlewareConfig, RlmStopReason } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Tool call metadata shape (same as engine-loop)
@@ -76,45 +69,6 @@ function extractToolCalls(response: ModelResponse): readonly ToolCallDescriptor[
   if (toolCalls === undefined) return [];
   if (!isToolCallArray(toolCalls)) return [];
   return toolCalls;
-}
-
-// ---------------------------------------------------------------------------
-// Metrics
-// ---------------------------------------------------------------------------
-
-interface MetricsAccumulator {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly turns: number;
-  readonly startTime: number;
-}
-
-function createMetricsAccumulator(): MetricsAccumulator {
-  return { inputTokens: 0, outputTokens: 0, turns: 0, startTime: Date.now() };
-}
-
-function addModelUsage(acc: MetricsAccumulator, response: ModelResponse): MetricsAccumulator {
-  const usage = response.usage;
-  if (usage === undefined) return acc;
-  return {
-    ...acc,
-    inputTokens: acc.inputTokens + usage.inputTokens,
-    outputTokens: acc.outputTokens + usage.outputTokens,
-  };
-}
-
-function incrementTurn(acc: MetricsAccumulator): MetricsAccumulator {
-  return { ...acc, turns: acc.turns + 1 };
-}
-
-function finalizeMetrics(acc: MetricsAccumulator): RlmMetrics {
-  return {
-    inputTokens: acc.inputTokens,
-    outputTokens: acc.outputTokens,
-    totalTokens: acc.inputTokens + acc.outputTokens,
-    turns: acc.turns,
-    durationMs: Date.now() - acc.startTime,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -183,16 +137,20 @@ export interface ReplLoopDeps {
  * reached, or the signal is aborted.
  */
 export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
-  const { modelCall, input, question, config, signal, onEvent } = deps;
-
-  const maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
-  const maxInputBytes = config.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES;
-  const chunkSize = config.chunkSize ?? DEFAULT_CHUNK_SIZE;
-  const previewLength = config.previewLength ?? DEFAULT_PREVIEW_LENGTH;
-  const compactionThreshold = config.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD;
-  const contextWindowTokens = config.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
-  const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
-  const depth = config.depth ?? DEFAULT_DEPTH;
+  const { modelCall, input, question, config, signal } = deps;
+  const resolved = resolveConfig(config);
+  const {
+    maxIterations,
+    maxInputBytes,
+    chunkSize,
+    previewLength,
+    compactionThreshold,
+    contextWindowTokens,
+    maxConcurrency,
+    depth,
+  } = resolved;
+  // Deps-level onEvent takes precedence over config-level (backward compat)
+  const onEvent = deps.onEvent ?? resolved.onEvent;
 
   // Size guard
   const inputBytes = new TextEncoder().encode(input).length;
@@ -207,6 +165,8 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
   const store = createInputStore(input, { maxInputBytes, chunkSize, previewLength });
   const tracker = createTokenTracker(contextWindowTokens);
   const semaphore = createSemaphore(maxConcurrency);
+  const costTracker =
+    resolved.costEstimator !== undefined ? createCostTracker(resolved.costEstimator) : undefined;
   const startTime = Date.now();
 
   // let: set by FINAL tool callback
@@ -216,29 +176,36 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
     finalAnswer = answer;
   };
 
-  // Create all 7 tools
+  // Create tools — rlm_query only when recursion is available and below maxDepth
   const inputInfoTool = createInputInfoTool({ store });
   const examineTool = createExamineTool({ store });
   const chunkTool = createChunkTool({ store });
   const llmQueryTool = createLlmQueryTool({
     modelCall,
     tracker,
-    model: config.subCallModel,
+    model: resolved.subCallModel,
   });
   const llmQueryBatchedTool = createLlmQueryBatchedTool({
     modelCall,
     tracker,
     semaphore,
-    model: config.subCallModel,
-  });
-  const rlmQueryTool = createRlmQueryTool({
-    spawnRlmChild: config.spawnRlmChild,
-    tracker,
-    depth,
-    startTime,
-    timeBudgetMs: DEFAULT_TIME_BUDGET_MS,
+    model: resolved.subCallModel,
   });
   const finalTool = createFinalTool({ onFinal });
+  const sharedLog = createSharedLog();
+  const sharedContextTool = createSharedContextTool({ entries: () => sharedLog.entries() });
+
+  // Conditionally create rlm_query — structurally removed when unavailable
+  const canRecurse = resolved.spawnRlmChild !== undefined && depth < resolved.maxDepth;
+  const rlmQueryTool = canRecurse
+    ? createRlmQueryTool({
+        spawnRlmChild: resolved.spawnRlmChild,
+        tracker,
+        depth,
+        startTime,
+        timeBudgetMs: resolved.timeBudgetMs,
+      })
+    : undefined;
 
   const toolMap: Readonly<Record<string, ToolLike>> = {
     input_info: inputInfoTool,
@@ -246,7 +213,8 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
     chunk: chunkTool,
     llm_query: llmQueryTool,
     llm_query_batched: llmQueryBatchedTool,
-    rlm_query: rlmQueryTool,
+    ...(rlmQueryTool !== undefined ? { rlm_query: rlmQueryTool } : {}),
+    shared_context: sharedContextTool,
     FINAL: finalTool,
   };
 
@@ -257,6 +225,7 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
     llmQuery: llmQueryTool,
     llmQueryBatched: llmQueryBatchedTool,
     rlmQuery: rlmQueryTool,
+    sharedContext: sharedContextTool,
     final: finalTool,
   });
 
@@ -272,7 +241,10 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
     `- Structure hints: ${meta.structureHints.length > 0 ? meta.structureHints.join(", ") : "none"}\n` +
     `- Preview: ${meta.preview}\n\n` +
     `Use the provided tools to examine the input and produce a final answer.\n` +
-    `Call FINAL with your answer when done.`;
+    `Call FINAL with your answer when done.` +
+    (resolved.parentContext !== undefined
+      ? `\n\n## Parent Context\n${resolved.parentContext}`
+      : "");
 
   // Mutable message array (local to this function)
   // let: reassigned during compaction to avoid O(n²) clear-and-push
@@ -297,11 +269,22 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
       break;
     }
 
+    // Cost budget check
+    if (
+      costTracker !== undefined &&
+      resolved.maxCostUsd !== undefined &&
+      costTracker.exceeded(resolved.maxCostUsd)
+    ) {
+      stopReason = "budget_exceeded";
+      break;
+    }
+
     // Compaction check
     if (shouldCompact(tracker, compactionThreshold) && messages.length > 1) {
       onEvent?.({ kind: "compaction", turn, utilization: tracker.utilization() });
-      const compacted = await compactHistory(messages, modelCall, config.subCallModel);
+      const compacted = await compactHistory(messages, modelCall, resolved.subCallModel);
       messages = [...compacted];
+      sharedLog.clear();
     }
 
     onEvent?.({ kind: "turn_start", turn });
@@ -317,7 +300,7 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
           description: d.description,
           inputSchema: d.inputSchema,
         })),
-        ...(config.rootModel !== undefined ? { model: config.rootModel } : {}),
+        ...(resolved.rootModel !== undefined ? { model: resolved.rootModel } : {}),
       });
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
@@ -326,13 +309,20 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
       const result: ReplLoopResult = {
         answer: `Model error: ${message}`,
         stopReason: "error",
-        metrics: finalizeMetrics(metrics),
+        metrics: finalizeMetrics(metrics, costTracker?.total()),
       };
       onEvent?.({ kind: "done", result });
       return result;
     }
 
     metrics = addModelUsage(metrics, response);
+    if (costTracker !== undefined && response.usage !== undefined) {
+      costTracker.add(
+        resolved.rootModel ?? "unknown",
+        response.usage.inputTokens,
+        response.usage.outputTokens,
+      );
+    }
     tracker.add(response.content);
 
     const toolCalls = extractToolCalls(response);
@@ -344,7 +334,7 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
       const result: ReplLoopResult = {
         answer: response.content,
         stopReason: "completed",
-        metrics: finalizeMetrics(metrics),
+        metrics: finalizeMetrics(metrics, costTracker?.total()),
       };
       onEvent?.({ kind: "done", result });
       return result;
@@ -383,7 +373,7 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
       const result: ReplLoopResult = {
         answer: finalAnswer,
         stopReason: "completed",
-        metrics: finalizeMetrics(metrics),
+        metrics: finalizeMetrics(metrics, costTracker?.total()),
       };
       onEvent?.({ kind: "done", result });
       return result;
@@ -404,7 +394,7 @@ export async function runReplLoop(deps: ReplLoopDeps): Promise<ReplLoopResult> {
   const result: ReplLoopResult = {
     answer: fallbackAnswer,
     stopReason,
-    metrics: finalizeMetrics(metrics),
+    metrics: finalizeMetrics(metrics, costTracker?.total()),
   };
   onEvent?.({ kind: "done", result });
   return result;

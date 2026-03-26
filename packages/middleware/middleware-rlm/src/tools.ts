@@ -351,10 +351,17 @@ export function createRlmQueryTool(deps: RlmQueryDeps): {
         return { output: "Error: input must be a non-empty string.", isError: true };
       }
 
-      try {
-        const elapsed = Date.now() - deps.startTime;
-        const remainingTimeMs = Math.max(0, deps.timeBudgetMs - elapsed);
+      // Time budget guard — refuse to spawn when time is exhausted
+      const elapsed = Date.now() - deps.startTime;
+      const remainingTimeMs = Math.max(0, deps.timeBudgetMs - elapsed);
+      if (remainingTimeMs <= 0) {
+        return {
+          output: "Error: time budget exhausted — cannot spawn child RLM agent.",
+          isError: true,
+        };
+      }
 
+      try {
         const result = await deps.spawnRlmChild({
           input,
           depth: deps.depth + 1,
@@ -368,6 +375,40 @@ export function createRlmQueryTool(deps: RlmQueryDeps): {
         const message = e instanceof Error ? e.message : String(e);
         return { output: `Error: child RLM failed — ${message}`, isError: true };
       }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// shared_context
+// ---------------------------------------------------------------------------
+
+export interface SharedContextDeps {
+  readonly entries: () => readonly string[];
+}
+
+export function createSharedContextTool(deps: SharedContextDeps): {
+  readonly descriptor: RlmToolDescriptor;
+  readonly execute: () => RlmToolResult;
+} {
+  return {
+    descriptor: {
+      name: "shared_context",
+      description:
+        "Returns findings shared by sibling sub-calls. Use this to check " +
+        "if other sub-calls have already discovered relevant information.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+    execute(): RlmToolResult {
+      const items = deps.entries();
+      if (items.length === 0) {
+        return { output: "No shared findings yet.", isError: false };
+      }
+      return { output: items.join("\n"), isError: false };
     },
   };
 }
@@ -424,16 +465,23 @@ export function getAllToolDescriptors(tools: {
   readonly chunk: { readonly descriptor: RlmToolDescriptor };
   readonly llmQuery: { readonly descriptor: RlmToolDescriptor };
   readonly llmQueryBatched: { readonly descriptor: RlmToolDescriptor };
-  readonly rlmQuery: { readonly descriptor: RlmToolDescriptor };
+  readonly rlmQuery?: { readonly descriptor: RlmToolDescriptor } | undefined;
+  readonly sharedContext?: { readonly descriptor: RlmToolDescriptor } | undefined;
   readonly final: { readonly descriptor: RlmToolDescriptor };
 }): readonly RlmToolDescriptor[] {
-  return [
+  const descriptors: RlmToolDescriptor[] = [
     tools.inputInfo.descriptor,
     tools.examine.descriptor,
     tools.chunk.descriptor,
     tools.llmQuery.descriptor,
     tools.llmQueryBatched.descriptor,
-    tools.rlmQuery.descriptor,
-    tools.final.descriptor,
   ];
+  if (tools.rlmQuery !== undefined) {
+    descriptors.push(tools.rlmQuery.descriptor);
+  }
+  if (tools.sharedContext !== undefined) {
+    descriptors.push(tools.sharedContext.descriptor);
+  }
+  descriptors.push(tools.final.descriptor);
+  return descriptors;
 }
