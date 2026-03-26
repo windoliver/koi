@@ -53,6 +53,7 @@
     "@koi/gateway": "workspace:*",
     "@koi/gateway-stack": "workspace:*",
     "@koi/goal-stack": "workspace:*",
+    "@koi/exec-approvals": "workspace:*",
     "@koi/governance": "workspace:*",
     "@koi/governance-memory": "workspace:*",
     "@koi/harness-scheduler": "workspace:*",
