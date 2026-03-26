@@ -609,40 +609,28 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (nexusBaseUrl !== undefined) {
     const nexusWriteOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
     if (!nexusWriteOk) {
-      output.warn("Nexus unhealthy — recreating container...");
+      output.warn("Nexus unhealthy — running nexus down + nexus up...");
       try {
-        const { readRuntimeState } = await import("@koi/nexus-embed");
-        const state = readRuntimeState(workspaceRoot);
-        if (state?.project_name) {
-          // Full recreate: rm -f + up -d (restart alone doesn't fix Raft issues)
-          const containerName = `${state.project_name}-nexus-1`;
-          await Bun.spawn(["docker", "rm", "-f", containerName], {
-            stdout: "ignore",
-            stderr: "ignore",
-          }).exited;
-          // Use docker compose to bring it back with proper networking
-          const composeFile = join(workspaceRoot, "nexus-stack.yml");
-          await Bun.spawn(
-            ["docker", "compose", "-f", composeFile, "-p", state.project_name, "up", "-d", "nexus"],
-            { stdout: "ignore", stderr: "ignore" },
-          ).exited;
-          // Wait for healthy
-          let recovered = false;
-          for (let attempt = 0; attempt < 12; attempt++) {
-            await new Promise((r) => setTimeout(r, 5000));
-            if (await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "")) {
-              recovered = true;
-              break;
-            }
+        const { nexusDown, nexusUp: nexusUpFn } = await import("@koi/nexus-embed");
+        await nexusDown({ cwd: workspaceRoot, verbose: flags.verbose });
+        const upResult = await nexusUpFn({
+          cwd: workspaceRoot,
+          koiPreset: presetId,
+          verbose: flags.verbose,
+          portStrategy: "auto",
+        });
+        if (upResult.ok) {
+          nexusBaseUrl = upResult.value.baseUrl;
+          if (upResult.value.apiKey !== undefined) {
+            process.env.NEXUS_API_KEY = upResult.value.apiKey;
           }
-          if (recovered) {
-            output.success("Nexus recovered");
-          } else {
-            output.warn("Nexus still unhealthy — storage may not work");
-          }
+          output.success("Nexus recovered");
+        } else {
+          output.warn(`Nexus recovery failed: ${upResult.error.message}`);
         }
-      } catch {
-        output.warn("Could not auto-restart Nexus — storage may not work");
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        output.warn(`Nexus recovery failed: ${msg}`);
       }
     }
   }
