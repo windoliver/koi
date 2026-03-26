@@ -5,7 +5,7 @@
  */
 
 import { PanelChrome } from "../components/panel-chrome.js";
-import type { GovernanceAgentSanction, GovernanceViewState } from "../state/domain-types.js";
+import type { GovernanceViewState } from "../state/domain-types.js";
 import { COLORS } from "../theme.js";
 
 export interface GovernanceViewProps {
@@ -14,53 +14,8 @@ export interface GovernanceViewProps {
   readonly zoomLevel?: "normal" | "half" | "full" | undefined;
 }
 
-/** Color for a sanction level (0–6). */
-function sanctionColor(level: number): string {
-  if (level <= 0) return COLORS.green;
-  if (level <= 2) return COLORS.yellow;
-  if (level <= 4) return COLORS.orange;
-  return COLORS.red;
-}
-
-/** Human label for a sanction level. */
-function sanctionLabel(level: number): string {
-  if (level <= 0) return "normal — full autonomy";
-  if (level <= 2) return "monitoring — increased oversight";
-  if (level <= 4) return "reduced — limited autonomy";
-  if (level <= 5) return "suspended";
-  return "terminated";
-}
-
-/** Render the sanction levels section. */
-function SanctionLevelsSection(props: {
-  readonly levels: readonly GovernanceAgentSanction[];
-}): React.ReactNode {
-  if (props.levels.length === 0) return null;
-  return (
-    <box flexDirection="column" marginTop={1}>
-      <box height={1}>
-        <text fg={COLORS.dim}>{"────────────────────────────────────────────"}</text>
-      </box>
-      <box height={1}>
-        <text fg={COLORS.cyan}><b>{" SANCTION LEVELS"}</b></text>
-      </box>
-      {props.levels.map((entry) => {
-        const color = sanctionColor(entry.level);
-        return (
-          <box key={entry.agentId} height={1}>
-            <text fg={color}>
-              {`   ${entry.agentId.padEnd(18).slice(0, 18)} Level ${String(entry.level)}  ${sanctionLabel(entry.level)}`}
-            </text>
-          </box>
-        );
-      })}
-    </box>
-  );
-}
-
 export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
-  const { pendingApprovals, violations, scrollOffset, selectedIndex, sanctionLevels } =
-    props.governanceView;
+  const { pendingApprovals, violations, scrollOffset, selectedIndex } = props.governanceView;
   const VISIBLE_ROWS = 10;
   const visibleApprovals = pendingApprovals.slice(scrollOffset, scrollOffset + VISIBLE_ROWS);
 
@@ -70,7 +25,7 @@ export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
       count={pendingApprovals.length}
       focused={props.focused}
       zoomLevel={props.zoomLevel}
-      isEmpty={pendingApprovals.length === 0 && violations.length === 0 && sanctionLevels.length === 0}
+      isEmpty={pendingApprovals.length === 0 && violations.length === 0}
       emptyMessage="All clear — no pending approvals or violations."
       emptyHint="Governance manages approval workflows and policy violations."
     >
@@ -116,9 +71,6 @@ export function GovernanceView(props: GovernanceViewProps): React.ReactNode {
           })}
         </box>
       )}
-
-      {/* Sanction levels */}
-      <SanctionLevelsSection levels={sanctionLevels} />
 
       {/* Violation log */}
       {violations.length > 0 && (

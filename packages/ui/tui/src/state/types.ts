@@ -37,7 +37,6 @@ import type {
   DebugViewState,
   DelegationViewState,
   GatewayViewState,
-  GovernanceAgentSanction,
   GovernancePendingApproval,
   GovernanceViewState,
   GovernanceViolation,
@@ -664,10 +663,6 @@ export type TuiAction =
     }
   | { readonly kind: "add_governance_violation"; readonly violation: GovernanceViolation }
   | { readonly kind: "select_governance_item"; readonly index: number }
-  | {
-      readonly kind: "set_governance_sanction_levels";
-      readonly levels: readonly GovernanceAgentSanction[];
-    }
   | { readonly kind: "set_skills_list"; readonly skills: readonly DashboardSkillSummary[] }
   | { readonly kind: "set_channels_list"; readonly channels: readonly DashboardChannelSummary[] }
   | { readonly kind: "set_system_metrics"; readonly metrics: DashboardSystemMetrics }

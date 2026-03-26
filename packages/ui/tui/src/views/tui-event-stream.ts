@@ -436,42 +436,48 @@ export function harnessPauseResume(deps: DomainActionDeps): void {
     .catch(() => {});
 }
 
-/** Governance approve — directly approves the selected item and returns to console. */
+/** Governance approve — sends approval, removes item + returns to console on success. */
 export function governanceApprove(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
   if (item === undefined) return;
 
-  deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
   deps.client
     .reviewGovernance(item.id, "approved")
     .then((r) => {
-      if (r.ok) deps.addLifecycleMessage(`Approved: ${item.action} for ${item.agentId}`);
-      else deps.addLifecycleMessage(`Approve failed: ${r.error.kind}`);
+      if (r.ok) {
+        deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
+        deps.addLifecycleMessage(`Approved: ${item.action} for ${item.agentId}`);
+        deps.store.dispatch({ kind: "set_view", view: "console" });
+      } else {
+        deps.addLifecycleMessage(`Approve failed: ${r.error.kind}`);
+      }
     })
-    .catch(() => {});
-
-  // Always return to console after approving — the agent is waiting for the result
-  deps.store.dispatch({ kind: "set_view", view: "console" });
+    .catch(() => {
+      deps.addLifecycleMessage("Approve failed: network error");
+    });
 }
 
-/** Governance deny — directly denies the selected item and returns to console. */
+/** Governance deny — sends denial, removes item + returns to console on success. */
 export function governanceDeny(deps: DomainActionDeps): void {
   const gv = deps.store.getState().governanceView;
   const item = gv.pendingApprovals[gv.selectedIndex];
   if (item === undefined) return;
 
-  deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
   deps.client
     .reviewGovernance(item.id, "rejected")
     .then((r) => {
-      if (r.ok) deps.addLifecycleMessage(`Denied: ${item.action} for ${item.agentId}`);
-      else deps.addLifecycleMessage(`Deny failed: ${r.error.kind}`);
+      if (r.ok) {
+        deps.store.dispatch({ kind: "remove_governance_approval", id: item.id });
+        deps.addLifecycleMessage(`Denied: ${item.action} for ${item.agentId}`);
+        deps.store.dispatch({ kind: "set_view", view: "console" });
+      } else {
+        deps.addLifecycleMessage(`Deny failed: ${r.error.kind}`);
+      }
     })
-    .catch(() => {});
-
-  // Always return to console after denying
-  deps.store.dispatch({ kind: "set_view", view: "console" });
+    .catch(() => {
+      deps.addLifecycleMessage("Deny failed: network error");
+    });
 }
 
 /** Promote the selected forge brick via API. */
