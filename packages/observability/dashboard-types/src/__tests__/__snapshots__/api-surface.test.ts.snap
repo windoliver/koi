@@ -397,7 +397,17 @@ interface LogDashboardEvent {
     readonly message: string;
     readonly timestamp: number;
 }
-type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent | DataSourceDashboardEvent | ForgeDashboardEvent | MonitorDashboardEvent | PtyOutputDashboardEvent | LogDashboardEvent;
+/** Governance events — approval requests and decisions. */
+type GovernanceDashboardEvent = {
+    readonly kind: "governance";
+    readonly subKind: "approval_required";
+    readonly approvalId: string;
+    readonly agentId: string;
+    readonly action: string;
+    readonly resource: string;
+    readonly timestamp: number;
+};
+type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent | NexusDashboardEvent | GatewayDashboardEvent | TemporalDashboardEvent | SchedulerDashboardEvent | TaskBoardDashboardEvent | HarnessDashboardEvent | DataSourceDashboardEvent | ForgeDashboardEvent | MonitorDashboardEvent | PtyOutputDashboardEvent | LogDashboardEvent | GovernanceDashboardEvent;
 /** Batched envelope sent over SSE. Monotonic seq for gap detection. */
 interface DashboardEventBatch {
     readonly events: readonly DashboardEvent[];
