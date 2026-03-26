@@ -54,7 +54,14 @@ function piMessagesToOpenAI(messages: readonly Message[]): readonly Record<strin
         .filter((c) => c.type === "text")
         .map((c) => String(c.text ?? ""))
         .join("");
-      result.push({ role: "user", content: text || String(msg.content) });
+      const userText = text || String(msg.content);
+      // Merge consecutive user messages (OpenRouter/Anthropic requires alternating turns)
+      const last = result[result.length - 1];
+      if (last !== undefined && last.role === "user") {
+        last.content = `${String(last.content)}\n\n${userText}`;
+      } else {
+        result.push({ role: "user", content: userText });
+      }
     } else if (msg.role === "assistant") {
       const blocks = Array.isArray(content) ? content : [];
       const text = blocks
@@ -117,14 +124,15 @@ async function openRouterRawFetch(
     }));
   }
 
+  const bodyStr = JSON.stringify(body);
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify(body),
+    body: bodyStr,
   });
   if (!resp.ok) {
     const errBody = await resp.text();
-    // Return empty response instead of parsing bad JSON
+    // Return text response with error info instead of crashing
     return {
       role: "assistant",
       content: [{ type: "text", text: `API error: ${errBody.slice(0, 100)}` }],
