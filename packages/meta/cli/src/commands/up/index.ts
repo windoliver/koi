@@ -609,27 +609,36 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (nexusBaseUrl !== undefined) {
     const nexusWriteOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
     if (!nexusWriteOk) {
-      output.warn("Nexus write test failed — restarting container...");
+      output.warn("Nexus unhealthy — recreating container...");
       try {
         const { readRuntimeState } = await import("@koi/nexus-embed");
         const state = readRuntimeState(workspaceRoot);
         if (state?.project_name) {
+          // Full recreate: rm -f + up -d (restart alone doesn't fix Raft issues)
           const containerName = `${state.project_name}-nexus-1`;
-          const proc = Bun.spawn(["docker", "restart", containerName], {
+          await Bun.spawn(["docker", "rm", "-f", containerName], {
             stdout: "ignore",
-            stderr: "pipe",
-          });
-          await proc.exited;
-          // Wait for container to be healthy (Raft needs time to elect leader)
-          for (let attempt = 0; attempt < 6; attempt++) {
+            stderr: "ignore",
+          }).exited;
+          // Use docker compose to bring it back with proper networking
+          const composeFile = join(workspaceRoot, "nexus-stack.yml");
+          await Bun.spawn(
+            ["docker", "compose", "-f", composeFile, "-p", state.project_name, "up", "-d", "nexus"],
+            { stdout: "ignore", stderr: "ignore" },
+          ).exited;
+          // Wait for healthy
+          let recovered = false;
+          for (let attempt = 0; attempt < 12; attempt++) {
             await new Promise((r) => setTimeout(r, 5000));
-            if (await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "")) break;
+            if (await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "")) {
+              recovered = true;
+              break;
+            }
           }
-          const retryOk = await testNexusWrite(nexusBaseUrl, process.env.NEXUS_API_KEY ?? "");
-          if (retryOk) {
-            output.success("Nexus recovered after restart");
+          if (recovered) {
+            output.success("Nexus recovered");
           } else {
-            output.warn("Nexus still unhealthy after restart — storage may not work");
+            output.warn("Nexus still unhealthy — storage may not work");
           }
         }
       } catch {
