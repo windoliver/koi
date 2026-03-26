@@ -581,6 +581,34 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
+  // Verify Nexus connectivity with a write test — surface errors at startup, not at runtime
+  if (nexusBaseUrl !== undefined) {
+    try {
+      const apiKey = process.env.NEXUS_API_KEY ?? "";
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const resp = await fetch(`${nexusBaseUrl}/api/nfs/write`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({ path: "/.koi-health-check", content: new Date().toISOString() }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        output.warn(`Nexus write test failed (${String(resp.status)}): ${body.slice(0, 100)}`);
+        output.warn("Nexus-backed storage may not work — check Nexus health or restart containers");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      output.warn(`Nexus connectivity check failed: ${msg}`);
+      output.warn("Nexus-backed storage may not work — check Nexus health or restart containers");
+    }
+  }
+
   // Temporal auto-start
   let temporalEmbedHandle: Awaited<ReturnType<typeof startTemporalEmbed>>;
   let temporalUrl = flags.temporalUrl;
