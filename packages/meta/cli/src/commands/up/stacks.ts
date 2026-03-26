@@ -43,6 +43,8 @@ export interface ActivatedStacks {
       decision: "approved" | "rejected",
       reason?: string,
     ) => Result<void, KoiError>;
+    /** Set a callback to be called immediately when a governance item is enqueued. */
+    readonly setOnEnqueue: (cb: (item: GovernancePendingItem) => void) => void;
   };
 }
 
@@ -149,6 +151,7 @@ async function activateGovernance(
     }
   >();
   let nextId = 0;
+  let onEnqueueCb: ((item: GovernancePendingItem) => void) | undefined;
 
   // Shared helper: push a tool call into the pending queue and block until operator decides.
   function enqueue(
@@ -157,14 +160,23 @@ async function activateGovernance(
     payload: Readonly<Record<string, unknown>>,
   ): Promise<boolean> {
     const id = `gov-${String(++nextId)}-${Date.now()}`;
+    const item: GovernancePendingItem = {
+      id,
+      agentId,
+      requestKind: toolId,
+      payload,
+      timestamp: Date.now(),
+    };
     return new Promise((resolve) => {
       pendingQueue.set(id, {
-        item: { id, agentId, requestKind: toolId, payload, timestamp: Date.now() },
+        item,
         resolve: (decision) => {
           pendingQueue.delete(id);
           resolve(decision === "approved");
         },
       });
+      // Notify the TUI immediately — no polling needed
+      onEnqueueCb?.(item);
     });
   }
 
@@ -205,6 +217,7 @@ async function activateGovernance(
       }),
       approvalHandler,
       approvalTimeoutMs: 300_000, // 5 minutes — operator needs time to navigate to governance view
+      cache: true, // Cache approvals so the same tool doesn't need re-approval in the same session
     },
     // exec-approvals doesn't support group: patterns — use explicit tool names
     execApprovals: {
@@ -274,6 +287,9 @@ async function activateGovernance(
       }
       entry.resolve(decision);
       return { ok: true, value: undefined };
+    },
+    setOnEnqueue: (cb: (item: GovernancePendingItem) => void) => {
+      onEnqueueCb = cb;
     },
   };
 }
