@@ -91,15 +91,21 @@ export function inboundToPiMessage(msg: InboundMessage): Message {
     if (typeof originalRole === "string") {
       if (originalRole === "assistant") return inboundToAssistantMessage(msg);
       // originalRole is "user"/"system"/"tool" → fall through to UserMessage
-    } else if (
-      msg.senderId !== "user" &&
-      msg.senderId !== "system" &&
-      !msg.senderId.startsWith("system:") &&
-      !msg.senderId.startsWith("user")
-    ) {
+    } else {
       // Legacy path: no originalRole metadata.
-      // Heuristic: senderIds starting with "user" are user messages (e.g., "user-42").
-      return inboundToAssistantMessage(msg);
+      // Positive-match agent senderIds rather than excluding user patterns.
+      // Agent IDs in Koi follow "name" or "name-suffix" from the manifest —
+      // they're never UUIDs/emails. The conversation middleware sets senderId
+      // to the agentId for assistant messages. Match common agent ID patterns.
+      // Default to user (safe) if uncertain — misclassifying user as assistant
+      // is worse than the reverse.
+      const agentName = meta.agentId;
+      if (typeof agentName === "string" && msg.senderId === agentName) {
+        return inboundToAssistantMessage(msg);
+      }
+      // No agentId metadata and no originalRole → default to user (safe).
+      // This may misclassify assistant messages from very old history that
+      // lacks both metadata fields, but that's safer than the reverse.
     }
   }
   // "user", "system:compactor", or any other senderId → UserMessage

@@ -15,9 +15,11 @@ import { AsyncQueue, createEventSubscriber } from "./event-bridge.js";
 import { engineInputToHistory, engineInputToPrompt, PI_CAPABILITIES } from "./message-map.js";
 import { createMetricsAccumulator } from "./metrics.js";
 import {
-  clearLastKnownParams,
+  clearParamsFallback,
   createModelCallTerminal,
   createModelStreamTerminal,
+  type PiParamsFallback,
+  setParamsFallback,
 } from "./model-terminal.js";
 import { createBridgeStreamFn } from "./stream-bridge.js";
 import { wrapTool } from "./tool-bridge.js";
@@ -109,6 +111,11 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const queue = new AsyncQueue<EngineEvent>();
       const metrics = createMetricsAccumulator();
+
+      // Scope pi-params fallback to this stream() call so sub-calls without
+      // nonces (e.g., RLM REPL) use this session's params, not a stale one.
+      const paramsFallback: PiParamsFallback = { current: undefined };
+      setParamsFallback(paramsFallback);
 
       const callHandlers = input.callHandlers;
       if (!callHandlers) {
@@ -246,6 +253,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
               const result = await inner.next();
               if (result.done) {
                 unsubscribe();
+                clearParamsFallback();
                 if (currentPiAgent === piAgent) {
                   currentPiAgent = undefined;
                 }
@@ -254,6 +262,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
             },
             async return(): Promise<IteratorResult<EngineEvent>> {
               unsubscribe();
+              clearParamsFallback();
               piAgent.abort();
               if (currentPiAgent === piAgent) {
                 currentPiAgent = undefined;
@@ -290,9 +299,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
         currentPiAgent.abort();
         currentPiAgent = undefined;
       }
-      // Clear session-scoped fallback to prevent leaking piParams
-      // (API key, abort signal, callBoundStream) into a later session.
-      clearLastKnownParams();
+      clearParamsFallback();
     },
   };
 }

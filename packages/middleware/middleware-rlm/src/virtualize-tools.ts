@@ -38,8 +38,8 @@ export const RLM_EXAMINE_DESCRIPTOR: RlmToolDescriptor = {
   description:
     `Read a slice of virtualized content. Returns the raw text from offset to offset+length. ` +
     `Max ${String(MAX_EXAMINE_LENGTH)} chars per call. ` +
-    `To read all content: set offset=0, length=<sizeBytes from stub>. ` +
-    `For large content, read incrementally with different offset values. ` +
+    `For small content (< ${String(MAX_EXAMINE_LENGTH)} chars): set offset=0, length=sizeBytes. ` +
+    `For large content: read incrementally with different offset values. ` +
     `This is the ONLY way to access virtualized content — re-reading the file will return the same stub.`,
   inputSchema: {
     type: "object",

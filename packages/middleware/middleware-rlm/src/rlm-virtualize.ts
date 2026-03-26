@@ -40,6 +40,11 @@ import type {
 } from "@koi/core/middleware";
 import { estimateTokens } from "@koi/token-estimator";
 import type { InputStore } from "./input-store.js";
+import { MAX_EXAMINE_LENGTH } from "./types.js";
+
+/** Max chars for a single rlm_examine call — used in stub generation. */
+const MAX_EXAMINE_CHAR_LENGTH = MAX_EXAMINE_LENGTH;
+
 import { createInputStore } from "./input-store.js";
 import type { VirtualStoreRegistry } from "./virtualize-tools.js";
 import {
@@ -132,8 +137,10 @@ function generateStub(
     `Preview: ${meta.preview}\n` +
     `\n` +
     `IMPORTANT: This content has been virtualized. The raw content is NOT available inline.\n` +
-    `You MUST use the rlm_examine tool to read it. Call rlm_examine with offset=0 and length=${String(meta.sizeBytes)} to read the full content.\n` +
-    `For large content, read in chunks: call rlm_input_info first, then rlm_examine with offset/length ranges.`
+    `You MUST use the rlm_examine tool to read it. ` +
+    (meta.sizeBytes <= MAX_EXAMINE_CHAR_LENGTH
+      ? `Call rlm_examine with offset=0 and length=${String(meta.sizeBytes)} to read the full content.`
+      : `Content exceeds single-read limit (${String(MAX_EXAMINE_CHAR_LENGTH)} chars). Read in chunks: call rlm_input_info first, then rlm_examine with sequential offset/length ranges.`)
   );
 }
 

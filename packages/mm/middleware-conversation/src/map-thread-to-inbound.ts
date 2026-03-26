@@ -29,6 +29,6 @@ export function mapThreadMessageToInbound(
     content: [textBlock],
     senderId,
     timestamp: msg.createdAt,
-    metadata: { ...(msg.metadata ?? {}), fromHistory: true, originalRole: msg.role },
+    metadata: { ...(msg.metadata ?? {}), fromHistory: true, originalRole: msg.role, agentId },
   };
 }
