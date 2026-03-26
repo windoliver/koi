@@ -180,10 +180,18 @@ async function activateGovernance(
     });
   }
 
+  // Track approved tools — once approved, auto-approve for the rest of the session
+  const approvedTools = new Set<string>();
+
   // Bridge: permissions middleware "ask" tier → pending queue → admin API.
   const approvalHandler: import("@koi/middleware-permissions").ApprovalHandler = {
-    requestApproval: (toolId, input, _reason) =>
-      enqueue(toolId, "primary", input as Readonly<Record<string, unknown>>),
+    requestApproval: async (toolId, input, _reason) => {
+      // Auto-approve if this tool was already approved in this session
+      if (approvedTools.has(toolId)) return true;
+      const approved = await enqueue(toolId, "primary", input as Readonly<Record<string, unknown>>);
+      if (approved) approvedTools.add(toolId);
+      return approved;
+    },
   };
 
   // Bridge: exec-approvals "ask" tier → pending queue → admin API.
