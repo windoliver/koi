@@ -813,6 +813,24 @@ export function forwardAgentEventsToConsole(
       });
       continue;
     }
+    if (evt.kind === "governance" && evt.subKind === "approval_required") {
+      deps.store.dispatch({
+        kind: "add_governance_approval",
+        approval: {
+          id: evt.approvalId,
+          agentId: evt.agentId,
+          action: evt.action,
+          resource: evt.resource,
+          timestamp: evt.timestamp,
+        },
+      });
+      // Auto-switch to governance view immediately
+      if (deps.store.getState().view !== "governance") {
+        deps.store.dispatch({ kind: "set_view", view: "governance" });
+        deps.addLifecycleMessage(`⚠ Governance approval required — ${evt.action}`);
+      }
+      continue;
+    }
     if (isDataSourceEvent(evt)) {
       const desc = formatDataSourceEvent(evt);
       if (desc !== null) {

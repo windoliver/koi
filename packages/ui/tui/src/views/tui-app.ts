@@ -1018,42 +1018,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
     refreshTimer = setInterval(() => {
       refreshAgents().catch(() => {});
-      // Poll governance queue — auto-switch to governance view when items appear
-      if (store.getState().capabilities?.governance === true) {
-        client
-          .listGovernanceQueue()
-          .then((r) => {
-            if (!r.ok) return;
-            const current = store.getState().governanceView.pendingApprovals;
-            const currentIds = new Set(current.map((a) => a.id));
-            for (const item of r.value) {
-              if (!currentIds.has(item.id)) {
-                store.dispatch({
-                  kind: "add_governance_approval",
-                  approval: {
-                    id: item.id,
-                    agentId: item.agentId,
-                    action: item.requestKind,
-                    resource: JSON.stringify(item.payload).slice(0, 40),
-                    timestamp: item.timestamp,
-                  },
-                });
-              }
-            }
-            // Auto-switch to governance view when new items appear
-            if (
-              r.value.length > 0 &&
-              current.length === 0 &&
-              store.getState().view !== "governance"
-            ) {
-              store.dispatch({ kind: "set_view", view: "governance" });
-              addLifecycleMessage(
-                `⚠ Governance approval required — ${String(r.value.length)} pending`,
-              );
-            }
-          })
-          .catch(() => {});
-      }
+      // Governance events are pushed via SSE — no polling needed
     }, refreshIntervalMs);
     renderTui();
   }

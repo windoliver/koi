@@ -82,7 +82,7 @@ export async function nexusInit(
   if (!binaryCheck.ok) return binaryCheck;
 
   const nexusPreset = PRESET_MAP[koiPreset] ?? "local";
-  const channel = options?.channel ?? "stable";
+  const channel = options?.channel ?? "edge";
   const args: string[] = ["init", "--preset", nexusPreset, "--force", "--channel", channel];
 
   const result = await runNexusCommand(args, cwd, verbose, "nexus init", sourceDir);

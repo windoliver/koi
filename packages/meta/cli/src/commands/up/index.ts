@@ -1227,6 +1227,21 @@ export async function runUp(flags: UpFlags): Promise<void> {
     // Wire forge/monitor SSE event sink now that the bridge exists
     emitDashboardEvent = adminBridge.emitEvent;
 
+    // Wire governance → SSE push: when a tool call is blocked, emit immediately
+    if (activatedStacks.governanceCommands?.setOnEnqueue) {
+      activatedStacks.governanceCommands.setOnEnqueue((item) => {
+        adminBridge?.emitEvent({
+          kind: "governance",
+          subKind: "approval_required",
+          approvalId: item.id,
+          agentId: item.agentId,
+          action: item.requestKind,
+          resource: JSON.stringify(item.payload).slice(0, 40),
+          timestamp: item.timestamp,
+        });
+      });
+    }
+
     const routingChatHandler = createChatRouter({
       primaryHandler: chatBridge.handler,
       getDispatchedHandler: dispatcher.getChatHandler,
