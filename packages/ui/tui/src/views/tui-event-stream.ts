@@ -453,11 +453,8 @@ export function governanceApprove(deps: DomainActionDeps): void {
     })
     .catch(() => {});
 
-  // Return to console after approval — check updated state
-  const after = deps.store.getState().governanceView.pendingApprovals;
-  if (after.length === 0) {
-    deps.store.dispatch({ kind: "set_view", view: "console" });
-  }
+  // Always return to console after approving — the agent is waiting for the result
+  deps.store.dispatch({ kind: "set_view", view: "console" });
 }
 
 /** Governance deny — directly denies the selected item and returns to console. */
@@ -475,10 +472,8 @@ export function governanceDeny(deps: DomainActionDeps): void {
     })
     .catch(() => {});
 
-  const after = deps.store.getState().governanceView.pendingApprovals;
-  if (after.length === 0) {
-    deps.store.dispatch({ kind: "set_view", view: "console" });
-  }
+  // Always return to console after denying
+  deps.store.dispatch({ kind: "set_view", view: "console" });
 }
 
 /** Governance confirm — executes the pending action and refreshes the queue. */

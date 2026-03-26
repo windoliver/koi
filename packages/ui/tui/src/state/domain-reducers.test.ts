@@ -234,6 +234,21 @@ describe("governance reducers", () => {
     expect(next.pendingApprovals).toHaveLength(1);
   });
 
+  test("addGovernanceApproval deduplicates by id", () => {
+    const state = createInitialGovernanceView();
+    const item = {
+      id: "ap-1",
+      agentId: "a-1",
+      action: "write",
+      resource: "/data",
+      timestamp: Date.now(),
+    };
+    const once = addGovernanceApproval(state, item);
+    const twice = addGovernanceApproval(once, item);
+    expect(twice.pendingApprovals).toHaveLength(1);
+    expect(twice).toBe(once); // same reference — no-op
+  });
+
   test("removeGovernanceApproval removes by id", () => {
     const state = addGovernanceApproval(createInitialGovernanceView(), {
       id: "ap-1",
