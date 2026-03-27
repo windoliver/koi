@@ -63,12 +63,12 @@ function makeEd25519Token(id: string): CapabilityToken {
     expiresAt: FUTURE,
   };
   const canonical = JSON.stringify(sortKeys(base));
-  const signature = cryptoSign(null, Buffer.from(canonical), {
-    key: Buffer.from(ed25519Private),
+  const signature = cryptoSign(null, new Uint8Array(Buffer.from(canonical)), {
+    key: ed25519Private,
     format: "der",
     type: "pkcs8",
   }).toString("base64");
-  const publicKeyB64 = Buffer.from(ed25519Public).toString("base64");
+  const publicKeyB64 = ed25519Public.toString("base64");
   return { ...base, proof: { kind: "ed25519", publicKey: publicKeyB64, signature } };
 }
 
@@ -149,7 +149,7 @@ describe("createCompositeVerifier — keyRegistry", () => {
   });
 
   test("accepts ed25519 token when keyRegistry returns matching key", async () => {
-    const correctKey = Buffer.from(ed25519Public).toString("base64");
+    const correctKey = ed25519Public.toString("base64");
     const matchingRegistry = {
       resolve: (_issuerId: string) => correctKey,
     };
@@ -349,7 +349,7 @@ describe("createCompositeVerifier — async verification paths", () => {
   });
 
   test("resolves correctly with async key registry", async () => {
-    const correctKey = Buffer.from(ed25519Public).toString("base64");
+    const correctKey = ed25519Public.toString("base64");
     const composite = createCompositeVerifier({
       hmacSecret: HMAC_SECRET,
       keyRegistry: { resolve: () => Promise.resolve(correctKey) },
@@ -390,7 +390,7 @@ describe("createCompositeVerifier — async verification paths", () => {
 
   test("caches resolved value with async key registry", async () => {
     const cache = createInMemoryVerifierCache();
-    const correctKey = Buffer.from(ed25519Public).toString("base64");
+    const correctKey = ed25519Public.toString("base64");
     const composite = createCompositeVerifier({
       hmacSecret: HMAC_SECRET,
       keyRegistry: { resolve: () => Promise.resolve(correctKey) },
