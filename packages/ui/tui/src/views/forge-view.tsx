@@ -81,7 +81,8 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
   const { forgeBricks, forgeSparklines, forgeEvents, monitorEvents, forgeSelectedBrickIndex } = props.state;
   const brickEntries = Object.entries(forgeBricks);
   const selectedIdx = forgeSelectedBrickIndex;
-  const isNarrow = (props.terminalWidth ?? 120) < NARROW_WIDTH_THRESHOLD;
+  const isNarrow =
+    (props.terminalWidth ?? process.stdout?.columns ?? 120) < NARROW_WIDTH_THRESHOLD;
 
   // Count promotions
   let promotedCount = 0;

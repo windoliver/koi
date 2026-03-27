@@ -170,9 +170,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     ]);
     const bricks = bricksResult.ok ? bricksResult.value : [];
     const events = eventsResult.ok ? eventsResult.value : [];
-    if (bricks.length > 0 || events.length > 0) {
-      store.dispatch({ kind: "hydrate_forge", bricks, events });
-    }
+    // Always dispatch — even empty results should clear stale state from a previous session.
+    store.dispatch({ kind: "hydrate_forge", bricks, events });
   }
 
   const dsDeps: DataSourceDeps = { store, client, addLifecycleMessage };
@@ -1008,7 +1007,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
 
     await refreshAgents();
-    refreshForge().catch(() => {});
+    await refreshForge().catch(() => {});
     startEventStream();
 
     if (initialAgentId !== undefined) {
@@ -1045,7 +1044,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
 
     await refreshAgents();
-    refreshForge().catch(() => {});
+    await refreshForge().catch(() => {});
     startEventStream();
     refreshTimer = setInterval(() => {
       refreshAgents().catch(() => {});
