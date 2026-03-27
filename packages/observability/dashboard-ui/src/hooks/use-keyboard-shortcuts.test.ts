@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { renderHook } from "@testing-library/react";
+import { cleanup, renderHook } from "@testing-library/react";
 import { useThemeStore } from "../stores/theme-store.js";
 import { FOCUS_SEARCH_EVENT, useKeyboardShortcuts } from "./use-keyboard-shortcuts.js";
 
@@ -9,6 +9,7 @@ describe("use-keyboard-shortcuts", () => {
   });
 
   afterEach(() => {
+    cleanup();
     localStorage.clear();
   });
 
