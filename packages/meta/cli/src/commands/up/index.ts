@@ -1495,21 +1495,39 @@ export async function runUp(flags: UpFlags): Promise<void> {
       await tuiApp.start();
       tuiAttached = true;
     } catch {
+      // start() may have entered raw mode before failing — force cleanup.
+      try {
+        tuiApp?.stop().catch(() => {});
+      } catch {
+        // Best effort
+      }
+      if (process.stdin.isTTY) {
+        try {
+          process.stdin.setRawMode(false);
+        } catch {
+          // May not be in raw mode
+        }
+      }
+      clearTerminalState();
       tuiApp = undefined;
     }
   }
 
   // Defense-in-depth: restore terminal on any exit path (same pattern as tui.ts).
   // Catches cases where the normal cleanup sequence hangs or throws.
+  // No tuiAttached guard — start() may have entered raw mode before failing.
   const forceRestoreTerminal = (): void => {
-    if (!tuiAttached) return;
     try {
       tuiApp?.stop().catch(() => {});
     } catch {
       // Best effort
     }
     if (process.stdin.isTTY) {
-      process.stdin.setRawMode(false);
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // May not be in raw mode
+      }
     }
     clearTerminalState();
   };

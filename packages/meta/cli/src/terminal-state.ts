@@ -3,17 +3,27 @@
  *
  * SIGKILL is uncatchable, so when the OS OOM-kills `koi up` while the TUI
  * is in raw mode with mouse tracking, the terminal is left broken. This
- * module saves terminal state to a sentinel file before entering raw mode
- * and restores it on next startup if the previous process died unexpectedly.
+ * module saves terminal state to a PID-keyed sentinel file before entering
+ * raw mode and restores it on next startup if the previous process died.
+ *
+ * Sentinel files are keyed by PID (`.terminal-sentinel-{pid}`) so that
+ * concurrent koi up / koi tui sessions don't clobber each other.
  *
  * Flow:
  *   1. `saveTerminalState()` — called before TUI enters raw mode
  *   2. `clearTerminalState()` — called on clean exit
- *   3. `restoreCrashedTerminal()` — called at startup, auto-restores if needed
+ *   3. `restoreCrashedTerminal()` — called at startup, restores ALL dead sentinels
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -22,7 +32,7 @@ import { join } from "node:path";
 // ---------------------------------------------------------------------------
 
 const SENTINEL_DIR = join(homedir(), ".koi");
-const SENTINEL_FILE = join(SENTINEL_DIR, ".terminal-sentinel");
+const SENTINEL_PREFIX = ".terminal-sentinel-";
 
 /** Escape sequences to undo raw-mode TUI artifacts. */
 const TERMINAL_RESET_SEQUENCES = [
@@ -63,11 +73,35 @@ function isProcessAlive(pid: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Returns the sentinel file path for the current process. */
+function sentinelPath(): string {
+  return join(SENTINEL_DIR, `${SENTINEL_PREFIX}${String(process.pid)}`);
+}
+
+/**
+ * Lists all sentinel files in the sentinel directory.
+ * Returns full paths.
+ */
+function listSentinelFiles(): readonly string[] {
+  try {
+    if (!existsSync(SENTINEL_DIR)) return [];
+    return readdirSync(SENTINEL_DIR)
+      .filter((name) => name.startsWith(SENTINEL_PREFIX))
+      .map((name) => join(SENTINEL_DIR, name));
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Saves the current terminal state to a sentinel file.
+ * Saves the current terminal state to a PID-keyed sentinel file.
  *
  * Call this just before the TUI enters raw mode. The sentinel records the
  * `stty -g` snapshot and the current PID so that `restoreCrashedTerminal()`
@@ -87,19 +121,20 @@ export function saveTerminalState(): void {
     const sentinel: TerminalSentinel = { sttyState, pid: process.pid };
 
     mkdirSync(SENTINEL_DIR, { recursive: true });
-    writeFileSync(SENTINEL_FILE, JSON.stringify(sentinel), "utf-8");
+    writeFileSync(sentinelPath(), JSON.stringify(sentinel), "utf-8");
   } catch {
     // Best effort — never block TUI startup
   }
 }
 
 /**
- * Deletes the sentinel file. Call on clean exit.
+ * Deletes this process's sentinel file. Call on clean exit.
  */
 export function clearTerminalState(): void {
   try {
-    if (existsSync(SENTINEL_FILE)) {
-      unlinkSync(SENTINEL_FILE);
+    const path = sentinelPath();
+    if (existsSync(path)) {
+      unlinkSync(path);
     }
   } catch {
     // Best effort
@@ -107,68 +142,55 @@ export function clearTerminalState(): void {
 }
 
 /**
- * Detects a crashed terminal session from a previous run.
+ * Scans all sentinel files and restores terminals from any crashed sessions.
  *
- * Returns the saved sentinel if the file exists and the recorded PID is dead.
- * Returns `undefined` if no crash is detected (no sentinel, PID still alive,
- * or sentinel is malformed).
- */
-export function detectCrashedTerminal(): TerminalSentinel | undefined {
-  try {
-    if (!existsSync(SENTINEL_FILE)) return undefined;
-
-    const raw = readFileSync(SENTINEL_FILE, "utf-8");
-    const parsed: unknown = JSON.parse(raw);
-    if (!isValidSentinel(parsed)) {
-      // Malformed sentinel — clean it up
-      unlinkSync(SENTINEL_FILE);
-      return undefined;
-    }
-
-    // If the process is still alive, the sentinel is valid (TUI is running)
-    if (isProcessAlive(parsed.pid)) return undefined;
-
-    return parsed;
-  } catch {
-    // JSON parse or file read failed — clean up the corrupt sentinel
-    try {
-      if (existsSync(SENTINEL_FILE)) unlinkSync(SENTINEL_FILE);
-    } catch {
-      // Best effort
-    }
-    return undefined;
-  }
-}
-
-/**
- * Restores the terminal from a crashed session if one is detected.
+ * A sentinel is considered crashed if its recorded PID is no longer alive.
+ * For each crashed sentinel, runs `stty <saved_state>` and writes escape
+ * sequences to disable mouse tracking and exit alternate screen.
  *
- * Runs `stty <saved_state>` to restore terminal settings, writes escape
- * sequences to disable mouse tracking and exit alternate screen, then
- * deletes the sentinel file.
- *
- * Returns `true` if a crash was detected and recovery was attempted.
+ * Returns `true` if at least one crash was detected and recovery attempted.
  */
 export function restoreCrashedTerminal(): boolean {
-  const sentinel = detectCrashedTerminal();
-  if (sentinel === undefined) return false;
+  let recovered = false;
 
-  try {
-    // Restore terminal settings via stty
-    spawnSync("stty", [sentinel.sttyState], {
-      stdio: ["inherit", "pipe", "pipe"],
-      timeout: 3000,
-    });
+  for (const filePath of listSentinelFiles()) {
+    try {
+      const raw = readFileSync(filePath, "utf-8");
+      const parsed: unknown = JSON.parse(raw);
 
-    // Write escape sequences to undo mouse tracking and alternate screen
-    process.stdout.write(TERMINAL_RESET_SEQUENCES);
+      if (!isValidSentinel(parsed)) {
+        // Malformed sentinel — clean it up
+        unlinkSync(filePath);
+        continue;
+      }
 
-    process.stderr.write("Restored terminal state from previous crash.\n");
-  } catch {
-    // Best effort — even partial restore is better than nothing
+      // Skip sentinels whose process is still alive
+      if (isProcessAlive(parsed.pid)) continue;
+
+      // Dead process — restore terminal from this sentinel
+      spawnSync("stty", [parsed.sttyState], {
+        stdio: ["inherit", "pipe", "pipe"],
+        timeout: 3000,
+      });
+
+      process.stdout.write(TERMINAL_RESET_SEQUENCES);
+      recovered = true;
+
+      // Clean up after restoring
+      unlinkSync(filePath);
+    } catch {
+      // Best effort — try to clean up the file even on error
+      try {
+        if (existsSync(filePath)) unlinkSync(filePath);
+      } catch {
+        // Ignore
+      }
+    }
   }
 
-  // Always clean up the sentinel
-  clearTerminalState();
-  return true;
+  if (recovered) {
+    process.stderr.write("Restored terminal state from previous crash.\n");
+  }
+
+  return recovered;
 }
