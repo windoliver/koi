@@ -162,6 +162,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
   }
 
+  /** Fetch forge bricks + events from REST API to hydrate initial state. */
+  async function refreshForge(): Promise<void> {
+    const [bricksResult, eventsResult] = await Promise.all([
+      client.listForgeBricks(),
+      client.listForgeEvents(),
+    ]);
+    const bricks = bricksResult.ok ? bricksResult.value : [];
+    const events = eventsResult.ok ? eventsResult.value : [];
+    // Always dispatch — even empty results should clear stale state from a previous session.
+    store.dispatch({ kind: "hydrate_forge", bricks, events });
+  }
+
   const dsDeps: DataSourceDeps = { store, client, addLifecycleMessage };
 
   const cmdDeps: CommandDeps = {
@@ -995,6 +1007,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
 
     await refreshAgents();
+    await refreshForge().catch(() => {});
     startEventStream();
 
     if (initialAgentId !== undefined) {
@@ -1032,6 +1045,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
 
     await refreshAgents();
+    await refreshForge().catch(() => {});
     startEventStream();
     refreshTimer = setInterval(() => {
       refreshAgents().catch(() => {});

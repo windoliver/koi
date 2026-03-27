@@ -335,6 +335,28 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "apply_forge_batch":
       return { ...state, ...applyForgeBatch(state, action.events) };
 
+    case "hydrate_forge": {
+      const bricks: Record<string, TuiBrickSummary> = {};
+      for (const brick of action.bricks) {
+        bricks[brick.brickId] = { name: brick.name, status: brick.status, fitness: brick.fitness };
+      }
+      const events =
+        action.events.length > MAX_FORGE_EVENTS
+          ? action.events.slice(-MAX_FORGE_EVENTS)
+          : action.events;
+      // Build sparklines from fitness_flushed events in hydrated data
+      const sparklines: Record<string, readonly number[]> = {};
+      for (const event of action.events) {
+        if (event.subKind === "fitness_flushed") {
+          const bid = (event as { readonly brickId: string }).brickId;
+          const rate = (event as { readonly successRate: number }).successRate;
+          const prev = sparklines[bid] ?? [];
+          sparklines[bid] = [...prev, rate].slice(-MAX_FORGE_SPARKLINE_POINTS);
+        }
+      }
+      return { ...state, forgeBricks: bricks, forgeEvents: events, forgeSparklines: sparklines };
+    }
+
     case "apply_monitor_event": {
       const combined = [...state.monitorEvents, action.event];
       return {

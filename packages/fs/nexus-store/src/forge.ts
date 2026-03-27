@@ -70,8 +70,22 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
     return `${basePath}/${id}.json`;
   }
 
+  /** Unwrap Nexus response — handles string, pre-parsed object, and { __type__: "bytes", data: base64 }. */
+  function unwrapNexusValue(value: unknown): unknown {
+    if (typeof value === "string") return JSON.parse(value);
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      (value as { readonly __type__?: string }).__type__ === "bytes" &&
+      typeof (value as { readonly data?: unknown }).data === "string"
+    ) {
+      return JSON.parse(atob((value as { readonly data: string }).data));
+    }
+    return value;
+  }
+
   async function readBrick(id: BrickId): Promise<Result<BrickArtifact, KoiError>> {
-    const readResult = await client.rpc<string>("read", { path: brickPath(id) });
+    const readResult = await client.rpc<unknown>("read", { path: brickPath(id) });
     if (!readResult.ok) {
       if (
         readResult.error.code === "NOT_FOUND" ||
@@ -80,10 +94,10 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
       ) {
         return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
       }
-      return readResult;
+      return readResult as Result<BrickArtifact, KoiError>;
     }
     try {
-      const parsed: unknown = JSON.parse(readResult.value);
+      const parsed: unknown = unwrapNexusValue(readResult.value);
       return validateBrickArtifact(parsed, `nexus:${id}`);
     } catch (e: unknown) {
       return { ok: false, error: wrapNexusError("INTERNAL", `Failed to parse brick ${id}`, e) };
@@ -116,10 +130,20 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
   };
 
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
-    const globResult = await client.rpc<readonly string[]>("glob", {
+    const rawGlob = await client.rpc<unknown>("glob", {
       pattern: `${basePath}/*.json`,
     });
-    if (!globResult.ok) return globResult;
+    if (!rawGlob.ok) return rawGlob as Result<readonly BrickArtifact[], KoiError>;
+    // Nexus glob returns { matches: string[] } — extract the array
+    const globValue = rawGlob.value;
+    const globResult = {
+      ok: true as const,
+      value: Array.isArray(globValue)
+        ? (globValue as readonly string[])
+        : Array.isArray((globValue as { readonly matches?: unknown }).matches)
+          ? (globValue as { readonly matches: readonly string[] }).matches
+          : ([] as readonly string[]),
+    };
 
     // let justified: accumulates first infrastructure error from parallel reads
     let infrastructureError: KoiError | undefined;
@@ -142,7 +166,7 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
           return undefined;
         }
         try {
-          const parsed: unknown = JSON.parse(readResult.value);
+          const parsed: unknown = unwrapNexusValue(readResult.value);
           const validated = validateBrickArtifact(parsed, `nexus:search:${path}`);
           if (!validated.ok) return undefined;
           return validated.value;

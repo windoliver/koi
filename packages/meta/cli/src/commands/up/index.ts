@@ -1536,7 +1536,6 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   chatBridge.wireDispatch(async (msg) => {
     if (tuiProcessing) {
-      process.stderr.write("[dispatch] BLOCKED: agent is busy\n");
       throw new Error("Agent is busy processing another request");
     }
     tuiProcessing = true;
