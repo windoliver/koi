@@ -306,7 +306,7 @@ async function computeComponentAggregateFitness(
   if (typeof ngramKey !== "string") return undefined;
 
   // n-gram key is "toolA|toolB|toolC"
-  const toolIds = ngramKey.split("|");
+  const toolIds = ngramKey.split("|").filter((id) => id.length > 0);
   if (toolIds.length === 0) return undefined;
 
   // Search for component tools by name

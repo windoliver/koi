@@ -302,4 +302,144 @@ describe("createSlackChannel", () => {
 
     await adapter.disconnect();
   });
+
+  test("slash_commands event dispatched when features.slashCommands is true", async () => {
+    const webClient = createMockWebClient();
+    const socketClient = createMockSocketClient();
+
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      features: { slashCommands: true },
+      _webClient: webClient,
+      _socketClient: socketClient,
+    });
+
+    await adapter.connect();
+
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    socketClient._emit("slash_commands", {
+      command: "/test",
+      text: "hello",
+      user_id: "U123",
+      channel_id: "C456",
+      trigger_id: "T789",
+      response_url: "https://hooks.slack.com/response/xxx",
+    });
+
+    // Allow async processing
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received.length).toBeGreaterThanOrEqual(1);
+
+    await adapter.disconnect();
+  });
+
+  test("slash_commands event NOT dispatched when features.slashCommands is false", async () => {
+    const webClient = createMockWebClient();
+    const socketClient = createMockSocketClient();
+
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      features: { slashCommands: false },
+      _webClient: webClient,
+      _socketClient: socketClient,
+    });
+
+    await adapter.connect();
+
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    socketClient._emit("slash_commands", {
+      command: "/test",
+      text: "hello",
+      user_id: "U123",
+      channel_id: "C456",
+      trigger_id: "T789",
+      response_url: "https://hooks.slack.com/response/xxx",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received.length).toBe(0);
+
+    await adapter.disconnect();
+  });
+
+  test("message event registered when features.files is true", async () => {
+    const webClient = createMockWebClient();
+    const socketClient = createMockSocketClient();
+
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      features: { files: true, threads: false },
+      _webClient: webClient,
+      _socketClient: socketClient,
+    });
+
+    await adapter.connect();
+
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    socketClient._emit("message", {
+      event: {
+        type: "message",
+        subtype: "file_share",
+        text: "file",
+        user: "U123",
+        channel: "C456",
+        ts: "1234567890.000001",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received.length).toBeGreaterThanOrEqual(1);
+
+    await adapter.disconnect();
+  });
+
+  test("message event NOT registered when features.files and features.threads are both false", async () => {
+    const webClient = createMockWebClient();
+    const socketClient = createMockSocketClient();
+
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      features: { files: false, threads: false },
+      _webClient: webClient,
+      _socketClient: socketClient,
+    });
+
+    await adapter.connect();
+
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    socketClient._emit("message", {
+      event: {
+        type: "message",
+        text: "hello",
+        user: "U123",
+        channel: "C456",
+        ts: "1234567890.000001",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received.length).toBe(0);
+
+    await adapter.disconnect();
+  });
 });
