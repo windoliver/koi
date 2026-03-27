@@ -8,6 +8,7 @@ import type {
   UserMessage,
 } from "@mariozechner/pi-ai";
 import {
+  engineInputToHistory,
   engineInputToPrompt,
   inboundToPiMessage,
   inboundToPiMessages,
@@ -277,6 +278,75 @@ describe("inboundToPiMessage", () => {
     expect(result.role).toBe("toolResult");
     expect(result.content[0]).toEqual({ type: "image", data: "imgdata", mimeType: "image/jpeg" });
   });
+
+  test("detects assistant via metadata.originalRole when senderId is agentId", () => {
+    const inbound: InboundMessage = {
+      content: [{ kind: "text", text: "Hello from assistant" }],
+      senderId: "koi-demo",
+      timestamp: now,
+      metadata: { fromHistory: true, originalRole: "assistant", agentId: "koi-demo" },
+    };
+    const result = inboundToPiMessage(inbound) as AssistantMessage;
+
+    expect(result.role).toBe("assistant");
+    expect(Array.isArray(result.content)).toBe(true);
+    expect(result.content[0]).toEqual({ type: "text", text: "Hello from assistant" });
+  });
+
+  test("detects assistant via metadata.role when senderId is agentId", () => {
+    const inbound: InboundMessage = {
+      content: [{ kind: "text", text: "Labeled response" }],
+      senderId: "my-agent",
+      timestamp: now,
+      metadata: { role: "assistant" },
+    };
+    const result = inboundToPiMessage(inbound) as AssistantMessage;
+
+    expect(result.role).toBe("assistant");
+    expect(Array.isArray(result.content)).toBe(true);
+  });
+
+  test("detects assistant via legacy agentId match", () => {
+    const inbound: InboundMessage = {
+      content: [{ kind: "text", text: "Legacy response" }],
+      senderId: "old-agent",
+      timestamp: now,
+      metadata: { agentId: "old-agent" },
+    };
+    const result = inboundToPiMessage(inbound) as AssistantMessage;
+
+    expect(result.role).toBe("assistant");
+  });
+
+  test("detects tool via metadata.originalRole", () => {
+    const inbound: InboundMessage = {
+      content: [{ kind: "text", text: "tool result" }],
+      senderId: "some-tool-id",
+      timestamp: now,
+      metadata: {
+        fromHistory: true,
+        originalRole: "tool",
+        toolCallId: "c1",
+        toolName: "search",
+        isError: false,
+      },
+    };
+    const result = inboundToPiMessage(inbound) as ToolResultMessage;
+
+    expect(result.role).toBe("toolResult");
+  });
+
+  test("does not misclassify user with agentId metadata as assistant", () => {
+    const inbound: InboundMessage = {
+      content: [{ kind: "text", text: "user message" }],
+      senderId: "user-42",
+      timestamp: now,
+      metadata: { fromHistory: true, originalRole: "user", agentId: "koi-demo" },
+    };
+    const result = inboundToPiMessage(inbound) as UserMessage;
+
+    expect(result.role).toBe("user");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -335,6 +405,52 @@ describe("engineInputToPrompt", () => {
       ],
     };
     expect(engineInputToPrompt(input)).toBe("second");
+  });
+
+  test("skips assistant messages with agentId senderId (metadata.originalRole)", () => {
+    const input: EngineInput = {
+      kind: "messages",
+      messages: [
+        {
+          content: [{ kind: "text", text: "first" }],
+          senderId: "user",
+          timestamp: now - 1000,
+        },
+        {
+          content: [{ kind: "text", text: "assistant response" }],
+          senderId: "koi-demo",
+          timestamp: now - 500,
+          metadata: { fromHistory: true, originalRole: "assistant", agentId: "koi-demo" },
+        },
+        {
+          content: [{ kind: "text", text: "second" }],
+          senderId: "user",
+          timestamp: now,
+        },
+      ],
+    };
+    expect(engineInputToPrompt(input)).toBe("second");
+  });
+
+  test("skips assistant messages with agentId senderId even when last message", () => {
+    const input: EngineInput = {
+      kind: "messages",
+      messages: [
+        {
+          content: [{ kind: "text", text: "user prompt" }],
+          senderId: "user",
+          timestamp: now - 500,
+        },
+        {
+          content: [{ kind: "text", text: "assistant response" }],
+          senderId: "koi-demo",
+          timestamp: now,
+          metadata: { originalRole: "assistant" },
+        },
+      ],
+    };
+    // Should skip the assistant message and find the user message
+    expect(engineInputToPrompt(input)).toBe("user prompt");
   });
 
   test("returns empty string for messages input with no user messages", () => {
@@ -412,6 +528,68 @@ describe("engineInputToPrompt", () => {
       ],
     };
     expect(engineInputToPrompt(input)).toBe("Summarize this document");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// engineInputToHistory — assistant detection with agentId senderId
+// ---------------------------------------------------------------------------
+
+describe("engineInputToHistory", () => {
+  test("correctly classifies assistant messages with agentId senderId as history", () => {
+    const input: EngineInput = {
+      kind: "messages",
+      messages: [
+        {
+          content: [{ kind: "text", text: "first" }],
+          senderId: "user",
+          timestamp: now - 2000,
+        },
+        {
+          content: [{ kind: "text", text: "assistant response" }],
+          senderId: "koi-demo",
+          timestamp: now - 1000,
+          metadata: { fromHistory: true, originalRole: "assistant", agentId: "koi-demo" },
+        },
+        {
+          content: [{ kind: "text", text: "second" }],
+          senderId: "user",
+          timestamp: now,
+        },
+      ],
+    };
+    const history = engineInputToHistory(input);
+
+    // History should include user + assistant messages before the prompt
+    expect(history).toHaveLength(2);
+    expect(history[0]?.role).toBe("user");
+    expect(history[1]?.role).toBe("assistant");
+    // Assistant content must be array (not string) to avoid flatMap crash
+    expect(Array.isArray(history[1]?.content)).toBe(true);
+  });
+
+  test("does not treat agentId-senderId assistant message as prompt", () => {
+    const input: EngineInput = {
+      kind: "messages",
+      messages: [
+        {
+          content: [{ kind: "text", text: "user prompt" }],
+          senderId: "user",
+          timestamp: now - 500,
+        },
+        {
+          content: [{ kind: "text", text: "assistant response" }],
+          senderId: "my-agent",
+          timestamp: now,
+          metadata: { originalRole: "assistant" },
+        },
+      ],
+    };
+    const history = engineInputToHistory(input);
+
+    // Prompt is the user message; assistant is not mistaken for prompt
+    // lastUserIndex=0, so slice(0, 0) = empty (only the prompt, no prior history)
+    expect(history).toHaveLength(0);
   });
 });
 
