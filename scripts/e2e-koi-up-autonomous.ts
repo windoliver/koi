@@ -115,6 +115,7 @@ async function getPrimaryAgentId(): Promise<string> {
 async function sendMessage(message: string): Promise<{
   readonly events: string[];
   readonly text: string;
+  readonly toolCalls: readonly string[];
 }> {
   const agentIdStr = await getPrimaryAgentId();
   const threadId = `thread-${Date.now().toString(36)}`;
@@ -155,15 +156,25 @@ async function sendMessage(message: string): Promise<{
   const body = await res.text();
   const events: string[] = [];
   const textParts: string[] = [];
+  const toolCalls: string[] = [];
 
   for (const line of body.split("\n")) {
     if (line.startsWith("data: ")) {
       const data = line.slice(6);
       events.push(data);
       try {
-        const parsed = JSON.parse(data);
+        const parsed = JSON.parse(data) as Record<string, unknown>;
         if (parsed.type === "TEXT_MESSAGE_CONTENT" && typeof parsed.value === "string") {
           textParts.push(parsed.value);
+        }
+        // Capture tool calls (AG-UI TOOL_CALL_START events)
+        if (parsed.type === "TOOL_CALL_START" || parsed.type === "tool_call_start") {
+          const name =
+            (parsed as { toolCallName?: string }).toolCallName ??
+            (parsed as { toolName?: string }).toolName ??
+            (parsed as { name?: string }).name ??
+            "unknown";
+          toolCalls.push(name);
         }
       } catch {
         // Non-JSON data line
@@ -171,7 +182,7 @@ async function sendMessage(message: string): Promise<{
     }
   }
 
-  return { events, text: textParts.join("") };
+  return { events, text: textParts.join(""), toolCalls };
 }
 
 async function getHarnessStatus(): Promise<{
@@ -312,6 +323,12 @@ try {
     response.events.length > 0,
     `events=${response.events.length}`,
   );
+  console.log(`  tool calls: [${response.toolCalls.join(", ")}]`);
+  assert(
+    "plan_autonomous was called",
+    response.toolCalls.includes("plan_autonomous"),
+    `tools=${response.toolCalls.join(",")}`,
+  );
   console.log(`  response text: ${response.text.slice(0, 200)}...`);
 } catch (e: unknown) {
   const msg = e instanceof Error ? e.message : String(e);
@@ -372,6 +389,37 @@ try {
 } catch (e: unknown) {
   const msg = e instanceof Error ? e.message : String(e);
   assert("copilot responded", false, msg);
+}
+
+// Step 8: Session 3 — copilot reviews and synthesizes results
+step("Session 3: Copilot reviews + synthesizes worker results");
+
+try {
+  const response3 = await sendMessage(
+    [
+      "Check the task board status using task_status.",
+      "Then use task_synthesize to merge all completed task results into a summary.",
+    ].join("\n"),
+  );
+
+  console.log(`  tool calls: [${response3.toolCalls.join(", ")}]`);
+
+  const calledStatus = response3.toolCalls.includes("task_status");
+  const calledSynthesize = response3.toolCalls.includes("task_synthesize");
+
+  assert("copilot called task_status", calledStatus, `tools=${response3.toolCalls.join(",")}`);
+  assert(
+    "copilot called task_synthesize",
+    calledSynthesize,
+    `tools=${response3.toolCalls.join(",")}`,
+  );
+
+  if (response3.text.length > 0) {
+    console.log(`  synthesis result: ${response3.text.slice(0, 300)}`);
+  }
+} catch (e: unknown) {
+  const msg = e instanceof Error ? e.message : String(e);
+  assert("copilot reviewed and synthesized", false, msg);
 }
 
 // Cleanup
