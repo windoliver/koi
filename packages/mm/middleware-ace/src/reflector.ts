@@ -87,10 +87,11 @@ function formatCompactTrajectory(
     .join("\n");
 }
 
-/** Format rich trajectory steps for the reflector prompt with full context. */
+/** Format rich trajectory steps for the reflector prompt with full context.
+ *  No slice applied here — the caller (compressRichTrajectory) already
+ *  selected the highest-priority steps within the token budget. */
 export function formatRichTrajectory(steps: readonly RichTrajectoryStep[]): string {
   return steps
-    .slice(-MAX_TRAJECTORY_ENTRIES)
     .map((step) => {
       const parts: string[] = [
         `- [${step.kind}] ${step.identifier}: ${step.outcome} (${step.durationMs}ms)`,

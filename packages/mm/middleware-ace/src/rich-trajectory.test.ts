@@ -120,8 +120,8 @@ describe("formatRichTrajectory", () => {
     expect(result).toContain("  Response: short response [truncated]");
   });
 
-  test("only takes last 10 entries (MAX_TRAJECTORY_ENTRIES)", () => {
-    // Use zero-padded identifiers to avoid substring collisions (e.g. "id-01" in "id-01x")
+  test("renders all steps (no internal slicing — caller handles budget)", () => {
+    // formatRichTrajectory does not slice; compressRichTrajectory handles selection
     const steps = Array.from({ length: 15 }, (_, i) =>
       makeRichStep({
         stepIndex: i,
@@ -132,12 +132,8 @@ describe("formatRichTrajectory", () => {
 
     const result = formatRichTrajectory(steps);
 
-    // Steps 0-4 should be excluded (only last 10 kept)
-    for (let i = 0; i < 5; i++) {
-      expect(result).not.toContain(`id-${String(i).padStart(2, "0")}`);
-    }
-    // Steps 5-14 should be included
-    for (let i = 5; i < 15; i++) {
+    // All 15 steps should be included
+    for (let i = 0; i < 15; i++) {
       expect(result).toContain(`id-${String(i).padStart(2, "0")}`);
     }
   });
