@@ -314,6 +314,23 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
         // Save to store — StoreChangeEvent triggers hot-attach in L1
         const brick = mapDescriptorToBrick(descriptor, now);
 
+        // Name-based dedup: prevent duplicate bricks with the same name.
+        // Content dedup (hash) misses bricks with slightly different implementations.
+        try {
+          const nameSearch = await config.forgeStore.search({
+            text: brick.name,
+            kind: "tool",
+            lifecycle: "active",
+            limit: 5,
+          });
+          if (nameSearch.ok && nameSearch.value.some((b) => b.name === brick.name)) {
+            continue; // Active brick with same name already exists
+          }
+        } catch (e: unknown) {
+          // Non-fatal: proceed with forge if search fails (fail-open)
+          onError(e);
+        }
+
         // Pre-save gate (e.g., mutation pressure check injected by L3)
         if (config.beforeSave !== undefined) {
           const allowed = await config.beforeSave(brick);
@@ -455,6 +472,24 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       scope: config.scope,
       provenance,
     });
+
+    // Name-based dedup: prevent duplicate pioneer bricks with the same name.
+    // Content dedup (hash) misses pioneers because each attempt has different
+    // timestamps/error messages, producing different hashes for the same logical brick.
+    try {
+      const nameSearch = await config.forgeStore.search({
+        text: name,
+        kind: signal.suggestedBrickKind,
+        lifecycle: "active",
+        limit: 5,
+      });
+      if (nameSearch.ok && nameSearch.value.some((b) => b.name === name)) {
+        return; // Active brick with same name already exists
+      }
+    } catch (e: unknown) {
+      // Non-fatal: proceed with forge if search fails (fail-open)
+      onError(e);
+    }
 
     // Pre-save gate (e.g., mutation pressure check injected by L3)
     if (config.beforeSave !== undefined) {
