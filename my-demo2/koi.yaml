@@ -1,0 +1,41 @@
+name: my-demo2
+version: 0.1.0
+description: A Koi agent
+model: "anthropic:claude-sonnet-4-5-20250929"
+preset: demo
+
+# Demo preset: auth-enabled local Nexus (API key auto-generated in .env).
+# nexus:
+#   url: https://nexus.example.com
+
+channels:
+  - name: "@koi/channel-cli"
+
+forge:
+  enabled: true
+
+autonomous:
+  enabled: true
+
+soul: ".koi/SOUL.md"
+
+tools:
+  koi:
+    - name: "@koi/tool-ask-user"
+    - name: "@koi/tools-web"
+    - name: "@koi/tool-exec"
+    - name: "@koi/tools-context-hub"
+
+demo:
+  pack: connected
+
+dataSources:
+  - name: herb-employees
+    protocol: nexus
+  - name: herb-customers
+    protocol: nexus
+  - name: herb-products
+    protocol: nexus
+
+context:
+  bootstrap: true
