@@ -63,7 +63,8 @@ export function truncate(text: string, width: number): string {
 
 /** Abbreviate a model name to its first character (e.g., "haiku-4.5" → "h"). */
 export function abbreviateModel(model: string): string {
-  return model.length > 0 ? model[0]! : "?";
+  const first = model[0];
+  return first !== undefined ? first : "?";
 }
 
 /** Create a horizontal separator line that fits the terminal. */
