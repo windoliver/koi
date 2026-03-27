@@ -31,12 +31,12 @@ function createTestSigner(): SigningBackend {
     sign(data: Uint8Array): Uint8Array {
       const hasher = new Bun.CryptoHasher("sha256", TEST_SECRET);
       hasher.update(data);
-      return hasher.digest();
+      return new Uint8Array(hasher.digest());
     },
     verify(data: Uint8Array, signature: Uint8Array): boolean {
       const hasher = new Bun.CryptoHasher("sha256", TEST_SECRET);
       hasher.update(data);
-      const expected = hasher.digest();
+      const expected = new Uint8Array(hasher.digest());
       if (expected.length !== signature.length) return false;
       for (let i = 0; i < expected.length; i++) {
         if (expected[i] !== signature[i]) return false;
