@@ -51,12 +51,16 @@ const TERMINAL_RESET_SEQUENCES = [
 interface TerminalSentinel {
   readonly sttyState: string;
   readonly pid: number;
+  /** TTY device path (e.g., "/dev/ttys001") — recovery only applies to matching TTY. */
+  readonly tty: string;
 }
 
 function isValidSentinel(value: unknown): value is TerminalSentinel {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
-  return typeof obj.sttyState === "string" && typeof obj.pid === "number";
+  return (
+    typeof obj.sttyState === "string" && typeof obj.pid === "number" && typeof obj.tty === "string"
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +83,26 @@ function isProcessAlive(pid: number): boolean {
 /** Returns the sentinel file path for the current process. */
 function sentinelPath(): string {
   return join(SENTINEL_DIR, `${SENTINEL_PREFIX}${String(process.pid)}`);
+}
+
+/**
+ * Returns the TTY device path for the current process (e.g., "/dev/ttys001").
+ * Returns `undefined` if not attached to a TTY.
+ */
+function currentTty(): string | undefined {
+  try {
+    const result = spawnSync("tty", [], {
+      stdio: ["inherit", "pipe", "pipe"],
+      timeout: 3000,
+    });
+    if (result.status !== 0 || result.stdout === null) return undefined;
+    const tty = result.stdout.toString().trim();
+    // `tty` prints "not a tty" when stdin is not a terminal
+    if (tty === "" || tty === "not a tty") return undefined;
+    return tty;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -118,7 +142,10 @@ export function saveTerminalState(): void {
     const sttyState = result.stdout.toString().trim();
     if (sttyState === "") return;
 
-    const sentinel: TerminalSentinel = { sttyState, pid: process.pid };
+    const tty = currentTty();
+    if (tty === undefined) return; // No TTY — nothing to save
+
+    const sentinel: TerminalSentinel = { sttyState, pid: process.pid, tty };
 
     mkdirSync(SENTINEL_DIR, { recursive: true });
     writeFileSync(sentinelPath(), JSON.stringify(sentinel), "utf-8");
@@ -151,6 +178,7 @@ export function clearTerminalState(): void {
  * Returns `true` if at least one crash was detected and recovery attempted.
  */
 export function restoreCrashedTerminal(): boolean {
+  const myTty = currentTty();
   let recovered = false;
 
   for (const filePath of listSentinelFiles()) {
@@ -159,7 +187,7 @@ export function restoreCrashedTerminal(): boolean {
       const parsed: unknown = JSON.parse(raw);
 
       if (!isValidSentinel(parsed)) {
-        // Malformed sentinel — clean it up
+        // Malformed sentinel — clean it up regardless of caller's TTY
         unlinkSync(filePath);
         continue;
       }
@@ -167,18 +195,21 @@ export function restoreCrashedTerminal(): boolean {
       // Skip sentinels whose process is still alive
       if (isProcessAlive(parsed.pid)) continue;
 
-      // Dead process — restore terminal from this sentinel.
-      // Only consume the sentinel if stty actually succeeds, so that a
-      // non-TTY process (CI, background) doesn't discard the record
-      // without repairing the terminal the user is sitting in.
+      // Can't restore without a TTY — leave valid sentinels for later
+      if (myTty === undefined) continue;
+
+      // Only restore sentinels that belong to THIS terminal device.
+      // A sentinel from /dev/ttys001 must not be applied to /dev/ttys002.
+      if (parsed.tty !== myTty) continue;
+
+      // Dead process, same TTY — restore terminal from this sentinel.
       const sttyResult = spawnSync("stty", [parsed.sttyState], {
         stdio: ["inherit", "pipe", "pipe"],
         timeout: 3000,
       });
 
       if (sttyResult.status !== 0) {
-        // stty failed (no TTY, wrong terminal) — leave sentinel for
-        // the actual interactive session to pick up later.
+        // stty failed — leave sentinel for a retry
         continue;
       }
 
@@ -188,7 +219,7 @@ export function restoreCrashedTerminal(): boolean {
       // Clean up only after successful restore
       unlinkSync(filePath);
     } catch {
-      // Best effort — try to clean up the file even on error
+      // JSON parse or file read failed — clean up broken sentinel
       try {
         if (existsSync(filePath)) unlinkSync(filePath);
       } catch {
