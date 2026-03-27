@@ -24,6 +24,24 @@ import type {
 } from "@koi/core";
 
 // ---------------------------------------------------------------------------
+// Lifecycle callbacks
+// ---------------------------------------------------------------------------
+
+/**
+ * Called when the harness transitions to "completed" (all tasks done).
+ * Receives the final HarnessStatus snapshot. Errors are caught and logged
+ * — they never prevent the completion from succeeding.
+ */
+export type OnCompletedCallback = (status: HarnessStatus) => void | Promise<void>;
+
+/**
+ * Called when the harness transitions to "failed".
+ * Receives the final HarnessStatus snapshot and the triggering error.
+ * Errors are caught and logged — they never prevent the failure from recording.
+ */
+export type OnFailedCallback = (status: HarnessStatus, error: KoiError) => void | Promise<void>;
+
+// ---------------------------------------------------------------------------
 // Save-state callback for soft checkpoints
 // ---------------------------------------------------------------------------
 
@@ -47,6 +65,10 @@ export interface LongRunningConfig {
   readonly saveState?: SaveStateCallback | undefined;
   /** Optional agent registry for CAS-based lifecycle transitions. */
   readonly registry?: AgentRegistry | undefined;
+  /** Called when the harness transitions to "completed". Best-effort — errors are logged, not propagated. */
+  readonly onCompleted?: OnCompletedCallback | undefined;
+  /** Called when the harness transitions to "failed". Best-effort — errors are logged, not propagated. */
+  readonly onFailed?: OnFailedCallback | undefined;
 }
 
 // ---------------------------------------------------------------------------

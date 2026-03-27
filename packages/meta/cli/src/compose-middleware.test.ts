@@ -59,6 +59,9 @@ function createAutonomousResult(): AutonomousResult {
     providers: [mockProvider("autonomous-prov")],
     harness: {} as AutonomousResult["harness"],
     dispose: async () => {},
+    bindNotification: () => {},
+    pauseHarness: async () => ({ ok: true as const, value: undefined }),
+    bindSessionRunner: () => {},
   };
 }
 

@@ -1,10 +1,10 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/autonomous API surface . has stable type surface 1`] = `
-"import { AgentManifest, EngineAdapter, KoiMiddleware, ComponentProvider, BrickId, BrickArtifact, Result, KoiError, AgentResolver, ThreadStore, CheckpointPolicy, InboxPolicy, ForgeStore } from '@koi/core';
+"import { AgentManifest, EngineAdapter, KoiMiddleware, ComponentProvider, BrickId, BrickArtifact, Result, KoiError, AgentResolver, ThreadStore, CheckpointPolicy, InboxPolicy, ForgeStore, AgentId, MailboxComponent } from '@koi/core';
 import { MiddlewareRegistry } from '@koi/starter';
 import { HarnessScheduler } from '@koi/harness-scheduler';
-import { LongRunningHarness } from '@koi/long-running';
+import { LongRunningHarness, OnCompletedCallback, OnFailedCallback } from '@koi/long-running';
 
 /**
  * Agent instantiation from forge brick artifacts.
@@ -170,6 +170,46 @@ interface AutonomousAgent {
 
 declare function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent;
 
-export { type AgentInstantiateConfig, type AgentInstantiateResult, type AutonomousAgent, type AutonomousAgentParts, type SpawnFitnessWrapperConfig, type SpawnHealthRecorder, createAgentFromBrick, createAutonomousAgent, createSpawnFitnessWrapper, embedBrickId };
+/**
+ * Completion notifier — creates harness lifecycle callbacks that send
+ * push notifications to the initiating copilot's inbox on plan
+ * completion or failure.
+ *
+ * Usage:
+ *   const notifier = createCompletionNotifier({ initiatorId, agentId, mailbox });
+ *   const harness = createLongRunningHarness({
+ *     ...config,
+ *     onCompleted: notifier.onCompleted,
+ *     onFailed: notifier.onFailed,
+ *   });
+ *
+ * Follows the "thin event" pattern (Stripe, A2A): the notification carries
+ * status + summary only. The copilot fetches full results via task_synthesize().
+ */
+
+interface CompletionNotifierConfig {
+    /** AgentId of the copilot to notify. */
+    readonly initiatorId: AgentId;
+    /** AgentId of the autonomous agent sending the notification. */
+    readonly agentId: AgentId;
+    /** Mailbox used to deliver the notification message. */
+    readonly mailbox: MailboxComponent;
+}
+interface CompletionNotifierCallbacks {
+    readonly onCompleted: OnCompletedCallback;
+    readonly onFailed: OnFailedCallback;
+}
+/**
+ * Create onCompleted/onFailed callbacks that send push notifications
+ * to the initiating copilot's inbox via the mailbox.
+ *
+ * Designed to be spread into a \`LongRunningConfig\`:
+ *
+ *   const { onCompleted, onFailed } = createCompletionNotifier(notifierConfig);
+ *   const harness = createLongRunningHarness({ ...config, onCompleted, onFailed });
+ */
+declare function createCompletionNotifier(config: CompletionNotifierConfig): CompletionNotifierCallbacks;
+
+export { type AgentInstantiateConfig, type AgentInstantiateResult, type AutonomousAgent, type AutonomousAgentParts, type CompletionNotifierCallbacks, type CompletionNotifierConfig, type SpawnFitnessWrapperConfig, type SpawnHealthRecorder, createAgentFromBrick, createAutonomousAgent, createCompletionNotifier, createSpawnFitnessWrapper, embedBrickId };
 "
 `;

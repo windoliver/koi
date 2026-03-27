@@ -1025,6 +1025,50 @@ export async function runUp(flags: UpFlags): Promise<void> {
   output.spinner.stop(undefined);
   output.success("Runtime assembled");
 
+  // Bind autonomous session lifecycle — the runtime is only available after assembly.
+  if (autonomous !== undefined) {
+    // Bind push notifications via copilot's MAILBOX (if attached).
+    const { MAILBOX: MAILBOX_TOKEN } = await import("@koi/core");
+    const copilotMailbox = runtime.agent.component(MAILBOX_TOKEN) as
+      | import("@koi/core").MailboxComponent
+      | undefined;
+    if (copilotMailbox !== undefined) {
+      autonomous.bindNotification(runtime.agent.pid.id, copilotMailbox);
+    }
+
+    // Bind session runner — scheduler calls this after resume() to run engine sub-sessions.
+    autonomous.bindSessionRunner(async (resumeResult: unknown) => {
+      const { engineInput, sessionId } = resumeResult as {
+        engineInput: import("@koi/core").EngineInput;
+        sessionId: string;
+      };
+      process.stderr.write(`[autonomous] running sub-session ${sessionId}...\n`);
+
+      let lastMetrics: import("@koi/core").EngineMetrics | undefined;
+      for await (const event of runtime.run(engineInput)) {
+        if (event.kind === "done") {
+          lastMetrics = event.output.metrics;
+          if (event.output.stopReason === "error") {
+            const errMeta = event.output.metadata as Record<string, unknown> | undefined;
+            const errMsg =
+              errMeta !== undefined && typeof errMeta.errorMessage === "string"
+                ? errMeta.errorMessage
+                : "unknown error";
+            process.stderr.write(`[autonomous] sub-session error: ${errMsg}\n`);
+          }
+        }
+      }
+
+      // Pause harness → suspended so scheduler can resume for next session
+      if (lastMetrics !== undefined) {
+        process.stderr.write(
+          `[autonomous] sub-session done (${String(lastMetrics.turns)} turns) — pausing harness\n`,
+        );
+        await autonomous.pauseHarness({ sessionId, metrics: lastMetrics });
+      }
+    });
+  }
+
   // 8. Prepare channels (connected after TUI decision in step 12b)
   const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
 
@@ -1337,7 +1381,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
 
     stopAdmin = () => {
-      server!.stop(true);
+      server?.stop(true);
       dashboardResult.dispose();
     };
     adminReady = true;
@@ -1587,6 +1631,27 @@ export async function runUp(flags: UpFlags): Promise<void> {
             `warn: Nexus chat persist failed: ${e instanceof Error ? e.message : String(e)}\n`,
           );
         });
+      }
+
+      // Auto-pause harness after copilot run if plan_autonomous was called.
+      // Transitions active → suspended so the scheduler can resume sub-sessions.
+      if (autonomous !== undefined) {
+        const hs = autonomous.harness.status();
+        if (hs.phase === "active") {
+          process.stderr.write(
+            "[autonomous] copilot run finished — pausing harness for scheduler\n",
+          );
+          await autonomous.pauseHarness({
+            sessionId: `copilot-${String(hs.currentSessionSeq ?? 0)}`,
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: turnCount,
+              durationMs: 0,
+            },
+          });
+        }
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
