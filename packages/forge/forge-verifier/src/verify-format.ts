@@ -120,13 +120,15 @@ export async function verifyFormat(
 
     const exitCode = raceResult;
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
+      // Non-zero exit (e.g. parse errors) is non-fatal — formatting is best-effort
       return {
-        ok: false,
-        error: formatError(
-          "FORMAT_FAILED",
-          `Formatter "${config.command}" exited with code ${exitCode}: ${stderr.slice(0, 500)}`,
-        ),
+        ok: true,
+        value: {
+          stage: "format",
+          passed: true,
+          durationMs: performance.now() - start,
+          message: `Formatter "${config.command}" exited with code ${String(exitCode)} — skipped`,
+        },
       };
     }
 

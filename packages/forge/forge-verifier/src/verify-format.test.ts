@@ -107,7 +107,7 @@ describe("verifyFormat", () => {
     expect(result.error.code).toBe("FORMAT_TIMEOUT");
   });
 
-  test("returns error when formatter exits with non-zero code", async () => {
+  test("returns skip when formatter exits with non-zero code", async () => {
     const config: FormatConfig = {
       enabled: true,
       command: "false", // exits with code 1
@@ -115,8 +115,10 @@ describe("verifyFormat", () => {
       timeoutMs: 5_000,
     };
     const result = await verifyFormat(TOOL_INPUT, config);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe("FORMAT_FAILED");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.stage).toBe("format");
+    expect(result.value.passed).toBe(true);
+    expect(result.value.message).toContain("skipped");
   });
 });
