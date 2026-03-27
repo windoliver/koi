@@ -1276,6 +1276,41 @@ export async function runUp(flags: UpFlags): Promise<void> {
               ),
             }
           : {}),
+      ...(forgeBootstrap !== undefined
+        ? {
+            forgeCommands: {
+              async promoteBrick(brickId: string) {
+                const r = await forgeBootstrap.store.update(brickId, { lifecycle: "active" });
+                return r.ok ? ({ ok: true, value: undefined } as const) : r;
+              },
+              async demoteBrick(brickId: string) {
+                const r = await forgeBootstrap.store.update(brickId, {
+                  policy: {
+                    sandbox: true,
+                    capabilities: {
+                      network: { allow: false },
+                      filesystem: {
+                        read: ["/usr", "/bin", "/lib", "/etc", "/tmp"],
+                        write: ["/tmp/koi-sandbox-*"],
+                      },
+                      resources: {
+                        maxMemoryMb: 512,
+                        timeoutMs: 30000,
+                        maxPids: 64,
+                        maxOpenFiles: 256,
+                      },
+                    },
+                  },
+                });
+                return r.ok ? ({ ok: true, value: undefined } as const) : r;
+              },
+              async quarantineBrick(brickId: string) {
+                const r = await forgeBootstrap.store.update(brickId, { lifecycle: "failed" });
+                return r.ok ? ({ ok: true, value: undefined } as const) : r;
+              },
+            },
+          }
+        : {}),
       ...(debugApi !== undefined
         ? {
             debug: {

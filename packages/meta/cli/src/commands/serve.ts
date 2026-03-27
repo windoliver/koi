@@ -429,6 +429,45 @@ export async function runServe(flags: ServeFlags): Promise<void> {
           }
         : {}),
       ...forgeViewSource,
+      ...(forgeBootstrap !== undefined
+        ? {
+            forgeCommands: {
+              async promoteBrick(brickId: string) {
+                const result = await forgeBootstrap.store.update(brickId, {
+                  lifecycle: "active",
+                });
+                return result.ok ? ({ ok: true, value: undefined } as const) : result;
+              },
+              async demoteBrick(brickId: string) {
+                const result = await forgeBootstrap.store.update(brickId, {
+                  policy: {
+                    sandbox: true,
+                    capabilities: {
+                      network: { allow: false },
+                      filesystem: {
+                        read: ["/usr", "/bin", "/lib", "/etc", "/tmp"],
+                        write: ["/tmp/koi-sandbox-*"],
+                      },
+                      resources: {
+                        maxMemoryMb: 512,
+                        timeoutMs: 30000,
+                        maxPids: 64,
+                        maxOpenFiles: 256,
+                      },
+                    },
+                  },
+                });
+                return result.ok ? ({ ok: true, value: undefined } as const) : result;
+              },
+              async quarantineBrick(brickId: string) {
+                const result = await forgeBootstrap.store.update(brickId, {
+                  lifecycle: "failed",
+                });
+                return result.ok ? ({ ok: true, value: undefined } as const) : result;
+              },
+            },
+          }
+        : {}),
     });
 
     // Wire forge/monitor SSE event sink now that the bridge exists
@@ -466,10 +505,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
               currentThreadKey = threadId;
               currentServeSessionId = threadId;
 
-              // Pass the full InboundMessage (with metadata.runId) so the AG-UI
-              // stream middleware can match the SSE writer registered by handleAguiRequest.
-              // Using { kind: "text", text } would strip the runId and break AG-UI streaming.
-              const input: EngineInput = { kind: "messages", messages: [msg] };
+              const input: EngineInput = { kind: "text", text };
               const deltas: string[] = [];
               for await (const event of runtime.run(input)) {
                 if (event.kind === "text_delta") deltas.push(event.delta);
