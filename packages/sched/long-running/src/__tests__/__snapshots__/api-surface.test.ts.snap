@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/long-running API surface . has stable type surface 1`] = `
-"import { InboxPolicy, InboxComponent, ComponentProvider, CheckpointPolicy, KoiMiddleware, HarnessId, TaskBoardSnapshot, HarnessSnapshot, Result, InboundMessage, KoiError, PruningPolicy, AgentId, HarnessSnapshotStore, SessionPersistence, EngineState, AgentRegistry, HarnessStatus, EngineInput, EngineMetrics, TaskItemId, TaskResult, ProcessState, TransitionReason, HarnessPhase, MailboxComponent, Tool, ThreadPruningPolicy, ChainCompactor, ThreadSnapshot } from '@koi/core';
+"import { InboxPolicy, InboxComponent, ComponentProvider, CheckpointPolicy, KoiMiddleware, HarnessId, TaskBoardSnapshot, HarnessSnapshot, Result, InboundMessage, KoiError, PruningPolicy, AgentId, HarnessSnapshotStore, SessionPersistence, EngineState, AgentRegistry, EngineInput, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, ProcessState, TransitionReason, HarnessPhase, MailboxComponent, Tool, ThreadPruningPolicy, ChainCompactor, ThreadSnapshot } from '@koi/core';
 
 /**
  * Autonomous provider — attaches InboxComponent to agents (Decision 4C).
@@ -108,18 +108,6 @@ declare function buildResumeContext(snapshot: HarnessSnapshot, config: {
  * These types are internal to the package — L0 types live in @koi/core/harness.
  */
 
-/**
- * Called when the harness transitions to "completed" (all tasks done).
- * Receives the final HarnessStatus snapshot. Errors are caught and logged
- * — they never prevent the completion from succeeding.
- */
-type OnCompletedCallback = (status: HarnessStatus) => void | Promise<void>;
-/**
- * Called when the harness transitions to "failed".
- * Receives the final HarnessStatus snapshot and the triggering error.
- * Errors are caught and logged — they never prevent the failure from recording.
- */
-type OnFailedCallback = (status: HarnessStatus, error: KoiError) => void | Promise<void>;
 /** Optional callback to capture real engine state during soft checkpoints. */
 type SaveStateCallback = () => EngineState | Promise<EngineState>;
 interface LongRunningConfig {
@@ -135,10 +123,6 @@ interface LongRunningConfig {
     readonly saveState?: SaveStateCallback | undefined;
     /** Optional agent registry for CAS-based lifecycle transitions. */
     readonly registry?: AgentRegistry | undefined;
-    /** Called when the harness transitions to "completed". Best-effort — errors are logged, not propagated. */
-    readonly onCompleted?: OnCompletedCallback | undefined;
-    /** Called when the harness transitions to "failed". Best-effort — errors are logged, not propagated. */
-    readonly onFailed?: OnFailedCallback | undefined;
 }
 interface LongRunningHarness {
     readonly harnessId: HarnessId;
@@ -294,6 +278,6 @@ declare function createTaskTools(config: TaskToolsConfig): readonly Tool[];
  */
 declare function createThreadCompactor(policy?: ThreadPruningPolicy): ChainCompactor<ThreadSnapshot>;
 
-export { type AutonomousProviderConfig, type CheckpointMiddlewareConfig, DEFAULT_LONG_RUNNING_CONFIG, type InboxMiddlewareConfig, type LongRunningConfig, type LongRunningHarness, type OnCompletedCallback, type OnFailedCallback, type PlanAutonomousConfig, type ResumeResult, type SaveStateCallback, type SessionResult, type StartResult, type TaskToolsConfig, buildInitialPrompt, buildResumeContext, computeCheckpointId, createAutonomousProvider, createCheckpointMiddleware, createInboxMiddleware, createLongRunningHarness, createPlanAutonomousProvider, createTaskTools, createThreadCompactor, mapProcessStateToHarnessPhase, shouldSoftCheckpoint };
+export { type AutonomousProviderConfig, type CheckpointMiddlewareConfig, DEFAULT_LONG_RUNNING_CONFIG, type InboxMiddlewareConfig, type LongRunningConfig, type LongRunningHarness, type PlanAutonomousConfig, type ResumeResult, type SaveStateCallback, type SessionResult, type StartResult, type TaskToolsConfig, buildInitialPrompt, buildResumeContext, computeCheckpointId, createAutonomousProvider, createCheckpointMiddleware, createInboxMiddleware, createLongRunningHarness, createPlanAutonomousProvider, createTaskTools, createThreadCompactor, mapProcessStateToHarnessPhase, shouldSoftCheckpoint };
 "
 `;
