@@ -45,19 +45,60 @@ import type {
   InboxPolicy,
   KoiMiddleware,
   MailboxComponent,
+  TaskBoard,
+  TaskBoardSnapshot,
   TaskItemId,
   ThreadMetrics,
 } from "@koi/core";
 import { agentId, INBOX, MAILBOX, threadId } from "@koi/core";
 import { createGoalStack, createTaskAwareDrifting, createTaskBoardSource } from "@koi/goal-stack";
+import type { DelegationBridge } from "@koi/long-running";
 import {
   createAutonomousProvider,
   createCheckpointMiddleware,
+  createDelegationBridge,
   createInboxMiddleware,
   createPlanAutonomousProvider,
   createTaskTools,
 } from "@koi/long-running";
+import { createTaskBoard } from "@koi/task-board";
 import type { AutonomousAgent, AutonomousAgentParts } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Bridge helpers
+// ---------------------------------------------------------------------------
+
+/** Check if any task items in a snapshot use spawn delegation. */
+function hasSpawnTasks(snapshot: TaskBoardSnapshot): boolean {
+  return snapshot.items.some((item) => item.delegation === "spawn");
+}
+
+/**
+ * Hydrate a live TaskBoard from a snapshot, dispatch ready spawn tasks
+ * via the bridge, then write the updated snapshot back to the harness.
+ */
+async function dispatchSpawnTasks(
+  bridge: DelegationBridge,
+  snapshot: TaskBoardSnapshot,
+  harness: AutonomousAgentParts["harness"],
+): Promise<void> {
+  if (!hasSpawnTasks(snapshot)) return;
+
+  const liveBoard: TaskBoard = createTaskBoard(undefined, snapshot);
+  const updatedBoard = await bridge.dispatchReady(liveBoard);
+
+  // Write completed/failed spawn results back to harness
+  for (const result of updatedBoard.completed()) {
+    const existing = snapshot.results.find((r) => r.taskId === result.taskId);
+    if (existing === undefined) {
+      await harness.completeTask(result.taskId, result);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
 
 export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent {
   // let justified: mutable disposal guard
@@ -67,6 +108,11 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   // the autonomous-provider so inbox getters can resolve ECS components.
   // Undefined until the first provider.attach() fires during agent assembly.
   let attachedAgent: Agent | undefined;
+
+  // Delegation bridge — lazily created when a plan with spawn tasks is created
+  // and a spawn function is available via the getSpawn getter.
+  // let justified: mutable ref, created on first plan with spawn tasks.
+  let bridge: DelegationBridge | undefined;
 
   // --- Build middleware list ---
   const middlewareList: KoiMiddleware[] = [parts.harness.createMiddleware()];
@@ -181,12 +227,23 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   // Plan autonomous tool provider — always included for self-escalation.
   // When the agent creates a plan, start the harness with the task board
   // then start the scheduler so it begins auto-resuming sessions.
+  // If the plan contains spawn-delegated tasks, create the delegation bridge
+  // and dispatch root tasks immediately.
   providerList.push(
     createPlanAutonomousProvider({
       onPlanCreated: async (plan) => {
         process.stderr.write(
           `[autonomous] plan created — ${String(plan.items.length)} tasks, starting harness\n`,
         );
+
+        // Fail-fast: spawn tasks require a bound spawn function
+        if (hasSpawnTasks(plan) && parts.getSpawn?.() === undefined) {
+          throw new Error(
+            "Spawn delegation requested but no spawn function is available. " +
+              'Use delegation: "self" or bind a spawn function via bindSpawn().',
+          );
+        }
+
         const startResult = await parts.harness.start(plan);
         if (!startResult.ok) {
           process.stderr.write(`[autonomous] harness start failed: ${startResult.error.message}\n`);
@@ -199,6 +256,17 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
         // resumes for subsequent sessions until all tasks are done.
         process.stderr.write("[autonomous] harness active — scheduler starting\n");
         parts.scheduler.start();
+
+        // Dispatch ready spawn tasks via the delegation bridge.
+        // Lazily create the bridge on first plan with spawn tasks.
+        const spawn = parts.getSpawn?.();
+        if (hasSpawnTasks(plan) && spawn !== undefined) {
+          bridge = createDelegationBridge({ spawn });
+          process.stderr.write(
+            "[autonomous] delegation bridge created — dispatching spawn tasks\n",
+          );
+          await dispatchSpawnTasks(bridge, parts.harness.status().taskBoard, parts.harness);
+        }
       },
     }),
   );
@@ -224,6 +292,12 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
           process.stderr.write(
             `[autonomous] task_complete: ${tid} — ${String(remaining)} remaining\n`,
           );
+
+          // Cascade: dispatch newly-unblocked spawn tasks after a self-delegated
+          // task completes (e.g., task B depends on task A, A just finished).
+          if (bridge !== undefined) {
+            await dispatchSpawnTasks(bridge, board, parts.harness);
+          }
         },
         updateTask: async () => {
           // Harness has no updateDescription method — no-op
@@ -332,7 +406,8 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   const dispose = async (): Promise<void> => {
     if (disposed) return;
     disposed = true;
-    // Order: dispose scheduler first (prevents new resumes), then dispose harness
+    // Order: abort bridge (cancels in-flight spawns), then scheduler, then harness
+    bridge?.abort();
     await parts.scheduler.dispose();
     await parts.harness.dispose();
   };

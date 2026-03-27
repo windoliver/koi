@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { KoiMiddleware } from "@koi/core";
+import type { KoiMiddleware, SpawnFn, TaskBoardSnapshot } from "@koi/core";
 import type { HarnessScheduler } from "@koi/harness-scheduler";
 import type { LongRunningHarness } from "@koi/long-running";
 import { createAutonomousAgent } from "./autonomous.js";
@@ -15,35 +15,50 @@ function createMockMiddleware(name: string): KoiMiddleware {
 function createMockHarness(opts?: {
   readonly middlewareName?: string;
   readonly disposeCalls?: string[];
+  readonly taskBoard?: TaskBoardSnapshot;
 }): LongRunningHarness {
   const disposeCalls = opts?.disposeCalls ?? [];
   const mw = createMockMiddleware(opts?.middlewareName ?? "harness-mw");
+  // let justified: mutable board state updated by start/completeTask
+  let currentBoard: TaskBoardSnapshot = opts?.taskBoard ?? { items: [], results: [] };
 
   return {
     harnessId: "test-harness" as LongRunningHarness["harnessId"],
-    start: async () => ({
-      ok: true as const,
-      value: { engineInput: {} as never, sessionId: "s1" },
-    }),
+    start: async (plan: TaskBoardSnapshot) => {
+      currentBoard = plan;
+      return {
+        ok: true as const,
+        value: { engineInput: {} as never, sessionId: "s1" },
+      };
+    },
     resume: async () => ({
       ok: true as const,
       value: { engineInput: {} as never, sessionId: "s1", engineStateRecovered: false },
     }),
     pause: async () => ({ ok: true as const, value: undefined }),
     fail: async () => ({ ok: true as const, value: undefined }),
-    completeTask: async () => ({ ok: true as const, value: undefined }),
+    completeTask: async (taskId, result) => {
+      // Update task status to completed and store result
+      currentBoard = {
+        items: currentBoard.items.map((item) =>
+          item.id === taskId ? { ...item, status: "completed" as const } : item,
+        ),
+        results: [...currentBoard.results, result],
+      };
+      return { ok: true as const, value: undefined };
+    },
     status: () => ({
       harnessId: "test-harness" as LongRunningHarness["harnessId"],
       phase: "idle" as const,
       currentSessionSeq: 0,
-      taskBoard: { items: [], results: [] },
+      taskBoard: currentBoard,
       metrics: {
         totalSessions: 0,
         totalTurns: 0,
         totalInputTokens: 0,
         totalOutputTokens: 0,
-        completedTaskCount: 0,
-        pendingTaskCount: 0,
+        completedTaskCount: currentBoard.items.filter((i) => i.status === "completed").length,
+        pendingTaskCount: currentBoard.items.filter((i) => i.status !== "completed").length,
         elapsedMs: 0,
       },
     }),
@@ -324,5 +339,128 @@ describe("createAutonomousAgent", () => {
     const mw1 = agent.middleware();
     const mw2 = agent.middleware();
     expect(mw1).toBe(mw2); // same cached reference
+  });
+
+  test("onPlanCreated throws when spawn tasks exist but getSpawn returns undefined", async () => {
+    const harness = createMockHarness();
+    const scheduler = createMockScheduler();
+    const agent = createAutonomousAgent({
+      harness,
+      scheduler,
+      // getSpawn returns undefined — no spawn function bound
+      getSpawn: () => undefined,
+    });
+
+    // Get the plan_autonomous tool via the provider
+    const providers = agent.providers();
+    const planProvider = providers.find((p) => p.name === "plan-autonomous-provider");
+    expect(planProvider).toBeDefined();
+
+    const attachResult = await planProvider?.attach({
+      pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
+      manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
+      state: "created",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    });
+
+    const components = "components" in attachResult ? attachResult.components : attachResult;
+    const tool = components.get("tool:plan_autonomous") as {
+      execute: (args: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    // Plan with spawn tasks should throw
+    await expect(
+      tool.execute({
+        tasks: [{ id: "t1", description: "Spawn task", delegation: "spawn" }],
+      }),
+    ).rejects.toThrow("Spawn delegation requested but no spawn function is available");
+  });
+
+  test("onPlanCreated succeeds when plan has only self-delegated tasks and no getSpawn", async () => {
+    const harness = createMockHarness();
+    const scheduler = createMockScheduler();
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    const providers = agent.providers();
+    const planProvider = providers.find((p) => p.name === "plan-autonomous-provider");
+    expect(planProvider).toBeDefined();
+
+    const attachResult = await planProvider?.attach({
+      pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
+      manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
+      state: "created",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    });
+
+    const components = "components" in attachResult ? attachResult.components : attachResult;
+    const tool = components.get("tool:plan_autonomous") as {
+      execute: (args: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    // Self-delegated plan should succeed without getSpawn
+    const output = await tool.execute({
+      tasks: [
+        { id: "t1", description: "Self task" },
+        { id: "t2", description: "Another self task", delegation: "self" },
+      ],
+    });
+
+    expect(output).toEqual({
+      status: "plan_created",
+      taskCount: 2,
+      message: "Created autonomous plan with 2 tasks.",
+    });
+  });
+
+  test("dispose aborts bridge and then disposes scheduler and harness in order", async () => {
+    const disposeCalls: string[] = [];
+    const harness = createMockHarness({ disposeCalls });
+    const scheduler = createMockScheduler({ disposeCalls });
+
+    const mockSpawn: SpawnFn = async () => ({ ok: true, output: "done" });
+
+    const agent = createAutonomousAgent({
+      harness,
+      scheduler,
+      getSpawn: () => mockSpawn,
+    });
+
+    // Trigger plan creation to create the bridge
+    const providers = agent.providers();
+    const planProvider = providers.find((p) => p.name === "plan-autonomous-provider");
+    const attachResult = await planProvider?.attach({
+      pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
+      manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
+      state: "created",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    });
+
+    const components = "components" in attachResult ? attachResult.components : attachResult;
+    const tool = components.get("tool:plan_autonomous") as {
+      execute: (args: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    // Create a plan with spawn tasks to trigger bridge creation
+    await tool.execute({
+      tasks: [{ id: "t1", description: "Spawn task", delegation: "spawn" }],
+    });
+
+    // Dispose should: abort bridge, then scheduler, then harness
+    await agent.dispose();
+
+    // Verify scheduler disposed before harness
+    expect(disposeCalls).toEqual(["scheduler", "harness"]);
   });
 });

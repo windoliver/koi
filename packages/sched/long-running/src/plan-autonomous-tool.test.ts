@@ -75,6 +75,188 @@ describe("createPlanAutonomousProvider", () => {
     });
   });
 
+  test("spawn-delegated tasks start as pending, self-delegated as assigned", async () => {
+    let capturedPlan: TaskBoardSnapshot | undefined;
+    const provider = createPlanAutonomousProvider({
+      onPlanCreated: (plan) => {
+        capturedPlan = plan;
+      },
+    });
+
+    const result = await provider.attach({
+      pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
+      manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
+      state: "created",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    });
+
+    const components = "components" in result ? result.components : result;
+    const tool = components.get("tool:plan_autonomous") as {
+      execute: (args: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    await tool.execute({
+      tasks: [
+        { id: "self-task", description: "Self-delegated task" },
+        { id: "spawn-task", description: "Spawn-delegated task", delegation: "spawn" },
+        { id: "explicit-self", description: "Explicit self", delegation: "self" },
+      ],
+    });
+
+    expect(capturedPlan).toBeDefined();
+    expect(capturedPlan?.items).toHaveLength(3);
+    // Self-delegated (default) → assigned
+    expect(capturedPlan?.items[0]?.status).toBe("assigned");
+    expect(capturedPlan?.items[0]?.delegation).toBe("self");
+    // Spawn-delegated → pending
+    expect(capturedPlan?.items[1]?.status).toBe("pending");
+    expect(capturedPlan?.items[1]?.delegation).toBe("spawn");
+    // Explicit self → assigned
+    expect(capturedPlan?.items[2]?.status).toBe("assigned");
+    expect(capturedPlan?.items[2]?.delegation).toBe("self");
+  });
+
+  test("agentType is passed through to snapshot items", async () => {
+    let capturedPlan: TaskBoardSnapshot | undefined;
+    const provider = createPlanAutonomousProvider({
+      onPlanCreated: (plan) => {
+        capturedPlan = plan;
+      },
+    });
+
+    const result = await provider.attach({
+      pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
+      manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
+      state: "created",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    });
+
+    const components = "components" in result ? result.components : result;
+    const tool = components.get("tool:plan_autonomous") as {
+      execute: (args: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    await tool.execute({
+      tasks: [
+        {
+          id: "research",
+          description: "Research task",
+          delegation: "spawn",
+          agentType: "researcher",
+        },
+        { id: "code", description: "Code task", delegation: "spawn" },
+        { id: "review", description: "Review task" },
+      ],
+    });
+
+    expect(capturedPlan).toBeDefined();
+    // agentType set explicitly
+    expect(capturedPlan?.items[0]?.agentType).toBe("researcher");
+    // agentType omitted → not present on item
+    expect(capturedPlan?.items[1]?.agentType).toBeUndefined();
+    // Self-delegated → no agentType
+    expect(capturedPlan?.items[2]?.agentType).toBeUndefined();
+  });
+
+  test("invalid delegation value defaults to self", async () => {
+    let capturedPlan: TaskBoardSnapshot | undefined;
+    const provider = createPlanAutonomousProvider({
+      onPlanCreated: (plan) => {
+        capturedPlan = plan;
+      },
+    });
+
+    const result = await provider.attach({
+      pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
+      manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
+      state: "created",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    });
+
+    const components = "components" in result ? result.components : result;
+    const tool = components.get("tool:plan_autonomous") as {
+      execute: (args: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    await tool.execute({
+      tasks: [
+        { id: "t1", description: "Task with invalid delegation", delegation: "invalid" },
+        { id: "t2", description: "Task with numeric delegation", delegation: 42 },
+      ],
+    });
+
+    expect(capturedPlan).toBeDefined();
+    // Invalid values default to "self" → status "assigned"
+    expect(capturedPlan?.items[0]?.delegation).toBe("self");
+    expect(capturedPlan?.items[0]?.status).toBe("assigned");
+    expect(capturedPlan?.items[1]?.delegation).toBe("self");
+    expect(capturedPlan?.items[1]?.status).toBe("assigned");
+  });
+
+  test("mixed plan with dependencies preserves delegation across snapshot", async () => {
+    let capturedPlan: TaskBoardSnapshot | undefined;
+    const provider = createPlanAutonomousProvider({
+      onPlanCreated: (plan) => {
+        capturedPlan = plan;
+      },
+    });
+
+    const result = await provider.attach({
+      pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
+      manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
+      state: "created",
+      component: () => undefined,
+      has: () => false,
+      hasAll: () => false,
+      query: () => new Map(),
+      components: () => new Map(),
+    });
+
+    const components = "components" in result ? result.components : result;
+    const tool = components.get("tool:plan_autonomous") as {
+      execute: (args: Record<string, unknown>) => Promise<unknown>;
+    };
+
+    await tool.execute({
+      tasks: [
+        { id: "research", description: "Research", delegation: "spawn", agentType: "researcher" },
+        { id: "impl", description: "Implement", delegation: "self", dependencies: ["research"] },
+        {
+          id: "test",
+          description: "Test",
+          delegation: "spawn",
+          agentType: "tester",
+          dependencies: ["impl"],
+        },
+      ],
+    });
+
+    expect(capturedPlan).toBeDefined();
+    expect(capturedPlan?.items).toHaveLength(3);
+    // research: spawn, pending, has agentType
+    expect(capturedPlan?.items[0]?.status).toBe("pending");
+    expect(capturedPlan?.items[0]?.agentType).toBe("researcher");
+    // impl: self, assigned, depends on research
+    expect(capturedPlan?.items[1]?.status).toBe("assigned");
+    expect(capturedPlan?.items[1]?.dependencies).toEqual([taskItemId("research")]);
+    // test: spawn, pending, depends on impl, has agentType
+    expect(capturedPlan?.items[2]?.status).toBe("pending");
+    expect(capturedPlan?.items[2]?.agentType).toBe("tester");
+    expect(capturedPlan?.items[2]?.dependencies).toEqual([taskItemId("impl")]);
+  });
+
   test("plan_autonomous tool rejects empty tasks", async () => {
     const provider = createPlanAutonomousProvider({
       onPlanCreated: () => {},
