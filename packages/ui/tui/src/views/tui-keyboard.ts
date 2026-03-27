@@ -221,10 +221,15 @@ export function createKeyboardHandler(
     // Split pane controls: Tab (focus next), Enter (zoom toggle), Esc (back)
     if (view === "splitpanes") {
       if (sequence === "\t") {
-        // Tab: cycle focused pane
-        const paneCount =
+        // Tab: cycle focused pane (clamped to visible pane count by reducer)
+        const totalPanes =
           Object.keys(store.getState().splitSessions).length || store.getState().agents.length;
-        const next = (store.getState().focusedPaneIndex + 1) % Math.max(1, paneCount);
+        const maxPanes =
+          store.getState().layoutTier === "full" || store.getState().layoutTier === "compact"
+            ? 4
+            : 2;
+        const visiblePanes = Math.min(totalPanes, maxPanes);
+        const next = (store.getState().focusedPaneIndex + 1) % Math.max(1, visiblePanes);
         store.dispatch({ kind: "set_focused_pane", index: next });
         return true;
       }

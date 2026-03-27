@@ -10,14 +10,11 @@ import { PanelChrome } from "../components/panel-chrome.js";
 import { relativeTime } from "../lib/relative-time.js";
 import { computeTrend, sparkline } from "../lib/sparkline.js";
 import type { ForgeDashboardEvent, MonitorDashboardEvent } from "@koi/dashboard-types";
-import type { TuiBrickSummary } from "../state/types.js";
-import { brickStatusConfig, COLORS } from "../theme.js";
+import type { LayoutTier, TuiBrickSummary } from "../state/types.js";
+import { brickStatusConfig, COLORS, truncate } from "../theme.js";
 
 /** Maximum number of events shown in the demand feed. */
 const MAX_FEED_ITEMS = 5;
-
-/** Terminal width threshold below which sparklines are hidden. */
-const NARROW_WIDTH_THRESHOLD = 80;
 
 /** Map trend direction to a color for the sparkline. */
 const TREND_COLORS = {
@@ -51,8 +48,7 @@ export interface ForgeViewProps {
   readonly state: ForgeViewState;
   readonly focused: boolean;
   readonly zoomLevel?: "normal" | "half" | "full" | undefined;
-  /** Terminal width in columns. Used for 80-col responsive fallback. */
-  readonly terminalWidth?: number | undefined;
+  readonly layoutTier?: LayoutTier | undefined;
 }
 
 /** Extract a human-readable label from a forge event. */
@@ -81,8 +77,8 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
   const { forgeBricks, forgeSparklines, forgeEvents, monitorEvents, forgeSelectedBrickIndex } = props.state;
   const brickEntries = Object.entries(forgeBricks);
   const selectedIdx = forgeSelectedBrickIndex;
-  const isNarrow =
-    (props.terminalWidth ?? process.stdout?.columns ?? 120) < NARROW_WIDTH_THRESHOLD;
+  const isNarrow = props.layoutTier === "narrow" || props.layoutTier === "tooNarrow";
+  const nameWidth = isNarrow ? 16 : 20;
 
   // Count promotions
   let promotedCount = 0;
@@ -119,8 +115,9 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
       {/* Summary counters */}
       <box height={1} flexDirection="row">
         <text fg={COLORS.dim}>
-          {` Demands: ${String(demandCount)} (${lastDemandKind}) │ Anomalies: ${String(anomalyCount)} │ Promoted: ${String(promotedCount)}`}
+          {` Demands: ${String(demandCount)} (${lastDemandKind}) │ Anomalies: ${String(anomalyCount)} │ Promoted: `}
         </text>
+        <text fg={COLORS.accent}>{String(promotedCount)}</text>
       </box>
 
       {/* Brick table */}
@@ -128,8 +125,8 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
         <box height={1}>
           <text fg={COLORS.dim}>
             {isNarrow
-              ? " Name                 Status            Fitness"
-              : " Name                 Status            Fitness    Trend"}
+              ? ` ${"Name".padEnd(nameWidth)} Status            Fitness`
+              : ` ${"Name".padEnd(nameWidth)} Status            Fitness    Trend`}
           </text>
         </box>
         {brickEntries.map(([brickId, brick], i) => {
@@ -145,7 +142,7 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
             <box key={brickId} height={1} flexDirection="row">
               <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
                 {isSelected ? " ▸" : "  "}
-                {` ${brick.name.padEnd(20).slice(0, 20)} `}
+                {` ${truncate(brick.name, nameWidth)} `}
               </text>
               <text fg={isSelected ? COLORS.cyan : badge.color}>
                 {badge.label.padEnd(18).slice(0, 18)}

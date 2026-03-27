@@ -14,7 +14,7 @@ import { useKeyboard } from "@opentui/react";
 import { useCallback, useRef } from "react";
 import { PanelChrome } from "../components/panel-chrome.js";
 import type { SessionState } from "../state/types.js";
-import { COLORS } from "../theme.js";
+import { COLORS, separator } from "../theme.js";
 import { MessageRow } from "./message-row.js";
 
 /** Props for the console view. */
@@ -25,6 +25,7 @@ export interface ConsoleViewProps {
   readonly focused: boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
   readonly zoomLevel?: "normal" | "half" | "full" | undefined;
+  readonly cols?: number | undefined;
 }
 
 /** Console view with scrollable message list and text input. */
@@ -89,7 +90,7 @@ export function ConsoleView(props: ConsoleViewProps): React.ReactNode {
 
       {/* Separator */}
       <box height={1} backgroundColor={COLORS.bg}>
-        <text fg={COLORS.dim}>{"─".repeat(80)}</text>
+        <text fg={COLORS.dim}>{separator(props.cols ?? 120)}</text>
       </box>
 
       {/* Text input */}

@@ -53,8 +53,8 @@ export function SessionPickerView(props: SessionPickerViewProps): React.ReactNod
       loading={props.loading}
       loadingMessage="Loading sessions..."
       isEmpty={props.sessions.length === 0}
-      emptyMessage="No saved sessions."
-      emptyHint="Sessions are saved automatically. Start a conversation to see history here."
+      emptyMessage="No saved sessions yet."
+      emptyHint="Chat with an agent — sessions save automatically."
     >
       <select
         options={options as SelectOption[]}

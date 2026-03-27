@@ -24,8 +24,8 @@ export function SchedulerView(props: SchedulerViewProps): React.ReactNode {
       focused={props.focused}
       zoomLevel={props.zoomLevel}
       isEmpty={stats === null && tasks.length === 0 && events.length === 0}
-      emptyMessage="No scheduler data yet."
-      emptyHint="The scheduler manages task queues and cron schedules."
+      emptyMessage="No scheduled jobs."
+      emptyHint="Add a `schedule:` field to your koi.yaml."
     >
       {/* Stats bar */}
       {stats !== null && (
