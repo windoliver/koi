@@ -396,4 +396,47 @@ describe("delegation pipeline integration", () => {
     const board = getBoard();
     expect(board.items.every((i) => i.status === "completed")).toBe(true);
   });
+
+  test("retryable spawn failure persists retry count and error to harness", async () => {
+    const { harness, getBoard } = createIntegrationHarness();
+    const scheduler = createMockScheduler();
+    // let justified: mutable call counter for controlling failure
+    let callCount = 0;
+
+    const mockSpawn: SpawnFn = async () => {
+      callCount += 1;
+      // Fail on first attempt, succeed on retry (if re-dispatched)
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: "Worker crashed",
+          retryable: true,
+        },
+      };
+    };
+
+    const agent = createAutonomousAgent({
+      harness,
+      scheduler,
+      getSpawn: () => mockSpawn,
+    });
+
+    const planTool = await getPlanTool(agent);
+    await planTool.execute({
+      tasks: [{ id: "flaky", description: "Flaky task", delegation: "spawn" }],
+    });
+
+    // The spawn was attempted and failed with retryable error
+    expect(callCount).toBe(1);
+
+    // The harness should have persisted the retry state:
+    // - Task should be back to "pending" (retryable, under maxRetries)
+    // - retries should be incremented
+    const board = getBoard();
+    const task = board.items.find((i) => i.id === taskItemId("flaky"));
+    expect(task).toBeDefined();
+    expect(task?.status).toBe("pending");
+    expect(task?.retries).toBeGreaterThan(0);
+  });
 });

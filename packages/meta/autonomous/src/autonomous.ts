@@ -91,29 +91,42 @@ async function dispatchSpawnTasks(
   const liveBoard: TaskBoard = createTaskBoard(undefined, snapshot);
   const updatedBoard = await bridge.dispatchReady(liveBoard);
 
-  // Write transitions back to harness in correct order:
-  // 1. Assign tasks the bridge claimed (pending → assigned)
-  // 2. Complete tasks the bridge finished (assigned → completed)
+  // Write transitions back to harness in correct order.
+  //
+  // The bridge runs assign → spawn → complete/fail atomically on a transient
+  // board. For retryable failures, the board goes: pending → assigned → fail →
+  // pending (with retries incremented). We detect all three cases:
+  //   1. Successful dispatch: item ended as "completed"
+  //   2. Terminal failure: item ended as "failed" (retries exhausted)
+  //   3. Retryable failure: item ended as "pending" but retries > original
   for (const item of updatedBoard.all()) {
     const original = snapshot.items.find((i) => i.id === item.id);
     if (original === undefined) continue;
 
-    // Bridge assigned this task (was pending, now assigned or completed)
-    if (original.status === "pending" && item.status !== "pending") {
-      const assignResult = await harness.assignTask(
-        item.id,
-        item.assignedTo ?? agentId(`worker-${item.id}`),
+    const wasDispatched =
+      // Moved out of pending (success or terminal failure)
+      (original.status === "pending" && item.status !== "pending") ||
+      // Retryable failure: back to pending but retries incremented
+      (original.status === "pending" &&
+        item.status === "pending" &&
+        item.retries > original.retries);
+
+    if (!wasDispatched) continue;
+
+    // Step 1: assign in harness (pending → assigned)
+    const assignResult = await harness.assignTask(
+      item.id,
+      item.assignedTo ?? agentId(`worker-${item.id}`),
+    );
+    if (!assignResult.ok) {
+      process.stderr.write(
+        `[autonomous] assignTask failed for ${item.id}: ${assignResult.error.message}\n`,
       );
-      if (!assignResult.ok) {
-        process.stderr.write(
-          `[autonomous] assignTask failed for ${item.id}: ${assignResult.error.message}\n`,
-        );
-        continue;
-      }
+      continue;
     }
 
-    // Bridge completed this task
-    if (original.status !== "completed" && item.status === "completed") {
+    // Step 2a: complete (assigned → completed)
+    if (item.status === "completed") {
       const result = updatedBoard.result(item.id);
       if (result !== undefined) {
         const completeResult = await harness.completeTask(item.id, result);
@@ -123,10 +136,13 @@ async function dispatchSpawnTasks(
           );
         }
       }
+      continue;
     }
 
-    // Bridge failed this task — persist error, retry count, and backoff context
-    if (original.status !== "failed" && item.status === "failed" && item.error !== undefined) {
+    // Step 2b: fail (assigned → failed or assigned → pending via retryable)
+    // For both terminal and retryable failures, call failTask which handles
+    // the retry-count check and status transition internally.
+    if (item.error !== undefined) {
       const failResult = await harness.failTask(item.id, item.error);
       if (!failResult.ok) {
         process.stderr.write(
