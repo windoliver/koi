@@ -37,6 +37,7 @@
 import { createCatalogAgentResolver } from "@koi/catalog";
 import type {
   Agent,
+  AgentMessageInput,
   AgentResolver,
   AttachResult,
   ComponentProvider,
@@ -47,6 +48,7 @@ import type {
   MailboxComponent,
   TaskBoard,
   TaskBoardSnapshot,
+  TaskItem,
   TaskItemId,
   ThreadMetrics,
 } from "@koi/core";
@@ -73,6 +75,9 @@ function hasSpawnTasks(snapshot: TaskBoardSnapshot): boolean {
   return snapshot.items.some((item) => item.delegation === "spawn");
 }
 
+/** Callback to notify the copilot about per-task state changes. */
+type TaskNotifyFn = (taskId: TaskItemId, item: TaskItem, output?: string) => void;
+
 /**
  * Hydrate a live TaskBoard from a snapshot, dispatch ready spawn tasks
  * via the bridge, then write the updated state back to the harness.
@@ -85,6 +90,7 @@ async function dispatchSpawnTasks(
   bridge: DelegationBridge,
   snapshot: TaskBoardSnapshot,
   harness: AutonomousAgentParts["harness"],
+  notify?: TaskNotifyFn | undefined,
 ): Promise<void> {
   if (!hasSpawnTasks(snapshot)) return;
 
@@ -134,6 +140,8 @@ async function dispatchSpawnTasks(
           process.stderr.write(
             `[autonomous] completeTask failed for ${item.id}: ${completeResult.error.message}\n`,
           );
+        } else {
+          notify?.(item.id, item, result.output);
         }
       }
       continue;
@@ -148,6 +156,8 @@ async function dispatchSpawnTasks(
         process.stderr.write(
           `[autonomous] failTask failed for ${item.id}: ${failResult.error.message}\n`,
         );
+      } else {
+        notify?.(item.id, item);
       }
     }
   }
@@ -165,6 +175,42 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   // the autonomous-provider so inbox getters can resolve ECS components.
   // Undefined until the first provider.attach() fires during agent assembly.
   let attachedAgent: Agent | undefined;
+
+  // Per-task notification — sends mailbox messages when spawn tasks complete/fail.
+  // The copilot receives these on its next turn via inbox-middleware.
+  const notifyTask: TaskNotifyFn = (taskId, item, output) => {
+    const mailbox = attachedAgent?.component(MAILBOX) as MailboxComponent | undefined;
+    if (mailbox === undefined) return;
+
+    const isCompleted = item.status === "completed";
+    const preview = output !== undefined ? output.slice(0, 500) : undefined;
+
+    const message: AgentMessageInput = {
+      from: agentId(parts.harness.harnessId),
+      to: attachedAgent?.pid.id ?? agentId("copilot"),
+      kind: "event",
+      type: isCompleted ? "task.completed" : "task.failed",
+      payload: {
+        taskId,
+        status: item.status,
+        agentType: item.agentType,
+        ...(preview !== undefined ? { outputPreview: preview } : {}),
+        ...(item.error !== undefined
+          ? { errorMessage: item.error.message, retryable: item.error.retryable }
+          : {}),
+      },
+      metadata: { mode: "followup" },
+    };
+
+    // Fire-and-forget — notification failure should never block dispatch
+    void mailbox.send(message).then((result) => {
+      if (!result.ok) {
+        process.stderr.write(
+          `[autonomous] task notification failed for ${taskId}: ${result.error.message}\n`,
+        );
+      }
+    });
+  };
 
   // Delegation bridge — lazily created when a plan with spawn tasks is created
   // and a spawn function is available via the getSpawn getter.
@@ -322,7 +368,12 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
           process.stderr.write(
             "[autonomous] delegation bridge created — dispatching spawn tasks\n",
           );
-          await dispatchSpawnTasks(bridge, parts.harness.status().taskBoard, parts.harness);
+          await dispatchSpawnTasks(
+            bridge,
+            parts.harness.status().taskBoard,
+            parts.harness,
+            notifyTask,
+          );
         }
       },
     }),
@@ -353,20 +404,18 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
           // Cascade: dispatch newly-unblocked spawn tasks after a self-delegated
           // task completes (e.g., task B depends on task A, A just finished).
           if (bridge !== undefined) {
-            await dispatchSpawnTasks(bridge, board, parts.harness);
+            await dispatchSpawnTasks(bridge, board, parts.harness, notifyTask);
           }
         },
         updateTask: async () => {
           // Harness has no updateDescription method — no-op
         },
       });
-      // Only register task_complete and task_status — the essential two.
-      // task_update, task_review, task_synthesize can be added later if needed.
-      const tools = allTools.filter(
-        (t) => t.descriptor.name === "task_complete" || t.descriptor.name === "task_status",
-      );
+      // Register all task tools: task_complete, task_status, task_update,
+      // task_review, task_synthesize — the copilot needs all five to manage
+      // plan execution, review worker output, and merge final results.
       const components = new Map<string, unknown>();
-      for (const tool of tools) {
+      for (const tool of allTools) {
         components.set(`tool:${tool.descriptor.name}`, tool);
       }
       return { components, skipped: [] };
