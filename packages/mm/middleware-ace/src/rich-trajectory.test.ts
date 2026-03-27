@@ -391,8 +391,8 @@ describe("pipeline integration with rich trajectory", () => {
       }),
     ];
 
-    const analyze = mock(() =>
-      Promise.resolve({ rootCause: "test", keyInsight: "test", bulletTags: [] }),
+    const analyze = mock((_: unknown) =>
+      Promise.resolve({ rootCause: "test", keyInsight: "test", bulletTags: [] as const }),
     );
     const curate = mock(() => Promise.resolve([]));
     const richTrajectorySource = mock(() => Promise.resolve(richSteps));
@@ -526,7 +526,9 @@ describe("pipeline integration with rich trajectory", () => {
   });
 
   test("reflector receives undefined richTrajectory when no source configured", async () => {
-    const analyze = mock(() => Promise.resolve({ rootCause: "", keyInsight: "", bulletTags: [] }));
+    const analyze = mock((_: unknown) =>
+      Promise.resolve({ rootCause: "", keyInsight: "", bulletTags: [] as const }),
+    );
     const curate = mock(() => Promise.resolve([]));
 
     const config = makeMinimalConfig({
@@ -549,7 +551,9 @@ describe("pipeline integration with rich trajectory", () => {
   });
 
   test("richTrajectorySource returning empty array skips store operations", async () => {
-    const analyze = mock(() => Promise.resolve({ rootCause: "", keyInsight: "", bulletTags: [] }));
+    const analyze = mock((_: unknown) =>
+      Promise.resolve({ rootCause: "", keyInsight: "", bulletTags: [] as const }),
+    );
     const curate = mock(() => Promise.resolve([]));
     const richTrajectorySource = mock(() => Promise.resolve([]));
     const richTrajectoryStore = createInMemoryRichTrajectoryStore();

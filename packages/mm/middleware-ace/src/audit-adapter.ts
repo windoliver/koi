@@ -45,13 +45,7 @@ export function createAuditTrajectoryAdapter(
     let stepIdx = 0;
     for (const entry of entries) {
       if (entry.kind === "model_call" || entry.kind === "tool_call") {
-        result.push(
-          mapAuditEntryToRichStep(
-            entry as AuditEntry & { readonly kind: ActionKind },
-            stepIdx,
-            maxChars,
-          ),
-        );
+        result.push(mapAuditEntryToRichStep(entry, stepIdx, maxChars));
         stepIdx++;
       }
     }
@@ -64,11 +58,12 @@ type ActionKind = "model_call" | "tool_call";
 
 /** Map a single AuditEntry to a RichTrajectoryStep. */
 export function mapAuditEntryToRichStep(
-  entry: AuditEntry & { readonly kind: ActionKind },
+  entry: AuditEntry,
   stepIndex: number,
   maxContentChars: number = DEFAULT_MAX_CONTENT_CHARS,
 ): RichTrajectoryStep {
-  const kind: ActionKind = entry.kind;
+  const kind: ActionKind =
+    entry.kind === "model_call" || entry.kind === "tool_call" ? entry.kind : "tool_call";
   return {
     stepIndex,
     timestamp: entry.timestamp,

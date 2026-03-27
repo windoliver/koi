@@ -35,7 +35,7 @@ function makeSink(overrides?: Partial<AuditSink>): AuditSink {
 
 describe("createAuditTrajectoryAdapter", () => {
   test("throws when sink has no query method", () => {
-    const sink = makeSink({ query: undefined });
+    const sink = makeSink();
     expect(() => createAuditTrajectoryAdapter({ sink })).toThrow(
       "Audit sink must implement query()",
     );

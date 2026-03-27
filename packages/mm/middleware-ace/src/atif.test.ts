@@ -167,6 +167,7 @@ describe("mapRichTrajectoryToAtif", () => {
     });
     const doc = mapRichTrajectoryToAtif([step], createOptions());
     const metrics = at(doc.steps, 0).metrics;
+    if (metrics === undefined) throw new Error("expected metrics");
     expect(metrics.prompt_tokens).toBe(100);
     expect(metrics.completion_tokens).toBe(50);
     expect(metrics.cached_tokens).toBe(20);
@@ -193,7 +194,7 @@ describe("mapRichTrajectoryToAtif", () => {
   });
 
   test("final metrics omitted when no steps have metrics", () => {
-    const steps: readonly RichTrajectoryStep[] = [createModelCallStep({ metrics: undefined })];
+    const steps: readonly RichTrajectoryStep[] = [createModelCallStep({})];
     const doc = mapRichTrajectoryToAtif(steps, createOptions());
     expect(doc.final_metrics).toBeUndefined();
   });
@@ -232,7 +233,8 @@ describe("mapRichTrajectoryToAtif", () => {
   });
 
   test("tool call without response has no observation", () => {
-    const step = createToolCallStep({ response: undefined });
+    const { response: _, ...noResponse } = createToolCallStep();
+    const step: RichTrajectoryStep = noResponse;
     const doc = mapRichTrajectoryToAtif([step], createOptions());
     expect(doc.steps[0]?.observation).toBeUndefined();
   });
@@ -257,6 +259,7 @@ describe("mapRichTrajectoryToAtif", () => {
     });
     const doc = mapRichTrajectoryToAtif([step], createOptions());
     const metrics = at(doc.steps, 0).metrics;
+    if (metrics === undefined) throw new Error("expected metrics");
     expect(metrics.prompt_tokens).toBe(42);
     expect(metrics.completion_tokens).toBeUndefined();
     expect(metrics.cached_tokens).toBeUndefined();
@@ -324,6 +327,7 @@ describe("mapAtifToRichTrajectory", () => {
     });
     const steps = mapAtifToRichTrajectory(doc);
     const metrics = at(steps, 0).metrics;
+    if (metrics === undefined) throw new Error("expected metrics");
     expect(metrics.promptTokens).toBe(100);
     expect(metrics.completionTokens).toBe(50);
     expect(metrics.cachedTokens).toBe(20);
@@ -437,6 +441,7 @@ describe("mapAtifToRichTrajectory", () => {
     });
     const steps = mapAtifToRichTrajectory(doc);
     const metrics = at(steps, 0).metrics;
+    if (metrics === undefined) throw new Error("expected metrics");
     expect(metrics.promptTokens).toBe(42);
     expect(metrics.completionTokens).toBeUndefined();
     expect(metrics.cachedTokens).toBeUndefined();
@@ -507,6 +512,7 @@ describe("roundtrip fidelity", () => {
     const imported = mapAtifToRichTrajectory(doc);
 
     const metrics = at(imported, 0).metrics;
+    if (metrics === undefined) throw new Error("expected metrics");
     expect(metrics.promptTokens).toBe(150);
     expect(metrics.completionTokens).toBe(75);
     expect(metrics.cachedTokens).toBe(30);
@@ -632,12 +638,12 @@ describe("edge cases", () => {
   });
 
   test("step with only error content (no request/response)", () => {
-    const step = createModelCallStep({
-      request: undefined,
-      response: undefined,
+    const { request: _req, response: _res, ...base } = createModelCallStep();
+    const step: RichTrajectoryStep = {
+      ...base,
       error: { text: "Rate limit exceeded" },
       outcome: "failure",
-    });
+    };
     const doc = mapRichTrajectoryToAtif([step], createOptions());
     const atifStep = at(doc.steps, 0);
     // Error content is not directly mapped to ATIF (lossy)
@@ -742,7 +748,6 @@ describe("edge cases", () => {
       }),
       createModelCallStep({
         stepIndex: 1,
-        metrics: undefined,
       }),
       createToolCallStep({
         stepIndex: 2,
