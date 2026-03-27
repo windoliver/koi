@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import { createDiscoveryService } from "./discovery.js";
 
 describe("DiscoveryService", () => {
@@ -27,8 +27,12 @@ describe("DiscoveryService", () => {
   });
 
   it("handles publish gracefully when bonjour is not available", async () => {
-    const svc = createDiscoveryService({ enabled: true, serviceType: "_koi-agent._tcp" });
-    // bonjour is not installed as a real dependency — publish will fail silently
+    // Force the dynamic import to fail so the catch path is exercised
+    mock.module("bonjour", () => {
+      throw new Error("Cannot find module 'bonjour'");
+    });
+    const { createDiscoveryService: create } = await import("./discovery.js");
+    const svc = create({ enabled: true, serviceType: "_koi-agent._tcp" });
     await svc.publish({
       name: "test-node",
       type: "_koi-agent._tcp",

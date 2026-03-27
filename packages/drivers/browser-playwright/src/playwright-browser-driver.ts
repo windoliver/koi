@@ -824,7 +824,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         return {
           ok: true,
           value: {
-            data: Buffer.from(buffer).toString("base64"),
+            data: buffer.toString("base64"),
             mimeType,
             width,
             height,
