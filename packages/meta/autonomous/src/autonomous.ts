@@ -75,7 +75,11 @@ function hasSpawnTasks(snapshot: TaskBoardSnapshot): boolean {
 
 /**
  * Hydrate a live TaskBoard from a snapshot, dispatch ready spawn tasks
- * via the bridge, then write the updated snapshot back to the harness.
+ * via the bridge, then write the updated state back to the harness.
+ *
+ * The bridge internally runs assign → spawn → complete on a transient live
+ * board. We must replay those transitions into the harness in the right order
+ * (assign before complete) because the harness enforces status preconditions.
  */
 async function dispatchSpawnTasks(
   bridge: DelegationBridge,
@@ -87,11 +91,38 @@ async function dispatchSpawnTasks(
   const liveBoard: TaskBoard = createTaskBoard(undefined, snapshot);
   const updatedBoard = await bridge.dispatchReady(liveBoard);
 
-  // Write completed/failed spawn results back to harness
-  for (const result of updatedBoard.completed()) {
-    const existing = snapshot.results.find((r) => r.taskId === result.taskId);
-    if (existing === undefined) {
-      await harness.completeTask(result.taskId, result);
+  // Write transitions back to harness in correct order:
+  // 1. Assign tasks the bridge claimed (pending → assigned)
+  // 2. Complete tasks the bridge finished (assigned → completed)
+  for (const item of updatedBoard.all()) {
+    const original = snapshot.items.find((i) => i.id === item.id);
+    if (original === undefined) continue;
+
+    // Bridge assigned this task (was pending, now assigned or completed)
+    if (original.status === "pending" && item.status !== "pending") {
+      const assignResult = await harness.assignTask(
+        item.id,
+        item.assignedTo ?? agentId(`worker-${item.id}`),
+      );
+      if (!assignResult.ok) {
+        process.stderr.write(
+          `[autonomous] assignTask failed for ${item.id}: ${assignResult.error.message}\n`,
+        );
+        continue;
+      }
+    }
+
+    // Bridge completed this task
+    if (original.status !== "completed" && item.status === "completed") {
+      const result = updatedBoard.result(item.id);
+      if (result !== undefined) {
+        const completeResult = await harness.completeTask(item.id, result);
+        if (!completeResult.ok) {
+          process.stderr.write(
+            `[autonomous] completeTask failed for ${item.id}: ${completeResult.error.message}\n`,
+          );
+        }
+      }
     }
   }
 }

@@ -8,6 +8,7 @@
  */
 
 import type {
+  AgentId,
   AgentManifest,
   AgentStatus,
   ContextSummary,
@@ -513,6 +514,59 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
   };
 
   // -------------------------------------------------------------------------
+  // assignTask() — transition pending → assigned for spawn delegation
+  // -------------------------------------------------------------------------
+
+  const assignTask = async (
+    taskId: TaskItemId,
+    assignedAgentId: AgentId,
+  ): Promise<Result<void, KoiError>> => {
+    const dg = guardDisposed();
+    if (!dg.ok) return dg;
+    const pg = guardPhase("active", "suspended");
+    if (!pg.ok) return pg;
+
+    if (currentSnapshot === undefined) {
+      return { ok: false, error: validation("No active snapshot") };
+    }
+
+    const task = currentSnapshot.taskBoard.items.find((i: TaskItem) => i.id === taskId);
+    if (task === undefined) {
+      return {
+        ok: false,
+        error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+      };
+    }
+
+    if (task.status !== "pending") {
+      return {
+        ok: false,
+        error: validation(
+          `Cannot assign task ${taskId}: expected status "pending", got "${task.status}"`,
+        ),
+      };
+    }
+
+    const updatedItems: readonly TaskItem[] = currentSnapshot.taskBoard.items.map(
+      (item: TaskItem) =>
+        item.id === taskId
+          ? { ...item, status: "assigned" as const, assignedTo: assignedAgentId }
+          : item,
+    );
+
+    const snapshot: HarnessSnapshot = {
+      ...currentSnapshot,
+      taskBoard: { items: updatedItems, results: currentSnapshot.taskBoard.results },
+      checkpointedAt: Date.now(),
+    };
+
+    const persistResult = await persistSnapshot(snapshot);
+    if (!persistResult.ok) return persistResult;
+
+    return { ok: true, value: undefined };
+  };
+
+  // -------------------------------------------------------------------------
   // completeTask()
   // -------------------------------------------------------------------------
 
@@ -757,6 +811,7 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     resume,
     pause,
     fail,
+    assignTask,
     completeTask,
     status,
     createMiddleware,

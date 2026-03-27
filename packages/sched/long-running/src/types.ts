@@ -81,6 +81,8 @@ export interface LongRunningHarness {
   readonly resume: () => Promise<Result<ResumeResult, KoiError>>;
   readonly pause: (sessionResult: SessionResult) => Promise<Result<void, KoiError>>;
   readonly fail: (error: KoiError) => Promise<Result<void, KoiError>>;
+  /** Transition a task from "pending" to "assigned" for spawn delegation. */
+  readonly assignTask: (taskId: TaskItemId, agentId: AgentId) => Promise<Result<void, KoiError>>;
   readonly completeTask: (
     taskId: TaskItemId,
     result: TaskResult,

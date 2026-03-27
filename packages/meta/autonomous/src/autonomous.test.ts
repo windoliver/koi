@@ -37,8 +37,38 @@ function createMockHarness(opts?: {
     }),
     pause: async () => ({ ok: true as const, value: undefined }),
     fail: async () => ({ ok: true as const, value: undefined }),
+    assignTask: async (taskId) => {
+      const task = currentBoard.items.find((i) => i.id === taskId);
+      if (task?.status !== "pending") {
+        return {
+          ok: false as const,
+          error: {
+            code: "VALIDATION" as const,
+            message: `Cannot assign: status is ${task?.status}`,
+            retryable: false as const,
+          },
+        };
+      }
+      currentBoard = {
+        items: currentBoard.items.map((item) =>
+          item.id === taskId ? { ...item, status: "assigned" as const } : item,
+        ),
+        results: currentBoard.results,
+      };
+      return { ok: true as const, value: undefined };
+    },
     completeTask: async (taskId, result) => {
-      // Update task status to completed and store result
+      const task = currentBoard.items.find((i) => i.id === taskId);
+      if (task?.status !== "assigned") {
+        return {
+          ok: false as const,
+          error: {
+            code: "VALIDATION" as const,
+            message: `Cannot complete: status is ${task?.status}`,
+            retryable: false as const,
+          },
+        };
+      }
       currentBoard = {
         items: currentBoard.items.map((item) =>
           item.id === taskId ? { ...item, status: "completed" as const } : item,

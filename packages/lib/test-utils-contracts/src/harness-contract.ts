@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type {
+  AgentId,
   EngineMetrics,
   HarnessId,
   HarnessStatus,
@@ -40,6 +41,7 @@ interface ContractHarness {
   readonly resume: () => Promise<Result<unknown, KoiError>>;
   readonly pause: (result: ContractSessionResult) => Promise<Result<void, KoiError>>;
   readonly fail: (error: KoiError) => Promise<Result<void, KoiError>>;
+  readonly assignTask: (taskId: TaskItemId, agentId: AgentId) => Promise<Result<void, KoiError>>;
   readonly completeTask: (
     taskId: TaskItemId,
     result: TaskResult,

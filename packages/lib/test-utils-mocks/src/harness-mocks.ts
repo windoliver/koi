@@ -6,6 +6,7 @@
  */
 
 import type {
+  AgentId,
   ContextSummary,
   HarnessId,
   HarnessMetrics,
@@ -34,6 +35,7 @@ interface MockLongRunningHarness {
   readonly resume: () => Promise<Result<unknown, KoiError>>;
   readonly pause: (sessionResult: unknown) => Promise<Result<void, KoiError>>;
   readonly fail: (error: KoiError) => Promise<Result<void, KoiError>>;
+  readonly assignTask: (taskId: TaskItemId, agentId: AgentId) => Promise<Result<void, KoiError>>;
   readonly completeTask: (
     taskId: TaskItemId,
     result: TaskResult,
@@ -106,6 +108,9 @@ export function createMockHarness(
     async fail(_error: KoiError) {
       currentPhase = "failed";
       return { ok: true, value: undefined };
+    },
+    async assignTask(_taskId: TaskItemId, _agentId: AgentId) {
+      return { ok: true as const, value: undefined };
     },
     async completeTask(_taskId: TaskItemId, _result: TaskResult) {
       return { ok: true, value: undefined };

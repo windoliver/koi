@@ -1036,6 +1036,16 @@ export async function runUp(flags: UpFlags): Promise<void> {
       autonomous.bindNotification(runtime.agent.pid.id, copilotMailbox);
     }
 
+    // Bind spawn function for delegation bridge dispatch.
+    // TODO(#1078): replace stub with real spawnChildAgent adapter once the
+    // engine exposes a SpawnFn factory (requires spawn ledger + registry).
+    // Until then, plans with delegation:"spawn" tasks will fail-fast with
+    // a clear error at plan creation time — self-delegation works today.
+    //
+    // When the spawn pipeline is ready, uncomment and wire:
+    //   const spawnFn = createSpawnFnAdapter({ runtime, adapter, ... });
+    //   autonomous.bindSpawn(spawnFn);
+
     // Bind session runner — scheduler calls this after resume() to run engine sub-sessions.
     autonomous.bindSessionRunner(async (resumeResult: unknown) => {
       const { engineInput, sessionId } = resumeResult as {

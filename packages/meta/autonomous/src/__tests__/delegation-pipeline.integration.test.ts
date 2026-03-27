@@ -57,7 +57,38 @@ function createIntegrationHarness(): {
     }),
     pause: async () => ({ ok: true as const, value: undefined }),
     fail: async () => ({ ok: true as const, value: undefined }),
+    assignTask: async (taskId) => {
+      const task = board.items.find((i) => i.id === taskId);
+      if (task?.status !== "pending") {
+        return {
+          ok: false as const,
+          error: {
+            code: "VALIDATION" as const,
+            message: `Cannot assign task ${taskId}: expected "pending", got "${task?.status}"`,
+            retryable: false as const,
+          },
+        };
+      }
+      board = {
+        items: board.items.map((item) =>
+          item.id === taskId ? { ...item, status: "assigned" as const } : item,
+        ),
+        results: board.results,
+      };
+      return { ok: true as const, value: undefined };
+    },
     completeTask: async (taskId, result) => {
+      const task = board.items.find((i) => i.id === taskId);
+      if (task?.status !== "assigned") {
+        return {
+          ok: false as const,
+          error: {
+            code: "VALIDATION" as const,
+            message: `Cannot complete task ${taskId}: expected "assigned", got "${task?.status}"`,
+            retryable: false as const,
+          },
+        };
+      }
       board = {
         items: board.items.map((item) =>
           item.id === taskId ? { ...item, status: "completed" as const } : item,
