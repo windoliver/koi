@@ -87,6 +87,8 @@ export interface LongRunningHarness {
     taskId: TaskItemId,
     result: TaskResult,
   ) => Promise<Result<void, KoiError>>;
+  /** Mark an assigned task as failed. Retryable errors go back to pending. */
+  readonly failTask: (taskId: TaskItemId, error: KoiError) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
   readonly createMiddleware: () => KoiMiddleware;
   readonly dispose: () => Promise<void>;

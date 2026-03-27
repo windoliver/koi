@@ -40,6 +40,7 @@ interface MockLongRunningHarness {
     taskId: TaskItemId,
     result: TaskResult,
   ) => Promise<Result<void, KoiError>>;
+  readonly failTask: (taskId: TaskItemId, error: KoiError) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
   readonly createMiddleware: () => KoiMiddleware;
   readonly dispose: () => Promise<void>;
@@ -113,6 +114,9 @@ export function createMockHarness(
       return { ok: true as const, value: undefined };
     },
     async completeTask(_taskId: TaskItemId, _result: TaskResult) {
+      return { ok: true, value: undefined };
+    },
+    async failTask(_taskId: TaskItemId, _error: KoiError) {
       return { ok: true, value: undefined };
     },
     status() {

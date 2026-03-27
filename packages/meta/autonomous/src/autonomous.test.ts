@@ -77,6 +77,28 @@ function createMockHarness(opts?: {
       };
       return { ok: true as const, value: undefined };
     },
+    failTask: async (taskId) => {
+      const task = currentBoard.items.find((i) => i.id === taskId);
+      if (task?.status !== "assigned") {
+        return {
+          ok: false as const,
+          error: {
+            code: "VALIDATION" as const,
+            message: `Cannot fail: status is ${task?.status}`,
+            retryable: false as const,
+          },
+        };
+      }
+      currentBoard = {
+        items: currentBoard.items.map((item) =>
+          item.id === taskId
+            ? { ...item, status: "pending" as const, retries: (item.retries ?? 0) + 1 }
+            : item,
+        ),
+        results: currentBoard.results,
+      };
+      return { ok: true as const, value: undefined };
+    },
     status: () => ({
       harnessId: "test-harness" as LongRunningHarness["harnessId"],
       phase: "idle" as const,

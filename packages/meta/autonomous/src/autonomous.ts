@@ -124,6 +124,16 @@ async function dispatchSpawnTasks(
         }
       }
     }
+
+    // Bridge failed this task — persist error, retry count, and backoff context
+    if (original.status !== "failed" && item.status === "failed" && item.error !== undefined) {
+      const failResult = await harness.failTask(item.id, item.error);
+      if (!failResult.ok) {
+        process.stderr.write(
+          `[autonomous] failTask failed for ${item.id}: ${failResult.error.message}\n`,
+        );
+      }
+    }
   }
 }
 

@@ -650,6 +650,72 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
   };
 
   // -------------------------------------------------------------------------
+  // failTask() — transition assigned → failed (or pending retryable)
+  // -------------------------------------------------------------------------
+
+  const failTask = async (taskId: TaskItemId, error: KoiError): Promise<Result<void, KoiError>> => {
+    const dg = guardDisposed();
+    if (!dg.ok) return dg;
+    const pg = guardPhase("active", "suspended");
+    if (!pg.ok) return pg;
+
+    if (currentSnapshot === undefined) {
+      return { ok: false, error: validation("No active snapshot") };
+    }
+
+    const task = currentSnapshot.taskBoard.items.find((i: TaskItem) => i.id === taskId);
+    if (task === undefined) {
+      return {
+        ok: false,
+        error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+      };
+    }
+
+    if (task.status !== "assigned") {
+      return {
+        ok: false,
+        error: validation(
+          `Cannot fail task ${taskId}: expected status "assigned", got "${task.status}"`,
+        ),
+      };
+    }
+
+    // If retryable and under max retries, go back to pending for re-dispatch.
+    // Otherwise, mark as permanently failed.
+    const retries = task.retries + 1;
+    const canRetry = error.retryable === true && retries < task.maxRetries;
+    const nextStatus = canRetry ? ("pending" as const) : ("failed" as const);
+
+    const updatedItems: readonly TaskItem[] = currentSnapshot.taskBoard.items.map(
+      (item: TaskItem) =>
+        item.id === taskId ? { ...item, status: nextStatus, retries, error } : item,
+    );
+
+    const updatedBoard: TaskBoardSnapshot = {
+      items: updatedItems,
+      results: currentSnapshot.taskBoard.results,
+    };
+
+    const updatedMetrics: HarnessMetrics = {
+      ...currentSnapshot.metrics,
+      completedTaskCount: countByStatus(updatedBoard, "completed"),
+      pendingTaskCount: countByStatus(updatedBoard, "pending"),
+    };
+
+    const snapshot: HarnessSnapshot = {
+      ...currentSnapshot,
+      taskBoard: updatedBoard,
+      metrics: updatedMetrics,
+      checkpointedAt: Date.now(),
+    };
+
+    const persistResult = await persistSnapshot(snapshot);
+    if (!persistResult.ok) return persistResult;
+
+    return { ok: true, value: undefined };
+  };
+
+  // -------------------------------------------------------------------------
   // fail()
   // -------------------------------------------------------------------------
 
@@ -813,6 +879,7 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     fail,
     assignTask,
     completeTask,
+    failTask,
     status,
     createMiddleware,
     dispose,

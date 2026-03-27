@@ -97,6 +97,28 @@ function createIntegrationHarness(): {
       };
       return { ok: true as const, value: undefined };
     },
+    failTask: async (taskId) => {
+      const task = board.items.find((i) => i.id === taskId);
+      if (task?.status !== "assigned") {
+        return {
+          ok: false as const,
+          error: {
+            code: "VALIDATION" as const,
+            message: `Cannot fail task ${taskId}: expected "assigned", got "${task?.status}"`,
+            retryable: false as const,
+          },
+        };
+      }
+      board = {
+        items: board.items.map((item) =>
+          item.id === taskId
+            ? { ...item, status: "pending" as const, retries: (item.retries ?? 0) + 1 }
+            : item,
+        ),
+        results: board.results,
+      };
+      return { ok: true as const, value: undefined };
+    },
     status: () => ({
       harnessId: "integration-test" as LongRunningHarness["harnessId"],
       phase: "active" as const,

@@ -46,6 +46,7 @@ interface ContractHarness {
     taskId: TaskItemId,
     result: TaskResult,
   ) => Promise<Result<void, KoiError>>;
+  readonly failTask: (taskId: TaskItemId, error: KoiError) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
   readonly createMiddleware: () => KoiMiddleware;
   readonly dispose: () => Promise<void>;
