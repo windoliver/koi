@@ -448,10 +448,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "set_focused_pane": {
-      // Clamp to agents.length — split panes are built from the agent list,
-      // not splitSessions (which are only populated for interactive chat sessions)
-      const paneCount = Math.max(state.agents.length, Object.keys(state.splitSessions).length);
-      const maxIndex = Math.max(0, paneCount - 1);
+      // Clamp to visible pane count — respects layout tier pane cap
+      const totalPanes = Math.max(state.agents.length, Object.keys(state.splitSessions).length);
+      const maxPanes = state.layoutTier === "full" || state.layoutTier === "compact" ? 4 : 2;
+      const visiblePanes = Math.min(totalPanes, maxPanes);
+      const maxIndex = Math.max(0, visiblePanes - 1);
       return {
         ...state,
         focusedPaneIndex: Math.max(0, Math.min(action.index, maxIndex)),

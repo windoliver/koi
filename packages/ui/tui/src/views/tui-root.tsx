@@ -152,15 +152,15 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
       <StatusBarView state={state} />
 
       <box flexGrow={1}>
-        {/* Terminal too narrow warning */}
-        {state.layoutTier === "tooNarrow" && (
+        {state.layoutTier === "tooNarrow" ? (
+          /* Terminal too narrow — replace all content with warning */
           <box flexGrow={1} justifyContent="center" alignItems="center" flexDirection="column">
             <text fg={COLORS.yellow}>{`Terminal too narrow (${String(state.cols)} cols). Minimum: 80.`}</text>
           </box>
-        )}
+        ) : (<>
 
         {/* Welcome mode */}
-        {view === "welcome" && state.layoutTier !== "tooNarrow" && (
+        {view === "welcome" && (
           <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingTop={1}>
             <text fg={COLORS.accent}><b>{"  Welcome to Koi"}</b></text>
             <text fg={COLORS.white}>
@@ -500,6 +500,8 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           focused={isPalette}
           capabilities={state.capabilities}
         />
+
+        </>)}
       </box>
     </box>
   );
