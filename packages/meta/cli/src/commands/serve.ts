@@ -332,6 +332,54 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     adminDispatcher = dispatcher;
 
     const debugApi = runtime.debug;
+
+    // Forge view data source — reads live bricks from ForgeStore for the admin panel.
+    // Without this, GET /admin/api/view/forge/* returns "Forge not configured".
+    const forgeViewSource =
+      forgeBootstrap !== undefined
+        ? {
+            forge: {
+              async listBricks(): Promise<
+                readonly import("@koi/dashboard-types").ForgeBrickView[]
+              > {
+                const result = await forgeBootstrap.store.search({});
+                if (!result.ok) return [];
+                return result.value.map((brick) => ({
+                  brickId: brick.id,
+                  name: brick.name,
+                  status: (brick.lifecycle === "failed" || brick.lifecycle === "quarantined"
+                    ? "quarantined"
+                    : "active") as "active" | "deprecated" | "promoted" | "quarantined",
+                  fitness: brick.fitness?.successCount
+                    ? brick.fitness.successCount /
+                      (brick.fitness.successCount + brick.fitness.errorCount)
+                    : 0,
+                  sampleCount:
+                    (brick.fitness?.successCount ?? 0) + (brick.fitness?.errorCount ?? 0),
+                  createdAt: brick.provenance.metadata.startedAt,
+                  lastUpdatedAt: brick.fitness?.lastUsedAt ?? brick.provenance.metadata.startedAt,
+                }));
+              },
+              async getStats(): Promise<import("@koi/dashboard-types").ForgeStats> {
+                const result = await forgeBootstrap.store.search({});
+                const bricks = result.ok ? result.value : [];
+                return {
+                  totalBricks: bricks.length,
+                  activeBricks: bricks.filter((b) => b.lifecycle === "active").length,
+                  demandSignals: 0,
+                  crystallizeCandidates: 0,
+                  timestamp: Date.now(),
+                };
+              },
+              async listRecentEvents(): Promise<
+                readonly import("@koi/dashboard-types").ForgeDashboardEvent[]
+              > {
+                return [];
+              },
+            },
+          }
+        : {};
+
     adminBridge = createAdminPanelBridge({
       agentName: manifest.name,
       agentType: manifest.lifecycle ?? "copilot",
@@ -380,6 +428,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
             },
           }
         : {}),
+      ...forgeViewSource,
     });
 
     // Wire forge/monitor SSE event sink now that the bridge exists
@@ -417,7 +466,10 @@ export async function runServe(flags: ServeFlags): Promise<void> {
               currentThreadKey = threadId;
               currentServeSessionId = threadId;
 
-              const input: EngineInput = { kind: "text", text };
+              // Pass the full InboundMessage (with metadata.runId) so the AG-UI
+              // stream middleware can match the SSE writer registered by handleAguiRequest.
+              // Using { kind: "text", text } would strip the runId and break AG-UI streaming.
+              const input: EngineInput = { kind: "messages", messages: [msg] };
               const deltas: string[] = [];
               for await (const event of runtime.run(input)) {
                 if (event.kind === "text_delta") deltas.push(event.delta);
@@ -548,6 +600,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     try {
       const server = Bun.serve({
         port: adminPort,
+        idleTimeout: 255, // Match koi up — SSE streams need long-lived connections
         async fetch(req: Request): Promise<Response> {
           // Try admin panel handler first (returns null for non-dashboard paths)
           const adminResponse = await dashboardResult.handler(req);
