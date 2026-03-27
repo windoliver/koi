@@ -192,12 +192,15 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     // let justified: active flag gates dispatching; cleared on unsubscribe
     let handlerActive = true;
 
-    // Register grammY listeners immediately (before bot.start)
-    bot.on("message", (ctx) => {
-      if (handlerActive && eventHandler !== undefined) eventHandler(ctx);
-    });
-    bot.on("callback_query", (ctx) => {
-      if (handlerActive && eventHandler !== undefined) eventHandler(ctx);
+    // Register grammY listeners immediately (before bot.start).
+    // Use bot.use() instead of bot.on("message") — grammY 1.40.x on Bun has
+    // a compatibility issue where filter middleware (bot.on) doesn't dispatch,
+    // but catch-all middleware (bot.use) works reliably.
+    bot.use((ctx) => {
+      if (!handlerActive || eventHandler === undefined) return;
+      if (ctx.message !== undefined || ctx.callbackQuery !== undefined) {
+        eventHandler(ctx);
+      }
     });
 
     const base = createChannelAdapter<Context>({
