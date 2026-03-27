@@ -111,8 +111,9 @@ describe("detectCapabilityGap", () => {
     );
     expect(trigger1).toBeUndefined();
 
-    // Count 2 — at threshold (caller incremented via updateGapCounts)
-    gapCounts.set("I don't have a tool", 2);
+    // Count 2 — at threshold (caller incremented via updateGapCounts).
+    // Key is pattern.source (normalized), not the match string.
+    gapCounts.set(DEFAULT_CAPABILITY_GAP_PATTERNS[0]!.source, 2);
     const trigger2 = detectCapabilityGap(
       "I don't have a tool for that.",
       DEFAULT_CAPABILITY_GAP_PATTERNS,
