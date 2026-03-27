@@ -179,7 +179,9 @@ export function createGovernanceController(
     check(): GovernanceCheck {
       const now = Date.now();
       const windowCalls = totalCallsWindow.count(now);
-      if (windowCalls <= 0) return { ok: true };
+      // Require minimum sample size to avoid triggering on 1 error / 1 call
+      const minSamples = errorRateConfig.minSampleSize ?? 3;
+      if (windowCalls < minSamples) return { ok: true };
       const rate = errorWindow.count(now) / windowCalls;
       if (rate >= errorRateConfig.threshold) {
         return failCheck(
