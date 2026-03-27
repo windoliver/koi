@@ -218,18 +218,13 @@ name: "e2e-autonomous"
 version: "0.0.1"
 description: "E2E test for autonomous spawn delegation"
 
-preset: local
+preset: demo
 
 model:
   name: "openrouter:anthropic/claude-3.5-haiku"
 
 autonomous:
   enabled: true
-
-
-# NOTE: demo preset fails with "model call failed: unknown error" due to
-# governance middleware blocking model calls without proper Nexus auth setup.
-# Using local preset with --nexus-url until governance+OpenRouter is debugged.
 `.trim();
 
 await writeFile(join(workDir, "koi.yaml"), koiYaml);
