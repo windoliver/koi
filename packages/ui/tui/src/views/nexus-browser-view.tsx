@@ -30,8 +30,8 @@ export function NexusBrowserView(props: NexusBrowserViewProps): React.ReactNode 
       loading={loading}
       loadingMessage="Loading directory…"
       isEmpty={entries.length === 0 && fileContent === null}
-      emptyMessage="Empty directory."
-      emptyHint="Navigate with arrow keys. Enter to open."
+      emptyMessage="No data sources connected."
+      emptyHint="Run `koi connect gmail` to mount your email."
     >
       {/* Breadcrumb */}
       <box height={1}>

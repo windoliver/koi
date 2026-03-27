@@ -20,8 +20,8 @@ export function GatewayView(props: GatewayViewProps): React.ReactNode {
       focused={props.focused}
       zoomLevel={props.zoomLevel}
       isEmpty={events.length === 0 && topology === null}
-      emptyMessage="No gateway data yet."
-      emptyHint="The gateway manages channel connections and routing."
+      emptyMessage="No gateway running."
+      emptyHint="Start one with `koi gateway start`."
     >
       {/* Topology summary */}
       {topology !== null && (

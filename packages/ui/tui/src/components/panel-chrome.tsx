@@ -63,7 +63,7 @@ export function PanelChrome(props: PanelChromeProps): ReactNode {
     >
       {/* Title bar */}
       <box height={1} flexDirection="row">
-        <text fg={borderColor}>
+        <text fg={COLORS.accent}>
           <b>{` ${props.title}`}</b>
         </text>
         {props.count !== undefined && (

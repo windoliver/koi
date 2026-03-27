@@ -1,12 +1,15 @@
 import { PanelChrome } from "../components/panel-chrome.js";
 import type { CostViewState } from "../state/domain-types.js";
+import type { LayoutTier } from "../state/types.js";
 import type { AgentCostEntry, CascadeTierSummary, CircuitBreakerSummary } from "@koi/dashboard-types";
-import { COLORS } from "../theme.js";
+import { abbreviateModel, COLORS, separator, truncate } from "../theme.js";
 
 export interface CostViewProps {
   readonly costView: CostViewState;
   readonly focused: boolean;
   readonly zoomLevel?: "normal" | "half" | "full" | undefined;
+  readonly cols?: number | undefined;
+  readonly layoutTier?: LayoutTier | undefined;
 }
 
 function formatUsd(n: number): string {
@@ -53,12 +56,14 @@ function BudgetHeader(props: {
   );
 }
 
-function AgentCostRow(props: { readonly agent: AgentCostEntry }): React.ReactNode {
-  const { agent } = props;
+function AgentCostRow(props: { readonly agent: AgentCostEntry; readonly isNarrow: boolean }): React.ReactNode {
+  const { agent, isNarrow } = props;
+  const nameWidth = isNarrow ? 16 : 20;
+  const modelLabel = isNarrow ? abbreviateModel(agent.model).padEnd(3) : truncate(agent.model, 14);
   const bar = budgetBar(agent.budgetUsed, agent.budgetLimit, 10);
   const line =
-    `  ${agent.name.padEnd(20).slice(0, 20)}` +
-    ` ${agent.model.padEnd(14).slice(0, 14)}` +
+    `  ${truncate(agent.name, nameWidth)}` +
+    ` ${modelLabel}` +
     ` ${String(agent.turns).padStart(5)}` +
     `  ${formatUsd(agent.costUsd).padStart(8)}` +
     `  ${bar} ${formatUsd(agent.budgetUsed)} / ${formatUsd(agent.budgetLimit)}`;
@@ -72,27 +77,30 @@ function AgentCostRow(props: { readonly agent: AgentCostEntry }): React.ReactNod
 function AgentCostTable(props: {
   readonly agents: readonly AgentCostEntry[];
   readonly scrollOffset: number;
+  readonly isNarrow: boolean;
 }): React.ReactNode {
   const VISIBLE_ROWS = 15;
   const visible = props.agents.slice(props.scrollOffset, props.scrollOffset + VISIBLE_ROWS);
+  const header = props.isNarrow
+    ? "  AGENT            MODEL     TURNS      COST    BUDGET"
+    : "  AGENT                MODEL           TURNS      COST    BUDGET";
   return (
     <box flexDirection="column">
       <box height={1}>
-        <text fg={COLORS.dim}>
-          {"  AGENT                MODEL           TURNS      COST    BUDGET"}
-        </text>
+        <text fg={COLORS.dim}>{header}</text>
       </box>
       {visible.map((agent) => (
-        <AgentCostRow key={agent.agentId} agent={agent} />
+        <AgentCostRow key={agent.agentId} agent={agent} isNarrow={props.isNarrow} />
       ))}
     </box>
   );
 }
 
-function CascadeTierRow(props: { readonly tier: CascadeTierSummary }): React.ReactNode {
-  const { tier } = props;
+function CascadeTierRow(props: { readonly tier: CascadeTierSummary; readonly isNarrow: boolean }): React.ReactNode {
+  const { tier, isNarrow } = props;
+  const modelLabel = isNarrow ? abbreviateModel(tier.model).padEnd(3) : truncate(tier.model, 10);
   const line =
-    `  ${tier.model.padEnd(10).slice(0, 10)}` +
+    `  ${modelLabel}` +
     ` ${String(tier.calls).padStart(4)} calls` +
     `  ${formatUsd(tier.costUsd).padStart(8)}` +
     `  ${String(Math.round(tier.percentOfCalls)).padStart(3)}% of calls (${tier.label})`;
@@ -107,20 +115,22 @@ function CascadeBreakdown(props: {
   readonly tiers: readonly CascadeTierSummary[];
   readonly savingsUsd: number;
   readonly baselineModel: string;
+  readonly cols: number;
+  readonly isNarrow: boolean;
 }): React.ReactNode {
   return (
     <box flexDirection="column">
       <box height={1}>
-        <text fg={COLORS.dim}>{"────────────────────────────────────────────"}</text>
+        <text fg={COLORS.dim}>{separator(props.cols)}</text>
       </box>
       <box height={1}>
         <text fg={COLORS.white}>{"CASCADE BREAKDOWN"}</text>
       </box>
       {props.tiers.map((tier) => (
-        <CascadeTierRow key={tier.model} tier={tier} />
+        <CascadeTierRow key={tier.model} tier={tier} isNarrow={props.isNarrow} />
       ))}
       <box height={1}>
-        <text fg={COLORS.dim}>{"  ────────────────────────────────────────────"}</text>
+        <text fg={COLORS.dim}>{`  ${separator(props.cols)}`}</text>
       </box>
       <box height={1}>
         <text fg={COLORS.dim}>
@@ -154,6 +164,8 @@ function CircuitBreakerDisplay(props: {
 export function CostView(props: CostViewProps): React.ReactNode {
   const { costView } = props;
   const { snapshot } = costView;
+  const cols = props.cols ?? 120;
+  const isNarrow = props.layoutTier === "narrow" || props.layoutTier === "tooNarrow";
 
   const isEmpty = snapshot === null;
   const agentCount = snapshot !== null ? snapshot.agents.length : 0;
@@ -180,12 +192,14 @@ export function CostView(props: CostViewProps): React.ReactNode {
             monthlyLimit={snapshot.monthlyBudget.limit}
           />
           <box height={1} />
-          <AgentCostTable agents={snapshot.agents} scrollOffset={costView.scrollOffset} />
+          <AgentCostTable agents={snapshot.agents} scrollOffset={costView.scrollOffset} isNarrow={isNarrow} />
           {snapshot.cascade.tiers.length > 0 && (
             <CascadeBreakdown
               tiers={snapshot.cascade.tiers}
               savingsUsd={snapshot.cascade.savingsUsd}
               baselineModel={snapshot.cascade.baselineModel}
+              cols={cols}
+              isNarrow={isNarrow}
             />
           )}
           <CircuitBreakerDisplay cb={snapshot.circuitBreaker} />

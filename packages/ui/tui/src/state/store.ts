@@ -21,6 +21,7 @@ import {
   isTaskBoardEvent,
   isTemporalEvent,
 } from "@koi/dashboard-types";
+import { computeLayoutTier } from "../theme.js";
 import {
   addGovernanceApproval,
   addGovernanceViolation,
@@ -354,6 +355,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       const nextZoom = ZOOM_CYCLE[nextIdx];
       return nextZoom !== undefined ? { ...state, zoomLevel: nextZoom } : state;
     }
+
+    case "set_terminal_cols":
+      return { ...state, cols: action.cols, layoutTier: computeLayoutTier(action.cols) };
 
     case "append_pty_data": {
       const prev = state.ptyBuffers[action.agentId] ?? [];

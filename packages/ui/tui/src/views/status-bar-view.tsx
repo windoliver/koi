@@ -106,14 +106,14 @@ export function StatusBarView(props: StatusBarViewProps): React.ReactNode {
                   (viewKey === "agents" && state.activeSession === null)
                 ));
               return (
-                <text key={viewKey} fg={isActive ? COLORS.white : COLORS.dim}>
+                <text key={viewKey} fg={isActive ? COLORS.accent : COLORS.dim}>
                   {` ${label as string} `}
                   {isActive ? "·" : " "}
                 </text>
               );
             })}
             <box flexGrow={1} />
-            {state.capabilities !== null && (
+            {state.capabilities !== null && state.layoutTier === "full" && (
               <>
                 <text fg={state.capabilities.nexus ? COLORS.green : COLORS.dim}>{state.capabilities.nexus ? "●" : "○"}</text>
                 <text fg={state.capabilities.temporal ? COLORS.green : COLORS.dim}>{state.capabilities.temporal ? "●" : "○"}</text>

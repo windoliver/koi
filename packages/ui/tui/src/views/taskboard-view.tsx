@@ -25,8 +25,8 @@ export function TaskBoardView(props: TaskBoardViewProps): React.ReactNode {
       focused={props.focused}
       zoomLevel={props.zoomLevel}
       isEmpty={snapshot === null && events.length === 0}
-      emptyMessage="No task board data yet."
-      emptyHint="The task board shows DAG-structured task dependencies."
+      emptyMessage="No tasks queued."
+      emptyHint="Use `/dispatch` to start a multi-agent task."
     >
       {/* DAG layout */}
       {visible.length > 0 && (

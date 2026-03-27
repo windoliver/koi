@@ -130,9 +130,11 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
   const backgroundView = session !== null ? "console" : view === "forge" ? "forge" : "agents";
 
   // Build split pane data from agents + PTY buffers
+  // Limit visible split panes: 4 at full/compact, 2 at narrow/tooNarrow
+  const maxPanes = state.layoutTier === "full" || state.layoutTier === "compact" ? 4 : 2;
   const splitPaneData: readonly AgentPaneData[] = useMemo(() => {
     if (view !== "splitpanes") return [];
-    return agents.map((agent) => {
+    return agents.slice(0, maxPanes).map((agent) => {
       const chunks = state.ptyBuffers[agent.agentId] ?? [];
       const decoded = decodePtyChunks(chunks);
       const ptyData = decoded.length > 0 ? decoded : undefined;
@@ -143,17 +145,24 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         ptyData,
       };
     });
-  }, [view, agents, state.ptyBuffers]);
+  }, [view, agents, state.ptyBuffers, maxPanes]);
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS.bg}>
       <StatusBarView state={state} />
 
       <box flexGrow={1}>
+        {/* Terminal too narrow warning */}
+        {state.layoutTier === "tooNarrow" && (
+          <box flexGrow={1} justifyContent="center" alignItems="center" flexDirection="column">
+            <text fg={COLORS.yellow}>{`Terminal too narrow (${String(state.cols)} cols). Minimum: 80.`}</text>
+          </box>
+        )}
+
         {/* Welcome mode */}
-        {view === "welcome" && (
+        {view === "welcome" && state.layoutTier !== "tooNarrow" && (
           <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingTop={1}>
-            <text fg={COLORS.cyan}><b>{"  Welcome to Koi"}</b></text>
+            <text fg={COLORS.accent}><b>{"  Welcome to Koi"}</b></text>
             <text fg={COLORS.white}>
               {"  Koi is a self-extending agent engine. Select a preset to get started."}
             </text>
@@ -299,6 +308,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             focused={view === "console"}
             syntaxStyle={props.syntaxStyle}
             zoomLevel={state.zoomLevel}
+            cols={state.cols}
           />
         )}
 
@@ -340,7 +350,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         )}
 
         {(view === "forge" || (isPalette && backgroundView === "forge")) && (
-          <ForgeView state={state} focused={view === "forge"} zoomLevel={state.zoomLevel} />
+          <ForgeView state={state} focused={view === "forge"} zoomLevel={state.zoomLevel} layoutTier={state.layoutTier} />
         )}
 
         {view === "sessions" && (
@@ -452,7 +462,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           <GovernanceView governanceView={state.governanceView} focused={true} zoomLevel={state.zoomLevel} />
         )}
         {view === "cost" && (
-          <CostView costView={state.costView} focused={true} zoomLevel={state.zoomLevel} />
+          <CostView costView={state.costView} focused={true} zoomLevel={state.zoomLevel} cols={state.cols} layoutTier={state.layoutTier} />
         )}
         {view === "middleware" && (
           <MiddlewareView middlewareView={state.middlewareView} focused={true} zoomLevel={state.zoomLevel} />

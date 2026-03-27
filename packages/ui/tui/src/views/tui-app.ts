@@ -128,6 +128,16 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let reactRoot: Root | null = null;
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Throttled resize handler — fires at most once per 100ms. */
+  function handleResize(): void {
+    if (resizeTimer !== undefined) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      resizeTimer = undefined;
+      store.dispatch({ kind: "set_terminal_cols", cols: process.stdout.columns ?? 120 });
+    }, 100);
+  }
   let lastView: import("../state/types.js").TuiView = mode === "welcome" ? "welcome" : "agents";
 
   const fetchDeps = { store, client };
@@ -973,6 +983,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     });
     reactRoot = createRoot(tuiRenderer);
 
+    // Set initial terminal width and listen for resize
+    store.dispatch({ kind: "set_terminal_cols", cols: process.stdout.columns ?? 120 });
+    process.stdout.on("resize", handleResize);
+
     if (mode === "welcome") {
       if (configPresets !== undefined && configPresets.length > 0) {
         store.dispatch({ kind: "set_presets", presets: configPresets });
@@ -1091,6 +1105,11 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     debouncedRefresh.cancel();
     debouncedPersist.flush();
     cancelActiveStream();
+    process.stdout.removeListener("resize", handleResize);
+    if (resizeTimer !== undefined) {
+      clearTimeout(resizeTimer);
+      resizeTimer = undefined;
+    }
     await persistCurrentSession(store, client).catch(() => {});
     stopEventStream();
     if (reactRoot !== null) {

@@ -20,8 +20,8 @@ export function SkillsView(props: SkillsViewProps): React.ReactNode {
       focused={props.focused}
       zoomLevel={props.zoomLevel}
       isEmpty={events.length === 0 && skills.length === 0}
-      emptyMessage="No skill events yet."
-      emptyHint="Skills are installed/removed as agents evolve."
+      emptyMessage="No skills loaded."
+      emptyHint="Add a `skills:` section to your koi.yaml."
     >
       <box flexDirection="column">
         {skills.length > 0 && (
