@@ -135,9 +135,10 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
 
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 
-    // Exit with error if any critical subsystem is down
-    const healthy = wave1.healthOk || info.status === "running";
-    process.exit(healthy ? EXIT_OK : EXIT_ERROR);
+    // Exit with error unless the health endpoint confirmed healthy.
+    // A "running" service with a dead health endpoint is NOT healthy
+    // — scripts and monitoring must be able to trust this exit code.
+    process.exit(wave1.healthOk ? EXIT_OK : EXIT_ERROR);
     return;
   }
 

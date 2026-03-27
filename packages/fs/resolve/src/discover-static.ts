@@ -5,7 +5,7 @@
  * Falls back to dynamic scanning when the manifest is missing (dev mode).
  */
 
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import { discoverDescriptors } from "./discover.js";
@@ -102,9 +102,17 @@ export async function discoverDescriptorsFromManifest(
     const manifest = raw as DescriptorManifest;
     const descriptors: BrickDescriptor<unknown>[] = [];
 
+    // Resolve packagePath: relative paths are resolved against the monorepo root
+    // (inferred as 4 directories up from the manifest location in packages/fs/resolve/src/).
+    const manifestDir = dirname(resolvedPath);
+    const monorepoRoot = resolve(manifestDir, "..", "..", "..", "..");
+
     const results = await Promise.allSettled(
       manifest.descriptors.map(async (entry) => {
-        const distIndex = join(entry.packagePath, "dist", "index.js");
+        const absPath = isAbsolute(entry.packagePath)
+          ? entry.packagePath
+          : resolve(monorepoRoot, entry.packagePath);
+        const distIndex = join(absPath, "dist", "index.js");
         try {
           const mod = await import(distIndex);
           if (isDescriptor(mod.descriptor)) {

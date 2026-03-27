@@ -128,4 +128,136 @@ describe("build-binary", () => {
     expect(stderr).toContain("koi start");
     expect(stderr).toContain("koi serve");
   }, 30_000);
+
+  // -------------------------------------------------------------------------
+  // Product-path tests: verify init, status --json, doctor --json work in
+  // the compiled binary (not just usage output).
+  // -------------------------------------------------------------------------
+
+  test("binary: koi init creates a valid scaffold", async () => {
+    if (!buildSucceeded) {
+      console.warn("Build not available, skipping");
+      return;
+    }
+
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpDir = await mkdtemp(resolve(tmpdir(), "koi-bin-init-"));
+
+    try {
+      const agentDir = resolve(tmpDir, "test-agent");
+      const binaryPath = currentBinaryPath();
+      const proc = Bun.spawn(
+        [binaryPath, "init", agentDir, "--yes", "--name", "bin-e2e", "--template", "minimal"],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, CI: "1", NO_COLOR: "1" } },
+      );
+
+      const exitCode = await proc.exited;
+      expect(exitCode).toBe(0);
+
+      // Verify scaffold files exist
+      expect(existsSync(resolve(agentDir, "koi.yaml"))).toBe(true);
+      expect(existsSync(resolve(agentDir, "package.json"))).toBe(true);
+
+      // Verify manifest content
+      const manifest = await Bun.file(resolve(agentDir, "koi.yaml")).text();
+      expect(manifest).toContain("bin-e2e");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("binary: koi status --json returns valid structured output", async () => {
+    if (!buildSucceeded) {
+      console.warn("Build not available, skipping");
+      return;
+    }
+
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpDir = await mkdtemp(resolve(tmpdir(), "koi-bin-status-"));
+
+    try {
+      const agentDir = resolve(tmpDir, "test-agent");
+      const binaryPath = currentBinaryPath();
+
+      // Init first
+      const initProc = Bun.spawn(
+        [binaryPath, "init", agentDir, "--yes", "--name", "status-e2e", "--template", "minimal"],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, CI: "1", NO_COLOR: "1" } },
+      );
+      await initProc.exited;
+
+      // Run status --json
+      const proc = Bun.spawn(
+        [binaryPath, "status", "--json", "--manifest", resolve(agentDir, "koi.yaml")],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, CI: "1", NO_COLOR: "1" } },
+      );
+
+      const stdout = await new Response(proc.stdout).text();
+      const exitCode = await proc.exited;
+
+      // No agent running → exit 1 (unhealthy), but output must be valid JSON
+      expect(exitCode).toBe(1);
+
+      const parsed = JSON.parse(stdout);
+      expect(parsed).toHaveProperty("agent");
+      expect(parsed).toHaveProperty("service");
+      expect(parsed).toHaveProperty("health");
+      expect(parsed.agent).toBe("status-e2e");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("binary: koi doctor --json returns structured diagnostics", async () => {
+    if (!buildSucceeded) {
+      console.warn("Build not available, skipping");
+      return;
+    }
+
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpDir = await mkdtemp(resolve(tmpdir(), "koi-bin-doctor-"));
+
+    try {
+      const agentDir = resolve(tmpDir, "test-agent");
+      const binaryPath = currentBinaryPath();
+
+      // Init first
+      const initProc = Bun.spawn(
+        [binaryPath, "init", agentDir, "--yes", "--name", "doctor-e2e", "--template", "minimal"],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, CI: "1", NO_COLOR: "1" } },
+      );
+      await initProc.exited;
+
+      // Run doctor --json
+      const proc = Bun.spawn(
+        [binaryPath, "doctor", "--json", "--manifest", resolve(agentDir, "koi.yaml")],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, CI: "1", NO_COLOR: "1" } },
+      );
+
+      const stdout = await new Response(proc.stdout).text();
+      await proc.exited;
+
+      const parsed = JSON.parse(stdout);
+      expect(parsed).toHaveProperty("checks");
+      expect(parsed).toHaveProperty("summary");
+      expect(Array.isArray(parsed.checks)).toBe(true);
+      expect(parsed.checks.length).toBeGreaterThan(0);
+
+      // Each check must have id, name, status
+      const firstCheck = parsed.checks[0];
+      expect(firstCheck).toHaveProperty("id");
+      expect(firstCheck).toHaveProperty("name");
+      expect(firstCheck).toHaveProperty("status");
+
+      // Summary must have numeric counts
+      expect(typeof parsed.summary.pass).toBe("number");
+      expect(typeof parsed.summary.warn).toBe("number");
+      expect(typeof parsed.summary.fail).toBe("number");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

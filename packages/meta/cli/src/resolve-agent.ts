@@ -39,7 +39,7 @@ import type {
 } from "@koi/resolve";
 import {
   createRegistry,
-  discoverDescriptors,
+  discoverDescriptorsAuto,
   registerBundledAgents,
   registerCompanionSkills,
   resolveManifest,
@@ -185,9 +185,10 @@ export interface ResolveAgentOptions {
 export async function resolveAgent(
   options: ResolveAgentOptions,
 ): Promise<Result<ResolvedManifest, KoiError>> {
-  // Discover additional descriptors from packages directory
+  // Discover additional descriptors — uses pre-built manifest when available
+  // (required for standalone binary), falls back to filesystem scanning (dev).
   const packagesDir = options.packagesDir ?? detectPackagesDir();
-  const discoveryResult = await discoverDescriptors(packagesDir);
+  const discoveryResult = await discoverDescriptorsAuto(packagesDir);
 
   // Merge: static descriptors take precedence over discovered ones
   const staticKeys = new Set(ALL_DESCRIPTORS.map(descriptorKey));

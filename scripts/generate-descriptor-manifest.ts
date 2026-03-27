@@ -129,7 +129,9 @@ async function main(): Promise<void> {
       ...(descriptor.tags !== undefined && descriptor.tags.length > 0
         ? { tags: [...descriptor.tags] }
         : {}),
-      packagePath,
+      packagePath: packagePath.startsWith(MONOREPO_ROOT)
+        ? packagePath.slice(MONOREPO_ROOT.length)
+        : packagePath,
     };
     entries.push(entry);
   }

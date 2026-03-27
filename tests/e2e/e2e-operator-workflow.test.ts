@@ -200,11 +200,9 @@ describe("operator workflow", () => {
         cwd: initDir,
       });
 
-      // Exit code must be 0 (healthy) or 1 (unhealthy) — never a crash code.
-      // Exit code 0 means the health endpoint responded 200 OR the service is running.
-      // Exit code 1 means neither condition is met.
-      // Both are valid depending on whether another koi instance is running locally.
-      expect(result.exitCode === 0 || result.exitCode === 1).toBe(true);
+      // Exit code 0 only when health endpoint responds 200.
+      // In this test no agent is running, so health endpoint is unreachable → exit 1.
+      expect(result.exitCode).toBe(1);
 
       // Verify the output is valid JSON regardless of exit code
       const parsed = tryParseJson(result.stdout);

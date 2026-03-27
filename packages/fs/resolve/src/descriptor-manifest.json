@@ -2,33 +2,75 @@
   "descriptors": [
     {
       "kind": "channel",
+      "name": "@koi/channel-chat-sdk",
+      "aliases": ["chat-sdk"],
+      "packagePath": "packages/net/channel-chat-sdk"
+    },
+    {
+      "kind": "channel",
       "name": "@koi/channel-cli",
       "aliases": ["cli"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/net/channel-cli"
+      "packagePath": "packages/net/channel-cli"
     },
     {
       "kind": "channel",
       "name": "@koi/channel-discord",
       "aliases": ["discord"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/net/channel-discord"
+      "packagePath": "packages/net/channel-discord"
     },
     {
       "kind": "channel",
       "name": "@koi/channel-email",
       "aliases": ["email"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/net/channel-email"
+      "packagePath": "packages/net/channel-email"
+    },
+    {
+      "kind": "channel",
+      "name": "@koi/channel-matrix",
+      "aliases": ["matrix"],
+      "packagePath": "packages/net/channel-matrix"
+    },
+    {
+      "kind": "channel",
+      "name": "@koi/channel-mobile",
+      "aliases": ["mobile"],
+      "packagePath": "packages/net/channel-mobile"
+    },
+    {
+      "kind": "channel",
+      "name": "@koi/channel-signal",
+      "aliases": ["signal"],
+      "packagePath": "packages/net/channel-signal"
     },
     {
       "kind": "channel",
       "name": "@koi/channel-slack",
       "aliases": ["slack"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/net/channel-slack"
+      "packagePath": "packages/net/channel-slack"
+    },
+    {
+      "kind": "channel",
+      "name": "@koi/channel-teams",
+      "aliases": ["teams"],
+      "packagePath": "packages/net/channel-teams"
     },
     {
       "kind": "channel",
       "name": "@koi/channel-telegram",
       "aliases": ["telegram"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/net/channel-telegram"
+      "packagePath": "packages/net/channel-telegram"
+    },
+    {
+      "kind": "channel",
+      "name": "@koi/channel-voice",
+      "aliases": ["voice"],
+      "packagePath": "packages/net/channel-voice"
+    },
+    {
+      "kind": "channel",
+      "name": "@koi/channel-whatsapp",
+      "aliases": ["whatsapp"],
+      "packagePath": "packages/net/channel-whatsapp"
     },
     {
       "kind": "engine",
@@ -36,7 +78,7 @@
       "aliases": ["acp"],
       "description": "ACP protocol engine for Claude Code, Codex, and Gemini CLI agents",
       "tags": ["acp", "cli-agent", "json-rpc", "coding-agent"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/drivers/engine-acp"
+      "packagePath": "packages/drivers/engine-acp"
     },
     {
       "kind": "engine",
@@ -44,7 +86,7 @@
       "aliases": ["claude"],
       "description": "Claude Agent SDK engine for Anthropic-native orchestration",
       "tags": ["claude", "agent-sdk", "anthropic"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/drivers/engine-claude"
+      "packagePath": "packages/drivers/engine-claude"
     },
     {
       "kind": "engine",
@@ -52,7 +94,7 @@
       "aliases": ["external"],
       "description": "Arbitrary CLI subprocess engine for external tools",
       "tags": ["cli", "subprocess", "external"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/drivers/engine-external"
+      "packagePath": "packages/drivers/engine-external"
     },
     {
       "kind": "engine",
@@ -60,7 +102,7 @@
       "aliases": ["loop"],
       "description": "Default lightweight ReAct loop engine in pure TypeScript",
       "tags": ["default", "react-loop", "typescript"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/drivers/engine-loop"
+      "packagePath": "packages/drivers/engine-loop"
     },
     {
       "kind": "engine",
@@ -68,100 +110,100 @@
       "aliases": ["pi"],
       "description": "Multi-turn LLM reasoning engine with pi-agent-core",
       "tags": ["llm", "streaming", "thinking", "tool-use"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/drivers/engine-pi"
+      "packagePath": "packages/drivers/engine-pi"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-ace",
       "aliases": ["ace"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/mm/middleware-ace"
+      "packagePath": "packages/mm/middleware-ace"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-audit",
       "aliases": ["audit"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/security/middleware-audit"
+      "packagePath": "packages/security/middleware-audit"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-call-dedup",
       "aliases": ["call-dedup"],
       "description": "Caches identical deterministic tool call results to avoid redundant execution",
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-call-dedup"
+      "packagePath": "packages/middleware/middleware-call-dedup"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-call-limits",
       "aliases": ["call-limits"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-call-limits"
+      "packagePath": "packages/middleware/middleware-call-limits"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-compactor",
       "aliases": ["compactor"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/mm/middleware-compactor"
+      "packagePath": "packages/mm/middleware-compactor"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-context-editing",
       "aliases": ["context-editing"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/mm/middleware-context-editing"
+      "packagePath": "packages/mm/middleware-context-editing"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-event-rules",
       "aliases": ["event-rules"],
       "description": "Declarative YAML rule engine mapping engine events to actions",
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-event-rules"
+      "packagePath": "packages/middleware/middleware-event-rules"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-goal",
       "aliases": ["planning"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-goal"
+      "packagePath": "packages/middleware/middleware-goal"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-guided-retry",
       "aliases": ["guided-retry"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-guided-retry"
+      "packagePath": "packages/middleware/middleware-guided-retry"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-output-verifier",
       "aliases": ["output-verifier"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-output-verifier"
+      "packagePath": "packages/middleware/middleware-output-verifier"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-pay",
       "aliases": ["pay"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/security/middleware-pay"
+      "packagePath": "packages/security/middleware-pay"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-permissions",
       "aliases": ["permissions"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/security/middleware-permissions"
+      "packagePath": "packages/security/middleware-permissions"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-pii",
       "aliases": ["pii"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/security/middleware-pii"
+      "packagePath": "packages/security/middleware-pii"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-reflex",
       "aliases": ["reflex"],
       "description": "Rule-based short-circuit for known message patterns — skips LLM for predictable responses",
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-reflex"
+      "packagePath": "packages/middleware/middleware-reflex"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-report",
       "aliases": ["report"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-report"
+      "packagePath": "packages/middleware/middleware-report"
     },
     {
       "kind": "middleware",
@@ -169,43 +211,43 @@
       "aliases": ["rlm"],
       "description": "Recursive Language Model middleware — process unbounded inputs via virtualized REPL",
       "tags": ["rlm", "recursive", "unbounded-input"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-rlm"
+      "packagePath": "packages/middleware/middleware-rlm"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-sandbox",
       "aliases": ["sandbox"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-sandbox"
+      "packagePath": "packages/middleware/middleware-sandbox"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-sanitize",
       "aliases": ["sanitize"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/security/middleware-sanitize"
+      "packagePath": "packages/security/middleware-sanitize"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-semantic-retry",
       "aliases": ["semantic-retry"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-semantic-retry"
+      "packagePath": "packages/middleware/middleware-semantic-retry"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-tool-audit",
       "aliases": ["tool-audit"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-tool-audit"
+      "packagePath": "packages/middleware/middleware-tool-audit"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-tool-selector",
       "aliases": ["tool-selector"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-tool-selector"
+      "packagePath": "packages/middleware/middleware-tool-selector"
     },
     {
       "kind": "middleware",
       "name": "@koi/middleware-turn-ack",
       "aliases": ["turn-ack"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/middleware/middleware-turn-ack"
+      "packagePath": "packages/middleware/middleware-turn-ack"
     },
     {
       "kind": "search",
@@ -213,7 +255,7 @@
       "aliases": ["brave"],
       "description": "Brave Search API web search provider",
       "tags": ["search", "web", "brave"],
-      "packagePath": "/Users/tafeng/koi/.claude/worktrees/graceful-enchanting-barto/packages/fs/search-brave"
+      "packagePath": "packages/fs/search-brave"
     }
   ]
 }
