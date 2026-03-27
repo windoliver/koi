@@ -167,16 +167,25 @@ export function restoreCrashedTerminal(): boolean {
       // Skip sentinels whose process is still alive
       if (isProcessAlive(parsed.pid)) continue;
 
-      // Dead process — restore terminal from this sentinel
-      spawnSync("stty", [parsed.sttyState], {
+      // Dead process — restore terminal from this sentinel.
+      // Only consume the sentinel if stty actually succeeds, so that a
+      // non-TTY process (CI, background) doesn't discard the record
+      // without repairing the terminal the user is sitting in.
+      const sttyResult = spawnSync("stty", [parsed.sttyState], {
         stdio: ["inherit", "pipe", "pipe"],
         timeout: 3000,
       });
 
+      if (sttyResult.status !== 0) {
+        // stty failed (no TTY, wrong terminal) — leave sentinel for
+        // the actual interactive session to pick up later.
+        continue;
+      }
+
       process.stdout.write(TERMINAL_RESET_SEQUENCES);
       recovered = true;
 
-      // Clean up after restoring
+      // Clean up only after successful restore
       unlinkSync(filePath);
     } catch {
       // Best effort — try to clean up the file even on error

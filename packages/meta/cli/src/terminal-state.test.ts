@@ -126,26 +126,37 @@ describe("restoreCrashedTerminal", () => {
     expect(existsSync(path)).toBe(true);
   });
 
-  test("restores and cleans up sentinel for a dead PID", () => {
+  test("preserves sentinel when stty fails (non-TTY or invalid state)", () => {
+    // Fake stty state causes stty to fail — sentinel must be preserved
+    // so the real interactive terminal can recover later.
     const deadPid = 2147483647;
     mkdirSync(SENTINEL_DIR, { recursive: true });
     const path = sentinelPathForPid(deadPid);
-    writeFileSync(path, JSON.stringify({ sttyState: "test-state", pid: deadPid }), "utf-8");
+    writeFileSync(path, JSON.stringify({ sttyState: "invalid-state", pid: deadPid }), "utf-8");
+
+    expect(restoreCrashedTerminal()).toBe(false);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  test("restores sentinel with real stty state on TTY", () => {
+    if (!process.stdin.isTTY) return; // skip in non-TTY environments
+
+    // Capture real stty state, write sentinel with dead PID, verify recovery
+    const { spawnSync } = require("node:child_process");
+    const sttyResult = spawnSync("stty", ["-g"], {
+      stdio: ["inherit", "pipe", "pipe"],
+      timeout: 3000,
+    });
+    if (sttyResult.status !== 0) return;
+    const realState = sttyResult.stdout.toString().trim();
+
+    const deadPid = 2147483647;
+    mkdirSync(SENTINEL_DIR, { recursive: true });
+    const path = sentinelPathForPid(deadPid);
+    writeFileSync(path, JSON.stringify({ sttyState: realState, pid: deadPid }), "utf-8");
 
     expect(restoreCrashedTerminal()).toBe(true);
     expect(existsSync(path)).toBe(false);
-  });
-
-  test("handles multiple crashed sentinels", () => {
-    mkdirSync(SENTINEL_DIR, { recursive: true });
-    const dead1 = sentinelPathForPid(2147483646);
-    const dead2 = sentinelPathForPid(2147483647);
-    writeFileSync(dead1, JSON.stringify({ sttyState: "s1", pid: 2147483646 }), "utf-8");
-    writeFileSync(dead2, JSON.stringify({ sttyState: "s2", pid: 2147483647 }), "utf-8");
-
-    expect(restoreCrashedTerminal()).toBe(true);
-    expect(existsSync(dead1)).toBe(false);
-    expect(existsSync(dead2)).toBe(false);
   });
 
   test("cleans up malformed sentinel files", () => {
@@ -166,15 +177,12 @@ describe("restoreCrashedTerminal", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  test("leaves alive sentinels while cleaning dead ones", () => {
+  test("leaves alive sentinels untouched", () => {
     mkdirSync(SENTINEL_DIR, { recursive: true });
     const alivePath = currentSentinelPath();
-    const deadPath = sentinelPathForPid(2147483647);
     writeFileSync(alivePath, JSON.stringify({ sttyState: "alive", pid: process.pid }), "utf-8");
-    writeFileSync(deadPath, JSON.stringify({ sttyState: "dead", pid: 2147483647 }), "utf-8");
 
-    expect(restoreCrashedTerminal()).toBe(true);
-    expect(existsSync(deadPath)).toBe(false);
+    expect(restoreCrashedTerminal()).toBe(false);
     expect(existsSync(alivePath)).toBe(true);
   });
 });

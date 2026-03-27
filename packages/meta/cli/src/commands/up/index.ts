@@ -496,13 +496,18 @@ async function freePort(port: number): Promise<void> {
 }
 
 export async function runUp(flags: UpFlags): Promise<void> {
-  // Recover terminal from a previous crash (SIGKILL leaves raw mode active)
-  restoreCrashedTerminal();
-
-  // 0. DETACH
+  // 0. DETACH — check before crash recovery so background/CI launches
+  // don't consume sentinel files meant for the user's interactive terminal.
   if (flags.detach) {
     const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
     await runDetach(manifestPath);
+  }
+
+  // Recover terminal from a previous crash (SIGKILL leaves raw mode active).
+  // Only attempt on interactive terminals — non-TTY sessions (CI, --detach
+  // child) must not consume sentinels they can't actually restore.
+  if (process.stdin.isTTY) {
+    restoreCrashedTerminal();
   }
 
   // Validate --nexus-build / --nexus-source and run uv sync if needed
