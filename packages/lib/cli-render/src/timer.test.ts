@@ -17,8 +17,8 @@ describe("createTimer", () => {
 
   test("enabled=false print is no-op", () => {
     const stream = new PassThrough();
-    const chunks: Buffer[] = [];
-    stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const chunks: Uint8Array[] = [];
+    stream.on("data", (chunk: Uint8Array) => chunks.push(chunk));
 
     const timer = createTimer(false);
     timer.print(stream);
@@ -53,8 +53,8 @@ describe("createTimer", () => {
 
   test("print outputs formatted timing table", async () => {
     const stream = new PassThrough();
-    const chunks: Buffer[] = [];
-    stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const chunks: Uint8Array[] = [];
+    stream.on("data", (chunk: Uint8Array) => chunks.push(chunk));
 
     const timer = createTimer(true);
     await timer.time("resolve", async () => undefined);

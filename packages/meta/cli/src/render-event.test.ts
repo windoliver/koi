@@ -6,10 +6,10 @@ import { renderEvent } from "./render-event.js";
 function createStreams() {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-  stdout.on("data", (c: Buffer) => stdoutChunks.push(c));
-  stderr.on("data", (c: Buffer) => stderrChunks.push(c));
+  const stdoutChunks: Uint8Array[] = [];
+  const stderrChunks: Uint8Array[] = [];
+  stdout.on("data", (c: Uint8Array) => stdoutChunks.push(c));
+  stderr.on("data", (c: Uint8Array) => stderrChunks.push(c));
   return {
     stdout,
     stderr,
