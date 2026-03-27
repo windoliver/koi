@@ -138,5 +138,32 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
     await flushBuffer();
   };
 
-  return { log, flush };
+  const query = async (sessionId: string): Promise<readonly AuditEntry[]> => {
+    // Flush pending entries before querying
+    await flush();
+
+    const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const sessionPath = `${basePath}/${safeSessionId}`;
+
+    const listResult = await client.rpc("list", { path: sessionPath });
+    if (!listResult.ok) return [];
+
+    const files = listResult.value as readonly { readonly path: string }[];
+    const entries: AuditEntry[] = [];
+
+    for (const file of files) {
+      const readResult = await client.rpc("read", { path: file.path });
+      if (readResult.ok && typeof readResult.value === "string") {
+        try {
+          entries.push(JSON.parse(readResult.value) as AuditEntry);
+        } catch {
+          // Skip malformed entries
+        }
+      }
+    }
+
+    return entries;
+  };
+
+  return { log, flush, query };
 }

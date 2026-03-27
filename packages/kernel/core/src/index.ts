@@ -750,6 +750,13 @@ export type {
 export { DEFAULT_REPUTATION_QUERY_LIMIT, REPUTATION_LEVEL_ORDER } from "./reputation-backend.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
+// rich trajectory — full execution traces for LLM reflection
+export type {
+  RichContent,
+  RichStepMetrics,
+  RichTrajectoryStep,
+  RichTrajectoryStore,
+} from "./rich-trajectory.js";
 // run report — structured summary of an autonomous agent run
 export type {
   ActionEntry,

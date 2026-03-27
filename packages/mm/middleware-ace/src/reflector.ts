@@ -4,7 +4,16 @@
  */
 
 import type { InboundMessage } from "@koi/core/message";
+import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
+import { normalizeBulletId } from "./playbook.js";
 import type { ReflectionResult, ReflectorInput } from "./types.js";
+
+/** Callback for LLM response parse failures. */
+export type ParseFailureCallback = (
+  raw: string,
+  error: unknown,
+  stage: "reflector" | "curator",
+) => void;
 
 /** Adapter interface for the reflector agent. */
 export interface ReflectorAdapter {
@@ -18,6 +27,7 @@ export type ReflectorModelCall = (messages: readonly InboundMessage[]) => Promis
 export function createDefaultReflector(
   modelCall: ReflectorModelCall,
   clock: () => number = Date.now,
+  onParseFailure?: ParseFailureCallback,
 ): ReflectorAdapter {
   return {
     async analyze(input: ReflectorInput): Promise<ReflectionResult> {
@@ -29,7 +39,7 @@ export function createDefaultReflector(
       };
 
       const raw = await modelCall([message]);
-      return parseReflectionResponse(raw, input.citedBulletIds);
+      return parseReflectionResponse(raw, input.citedBulletIds, onParseFailure);
     },
   };
 }
@@ -37,10 +47,11 @@ export function createDefaultReflector(
 const MAX_TRAJECTORY_ENTRIES = 10;
 
 function buildReflectorPrompt(input: ReflectorInput): string {
-  const trajectorySlice = input.trajectory
-    .slice(-MAX_TRAJECTORY_ENTRIES)
-    .map((e) => `- [${e.kind}] ${e.identifier}: ${e.outcome} (${e.durationMs}ms)`)
-    .join("\n");
+  // Prefer rich trajectory when available; fall back to compact entries
+  const trajectorySection =
+    input.richTrajectory !== undefined && input.richTrajectory.length > 0
+      ? formatRichTrajectory(input.richTrajectory)
+      : formatCompactTrajectory(input.trajectory);
 
   const citedSection =
     input.citedBulletIds.length > 0 ? `\nCited bullet IDs: ${input.citedBulletIds.join(", ")}` : "";
@@ -50,7 +61,7 @@ function buildReflectorPrompt(input: ReflectorInput): string {
     `Overall outcome: ${input.outcome}`,
     "",
     "Recent actions:",
-    trajectorySlice,
+    trajectorySection,
     citedSection,
     "",
     "Respond with a JSON object containing:",
@@ -62,7 +73,57 @@ function buildReflectorPrompt(input: ReflectorInput): string {
   ].join("\n");
 }
 
-function parseReflectionResponse(raw: string, citedBulletIds: readonly string[]): ReflectionResult {
+function formatCompactTrajectory(
+  entries: readonly {
+    readonly kind: string;
+    readonly identifier: string;
+    readonly outcome: string;
+    readonly durationMs: number;
+  }[],
+): string {
+  return entries
+    .slice(-MAX_TRAJECTORY_ENTRIES)
+    .map((e) => `- [${e.kind}] ${e.identifier}: ${e.outcome} (${e.durationMs}ms)`)
+    .join("\n");
+}
+
+/** Format rich trajectory steps for the reflector prompt with full context. */
+export function formatRichTrajectory(steps: readonly RichTrajectoryStep[]): string {
+  return steps
+    .slice(-MAX_TRAJECTORY_ENTRIES)
+    .map((step) => {
+      const parts: string[] = [
+        `- [${step.kind}] ${step.identifier}: ${step.outcome} (${step.durationMs}ms)`,
+      ];
+
+      if (step.request?.text !== undefined) {
+        const truncated = step.request.truncated === true ? " [truncated]" : "";
+        parts.push(`  Request: ${step.request.text}${truncated}`);
+      }
+
+      if (step.reasoningContent !== undefined) {
+        parts.push(`  Reasoning: ${step.reasoningContent}`);
+      }
+
+      if (step.response?.text !== undefined) {
+        const truncated = step.response.truncated === true ? " [truncated]" : "";
+        parts.push(`  Response: ${step.response.text}${truncated}`);
+      }
+
+      if (step.error?.text !== undefined) {
+        parts.push(`  Error: ${step.error.text}`);
+      }
+
+      return parts.join("\n");
+    })
+    .join("\n");
+}
+
+function parseReflectionResponse(
+  raw: string,
+  citedBulletIds: readonly string[],
+  onParseFailure?: ParseFailureCallback,
+): ReflectionResult {
   try {
     const cleaned = raw.replace(/^```json?\s*|\s*```$/g, "").trim();
     const parsed = JSON.parse(cleaned) as Record<string, unknown>;
@@ -72,7 +133,8 @@ function parseReflectionResponse(raw: string, citedBulletIds: readonly string[])
     const bulletTags = parseBulletTags(parsed.bulletTags, citedBulletIds);
 
     return { rootCause, keyInsight, bulletTags };
-  } catch {
+  } catch (e: unknown) {
+    onParseFailure?.(raw, e, "reflector");
     return { rootCause: "", keyInsight: "", bulletTags: [] };
   }
 }
@@ -81,15 +143,6 @@ function isBulletTagLike(item: unknown): item is { readonly id: string; readonly
   if (typeof item !== "object" || item === null) return false;
   const obj = item as Record<string, unknown>;
   return typeof obj.id === "string" && typeof obj.tag === "string";
-}
-
-/** Normalize a bullet ID: LLMs sometimes strip brackets from `[str-00000]`. */
-function normalizeBulletId(id: string, validIds: ReadonlySet<string>): string | undefined {
-  if (validIds.has(id)) return id;
-  // Try adding brackets: "str-00000" → "[str-00000]"
-  const bracketed = `[${id}]`;
-  if (validIds.has(bracketed)) return bracketed;
-  return undefined;
 }
 
 function parseBulletTags(

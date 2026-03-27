@@ -6,6 +6,7 @@
  */
 
 import type { JsonObject } from "@koi/core/common";
+import type { RichTrajectoryStep, RichTrajectoryStore } from "@koi/core/rich-trajectory";
 import { openDb } from "@koi/sqlite-utils";
 import type { PlaybookStore, StructuredPlaybookStore, TrajectoryStore } from "./stores.js";
 import type { Playbook, StructuredPlaybook, TrajectoryEntry } from "./types.js";
@@ -14,11 +15,14 @@ import type { Playbook, StructuredPlaybook, TrajectoryEntry } from "./types.js";
 // Schema version
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 function ensureSchema(db: ReturnType<typeof openDb>): void {
   const version = db.query("PRAGMA user_version").get() as { readonly user_version: number };
   if (version.user_version >= SCHEMA_VERSION) return;
+
+  // Note: all CREATE TABLE use IF NOT EXISTS, so re-running on v1 databases
+  // only creates the new rich_trajectories table and bumps the version.
 
   db.run(`
     CREATE TABLE IF NOT EXISTS trajectories (
@@ -82,6 +86,18 @@ function ensureSchema(db: ReturnType<typeof openDb>): void {
   db.run(
     "CREATE INDEX IF NOT EXISTS idx_structured_playbook_tags_tag ON structured_playbook_tags(tag)",
   );
+
+  // Rich trajectory store (v2)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS rich_trajectories (
+      session_id  TEXT NOT NULL,
+      step_index  INTEGER NOT NULL,
+      timestamp   INTEGER NOT NULL,
+      step_data   TEXT NOT NULL,
+      PRIMARY KEY (session_id, step_index)
+    )
+  `);
+  db.run("CREATE INDEX IF NOT EXISTS idx_rich_trajectories_ts ON rich_trajectories(timestamp)");
 
   db.run(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
 }
@@ -323,6 +339,52 @@ export function createSqliteStructuredPlaybookStore(
     async remove(id: string): Promise<boolean> {
       const result = db.run("DELETE FROM structured_playbooks WHERE id = ?", [id]);
       return result.changes > 0;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SQLite RichTrajectoryStore
+// ---------------------------------------------------------------------------
+
+export interface SqliteRichTrajectoryStoreConfig {
+  /** Path to the SQLite database file. */
+  readonly dbPath: string;
+}
+
+/** Creates a SQLite-backed RichTrajectoryStore for persistent rich trajectory storage. */
+export function createSqliteRichTrajectoryStore(
+  config: SqliteRichTrajectoryStoreConfig,
+): RichTrajectoryStore {
+  const db = openDb(config.dbPath);
+  ensureSchema(db);
+
+  const insertStmt = db.prepare(`
+    INSERT OR REPLACE INTO rich_trajectories
+      (session_id, step_index, timestamp, step_data)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  return {
+    async append(sessionId: string, steps: readonly RichTrajectoryStep[]): Promise<void> {
+      const insert = db.transaction(() => {
+        for (const step of steps) {
+          insertStmt.run(sessionId, step.stepIndex, step.timestamp, JSON.stringify(step));
+        }
+      });
+      insert();
+    },
+
+    async getSession(sessionId: string): Promise<readonly RichTrajectoryStep[]> {
+      const rows = db
+        .query("SELECT step_data FROM rich_trajectories WHERE session_id = ? ORDER BY step_index")
+        .all(sessionId) as readonly { readonly step_data: string }[];
+      return rows.map((r) => JSON.parse(r.step_data) as RichTrajectoryStep);
+    },
+
+    async prune(olderThanMs: number): Promise<number> {
+      const result = db.run("DELETE FROM rich_trajectories WHERE timestamp < ?", [olderThanMs]);
+      return result.changes;
     },
   };
 }

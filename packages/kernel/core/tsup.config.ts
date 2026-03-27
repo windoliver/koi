@@ -23,6 +23,7 @@ export default defineConfig({
     "src/middleware.ts",
     "src/model-provider.ts",
     "src/resolver.ts",
+    "src/rich-trajectory.ts",
     "src/brick-snapshot.ts",
     "src/brick-store.ts",
     "src/filesystem-backend.ts",

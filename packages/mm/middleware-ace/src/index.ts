@@ -17,6 +17,27 @@ export { createAceMiddleware } from "./ace.js";
 // ACE tools provider (ComponentProvider for list_playbooks + self-forge skill)
 export type { AceToolsProviderConfig } from "./ace-tools-provider.js";
 export { createAceToolsProvider } from "./ace-tools-provider.js";
+// ATIF import/export
+export type {
+  AtifAgent,
+  AtifDocument,
+  AtifExportOptions,
+  AtifFinalMetrics,
+  AtifObservation,
+  AtifObservationResult,
+  AtifStep,
+  AtifStepMetrics,
+  AtifToolCall,
+  AtifToolDefinition,
+} from "./atif.js";
+export { mapAtifToRichTrajectory, mapRichTrajectoryToAtif } from "./atif.js";
+// Audit adapter
+export type { AuditTrajectoryAdapterConfig } from "./audit-adapter.js";
+export {
+  createAuditTrajectoryAdapter,
+  mapAuditEntryToRichStep,
+  mapPayloadToContent,
+} from "./audit-adapter.js";
 // Config
 export type { AceConfig } from "./config.js";
 export { validateAceConfig } from "./config.js";
@@ -37,8 +58,10 @@ export { selectPlaybooks } from "./injector.js";
 // Pipeline
 export type { ConsolidationPipeline } from "./pipeline.js";
 export {
+  compressRichTrajectory,
   createLlmPipeline,
   createStatPipeline,
+  createTokenizerFn,
   isLlmPipelineEnabled,
 } from "./pipeline.js";
 
@@ -50,12 +73,13 @@ export {
   estimateStructuredTokens,
   extractCitedBulletIds,
   incrementCounter,
+  normalizeBulletId,
   serializeForInjection,
 } from "./playbook.js";
 
 // Reflector
-export type { ReflectorAdapter, ReflectorModelCall } from "./reflector.js";
-export { createDefaultReflector } from "./reflector.js";
+export type { ParseFailureCallback, ReflectorAdapter, ReflectorModelCall } from "./reflector.js";
+export { createDefaultReflector, formatRichTrajectory } from "./reflector.js";
 // Scoring
 export { computeCurationScore, computeRecencyFactor } from "./scoring.js";
 // Self-forge companion skill
@@ -66,17 +90,20 @@ export { type CurateOptions, curateTrajectorySummary } from "./stats-aggregator.
 export type { PlaybookStore, StructuredPlaybookStore, TrajectoryStore } from "./stores.js";
 export {
   createInMemoryPlaybookStore,
+  createInMemoryRichTrajectoryStore,
   createInMemoryStructuredPlaybookStore,
   createInMemoryTrajectoryStore,
 } from "./stores.js";
 // SQLite stores
 export type {
   SqlitePlaybookStoreConfig,
+  SqliteRichTrajectoryStoreConfig,
   SqliteStructuredPlaybookStoreConfig,
   SqliteTrajectoryStoreConfig,
 } from "./stores-sqlite.js";
 export {
   createSqlitePlaybookStore,
+  createSqliteRichTrajectoryStore,
   createSqliteStructuredPlaybookStore,
   createSqliteTrajectoryStore,
 } from "./stores-sqlite.js";

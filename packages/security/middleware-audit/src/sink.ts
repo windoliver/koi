@@ -33,6 +33,10 @@ export function createInMemoryAuditSink(): AuditSink & {
     async flush(): Promise<void> {
       // No-op for in-memory sink — all entries are immediately available
     },
+
+    async query(sessionId: string): Promise<readonly AuditEntry[]> {
+      return entries.filter((e) => e.sessionId === sessionId);
+    },
   };
 }
 

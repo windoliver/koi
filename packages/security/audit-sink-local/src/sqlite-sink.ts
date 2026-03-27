@@ -129,6 +129,15 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
       return rows.map(mapDbRow);
     },
 
+    async query(sessionId: string): Promise<readonly AuditEntry[]> {
+      // Flush first to ensure all buffered entries are in the DB
+      flushBuffer();
+      const rows = db
+        .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
+        .all(sessionId) as readonly Parameters<typeof mapDbRow>[0][];
+      return rows.map(mapDbRow);
+    },
+
     close(): void {
       clearInterval(timer);
       flushBuffer();

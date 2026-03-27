@@ -4,7 +4,13 @@
  */
 
 import type { InboundMessage } from "@koi/core/message";
-import { computeBulletValue, createBulletId, estimateStructuredTokens } from "./playbook.js";
+import {
+  computeBulletValue,
+  createBulletId,
+  estimateStructuredTokens,
+  normalizeBulletId,
+} from "./playbook.js";
+import type { ParseFailureCallback } from "./reflector.js";
 import type {
   CuratorInput,
   CuratorOperation,
@@ -24,6 +30,7 @@ export type CuratorModelCall = (messages: readonly InboundMessage[]) => Promise<
 export function createDefaultCurator(
   modelCall: CuratorModelCall,
   clock: () => number = Date.now,
+  onParseFailure?: ParseFailureCallback,
 ): CuratorAdapter {
   return {
     async curate(input: CuratorInput): Promise<readonly CuratorOperation[]> {
@@ -35,7 +42,7 @@ export function createDefaultCurator(
       };
 
       const raw = await modelCall([message]);
-      return parseCuratorResponse(raw, input.playbook);
+      return parseCuratorResponse(raw, input.playbook, onParseFailure);
     },
   };
 }
@@ -298,6 +305,7 @@ function buildCuratorPrompt(input: CuratorInput): string {
 function parseCuratorResponse(
   raw: string,
   playbook: StructuredPlaybook,
+  onParseFailure?: ParseFailureCallback,
 ): readonly CuratorOperation[] {
   try {
     const cleaned = raw
@@ -322,17 +330,10 @@ function parseCuratorResponse(
     }
 
     return ops;
-  } catch {
+  } catch (e: unknown) {
+    onParseFailure?.(raw, e, "curator");
     return [];
   }
-}
-
-/** Normalize a bullet ID: LLMs sometimes strip brackets from `[str-00000]`. */
-function normalizeBulletId(id: string, validIds: ReadonlySet<string>): string | undefined {
-  if (validIds.has(id)) return id;
-  const bracketed = `[${id}]`;
-  if (validIds.has(bracketed)) return bracketed;
-  return undefined;
 }
 
 function validateOperation(

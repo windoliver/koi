@@ -3,6 +3,7 @@
  */
 
 import type { JsonObject } from "@koi/core/common";
+import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
 
 /** Trajectory entry — one per model/tool call within a session. */
 export interface TrajectoryEntry {
@@ -94,6 +95,9 @@ export interface PlaybookBullet {
 /** Input to the reflector for trajectory analysis. */
 export interface ReflectorInput {
   readonly trajectory: readonly TrajectoryEntry[];
+  /** Rich trajectory steps for deeper LLM reflection. When present, the
+   *  reflector prompt uses these instead of the compact trajectory entries. */
+  readonly richTrajectory?: readonly RichTrajectoryStep[];
   readonly citedBulletIds: readonly string[];
   readonly outcome: "success" | "failure" | "mixed";
   readonly playbook: StructuredPlaybook;

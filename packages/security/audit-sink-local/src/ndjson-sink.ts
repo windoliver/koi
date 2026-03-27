@@ -58,6 +58,11 @@ export function createNdjsonAuditSink(config: NdjsonAuditSinkConfig): AuditSink 
       }
     },
 
+    async query(sessionId: string): Promise<readonly AuditEntry[]> {
+      const all = await this.getEntries();
+      return all.filter((e) => e.sessionId === sessionId);
+    },
+
     close(): void {
       // No resources to clean up for file-based sink
     },
