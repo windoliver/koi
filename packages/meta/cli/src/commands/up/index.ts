@@ -42,10 +42,16 @@ import { mergeBootstrapContext } from "../../resolve-bootstrap.js";
 import { resolveNexusOrWarn, runNexusBuildIfNeeded } from "../../resolve-nexus.js";
 import { resolveOrchestrationFromAgent } from "../../resolve-orchestration.js";
 import { resolveTemporalOrWarn } from "../../resolve-temporal.js";
+import {
+  clearTerminalState,
+  restoreCrashedTerminal,
+  saveTerminalState,
+} from "../../terminal-state.js";
 import { printBanner } from "./banner.js";
 import { createInteractiveConsent } from "./consent.js";
 import { buildDemoManifestOverrides, provisionDemoAgents, seedDemoPackIfNeeded } from "./demo.js";
 import { runDetach } from "./detach.js";
+import { detectOrphanedNexusStacks } from "./detect-orphaned-nexus.js";
 import { mapNexusModeToProfile, startNexusStack } from "./nexus.js";
 import { runPreflight } from "./preflight.js";
 import { extractDemoPack, extractStacks, inferPresetId } from "./preset.js";
@@ -490,10 +496,18 @@ async function freePort(port: number): Promise<void> {
 }
 
 export async function runUp(flags: UpFlags): Promise<void> {
-  // 0. DETACH
+  // 0. DETACH — check before crash recovery so background/CI launches
+  // don't consume sentinel files meant for the user's interactive terminal.
   if (flags.detach) {
     const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
     await runDetach(manifestPath);
+  }
+
+  // Recover terminal from a previous crash (SIGKILL leaves raw mode active).
+  // Only attempt on interactive terminals — non-TTY sessions (CI, --detach
+  // child) must not consume sentinels they can't actually restore.
+  if (process.stdin.isTTY) {
+    restoreCrashedTerminal();
   }
 
   // Validate --nexus-build / --nexus-source and run uv sync if needed
@@ -573,6 +587,20 @@ export async function runUp(flags: UpFlags): Promise<void> {
   );
 
   // 5. NEXUS + SUBSYSTEMS (before forge, so search backends are available)
+  // Detect orphaned Nexus stacks and block if memory is constrained (#1076)
+  if (preset.nexusMode === "embed-auth") {
+    try {
+      const { readRuntimeState } = await import("@koi/nexus-embed");
+      const currentState = readRuntimeState(workspaceRoot);
+      const canProceed = detectOrphanedNexusStacks(currentState?.project_name);
+      if (!canProceed) {
+        process.exit(EXIT_CONFIG);
+      }
+    } catch {
+      // Non-fatal — skip orphan detection if nexus-embed is unavailable
+    }
+  }
+
   // Nexus: try reusing existing instance from nexus.yaml before starting a new one
   let nexusBaseUrl = flags.nexusUrl ?? manifest.nexus?.url ?? process.env.NEXUS_URL;
   let nexusStartedByUs = false;
@@ -1466,12 +1494,54 @@ export async function runUp(flags: UpFlags): Promise<void> {
         adminUrl: `http://localhost:${String(boundPort)}/admin/api`,
         ...(flags.resume !== undefined ? { initialSessionId: currentSessionId } : {}),
       });
+      // Save terminal state before entering raw mode so it can be restored
+      // on next startup if the process is killed by SIGKILL (uncatchable).
+      saveTerminalState();
       await tuiApp.start();
       tuiAttached = true;
     } catch {
+      // start() may have entered raw mode before failing — force cleanup.
+      try {
+        tuiApp?.stop().catch(() => {});
+      } catch {
+        // Best effort
+      }
+      if (process.stdin.isTTY) {
+        try {
+          process.stdin.setRawMode(false);
+        } catch {
+          // May not be in raw mode
+        }
+      }
+      clearTerminalState();
       tuiApp = undefined;
     }
   }
+
+  // Defense-in-depth: restore terminal on any exit path (same pattern as tui.ts).
+  // Catches cases where the normal cleanup sequence hangs or throws.
+  // No tuiAttached guard — start() may have entered raw mode before failing.
+  const forceRestoreTerminal = (): void => {
+    try {
+      tuiApp?.stop().catch(() => {});
+    } catch {
+      // Best effort
+    }
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // May not be in raw mode
+      }
+    }
+    clearTerminalState();
+  };
+  process.on("exit", forceRestoreTerminal);
+  process.on("uncaughtException", (err) => {
+    forceRestoreTerminal();
+    process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
 
   // 12b. Connect channels — skip CLI when TUI owns stdin/stdout
   if (tuiAttached) {
@@ -1757,6 +1827,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
   process.removeListener("SIGTERM", shutdown);
   if (schedulerCron !== undefined) schedulerCron.stop();
   if (tuiApp !== undefined) await tuiApp.stop();
+  clearTerminalState();
+  process.removeListener("exit", forceRestoreTerminal);
   for (const unsub of unsubscribers) unsub();
   for (const ch of channels) await ch.disconnect();
   if (stopHealth !== undefined) stopHealth();
