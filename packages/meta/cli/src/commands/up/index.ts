@@ -972,6 +972,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
     agentName: manifest.name,
     ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
+    ...(effectiveStacks.ace === true ? { aceModelCall: await createAceModelCall() } : {}),
   });
 
   // Resolve manifest tools (tools.koi section) into ComponentProviders
@@ -1777,4 +1778,36 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // Use `nexus down` or `docker compose down` to explicitly stop them.
 
   output.info("Goodbye.");
+}
+
+/**
+ * Create a lightweight model call function for the ACE reflector/curator.
+ *
+ * Uses Anthropic Claude Haiku for speed and cost efficiency. Returns undefined
+ * when no API key is available (ACE falls back to stat-only pipeline).
+ */
+async function createAceModelCall(): Promise<
+  ((messages: readonly import("@koi/core/message").InboundMessage[]) => Promise<string>) | undefined
+> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (apiKey === undefined || apiKey.length === 0) return undefined;
+
+  const { createAnthropicAdapter } = await import("@koi/model-router");
+  const adapter = createAnthropicAdapter({ apiKey });
+  const aceModel = "claude-haiku-4-5-20251001";
+
+  return async (messages) => {
+    const koiMessages = messages.map((m) => ({
+      ...m,
+      content: m.content.map((c) =>
+        c.kind === "text" ? c : { kind: "text" as const, text: JSON.stringify(c) },
+      ),
+    }));
+    const response = await adapter.complete({
+      messages: koiMessages,
+      model: aceModel,
+      maxTokens: 1024,
+    });
+    return typeof response.content === "string" ? response.content : "";
+  };
 }
