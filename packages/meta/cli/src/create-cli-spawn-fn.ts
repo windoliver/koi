@@ -13,6 +13,8 @@ import type {
   AgentManifest,
   ContentBlock,
   EngineAdapter,
+  EngineEvent,
+  EngineOutput,
   KoiError,
   SpawnFn,
   SpawnRequest,
@@ -34,9 +36,10 @@ export interface CliSpawnFnConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Content extraction helper
+// Output extraction helpers
 // ---------------------------------------------------------------------------
 
+/** Extract text from done.output.content blocks (standard engine adapters). */
 function extractTextFromContent(blocks: readonly ContentBlock[]): string {
   const parts: string[] = [];
   for (const block of blocks) {
@@ -45,6 +48,18 @@ function extractTextFromContent(blocks: readonly ContentBlock[]): string {
     }
   }
   return parts.join("\n");
+}
+
+/** Extract error details from done.output.metadata (PI adapter pattern). */
+function extractErrorMessage(output: EngineOutput): string {
+  const meta = output.metadata;
+  if (typeof meta === "object" && meta !== null && "error" in meta) {
+    return String(meta.error);
+  }
+  if (typeof meta === "object" && meta !== null && "errorMessage" in meta) {
+    return String(meta.errorMessage);
+  }
+  return "Child agent terminated with error";
 }
 
 // ---------------------------------------------------------------------------
@@ -78,14 +93,22 @@ export async function createCliSpawnFn(config: CliSpawnFnConfig): Promise<SpawnF
       });
 
       try {
-        // Run the child with the task description as text input
-        let outputText = "";
+        // Run the child with the task description as text input.
+        // Accumulate text_delta events (PI adapter delivers text this way;
+        // done.output.content is empty for PI). Also capture done.output
+        // for content blocks and stopReason checking.
+        const textDeltas: string[] = [];
+        let doneOutput: EngineOutput | undefined;
+
         for await (const event of childRuntime.run({ kind: "text", text: request.description })) {
           if (request.signal.aborted) {
             break;
           }
+          if (event.kind === "text_delta") {
+            textDeltas.push((event as EngineEvent & { readonly delta: string }).delta);
+          }
           if (event.kind === "done") {
-            outputText = extractTextFromContent(event.output.content);
+            doneOutput = event.output;
           }
         }
 
@@ -95,6 +118,26 @@ export async function createCliSpawnFn(config: CliSpawnFnConfig): Promise<SpawnF
             error: { code: "EXTERNAL", message: "Spawn aborted", retryable: false },
           };
         }
+
+        // Check stopReason before treating as success — errored runs must
+        // be reported as failures, not silently swallowed.
+        if (doneOutput?.stopReason === "error") {
+          return {
+            ok: false,
+            error: {
+              code: "EXTERNAL",
+              message: extractErrorMessage(doneOutput),
+              retryable: true,
+            },
+          };
+        }
+
+        // Prefer text_delta accumulation (PI adapter), fall back to
+        // done.output.content blocks (standard adapters).
+        const deltaText = textDeltas.join("");
+        const contentText =
+          doneOutput !== undefined ? extractTextFromContent(doneOutput.content) : "";
+        const outputText = deltaText.length > 0 ? deltaText : contentText;
 
         return { ok: true, output: outputText || "(no output)" };
       } finally {
