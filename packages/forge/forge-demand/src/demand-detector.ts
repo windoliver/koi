@@ -153,12 +153,25 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     return clock() - lastEmitted < config.budget.cooldownMs;
   }
 
-  /** Evict expired cooldown entries to prevent unbounded memory growth. */
+  /** Evict expired cooldown entries and stale tracking maps to prevent unbounded memory growth. */
   function evictExpiredCooldowns(): void {
     const now = clock();
     for (const [key, lastEmitted] of cooldowns) {
       if (now - lastEmitted >= config.budget.cooldownMs) {
         cooldowns.delete(key);
+      }
+    }
+    // Evict tracking maps for tools with zero consecutive failures (resolved)
+    for (const [toolId, count] of consecutiveFailures) {
+      if (count === 0) {
+        consecutiveFailures.delete(toolId);
+        failedToolCalls.delete(`rf:${toolId}`);
+      }
+    }
+    // Evict capability gap counts for expired cooldowns (no longer active)
+    for (const capability of capabilityGapCounts.keys()) {
+      if (!cooldowns.has(`cg:${capability}`)) {
+        capabilityGapCounts.delete(capability);
       }
     }
   }
