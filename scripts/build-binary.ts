@@ -60,6 +60,22 @@ const EXTERNAL_PACKAGES = [
   // Cloud sandbox providers — require external accounts
   "@vercel/sandbox",
   "e2b",
+  // Voice/audio — require native codecs and ffmpeg binary
+  "ffmpeg-static",
+  "prism-media",
+  "@discordjs/voice",
+  "@discordjs/opus",
+  "sodium-native",
+  "libsodium-wrappers",
+  "opusscript",
+  // WhatsApp — requires native QR code and baileys WebSocket
+  "qrcode-terminal",
+  "@whiskeysockets/baileys",
+  // Signal — requires native libsignal crypto
+  "@niccolocase/libsignal-node",
+  "libsignal-client",
+  // Matrix — optional native olm crypto
+  "@matrix-org/olm",
 ] as const;
 
 /** Supported Bun compile target triples. */
