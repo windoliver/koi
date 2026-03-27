@@ -6,12 +6,12 @@
       "outputs": ["dist/**"]
     },
     "test": {
-      "dependsOn": ["build"],
+      "dependsOn": ["^build"],
       "inputs": ["src/**/*.ts", "tsconfig.json", "../../tsconfig.base.json"],
       "outputs": ["coverage/**"]
     },
     "test:api": {
-      "dependsOn": ["build"],
+      "dependsOn": ["^build"],
       "inputs": ["src/**/*.ts", "dist/**/*.d.ts"],
       "outputs": []
     },
