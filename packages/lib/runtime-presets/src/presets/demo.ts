@@ -34,6 +34,8 @@ export const DEMO_PRESET: RuntimePreset = {
     aceStoreBackend: "nexus",
     codeExecutor: true,
     governance: true,
+    filesystem: true,
+    rlmStack: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },

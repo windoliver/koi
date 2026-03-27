@@ -688,6 +688,124 @@ describe("createMiddleware", () => {
 });
 
 // ---------------------------------------------------------------------------
+// onCompleted / onFailed callbacks
+// ---------------------------------------------------------------------------
+
+describe("onCompleted callback", () => {
+  test("fires with HarnessStatus when all tasks complete", async () => {
+    let receivedStatus: import("@koi/core").HarnessStatus | undefined;
+    const testHarness = createTestHarness({
+      onCompleted: (status) => {
+        receivedStatus = status;
+      },
+    });
+    await testHarness.start(createTestPlan());
+
+    await testHarness.completeTask(taskItemId("task-1"), createTaskResult("task-1"));
+    await testHarness.completeTask(taskItemId("task-2"), createTaskResult("task-2"));
+    expect(receivedStatus).toBeUndefined(); // not yet — 1 task remains
+
+    await testHarness.completeTask(taskItemId("task-3"), createTaskResult("task-3"));
+    expect(receivedStatus).toBeDefined();
+    expect(receivedStatus?.phase).toBe("completed");
+    expect(receivedStatus?.metrics.completedTaskCount).toBe(3);
+  });
+
+  test("does not fire when tasks remain", async () => {
+    let called = false;
+    const testHarness = createTestHarness({
+      onCompleted: () => {
+        called = true;
+      },
+    });
+    await testHarness.start(createTestPlan());
+    await testHarness.completeTask(taskItemId("task-1"), createTaskResult("task-1"));
+    expect(called).toBe(false);
+  });
+
+  test("callback error does not prevent completion", async () => {
+    const testHarness = createTestHarness({
+      onCompleted: () => {
+        throw new Error("callback boom");
+      },
+    });
+    await testHarness.start(createTestPlan());
+
+    await testHarness.completeTask(taskItemId("task-1"), createTaskResult("task-1"));
+    await testHarness.completeTask(taskItemId("task-2"), createTaskResult("task-2"));
+    const result = await testHarness.completeTask(taskItemId("task-3"), createTaskResult("task-3"));
+    assertOk(result);
+    expect(testHarness.status().phase).toBe("completed");
+  });
+
+  test("async callback error does not prevent completion", async () => {
+    const testHarness = createTestHarness({
+      onCompleted: async () => {
+        throw new Error("async callback boom");
+      },
+    });
+    await testHarness.start(createTestPlan());
+
+    await testHarness.completeTask(taskItemId("task-1"), createTaskResult("task-1"));
+    await testHarness.completeTask(taskItemId("task-2"), createTaskResult("task-2"));
+    const result = await testHarness.completeTask(taskItemId("task-3"), createTaskResult("task-3"));
+    assertOk(result);
+    expect(testHarness.status().phase).toBe("completed");
+  });
+});
+
+describe("onFailed callback", () => {
+  test("fires with HarnessStatus and KoiError on failure", async () => {
+    let receivedStatus: import("@koi/core").HarnessStatus | undefined;
+    let receivedError: KoiError | undefined;
+    const testHarness = createTestHarness({
+      onFailed: (status, error) => {
+        receivedStatus = status;
+        receivedError = error;
+      },
+    });
+    await testHarness.start(createTestPlan());
+
+    const error: KoiError = { code: "TIMEOUT", message: "Agent timed out", retryable: false };
+    await testHarness.fail(error);
+
+    expect(receivedStatus).toBeDefined();
+    expect(receivedStatus?.phase).toBe("failed");
+    expect(receivedStatus?.failureReason).toBe("Agent timed out");
+    expect(receivedError).toBe(error);
+  });
+
+  test("callback error does not prevent failure recording", async () => {
+    const testHarness = createTestHarness({
+      onFailed: () => {
+        throw new Error("callback boom");
+      },
+    });
+    await testHarness.start(createTestPlan());
+
+    const error: KoiError = { code: "TIMEOUT", message: "Timed out", retryable: false };
+    const result = await testHarness.fail(error);
+    assertOk(result);
+    expect(testHarness.status().phase).toBe("failed");
+  });
+
+  test("does not fire on completion", async () => {
+    let called = false;
+    const testHarness = createTestHarness({
+      onFailed: () => {
+        called = true;
+      },
+    });
+    await testHarness.start(createTestPlan());
+
+    await testHarness.completeTask(taskItemId("task-1"), createTaskResult("task-1"));
+    await testHarness.completeTask(taskItemId("task-2"), createTaskResult("task-2"));
+    await testHarness.completeTask(taskItemId("task-3"), createTaskResult("task-3"));
+    expect(called).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // dispose()
 // ---------------------------------------------------------------------------
 

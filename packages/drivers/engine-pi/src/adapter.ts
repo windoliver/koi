@@ -14,7 +14,13 @@ import { getModel, streamSimple } from "@mariozechner/pi-ai";
 import { AsyncQueue, createEventSubscriber } from "./event-bridge.js";
 import { engineInputToHistory, engineInputToPrompt, PI_CAPABILITIES } from "./message-map.js";
 import { createMetricsAccumulator } from "./metrics.js";
-import { createModelCallTerminal, createModelStreamTerminal } from "./model-terminal.js";
+import {
+  clearParamsFallback,
+  createModelCallTerminal,
+  createModelStreamTerminal,
+  type PiParamsFallback,
+  setParamsFallback,
+} from "./model-terminal.js";
 import { createBridgeStreamFn } from "./stream-bridge.js";
 import { wrapTool } from "./tool-bridge.js";
 import type { PiAdapterConfig, PiEngineAdapter } from "./types.js";
@@ -71,6 +77,15 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
     modelId as Parameters<typeof getModel>[1],
   );
 
+  if (piModel === undefined || piModel === null) {
+    throw new Error(
+      `Model "${config.model}" is not recognized by pi-ai. ` +
+        `Provider "${provider}" does not have model "${modelId}". ` +
+        `Check that the model ID matches the provider's format (e.g., ` +
+        `"openrouter:anthropic/claude-sonnet-4.6", not "openrouter:anthropic/claude-sonnet-4-5-20250929").`,
+    );
+  }
+
   // Create model terminals
   const modelStreamTerminal = createModelStreamTerminal();
   const modelCallTerminal = createModelCallTerminal(modelStreamTerminal);
@@ -97,6 +112,11 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
       const queue = new AsyncQueue<EngineEvent>();
       const metrics = createMetricsAccumulator();
 
+      // Scope pi-params fallback to this stream() call so sub-calls without
+      // nonces (e.g., RLM REPL) use this session's params, not a stale one.
+      const paramsFallback: PiParamsFallback = { current: undefined };
+      setParamsFallback(paramsFallback);
+
       const callHandlers = input.callHandlers;
       if (!callHandlers) {
         throw new Error(
@@ -106,14 +126,14 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
       }
 
       // Build the bridge streamFn that routes through middleware
-      const modelStream = callHandlers.modelStream;
-      if (!modelStream) {
+      const rawModelStream = callHandlers.modelStream;
+      if (!rawModelStream) {
         throw new Error(
           "PiEngineAdapter requires callHandlers.modelStream. " +
             "This should be provided by L1 when terminals.modelStream is defined.",
         );
       }
-      const bridgeStreamFn = createBridgeStreamFn(modelStream, realStreamSimple);
+      const bridgeStreamFn = createBridgeStreamFn(rawModelStream, realStreamSimple);
 
       // Wrap Koi tool descriptors as pi AgentTools, routing execution through middleware.
       // Build a reverse map from sanitized API names → original Koi names for event bridging.
@@ -233,6 +253,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
               const result = await inner.next();
               if (result.done) {
                 unsubscribe();
+                clearParamsFallback();
                 if (currentPiAgent === piAgent) {
                   currentPiAgent = undefined;
                 }
@@ -241,6 +262,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
             },
             async return(): Promise<IteratorResult<EngineEvent>> {
               unsubscribe();
+              clearParamsFallback();
               piAgent.abort();
               if (currentPiAgent === piAgent) {
                 currentPiAgent = undefined;
@@ -277,6 +299,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
         currentPiAgent.abort();
         currentPiAgent = undefined;
       }
+      clearParamsFallback();
     },
   };
 }

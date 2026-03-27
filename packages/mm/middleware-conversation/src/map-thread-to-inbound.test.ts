@@ -64,7 +64,12 @@ describe("mapThreadMessageToInbound", () => {
     const msg = { ...baseMsg, metadata: { custom: "value" } };
     const result = mapThreadMessageToInbound(msg, "agent-1");
 
-    expect(result.metadata).toEqual({ custom: "value", fromHistory: true });
+    expect(result.metadata).toEqual({
+      custom: "value",
+      fromHistory: true,
+      originalRole: "user",
+      agentId: "agent-1",
+    });
   });
 
   test("preserves timestamp from createdAt", () => {

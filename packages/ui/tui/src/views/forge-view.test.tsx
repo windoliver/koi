@@ -7,7 +7,7 @@ import { testRender } from "@opentui/react/test-utils";
 import type { ForgeViewProps, ForgeViewState } from "./forge-view.js";
 import { ForgeView } from "./forge-view.js";
 
-function makeEmptyState(): ForgeViewState {
+function createEmptyForgeState(): ForgeViewState {
   return {
     forgeBricks: {},
     forgeSparklines: {},
@@ -19,13 +19,32 @@ function makeEmptyState(): ForgeViewState {
 
 function makeProps(overrides?: Partial<ForgeViewProps>): ForgeViewProps {
   return {
-    state: makeEmptyState(),
+    state: createEmptyForgeState(),
     focused: false,
     ...overrides,
   };
 }
 
 describe("ForgeView", () => {
+  test("is a function component", () => {
+    expect(typeof ForgeView).toBe("function");
+  });
+
+  test("accepts ForgeViewState props", () => {
+    const props: ForgeViewProps = {
+      state: createEmptyForgeState(),
+      focused: true,
+      zoomLevel: "normal",
+    };
+    expect(props.state.forgeBricks).toEqual({});
+    expect(props.state.forgeEvents).toEqual([]);
+  });
+
+  test("empty state has zero selected index", () => {
+    const state = createEmptyForgeState();
+    expect(state.forgeSelectedBrickIndex).toBe(0);
+  });
+
   test("renders empty state when no bricks", async () => {
     const { captureCharFrame, renderOnce } = await testRender(
       <ForgeView {...makeProps()} />,

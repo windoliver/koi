@@ -142,14 +142,15 @@ describe("createAutonomousAgent", () => {
     expect(mw[2]?.name).toBe("collective-memory-mw");
   });
 
-  test("providers returns plan_autonomous provider by default", () => {
+  test("providers returns plan_autonomous and task-tools providers by default", () => {
     const harness = createMockHarness();
     const scheduler = createMockScheduler();
     const agent = createAutonomousAgent({ harness, scheduler });
 
     const provs = agent.providers();
-    expect(provs).toHaveLength(1);
+    expect(provs).toHaveLength(2);
     expect(provs[0]?.name).toBe("plan-autonomous-provider");
+    expect(provs[1]?.name).toBe("task-tools-provider");
   });
 
   test("middleware includes checkpoint + inbox when threadStore provided", () => {
@@ -184,9 +185,10 @@ describe("createAutonomousAgent", () => {
     const agent = createAutonomousAgent({ harness, scheduler, threadStore: fakeStore });
 
     const provs = agent.providers();
-    expect(provs).toHaveLength(2); // plan_autonomous + autonomous
+    expect(provs).toHaveLength(3); // plan_autonomous + task-tools + autonomous
     expect(provs[0]?.name).toBe("plan-autonomous-provider");
-    expect(provs[1]?.name).toBe("autonomous-provider");
+    expect(provs[1]?.name).toBe("task-tools-provider");
+    expect(provs[2]?.name).toBe("autonomous-provider");
   });
 
   test("dispose stops scheduler first, then harness", async () => {

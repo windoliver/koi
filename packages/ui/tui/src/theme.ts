@@ -93,3 +93,25 @@ export function agentStateColor(
       return COLORS.fgDim;
   }
 }
+
+/** Brick lifecycle status badge config (symbol + color). */
+export function brickStatusConfig(status: string): {
+  readonly label: string;
+  readonly color: string;
+} {
+  switch (status) {
+    case "promoted":
+    case "verified":
+      return { label: `✓ ${status}`, color: COLORS.accent };
+    case "active":
+      return { label: `● ${status}`, color: COLORS.green };
+    case "decaying":
+    case "deprecated":
+      return { label: `▼ ${status}`, color: COLORS.yellow };
+    case "evaporating":
+    case "quarantined":
+      return { label: `✕ ${status}`, color: COLORS.red };
+    default:
+      return { label: `○ ${status}`, color: COLORS.dim };
+  }
+}

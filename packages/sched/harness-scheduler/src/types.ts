@@ -39,6 +39,15 @@ export interface HarnessSchedulerConfig {
   readonly signal?: AbortSignal | undefined;
   /** Injectable delay function for tests. Default: Bun.sleep. */
   readonly delay?: ((ms: number) => Promise<void>) | undefined;
+  /**
+   * Called after a successful resume(). Responsible for running the engine
+   * sub-session and pausing the harness when done. The scheduler awaits this
+   * callback before continuing the poll loop.
+   *
+   * When absent, the scheduler only calls resume() (legacy behavior —
+   * caller is responsible for driving sessions externally).
+   */
+  readonly onResumed?: ((resumeResult: unknown) => Promise<void>) | undefined;
 }
 
 // ---------------------------------------------------------------------------

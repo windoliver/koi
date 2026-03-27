@@ -44,6 +44,7 @@ const EXTENSION_FIELDS = [
   "nexus",
   "codeSandbox",
   "dataSources",
+  "autonomous",
 ] as const;
 
 /**

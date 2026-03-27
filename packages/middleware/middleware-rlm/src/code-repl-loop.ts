@@ -12,25 +12,24 @@
 import type { InboundMessage, JsonObject, ModelHandler } from "@koi/core";
 import { extractCodeBlock } from "./code-parser.js";
 import { compactHistory, shouldCompact } from "./compaction.js";
+import { createCostTracker } from "./cost-tracker.js";
 import { createInputStore } from "./input-store.js";
+import {
+  addModelUsage,
+  createMetricsAccumulator,
+  finalizeMetrics,
+  incrementTurn,
+} from "./metrics.js";
+import { resolveConfig } from "./resolve-config.js";
 import { createSemaphore } from "./semaphore.js";
+import { createSharedLog } from "./shared-log.js";
 import { createTokenTracker } from "./token-tracker.js";
 import type {
   ReplLoopResult,
   RlmEvent,
-  RlmMetrics,
   RlmMiddlewareConfig,
   RlmScriptRunner,
   RlmStopReason,
-} from "./types.js";
-import {
-  DEFAULT_CHUNK_SIZE,
-  DEFAULT_COMPACTION_THRESHOLD,
-  DEFAULT_CONTEXT_WINDOW_TOKENS,
-  DEFAULT_MAX_CONCURRENCY,
-  DEFAULT_MAX_INPUT_BYTES,
-  DEFAULT_MAX_ITERATIONS,
-  DEFAULT_PREVIEW_LENGTH,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -56,31 +55,6 @@ export interface CodeReplLoopDeps {
 }
 
 // ---------------------------------------------------------------------------
-// Metrics
-// ---------------------------------------------------------------------------
-
-interface MetricsAccumulator {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly turns: number;
-  readonly startTime: number;
-}
-
-function createMetricsAccumulator(): MetricsAccumulator {
-  return { inputTokens: 0, outputTokens: 0, turns: 0, startTime: Date.now() };
-}
-
-function finalizeMetrics(acc: MetricsAccumulator): RlmMetrics {
-  return {
-    inputTokens: acc.inputTokens,
-    outputTokens: acc.outputTokens,
-    totalTokens: acc.inputTokens + acc.outputTokens,
-    turns: acc.turns,
-    durationMs: Date.now() - acc.startTime,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Preamble (wrapper functions prepended to model's code)
 // ---------------------------------------------------------------------------
 
@@ -90,6 +64,7 @@ const RLM_PREAMBLE = `function readInput(offset, length) {
 function inputInfo() { return callTool("inputInfo", {}); }
 function llm_query(prompt) { return callTool("llm_query", { prompt: prompt }); }
 function llm_query_batched(prompts) { return callTool("llm_query_batched", { prompts: prompts }); }
+function sharedFindings() { return callTool("sharedFindings", {}); }
 function SUBMIT(answer) {
   return callTool("SUBMIT", {
     answer: typeof answer === "string" ? answer : JSON.stringify(answer)
@@ -107,6 +82,7 @@ function generateSystemPrompt(
   sizeBytes: number,
   estimatedTokens: number,
   preview: string,
+  parentContext?: string | undefined,
 ): string {
   return (
     `You are an RLM agent analyzing a large input via code execution.\n\n` +
@@ -119,6 +95,7 @@ function generateSystemPrompt(
     `- inputInfo() — returns { format, sizeBytes, totalChunks, preview }\n` +
     `- llm_query(prompt) — sub-LLM query for semantic analysis\n` +
     `- llm_query_batched(prompts) — parallel sub-LLM queries (array of strings)\n` +
+    `- sharedFindings() — returns findings from sibling sub-calls\n` +
     `- SUBMIT(answer) — submit your final answer (string)\n\n` +
     `## Guidelines\n` +
     `1. EXPLORE FIRST — readInput(0, 2000) to understand structure\n` +
@@ -126,7 +103,8 @@ function generateSystemPrompt(
     `3. Each code block runs independently — variables do not persist between steps\n` +
     `4. Use llm_query for meaning, readInput for data access\n` +
     `5. SUBMIT when confident in your answer\n\n` +
-    `Provide code in a \`\`\`javascript block.`
+    `Provide code in a \`\`\`javascript block.` +
+    (parentContext !== undefined ? `\n\n## Parent Context\n${parentContext}` : "")
   );
 }
 
@@ -170,15 +148,19 @@ function formatStepHistory(turn: number, code: string, consoleOutput: string): s
  * maxIterations is reached, or the model returns no code block.
  */
 export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopResult> {
-  const { scriptRunner, modelCall, input, question, config, signal, onEvent } = deps;
-
-  const maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
-  const maxInputBytes = config.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES;
-  const chunkSize = config.chunkSize ?? DEFAULT_CHUNK_SIZE;
-  const previewLength = config.previewLength ?? DEFAULT_PREVIEW_LENGTH;
-  const compactionThreshold = config.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD;
-  const contextWindowTokens = config.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
-  const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+  const { scriptRunner, modelCall, input, question, config, signal } = deps;
+  const resolved = resolveConfig(config);
+  const {
+    maxIterations,
+    maxInputBytes,
+    chunkSize,
+    previewLength,
+    compactionThreshold,
+    contextWindowTokens,
+    maxConcurrency,
+  } = resolved;
+  // Deps-level onEvent takes precedence over config-level (backward compat)
+  const onEvent = deps.onEvent ?? resolved.onEvent;
 
   // Size guard
   const inputBytes = new TextEncoder().encode(input).length;
@@ -193,15 +175,26 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
   const store = createInputStore(input, { maxInputBytes, chunkSize, previewLength });
   const tracker = createTokenTracker(contextWindowTokens);
   const semaphore = createSemaphore(maxConcurrency);
+  const costTracker =
+    resolved.costEstimator !== undefined ? createCostTracker(resolved.costEstimator) : undefined;
   const meta = store.metadata();
 
   // let: set by SUBMIT host function
   let finalAnswer: string | undefined;
+  const sharedLog = createSharedLog();
 
   // Build host functions map
-  const hostFns = createHostFns(store, modelCall, semaphore, tracker, config, (answer: string) => {
-    finalAnswer = answer;
-  });
+  const hostFns = createHostFns(
+    store,
+    modelCall,
+    semaphore,
+    tracker,
+    config,
+    sharedLog,
+    (answer: string) => {
+      finalAnswer = answer;
+    },
+  );
 
   // Build system prompt
   const systemPrompt = generateSystemPrompt(
@@ -210,6 +203,7 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
     meta.sizeBytes,
     meta.estimatedTokens,
     meta.preview,
+    resolved.parentContext,
   );
 
   const messages: InboundMessage[] = [
@@ -232,12 +226,23 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
       break;
     }
 
+    // Cost budget check
+    if (
+      costTracker !== undefined &&
+      resolved.maxCostUsd !== undefined &&
+      costTracker.exceeded(resolved.maxCostUsd)
+    ) {
+      stopReason = "budget_exceeded";
+      break;
+    }
+
     // Compaction check
     if (shouldCompact(tracker, compactionThreshold) && messages.length > 1) {
       onEvent?.({ kind: "compaction", turn, utilization: tracker.utilization() });
-      const compacted = await compactHistory(messages, modelCall, config.subCallModel);
+      const compacted = await compactHistory(messages, modelCall, resolved.subCallModel);
       messages.length = 0;
       messages.push(...compacted);
+      sharedLog.clear();
     }
 
     onEvent?.({ kind: "turn_start", turn });
@@ -248,27 +253,27 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
     try {
       const response = await modelCall({
         messages,
-        ...(config.rootModel !== undefined ? { model: config.rootModel } : {}),
+        ...(resolved.rootModel !== undefined ? { model: resolved.rootModel } : {}),
       });
 
-      const usage = response.usage;
-      if (usage !== undefined) {
-        metrics = {
-          ...metrics,
-          inputTokens: metrics.inputTokens + usage.inputTokens,
-          outputTokens: metrics.outputTokens + usage.outputTokens,
-        };
+      metrics = addModelUsage(metrics, response);
+      if (costTracker !== undefined && response.usage !== undefined) {
+        costTracker.add(
+          resolved.rootModel ?? "unknown",
+          response.usage.inputTokens,
+          response.usage.outputTokens,
+        );
       }
       tracker.add(response.content);
       responseContent = response.content;
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
-      metrics = { ...metrics, turns: metrics.turns + 1 };
+      metrics = incrementTurn(metrics);
       onEvent?.({ kind: "turn_end", turn });
       const result: ReplLoopResult = {
         answer: `Model error: ${message}`,
         stopReason: "error",
-        metrics: finalizeMetrics(metrics),
+        metrics: finalizeMetrics(metrics, costTracker?.total()),
       };
       onEvent?.({ kind: "done", result });
       return result;
@@ -279,12 +284,12 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
 
     if (codeBlock === undefined) {
       // No code block: treat as implicit final answer
-      metrics = { ...metrics, turns: metrics.turns + 1 };
+      metrics = incrementTurn(metrics);
       onEvent?.({ kind: "turn_end", turn });
       const result: ReplLoopResult = {
         answer: responseContent,
         stopReason: "completed",
-        metrics: finalizeMetrics(metrics),
+        metrics: finalizeMetrics(metrics, costTracker?.total()),
       };
       onEvent?.({ kind: "done", result });
       return result;
@@ -322,7 +327,7 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
       },
     );
 
-    metrics = { ...metrics, turns: metrics.turns + 1 };
+    metrics = incrementTurn(metrics);
     onEvent?.({ kind: "turn_end", turn });
 
     // Check if SUBMIT was called during execution
@@ -330,7 +335,7 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
       const result: ReplLoopResult = {
         answer: finalAnswer,
         stopReason: "completed",
-        metrics: finalizeMetrics(metrics),
+        metrics: finalizeMetrics(metrics, costTracker?.total()),
       };
       onEvent?.({ kind: "done", result });
       return result;
@@ -351,7 +356,7 @@ export async function runCodeReplLoop(deps: CodeReplLoopDeps): Promise<ReplLoopR
   const result: ReplLoopResult = {
     answer: fallbackAnswer,
     stopReason,
-    metrics: finalizeMetrics(metrics),
+    metrics: finalizeMetrics(metrics, costTracker?.total()),
   };
   onEvent?.({ kind: "done", result });
   return result;
@@ -380,12 +385,17 @@ interface TokenTrackerLike {
   readonly addTokens: (count: number) => void;
 }
 
+interface SharedLogLike {
+  readonly entries: () => readonly string[];
+}
+
 function createHostFns(
   store: InputStoreLike,
   modelCall: ModelHandler,
   semaphore: SemaphoreLike,
   tracker: TokenTrackerLike,
   config: RlmMiddlewareConfig,
+  sharedLog: SharedLogLike,
   onSubmit: (answer: string) => void,
 ): ReadonlyMap<string, (args: JsonObject) => Promise<unknown> | unknown> {
   return new Map<string, (args: JsonObject) => Promise<unknown> | unknown>([
@@ -439,7 +449,7 @@ function createHostFns(
           return "Error: all prompts must be strings.";
         }
         const prompts: readonly string[] = rawPrompts;
-        const results = await Promise.all(
+        const settled = await Promise.allSettled(
           prompts.map((prompt) =>
             semaphore.run(async () => {
               const response = await modelCall({
@@ -458,7 +468,19 @@ function createHostFns(
             }),
           ),
         );
-        return results;
+        const outputs = settled.map((r) =>
+          r.status === "fulfilled"
+            ? r.value
+            : `Error: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`,
+        );
+        return outputs;
+      },
+    ],
+    [
+      "sharedFindings",
+      () => {
+        const items = sharedLog.entries();
+        return items.length === 0 ? "No shared findings yet." : items.join("\n");
       },
     ],
     [

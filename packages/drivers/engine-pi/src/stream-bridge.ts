@@ -255,13 +255,22 @@ export function createBridgeStreamFn(
 
     // Build a bound streamSimple that captures model + context.
     // Accepts optional messageOverride to apply middleware-modified messages.
+    // Filter invalid signal from pi-agent-core options — pi may pass signal: {}
+    // (empty object) which causes fetch() to abort immediately with "Connection error".
+    const safeOptions =
+      options !== undefined
+        ? Object.fromEntries(
+            Object.entries(options).filter(([k, v]) => k !== "signal" || v instanceof AbortSignal),
+          )
+        : undefined;
+
     const callBoundStream = (
       overrides?: Record<string, unknown>,
       messageOverride?: readonly Message[],
     ): AssistantMessageEventStream | Promise<AssistantMessageEventStream> => {
       const effectiveContext =
         messageOverride !== undefined ? { ...context, messages: [...messageOverride] } : context;
-      return realStreamSimpleFn(model, effectiveContext, { ...options, ...overrides });
+      return realStreamSimpleFn(model, effectiveContext, { ...safeOptions, ...overrides });
     };
 
     // Convert messages for the ModelRequest and store as originalMessages for change detection
@@ -277,7 +286,7 @@ export function createBridgeStreamFn(
       cacheResult,
       ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
       ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
-      ...(options?.signal !== undefined ? { signal: options.signal } : {}),
+      ...(options?.signal instanceof AbortSignal ? { signal: options.signal } : {}),
       ...(options?.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
       ...(options?.reasoning !== undefined ? { reasoning: options.reasoning } : {}),
     };

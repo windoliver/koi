@@ -11,11 +11,18 @@
  */
 
 import type {
+  AgentId,
+  AgentMessageInput,
   ComponentProvider,
+  EngineMetrics,
   HarnessSnapshot,
+  HarnessStatus,
+  KoiError,
   KoiMiddleware,
+  MailboxComponent,
   PendingFrame,
   RecoveryPlan,
+  Result,
   SessionFilter,
   SessionPersistence,
   SessionRecord,
@@ -37,6 +44,27 @@ export interface AutonomousResult {
   readonly providers: readonly ComponentProvider[];
   /** Dispose autonomous agent (scheduler first, then harness). */
   readonly dispose: () => Promise<void>;
+  /**
+   * Bind the notification target after agent assembly. Once bound, the harness
+   * sends a push notification to the initiator's inbox on completion or failure.
+   * Call this after createForgeConfiguredKoi() when the mailbox is available.
+   */
+  readonly bindNotification: (initiatorId: AgentId, mailbox: MailboxComponent) => void;
+  /**
+   * Pause the harness after a session completes. Transitions active → suspended
+   * so the scheduler can resume the next session.
+   */
+  readonly pauseHarness: (sessionResult: {
+    readonly sessionId: string;
+    readonly metrics: EngineMetrics;
+    readonly summary?: string | undefined;
+  }) => Promise<Result<void, KoiError>>;
+  /**
+   * Bind a session runner callback. Called by the scheduler after resume()
+   * to run the engine sub-session. Deferred because the runtime is created
+   * after the scheduler.
+   */
+  readonly bindSessionRunner: (runner: (resumeResult: unknown) => Promise<void>) => void;
 }
 
 /** Autonomous resolution result bundled with contribution metadata. */
@@ -228,14 +256,95 @@ export async function resolveAutonomousOrWarn(
     const harnessStore = createInMemorySnapshotChainStore<HarnessSnapshot>();
     const sessionPersistence = createInMemorySessionPersistence();
 
+    // Deferred notification target — set after agent assembly via bindNotification().
+    // let justified: mutable refs populated post-assembly when mailbox is available.
+    let notifyMailbox: MailboxComponent | undefined;
+    let notifyInitiatorId: AgentId | undefined;
+
     const harness = createLongRunningHarness({
       harnessId: hId,
       agentId: aId,
       harnessStore,
       sessionPersistence,
+      onCompleted: async (status: HarnessStatus) => {
+        const { completedTaskCount, pendingTaskCount } = status.metrics;
+        const total = completedTaskCount + pendingTaskCount;
+        const summary = `Autonomous plan completed. ${String(completedTaskCount)}/${String(total)} tasks done.`;
+
+        if (notifyMailbox !== undefined && notifyInitiatorId !== undefined) {
+          const message: AgentMessageInput = {
+            from: aId,
+            to: notifyInitiatorId,
+            kind: "event",
+            type: "autonomous.completed",
+            payload: {
+              harnessId: status.harnessId,
+              phase: status.phase,
+              completedTaskCount,
+              totalTaskCount: total,
+              summary,
+            },
+            metadata: { mode: "steer" },
+          };
+          const result = await notifyMailbox.send(message);
+          if (!result.ok) {
+            process.stderr.write(
+              `[autonomous] Failed to send completion notification: ${result.error.message}\n`,
+            );
+          }
+        }
+        process.stderr.write(`[autonomous] ✓ ${summary}\n`);
+      },
+      onFailed: async (status: HarnessStatus, error: KoiError) => {
+        const { completedTaskCount, pendingTaskCount } = status.metrics;
+        const total = completedTaskCount + pendingTaskCount;
+        const summary = `Autonomous plan failed: ${error.message}. ${String(completedTaskCount)}/${String(total)} tasks completed.`;
+
+        if (notifyMailbox !== undefined && notifyInitiatorId !== undefined) {
+          const message: AgentMessageInput = {
+            from: aId,
+            to: notifyInitiatorId,
+            kind: "event",
+            type: "autonomous.failed",
+            payload: {
+              harnessId: status.harnessId,
+              phase: status.phase,
+              completedTaskCount,
+              totalTaskCount: total,
+              errorCode: error.code,
+              errorMessage: error.message,
+              summary,
+            },
+            metadata: { mode: "steer" },
+          };
+          const result = await notifyMailbox.send(message);
+          if (!result.ok) {
+            process.stderr.write(
+              `[autonomous] Failed to send failure notification: ${result.error.message}\n`,
+            );
+          }
+        }
+        process.stderr.write(`[autonomous] ✗ ${summary}\n`);
+      },
     });
 
-    const scheduler = createHarnessScheduler({ harness });
+    // Deferred session runner — set after runtime assembly via bindSessionRunner().
+    // let justified: mutable ref populated post-assembly when runtime is available.
+    let boundSessionRunner: ((resumeResult: unknown) => Promise<void>) | undefined;
+
+    const scheduler = createHarnessScheduler({
+      harness,
+      onResumed: async (resumeResult: unknown) => {
+        if (boundSessionRunner === undefined) {
+          process.stderr.write(
+            "[autonomous] warn: scheduler resumed but session runner not bound — skipping\n",
+          );
+          return;
+        }
+        process.stderr.write("[autonomous] scheduler driving sub-session...\n");
+        await boundSessionRunner(resumeResult);
+      },
+    });
 
     const agent = createAutonomousAgent({ harness, scheduler });
 
@@ -250,6 +359,14 @@ export async function resolveAutonomousOrWarn(
       dispose: async () => {
         await agent.dispose();
         sessionPersistence.close();
+      },
+      bindNotification: (initiatorId: AgentId, mailbox: MailboxComponent) => {
+        notifyInitiatorId = initiatorId;
+        notifyMailbox = mailbox;
+      },
+      pauseHarness: (sessionResult) => harness.pause(sessionResult),
+      bindSessionRunner: (runner) => {
+        boundSessionRunner = runner;
       },
     };
 

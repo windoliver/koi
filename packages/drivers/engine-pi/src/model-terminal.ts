@@ -81,15 +81,56 @@ export interface PiNativeParams {
 export const piParamsStore: Map<string, PiNativeParams> = new Map<string, PiNativeParams>();
 
 /**
+ * Per-stream fallback scope for pi-native params.
+ *
+ * When middleware sub-calls (e.g., RLM REPL loop) invoke the model terminal
+ * without a nonce, they fall back to the last known params from the current
+ * stream() call. Scoped to a single stream() invocation to prevent one
+ * session's API key / abort signal from leaking into a later session.
+ */
+export interface PiParamsFallback {
+  /** Current fallback params. Set on first nonce-based lookup within a stream(). */
+  current: PiNativeParams | undefined;
+}
+
+/**
+ * Active fallback scope. Set by the adapter's stream() method before each run
+ * and cleared on completion. Module-level ref because the terminal is a
+ * singleton shared across stream() calls, but only one stream() runs at a time
+ * (guarded by the kernel's `running` flag).
+ */
+// let: mutable ref swapped per stream() call
+let activeFallback: PiParamsFallback | undefined;
+
+/** Set the active fallback scope (call at stream() start). */
+export function setParamsFallback(fb: PiParamsFallback): void {
+  activeFallback = fb;
+}
+
+/** Clear the active fallback scope (call at stream() end). */
+export function clearParamsFallback(): void {
+  activeFallback = undefined;
+}
+
+/**
  * Look up pi-native params by nonce from ModelRequest.metadata.
  * Auto-deletes the entry after retrieval (one-shot cleanup prevents memory leaks).
+ * Falls back to the active stream()'s params if no nonce is present (middleware sub-calls).
  */
 export function getPiParams(request: ModelRequest): PiNativeParams | undefined {
   const raw = request.metadata?.[PI_PARAMS_NONCE_KEY];
-  if (typeof raw !== "string") return undefined;
+  if (typeof raw !== "string") {
+    // No nonce — this is a middleware sub-call (e.g., RLM REPL loop).
+    // Fall back to the current stream()'s last known params.
+    return activeFallback?.current;
+  }
   const params = piParamsStore.get(raw);
   if (params !== undefined) {
     piParamsStore.delete(raw);
+    // Cache in the active stream()'s fallback scope for subsequent sub-calls
+    if (activeFallback !== undefined) {
+      activeFallback.current = params;
+    }
   }
   return params;
 }
@@ -191,7 +232,9 @@ export function createModelStreamTerminal(): ModelStreamHandler {
     if (piParams.maxTokens !== undefined && request.maxTokens === undefined) {
       streamOptions.maxTokens = piParams.maxTokens;
     }
-    if (piParams.signal) streamOptions.signal = piParams.signal;
+    // Only pass signal if it's an actual AbortSignal — pi-agent-core may pass
+    // an empty object {} as signal, which causes fetch() to abort immediately.
+    if (piParams.signal instanceof AbortSignal) streamOptions.signal = piParams.signal;
     if (piParams.apiKey) streamOptions.apiKey = piParams.apiKey;
     if (piParams.reasoning) streamOptions.reasoning = piParams.reasoning;
 

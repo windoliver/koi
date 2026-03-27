@@ -66,7 +66,7 @@ describe("createPlanAutonomousProvider", () => {
 
     expect(capturedPlan).toBeDefined();
     expect(capturedPlan?.items).toHaveLength(2);
-    expect(capturedPlan?.items[0]?.status).toBe("pending");
+    expect(capturedPlan?.items[0]?.status).toBe("assigned");
     expect(capturedPlan?.items[1]?.dependencies).toEqual([taskItemId("t1")]);
     expect(output).toEqual({
       status: "plan_created",

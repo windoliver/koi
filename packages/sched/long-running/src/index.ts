@@ -23,6 +23,8 @@ export { createThreadCompactor } from "./thread-compactor.js";
 export type {
   LongRunningConfig,
   LongRunningHarness,
+  OnCompletedCallback,
+  OnFailedCallback,
   ResumeResult,
   SaveStateCallback,
   SessionResult,
