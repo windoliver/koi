@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { createDiscoveryService } from "./discovery.js";
 
+let bonjourAvailable = false;
+try {
+  await import("bonjour" as string);
+  bonjourAvailable = true;
+} catch {
+  bonjourAvailable = false;
+}
+
 describe("DiscoveryService", () => {
   it("starts unpublished", () => {
     const svc = createDiscoveryService({ enabled: true, serviceType: "_koi-agent._tcp" });
@@ -28,14 +36,20 @@ describe("DiscoveryService", () => {
 
   it("handles publish gracefully when bonjour is not available", async () => {
     const svc = createDiscoveryService({ enabled: true, serviceType: "_koi-agent._tcp" });
-    // bonjour is not installed as a real dependency — publish will fail silently
     await svc.publish({
       name: "test-node",
       type: "_koi-agent._tcp",
       port: 3000,
       txt: { nodeId: "n1", version: "0.0.0", capacity: "10" },
     });
-    // Stays unpublished since bonjour is not available
-    expect(svc.isPublished()).toBe(false);
+    if (bonjourAvailable) {
+      // bonjour is installed — publish succeeds
+      expect(svc.isPublished()).toBe(true);
+      await svc.unpublish();
+      expect(svc.isPublished()).toBe(false);
+    } else {
+      // bonjour is not installed — publish fails silently
+      expect(svc.isPublished()).toBe(false);
+    }
   });
 });
