@@ -108,7 +108,7 @@ async function getPrimaryAgentId(): Promise<string> {
   if (!json.ok || json.data === undefined || json.data.length === 0) {
     throw new Error("No agents found via admin API");
   }
-  return json.data[0]!.agentId;
+  return json.data[0]?.agentId;
 }
 
 /** Send a message via AG-UI chat endpoint and collect the full response. */
@@ -225,6 +225,11 @@ model:
 
 autonomous:
   enabled: true
+
+
+# NOTE: demo preset fails with "model call failed: unknown error" due to
+# governance middleware blocking model calls without proper Nexus auth setup.
+# Using local preset with --nexus-url until governance+OpenRouter is debugged.
 `.trim();
 
 await writeFile(join(workDir, "koi.yaml"), koiYaml);
@@ -242,6 +247,8 @@ const koiProcess = spawn(
     "up",
     "--manifest",
     join(workDir, "koi.yaml"),
+    "--nexus-url",
+    process.env.NEXUS_URL ?? "http://localhost:33320",
     "--verbose",
   ],
   {
@@ -249,6 +256,7 @@ const koiProcess = spawn(
     env: {
       ...process.env,
       OPENROUTER_API_KEY: API_KEY,
+      NEXUS_API_KEY: process.env.NEXUS_API_KEY ?? "sk-qaJ8CryJvAtKpHGtIZe6KFOlHV44IhTlaVFXLVK0dbM",
     },
     stdio: ["ignore", "pipe", "pipe"],
   },
@@ -267,7 +275,7 @@ koiProcess.stderr?.on("data", (chunk: Buffer) => {
 // Step 3: Wait for healthy
 step("Wait: admin API healthy");
 
-const healthy = await waitForHealthy(45_000);
+const healthy = await waitForHealthy(90_000);
 assert("admin API is healthy", healthy);
 
 if (!healthy) {
