@@ -7,6 +7,11 @@
 export type { AgentInstantiateConfig, AgentInstantiateResult } from "./agent-instantiate.js";
 export { createAgentFromBrick } from "./agent-instantiate.js";
 export { createAutonomousAgent } from "./autonomous.js";
+export type {
+  CompletionNotifierCallbacks,
+  CompletionNotifierConfig,
+} from "./completion-notifier.js";
+export { createCompletionNotifier } from "./completion-notifier.js";
 export type { SpawnFitnessWrapperConfig, SpawnHealthRecorder } from "./spawn-fitness-wrapper.js";
 export { createSpawnFitnessWrapper, embedBrickId } from "./spawn-fitness-wrapper.js";
 export type { AutonomousAgent, AutonomousAgentParts } from "./types.js";

@@ -44,6 +44,7 @@ export function createHarnessScheduler(config: HarnessSchedulerConfig): HarnessS
   const backoffCapMs = config.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
   const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
   const signal = config.signal;
+  const onResumed = config.onResumed;
   const delay =
     config.delay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
@@ -93,6 +94,27 @@ export function createHarnessScheduler(config: HarnessSchedulerConfig): HarnessS
           retriesRemaining = maxRetries;
           lastError = undefined;
           prevBackoffMs = backoffBaseMs;
+
+          // Drive the engine sub-session if callback provided
+          if (onResumed !== undefined) {
+            try {
+              await onResumed(result.value);
+            } catch (e: unknown) {
+              retriesRemaining -= 1;
+              lastError = {
+                code: "INTERNAL",
+                message: `onResumed failed: ${e instanceof Error ? e.message : String(e)}`,
+                retryable: true,
+                cause: e instanceof Error ? e : undefined,
+              };
+              if (retriesRemaining <= 0) {
+                phase = "failed";
+                return;
+              }
+              prevBackoffMs = computeBackoff(prevBackoffMs, backoffBaseMs, backoffCapMs);
+              await delay(prevBackoffMs);
+            }
+          }
         } else {
           retriesRemaining -= 1;
           lastError = result.error;

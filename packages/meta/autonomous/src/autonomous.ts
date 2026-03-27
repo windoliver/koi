@@ -38,12 +38,14 @@ import { createCatalogAgentResolver } from "@koi/catalog";
 import type {
   Agent,
   AgentResolver,
+  AttachResult,
   ComponentProvider,
   HarnessThreadSnapshot,
   InboxComponent,
   InboxPolicy,
   KoiMiddleware,
   MailboxComponent,
+  TaskItemId,
   ThreadMetrics,
 } from "@koi/core";
 import { agentId, INBOX, MAILBOX, threadId } from "@koi/core";
@@ -53,6 +55,7 @@ import {
   createCheckpointMiddleware,
   createInboxMiddleware,
   createPlanAutonomousProvider,
+  createTaskTools,
 } from "@koi/long-running";
 import type { AutonomousAgent, AutonomousAgentParts } from "./types.js";
 
@@ -176,15 +179,68 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   const providerList: ComponentProvider[] = [];
 
   // Plan autonomous tool provider — always included for self-escalation.
-  // When the agent creates a plan, start the scheduler so the harness
-  // begins polling and auto-resuming sessions.
+  // When the agent creates a plan, start the harness with the task board
+  // then start the scheduler so it begins auto-resuming sessions.
   providerList.push(
     createPlanAutonomousProvider({
-      onPlanCreated: () => {
+      onPlanCreated: async (plan) => {
+        process.stderr.write(
+          `[autonomous] plan created — ${String(plan.items.length)} tasks, starting harness\n`,
+        );
+        const startResult = await parts.harness.start(plan);
+        if (!startResult.ok) {
+          process.stderr.write(`[autonomous] harness start failed: ${startResult.error.message}\n`);
+          return;
+        }
+        // Harness is now active. The copilot's current engine run continues —
+        // the agent can start working on tasks in this same session using
+        // task_complete. When the engine run ends, the CLI auto-pauses the
+        // harness (active → suspended), then the scheduler picks it up and
+        // resumes for subsequent sessions until all tasks are done.
+        process.stderr.write("[autonomous] harness active — scheduler starting\n");
         parts.scheduler.start();
       },
     }),
   );
+
+  // Task tools provider — registers task_complete, task_status, task_synthesize,
+  // task_update, task_review so the agent can manage autonomous plan execution.
+  providerList.push({
+    name: "task-tools-provider",
+    attach: async (_agent: Agent): Promise<AttachResult> => {
+      const allTools = createTaskTools({
+        getTaskBoard: () => parts.harness.status().taskBoard,
+        completeTask: async (tid: TaskItemId, output: string) => {
+          const result = await parts.harness.completeTask(tid, {
+            taskId: tid,
+            output,
+            durationMs: 0,
+          });
+          if (!result.ok) {
+            throw new Error(`completeTask failed: ${result.error.message}`);
+          }
+          const board = parts.harness.status().taskBoard;
+          const remaining = board.items.filter((i) => i.status !== "completed").length;
+          process.stderr.write(
+            `[autonomous] task_complete: ${tid} — ${String(remaining)} remaining\n`,
+          );
+        },
+        updateTask: async () => {
+          // Harness has no updateDescription method — no-op
+        },
+      });
+      // Only register task_complete and task_status — the essential two.
+      // task_update, task_review, task_synthesize can be added later if needed.
+      const tools = allTools.filter(
+        (t) => t.descriptor.name === "task_complete" || t.descriptor.name === "task_status",
+      );
+      const components = new Map<string, unknown>();
+      for (const tool of tools) {
+        components.set(`tool:${tool.descriptor.name}`, tool);
+      }
+      return { components, skipped: [] };
+    },
+  });
 
   // Autonomous provider with inbox — when thread support enabled.
   // The attach() callback captures the agent reference so inbox middleware

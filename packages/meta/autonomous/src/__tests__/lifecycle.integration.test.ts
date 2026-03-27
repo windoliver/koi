@@ -298,11 +298,12 @@ describe("AutonomousAgent lifecycle integration", () => {
     expect(mw[1]?.name).toBe("checkpoint-middleware");
     expect(mw[2]?.name).toBe("inbox-middleware");
 
-    // providers: plan_autonomous + autonomous
+    // providers: plan_autonomous + task-tools + autonomous
     const provs = agent.providers();
-    expect(provs).toHaveLength(2);
+    expect(provs).toHaveLength(3);
     expect(provs[0]?.name).toBe("plan-autonomous-provider");
-    expect(provs[1]?.name).toBe("autonomous-provider");
+    expect(provs[1]?.name).toBe("task-tools-provider");
+    expect(provs[2]?.name).toBe("autonomous-provider");
   });
 
   test("thread store + compactor yields 4 middleware in correct order", () => {

@@ -242,7 +242,9 @@ export function createPlanAutonomousProvider(config: PlanAutonomousConfig): Comp
             priority: 0,
             maxRetries: 3,
             retries: 0,
-            status: "pending",
+            // "assigned" — in self-escalation mode the copilot IS the worker,
+            // so tasks are immediately assignable. completeTask() requires "assigned".
+            status: "assigned",
           })),
           results: [],
         };

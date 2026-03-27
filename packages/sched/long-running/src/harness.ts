@@ -41,6 +41,8 @@ import { buildInitialPrompt, buildResumeContext } from "./context-bridge.js";
 import type {
   LongRunningConfig,
   LongRunningHarness,
+  OnCompletedCallback,
+  OnFailedCallback,
   ResumeResult,
   SaveStateCallback,
   SessionResult,
@@ -143,6 +145,8 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
   const artifactToolNames = config.artifactToolNames ?? [];
   const pruningPolicy = config.pruningPolicy ?? DEFAULT_LONG_RUNNING_CONFIG.pruningPolicy;
   const saveState: SaveStateCallback | undefined = config.saveState;
+  const onCompleted: OnCompletedCallback | undefined = config.onCompleted;
+  const onFailed: OnFailedCallback | undefined = config.onFailed;
 
   const cid = chainId(harnessId);
 
@@ -575,6 +579,17 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
       const transResult = await registryTransition("terminated", { kind: "completed" });
       if (!transResult.ok) return transResult;
       phase = "completed";
+
+      // Fire completion callback — best-effort, errors logged but never propagated
+      if (onCompleted !== undefined) {
+        try {
+          await onCompleted(status());
+        } catch (e: unknown) {
+          console.warn(
+            `[long-running] onCompleted callback failed for harness ${harnessId}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
     }
 
     return { ok: true, value: undefined };
@@ -615,6 +630,18 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     });
     if (!transResult.ok) return transResult;
     phase = "failed";
+
+    // Fire failure callback — best-effort, errors logged but never propagated
+    if (onFailed !== undefined) {
+      try {
+        await onFailed(status(), error);
+      } catch (e: unknown) {
+        console.warn(
+          `[long-running] onFailed callback failed for harness ${harnessId}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
     return { ok: true, value: undefined };
   };
 
