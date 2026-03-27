@@ -44,6 +44,7 @@
     "@koi/deploy": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/engine-external": "workspace:*",
+    "@koi/errors": "workspace:*",
     "@koi/engine-loop": "workspace:*",
     "@koi/engine-pi": "workspace:*",
     "@koi/filesystem-nexus": "workspace:*",

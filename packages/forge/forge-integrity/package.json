@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/crypto-utils": "workspace:*",
     "@koi/forge-types": "workspace:*",
     "@koi/hash": "workspace:*"
   },

@@ -464,6 +464,9 @@ describe("ProgressiveSkillProvider.mount", () => {
 });
 
 describe("ProgressiveSkillProvider.unmount", () => {
+  /** Flush the internal pending promise chain by awaiting a macrotask. */
+  const flushPending = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
   test("removes a mounted skill", async () => {
     const provider = createSkillComponentProvider({
       skills: [fsSkill("code-review", "./valid-skill")],
@@ -472,6 +475,8 @@ describe("ProgressiveSkillProvider.unmount", () => {
     await provider.attach(stubAgent);
 
     provider.unmount("code-review");
+    await flushPending();
+
     expect(provider.getLevel("code-review")).toBeUndefined();
 
     const attachResult = await provider.attach(stubAgent);
@@ -494,10 +499,40 @@ describe("ProgressiveSkillProvider.unmount", () => {
     const unsub = provider.watch?.((event) => events.push(event));
 
     provider.unmount("code-review");
+    await flushPending();
 
     expect(events).toHaveLength(1);
     expect(events[0]?.kind).toBe("detached");
     expect(events[0]?.componentKey).toBe("skill:code-review");
     unsub?.();
+  });
+
+  test("unmount after queued mount serializes correctly", async () => {
+    const provider = createSkillComponentProvider({
+      skills: [],
+      basePath: FIXTURES,
+    });
+    await provider.attach(stubAgent);
+
+    const skill = fsSkill("code-review", "./valid-skill");
+
+    // Queue mount (async) then immediately unmount (sync call, but chained)
+    const mountPromise = provider.mount(skill, FIXTURES);
+    provider.unmount("code-review");
+
+    // Mount should complete first, then unmount runs
+    const mountResult = await mountPromise;
+    expect(mountResult.ok).toBe(true);
+
+    // Wait for the unmount to complete in the chain
+    await flushPending();
+
+    // Skill should be gone — unmount ran after mount
+    expect(provider.getLevel("code-review")).toBeUndefined();
+
+    const attachResult = await provider.attach(stubAgent);
+    if ("components" in attachResult) {
+      expect(attachResult.components.has("skill:code-review")).toBe(false);
+    }
   });
 });

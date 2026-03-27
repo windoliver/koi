@@ -1,6 +1,10 @@
 /**
  * InMemoryForgeStore — simple Map-based store for tests and development.
  * No eviction, no persistence across restarts.
+ *
+ * Features:
+ * - Content integrity verification on load (recomputes BrickId from content)
+ * - Store-level version tracking for optimistic locking on update
  */
 
 import type {
@@ -14,7 +18,8 @@ import type {
   KoiError,
   Result,
 } from "@koi/core";
-import { notFound } from "@koi/core";
+import { conflict, notFound } from "@koi/core";
+import { computeBrickId, isBrickId } from "@koi/hash";
 import {
   applyBrickUpdate,
   createMemoryStoreChangeNotifier,
@@ -22,9 +27,67 @@ import {
   sortBricks,
 } from "@koi/validation";
 
-// Error helpers use shared factories from @koi/core.
+// ---------------------------------------------------------------------------
+// Error helpers
+// ---------------------------------------------------------------------------
+
 function notFoundError(id: BrickId): KoiError {
   return notFound(id, `Brick not found: ${id}`);
+}
+
+function integrityError(id: BrickId, expectedId: BrickId, actualId: BrickId): KoiError {
+  return {
+    code: "VALIDATION",
+    message: `Content integrity check failed for brick ${id}: expected ${expectedId}, got ${actualId}`,
+    retryable: false,
+    context: { brickId: id, expectedId, actualId },
+  };
+}
+
+function versionConflictError(id: BrickId, expected: number, actual: number): KoiError {
+  return conflict(
+    id,
+    `Version conflict on brick ${id}: expected version ${String(expected)}, current version ${String(actual)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Content integrity helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the primary content string from a brick for BrickId recomputation.
+ * Mirrors the logic in @koi/forge-integrity/brick-content.ts but avoids
+ * the L2→L2 dependency by inlining the mapping.
+ */
+function extractContent(brick: BrickArtifact): string {
+  switch (brick.kind) {
+    case "tool":
+    case "middleware":
+    case "channel":
+      return brick.implementation;
+    case "skill":
+      return brick.content;
+    case "agent":
+      return brick.manifestYaml;
+    case "composite":
+      return brick.steps.map((s) => s.brickId).join(",");
+  }
+}
+
+/**
+ * Verify that a brick's content matches its content-addressed ID.
+ * Returns the recomputed BrickId, or undefined if the check passes.
+ */
+function verifyContentIntegrity(
+  brick: BrickArtifact,
+): { readonly valid: true } | { readonly valid: false; readonly recomputedId: BrickId } {
+  const content = extractContent(brick);
+  const recomputedId = computeBrickId(brick.kind, content, brick.files);
+  if (recomputedId === brick.id) {
+    return { valid: true };
+  }
+  return { valid: false, recomputedId };
 }
 
 // ---------------------------------------------------------------------------
@@ -36,8 +99,11 @@ export function createInMemoryForgeStore(): ForgeStore {
   const notifier = createMemoryStoreChangeNotifier();
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
-    bricks.set(brick.id, brick);
-    notifier.notify({ kind: "saved", brickId: brick.id });
+    // Stamp storeVersion=1 on first save (preserve existing if present)
+    const versioned: BrickArtifact =
+      brick.storeVersion !== undefined ? brick : { ...brick, storeVersion: 1 };
+    bricks.set(versioned.id, versioned);
+    notifier.notify({ kind: "saved", brickId: versioned.id });
     return { ok: true, value: undefined };
   };
 
@@ -45,6 +111,14 @@ export function createInMemoryForgeStore(): ForgeStore {
     const brick = bricks.get(id);
     if (brick === undefined) {
       return { ok: false, error: notFoundError(id) };
+    }
+    // Verify content integrity only for content-addressed IDs (sha256:<64-hex>).
+    // Non-content-addressed IDs (legacy, test fixtures) bypass the check.
+    if (isBrickId(brick.id)) {
+      const check = verifyContentIntegrity(brick);
+      if (!check.valid) {
+        return { ok: false, error: integrityError(id, id, check.recomputedId) };
+      }
     }
     return { ok: true, value: brick };
   };
@@ -75,7 +149,21 @@ export function createInMemoryForgeStore(): ForgeStore {
     if (existing === undefined) {
       return { ok: false, error: notFoundError(id) };
     }
-    bricks.set(id, applyBrickUpdate(existing, updates));
+    // Optimistic locking: reject if version mismatch
+    if (updates.expectedVersion !== undefined) {
+      const currentVersion = existing.storeVersion ?? 0;
+      if (currentVersion !== updates.expectedVersion) {
+        return {
+          ok: false,
+          error: versionConflictError(id, updates.expectedVersion, currentVersion),
+        };
+      }
+    }
+    const applied = applyBrickUpdate(existing, updates);
+    // Bump storeVersion on every successful update
+    const nextVersion = (existing.storeVersion ?? 0) + 1;
+    const versioned: BrickArtifact = { ...applied, storeVersion: nextVersion };
+    bricks.set(id, versioned);
     notifier.notify({ kind: "updated", brickId: id });
     return { ok: true, value: undefined };
   };
@@ -111,8 +199,20 @@ export function createInMemoryForgeStore(): ForgeStore {
     if (existing === undefined) {
       return { ok: false, error: notFoundError(id) };
     }
-    const merged = applyBrickUpdate(existing, { ...updates, scope: targetScope });
-    bricks.set(id, merged);
+    // Optimistic locking for promote+update too
+    if (updates.expectedVersion !== undefined) {
+      const currentVersion = existing.storeVersion ?? 0;
+      if (currentVersion !== updates.expectedVersion) {
+        return {
+          ok: false,
+          error: versionConflictError(id, updates.expectedVersion, currentVersion),
+        };
+      }
+    }
+    const applied = applyBrickUpdate(existing, { ...updates, scope: targetScope });
+    const nextVersion = (existing.storeVersion ?? 0) + 1;
+    const versioned: BrickArtifact = { ...applied, storeVersion: nextVersion };
+    bricks.set(id, versioned);
     notifier.notify({ kind: "promoted", brickId: id, scope: targetScope });
     return { ok: true, value: undefined };
   };

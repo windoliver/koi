@@ -12,13 +12,25 @@ export {
   signAttestation,
   verifyAttestation,
 } from "./attestation.js";
-
 // attestation cache — LRU verification cache
 export type { AttestationCache } from "./attestation-cache.js";
 export { createAttestationCache } from "./attestation-cache.js";
-
 // brick content — content extraction for hashing
 export { extractBrickContent } from "./brick-content.js";
+// brick signing — Ed25519 signature creation and verification for trust tiers
+export type {
+  BrickIdentityPayload,
+  BrickSigningError,
+  BrickVerificationResult,
+  Ed25519KeyPair,
+} from "./brick-signing.js";
+export {
+  classifyTrustTier,
+  computeSigningPayload,
+  generateBrickSigningKeyPair,
+  signBrick,
+  verifyBrickSignature,
+} from "./brick-signing.js";
 
 // integrity — content-addressed verification
 export type {

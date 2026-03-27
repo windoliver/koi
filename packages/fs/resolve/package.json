@@ -21,6 +21,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
-    "test:api": "bun test src/__tests__/api-surface.test.ts"
+    "test:api": "bun test src/__tests__/api-surface.test.ts",
+    "generate:manifest": "bun ../../../scripts/generate-descriptor-manifest.ts"
   }
 }

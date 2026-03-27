@@ -401,8 +401,6 @@ export function createSkillComponentProvider(
 
   // let: pending promise chain ensures serialized mount/unmount execution
   let pending = Promise.resolve();
-  // let: true while an async mount is in-flight — unmount defers to chain only when needed
-  let mountInFlight = false;
 
   const mountImpl = async (
     skill: SkillConfig,
@@ -498,15 +496,10 @@ export function createSkillComponentProvider(
     mountBasePath: string,
     mountFindingCallback?: (name: string, findings: readonly ScanFinding[]) => void,
   ): Promise<Result<void, KoiError>> => {
-    mountInFlight = true;
     const op = pending.then(() => mountImpl(skill, mountBasePath, mountFindingCallback));
     pending = op.then(
-      () => {
-        mountInFlight = false;
-      },
-      () => {
-        mountInFlight = false;
-      },
+      () => {},
+      () => {},
     );
     return op;
   };
@@ -545,15 +538,10 @@ export function createSkillComponentProvider(
   };
 
   const unmount = (name: string): void => {
-    if (mountInFlight) {
-      // Serialize with in-flight mount to prevent races on shared state
-      pending = pending.then(() => {
-        unmountImpl(name);
-      });
-    } else {
-      // No mount in-flight — run synchronously for immediate observable effects
+    // Always chain through pending to serialize with queued mount/unmount ops
+    pending = pending.then(() => {
       unmountImpl(name);
-    }
+    });
   };
 
   return {

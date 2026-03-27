@@ -6,9 +6,8 @@
 
 import { resolve } from "node:path";
 import { detectPlatform, installService, uninstallService } from "@koi/deploy";
-import { loadManifest } from "@koi/manifest";
-import { EXIT_CONFIG } from "@koi/shutdown/exit-codes";
 import type { DeployFlags } from "../args.js";
+import { loadManifestOrExit } from "../load-manifest-or-exit.js";
 
 // ---------------------------------------------------------------------------
 // Default deploy config when manifest has no deploy: section
@@ -30,14 +29,7 @@ const DEFAULT_DEPLOY = {
 export async function runDeploy(flags: DeployFlags): Promise<void> {
   // 1. Load manifest
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
-
-  const loadResult = await loadManifest(manifestPath);
-  if (!loadResult.ok) {
-    process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
-    process.exit(EXIT_CONFIG);
-  }
-
-  const { manifest } = loadResult.value;
+  const { manifest } = await loadManifestOrExit(manifestPath);
 
   // 2. Merge deploy config: manifest.deploy → flag overrides → defaults
   const manifestDeploy = manifest.deploy ?? DEFAULT_DEPLOY;
