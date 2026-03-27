@@ -115,16 +115,16 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
       // Collect cited bullet IDs from trajectory
       const citedBulletIds = entries.flatMap((e) => e.bulletIds ?? []);
 
-      // Fetch rich trajectory if source is configured
-      const richTrajectory = await fetchRichTrajectory(config, sessionId, maxReflectorTokens);
+      // Fetch full rich trajectory from source
+      const fullRichTrajectory = await fetchFullRichTrajectory(config, sessionId);
 
-      // Persist rich trajectory if store is configured
+      // Persist full (uncompressed) rich trajectory if store is configured
       if (
-        richTrajectory !== undefined &&
-        richTrajectory.length > 0 &&
+        fullRichTrajectory !== undefined &&
+        fullRichTrajectory.length > 0 &&
         config.richTrajectoryStore !== undefined
       ) {
-        await config.richTrajectoryStore.append(sessionId, richTrajectory);
+        await config.richTrajectoryStore.append(sessionId, fullRichTrajectory);
 
         // TTL pruning — piggyback on writes
         const retentionDays =
@@ -133,7 +133,13 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
         await config.richTrajectoryStore.prune(cutoff);
       }
 
-      // Reflect on trajectory (with rich data if available)
+      // Compress for reflector prompt (budget-aware subset of the full trajectory)
+      const richTrajectory =
+        fullRichTrajectory !== undefined && fullRichTrajectory.length > 0
+          ? compressRichTrajectory(fullRichTrajectory, maxReflectorTokens)
+          : undefined;
+
+      // Reflect on trajectory (with compressed rich data if available)
       const reflection = await reflector.analyze({
         trajectory: entries,
         ...(richTrajectory !== undefined ? { richTrajectory } : {}),
@@ -168,18 +174,17 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
   };
 }
 
-/** Fetch and compress rich trajectory from the configured source. */
-async function fetchRichTrajectory(
+/** Fetch full (uncompressed) rich trajectory from the configured source. */
+async function fetchFullRichTrajectory(
   config: AceConfig,
   sessionId: string,
-  maxTokens: number,
 ): Promise<readonly RichTrajectoryStep[] | undefined> {
   if (config.richTrajectorySource === undefined) return undefined;
 
   const steps = await config.richTrajectorySource(sessionId);
   if (steps.length === 0) return undefined;
 
-  return compressRichTrajectory(steps, maxTokens);
+  return steps;
 }
 
 /**

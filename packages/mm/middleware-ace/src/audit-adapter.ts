@@ -6,7 +6,7 @@
  * ACE's learning pipeline without duplicating data capture.
  */
 
-import type { AuditEntry, AuditSink } from "@koi/core";
+import type { AuditEntry, AuditSink, JsonObject } from "@koi/core";
 import type { RichContent, RichTrajectoryStep } from "@koi/core/rich-trajectory";
 
 /** Configuration for the audit trajectory adapter. */
@@ -115,11 +115,13 @@ export function mapPayloadToContent(payload: unknown, maxChars: number): RichCon
     return truncateContent(payload, maxChars);
   }
 
-  // Handle object payloads — serialize to JSON
+  // Handle object payloads — serialize to JSON text and preserve structured data
   if (typeof payload === "object" && payload !== null) {
     try {
       const serialized = JSON.stringify(payload);
-      return truncateContent(serialized, maxChars);
+      const content = truncateContent(serialized, maxChars);
+      // Preserve structured data for ATIF tool argument export
+      return { ...content, data: payload as JsonObject };
     } catch {
       return { text: "[unserializable]" };
     }

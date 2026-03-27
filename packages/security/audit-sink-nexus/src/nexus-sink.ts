@@ -162,7 +162,12 @@ export function createNexusAuditSink(config: NexusAuditSinkConfig): AuditSink {
       }
     }
 
-    return entries;
+    // Sort by timestamp then turnIndex to ensure chronological order
+    // (Nexus list order is not guaranteed)
+    return [...entries].sort((a, b) => {
+      if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+      return a.turnIndex - b.turnIndex;
+    });
   };
 
   return { log, flush, query };
