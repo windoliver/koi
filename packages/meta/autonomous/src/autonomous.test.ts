@@ -354,9 +354,9 @@ describe("createAutonomousAgent", () => {
     // Get the plan_autonomous tool via the provider
     const providers = agent.providers();
     const planProvider = providers.find((p) => p.name === "plan-autonomous-provider");
-    expect(planProvider).toBeDefined();
+    if (planProvider === undefined) throw new Error("plan-autonomous-provider not found");
 
-    const attachResult = await planProvider?.attach({
+    const attachResult = await planProvider.attach({
       pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
       manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
       state: "created",
@@ -387,9 +387,9 @@ describe("createAutonomousAgent", () => {
 
     const providers = agent.providers();
     const planProvider = providers.find((p) => p.name === "plan-autonomous-provider");
-    expect(planProvider).toBeDefined();
+    if (planProvider === undefined) throw new Error("plan-autonomous-provider not found");
 
-    const attachResult = await planProvider?.attach({
+    const attachResult = await planProvider.attach({
       pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
       manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
       state: "created",
@@ -436,7 +436,9 @@ describe("createAutonomousAgent", () => {
     // Trigger plan creation to create the bridge
     const providers = agent.providers();
     const planProvider = providers.find((p) => p.name === "plan-autonomous-provider");
-    const attachResult = await planProvider?.attach({
+    if (planProvider === undefined) throw new Error("plan-autonomous-provider not found");
+
+    const attachResult = await planProvider.attach({
       pid: { id: "test" as never, name: "test", type: "copilot", depth: 0 },
       manifest: { name: "test", version: "0.1.0", model: { name: "test-model" } },
       state: "created",
