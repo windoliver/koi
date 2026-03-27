@@ -44,16 +44,19 @@ function listNexusProjects(): readonly NexusProjectInfo[] {
   const output = result.stdout.toString().trim();
   if (output === "") return [];
 
-  // Group containers by project name prefix (e.g., "nexus-abcd1234-postgres-1"
-  // and "nexus-abcd1234-api-1" both belong to project "nexus-abcd1234")
+  // Group containers by Koi's Nexus project name prefix. Koi names its
+  // Docker Compose projects "nexus-{md5[:8]}" where the hash is exactly
+  // 8 lowercase hex chars derived from the data directory path. Container
+  // names follow: "nexus-{8hex}-{service}-{replica}".
+  // This avoids matching unrelated containers (e.g., "nexus-proxy").
   const projects = new Map<string, string[]>();
 
   for (const line of output.split("\n")) {
     const [name] = line.split("\t");
     if (name === undefined || name === "") continue;
 
-    // Extract project name: "nexus-{hash}-{service}-{replica}" → "nexus-{hash}"
-    const match = /^(nexus-[a-f0-9]+)/.exec(name);
+    // Match only Koi's naming convention: "nexus-{exactly 8 hex}-..."
+    const match = /^(nexus-[a-f0-9]{8})(?:-|$)/.exec(name);
     if (match === null) continue;
 
     const projectName = match[1];
