@@ -275,9 +275,16 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       : {}),
   });
 
-  // 6c. Connect resolved channels and wire per-session concurrency
-  // Empty fallback is intentional — headless serve mode has no stdin/stdout channel
-  const channels = resolved.value.channels ?? [];
+  // 6c. Connect resolved channels and wire per-session concurrency.
+  // When --admin is active and stdin is not a TTY (headless mode), skip CLI channel
+  // connection — the CLI channel reads stdin via readline, which fires 'close' on
+  // EOF from /dev/null. After the first async operation completes, Bun exits because
+  // no active I/O handles remain. The AG-UI chat bridge serves as the input channel.
+  const isTty = process.stdin.isTTY === true;
+  const channels = (resolved.value.channels ?? []).filter((ch) => {
+    if (flags.admin && !isTty && ch.name === "@koi/channel-cli") return false;
+    return true;
+  });
   for (const ch of channels) {
     await ch.connect();
   }
@@ -758,10 +765,15 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     `Agent "${manifest.name}" serving on port ${healthInfo.port}${adminSuffix}. Send SIGTERM to stop.\n`,
   );
 
-  // 10. Wait for abort signal (blocks until shutdown)
+  // 10. Wait for abort signal (blocks until shutdown).
+  // Keepalive prevents event loop drain in headless mode. Also ignore SIGPIPE
+  // which Bun sends when stdout is broken (e.g., running in background with &).
+  const keepalive = setInterval(() => {}, 60_000);
+  process.on("SIGPIPE", () => {}); // no-op — prevent default exit on broken stdout
   await new Promise<void>((resolve) => {
     controller.signal.addEventListener("abort", () => resolve(), { once: true });
   });
+  clearInterval(keepalive);
 
   // 11. Cleanup — stop accepting new messages first, then drain in-flight work
   shutdown.uninstall();
