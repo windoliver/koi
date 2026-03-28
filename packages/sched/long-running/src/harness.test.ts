@@ -11,6 +11,8 @@ import type {
   SessionPersistence,
   SessionRecord,
   TaskBoardSnapshot,
+  TaskItemInput,
+  TaskItemPatch,
   TaskResult,
   ToolRequest,
   ToolResponse,
@@ -820,5 +822,210 @@ describe("dispose", () => {
   test("is idempotent", async () => {
     await harness.dispose();
     await harness.dispose(); // Should not throw
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addTask()
+// ---------------------------------------------------------------------------
+
+describe("addTask", () => {
+  beforeEach(async () => {
+    await harness.start(createTestPlan());
+  });
+
+  test("adds task to active harness and persists", async () => {
+    const input: TaskItemInput = {
+      id: taskItemId("task-new"),
+      description: "A brand new task",
+      priority: 5,
+    };
+    const result = await harness.addTask(input);
+    assertOk(result);
+
+    const status = harness.status();
+    const added = status.taskBoard.items.find((i) => i.id === "task-new");
+    expect(added).toBeDefined();
+    expect(added?.description).toBe("A brand new task");
+    expect(added?.status).toBe("pending");
+
+    // Verify snapshot was persisted
+    const headResult = await harnessStore.head(TEST_CHAIN_ID);
+    assertOk(headResult);
+    const boardItems = headResult.value?.data.taskBoard.items ?? [];
+    expect(boardItems.find((i) => i.id === "task-new")).toBeDefined();
+  });
+
+  test("updates pendingTaskCount to reflect new pending task", async () => {
+    // Initial tasks from createTestPlan are "assigned" (not "pending").
+    // After addTask, the board mutation recalculates: the new task is "pending".
+    const input: TaskItemInput = {
+      id: taskItemId("task-extra"),
+      description: "Extra task",
+    };
+    await harness.addTask(input);
+    // The newly added task is the only "pending" item; the 3 originals are "assigned"
+    expect(harness.status().metrics.pendingTaskCount).toBe(1);
+  });
+
+  test("rejects when harness is disposed", async () => {
+    await harness.dispose();
+    const input: TaskItemInput = {
+      id: taskItemId("task-after-dispose"),
+      description: "Should fail",
+    };
+    const result = await harness.addTask(input);
+    assertErr(result);
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects in idle phase", async () => {
+    const freshHarness = createTestHarness();
+    const input: TaskItemInput = {
+      id: taskItemId("task-idle"),
+      description: "Should fail in idle",
+    };
+    const result = await freshHarness.addTask(input);
+    assertErr(result);
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects duplicate task ID", async () => {
+    const input: TaskItemInput = {
+      id: taskItemId("task-1"),
+      description: "Duplicate of existing task",
+    };
+    const result = await harness.addTask(input);
+    assertErr(result);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateTask()
+// ---------------------------------------------------------------------------
+
+describe("updateTask", () => {
+  beforeEach(async () => {
+    await harness.start(createTestPlan());
+  });
+
+  test("updates description of assigned task", async () => {
+    const patch: TaskItemPatch = { description: "Updated description" };
+    const result = await harness.updateTask(taskItemId("task-1"), patch);
+    assertOk(result);
+
+    const status = harness.status();
+    const task = status.taskBoard.items.find((i) => i.id === "task-1");
+    expect(task?.description).toBe("Updated description");
+  });
+
+  test("updates priority of assigned task", async () => {
+    const patch: TaskItemPatch = { priority: 99 };
+    const result = await harness.updateTask(taskItemId("task-1"), patch);
+    assertOk(result);
+
+    const status = harness.status();
+    const task = status.taskBoard.items.find((i) => i.id === "task-1");
+    expect(task?.priority).toBe(99);
+  });
+
+  test("persists updated snapshot", async () => {
+    const patch: TaskItemPatch = { description: "Persisted update" };
+    await harness.updateTask(taskItemId("task-2"), patch);
+
+    const headResult = await harnessStore.head(TEST_CHAIN_ID);
+    assertOk(headResult);
+    const boardItems = headResult.value?.data.taskBoard.items ?? [];
+    const task = boardItems.find((i) => i.id === "task-2");
+    expect(task?.description).toBe("Persisted update");
+  });
+
+  test("rejects for unknown task ID", async () => {
+    const patch: TaskItemPatch = { description: "Ghost" };
+    const result = await harness.updateTask(taskItemId("nonexistent"), patch);
+    assertErr(result);
+  });
+
+  test("rejects when harness is disposed", async () => {
+    await harness.dispose();
+    const patch: TaskItemPatch = { description: "After dispose" };
+    const result = await harness.updateTask(taskItemId("task-1"), patch);
+    assertErr(result);
+    expect(result.error.code).toBe("VALIDATION");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cancelTask()
+// ---------------------------------------------------------------------------
+
+describe("cancelTask", () => {
+  beforeEach(async () => {
+    await harness.start(createTestPlan());
+  });
+
+  test("cancels assigned task with failed status", async () => {
+    const result = await harness.cancelTask(taskItemId("task-1"), "No longer needed");
+    assertOk(result);
+
+    const status = harness.status();
+    const task = status.taskBoard.items.find((i) => i.id === "task-1");
+    expect(task?.status).toBe("failed");
+  });
+
+  test("persists updated snapshot after cancel", async () => {
+    await harness.cancelTask(taskItemId("task-2"), "Cancelled by test");
+
+    const headResult = await harnessStore.head(TEST_CHAIN_ID);
+    assertOk(headResult);
+    const boardItems = headResult.value?.data.taskBoard.items ?? [];
+    const task = boardItems.find((i) => i.id === "task-2");
+    expect(task?.status).toBe("failed");
+  });
+
+  test("triggers completion when cancelling last non-completed task", async () => {
+    // Complete tasks 1 and 2
+    await harness.completeTask(taskItemId("task-1"), createTaskResult("task-1"));
+    await harness.completeTask(taskItemId("task-2"), createTaskResult("task-2"));
+    expect(harness.status().phase).toBe("active");
+
+    // Cancel the remaining task — all tasks now done (completed + failed)
+    const result = await harness.cancelTask(taskItemId("task-3"), "No longer needed");
+    assertOk(result);
+    expect(harness.status().phase).toBe("completed");
+  });
+
+  test("rejects for unknown task ID", async () => {
+    const result = await harness.cancelTask(taskItemId("nonexistent"), "Nope");
+    assertErr(result);
+  });
+
+  test("rejects when harness is disposed", async () => {
+    await harness.dispose();
+    const result = await harness.cancelTask(taskItemId("task-1"), "After dispose");
+    assertErr(result);
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects in idle phase", async () => {
+    const freshHarness = createTestHarness();
+    const result = await freshHarness.cancelTask(taskItemId("task-1"), "Not started");
+    assertErr(result);
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("fires onCompleted callback when cancel causes completion", async () => {
+    let receivedStatus: import("@koi/core").HarnessStatus | undefined;
+    const testHarness = createTestHarness({
+      onCompleted: (status) => {
+        receivedStatus = status;
+      },
+    });
+    await testHarness.start(createTestPlan(1));
+
+    // Cancel the only task — should trigger completion
+    await testHarness.cancelTask(taskItemId("task-1"), "Cancelled");
+    expect(receivedStatus).toBeDefined();
+    expect(receivedStatus?.phase).toBe("completed");
   });
 });

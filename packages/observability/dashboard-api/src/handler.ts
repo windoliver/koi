@@ -21,6 +21,8 @@ import { createRouter, errorResponse } from "./router.js";
 import { handleGetAgent, handleListAgents, handleTerminateAgent } from "./routes/agents.js";
 import { handleChannels } from "./routes/channels.js";
 import {
+  handleAddTask,
+  handleCancelTask,
   handleDemoteBrick,
   handleDispatchAgent,
   handleListMailbox,
@@ -31,6 +33,7 @@ import {
   handleReviewGovernance,
   handleSuspendAgent,
   handleTerminateAgentCmd,
+  handleUpdateTask,
 } from "./routes/commands.js";
 import {
   handleApproveDataSource,
@@ -535,6 +538,22 @@ export function createDashboardHandler(
         method: "POST",
         pattern: "/cmd/forge/bricks/:id/quarantine",
         handler: (req, params) => handleQuarantineBrick(req, params, commands),
+      },
+      // Task board mutations
+      {
+        method: "POST",
+        pattern: "/cmd/tasks/add",
+        handler: (req, params) => handleAddTask(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/tasks/:id/update",
+        handler: (req, params) => handleUpdateTask(req, params, commands),
+      },
+      {
+        method: "POST",
+        pattern: "/cmd/tasks/:id/cancel",
+        handler: (req, params) => handleCancelTask(req, params, commands),
       },
       // Delegation, handoff, scratchpad, governance views (read-only through commands)
       {

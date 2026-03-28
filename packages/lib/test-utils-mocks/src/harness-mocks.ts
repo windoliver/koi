@@ -16,6 +16,8 @@ import type {
   Result,
   TaskBoardSnapshot,
   TaskItemId,
+  TaskItemInput,
+  TaskItemPatch,
   TaskResult,
 } from "@koi/core";
 import { harnessId, taskItemId } from "@koi/core";
@@ -38,6 +40,12 @@ interface MockLongRunningHarness {
     taskId: TaskItemId,
     result: TaskResult,
   ) => Promise<Result<void, KoiError>>;
+  readonly addTask: (item: TaskItemInput) => Promise<Result<void, KoiError>>;
+  readonly updateTask: (
+    taskId: TaskItemId,
+    patch: TaskItemPatch,
+  ) => Promise<Result<void, KoiError>>;
+  readonly cancelTask: (taskId: TaskItemId, reason: string) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
   readonly createMiddleware: () => KoiMiddleware;
   readonly dispose: () => Promise<void>;
@@ -108,6 +116,15 @@ export function createMockHarness(
       return { ok: true, value: undefined };
     },
     async completeTask(_taskId: TaskItemId, _result: TaskResult) {
+      return { ok: true, value: undefined };
+    },
+    async addTask(_item: TaskItemInput) {
+      return { ok: true, value: undefined };
+    },
+    async updateTask(_taskId: TaskItemId, _patch: TaskItemPatch) {
+      return { ok: true, value: undefined };
+    },
+    async cancelTask(_taskId: TaskItemId, _reason: string) {
       return { ok: true, value: undefined };
     },
     status() {

@@ -25,9 +25,12 @@ import type {
   Result,
   SessionContext,
   SessionRecord,
+  TaskBoard,
   TaskBoardSnapshot,
   TaskItem,
   TaskItemId,
+  TaskItemInput,
+  TaskItemPatch,
   TaskResult,
   ToolHandler,
   ToolRequest,
@@ -35,6 +38,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { chainId, sessionId as createSessionId, validation } from "@koi/core";
+import { createTaskBoard } from "@koi/task-board";
 import { estimateTokens } from "@koi/token-estimator";
 import { shouldSoftCheckpoint } from "./checkpoint-policy.js";
 import { buildInitialPrompt, buildResumeContext } from "./context-bridge.js";
@@ -596,6 +600,88 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
   };
 
   // -------------------------------------------------------------------------
+  // Board mutations (add / update / cancel)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Apply an immutable board mutation, persist the updated snapshot,
+   * and check for completion. Shared by addTask, updateTask, cancelTask.
+   */
+  async function applyBoardMutation(
+    mutate: (board: TaskBoard) => Result<TaskBoard, KoiError>,
+  ): Promise<Result<void, KoiError>> {
+    const dg = guardDisposed();
+    if (!dg.ok) return dg;
+    const pg = guardPhase("active", "suspended");
+    if (!pg.ok) return pg;
+
+    if (currentSnapshot === undefined) {
+      return { ok: false, error: validation("No active snapshot") };
+    }
+
+    const board = createTaskBoard(undefined, currentSnapshot.taskBoard);
+    const mutResult = mutate(board);
+    if (!mutResult.ok) return mutResult;
+
+    const mutated = mutResult.value;
+    const updatedBoard: TaskBoardSnapshot = {
+      items: mutated.all(),
+      results: mutated.completed(),
+    };
+
+    const updatedMetrics: HarnessMetrics = {
+      ...currentSnapshot.metrics,
+      completedTaskCount: countByStatus(updatedBoard, "completed"),
+      pendingTaskCount: countByStatus(updatedBoard, "pending"),
+    };
+
+    const allDone = allTasksCompleted(updatedBoard);
+    const nextPhase: HarnessPhase = allDone ? "completed" : phase;
+
+    const snapshot: HarnessSnapshot = {
+      ...currentSnapshot,
+      phase: nextPhase,
+      taskBoard: updatedBoard,
+      metrics: updatedMetrics,
+      checkpointedAt: Date.now(),
+    };
+
+    const persistResult = await persistSnapshot(snapshot);
+    if (!persistResult.ok) return persistResult;
+
+    if (allDone) {
+      const transResult = await registryTransition("terminated", { kind: "completed" });
+      if (!transResult.ok) return transResult;
+      phase = "completed";
+
+      if (onCompleted !== undefined) {
+        try {
+          await onCompleted(status());
+        } catch (e: unknown) {
+          console.warn(
+            `[long-running] onCompleted callback failed for harness ${harnessId}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    }
+
+    return { ok: true, value: undefined };
+  }
+
+  const addTask = async (item: TaskItemInput): Promise<Result<void, KoiError>> =>
+    applyBoardMutation((board) => board.add(item));
+
+  const updateTask = async (
+    taskId: TaskItemId,
+    patch: TaskItemPatch,
+  ): Promise<Result<void, KoiError>> => applyBoardMutation((board) => board.update(taskId, patch));
+
+  const cancelTask = async (taskId: TaskItemId, reason: string): Promise<Result<void, KoiError>> =>
+    applyBoardMutation((board) =>
+      board.fail(taskId, { code: "CONFLICT", message: `Cancelled: ${reason}`, retryable: false }),
+    );
+
+  // -------------------------------------------------------------------------
   // fail()
   // -------------------------------------------------------------------------
 
@@ -758,6 +844,9 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     pause,
     fail,
     completeTask,
+    addTask,
+    updateTask,
+    cancelTask,
     status,
     createMiddleware,
     dispose,

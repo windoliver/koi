@@ -225,17 +225,20 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
             `[autonomous] task_complete: ${tid} — ${String(remaining)} remaining\n`,
           );
         },
-        updateTask: async () => {
-          // Harness has no updateDescription method — no-op
+        updateTask: async (tid: TaskItemId, description: string) => {
+          const result = await parts.harness.updateTask(tid, { description });
+          if (!result.ok) {
+            throw new Error(`updateTask failed: ${result.error.message}`);
+          }
+        },
+        failTask: async (tid: TaskItemId, message: string) => {
+          const result = await parts.harness.cancelTask(tid, message);
+          if (!result.ok) return undefined;
+          return parts.harness.status().taskBoard;
         },
       });
-      // Only register task_complete and task_status — the essential two.
-      // task_update, task_review, task_synthesize can be added later if needed.
-      const tools = allTools.filter(
-        (t) => t.descriptor.name === "task_complete" || t.descriptor.name === "task_status",
-      );
       const components = new Map<string, unknown>();
-      for (const tool of tools) {
+      for (const tool of allTools) {
         components.set(`tool:${tool.descriptor.name}`, tool);
       }
       return { components, skipped: [] };

@@ -7,6 +7,8 @@ import type { KoiError, KoiErrorCode, Result } from "@koi/core";
 import { agentId } from "@koi/core";
 import type { CommandDispatcher, DispatchAgentResponse } from "@koi/dashboard-types";
 import {
+  handleAddTask,
+  handleCancelTask,
   handleDemoteBrick,
   handleDispatchAgent,
   handleListMailbox,
@@ -16,6 +18,7 @@ import {
   handleRetryDeadLetter,
   handleSuspendAgent,
   handleTerminateAgentCmd,
+  handleUpdateTask,
 } from "./commands.js";
 
 function ok(): Result<void, KoiError> {
@@ -405,6 +408,122 @@ describe("handleQuarantineBrick", () => {
     const res = await handleQuarantineBrick(
       makeReq("/cmd/forge/bricks/b1/quarantine"),
       { id: "b1" },
+      commands,
+    );
+    expect(res.status).toBe(501);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task board mutations (add / update / cancel)
+// ---------------------------------------------------------------------------
+
+describe("handleAddTask", () => {
+  test("returns 200 on success", async () => {
+    const commands = createMockCommands({ addTask: () => ok() });
+    const res = await handleAddTask(
+      makeJsonReq("/cmd/tasks/add", { id: "task-1", description: "Do something" }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  test("returns 400 when id is missing", async () => {
+    const commands = createMockCommands({ addTask: () => ok() });
+    const res = await handleAddTask(
+      makeJsonReq("/cmd/tasks/add", { description: "No id" }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 400 when description is missing", async () => {
+    const commands = createMockCommands({ addTask: () => ok() });
+    const res = await handleAddTask(makeJsonReq("/cmd/tasks/add", { id: "task-1" }), {}, commands);
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 501 when not implemented", async () => {
+    const commands = createMockCommands();
+    const res = await handleAddTask(
+      makeJsonReq("/cmd/tasks/add", { id: "task-1", description: "Test" }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(501);
+  });
+});
+
+describe("handleUpdateTask", () => {
+  test("returns 200 on success", async () => {
+    const commands = createMockCommands({ updateTask: () => ok() });
+    const res = await handleUpdateTask(
+      makeJsonReq("/cmd/tasks/t1/update", { description: "Updated" }),
+      { id: "t1" },
+      commands,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  test("returns 400 when id is missing", async () => {
+    const commands = createMockCommands({ updateTask: () => ok() });
+    const res = await handleUpdateTask(
+      makeJsonReq("/cmd/tasks//update", { description: "Updated" }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 501 when not implemented", async () => {
+    const commands = createMockCommands();
+    const res = await handleUpdateTask(
+      makeJsonReq("/cmd/tasks/t1/update", { description: "Updated" }),
+      { id: "t1" },
+      commands,
+    );
+    expect(res.status).toBe(501);
+  });
+});
+
+describe("handleCancelTask", () => {
+  test("returns 200 on success", async () => {
+    const commands = createMockCommands({ cancelTask: () => ok() });
+    const res = await handleCancelTask(
+      makeJsonReq("/cmd/tasks/t1/cancel", { reason: "Prod freeze" }),
+      { id: "t1" },
+      commands,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  test("returns 400 when id is missing", async () => {
+    const commands = createMockCommands({ cancelTask: () => ok() });
+    const res = await handleCancelTask(
+      makeJsonReq("/cmd/tasks//cancel", { reason: "Prod freeze" }),
+      {},
+      commands,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 400 when reason is missing", async () => {
+    const commands = createMockCommands({ cancelTask: () => ok() });
+    const res = await handleCancelTask(
+      makeJsonReq("/cmd/tasks/t1/cancel", {}),
+      { id: "t1" },
+      commands,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 501 when not implemented", async () => {
+    const commands = createMockCommands();
+    const res = await handleCancelTask(
+      makeJsonReq("/cmd/tasks/t1/cancel", { reason: "Prod freeze" }),
+      { id: "t1" },
       commands,
     );
     expect(res.status).toBe(501);

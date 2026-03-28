@@ -20,6 +20,8 @@ import type {
   SessionPersistence,
   TaskBoardSnapshot,
   TaskItemId,
+  TaskItemInput,
+  TaskItemPatch,
   TaskResult,
 } from "@koi/core";
 
@@ -85,6 +87,12 @@ export interface LongRunningHarness {
     taskId: TaskItemId,
     result: TaskResult,
   ) => Promise<Result<void, KoiError>>;
+  readonly addTask: (item: TaskItemInput) => Promise<Result<void, KoiError>>;
+  readonly updateTask: (
+    taskId: TaskItemId,
+    patch: TaskItemPatch,
+  ) => Promise<Result<void, KoiError>>;
+  readonly cancelTask: (taskId: TaskItemId, reason: string) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
   readonly createMiddleware: () => KoiMiddleware;
   readonly dispose: () => Promise<void>;

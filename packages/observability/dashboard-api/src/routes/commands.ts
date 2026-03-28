@@ -11,9 +11,13 @@
  * POST /cmd/forge/bricks/:id/promote     — promote brick
  * POST /cmd/forge/bricks/:id/demote      — demote brick
  * POST /cmd/forge/bricks/:id/quarantine  — quarantine brick
+ * POST /cmd/tasks/add                    — add task to board
+ * POST /cmd/tasks/:id/update             — update task description/priority
+ * POST /cmd/tasks/:id/cancel             — cancel task
  */
 
-import { agentId } from "@koi/core";
+import type { TaskItemInput } from "@koi/core";
+import { agentId, taskItemId } from "@koi/core";
 import type { CommandDispatcher, DispatchAgentRequest } from "@koi/dashboard-types";
 import type { RouteParams } from "../router.js";
 import { errorResponse, jsonResponse } from "../router.js";
@@ -252,5 +256,115 @@ export async function handleQuarantineBrick(
     return errorResponse("NOT_IMPLEMENTED", "Brick quarantine not supported", 501);
   }
   const result = await commands.quarantineBrick(id);
+  return handleCommandResult(result);
+}
+
+// ---------------------------------------------------------------------------
+// Task board mutations
+// ---------------------------------------------------------------------------
+
+export async function handleAddTask(
+  req: Request,
+  _params: RouteParams,
+  commands: CommandDispatcher,
+): Promise<Response> {
+  if (commands.addTask === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Task addition not supported", 501);
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return errorResponse("VALIDATION", "Invalid JSON body", 400);
+  }
+
+  if (typeof body !== "object" || body === null) {
+    return errorResponse("VALIDATION", "Request body must be an object", 400);
+  }
+
+  const { id, description, dependencies, priority } = body as Record<string, unknown>;
+  if (typeof id !== "string" || id.trim().length === 0) {
+    return errorResponse("VALIDATION", "id is required", 400);
+  }
+  if (typeof description !== "string" || description.trim().length === 0) {
+    return errorResponse("VALIDATION", "description is required", 400);
+  }
+
+  const item: TaskItemInput = {
+    id: taskItemId(id.trim()),
+    description: description.trim(),
+    ...(Array.isArray(dependencies)
+      ? { dependencies: dependencies.map((d: unknown) => taskItemId(String(d))) }
+      : {}),
+    ...(typeof priority === "number" ? { priority } : {}),
+  };
+
+  const result = await commands.addTask(item);
+  return handleCommandResult(result);
+}
+
+export async function handleUpdateTask(
+  req: Request,
+  params: RouteParams,
+  commands: CommandDispatcher,
+): Promise<Response> {
+  const id = params.id;
+  if (id === undefined) {
+    return errorResponse("VALIDATION", "Missing task ID", 400);
+  }
+  if (commands.updateTask === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Task update not supported", 501);
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return errorResponse("VALIDATION", "Invalid JSON body", 400);
+  }
+
+  if (typeof body !== "object" || body === null) {
+    return errorResponse("VALIDATION", "Request body must be an object", 400);
+  }
+
+  const { description, priority } = body as Record<string, unknown>;
+  const result = await commands.updateTask(taskItemId(id), {
+    ...(typeof description === "string" ? { description } : {}),
+    ...(typeof priority === "number" ? { priority } : {}),
+  });
+  return handleCommandResult(result);
+}
+
+export async function handleCancelTask(
+  req: Request,
+  params: RouteParams,
+  commands: CommandDispatcher,
+): Promise<Response> {
+  const id = params.id;
+  if (id === undefined) {
+    return errorResponse("VALIDATION", "Missing task ID", 400);
+  }
+  if (commands.cancelTask === undefined) {
+    return errorResponse("NOT_IMPLEMENTED", "Task cancellation not supported", 501);
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return errorResponse("VALIDATION", "Invalid JSON body", 400);
+  }
+
+  if (typeof body !== "object" || body === null) {
+    return errorResponse("VALIDATION", "Request body must be an object", 400);
+  }
+
+  const { reason } = body as Record<string, unknown>;
+  if (typeof reason !== "string" || reason.trim().length === 0) {
+    return errorResponse("VALIDATION", "reason is required", 400);
+  }
+
+  const result = await commands.cancelTask(taskItemId(id), reason.trim());
   return handleCommandResult(result);
 }

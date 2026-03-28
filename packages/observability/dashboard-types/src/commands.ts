@@ -5,7 +5,14 @@
  * All methods return Result<T, KoiError> for expected failures.
  */
 
-import type { AgentId, KoiError, Result } from "@koi/core";
+import type {
+  AgentId,
+  KoiError,
+  Result,
+  TaskItemId,
+  TaskItemInput,
+  TaskItemPatch,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Agent message (mailbox)
@@ -148,6 +155,21 @@ export interface CommandDispatcher {
 
   readonly quarantineBrick?: (
     brickId: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  // Task board mutations
+  readonly addTask?: (
+    item: TaskItemInput,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  readonly updateTask?: (
+    taskId: TaskItemId,
+    patch: TaskItemPatch,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  readonly cancelTask?: (
+    taskId: TaskItemId,
+    reason: string,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
 }
 
