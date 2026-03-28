@@ -1,2 +1,0 @@
-{"kind":"user","text":"[user]: Use forge_tool to create another tool called my_greeter. Description: Greets a user v2. Implementation: return { greeting: Hi + input.name }; Input schema: { type: \"object\", properties: { name: { type: \"string\" } }, required: [\"name\"] }","timestamp":1774644258371}
-{"kind":"assistant","text":"","timestamp":1774644258371}
