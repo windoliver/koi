@@ -153,6 +153,22 @@ describe("matchesBrickQuery", () => {
     expect(matchesBrickQuery(brick, query)).toBe(true);
   });
 
+  // --- name matching (exact, case-insensitive) ---
+
+  test("filters by name (exact case-insensitive match)", () => {
+    const brick = createBrickBase({ name: "pioneer-api-fetch" });
+    expect(matchesBrickQuery(brick, { name: "pioneer-api-fetch" })).toBe(true);
+    expect(matchesBrickQuery(brick, { name: "Pioneer-API-Fetch" })).toBe(true);
+    expect(matchesBrickQuery(brick, { name: "pioneer-api" })).toBe(false);
+    expect(matchesBrickQuery(brick, { name: "other-tool" })).toBe(false);
+  });
+
+  test("name filter combines with lifecycle filter", () => {
+    const brick = createBrickBase({ name: "pioneer-exec", lifecycle: "active" });
+    expect(matchesBrickQuery(brick, { name: "pioneer-exec", lifecycle: "active" })).toBe(true);
+    expect(matchesBrickQuery(brick, { name: "pioneer-exec", lifecycle: "deprecated" })).toBe(false);
+  });
+
   // --- triggerText matching ---
 
   test("filters by triggerText (case-insensitive substring on trigger array)", () => {
