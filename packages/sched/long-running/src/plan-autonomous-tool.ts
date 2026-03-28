@@ -183,11 +183,18 @@ function validateTasks(raw: unknown): TaskValidationResult {
     }
     seenIds.add(item.id);
 
-    const deps = Array.isArray(item.dependencies)
+    const rawDeps = Array.isArray(item.dependencies)
       ? (item.dependencies as readonly unknown[])
-          .filter((d): d is string => typeof d === "string")
-          .map(taskItemId)
       : [];
+    for (let di = 0; di < rawDeps.length; di++) {
+      if (typeof rawDeps[di] !== "string") {
+        return {
+          ok: false,
+          error: `Task "${item.id}" has non-string dependency at index ${String(di)}: expected string.`,
+        };
+      }
+    }
+    const deps = rawDeps.map((d) => taskItemId(d as string));
     const delegation = item.delegation === "spawn" ? "spawn" : "self";
     const agentType = typeof item.agentType === "string" ? item.agentType : undefined;
     parsed.push({

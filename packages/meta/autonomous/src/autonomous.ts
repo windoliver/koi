@@ -410,7 +410,24 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
           // Cascade: dispatch newly-unblocked spawn tasks after a self-delegated
           // task completes (e.g., task B depends on task A, A just finished).
           if (bridge !== undefined) {
-            await dispatchSpawnTasks(bridge, board, parts.harness, notifyTask, logger);
+            const bridgeBoard = await dispatchSpawnTasks(
+              bridge,
+              board,
+              parts.harness,
+              notifyTask,
+              logger,
+            );
+
+            // Reconcile second-wave dispatch — same drift can occur here as
+            // in the initial dispatch (assignTask/completeTask harness failures).
+            if (bridgeBoard !== undefined) {
+              const reconcileResult = await reconcileTaskBoard(bridgeBoard, parts.harness, logger);
+              if (reconcileResult.fixed > 0) {
+                logger.warn(
+                  `reconciled ${String(reconcileResult.fixed)} cascade task(s): ${reconcileResult.details.join(", ")}`,
+                );
+              }
+            }
           }
         },
         updateTask: async () => {
