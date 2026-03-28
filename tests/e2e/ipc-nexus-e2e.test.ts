@@ -35,8 +35,8 @@ import { createNexusMailbox } from "@koi/ipc-nexus";
 // ---------------------------------------------------------------------------
 
 interface NexusSendRequest {
-  readonly from: string;
-  readonly to: string;
+  readonly sender: string;
+  readonly recipient: string;
   readonly kind: string;
   readonly correlationId?: string | undefined;
   readonly ttlSeconds?: number | undefined;
@@ -95,8 +95,8 @@ function createMockNexusServer(): void {
 
         const envelope: NexusMessageEnvelope = {
           id: crypto.randomUUID(),
-          from: body.from,
-          to: body.to,
+          sender: body.sender,
+          recipient: body.recipient,
           kind: body.kind,
           type: body.type,
           payload: body.payload,
@@ -107,8 +107,8 @@ function createMockNexusServer(): void {
         };
 
         // Store in recipient's inbox (immutable — replace array)
-        const existing = inboxStore.get(body.to) ?? [];
-        inboxStore.set(body.to, [...existing, envelope]);
+        const existing = inboxStore.get(body.recipient) ?? [];
+        inboxStore.set(body.recipient, [...existing, envelope]);
 
         return new Response(JSON.stringify(envelope), {
           status: 200,
