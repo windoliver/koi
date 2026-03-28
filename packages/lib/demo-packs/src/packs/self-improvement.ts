@@ -28,17 +28,204 @@ const FORGE_EVENTS: readonly {
       timestamp: Date.now() - 3_600_000,
     },
   },
+  // Fitness history for search-refine: rising trend (will show teal sparkline)
   {
-    key: "fitness_flushed/tool-search-refine",
+    key: "fitness/search-refine/1",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-search-refine-001",
+      successRate: 0.55,
+      sampleCount: 5,
+      timestamp: Date.now() - 3_000_000,
+    },
+  },
+  {
+    key: "fitness/search-refine/2",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-search-refine-001",
+      successRate: 0.65,
+      sampleCount: 10,
+      timestamp: Date.now() - 2_400_000,
+    },
+  },
+  {
+    key: "fitness/search-refine/3",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-search-refine-001",
+      successRate: 0.75,
+      sampleCount: 15,
+      timestamp: Date.now() - 1_800_000,
+    },
+  },
+  {
+    key: "fitness/search-refine/4",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-search-refine-001",
+      successRate: 0.82,
+      sampleCount: 20,
+      timestamp: Date.now() - 1_200_000,
+    },
+  },
+  {
+    key: "fitness/search-refine/5",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-search-refine-001",
+      successRate: 0.88,
+      sampleCount: 22,
+      timestamp: Date.now() - 600_000,
+    },
+  },
+  {
+    key: "fitness/search-refine/6",
     value: {
       kind: "forge",
       subKind: "fitness_flushed",
       brickId: "brick-search-refine-001",
       successRate: 0.92,
       sampleCount: 25,
+      timestamp: Date.now() - 300_000,
+    },
+  },
+  // Brick forged for code-explain
+  {
+    key: "brick_forged/tool-code-explain",
+    value: {
+      kind: "forge",
+      subKind: "brick_forged",
+      brickId: "brick-code-explain-002",
+      name: "code-explain",
+      origin: "crystallize",
+      ngramKey: "read>parse>explain",
+      occurrences: 9,
+      score: 0.91,
+      timestamp: Date.now() - 7_200_000,
+    },
+  },
+  // Fitness history for code-explain: stable high (flat, dim sparkline)
+  {
+    key: "fitness/code-explain/1",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-code-explain-002",
+      successRate: 0.9,
+      sampleCount: 20,
+      timestamp: Date.now() - 5_400_000,
+    },
+  },
+  {
+    key: "fitness/code-explain/2",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-code-explain-002",
+      successRate: 0.93,
+      sampleCount: 30,
+      timestamp: Date.now() - 3_600_000,
+    },
+  },
+  {
+    key: "fitness/code-explain/3",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-code-explain-002",
+      successRate: 0.94,
+      sampleCount: 40,
       timestamp: Date.now() - 1_800_000,
     },
   },
+  {
+    key: "fitness/code-explain/4",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-code-explain-002",
+      successRate: 0.95,
+      sampleCount: 48,
+      timestamp: Date.now() - 600_000,
+    },
+  },
+  // Brick forged for data-validate (demand-driven)
+  {
+    key: "brick_demand_forged/data-validate",
+    value: {
+      kind: "forge",
+      subKind: "brick_demand_forged",
+      brickId: "brick-data-validate-003",
+      name: "data-validate",
+      triggerId: "trigger-validate-001",
+      triggerKind: "repeated_failure",
+      confidence: 0.72,
+      timestamp: Date.now() - 10_800_000,
+    },
+  },
+  // Fitness history for data-validate: declining trend (will show yellow sparkline)
+  {
+    key: "fitness/data-validate/1",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-data-validate-003",
+      successRate: 0.7,
+      sampleCount: 5,
+      timestamp: Date.now() - 7_200_000,
+    },
+  },
+  {
+    key: "fitness/data-validate/2",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-data-validate-003",
+      successRate: 0.55,
+      sampleCount: 8,
+      timestamp: Date.now() - 5_400_000,
+    },
+  },
+  {
+    key: "fitness/data-validate/3",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-data-validate-003",
+      successRate: 0.42,
+      sampleCount: 10,
+      timestamp: Date.now() - 3_600_000,
+    },
+  },
+  {
+    key: "fitness/data-validate/4",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-data-validate-003",
+      successRate: 0.35,
+      sampleCount: 13,
+      timestamp: Date.now() - 1_800_000,
+    },
+  },
+  {
+    key: "fitness/data-validate/5",
+    value: {
+      kind: "forge",
+      subKind: "fitness_flushed",
+      brickId: "brick-data-validate-003",
+      successRate: 0.31,
+      sampleCount: 15,
+      timestamp: Date.now() - 600_000,
+    },
+  },
+  // Demand and crystallize events
   {
     key: "demand_detected/capability-gap-summarize",
     value: {
@@ -52,6 +239,18 @@ const FORGE_EVENTS: readonly {
     },
   },
   {
+    key: "demand_detected/tool-missing-yaml",
+    value: {
+      kind: "forge",
+      subKind: "demand_detected",
+      signalId: "sig-yaml-001",
+      triggerKind: "tool_missing",
+      confidence: 0.85,
+      suggestedBrickKind: "tool",
+      timestamp: Date.now() - 5_400_000,
+    },
+  },
+  {
     key: "crystallize_candidate/summarize-chain",
     value: {
       kind: "forge",
@@ -61,6 +260,29 @@ const FORGE_EVENTS: readonly {
       suggestedName: "summarize-chain",
       score: 0.74,
       timestamp: Date.now() - 900_000,
+    },
+  },
+  // Promotion event for code-explain
+  {
+    key: "brick_promoted/code-explain",
+    value: {
+      kind: "forge",
+      subKind: "brick_promoted",
+      brickId: "brick-code-explain-002",
+      fitnessOriginal: 0.95,
+      timestamp: Date.now() - 300_000,
+    },
+  },
+  // Deprecation event for data-validate
+  {
+    key: "brick_deprecated/data-validate",
+    value: {
+      kind: "forge",
+      subKind: "brick_deprecated",
+      brickId: "brick-data-validate-003",
+      reason: "sustained error rate above threshold",
+      fitnessOriginal: 0.31,
+      timestamp: Date.now() - 120_000,
     },
   },
 ];

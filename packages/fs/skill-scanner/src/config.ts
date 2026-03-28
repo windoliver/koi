@@ -20,6 +20,7 @@ const DEFAULT_CONFIG: Required<ScannerConfig> = {
   severityThreshold: "LOW",
   confidenceThreshold: 0.0,
   trustedDomains: [],
+  onFilteredFinding: undefined,
 };
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,7 @@ export function resolveConfig(config?: ScannerConfig): Required<ScannerConfig> {
     severityThreshold: config.severityThreshold ?? DEFAULT_CONFIG.severityThreshold,
     confidenceThreshold: config.confidenceThreshold ?? DEFAULT_CONFIG.confidenceThreshold,
     trustedDomains: config.trustedDomains ?? DEFAULT_CONFIG.trustedDomains,
+    onFilteredFinding: config.onFilteredFinding ?? DEFAULT_CONFIG.onFilteredFinding,
   };
 }
 

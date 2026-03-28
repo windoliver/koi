@@ -6,9 +6,12 @@
  */
 
 export {
+  EXIT_CODES,
   EXIT_CONFIG,
   EXIT_ERROR,
+  EXIT_NETWORK,
   EXIT_OK,
+  EXIT_TIMEOUT,
   EXIT_UNAVAILABLE,
   exitCodeForError,
 } from "./exit-codes.js";

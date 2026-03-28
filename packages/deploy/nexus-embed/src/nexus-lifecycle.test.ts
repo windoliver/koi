@@ -286,3 +286,92 @@ describe("readRuntimeState", () => {
     expect(result).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// nexusUp — killed container recovery (#1077)
+// ---------------------------------------------------------------------------
+
+describe("nexusUp — killed container recovery", () => {
+  test("falls back to full startup when .state.json exists but binary is unavailable", async () => {
+    // Simulate a killed container scenario: .state.json exists (from a previous
+    // successful run) but the nexus binary is unavailable. nexusUp should:
+    // 1. Detect .state.json → attempt fast resume
+    // 2. Fast resume fails (binary unavailable)
+    // 3. Run nexus down to clean up (also fails, but non-fatal)
+    // 4. Fall back to full nexus up (also fails due to binary)
+    // The key assertion: nexusUp returns a clean error, not a hang or crash.
+    const dataDir = join(tempDir, "nexus-data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(
+      join(tempDir, "nexus.yaml"),
+      `data_dir: ${dataDir}\npreset: demo\nports:\n  http: 41520\napi_key: nx_admin_test\n`,
+    );
+    writeFileSync(
+      join(dataDir, ".state.json"),
+      JSON.stringify({
+        ports: { http: 41520, grpc: 41521 },
+        api_key: "sk-test-key",
+        project_name: "nexus-abcd1234",
+      }),
+    );
+
+    const saved = process.env.NEXUS_COMMAND;
+    process.env.NEXUS_COMMAND = "/nonexistent/nexus-fake-binary";
+    try {
+      const result = await nexusUp({ cwd: tempDir });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        // Should fail cleanly with NOT_FOUND (binary unavailable),
+        // not hang or crash during the recovery sequence
+        expect(result.error.code).toBe("NOT_FOUND");
+      }
+    } finally {
+      if (saved !== undefined) {
+        process.env.NEXUS_COMMAND = saved;
+      } else {
+        delete process.env.NEXUS_COMMAND;
+      }
+    }
+  });
+
+  test("verbose mode logs cleanup message during recovery", async () => {
+    const dataDir = join(tempDir, "nexus-data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(
+      join(tempDir, "nexus.yaml"),
+      `data_dir: ${dataDir}\npreset: demo\nports:\n  http: 41520\napi_key: nx_admin_test\n`,
+    );
+    writeFileSync(
+      join(dataDir, ".state.json"),
+      JSON.stringify({
+        ports: { http: 41520, grpc: 41521 },
+        api_key: "sk-test-key",
+        project_name: "nexus-abcd1234",
+      }),
+    );
+
+    // Use /usr/bin/false so ensureBinary succeeds (binary exists) but
+    // runNexusCommand(["start"]) fails (exit code 1), triggering the
+    // fast-resume fallback path where the cleanup message is logged.
+    const saved = process.env.NEXUS_COMMAND;
+    process.env.NEXUS_COMMAND = "/usr/bin/false";
+    const stderrChunks: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrChunks.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await nexusUp({ cwd: tempDir, verbose: true });
+      const output = stderrChunks.join("");
+      expect(output).toContain("cleaning up stale containers");
+    } finally {
+      process.stderr.write = origWrite;
+      if (saved !== undefined) {
+        process.env.NEXUS_COMMAND = saved;
+      } else {
+        delete process.env.NEXUS_COMMAND;
+      }
+    }
+  });
+});

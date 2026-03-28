@@ -36,8 +36,8 @@ export function TemporalView(props: TemporalViewProps): React.ReactNode {
       focused={props.focused}
       zoomLevel={props.zoomLevel}
       isEmpty={health === null && workflows.length === 0 && events.length === 0}
-      emptyMessage="No Temporal data yet."
-      emptyHint="Temporal orchestrates long-running agent workflows."
+      emptyMessage="No workflows running."
+      emptyHint="Temporal connects automatically when needed."
     >
       {/* Health bar */}
       {health !== null && (

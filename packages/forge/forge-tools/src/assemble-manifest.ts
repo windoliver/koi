@@ -61,8 +61,10 @@ export async function assembleManifest(
     };
   }
 
-  // Load all bricks in parallel (14A)
-  const loadResults = await Promise.all(brickIds.map((id) => store.load(brickId(id))));
+  // Load all bricks in parallel (14A) — use allSettled to handle store implementations
+  // that throw instead of returning Result
+  const settled = await Promise.allSettled(brickIds.map((id) => store.load(brickId(id))));
+  const loadResults = settled.map((s) => (s.status === "fulfilled" ? s.value : undefined));
 
   // Validate all exist, collect missing IDs
   const loadedBricks: BrickArtifact[] = [];

@@ -21,6 +21,7 @@ import {
   isTaskBoardEvent,
   isTemporalEvent,
 } from "@koi/dashboard-types";
+import { computeLayoutTier } from "../theme.js";
 import {
   addGovernanceApproval,
   addGovernanceViolation,
@@ -335,6 +336,28 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "apply_forge_batch":
       return { ...state, ...applyForgeBatch(state, action.events) };
 
+    case "hydrate_forge": {
+      const bricks: Record<string, TuiBrickSummary> = {};
+      for (const brick of action.bricks) {
+        bricks[brick.brickId] = { name: brick.name, status: brick.status, fitness: brick.fitness };
+      }
+      const events =
+        action.events.length > MAX_FORGE_EVENTS
+          ? action.events.slice(-MAX_FORGE_EVENTS)
+          : action.events;
+      // Build sparklines from fitness_flushed events in hydrated data
+      const sparklines: Record<string, readonly number[]> = {};
+      for (const event of action.events) {
+        if (event.subKind === "fitness_flushed") {
+          const bid = (event as { readonly brickId: string }).brickId;
+          const rate = (event as { readonly successRate: number }).successRate;
+          const prev = sparklines[bid] ?? [];
+          sparklines[bid] = [...prev, rate].slice(-MAX_FORGE_SPARKLINE_POINTS);
+        }
+      }
+      return { ...state, forgeBricks: bricks, forgeEvents: events, forgeSparklines: sparklines };
+    }
+
     case "apply_monitor_event": {
       const combined = [...state.monitorEvents, action.event];
       return {
@@ -354,6 +377,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       const nextZoom = ZOOM_CYCLE[nextIdx];
       return nextZoom !== undefined ? { ...state, zoomLevel: nextZoom } : state;
     }
+
+    case "set_terminal_cols":
+      return { ...state, cols: action.cols, layoutTier: computeLayoutTier(action.cols) };
 
     case "append_pty_data": {
       const prev = state.ptyBuffers[action.agentId] ?? [];
@@ -422,10 +448,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "set_focused_pane": {
-      // Clamp to agents.length — split panes are built from the agent list,
-      // not splitSessions (which are only populated for interactive chat sessions)
-      const paneCount = Math.max(state.agents.length, Object.keys(state.splitSessions).length);
-      const maxIndex = Math.max(0, paneCount - 1);
+      // Clamp to visible pane count — respects layout tier pane cap
+      const totalPanes = Math.max(state.agents.length, Object.keys(state.splitSessions).length);
+      const maxPanes = state.layoutTier === "full" || state.layoutTier === "compact" ? 4 : 2;
+      const visiblePanes = Math.min(totalPanes, maxPanes);
+      const maxIndex = Math.max(0, visiblePanes - 1);
       return {
         ...state,
         focusedPaneIndex: Math.max(0, Math.min(action.index, maxIndex)),

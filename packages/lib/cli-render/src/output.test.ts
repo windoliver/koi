@@ -8,8 +8,8 @@ function createTestOutput(options?: {
   readonly logFormat?: "text" | "json";
 }) {
   const stream = new PassThrough();
-  const chunks: Buffer[] = [];
-  stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const chunks: Uint8Array[] = [];
+  stream.on("data", (chunk: Uint8Array) => chunks.push(chunk));
 
   const output = createCliOutput({
     stream,

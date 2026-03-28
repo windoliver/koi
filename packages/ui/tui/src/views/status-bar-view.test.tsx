@@ -99,4 +99,60 @@ describe("StatusBarView", () => {
     const frame = captureCharFrame();
     expect(frame).toContain("navigate");
   });
+
+  test("hides capability dots at compact width", async () => {
+    const store = makeStore();
+    const state = {
+      ...store.getState(),
+      layoutTier: "narrow" as const,
+      cols: 80,
+      capabilities: {
+        nexus: true,
+        temporal: false,
+        scheduler: false,
+        gateway: true,
+        harness: false,
+        taskboard: false,
+        forge: false,
+        governance: false,
+      },
+    };
+
+    const { captureCharFrame, renderOnce } = await testRender(
+      <StatusBarView state={state} />,
+      { width: 80, height: 3 },
+    );
+
+    await renderOnce();
+    const frame = captureCharFrame();
+    expect(frame).not.toContain("●");
+  });
+
+  test("shows capability dots at full width", async () => {
+    const store = makeStore();
+    const state = {
+      ...store.getState(),
+      layoutTier: "full" as const,
+      cols: 120,
+      capabilities: {
+        nexus: true,
+        temporal: false,
+        scheduler: false,
+        gateway: true,
+        harness: false,
+        taskboard: false,
+        forge: false,
+        governance: false,
+      },
+    };
+
+    const { captureCharFrame, renderOnce } = await testRender(
+      <StatusBarView state={state} />,
+      { width: 120, height: 3 },
+    );
+
+    await renderOnce();
+    const frame = captureCharFrame();
+    expect(frame).toContain("●");
+  });
 });

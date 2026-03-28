@@ -36,121 +36,119 @@ interface CommandEntry {
   readonly description: string;
 }
 
+/**
+ * Factory for lazy-loaded command entries. Dynamic-imports the module on first
+ * invocation, extracts the named export, and forwards the narrowed flags.
+ */
+function defineLazyCommand<
+  TModule extends Record<string, unknown>,
+  TKey extends string & keyof TModule,
+>(
+  match: (flags: CliFlags) => boolean,
+  loader: () => Promise<TModule>,
+  exportName: TKey,
+  description: string,
+): CommandEntry {
+  return {
+    match,
+    run: async (f) => {
+      const mod = await loader();
+      const runner = mod[exportName] as (flags: CliFlags) => Promise<void>;
+      return runner(f);
+    },
+    description,
+  };
+}
+
 const COMMANDS: readonly CommandEntry[] = [
   {
     match: isInitFlags,
     run: (f) => runInit(f as Parameters<typeof runInit>[0]),
     description: "koi init [directory]   Create a new agent",
   },
-  {
-    match: isUpFlags,
-    run: async (f) => {
-      const { runUp } = await import("./commands/up.js");
-      return runUp(f as Parameters<typeof runUp>[0]);
-    },
-    description: "koi up [manifest]      Start everything (runtime + admin + TUI)",
-  },
+  defineLazyCommand(
+    isUpFlags,
+    () => import("./commands/up.js"),
+    "runUp",
+    "koi up [manifest]      Start everything (runtime + admin + TUI)",
+  ),
   {
     match: isStartFlags,
     run: (f) => runStart(f as Parameters<typeof runStart>[0]),
     description: "koi start [manifest]   Start an agent interactively",
   },
-  {
-    match: isServeFlags,
-    run: async (f) => {
-      const { runServe } = await import("./commands/serve.js");
-      return runServe(f as Parameters<typeof runServe>[0]);
-    },
-    description: "koi serve [manifest]   Run agent headless (for services)",
-  },
-  {
-    match: isAdminFlags,
-    run: async (f) => {
-      const { runAdmin } = await import("./commands/admin.js");
-      return runAdmin(f as Parameters<typeof runAdmin>[0]);
-    },
-    description: "koi admin [manifest]   Standalone admin panel server",
-  },
-  {
-    match: isDemoFlags,
-    run: async (f) => {
-      const { runDemo } = await import("./commands/demo.js");
-      return runDemo(f as Parameters<typeof runDemo>[0]);
-    },
-    description: "koi demo <init|list|reset> [pack]  Manage demo data",
-  },
-  {
-    match: isSessionsFlags,
-    run: async (f) => {
-      const { runSessions } = await import("./commands/sessions.js");
-      return runSessions(f as Parameters<typeof runSessions>[0]);
-    },
-    description: "koi sessions [list]    List chat sessions",
-  },
-  {
-    match: isForgeFlags,
-    run: async (f) => {
-      const { runForge } = await import("./commands/forge.js");
-      return runForge(f as Parameters<typeof runForge>[0]);
-    },
-    description: "koi forge <cmd>        Manage community bricks",
-  },
-  {
-    match: isDeployFlags,
-    run: async (f) => {
-      const { runDeploy } = await import("./commands/deploy.js");
-      return runDeploy(f as Parameters<typeof runDeploy>[0]);
-    },
-    description: "koi deploy [manifest]  Install/uninstall OS service",
-  },
-  {
-    match: isStatusFlags,
-    run: async (f) => {
-      const { runStatus } = await import("./commands/status.js");
-      return runStatus(f as Parameters<typeof runStatus>[0]);
-    },
-    description: "koi status [manifest]  Check service status",
-  },
-  {
-    match: isStopFlags,
-    run: async (f) => {
-      const { runStop } = await import("./commands/stop.js");
-      return runStop(f as Parameters<typeof runStop>[0]);
-    },
-    description: "koi stop [manifest]    Stop the service",
-  },
-  {
-    match: isLogsFlags,
-    run: async (f) => {
-      const { runLogs } = await import("./commands/logs.js");
-      return runLogs(f as Parameters<typeof runLogs>[0]);
-    },
-    description: "koi logs [manifest]    View service logs",
-  },
-  {
-    match: isDoctorFlags,
-    run: async (f) => {
-      const { runDoctor } = await import("./commands/doctor.js");
-      return runDoctor(f as Parameters<typeof runDoctor>[0]);
-    },
-    description: "koi doctor [manifest]  Diagnose service health",
-  },
-  {
-    match: isReplayFlags,
-    run: async (f) => {
-      const { runReplay } = await import("./commands/replay.js");
-      return runReplay(f as Parameters<typeof runReplay>[0]);
-    },
-    description: "koi replay             Replay agent state at a specific turn",
-  },
-  {
-    match: isTuiFlags,
-    run: async (f) => {
-      const { runTui } = await import("./commands/tui.js");
-      return runTui(f as Parameters<typeof runTui>[0]);
-    },
-    description: "koi tui                Interactive terminal console",
-  },
+  defineLazyCommand(
+    isServeFlags,
+    () => import("./commands/serve.js"),
+    "runServe",
+    "koi serve [manifest]   Run agent headless (for services)",
+  ),
+  defineLazyCommand(
+    isAdminFlags,
+    () => import("./commands/admin.js"),
+    "runAdmin",
+    "koi admin [manifest]   Standalone admin panel server",
+  ),
+  defineLazyCommand(
+    isDemoFlags,
+    () => import("./commands/demo.js"),
+    "runDemo",
+    "koi demo <init|list|reset> [pack]  Manage demo data",
+  ),
+  defineLazyCommand(
+    isSessionsFlags,
+    () => import("./commands/sessions.js"),
+    "runSessions",
+    "koi sessions [list]    List chat sessions",
+  ),
+  defineLazyCommand(
+    isForgeFlags,
+    () => import("./commands/forge.js"),
+    "runForge",
+    "koi forge <cmd>        Manage community bricks",
+  ),
+  defineLazyCommand(
+    isDeployFlags,
+    () => import("./commands/deploy.js"),
+    "runDeploy",
+    "koi deploy [manifest]  Install/uninstall OS service",
+  ),
+  defineLazyCommand(
+    isStatusFlags,
+    () => import("./commands/status.js"),
+    "runStatus",
+    "koi status [manifest]  Check service status",
+  ),
+  defineLazyCommand(
+    isStopFlags,
+    () => import("./commands/stop.js"),
+    "runStop",
+    "koi stop [manifest]    Stop the service",
+  ),
+  defineLazyCommand(
+    isLogsFlags,
+    () => import("./commands/logs.js"),
+    "runLogs",
+    "koi logs [manifest]    View service logs",
+  ),
+  defineLazyCommand(
+    isDoctorFlags,
+    () => import("./commands/doctor.js"),
+    "runDoctor",
+    "koi doctor [manifest]  Diagnose service health",
+  ),
+  defineLazyCommand(
+    isReplayFlags,
+    () => import("./commands/replay.js"),
+    "runReplay",
+    "koi replay             Replay agent state at a specific turn",
+  ),
+  defineLazyCommand(
+    isTuiFlags,
+    () => import("./commands/tui.js"),
+    "runTui",
+    "koi tui                Interactive terminal console",
+  ),
 ];
 
 // ---------------------------------------------------------------------------

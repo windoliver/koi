@@ -283,7 +283,7 @@ export function collectDescendants(pid: number): readonly number[] {
       });
       const stdout =
         result.stdout instanceof Uint8Array
-          ? new TextDecoder().decode(result.stdout)
+          ? new TextDecoder().decode(new Uint8Array(result.stdout))
           : typeof result.stdout === "string"
             ? result.stdout
             : "";

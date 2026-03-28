@@ -1,12 +1,16 @@
 import { describe, expect, it } from "bun:test";
 import type { DoctorConfig } from "./doctor.js";
-import { runDiagnostics } from "./doctor.js";
+import { CHECK_IDS, runDiagnostics } from "./doctor.js";
 
 const BASE_CONFIG: DoctorConfig = {
   agentName: "test-agent",
   system: false,
   port: 19876, // high port unlikely to be in use
 };
+
+// ---------------------------------------------------------------------------
+// runDiagnostics
+// ---------------------------------------------------------------------------
 
 describe("runDiagnostics", () => {
   it("returns a diagnostic report with expected shape", async () => {
@@ -24,7 +28,7 @@ describe("runDiagnostics", () => {
 
   it("always includes bun runtime check", async () => {
     const report = await runDiagnostics(BASE_CONFIG);
-    const bunCheck = report.checks.find((c) => c.name === "Bun runtime");
+    const bunCheck = report.checks.find((c) => c.id === CHECK_IDS.BUN_RUNTIME);
     expect(bunCheck).toBeDefined();
     // Bun is available since we're running in bun:test
     expect(bunCheck?.status).toBe("pass");
@@ -32,7 +36,7 @@ describe("runDiagnostics", () => {
 
   it("reports service file as fail when not installed", async () => {
     const report = await runDiagnostics(BASE_CONFIG);
-    const fileCheck = report.checks.find((c) => c.name === "Service file");
+    const fileCheck = report.checks.find((c) => c.id === CHECK_IDS.SERVICE_FILE);
     expect(fileCheck).toBeDefined();
     // Service is not installed, so should fail
     expect(fileCheck?.status).toBe("fail");
@@ -41,15 +45,17 @@ describe("runDiagnostics", () => {
 
   it("reports health endpoint as fail when service is not running", async () => {
     const report = await runDiagnostics(BASE_CONFIG);
-    const healthCheck = report.checks.find((c) => c.name === "Health endpoint");
+    const healthCheck = report.checks.find((c) => c.id === CHECK_IDS.HEALTH_ENDPOINT);
     expect(healthCheck).toBeDefined();
     expect(healthCheck?.status).toBe("fail");
   });
 
-  it("each check has name, status, and message", async () => {
+  it("each check has id, name, status, and message", async () => {
     const report = await runDiagnostics(BASE_CONFIG);
+    const allIds = new Set<string>(Object.values(CHECK_IDS));
 
     for (const check of report.checks) {
+      expect(allIds.has(check.id)).toBe(true);
       expect(typeof check.name).toBe("string");
       expect(check.name.length).toBeGreaterThan(0);
       expect(["pass", "warn", "fail"]).toContain(check.status);
@@ -78,5 +84,29 @@ describe("runDiagnostics", () => {
     expect(report.passing).toBe(passByCount);
     expect(report.warnings).toBe(warnByCount);
     expect(report.failures).toBe(failByCount);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CHECK_IDS
+// ---------------------------------------------------------------------------
+
+describe("CHECK_IDS", () => {
+  it("typed check IDs match between diagnostic and repair", async () => {
+    // Run a real diagnostic to get all check IDs that the system produces
+    const report = await runDiagnostics(BASE_CONFIG);
+    const reportIds = new Set(report.checks.map((c) => c.id));
+    const definedIds = new Set<string>(Object.values(CHECK_IDS));
+
+    // Every ID in the report must be a defined CHECK_ID
+    for (const id of reportIds) {
+      expect(definedIds.has(id)).toBe(true);
+    }
+  });
+
+  it("every CHECK_IDS value is a unique string", () => {
+    const values = Object.values(CHECK_IDS);
+    const unique = new Set(values);
+    expect(unique.size).toBe(values.length);
   });
 });

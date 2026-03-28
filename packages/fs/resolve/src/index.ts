@@ -13,6 +13,8 @@ export {
 } from "./descriptor-validation.js";
 // discovery
 export { discoverDescriptors } from "./discover.js";
+export type { DescriptorManifest, ManifestEntry } from "./discover-static.js";
+export { discoverDescriptorsAuto, discoverDescriptorsFromManifest } from "./discover-static.js";
 // errors
 export { aggregateErrors, formatResolutionError } from "./errors.js";
 export type { BundledAgentRegistrationResult } from "./register-bundled-agents.js";

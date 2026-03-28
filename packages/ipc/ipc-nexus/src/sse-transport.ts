@@ -91,7 +91,8 @@ export function createSseTransport(config: SseTransportConfig): SseTransport {
   async function connect(): Promise<void> {
     if (stopped) return;
 
-    abortController = new AbortController();
+    const controller = new AbortController();
+    abortController = controller;
     const headers: Record<string, string> = {
       Accept: "text/event-stream",
       "X-Agent-Id": agentId,
@@ -102,7 +103,7 @@ export function createSseTransport(config: SseTransportConfig): SseTransport {
     try {
       const response = await fetchImpl(url, {
         headers,
-        signal: abortController.signal,
+        signal: controller.signal,
       });
 
       if (!response.ok || response.body === null) {

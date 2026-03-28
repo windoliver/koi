@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { testRender } from "@opentui/react/test-utils";
 import { createInitialCostView } from "../state/domain-types.js";
 import type { CostViewState } from "../state/domain-types.js";
 import type { CostSnapshot } from "@koi/dashboard-types";
@@ -84,5 +85,52 @@ describe("CostView", () => {
     expect(state.snapshot!.cascade.tiers).toHaveLength(3);
     expect(state.snapshot!.circuitBreaker.state).toBe("CLOSED");
     expect(state.snapshot!.sessionBudget.used).toBe(0.24);
+  });
+
+  test("renders empty state message", async () => {
+    const costView = createInitialCostView();
+    const { captureCharFrame, renderOnce } = await testRender(
+      <CostView costView={costView} focused={true} zoomLevel="normal" cols={120} layoutTier="full" />,
+      { width: 120, height: 20 },
+    );
+
+    await renderOnce();
+    const frame = captureCharFrame();
+    expect(frame).toContain("No cost data yet");
+  });
+
+  test("renders agent table at full width", async () => {
+    const costView: CostViewState = {
+      scrollOffset: 0,
+      snapshot: makeCostSnapshot(),
+      loading: false,
+    };
+    const { captureCharFrame, renderOnce } = await testRender(
+      <CostView costView={costView} focused={true} zoomLevel="normal" cols={120} layoutTier="full" />,
+      { width: 120, height: 30 },
+    );
+
+    await renderOnce();
+    const frame = captureCharFrame();
+    expect(frame).toContain("daily-briefer");
+    expect(frame).toContain("code-copilot");
+    expect(frame).toContain("CASCADE BREAKDOWN");
+  });
+
+  test("renders agent table at narrow width", async () => {
+    const costView: CostViewState = {
+      scrollOffset: 0,
+      snapshot: makeCostSnapshot(),
+      loading: false,
+    };
+    const { captureCharFrame, renderOnce } = await testRender(
+      <CostView costView={costView} focused={true} zoomLevel="normal" cols={80} layoutTier="narrow" />,
+      { width: 80, height: 30 },
+    );
+
+    await renderOnce();
+    const frame = captureCharFrame();
+    expect(frame).toContain("daily-briefer");
+    expect(frame).toContain("code-copilot");
   });
 });

@@ -314,6 +314,14 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
         // Save to store — StoreChangeEvent triggers hot-attach in L1
         const brick = mapDescriptorToBrick(descriptor, now);
 
+        // Name-based dedup — skip if an active brick with the same name exists
+        const nameCheck = await config.forgeStore.search({
+          name: brick.name,
+          lifecycle: "active",
+          limit: 1,
+        });
+        if (nameCheck.ok && nameCheck.value.length > 0) continue;
+
         // Pre-save gate (e.g., mutation pressure check injected by L3)
         if (config.beforeSave !== undefined) {
           const allowed = await config.beforeSave(brick);
@@ -455,6 +463,17 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       scope: config.scope,
       provenance,
     });
+
+    // Name-based dedup — skip if an active brick with the same name exists
+    const nameCheck = await config.forgeStore.search({
+      name: brick.name,
+      lifecycle: "active",
+      limit: 1,
+    });
+    if (nameCheck.ok && nameCheck.value.length > 0) {
+      config.demandHandle?.dismiss(signal.id);
+      return;
+    }
 
     // Pre-save gate (e.g., mutation pressure check injected by L3)
     if (config.beforeSave !== undefined) {

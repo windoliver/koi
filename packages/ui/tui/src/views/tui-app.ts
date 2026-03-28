@@ -128,6 +128,16 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let reactRoot: Root | null = null;
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Throttled resize handler — fires at most once per 100ms. */
+  function handleResize(): void {
+    if (resizeTimer !== undefined) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      resizeTimer = undefined;
+      store.dispatch({ kind: "set_terminal_cols", cols: process.stdout.columns ?? 120 });
+    }, 100);
+  }
   let lastView: import("../state/types.js").TuiView = mode === "welcome" ? "welcome" : "agents";
 
   const fetchDeps = { store, client };
@@ -160,6 +170,18 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     } else {
       store.dispatch({ kind: "set_error", error: result.error });
     }
+  }
+
+  /** Fetch forge bricks + events from REST API to hydrate initial state. */
+  async function refreshForge(): Promise<void> {
+    const [bricksResult, eventsResult] = await Promise.all([
+      client.listForgeBricks(),
+      client.listForgeEvents(),
+    ]);
+    const bricks = bricksResult.ok ? bricksResult.value : [];
+    const events = eventsResult.ok ? eventsResult.value : [];
+    // Always dispatch — even empty results should clear stale state from a previous session.
+    store.dispatch({ kind: "hydrate_forge", bricks, events });
   }
 
   const dsDeps: DataSourceDeps = { store, client, addLifecycleMessage };
@@ -973,6 +995,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     });
     reactRoot = createRoot(tuiRenderer);
 
+    // Set initial terminal width and listen for resize
+    store.dispatch({ kind: "set_terminal_cols", cols: process.stdout.columns ?? 120 });
+    process.stdout.on("resize", handleResize);
+
     if (mode === "welcome") {
       if (configPresets !== undefined && configPresets.length > 0) {
         store.dispatch({ kind: "set_presets", presets: configPresets });
@@ -995,6 +1021,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
 
     await refreshAgents();
+    await refreshForge().catch(() => {});
     startEventStream();
 
     if (initialAgentId !== undefined) {
@@ -1032,6 +1059,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
 
     await refreshAgents();
+    await refreshForge().catch(() => {});
     startEventStream();
     refreshTimer = setInterval(() => {
       refreshAgents().catch(() => {});
@@ -1091,6 +1119,11 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     debouncedRefresh.cancel();
     debouncedPersist.flush();
     cancelActiveStream();
+    process.stdout.removeListener("resize", handleResize);
+    if (resizeTimer !== undefined) {
+      clearTimeout(resizeTimer);
+      resizeTimer = undefined;
+    }
     await persistCurrentSession(store, client).catch(() => {});
     stopEventStream();
     if (reactRoot !== null) {

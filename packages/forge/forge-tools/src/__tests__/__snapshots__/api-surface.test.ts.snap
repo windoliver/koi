@@ -311,6 +311,10 @@ declare function mapBrickToIndexDoc(brick: BrickArtifact): IndexDocument;
 /**
  * InMemoryForgeStore — simple Map-based store for tests and development.
  * No eviction, no persistence across restarts.
+ *
+ * Features:
+ * - Content integrity verification on load (recomputes BrickId from content)
+ * - Store-level version tracking for optimistic locking on update
  */
 
 declare function createInMemoryForgeStore(): ForgeStore;

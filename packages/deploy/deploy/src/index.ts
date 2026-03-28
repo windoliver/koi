@@ -9,13 +9,14 @@
 
 // Diagnostics
 export type {
+  CheckId,
   CheckStatus,
   DiagnosticCheck,
   DiagnosticReport,
   DoctorConfig,
   RepairResult,
 } from "./doctor.js";
-export { runDiagnostics, runRepair } from "./doctor.js";
+export { CHECK_IDS, runDiagnostics, runRepair } from "./doctor.js";
 
 // Health server
 export type { HealthServer, HealthServerConfig } from "./health-server.js";

@@ -7,8 +7,11 @@ import type { KoiError, KoiErrorCode, Result } from "@koi/core";
 import { agentId } from "@koi/core";
 import type { CommandDispatcher, DispatchAgentResponse } from "@koi/dashboard-types";
 import {
+  handleDemoteBrick,
   handleDispatchAgent,
   handleListMailbox,
+  handlePromoteBrick,
+  handleQuarantineBrick,
   handleResumeAgent,
   handleRetryDeadLetter,
   handleSuspendAgent,
@@ -305,5 +308,105 @@ describe("handleDispatchAgent", () => {
       commands,
     );
     expect(capturedName).toBe("padded");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Brick lifecycle commands (promote / demote / quarantine)
+// ---------------------------------------------------------------------------
+
+describe("handlePromoteBrick", () => {
+  test("returns 200 on success", async () => {
+    const commands = createMockCommands({ promoteBrick: () => ok() });
+    const res = await handlePromoteBrick(
+      makeReq("/cmd/forge/bricks/b1/promote"),
+      { id: "b1" },
+      commands,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  test("returns 400 when id is missing", async () => {
+    const commands = createMockCommands({ promoteBrick: () => ok() });
+    const res = await handlePromoteBrick(makeReq("/cmd/forge/bricks//promote"), {}, commands);
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 501 when not implemented", async () => {
+    const commands = createMockCommands();
+    const res = await handlePromoteBrick(
+      makeReq("/cmd/forge/bricks/b1/promote"),
+      { id: "b1" },
+      commands,
+    );
+    expect(res.status).toBe(501);
+  });
+
+  test("returns 404 on NOT_FOUND error", async () => {
+    const commands = createMockCommands({
+      promoteBrick: () => err("NOT_FOUND", "Brick not found"),
+    });
+    const res = await handlePromoteBrick(
+      makeReq("/cmd/forge/bricks/x/promote"),
+      { id: "x" },
+      commands,
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("handleDemoteBrick", () => {
+  test("returns 200 on success", async () => {
+    const commands = createMockCommands({ demoteBrick: () => ok() });
+    const res = await handleDemoteBrick(
+      makeReq("/cmd/forge/bricks/b1/demote"),
+      { id: "b1" },
+      commands,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  test("returns 400 when id is missing", async () => {
+    const commands = createMockCommands({ demoteBrick: () => ok() });
+    const res = await handleDemoteBrick(makeReq("/cmd/forge/bricks//demote"), {}, commands);
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 501 when not implemented", async () => {
+    const commands = createMockCommands();
+    const res = await handleDemoteBrick(
+      makeReq("/cmd/forge/bricks/b1/demote"),
+      { id: "b1" },
+      commands,
+    );
+    expect(res.status).toBe(501);
+  });
+});
+
+describe("handleQuarantineBrick", () => {
+  test("returns 200 on success", async () => {
+    const commands = createMockCommands({ quarantineBrick: () => ok() });
+    const res = await handleQuarantineBrick(
+      makeReq("/cmd/forge/bricks/b1/quarantine"),
+      { id: "b1" },
+      commands,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  test("returns 400 when id is missing", async () => {
+    const commands = createMockCommands({ quarantineBrick: () => ok() });
+    const res = await handleQuarantineBrick(makeReq("/cmd/forge/bricks//quarantine"), {}, commands);
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 501 when not implemented", async () => {
+    const commands = createMockCommands();
+    const res = await handleQuarantineBrick(
+      makeReq("/cmd/forge/bricks/b1/quarantine"),
+      { id: "b1" },
+      commands,
+    );
+    expect(res.status).toBe(501);
   });
 });
