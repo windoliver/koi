@@ -145,4 +145,13 @@ describe("resolveNexusMode", () => {
   test("undefined -> undefined", () => {
     expect(resolveNexusMode(undefined)).toBeUndefined();
   });
+
+  test("infers embed-auth from demo.pack (legacy fallback)", () => {
+    expect(resolveNexusMode(undefined, { pack: "finance" })).toBe("embed-auth");
+  });
+
+  test("demo.pack without string value does not infer", () => {
+    expect(resolveNexusMode(undefined, { pack: 123 })).toBeUndefined();
+    expect(resolveNexusMode(undefined, {})).toBeUndefined();
+  });
 });

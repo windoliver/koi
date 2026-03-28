@@ -94,7 +94,7 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
   const adminUrl = `http://localhost:${String(wave1.adminPort)}/admin/api`;
 
   // Nexus mode detection
-  const nexusMode = resolveNexusMode(manifest.preset);
+  const nexusMode = resolveNexusMode(manifest.preset, manifest.demo);
 
   // Temporal: prefer admin API health, fall back to direct probe result from wave 1
   const temporalHealth = wave1.adminOk
@@ -556,9 +556,18 @@ function formatMemory(bytes: number): string {
   return `${gb.toFixed(2)} GB`;
 }
 
-/** Determines Nexus mode label from the manifest preset field. */
-function resolveNexusMode(preset: string | undefined): string | undefined {
+/** Determines Nexus mode label from the manifest preset and demo config. */
+function resolveNexusMode(preset: string | undefined, demo: unknown): string | undefined {
   if (preset === "demo" || preset === "mesh") return "embed-auth";
   if (preset === "local") return "embed-lite";
+  // Infer demo mode from demo.pack presence (matches koi up's inferPresetId)
+  if (
+    typeof demo === "object" &&
+    demo !== null &&
+    "pack" in demo &&
+    typeof (demo as { readonly pack?: unknown }).pack === "string"
+  ) {
+    return "embed-auth";
+  }
   return undefined;
 }

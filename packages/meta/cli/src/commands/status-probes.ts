@@ -64,9 +64,18 @@ export async function fetchAdminJson<T>(
   }
 }
 
-/** Determines Nexus mode label from the manifest preset field. */
-export function resolveNexusMode(preset: string | undefined): string | undefined {
+/** Determines Nexus mode label from the manifest preset and demo config. */
+export function resolveNexusMode(preset: string | undefined, demo?: unknown): string | undefined {
   if (preset === "demo" || preset === "mesh") return "embed-auth";
   if (preset === "local") return "embed-lite";
+  // Infer demo mode from demo.pack presence (matches koi up's inferPresetId)
+  if (
+    typeof demo === "object" &&
+    demo !== null &&
+    "pack" in demo &&
+    typeof (demo as { readonly pack?: unknown }).pack === "string"
+  ) {
+    return "embed-auth";
+  }
   return undefined;
 }

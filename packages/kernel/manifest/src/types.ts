@@ -108,6 +108,7 @@ export interface ManifestExtensions {
   readonly deploy?: DeployConfig | undefined;
   readonly scope?: ManifestScopeConfig | undefined;
   readonly preset?: string | undefined;
+  readonly demo?: { readonly pack?: string; readonly [key: string]: unknown } | undefined;
   readonly nexus?: NexusManifestConfig | undefined;
   readonly codeSandbox?: CodeSandboxManifestConfig | undefined;
   readonly dataSources?: readonly DataSourceManifestEntry[] | undefined;

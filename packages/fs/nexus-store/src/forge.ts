@@ -238,6 +238,11 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
     return { ok: true, value: undefined };
   };
 
+  // Note: optimistic locking is client-side (read → check → write). Under
+  // concurrent multi-node writers, two callers can read the same version,
+  // both pass the check, and both write — losing one update. True atomicity
+  // requires a server-side CAS operation in Nexus (not yet implemented).
+  // For single-node or low-contention use this eliminates most real conflicts.
   const update = async (id: BrickId, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
     const segCheck = validatePathSegment(id, "Brick ID");
     if (!segCheck.ok) return segCheck;

@@ -133,19 +133,12 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
   // Verify attestation signature (when brick has one)
   if (brick.provenance.attestation !== undefined) {
     process.stderr.write("  Verifying attestation signature...\n");
-    const secret = process.env.KOI_REGISTRY_SIGNING_KEY;
-    if (secret === undefined) {
-      if (flags.yes) {
-        process.stderr.write("  Skipping attestation (KOI_REGISTRY_SIGNING_KEY not set, --yes).\n");
-      } else {
-        process.stderr.write(
-          "KOI_REGISTRY_SIGNING_KEY is required to verify brick attestations.\n" +
-            "Set this environment variable or use --yes to skip verification.\n",
-        );
-        process.exit(EXIT_CONFIG);
-      }
-    }
-    if (secret !== undefined) {
+    // Community HMAC verification key — shared, not secret. Provides weak
+    // tamper detection (anyone who reads source can forge attestations).
+    // TODO(key-lifecycle): migrate to asymmetric Ed25519 verification with
+    // proper key distribution once the registry ships (WS4+5).
+    const secret = process.env.KOI_REGISTRY_SIGNING_KEY ?? "koi-community-v1";
+    {
       // Use HMAC-SHA256 signer for community registry attestations
       const signer: import("@koi/core").SigningBackend = {
         algorithm: "hmac-sha256",
@@ -174,7 +167,7 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
         }
         process.stderr.write("  Proceeding despite attestation failure (--yes).\n");
       }
-    } // end if (secret !== undefined)
+    }
   }
 
   // Verify Ed25519 brick signature and classify trust tier
