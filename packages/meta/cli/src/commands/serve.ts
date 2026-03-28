@@ -70,6 +70,19 @@ function deriveSessionKey(channelName: string, inbound: InboundMessage): string 
 // ---------------------------------------------------------------------------
 
 export async function runServe(flags: ServeFlags): Promise<void> {
+  // In headless --admin mode, prevent process exit from signals/rejections:
+  // - SIGHUP: parent shell sends on terminal close
+  // - SIGPIPE: broken stdout when running as background process
+  // - Unhandled rejections: AG-UI dispatch errors should not crash the server
+  if (flags.admin && process.stdin.isTTY !== true) {
+    process.on("SIGHUP", () => {}); // no-op — prevent shutdown on terminal close
+    process.on("SIGPIPE", () => {}); // no-op — prevent exit on broken stdout
+    process.on("unhandledRejection", (reason: unknown) => {
+      const msg = reason instanceof Error ? reason.message : String(reason);
+      process.stderr.write(`warn: unhandled rejection in serve: ${msg}\n`);
+    });
+  }
+
   // Validate --nexus-build / --nexus-source and run uv sync if needed
   runNexusBuildIfNeeded(flags.nexusBuild, flags.nexusSource);
 
@@ -749,6 +762,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
 
   shutdown.install();
 
+  // In headless --admin mode, remove SIGHUP from the shutdown handler.
+  // The parent shell sends SIGHUP when the terminal exits — only SIGTERM/SIGINT
+  // should trigger graceful shutdown in headless mode.
+  if (flags.admin && process.stdin.isTTY !== true) {
+    process.removeAllListeners("SIGHUP");
+    process.on("SIGHUP", () => {}); // no-op
+  }
+
   // 9. Print startup info
   if (flags.verbose) {
     process.stderr.write(`Agent: ${manifest.name} v${manifest.version}\n`);
@@ -766,10 +787,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   );
 
   // 10. Wait for abort signal (blocks until shutdown).
-  // Keepalive prevents event loop drain in headless mode. Also ignore SIGPIPE
-  // which Bun sends when stdout is broken (e.g., running in background with &).
+  // Keepalive prevents event loop drain in headless mode.
   const keepalive = setInterval(() => {}, 60_000);
-  process.on("SIGPIPE", () => {}); // no-op — prevent default exit on broken stdout
   await new Promise<void>((resolve) => {
     controller.signal.addEventListener("abort", () => resolve(), { once: true });
   });
