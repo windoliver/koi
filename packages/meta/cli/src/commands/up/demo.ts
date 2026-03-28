@@ -41,7 +41,7 @@ export async function seedDemoPackIfNeeded(
         seededForgeEvents: pack?.staticViews?.seededForgeEvents ?? [],
       };
     } catch {
-      // Marker doesn't exist — proceed with seeding
+      // Marker doesn't exist — fall through to Nexus check
     }
 
     if (nexusClient === undefined) {
@@ -51,6 +51,35 @@ export async function seedDemoPackIfNeeded(
 
     const { getPack, runSeed } = await import("@koi/demo-packs");
     const pack = getPack(demoPack);
+
+    // Nexus-side fallback: if the local marker is missing but Nexus already
+    // has the data (e.g., marker lost after workspace cleanup, or Nexus data
+    // persists across Docker restarts), skip seeding and restore the marker.
+    const CHECK_SEEDED_TIMEOUT_MS = 3_000;
+    if (pack?.checkSeeded !== undefined) {
+      try {
+        const alreadySeeded = await Promise.race([
+          pack.checkSeeded({ nexusClient, agentName, workspaceRoot, verbose }),
+          new Promise<false>((resolve) =>
+            setTimeout(() => resolve(false), CHECK_SEEDED_TIMEOUT_MS),
+          ),
+        ]);
+        if (alreadySeeded) {
+          if (verbose) process.stderr.write("  Demo data already in Nexus — skipping seed\n");
+          // Restore the marker so future boots take the fast path
+          const { mkdir, writeFile } = await import("node:fs/promises");
+          await mkdir(join(workspaceRoot, ".koi"), { recursive: true });
+          await writeFile(markerPath, demoPack);
+          return {
+            prompts: pack.prompts,
+            seededBricks: pack.staticViews?.seededBricks ?? [],
+            seededForgeEvents: pack.staticViews?.seededForgeEvents ?? [],
+          };
+        }
+      } catch {
+        // Check failed (network error, etc.) — proceed with seeding
+      }
+    }
 
     if (pack === undefined) {
       process.stderr.write(`Unknown demo pack "${demoPack}". Run 'koi demo list'.\n`);
