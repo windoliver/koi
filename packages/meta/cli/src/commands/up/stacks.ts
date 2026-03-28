@@ -355,7 +355,12 @@ async function activateAce(
     } = await import("@koi/nexus-store");
 
     const agentPrefix = config.agentName !== undefined ? `agents/${config.agentName}/` : "";
-    const nexusBase = { baseUrl: config.nexusBaseUrl, apiKey: config.nexusApiKey ?? "" };
+    // Use config key, fall back to env var (set during Nexus startup), never empty string
+    const nexusApiKey = config.nexusApiKey ?? process.env.NEXUS_API_KEY ?? "";
+    if (nexusApiKey.length === 0) {
+      log(config, "Stack: ace — Nexus API key is empty, falling back to sqlite");
+    }
+    const nexusBase = { baseUrl: config.nexusBaseUrl, apiKey: nexusApiKey };
     const trajectoryStore = createNexusTrajectoryStore({
       ...nexusBase,
       basePath: `${agentPrefix}ace/trajectories`,

@@ -11,6 +11,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
@@ -24,6 +25,53 @@ import { DEFAULT_DATA_DIR_NAME, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROFILE } fr
 import { pollHealth, probeHealth } from "./health-check.js";
 import { cleanStalePid, isProcessAlive, readPid, removePid, writePid } from "./pid-manager.js";
 import type { ConnectionState, EmbedConfig, EmbedResult } from "./types.js";
+
+/** Read the API key from .state.json in the data directory (if available).
+ *  Falls back to scanning all known data directories for a matching port's state. */
+function readApiKeyFromState(dataDir: string, port?: number): string | undefined {
+  // Try the local data dir first
+  const localKey = readApiKeyFromStateFile(join(dataDir, ".state.json"));
+  if (localKey !== undefined) return localKey;
+
+  // If local dir doesn't have state, scan all data dirs for a matching port
+  if (port !== undefined) {
+    try {
+      const nexusDir = join(homedir(), ".koi", "nexus");
+      if (!existsSync(nexusDir)) return undefined;
+      const { readdirSync } = require("node:fs") as typeof import("node:fs");
+      for (const entry of readdirSync(nexusDir)) {
+        const statePath = join(nexusDir, entry, ".state.json");
+        const key = readApiKeyFromStateFile(statePath);
+        if (key !== undefined) {
+          // Verify the port matches
+          try {
+            const raw = readFileSync(statePath, "utf-8");
+            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            const ports = parsed.ports as Record<string, unknown> | undefined;
+            if (ports !== undefined && ports.http === port) return key;
+          } catch {
+            /* */
+          }
+        }
+      }
+    } catch {
+      /* */
+    }
+  }
+
+  return undefined;
+}
+
+function readApiKeyFromStateFile(statePath: string): string | undefined {
+  try {
+    if (!existsSync(statePath)) return undefined;
+    const raw = readFileSync(statePath, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return typeof parsed.api_key === "string" ? parsed.api_key : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Derive a per-workspace data directory to isolate parallel worktrees.
@@ -64,7 +112,12 @@ export async function ensureNexusRunning(
       if (alive) {
         return {
           ok: true,
-          value: { baseUrl: savedUrl, spawned: false, pid: savedState.pid },
+          value: {
+            baseUrl: savedUrl,
+            spawned: false,
+            pid: savedState.pid,
+            apiKey: readApiKeyFromState(dataDir, port),
+          },
         };
       }
     }
@@ -90,7 +143,12 @@ export async function ensureNexusRunning(
     const pid = readPid(dataDir);
     return {
       ok: true,
-      value: { baseUrl, spawned: false, pid: pid ?? undefined },
+      value: {
+        baseUrl,
+        spawned: false,
+        pid: pid ?? undefined,
+        apiKey: readApiKeyFromState(dataDir, port),
+      },
     };
   }
 
@@ -198,6 +256,6 @@ export async function ensureNexusRunning(
 
   return {
     ok: true,
-    value: { baseUrl, spawned: true, pid },
+    value: { baseUrl, spawned: true, pid, apiKey: readApiKeyFromState(dataDir, port) },
   };
 }
