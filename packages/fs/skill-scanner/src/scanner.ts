@@ -65,7 +65,14 @@ export function createScanner(config?: ScannerConfig): Scanner {
     const allFindings = [...parseOutput.findings, ...ruleFindings];
 
     // 4. Filter by thresholds
-    const filtered = allFindings.filter((f) => meetsThresholds(f.severity, f.confidence, resolved));
+    const filtered: ScanFinding[] = [];
+    for (const f of allFindings) {
+      if (meetsThresholds(f.severity, f.confidence, resolved)) {
+        filtered.push(f);
+      } else {
+        resolved.onFilteredFinding?.(f);
+      }
+    }
 
     const durationMs = performance.now() - start;
 
@@ -102,7 +109,7 @@ export function createScanner(config?: ScannerConfig): Scanner {
         allFindings.push(adjusted);
       }
       totalParseErrors += report.parseErrors;
-      totalRulesApplied = Math.max(totalRulesApplied, report.rulesApplied);
+      totalRulesApplied += report.rulesApplied;
     }
 
     // Run text-based rules (prompt injection) on full markdown
@@ -118,6 +125,8 @@ export function createScanner(config?: ScannerConfig): Scanner {
         for (const finding of results) {
           if (meetsThresholds(finding.severity, finding.confidence, resolved)) {
             allFindings.push(finding);
+          } else {
+            resolved.onFilteredFinding?.(finding);
           }
         }
       }

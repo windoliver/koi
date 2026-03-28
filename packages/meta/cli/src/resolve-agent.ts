@@ -6,23 +6,47 @@
  */
 
 import { dirname, resolve as pathResolve } from "node:path";
+// Channel descriptors (alphabetical)
+// NOTE: discord, voice, whatsapp, signal, mobile are excluded — they require
+// native binary deps (ffmpeg, libsignal, baileys, @discordjs/voice) that cannot
+// be compiled into the standalone binary. They remain available via dynamic
+// discovery in dev mode.
+import { descriptor as channelChatSdkDescriptor } from "@koi/channel-chat-sdk";
+import { descriptor as channelCliDescriptor } from "@koi/channel-cli";
+import { descriptor as channelEmailDescriptor } from "@koi/channel-email";
+import { descriptor as channelMatrixDescriptor } from "@koi/channel-matrix";
+import { descriptor as channelSlackDescriptor } from "@koi/channel-slack";
+import { descriptor as channelTeamsDescriptor } from "@koi/channel-teams";
+import { descriptor as channelTelegramDescriptor } from "@koi/channel-telegram";
 import type { AgentArtifact, ForgeStore, KoiError, ModelHandler, Result } from "@koi/core";
+// Engine descriptors (alphabetical)
+import { descriptor as acpEngineDescriptor } from "@koi/engine-acp";
+import { descriptor as claudeEngineDescriptor } from "@koi/engine-claude";
 import { descriptor as externalEngineDescriptor } from "@koi/engine-external";
+import { descriptor as loopEngineDescriptor } from "@koi/engine-loop";
 import { descriptor as piEngineDescriptor } from "@koi/engine-pi";
 import type { LoadedManifest } from "@koi/manifest";
+// Middleware descriptors (alphabetical)
 import { descriptor as aceDescriptor } from "@koi/middleware-ace";
 import { descriptor as auditDescriptor } from "@koi/middleware-audit";
+import { descriptor as callDedupDescriptor } from "@koi/middleware-call-dedup";
 import { descriptor as callLimitsDescriptor } from "@koi/middleware-call-limits";
 import { descriptor as compactorDescriptor } from "@koi/middleware-compactor";
 import { descriptor as contextEditingDescriptor } from "@koi/middleware-context-editing";
+import { descriptor as eventRulesDescriptor } from "@koi/middleware-event-rules";
 import { descriptor as planningDescriptor } from "@koi/middleware-goal";
 import { descriptor as guidedRetryDescriptor } from "@koi/middleware-guided-retry";
+import { descriptor as outputVerifierDescriptor } from "@koi/middleware-output-verifier";
 import { descriptor as payDescriptor } from "@koi/middleware-pay";
 import { descriptor as permissionsDescriptor } from "@koi/middleware-permissions";
 import { descriptor as piiDescriptor } from "@koi/middleware-pii";
+import { descriptor as reflexDescriptor } from "@koi/middleware-reflex";
+import { descriptor as reportDescriptor } from "@koi/middleware-report";
+import { descriptor as rlmDescriptor } from "@koi/middleware-rlm";
 import { descriptor as sandboxDescriptor } from "@koi/middleware-sandbox";
 import { descriptor as sanitizeDescriptor } from "@koi/middleware-sanitize";
 import { descriptor as semanticRetryDescriptor } from "@koi/middleware-semantic-retry";
+import { descriptor as toolAuditDescriptor } from "@koi/middleware-tool-audit";
 import { descriptor as toolSelectorDescriptor } from "@koi/middleware-tool-selector";
 import { descriptor as turnAckDescriptor } from "@koi/middleware-turn-ack";
 import type { ProviderAdapter, ProviderAdapterConfig } from "@koi/model-router";
@@ -31,19 +55,21 @@ import {
   PROVIDER_ENV_KEYS,
   PROVIDER_FACTORIES,
 } from "@koi/model-router";
+// Import from subpaths to keep discover-static.ts out of the compiled binary's
+// module graph. The barrel "@koi/resolve" re-exports discover-static which would
+// pull in Bun.file() and dynamic import() code that has no business in a binary.
+import { registerBundledAgents } from "@koi/resolve/register-bundled-agents";
+import { registerCompanionSkills } from "@koi/resolve/register-companion-skills";
+import { createRegistry } from "@koi/resolve/registry";
+import { resolveManifest } from "@koi/resolve/resolve-manifest";
 import type {
   BrickDescriptor,
   ResolutionContext,
   ResolveApprovalHandler,
   ResolvedManifest,
-} from "@koi/resolve";
-import {
-  createRegistry,
-  discoverDescriptors,
-  registerBundledAgents,
-  registerCompanionSkills,
-  resolveManifest,
-} from "@koi/resolve";
+} from "@koi/resolve/types";
+// Search descriptors (alphabetical)
+import { descriptor as searchBraveDescriptor } from "@koi/search-brave";
 import { descriptor as soulDescriptor } from "@koi/soul";
 
 // ---------------------------------------------------------------------------
@@ -110,30 +136,51 @@ const modelProviderDescriptors: readonly BrickDescriptor<ModelHandler>[] = Objec
  * BrickDescriptor is covariant in T, so KoiMiddleware/ModelHandler widen to unknown.
  */
 const ALL_DESCRIPTORS: readonly BrickDescriptor<unknown>[] = [
+  // Channel descriptors (alphabetical)
+  // discord, voice, whatsapp, signal, mobile excluded — native binary deps
+  channelChatSdkDescriptor,
+  channelCliDescriptor,
+  channelEmailDescriptor,
+  channelMatrixDescriptor,
+  channelSlackDescriptor,
+  channelTeamsDescriptor,
+  channelTelegramDescriptor,
   // Middleware descriptors (alphabetical)
   aceDescriptor,
   auditDescriptor,
+  callDedupDescriptor,
   callLimitsDescriptor,
   compactorDescriptor,
   contextEditingDescriptor,
+  eventRulesDescriptor,
   guidedRetryDescriptor,
+  outputVerifierDescriptor,
   payDescriptor,
   permissionsDescriptor,
   piiDescriptor,
   planningDescriptor,
+  reflexDescriptor,
+  reportDescriptor,
+  rlmDescriptor,
   sandboxDescriptor,
   sanitizeDescriptor,
   semanticRetryDescriptor,
   soulDescriptor,
+  toolAuditDescriptor,
   toolSelectorDescriptor,
   turnAckDescriptor,
   // Model provider descriptors
   ...modelProviderDescriptors,
   // Model router middleware
   modelRouterDescriptor,
-  // Engine descriptors
+  // Engine descriptors (alphabetical)
+  acpEngineDescriptor,
+  claudeEngineDescriptor,
   externalEngineDescriptor,
+  loopEngineDescriptor,
   piEngineDescriptor,
+  // Search descriptors (alphabetical)
+  searchBraveDescriptor,
 ];
 
 // ---------------------------------------------------------------------------
@@ -185,21 +232,34 @@ export interface ResolveAgentOptions {
 export async function resolveAgent(
   options: ResolveAgentOptions,
 ): Promise<Result<ResolvedManifest, KoiError>> {
-  // Discover additional descriptors from packages directory
-  const packagesDir = options.packagesDir ?? detectPackagesDir();
-  const discoveryResult = await discoverDescriptors(packagesDir);
+  // Compiled binaries have all descriptors statically bundled in ALL_DESCRIPTORS.
+  // No filesystem access, no dynamic imports, no manifest reads — fully self-contained.
+  // Dev mode extends that set by scanning the local packages/ directory.
+  const isCompiled = process.argv[0] !== undefined && !process.argv[0].includes("bun");
 
-  // Merge: static descriptors take precedence over discovered ones
-  const staticKeys = new Set(ALL_DESCRIPTORS.map(descriptorKey));
-  const discovered = discoveryResult.ok
-    ? discoveryResult.value.filter((d) => !staticKeys.has(descriptorKey(d)))
-    : [];
+  let allDescriptors: readonly BrickDescriptor<unknown>[];
 
-  if (!discoveryResult.ok) {
-    process.stderr.write(`warn: descriptor discovery failed: ${discoveryResult.error.message}\n`);
+  if (isCompiled) {
+    // Binary mode: use only statically bundled descriptors — zero filesystem dependency.
+    allDescriptors = ALL_DESCRIPTORS;
+  } else {
+    // Dev mode: discover additional descriptors from packages/ directory.
+    // Dynamic import keeps discover-static.ts out of the compiled binary entirely.
+    const { discoverDescriptorsAuto } = await import("@koi/resolve/discover-static");
+    const packagesDir = options.packagesDir ?? detectPackagesDir();
+    const discoveryResult = await discoverDescriptorsAuto(packagesDir);
+
+    const staticKeys = new Set(ALL_DESCRIPTORS.map(descriptorKey));
+    const discovered = discoveryResult.ok
+      ? discoveryResult.value.filter((d) => !staticKeys.has(descriptorKey(d)))
+      : [];
+
+    if (!discoveryResult.ok) {
+      process.stderr.write(`warn: descriptor discovery failed: ${discoveryResult.error.message}\n`);
+    }
+
+    allDescriptors = [...ALL_DESCRIPTORS, ...discovered];
   }
-
-  const allDescriptors: readonly BrickDescriptor<unknown>[] = [...ALL_DESCRIPTORS, ...discovered];
 
   // Register companion skills if ForgeStore is provided
   if (options.forgeStore !== undefined) {

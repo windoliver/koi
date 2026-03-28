@@ -1,7 +1,14 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/resolve API surface . has stable type surface 1`] = `
-"import { Result, KoiError, BrickKind, CompanionSkillDefinition, JsonObject, AgentManifest, KoiMiddleware, ModelHandler, ChannelAdapter, EngineAdapter, AgentArtifact, ForgeStore, MiddlewareConfig, ModelConfig, PermissionConfig } from '@koi/core';
+"import { Result, KoiError, ChannelAdapter, EngineAdapter, MiddlewareConfig, ModelConfig, ModelHandler, JsonObject, PermissionConfig, KoiMiddleware } from '@koi/core';
+import { BrickDescriptor, ResolutionFailure, ResolveRegistry, ResolutionContext, MiddlewareResolutionResult, ResolveKind } from './types.js';
+export { BrickFactory, OptionsValidator, ResolveApprovalHandler, ResolvedManifest } from './types.js';
+export { DescriptorManifest, ManifestEntry, discoverDescriptorsAuto, discoverDescriptorsFromManifest } from './discover-static.js';
+export { BundledAgentRegistrationResult, registerBundledAgents } from './register-bundled-agents.js';
+export { CompanionSkillRegistrationResult, registerCompanionSkills } from './register-companion-skills.js';
+export { createRegistry } from './registry.js';
+export { resolveManifest } from './resolve-manifest.js';
 import { SearchProvider } from '@koi/search-provider';
 
 /**
@@ -20,106 +27,6 @@ declare function validateOptionalDescriptorOptions(input: unknown, label: string
  * Use for descriptors where options are required (most middleware).
  */
 declare function validateRequiredDescriptorOptions(input: unknown, label: string): Result<Record<string, unknown>, KoiError>;
-
-/**
- * Core types for the manifest resolution layer.
- *
- * Bridges declarative koi.yaml configuration to runtime instances
- * via a registry of BrickDescriptors.
- */
-
-/** Kinds supported by the resolution layer. Extends L0 BrickKind. */
-type ResolveKind = BrickKind | "model" | "engine" | "context" | "forge" | "schedule" | "search" | "webhook";
-/**
- * Validates raw YAML options into a typed config.
- * Compatible with Zod (wrap safeParse in Result) or manual validators.
- */
-type OptionsValidator<T> = (input: unknown) => Result<T, KoiError>;
-/**
- * Factory signature — receives validated options + resolution context,
- * returns a runtime instance.
- */
-type BrickFactory<T> = (options: JsonObject, context: ResolutionContext) => T | Promise<T>;
-/**
- * A BrickDescriptor binds a name to a factory + options validator.
- * Every L2 package that participates in manifest auto-resolution exports one.
- */
-interface BrickDescriptor<T> {
-    /** What kind of brick this descriptor creates. */
-    readonly kind: ResolveKind;
-    /** Canonical name (e.g., "@koi/soul", "anthropic"). */
-    readonly name: string;
-    /** Short aliases for convenience (e.g., ["soul", "memory"]). */
-    readonly aliases?: readonly string[];
-    /** Human-readable description of what this brick does. */
-    readonly description?: string;
-    /** Searchable tags for categorization and discovery. */
-    readonly tags?: readonly string[];
-    /** Skills auto-injected into copilot context to teach the LLM when to use this brick. */
-    readonly companionSkills?: readonly CompanionSkillDefinition[];
-    /** Validates raw YAML options into typed config. */
-    readonly optionsValidator: OptionsValidator<unknown>;
-    /** Creates the runtime instance from validated options. */
-    readonly factory: BrickFactory<T>;
-}
-/** Handler for human-in-the-loop approval of tool calls. */
-interface ResolveApprovalHandler {
-    readonly requestApproval: (toolId: string, input: JsonObject, reason: string) => Promise<boolean>;
-}
-/**
- * Runtime context provided to brick factories during resolution.
- * Provides access to manifest metadata and environment.
- */
-interface ResolutionContext {
-    /** Directory containing koi.yaml — used as basePath for relative file refs. */
-    readonly manifestDir: string;
-    /** The full manifest (for cross-section references). */
-    readonly manifest: AgentManifest;
-    /** Process environment (for API key lookup). */
-    readonly env: Readonly<Record<string, string | undefined>>;
-    /** Approval handler from CLI runtime (for permissions ask rules). */
-    readonly approvalHandler?: ResolveApprovalHandler | undefined;
-}
-/** Read-only registry of brick descriptors. */
-interface ResolveRegistry {
-    /** Look up a descriptor by kind and name (or alias). */
-    readonly get: (kind: ResolveKind, name: string) => BrickDescriptor<unknown> | undefined;
-    /** Check if a descriptor exists for the given kind and name (or alias). */
-    readonly has: (kind: ResolveKind, name: string) => boolean;
-    /** List all descriptors of a given kind. */
-    readonly list: (kind: ResolveKind) => readonly BrickDescriptor<unknown>[];
-}
-/** Result of resolving the middleware section — includes warnings for skipped optional middleware. */
-interface MiddlewareResolutionResult {
-    readonly middleware: readonly KoiMiddleware[];
-    readonly warnings: readonly string[];
-}
-/** What resolveManifest() returns on success. */
-interface ResolvedManifest {
-    /** Merged and priority-sorted middleware (explicit + soul + permissions). */
-    readonly middleware: readonly KoiMiddleware[];
-    /** Resolved model handler ready for createLoopAdapter. */
-    readonly model: ModelHandler;
-    /** Resolved channel adapters (undefined → CLI defaults to channel-cli). */
-    readonly channels?: readonly ChannelAdapter[] | undefined;
-    /** Resolved engine adapter (undefined → CLI defaults to loop adapter). */
-    readonly engine?: EngineAdapter | undefined;
-    /** Resolved search provider (undefined → no web search capability). */
-    readonly search?: SearchProvider | undefined;
-    /** Warnings from optional middleware that failed to resolve. */
-    readonly warnings: readonly string[];
-}
-/** A single resolution failure within a section. */
-interface ResolutionFailure {
-    /** Which manifest section failed ("middleware", "model", "soul", "permissions"). */
-    readonly section: string;
-    /** Item index within the section (for arrays like middleware). */
-    readonly index?: number;
-    /** The name that failed to resolve. */
-    readonly name: string;
-    /** The underlying error. */
-    readonly error: KoiError;
-}
 
 /**
  * Dynamic descriptor discovery — scans packages directory for
@@ -148,65 +55,6 @@ declare function aggregateErrors(failures: readonly ResolutionFailure[]): KoiErr
  * Formats a resolution error for CLI stderr output.
  */
 declare function formatResolutionError(error: KoiError): string;
-
-/**
- * Auto-registration of bundled agents into ForgeStore.
- *
- * Accepts pre-built AgentArtifact instances and saves them into
- * the ForgeStore. Idempotent: agents whose ID already exists are
- * skipped. Partial-failure tolerant: save errors are collected.
- *
- * Follows the same pattern as registerCompanionSkills.
- */
-
-/** Summary of bundled agent registration. */
-interface BundledAgentRegistrationResult {
-    readonly registered: number;
-    readonly skipped: number;
-    readonly errors: readonly string[];
-}
-/**
- * Registers pre-built AgentArtifacts into a ForgeStore.
- *
- * Idempotent: agents whose content-addressed ID already exists are skipped.
- * Partial-failure tolerant: save errors are collected, not thrown.
- */
-declare function registerBundledAgents(agents: readonly AgentArtifact[], forgeStore: ForgeStore): Promise<Result<BundledAgentRegistrationResult, KoiError>>;
-
-/**
- * Auto-registration of companion skills from BrickDescriptors into ForgeStore.
- *
- * Two-phase pipeline: discoverDescriptors() remains pure, then
- * registerCompanionSkills() writes skills to ForgeStore as a separate step.
- */
-
-/** Summary of companion skill registration. */
-interface CompanionSkillRegistrationResult {
-    readonly registered: number;
-    readonly skipped: number;
-    readonly errors: readonly string[];
-}
-/**
- * Registers all companion skills from descriptors into a ForgeStore.
- *
- * Idempotent: skills whose content-addressed ID already exists are skipped.
- * Partial failure tolerant: save errors are collected, not thrown.
- */
-declare function registerCompanionSkills(descriptors: readonly BrickDescriptor<unknown>[], forgeStore: ForgeStore): Promise<Result<CompanionSkillRegistrationResult, KoiError>>;
-
-/**
- * Brick descriptor registry — maps (kind, name) pairs to descriptors.
- *
- * Immutable after creation. Supports canonical names and aliases.
- */
-
-/**
- * Creates an immutable registry from a list of descriptors.
- *
- * Validates no duplicate (kind, name) or (kind, alias) collisions.
- * Returns a Result — fails fast on duplicates.
- */
-declare function createRegistry(descriptors: readonly BrickDescriptor<unknown>[]): Result<ResolveRegistry, KoiError>;
 
 /**
  * Resolves the channels section of a manifest.
@@ -241,49 +89,6 @@ declare function resolveChannels(raw: unknown, registry: ResolveRegistry, contex
  * Accepts \`unknown\` because the manifest schema may not fully type this section.
  */
 declare function resolveEngine(config: unknown, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<EngineAdapter | undefined, KoiError>>;
-
-/**
- * Top-level manifest resolver — composes per-section resolvers.
- *
- * Runs all section resolvers in parallel, aggregates failures,
- * merges middleware, and returns a ResolvedManifest.
- */
-
-/** Manifest shape consumed by the resolver (LoadedManifest or AgentManifest + extensions). */
-interface ManifestInput {
-    readonly middleware?: readonly {
-        readonly name: string;
-        readonly options?: Record<string, unknown>;
-        readonly required?: boolean | undefined;
-    }[];
-    readonly model: {
-        readonly name: string;
-        readonly options?: Record<string, unknown>;
-    };
-    readonly permissions?: {
-        readonly allow?: readonly string[];
-        readonly deny?: readonly string[];
-        readonly ask?: readonly string[];
-    };
-    readonly soul?: unknown;
-    readonly user?: unknown;
-    readonly channels?: unknown;
-    readonly engine?: unknown;
-    readonly search?: unknown;
-}
-/**
- * Resolves a full manifest into runtime instances.
- *
- * Runs all per-section resolvers in parallel:
- * - Middleware (explicit entries from manifest.middleware)
- * - Soul (from manifest.soul / manifest.user)
- * - Permissions (from manifest.permissions)
- * - Model (from manifest.model)
- *
- * On success: merges middleware (explicit + soul + permissions), sorts by priority.
- * On failure: aggregates all section errors into a single KoiError.
- */
-declare function resolveManifest(manifest: ManifestInput, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<ResolvedManifest, KoiError>>;
 
 /**
  * Middleware section resolver.
@@ -400,6 +205,305 @@ interface SoulManifestSlice {
  */
 declare function resolveSoul(manifest: SoulManifestSlice, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<KoiMiddleware | undefined, KoiError>>;
 
-export { type BrickDescriptor, type BrickFactory, type BundledAgentRegistrationResult, type CompanionSkillRegistrationResult, type MiddlewareResolutionResult, type OptionsValidator, type ResolutionContext, type ResolutionFailure, type ResolveApprovalHandler, type ResolveKind, type ResolveRegistry, type ResolvedManifest, aggregateErrors, createRegistry, discoverDescriptors, formatResolutionError, parseModelName, registerBundledAgents, registerCompanionSkills, resolveChannels, resolveEngine, resolveManifest, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSearch, resolveSoul, validateOptionalDescriptorOptions, validateRequiredDescriptorOptions };
+export { BrickDescriptor, MiddlewareResolutionResult, ResolutionContext, ResolutionFailure, ResolveKind, ResolveRegistry, aggregateErrors, discoverDescriptors, formatResolutionError, parseModelName, resolveChannels, resolveEngine, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSearch, resolveSoul, validateOptionalDescriptorOptions, validateRequiredDescriptorOptions };
+"
+`;
+
+exports[`@koi/resolve API surface ./registry has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core';
+import { BrickDescriptor, ResolveRegistry } from './types.js';
+import '@koi/search-provider';
+
+/**
+ * Brick descriptor registry — maps (kind, name) pairs to descriptors.
+ *
+ * Immutable after creation. Supports canonical names and aliases.
+ */
+
+/**
+ * Creates an immutable registry from a list of descriptors.
+ *
+ * Validates no duplicate (kind, name) or (kind, alias) collisions.
+ * Returns a Result — fails fast on duplicates.
+ */
+declare function createRegistry(descriptors: readonly BrickDescriptor<unknown>[]): Result<ResolveRegistry, KoiError>;
+
+export { createRegistry };
+"
+`;
+
+exports[`@koi/resolve API surface ./resolve-manifest has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core';
+import { ResolveRegistry, ResolutionContext, ResolvedManifest } from './types.js';
+import '@koi/search-provider';
+
+/**
+ * Top-level manifest resolver — composes per-section resolvers.
+ *
+ * Runs all section resolvers in parallel, aggregates failures,
+ * merges middleware, and returns a ResolvedManifest.
+ */
+
+/** Manifest shape consumed by the resolver (LoadedManifest or AgentManifest + extensions). */
+interface ManifestInput {
+    readonly middleware?: readonly {
+        readonly name: string;
+        readonly options?: Record<string, unknown>;
+        readonly required?: boolean | undefined;
+    }[];
+    readonly model: {
+        readonly name: string;
+        readonly options?: Record<string, unknown>;
+    };
+    readonly permissions?: {
+        readonly allow?: readonly string[];
+        readonly deny?: readonly string[];
+        readonly ask?: readonly string[];
+    };
+    readonly soul?: unknown;
+    readonly user?: unknown;
+    readonly channels?: unknown;
+    readonly engine?: unknown;
+    readonly search?: unknown;
+}
+/**
+ * Resolves a full manifest into runtime instances.
+ *
+ * Runs all per-section resolvers in parallel:
+ * - Middleware (explicit entries from manifest.middleware)
+ * - Soul (from manifest.soul / manifest.user)
+ * - Permissions (from manifest.permissions)
+ * - Model (from manifest.model)
+ *
+ * On success: merges middleware (explicit + soul + permissions), sorts by priority.
+ * On failure: aggregates all section errors into a single KoiError.
+ */
+declare function resolveManifest(manifest: ManifestInput, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<ResolvedManifest, KoiError>>;
+
+export { resolveManifest };
+"
+`;
+
+exports[`@koi/resolve API surface ./register-companion-skills has stable type surface 1`] = `
+"import { ForgeStore, Result, KoiError, CompanionSkillDefinition, SkillArtifact } from '@koi/core';
+import { BrickDescriptor } from './types.js';
+import '@koi/search-provider';
+
+/**
+ * Auto-registration of companion skills from BrickDescriptors into ForgeStore.
+ *
+ * Two-phase pipeline: discoverDescriptors() remains pure, then
+ * registerCompanionSkills() writes skills to ForgeStore as a separate step.
+ */
+
+/** Summary of companion skill registration. */
+interface CompanionSkillRegistrationResult {
+    readonly registered: number;
+    readonly skipped: number;
+    readonly errors: readonly string[];
+}
+/**
+ * Creates a SkillArtifact from a CompanionSkillDefinition + descriptor metadata.
+ *
+ * Content-addressed via computeBrickId("skill", skill.content).
+ * Trust tier is "promoted" because package-shipped skills are pre-verified.
+ */
+declare function createCompanionSkillArtifact(skill: CompanionSkillDefinition, descriptorName: string, descriptorKind: string): SkillArtifact;
+/**
+ * Registers all companion skills from descriptors into a ForgeStore.
+ *
+ * Idempotent: skills whose content-addressed ID already exists are skipped.
+ * Partial failure tolerant: save errors are collected, not thrown.
+ */
+declare function registerCompanionSkills(descriptors: readonly BrickDescriptor<unknown>[], forgeStore: ForgeStore): Promise<Result<CompanionSkillRegistrationResult, KoiError>>;
+
+export { type CompanionSkillRegistrationResult, createCompanionSkillArtifact, registerCompanionSkills };
+"
+`;
+
+exports[`@koi/resolve API surface ./register-bundled-agents has stable type surface 1`] = `
+"import { AgentArtifact, ForgeStore, Result, KoiError } from '@koi/core';
+
+/**
+ * Auto-registration of bundled agents into ForgeStore.
+ *
+ * Accepts pre-built AgentArtifact instances and saves them into
+ * the ForgeStore. Idempotent: agents whose ID already exists are
+ * skipped. Partial-failure tolerant: save errors are collected.
+ *
+ * Follows the same pattern as registerCompanionSkills.
+ */
+
+/** Summary of bundled agent registration. */
+interface BundledAgentRegistrationResult {
+    readonly registered: number;
+    readonly skipped: number;
+    readonly errors: readonly string[];
+}
+/**
+ * Registers pre-built AgentArtifacts into a ForgeStore.
+ *
+ * Idempotent: agents whose content-addressed ID already exists are skipped.
+ * Partial-failure tolerant: save errors are collected, not thrown.
+ */
+declare function registerBundledAgents(agents: readonly AgentArtifact[], forgeStore: ForgeStore): Promise<Result<BundledAgentRegistrationResult, KoiError>>;
+
+export { type BundledAgentRegistrationResult, registerBundledAgents };
+"
+`;
+
+exports[`@koi/resolve API surface ./types has stable type surface 1`] = `
+"import { BrickKind, CompanionSkillDefinition, Result, KoiError, JsonObject, AgentManifest, KoiMiddleware, ModelHandler, ChannelAdapter, EngineAdapter } from '@koi/core';
+import { SearchProvider } from '@koi/search-provider';
+
+/**
+ * Core types for the manifest resolution layer.
+ *
+ * Bridges declarative koi.yaml configuration to runtime instances
+ * via a registry of BrickDescriptors.
+ */
+
+/** Kinds supported by the resolution layer. Extends L0 BrickKind. */
+type ResolveKind = BrickKind | "model" | "engine" | "context" | "forge" | "schedule" | "search" | "webhook";
+/**
+ * Validates raw YAML options into a typed config.
+ * Compatible with Zod (wrap safeParse in Result) or manual validators.
+ */
+type OptionsValidator<T> = (input: unknown) => Result<T, KoiError>;
+/**
+ * Factory signature — receives validated options + resolution context,
+ * returns a runtime instance.
+ */
+type BrickFactory<T> = (options: JsonObject, context: ResolutionContext) => T | Promise<T>;
+/**
+ * A BrickDescriptor binds a name to a factory + options validator.
+ * Every L2 package that participates in manifest auto-resolution exports one.
+ */
+interface BrickDescriptor<T> {
+    /** What kind of brick this descriptor creates. */
+    readonly kind: ResolveKind;
+    /** Canonical name (e.g., "@koi/soul", "anthropic"). */
+    readonly name: string;
+    /** Short aliases for convenience (e.g., ["soul", "memory"]). */
+    readonly aliases?: readonly string[];
+    /** Human-readable description of what this brick does. */
+    readonly description?: string;
+    /** Searchable tags for categorization and discovery. */
+    readonly tags?: readonly string[];
+    /** Skills auto-injected into copilot context to teach the LLM when to use this brick. */
+    readonly companionSkills?: readonly CompanionSkillDefinition[];
+    /** Validates raw YAML options into typed config. */
+    readonly optionsValidator: OptionsValidator<unknown>;
+    /** Creates the runtime instance from validated options. */
+    readonly factory: BrickFactory<T>;
+}
+/** Handler for human-in-the-loop approval of tool calls. */
+interface ResolveApprovalHandler {
+    readonly requestApproval: (toolId: string, input: JsonObject, reason: string) => Promise<boolean>;
+}
+/**
+ * Runtime context provided to brick factories during resolution.
+ * Provides access to manifest metadata and environment.
+ */
+interface ResolutionContext {
+    /** Directory containing koi.yaml — used as basePath for relative file refs. */
+    readonly manifestDir: string;
+    /** The full manifest (for cross-section references). */
+    readonly manifest: AgentManifest;
+    /** Process environment (for API key lookup). */
+    readonly env: Readonly<Record<string, string | undefined>>;
+    /** Approval handler from CLI runtime (for permissions ask rules). */
+    readonly approvalHandler?: ResolveApprovalHandler | undefined;
+}
+/** Read-only registry of brick descriptors. */
+interface ResolveRegistry {
+    /** Look up a descriptor by kind and name (or alias). */
+    readonly get: (kind: ResolveKind, name: string) => BrickDescriptor<unknown> | undefined;
+    /** Check if a descriptor exists for the given kind and name (or alias). */
+    readonly has: (kind: ResolveKind, name: string) => boolean;
+    /** List all descriptors of a given kind. */
+    readonly list: (kind: ResolveKind) => readonly BrickDescriptor<unknown>[];
+}
+/** Result of resolving the middleware section — includes warnings for skipped optional middleware. */
+interface MiddlewareResolutionResult {
+    readonly middleware: readonly KoiMiddleware[];
+    readonly warnings: readonly string[];
+}
+/** What resolveManifest() returns on success. */
+interface ResolvedManifest {
+    /** Merged and priority-sorted middleware (explicit + soul + permissions). */
+    readonly middleware: readonly KoiMiddleware[];
+    /** Resolved model handler ready for createLoopAdapter. */
+    readonly model: ModelHandler;
+    /** Resolved channel adapters (undefined → CLI defaults to channel-cli). */
+    readonly channels?: readonly ChannelAdapter[] | undefined;
+    /** Resolved engine adapter (undefined → CLI defaults to loop adapter). */
+    readonly engine?: EngineAdapter | undefined;
+    /** Resolved search provider (undefined → no web search capability). */
+    readonly search?: SearchProvider | undefined;
+    /** Warnings from optional middleware that failed to resolve. */
+    readonly warnings: readonly string[];
+}
+/** A single resolution failure within a section. */
+interface ResolutionFailure {
+    /** Which manifest section failed ("middleware", "model", "soul", "permissions"). */
+    readonly section: string;
+    /** Item index within the section (for arrays like middleware). */
+    readonly index?: number;
+    /** The name that failed to resolve. */
+    readonly name: string;
+    /** The underlying error. */
+    readonly error: KoiError;
+}
+
+export type { BrickDescriptor, BrickFactory, MiddlewareResolutionResult, OptionsValidator, ResolutionContext, ResolutionFailure, ResolveApprovalHandler, ResolveKind, ResolveRegistry, ResolvedManifest };
+"
+`;
+
+exports[`@koi/resolve API surface ./discover-static has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core';
+import { ResolveKind, BrickDescriptor } from './types.js';
+import '@koi/search-provider';
+
+/**
+ * Static descriptor discovery — loads descriptors from a pre-built
+ * JSON manifest instead of scanning the filesystem.
+ *
+ * Falls back to dynamic scanning when the manifest is missing (dev mode).
+ */
+
+/** A single entry in the descriptor manifest (metadata only, no factory). */
+interface ManifestEntry {
+    readonly kind: ResolveKind;
+    readonly name: string;
+    readonly aliases?: readonly string[];
+    readonly description?: string;
+    readonly tags?: readonly string[];
+    readonly packagePath: string;
+}
+/** Shape of the descriptor-manifest.json file. */
+interface DescriptorManifest {
+    readonly descriptors: readonly ManifestEntry[];
+}
+/**
+ * Loads descriptors from a pre-built JSON manifest.
+ *
+ * For each manifest entry, performs a targeted \`import(packagePath)\`
+ * to retrieve the factory function. Entries whose package cannot be
+ * imported are silently skipped.
+ */
+declare function discoverDescriptorsFromManifest(manifestPath?: string): Promise<Result<readonly BrickDescriptor<unknown>[], KoiError>>;
+/**
+ * Discovers descriptors using static manifest when available,
+ * falling back to dynamic filesystem scanning.
+ *
+ * - In production/binary builds: reads the pre-built manifest for
+ *   targeted imports (no directory scanning needed).
+ * - In development: falls back to \`discoverDescriptors()\` when
+ *   the manifest file is missing.
+ */
+declare function discoverDescriptorsAuto(packagesDir: string, manifestPath?: string): Promise<Result<readonly BrickDescriptor<unknown>[], KoiError>>;
+
+export { type DescriptorManifest, type ManifestEntry, discoverDescriptorsAuto, discoverDescriptorsFromManifest };
 "
 `;

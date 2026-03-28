@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type {
   AdminFlags,
+  DoctorFlags,
   InitFlags,
   ServeFlags,
   SessionsFlags,
   StartFlags,
+  StatusFlags,
   StopFlags,
   UpFlags,
 } from "./args.js";
@@ -370,6 +372,44 @@ describe("parseArgs — up --resume", () => {
     const result = parseArgs(["up", "--resume", "up:agent:1", "--verbose"]) as UpFlags;
     expect(result.resume).toBe("up:agent:1");
     expect(result.verbose).toBe(true);
+  });
+});
+
+describe("parseArgs — status --json flag", () => {
+  test("defaults json to false", () => {
+    const result = parseArgs(["status"]) as StatusFlags;
+    expect(result.command).toBe("status");
+    expect(result.json).toBe(false);
+  });
+
+  test("parses --json flag", () => {
+    const result = parseArgs(["status", "--json"]) as StatusFlags;
+    expect(result.json).toBe(true);
+  });
+
+  test("parses --json with other flags", () => {
+    const result = parseArgs(["status", "--json", "--timeout", "5000"]) as StatusFlags;
+    expect(result.json).toBe(true);
+    expect(result.timeout).toBe(5000);
+  });
+});
+
+describe("parseArgs — doctor --json flag", () => {
+  test("defaults json to false", () => {
+    const result = parseArgs(["doctor"]) as DoctorFlags;
+    expect(result.command).toBe("doctor");
+    expect(result.json).toBe(false);
+  });
+
+  test("parses --json flag", () => {
+    const result = parseArgs(["doctor", "--json"]) as DoctorFlags;
+    expect(result.json).toBe(true);
+  });
+
+  test("parses --json with --repair", () => {
+    const result = parseArgs(["doctor", "--json", "--repair"]) as DoctorFlags;
+    expect(result.json).toBe(true);
+    expect(result.repair).toBe(true);
   });
 });
 

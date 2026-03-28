@@ -13,6 +13,37 @@
 export type ForgeScope = "agent" | "zone" | "global";
 
 // ---------------------------------------------------------------------------
+// Trust tier — author-level trust classification for forge bricks
+// ---------------------------------------------------------------------------
+
+/**
+ * Trust tier for a brick based on cryptographic signature verification.
+ *
+ * - "local"     — Unverified; user's own forged brick, no signature.
+ * - "community" — Signed by the brick author (Ed25519 key pair).
+ * - "verified"  — Signed by the Koi registry or trusted authority.
+ */
+export type TrustTier = "local" | "community" | "verified";
+
+// ---------------------------------------------------------------------------
+// Brick signature — Ed25519 signature metadata attached to brick artifacts
+// ---------------------------------------------------------------------------
+
+/** Cryptographic signature metadata for a brick artifact. */
+export interface BrickSignature {
+  /** Signing algorithm identifier (e.g., "ed25519"). */
+  readonly algorithm: string;
+  /** Base64-encoded signature bytes. */
+  readonly signature: string;
+  /** Base64-encoded SPKI DER public key of the signer. */
+  readonly publicKey: string;
+  /** Optional key identifier for key rotation / registry lookup. */
+  readonly keyId?: string | undefined;
+  /** Epoch millis when the signature was created. */
+  readonly signedAt: number;
+}
+
+// ---------------------------------------------------------------------------
 // Trust transition caller discriminant
 // ---------------------------------------------------------------------------
 

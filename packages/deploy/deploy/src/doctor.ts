@@ -25,9 +25,26 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Compile-time-safe check identifiers. Dispatch repair actions on these
+ * instead of display names so renames never silently break repair logic.
+ */
+export const CHECK_IDS = {
+  SERVICE_FILE: "service_file",
+  SERVICE_STATUS: "service_status",
+  HEALTH_ENDPOINT: "health_endpoint",
+  READINESS_ENDPOINT: "readiness_endpoint",
+  BUN_RUNTIME: "bun_runtime",
+  KOI_CLI: "koi_cli",
+  LOGINCTL_LINGER: "loginctl_linger",
+} as const;
+
+export type CheckId = (typeof CHECK_IDS)[keyof typeof CHECK_IDS];
+
 export type CheckStatus = "pass" | "warn" | "fail";
 
 export interface DiagnosticCheck {
+  readonly id: CheckId;
   readonly name: string;
   readonly status: CheckStatus;
   readonly message: string;
@@ -69,9 +86,15 @@ async function checkServiceFile(
 
   try {
     await access(filePath);
-    return { name: "Service file", status: "pass", message: `Found at ${filePath}` };
+    return {
+      id: CHECK_IDS.SERVICE_FILE,
+      name: "Service file",
+      status: "pass",
+      message: `Found at ${filePath}`,
+    };
   } catch {
     return {
+      id: CHECK_IDS.SERVICE_FILE,
       name: "Service file",
       status: "fail",
       message: `Not found at ${filePath}`,
@@ -87,10 +110,16 @@ async function checkServiceStatus(
   const info = await manager.status(serviceName);
 
   if (info.status === "running") {
-    return { name: "Service status", status: "pass", message: "Running" };
+    return {
+      id: CHECK_IDS.SERVICE_STATUS,
+      name: "Service status",
+      status: "pass",
+      message: "Running",
+    };
   }
   if (info.status === "failed") {
     return {
+      id: CHECK_IDS.SERVICE_STATUS,
       name: "Service status",
       status: "fail",
       message: "Failed",
@@ -99,6 +128,7 @@ async function checkServiceStatus(
   }
   if (info.status === "stopped") {
     return {
+      id: CHECK_IDS.SERVICE_STATUS,
       name: "Service status",
       status: "warn",
       message: "Stopped",
@@ -107,6 +137,7 @@ async function checkServiceStatus(
   }
 
   return {
+    id: CHECK_IDS.SERVICE_STATUS,
     name: "Service status",
     status: "fail",
     message: "Not installed",
@@ -120,9 +151,15 @@ async function checkHealthEndpoint(port: number): Promise<DiagnosticCheck> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
     if (res.status === 200) {
-      return { name: "Health endpoint", status: "pass", message: `${url} → 200 OK` };
+      return {
+        id: CHECK_IDS.HEALTH_ENDPOINT,
+        name: "Health endpoint",
+        status: "pass",
+        message: `${url} → 200 OK`,
+      };
     }
     return {
+      id: CHECK_IDS.HEALTH_ENDPOINT,
       name: "Health endpoint",
       status: "fail",
       message: `${url} → ${res.status}`,
@@ -130,6 +167,7 @@ async function checkHealthEndpoint(port: number): Promise<DiagnosticCheck> {
     };
   } catch {
     return {
+      id: CHECK_IDS.HEALTH_ENDPOINT,
       name: "Health endpoint",
       status: "fail",
       message: `${url} → unreachable`,
@@ -144,10 +182,16 @@ async function checkReadinessEndpoint(port: number): Promise<DiagnosticCheck> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
     if (res.status === 200) {
-      return { name: "Readiness endpoint", status: "pass", message: `${url} → 200 OK` };
+      return {
+        id: CHECK_IDS.READINESS_ENDPOINT,
+        name: "Readiness endpoint",
+        status: "pass",
+        message: `${url} → 200 OK`,
+      };
     }
     if (res.status === 503) {
       return {
+        id: CHECK_IDS.READINESS_ENDPOINT,
         name: "Readiness endpoint",
         status: "warn",
         message: `${url} → 503 Not Ready`,
@@ -155,12 +199,14 @@ async function checkReadinessEndpoint(port: number): Promise<DiagnosticCheck> {
       };
     }
     return {
+      id: CHECK_IDS.READINESS_ENDPOINT,
       name: "Readiness endpoint",
       status: "fail",
       message: `${url} → ${res.status}`,
     };
   } catch {
     return {
+      id: CHECK_IDS.READINESS_ENDPOINT,
       name: "Readiness endpoint",
       status: "warn",
       message: `${url} → unreachable (skipped, service may not be running)`,
@@ -171,9 +217,15 @@ async function checkReadinessEndpoint(port: number): Promise<DiagnosticCheck> {
 function checkBunPath(): DiagnosticCheck {
   try {
     const path = detectBunPath();
-    return { name: "Bun runtime", status: "pass", message: `Found at ${path}` };
+    return {
+      id: CHECK_IDS.BUN_RUNTIME,
+      name: "Bun runtime",
+      status: "pass",
+      message: `Found at ${path}`,
+    };
   } catch {
     return {
+      id: CHECK_IDS.BUN_RUNTIME,
       name: "Bun runtime",
       status: "fail",
       message: "Bun binary not found",
@@ -185,9 +237,10 @@ function checkBunPath(): DiagnosticCheck {
 function checkKoiPath(): DiagnosticCheck {
   try {
     const path = detectKoiPath(process.cwd());
-    return { name: "Koi CLI", status: "pass", message: `Found at ${path}` };
+    return { id: CHECK_IDS.KOI_CLI, name: "Koi CLI", status: "pass", message: `Found at ${path}` };
   } catch {
     return {
+      id: CHECK_IDS.KOI_CLI,
       name: "Koi CLI",
       status: "fail",
       message: "koi binary not found",
@@ -199,9 +252,15 @@ function checkKoiPath(): DiagnosticCheck {
 async function checkLingerEnabled(): Promise<DiagnosticCheck> {
   const enabled = await isLingerEnabled();
   if (enabled) {
-    return { name: "loginctl linger", status: "pass", message: "Enabled" };
+    return {
+      id: CHECK_IDS.LOGINCTL_LINGER,
+      name: "loginctl linger",
+      status: "pass",
+      message: "Enabled",
+    };
   }
   return {
+    id: CHECK_IDS.LOGINCTL_LINGER,
     name: "loginctl linger",
     status: "warn",
     message: "Disabled — user services will stop on logout",
@@ -284,8 +343,8 @@ export async function runRepair(
   for (const check of report.checks) {
     if (check.status === "pass") continue;
 
-    switch (check.name) {
-      case "Service status": {
+    switch (check.id) {
+      case CHECK_IDS.SERVICE_STATUS: {
         if (check.status === "warn" || check.status === "fail") {
           try {
             await manager.start(report.serviceName);
@@ -298,7 +357,7 @@ export async function runRepair(
         break;
       }
 
-      case "loginctl linger": {
+      case CHECK_IDS.LOGINCTL_LINGER: {
         if (check.status === "warn" && report.platform === "linux") {
           try {
             const { execSync } = await import("node:child_process");

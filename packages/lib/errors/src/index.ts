@@ -28,6 +28,7 @@ export {
   toKoiError,
 } from "./error-utils.js";
 export { mapFsError, mapParseError } from "./fs-errors.js";
+export { mapWithConcurrency } from "./map-with-concurrency.js";
 export {
   computeBackoff,
   DEFAULT_RECONNECT_CONFIG,

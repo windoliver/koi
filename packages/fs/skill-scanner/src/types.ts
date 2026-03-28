@@ -85,4 +85,6 @@ export interface ScannerConfig {
   readonly severityThreshold?: Severity;
   readonly confidenceThreshold?: number;
   readonly trustedDomains?: readonly string[];
+  /** Called when a finding is filtered out (below severity/confidence threshold). */
+  readonly onFilteredFinding?: ((finding: ScanFinding) => void) | undefined;
 }

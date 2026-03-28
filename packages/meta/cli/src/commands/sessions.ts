@@ -7,8 +7,8 @@
 
 import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { loadManifest } from "@koi/manifest";
 import type { SessionsFlags } from "../args.js";
+import { loadManifestOrExit } from "../load-manifest-or-exit.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,14 +114,8 @@ export async function listSessionSummaries(
 async function runSessionsList(flags: SessionsFlags): Promise<void> {
   const manifestPath = flags.manifest ?? "koi.yaml";
   const workspaceRoot = resolve(dirname(manifestPath));
-
-  const loadResult = await loadManifest(manifestPath);
-  if (!loadResult.ok) {
-    process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
-    process.exit(1);
-  }
-
-  const agentName = loadResult.value.manifest.name;
+  const { manifest } = await loadManifestOrExit(manifestPath);
+  const agentName = manifest.name;
   const summaries = await listSessionSummaries(workspaceRoot, agentName, flags.limit);
 
   if (summaries.length === 0) {

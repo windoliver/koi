@@ -96,6 +96,25 @@ declare function mapFsError(err: unknown, context: string): KoiError;
 declare function mapParseError(err: unknown, filePath: string): KoiError;
 
 /**
+ * Bounded-concurrency map — processes items in parallel with at most
+ * \`concurrency\` concurrent executions, preserving input order.
+ *
+ * Unlike batch-based approaches that wait for an entire batch before
+ * starting the next, this uses a sliding-window strategy: a new item
+ * starts as soon as any slot frees up, maximizing throughput.
+ */
+/**
+ * Maps over \`items\` with at most \`concurrency\` concurrent calls to \`fn\`.
+ * Results preserve input order (result[i] corresponds to items[i]).
+ * Rejects on the first error, like \`Promise.all\`.
+ *
+ * @param items - Input array to map over
+ * @param fn - Async mapper receiving item and its index
+ * @param concurrency - Maximum number of concurrent executions (must be > 0)
+ */
+declare function mapWithConcurrency<T, R>(items: readonly T[], fn: (item: T, index: number) => Promise<R>, concurrency: number): Promise<readonly R[]>;
+
+/**
  * Retry with exponential backoff and jitter.
  *
  * Handles transient failures (rate limits, timeouts, server errors)
@@ -178,6 +197,6 @@ declare class KoiRuntimeError extends Error {
     toKoiError(): KoiError;
 }
 
-export { type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_RECONNECT_CONFIG, DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, createCircuitBreaker, extractCode, extractMessage, formatToolError, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, sleep, swallowError, toKoiError, withRetry };
+export { type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_RECONNECT_CONFIG, DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, createCircuitBreaker, extractCode, extractMessage, formatToolError, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, mapWithConcurrency, sleep, swallowError, toKoiError, withRetry };
 "
 `;

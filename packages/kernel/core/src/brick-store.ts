@@ -10,7 +10,13 @@ import type { BrickComposition } from "./brick-composition.js";
 import type { BrickId } from "./brick-snapshot.js";
 import type { ToolOrigin, ToolPolicy } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
-import type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
+import type {
+  BrickKind,
+  BrickLifecycle,
+  BrickSignature,
+  ForgeScope,
+  TrustTier,
+} from "./forge-types.js";
 import type { ContentMarker, DataClassification, ForgeProvenance } from "./provenance.js";
 
 // ---------------------------------------------------------------------------
@@ -253,6 +259,21 @@ export interface BrickArtifactBase {
   readonly trigger?: readonly string[] | undefined;
   /** Scoped namespace for community marketplace distribution (e.g., "@author/name"). */
   readonly namespace?: string | undefined;
+  /**
+   * Trust tier based on signature verification.
+   * - "local": unverified, user's own brick
+   * - "community": signed by the brick author
+   * - "verified": signed by the registry / Koi team
+   */
+  readonly trustTier?: TrustTier | undefined;
+  /** Ed25519 signature metadata. Undefined = unsigned brick. */
+  readonly signature?: BrickSignature | undefined;
+  /**
+   * Monotonically increasing store-level version for optimistic locking.
+   * Incremented on every `update()`. Absent on legacy bricks or bricks
+   * that have never been updated through a version-aware store.
+   */
+  readonly storeVersion?: number | undefined;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -392,11 +413,26 @@ export interface BrickUpdate {
   readonly trigger?: readonly string[] | undefined;
   /** Updated community namespace. */
   readonly namespace?: string | undefined;
+  /**
+   * Optimistic locking: expected current `storeVersion` of the brick.
+   * If provided, the update is rejected with CONFLICT when the stored
+   * version differs from this value (another writer modified it first).
+   * Omit to skip the version check (unconditional update).
+   */
+  readonly expectedVersion?: number | undefined;
 }
 
-/** Compile-time check: every key of BrickUpdate must exist on BrickArtifactBase. */
+/**
+ * Control-flow keys in BrickUpdate that are NOT data fields on BrickArtifactBase.
+ * These direct store behavior (e.g., optimistic locking) rather than modifying brick data.
+ */
+type BrickUpdateControlKeys = "expectedVersion";
+
+/** Compile-time check: every non-control key of BrickUpdate must exist on BrickArtifactBase. */
 type _AssertUpdateSubset =
-  Exclude<keyof BrickUpdate, keyof BrickArtifactBase> extends never ? true : never;
+  Exclude<keyof BrickUpdate, keyof BrickArtifactBase | BrickUpdateControlKeys> extends never
+    ? true
+    : never;
 const _checkSubset: _AssertUpdateSubset = true;
 void _checkSubset; // suppress unused-variable lint
 
