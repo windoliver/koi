@@ -285,8 +285,8 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
         if (llmPipeline !== undefined) {
           void llmPipeline
             .consolidate(entries, ctx.sessionId, sessionCount, clock, buffer)
+            .then(() => {})
             .catch((e: unknown) => {
-              // LLM pipeline failures are non-fatal — stat-based pipeline already ran
               config.onLlmPipelineError?.(e, ctx.sessionId);
             });
         }
