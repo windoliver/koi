@@ -351,6 +351,8 @@ export interface ForgeQuery {
   readonly createdBy?: string;
   readonly classification?: DataClassification;
   readonly contentMarkers?: readonly ContentMarker[];
+  /** Exact case-insensitive match against brick name. Used for name-based dedup. */
+  readonly name?: string;
   /** Case-insensitive substring match against brick name and description. */
   readonly text?: string;
   readonly limit?: number;
