@@ -1,7 +1,15 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: [
+    "src/index.ts",
+    "src/registry.ts",
+    "src/resolve-manifest.ts",
+    "src/register-companion-skills.ts",
+    "src/register-bundled-agents.ts",
+    "src/types.ts",
+    "src/discover-static.ts",
+  ],
   format: ["esm"],
   dts: {
     compilerOptions: {

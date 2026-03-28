@@ -55,18 +55,19 @@ import {
   PROVIDER_ENV_KEYS,
   PROVIDER_FACTORIES,
 } from "@koi/model-router";
+// Import from subpaths to keep discover-static.ts out of the compiled binary's
+// module graph. The barrel "@koi/resolve" re-exports discover-static which would
+// pull in Bun.file() and dynamic import() code that has no business in a binary.
+import { registerBundledAgents } from "@koi/resolve/register-bundled-agents";
+import { registerCompanionSkills } from "@koi/resolve/register-companion-skills";
+import { createRegistry } from "@koi/resolve/registry";
+import { resolveManifest } from "@koi/resolve/resolve-manifest";
 import type {
   BrickDescriptor,
   ResolutionContext,
   ResolveApprovalHandler,
   ResolvedManifest,
-} from "@koi/resolve";
-import {
-  createRegistry,
-  registerBundledAgents,
-  registerCompanionSkills,
-  resolveManifest,
-} from "@koi/resolve";
+} from "@koi/resolve/types";
 // Search descriptors (alphabetical)
 import { descriptor as searchBraveDescriptor } from "@koi/search-brave";
 import { descriptor as soulDescriptor } from "@koi/soul";
@@ -244,7 +245,7 @@ export async function resolveAgent(
   } else {
     // Dev mode: discover additional descriptors from packages/ directory.
     // Dynamic import keeps discover-static.ts out of the compiled binary entirely.
-    const { discoverDescriptorsAuto } = await import("@koi/resolve");
+    const { discoverDescriptorsAuto } = await import("@koi/resolve/discover-static");
     const packagesDir = options.packagesDir ?? detectPackagesDir();
     const discoveryResult = await discoverDescriptorsAuto(packagesDir);
 
