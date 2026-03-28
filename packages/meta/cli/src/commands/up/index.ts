@@ -728,9 +728,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
       if (nexus.baseUrl !== undefined) {
         try {
           const { createNexusForgeStore } = await import("@koi/nexus-store");
+          const nexusKey = process.env.NEXUS_API_KEY ?? "";
+          if (nexusKey === "") {
+            process.stderr.write("warn: NEXUS_API_KEY not set — forge store will fail auth\n");
+          }
           preForgeStore = createNexusForgeStore({
             baseUrl: nexus.baseUrl,
-            apiKey: process.env.NEXUS_API_KEY ?? "",
+            apiKey: nexusKey,
             basePath: `agents/${manifest.name}/bricks`,
           });
           activeStorage.forge = "nexus";
