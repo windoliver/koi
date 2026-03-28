@@ -11,6 +11,7 @@
  */
 
 import type { InboundMessage } from "@koi/core/message";
+
 import type {
   CapabilityFragment,
   KoiMiddleware,
@@ -199,6 +200,8 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       let responseText = "";
       // let: track model name from done chunk
       let modelName = request.model ?? "unknown";
+      // let: track whether we recorded the outcome (generator may be aborted early)
+      let recorded = false;
       try {
         for await (const chunk of next(enrichedRequest)) {
           if (chunk.kind === "text_delta") {
@@ -212,14 +215,25 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
                 responseText = resp.content;
               }
             }
+            // Record outcome when done chunk arrives — the consumer may
+            // abort the generator after this yield, so we can't defer
+            // recording to after the loop.
+            const bulletIds = extractCitedBulletIds(responseText);
+            recordOutcome(ctx, "model_call", modelName, start, "success", bulletIds);
+            recorded = true;
           }
           yield chunk;
         }
 
-        const bulletIds = extractCitedBulletIds(responseText);
-        recordOutcome(ctx, "model_call", modelName, start, "success", bulletIds);
+        // Fallback: record if loop completed without a done chunk
+        if (!recorded) {
+          const bulletIds = extractCitedBulletIds(responseText);
+          recordOutcome(ctx, "model_call", modelName, start, "success", bulletIds);
+        }
       } catch (e: unknown) {
-        recordOutcome(ctx, "model_call", modelName, start, "failure");
+        if (!recorded) {
+          recordOutcome(ctx, "model_call", modelName, start, "failure");
+        }
         throw e;
       }
     },
