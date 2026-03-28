@@ -7,7 +7,7 @@
 
 import type { KeyEvent, SyntaxStyle } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { AgentSplitPane, type AgentPaneData } from "../components/agent-split-pane.js";
 import type { TuiStore } from "../state/store.js";
 import type { PresetInfo } from "../state/types.js";
@@ -112,12 +112,23 @@ function mapKeyEventToSequence(key: KeyEvent, paletteActive?: boolean): string |
 export function TuiRoot(props: TuiRootProps): React.ReactNode {
   const state = useStoreState(props.store);
 
+  // Signal counters for palette navigation — incremented to trigger effects
+  const [paletteNavDown, setPaletteNavDown] = useState(0);
+  const [paletteNavUp, setPaletteNavUp] = useState(0);
+  const [paletteConfirm, setPaletteConfirm] = useState(0);
+
   useKeyboard((key: KeyEvent) => {
     // In palette mode, only intercept control keys — let printable chars
     // fall through to the palette's <input> for filter typing.
     const inPalette = state.view === "palette";
     const seq = mapKeyEventToSequence(key, inPalette);
     if (seq !== null) {
+      // Intercept arrows and Enter in palette mode for select navigation
+      if (inPalette) {
+        if (seq === "\x1b[B") { setPaletteNavDown((c) => c + 1); return; }
+        if (seq === "\x1b[A") { setPaletteNavUp((c) => c + 1); return; }
+        if (seq === "\r") { setPaletteConfirm((c) => c + 1); return; }
+      }
       props.onKeyInput(seq);
     }
   });
@@ -499,6 +510,9 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           onCancel={props.onPaletteCancel}
           focused={isPalette}
           capabilities={state.capabilities}
+          navigateDown={paletteNavDown}
+          navigateUp={paletteNavUp}
+          confirmSignal={paletteConfirm}
         />
 
         </>)}
