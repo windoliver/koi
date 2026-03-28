@@ -232,29 +232,32 @@ export interface ResolveAgentOptions {
 export async function resolveAgent(
   options: ResolveAgentOptions,
 ): Promise<Result<ResolvedManifest, KoiError>> {
-  // Static ALL_DESCRIPTORS contains every descriptor the compiled binary needs.
-  // Dynamic discovery extends that set in dev mode (e.g., local packages/ dir).
-  // In a compiled binary there is no packages/ directory, so discovery finds
-  // nothing — that is expected and not an error.
-  const packagesDir = options.packagesDir ?? detectPackagesDir();
-  const discoveryResult = await discoverDescriptorsAuto(packagesDir);
+  // Compiled binaries have all descriptors statically bundled in ALL_DESCRIPTORS.
+  // No filesystem access, no dynamic imports, no manifest reads — fully self-contained.
+  // Dev mode extends that set by scanning the local packages/ directory.
+  const isCompiled = process.argv[0] !== undefined && !process.argv[0].includes("bun");
 
-  // Merge: static descriptors take precedence over discovered ones
-  const staticKeys = new Set(ALL_DESCRIPTORS.map(descriptorKey));
-  const discovered = discoveryResult.ok
-    ? discoveryResult.value.filter((d) => !staticKeys.has(descriptorKey(d)))
-    : [];
+  let allDescriptors: readonly BrickDescriptor<unknown>[];
 
-  if (!discoveryResult.ok) {
-    // In compiled binaries, discovery failure is expected (no packages/ dir).
-    // Only warn in dev mode where the packages directory should exist.
-    const isCompiled = process.argv[0] !== undefined && !process.argv[0].includes("bun");
-    if (!isCompiled) {
+  if (isCompiled) {
+    // Binary mode: use only statically bundled descriptors — zero filesystem dependency.
+    allDescriptors = ALL_DESCRIPTORS;
+  } else {
+    // Dev mode: discover additional descriptors from packages/ directory.
+    const packagesDir = options.packagesDir ?? detectPackagesDir();
+    const discoveryResult = await discoverDescriptorsAuto(packagesDir);
+
+    const staticKeys = new Set(ALL_DESCRIPTORS.map(descriptorKey));
+    const discovered = discoveryResult.ok
+      ? discoveryResult.value.filter((d) => !staticKeys.has(descriptorKey(d)))
+      : [];
+
+    if (!discoveryResult.ok) {
       process.stderr.write(`warn: descriptor discovery failed: ${discoveryResult.error.message}\n`);
     }
-  }
 
-  const allDescriptors: readonly BrickDescriptor<unknown>[] = [...ALL_DESCRIPTORS, ...discovered];
+    allDescriptors = [...ALL_DESCRIPTORS, ...discovered];
+  }
 
   // Register companion skills if ForgeStore is provided
   if (options.forgeStore !== undefined) {
