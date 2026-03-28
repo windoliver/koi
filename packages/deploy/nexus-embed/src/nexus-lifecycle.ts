@@ -181,11 +181,16 @@ export async function nexusUp(
       );
     }
     upResult = await runNexusCommand(["start"], cwd, verbose, "nexus start", sourceDir);
-    // If start fails (e.g. containers were removed), fall through to full up
+    // If start fails (e.g. containers were killed/removed), clean up stale
+    // containers before full restart. Without this, `nexus up` sees the old
+    // containers occupying the port and allocates a new one (#1077).
     if (!upResult.ok) {
       if (verbose) {
-        process.stderr.write("Nexus: fast resume failed, falling back to nexus up\n");
+        process.stderr.write("Nexus: fast resume failed, cleaning up stale containers\n");
       }
+      // Remove dead containers so the configured port is freed.
+      // Result intentionally ignored — if down fails (already removed), up still works.
+      await runNexusCommand(["down"], cwd, verbose, "nexus down", sourceDir);
       upResult = await runNexusFullUp(options, cwd, verbose, sourceDir);
     }
   } else {
