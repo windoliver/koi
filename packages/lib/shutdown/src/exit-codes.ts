@@ -5,12 +5,6 @@
  * - EXIT_CONFIG (78) → RestartPreventExitStatus in systemd (won't restart on config errors)
  * - EXIT_ERROR (1) → restart appropriate
  * - EXIT_UNAVAILABLE (69) → retry later
- *
- * Breaking change history:
- * - EXIT_NETWORK changed from 3 → 68 (EX_NOHOST) in PR #1107
- * - EXIT_TIMEOUT changed from 4 → 75 (EX_TEMPFAIL) in PR #1107
- * If you have external scripts or CI that check specific numeric exit codes,
- * update them to use the new values or import the constants directly.
  */
 
 /** Clean exit — no errors. */
@@ -25,11 +19,11 @@ export const EXIT_WARN = 1;
 /** Critical failures present — used by diagnostic commands (doctor, status). */
 export const EXIT_CRITICAL = 2;
 
-/** Network error (HTTP timeouts, registry unreachable) — EX_NOHOST from sysexits.h. */
-export const EXIT_NETWORK = 68;
+/** Network error (HTTP timeouts, registry unreachable). */
+export const EXIT_NETWORK = 3;
 
-/** Operation timeout (probe timeouts, deadline exceeded) — EX_TEMPFAIL from sysexits.h. */
-export const EXIT_TIMEOUT = 75;
+/** Operation timeout (probe timeouts, deadline exceeded). */
+export const EXIT_TIMEOUT = 4;
 
 /** Dependency unavailable — retry later. */
 export const EXIT_UNAVAILABLE = 69;

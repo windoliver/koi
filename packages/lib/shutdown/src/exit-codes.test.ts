@@ -29,12 +29,12 @@ describe("exit codes", () => {
     expect(EXIT_CRITICAL).toBe(2);
   });
 
-  it("EXIT_NETWORK is 68 (EX_NOHOST)", () => {
-    expect(EXIT_NETWORK).toBe(68);
+  it("EXIT_NETWORK is 3", () => {
+    expect(EXIT_NETWORK).toBe(3);
   });
 
-  it("EXIT_TIMEOUT is 75 (EX_TEMPFAIL)", () => {
-    expect(EXIT_TIMEOUT).toBe(75);
+  it("EXIT_TIMEOUT is 4", () => {
+    expect(EXIT_TIMEOUT).toBe(4);
   });
 
   it("EXIT_UNAVAILABLE is 69 (EX_UNAVAILABLE)", () => {
@@ -79,11 +79,11 @@ describe("exitCodeForError", () => {
     expect(exitCodeForError("RATE_LIMIT")).toBe(EXIT_UNAVAILABLE);
   });
 
-  it("maps TIMEOUT to EXIT_TIMEOUT (75)", () => {
+  it("maps TIMEOUT to EXIT_TIMEOUT (4)", () => {
     expect(exitCodeForError("TIMEOUT")).toBe(EXIT_TIMEOUT);
   });
 
-  it("maps EXTERNAL to EXIT_NETWORK (68)", () => {
+  it("maps EXTERNAL to EXIT_NETWORK (3)", () => {
     expect(exitCodeForError("EXTERNAL")).toBe(EXIT_NETWORK);
   });
 
