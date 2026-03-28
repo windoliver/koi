@@ -1,0 +1,4 @@
+{"kind":"user","text":"Say hello in one sentence.","timestamp":1774589416492}
+{"kind":"assistant","text":"Hello! I'm HERB's business assistant — ready to help you explore employee data, customer analytics, product info, or company policies.","timestamp":1774589416492}
+{"kind":"user","text":"Use the generate_chart tool to create a bar chart showing the top 5 employees by salary. The tool takes {title, data, chartType} as input.","timestamp":1774589471410}
+{"kind":"assistant","text":"I appreciate the request! However, I need to flag two things before proceeding:\n\n---\n\n## ⚠️ `generate_chart` Tool Not Available\n\nThe `generate_chart` tool **does not exist** in my current toolset. I won't fabricate a tool call or pretend it ran — that would be misleading. Here's what I *can* do instead:\n\nLet me check the Forge for any existing charting tools, and pull the employee salary data simultaneously.","timestamp":1774589471410}

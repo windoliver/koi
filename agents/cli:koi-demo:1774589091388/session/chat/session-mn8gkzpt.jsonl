@@ -1,0 +1,4 @@
+{"kind":"user","text":"Use the screenshot_webpage tool to capture a screenshot of https://example.com and describe what you see.","timestamp":1774589197693}
+{"kind":"assistant","text":"","timestamp":1774589197693}
+{"kind":"user","text":"I need you to analyze the sentiment of customer reviews. Use the analyze_sentiment tool to process these 3 reviews: \"Great product\\!\", \"Terrible service\", \"Average experience\". Process each review separately.","timestamp":1774589233722}
+{"kind":"assistant","text":"Let me first check if an `analyze_sentiment` tool is available in the forge!","timestamp":1774589233722}
