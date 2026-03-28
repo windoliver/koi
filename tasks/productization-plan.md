@@ -115,6 +115,8 @@ Per decision 2A, skills and extensions are unified under `koi forge`. The forge 
 
 Remaining work:
 - [ ] Finish Ed25519 signature verification for curated trust tier (4A, in progress)
+- [ ] Build key lifecycle infrastructure for the "verified" trust tier — key generation/storage, distribution to clients, rotation without invalidating existing signatures, and revocation of compromised keys. **Blocks** meaningful use of `classifyTrustTier` with a non-empty `trustedKeys` set. Without this, the trust model is effectively two-tier (local | community).
+- [ ] Implement server-side search for NexusForgeStore (or migrate to store-sqlite for registry use). Current implementation reads all N bricks over the network for every search query — O(N) read amplification. Blocking for registry at scale (>200 bricks). See `packages/fs/nexus-store/src/forge.ts`.
 - [ ] Add `koi forge list` — show all installed bricks with kind, version, trust status
 - [ ] Add `koi forge link <path>` — symlink a local brick for development
 - [ ] Add `koi forge enable/disable <name>` — toggle without uninstall
@@ -272,6 +274,8 @@ Makes Koi supportable for operators who are not Koi contributors.
 Makes Koi extensible without repo surgery.
 
 - [ ] Ed25519 curated trust tier (finish 4A)
+- [ ] Key lifecycle infrastructure (generation, distribution, rotation, revocation) — prerequisite for "verified" tier
+- [ ] Server-side search for registry store (NexusForgeStore O(N) scan does not scale)
 - [ ] `koi forge list` (installed bricks with trust status)
 - [ ] `koi forge link` (local dev workflow)
 - [ ] `koi forge enable/disable` (toggle without uninstall)

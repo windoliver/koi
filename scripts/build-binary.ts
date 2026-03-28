@@ -241,6 +241,9 @@ async function compileBinary(target: TargetTriple): Promise<BuildResult> {
     "--outfile",
     outFile,
     ...externalFlags,
+    "--minify",
+    "--bytecode",
+    "--sourcemap",
     ENTRY_POINT,
   ];
 

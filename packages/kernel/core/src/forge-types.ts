@@ -127,6 +127,11 @@ export const ALL_BRICK_KINDS: readonly BrickKind[] = [
   "composite",
 ] as const;
 
+/** Runtime type guard for BrickKind values. */
+export function isBrickKind(value: string): value is BrickKind {
+  return (ALL_BRICK_KINDS as readonly string[]).includes(value);
+}
+
 /** Maximum number of steps in a composite pipeline. */
 export const MAX_PIPELINE_STEPS = 20;
 

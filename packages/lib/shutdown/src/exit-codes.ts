@@ -13,11 +13,17 @@ export const EXIT_OK = 0;
 /** Runtime error (agent crash, subsystem failure) — restart may help. */
 export const EXIT_ERROR = 1;
 
-/** Network error (HTTP timeouts, registry unreachable). */
-export const EXIT_NETWORK = 3;
+/** Warnings present but no critical failures — used by diagnostic commands (doctor, status). */
+export const EXIT_WARN = 1;
 
-/** Operation timeout (probe timeouts, deadline exceeded). */
-export const EXIT_TIMEOUT = 4;
+/** Critical failures present — used by diagnostic commands (doctor, status). */
+export const EXIT_CRITICAL = 2;
+
+/** Network error (HTTP timeouts, registry unreachable) — EX_NOHOST from sysexits.h. */
+export const EXIT_NETWORK = 68;
+
+/** Operation timeout (probe timeouts, deadline exceeded) — EX_TEMPFAIL from sysexits.h. */
+export const EXIT_TIMEOUT = 75;
 
 /** Dependency unavailable — retry later. */
 export const EXIT_UNAVAILABLE = 69;
@@ -31,6 +37,8 @@ export const EXIT_CONFIG = 78;
 export const EXIT_CODES: {
   readonly OK: typeof EXIT_OK;
   readonly ERROR: typeof EXIT_ERROR;
+  readonly WARN: typeof EXIT_WARN;
+  readonly CRITICAL: typeof EXIT_CRITICAL;
   readonly NETWORK: typeof EXIT_NETWORK;
   readonly TIMEOUT: typeof EXIT_TIMEOUT;
   readonly UNAVAILABLE: typeof EXIT_UNAVAILABLE;
@@ -38,6 +46,8 @@ export const EXIT_CODES: {
 } = {
   OK: EXIT_OK,
   ERROR: EXIT_ERROR,
+  WARN: EXIT_WARN,
+  CRITICAL: EXIT_CRITICAL,
   NETWORK: EXIT_NETWORK,
   TIMEOUT: EXIT_TIMEOUT,
   UNAVAILABLE: EXIT_UNAVAILABLE,

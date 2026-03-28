@@ -8,11 +8,13 @@
 export {
   EXIT_CODES,
   EXIT_CONFIG,
+  EXIT_CRITICAL,
   EXIT_ERROR,
   EXIT_NETWORK,
   EXIT_OK,
   EXIT_TIMEOUT,
   EXIT_UNAVAILABLE,
+  EXIT_WARN,
   exitCodeForError,
 } from "./exit-codes.js";
 export type { ShutdownCallbacks, ShutdownEmit, ShutdownHandler } from "./shutdown.js";

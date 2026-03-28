@@ -10,9 +10,21 @@
  * - `koi forge uninstall <name>` Remove a brick from local store
  */
 
+import type { BrickKind } from "@koi/core";
+import { ALL_BRICK_KINDS, isBrickKind } from "@koi/core";
 import { EXIT_CONFIG, EXIT_ERROR, EXIT_NETWORK } from "@koi/shutdown";
 import type { ForgeFlags } from "../args.js";
 import { expectArg } from "../expect-arg.js";
+
+/** Validate and narrow a CLI --kind flag to BrickKind. */
+function resolveKind(raw: string | undefined): BrickKind {
+  const value = raw ?? "tool";
+  if (!isBrickKind(value)) {
+    process.stderr.write(`Invalid brick kind: "${value}". Valid: ${ALL_BRICK_KINDS.join(", ")}\n`);
+    process.exit(EXIT_CONFIG);
+  }
+  return value;
+}
 
 export async function runForge(flags: ForgeFlags): Promise<void> {
   switch (flags.subcommand) {
@@ -96,13 +108,7 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
   const { createRemoteRegistry } = await import("@koi/registry-remote");
   const registry = createRemoteRegistry({ baseUrl: registryUrl });
 
-  const kind = (flags.kind ?? "tool") as
-    | "tool"
-    | "skill"
-    | "agent"
-    | "middleware"
-    | "channel"
-    | "composite";
+  const kind = resolveKind(flags.kind);
   const result = await registry.get(kind, name, flags.namespace);
   if (!result.ok) {
     process.stderr.write(`Failed to fetch brick "${name}": ${result.error.message}\n`);
@@ -127,35 +133,48 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
   // Verify attestation signature (when brick has one)
   if (brick.provenance.attestation !== undefined) {
     process.stderr.write("  Verifying attestation signature...\n");
-    // Use HMAC-SHA256 signer for community registry attestations
-    const secret = process.env.KOI_REGISTRY_SIGNING_KEY ?? "koi-community-v1";
-    const signer: import("@koi/core").SigningBackend = {
-      algorithm: "hmac-sha256",
-      sign(data: Uint8Array): Uint8Array {
-        const hasher = new Bun.CryptoHasher("sha256", secret);
-        hasher.update(data);
-        return new Uint8Array(hasher.digest());
-      },
-      verify(data: Uint8Array, signature: Uint8Array): boolean {
-        const hasher = new Bun.CryptoHasher("sha256", secret);
-        hasher.update(data);
-        const expected = new Uint8Array(hasher.digest());
-        if (expected.length !== signature.length) return false;
-        for (let i = 0; i < expected.length; i++) {
-          if (expected[i] !== signature[i]) return false;
-        }
-        return true;
-      },
-    };
-    const attestResult = await verifyBrickAttestation(brick, signer);
-    if (attestResult.kind === "attestation_failed") {
-      process.stderr.write(`  Attestation verification failed: ${attestResult.reason}\n`);
-      if (!flags.yes) {
-        process.stderr.write("  Use --yes to install anyway (not recommended).\n");
-        process.exit(EXIT_ERROR);
+    const secret = process.env.KOI_REGISTRY_SIGNING_KEY;
+    if (secret === undefined) {
+      if (flags.yes) {
+        process.stderr.write("  Skipping attestation (KOI_REGISTRY_SIGNING_KEY not set, --yes).\n");
+      } else {
+        process.stderr.write(
+          "KOI_REGISTRY_SIGNING_KEY is required to verify brick attestations.\n" +
+            "Set this environment variable or use --yes to skip verification.\n",
+        );
+        process.exit(EXIT_CONFIG);
       }
-      process.stderr.write("  Proceeding despite attestation failure (--yes).\n");
     }
+    if (secret !== undefined) {
+      // Use HMAC-SHA256 signer for community registry attestations
+      const signer: import("@koi/core").SigningBackend = {
+        algorithm: "hmac-sha256",
+        sign(data: Uint8Array): Uint8Array {
+          const hasher = new Bun.CryptoHasher("sha256", secret);
+          hasher.update(data);
+          return new Uint8Array(hasher.digest());
+        },
+        verify(data: Uint8Array, signature: Uint8Array): boolean {
+          const hasher = new Bun.CryptoHasher("sha256", secret);
+          hasher.update(data);
+          const expected = new Uint8Array(hasher.digest());
+          if (expected.length !== signature.length) return false;
+          for (let i = 0; i < expected.length; i++) {
+            if (expected[i] !== signature[i]) return false;
+          }
+          return true;
+        },
+      };
+      const attestResult = await verifyBrickAttestation(brick, signer);
+      if (attestResult.kind === "attestation_failed") {
+        process.stderr.write(`  Attestation verification failed: ${attestResult.reason}\n`);
+        if (!flags.yes) {
+          process.stderr.write("  Use --yes to install anyway (not recommended).\n");
+          process.exit(EXIT_ERROR);
+        }
+        process.stderr.write("  Proceeding despite attestation failure (--yes).\n");
+      }
+    } // end if (secret !== undefined)
   }
 
   // Verify Ed25519 brick signature and classify trust tier
@@ -276,9 +295,7 @@ async function runForgeSearch(flags: ForgeFlags): Promise<void> {
 
   const searchQuery: import("@koi/core").BrickSearchQuery = {
     text: query,
-    ...(flags.kind !== undefined
-      ? { kind: flags.kind as "tool" | "skill" | "agent" | "middleware" | "channel" | "composite" }
-      : {}),
+    ...(flags.kind !== undefined ? { kind: resolveKind(flags.kind) } : {}),
     ...(flags.tags !== undefined ? { tags: flags.tags.split(",") } : {}),
     ...(flags.namespace !== undefined ? { namespace: flags.namespace } : {}),
   };
@@ -325,13 +342,7 @@ async function runForgeInspect(flags: ForgeFlags): Promise<void> {
   const { createRemoteRegistry } = await import("@koi/registry-remote");
   const registry = createRemoteRegistry({ baseUrl: registryUrl });
 
-  const kind = (flags.kind ?? "tool") as
-    | "tool"
-    | "skill"
-    | "agent"
-    | "middleware"
-    | "channel"
-    | "composite";
+  const kind = resolveKind(flags.kind);
   const result = await registry.get(kind, name, flags.namespace);
   if (!result.ok) {
     process.stderr.write(`Brick "${name}" not found: ${result.error.message}\n`);
@@ -513,13 +524,7 @@ async function runForgeUninstall(flags: ForgeFlags): Promise<void> {
   const store = await resolveLocalStore(manifestPath);
 
   // Exact match: search by kind + namespace, then filter by exact name
-  const kind = (flags.kind ?? "tool") as
-    | "tool"
-    | "skill"
-    | "agent"
-    | "middleware"
-    | "channel"
-    | "composite";
+  const kind = resolveKind(flags.kind);
   const query: import("@koi/core").ForgeQuery = {
     kind,
     ...(flags.namespace !== undefined ? { namespace: flags.namespace } : {}),

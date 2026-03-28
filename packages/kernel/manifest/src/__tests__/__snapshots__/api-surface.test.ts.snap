@@ -97,6 +97,7 @@ interface ManifestExtensions {
     readonly user?: SoulUserConfig | undefined;
     readonly deploy?: DeployConfig | undefined;
     readonly scope?: ManifestScopeConfig | undefined;
+    readonly preset?: string | undefined;
     readonly nexus?: NexusManifestConfig | undefined;
     readonly codeSandbox?: CodeSandboxManifestConfig | undefined;
     readonly dataSources?: readonly DataSourceManifestEntry[] | undefined;
