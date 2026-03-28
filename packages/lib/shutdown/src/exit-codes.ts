@@ -5,6 +5,12 @@
  * - EXIT_CONFIG (78) → RestartPreventExitStatus in systemd (won't restart on config errors)
  * - EXIT_ERROR (1) → restart appropriate
  * - EXIT_UNAVAILABLE (69) → retry later
+ *
+ * Breaking change history:
+ * - EXIT_NETWORK changed from 3 → 68 (EX_NOHOST) in PR #1107
+ * - EXIT_TIMEOUT changed from 4 → 75 (EX_TEMPFAIL) in PR #1107
+ * If you have external scripts or CI that check specific numeric exit codes,
+ * update them to use the new values or import the constants directly.
  */
 
 /** Clean exit — no errors. */

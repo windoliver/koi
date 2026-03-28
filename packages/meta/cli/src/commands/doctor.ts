@@ -127,9 +127,9 @@ export async function runDoctor(flags: DoctorFlags): Promise<void> {
     }
   }
 
+  // Text mode: exit non-zero only for failures (warnings are advisory).
+  // --json mode uses 3-tier exit (0/1/2) for structured consumers.
   if (report.failures > 0) {
     process.exit(EXIT_CRITICAL);
-  } else if (report.warnings > 0) {
-    process.exit(EXIT_WARN);
   }
 }
