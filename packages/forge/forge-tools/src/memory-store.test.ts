@@ -86,29 +86,30 @@ describe("content integrity: load", () => {
     }
   });
 
-  test("load returns error when content was tampered with", async () => {
+  test("load does not block on content mismatch (integrity checked at trust boundaries)", async () => {
     const store = createInMemoryForgeStore();
+
+    // Save a brick whose content-addressed ID does not match its content.
+    // This is common in tests and with synthetic IDs.
     const originalImpl = "return 1;";
     const id = computeBrickId("tool", originalImpl);
-    const brick = validToolBrick({ id, implementation: originalImpl });
-    await store.save(brick);
-
-    // Save a brick whose content-addressed ID does not match its content
-    const store2 = createInMemoryForgeStore();
-    // Directly save a brick whose ID does not match its content
     const mismatchedBrick: BrickArtifact = {
       ...createTestToolArtifact({
         id,
         implementation: "return hacked;",
       }),
     };
-    await store2.save(mismatchedBrick);
+    await store.save(mismatchedBrick);
 
-    const result = await store2.load(id);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
-      expect(result.error.message).toContain("integrity");
+    // Load succeeds — integrity is checked at trust boundaries (e.g., forge install),
+    // not on every read.
+    const result = await store.load(id);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.kind).toBe("tool");
+      if (result.value.kind === "tool") {
+        expect(result.value.implementation).toBe("return hacked;");
+      }
     }
   });
 
