@@ -54,7 +54,7 @@ describe("createNexusMailbox", () => {
       mailbox[Symbol.dispose]();
     });
 
-    test("returns error when Nexus returns unknown kind", async () => {
+    test("falls back to input-based message when Nexus returns unknown kind", async () => {
       const responseEnvelope = {
         id: "msg-gen-2",
         sender: "a",
@@ -80,10 +80,13 @@ describe("createNexusMailbox", () => {
 
       const result = await mailbox.send(input);
 
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe("EXTERNAL");
-        expect(result.error.message).toContain("unknown kind");
+      // Send succeeded (HTTP 200) — fallback constructs AgentMessage from input
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.id).toBe(messageId("msg-gen-2"));
+        expect(result.value.kind).toBe("request"); // preserves input kind
+        expect(result.value.from).toBe(agentId("a"));
+        expect(result.value.createdAt).toBe("2026-01-01T00:00:00Z");
       }
 
       mailbox[Symbol.dispose]();

@@ -19,6 +19,7 @@ import type {
   MessageFilter,
   Result,
 } from "@koi/core";
+import { agentId as brandAgentId, messageId as brandMessageId } from "@koi/core";
 import type { DeliveryMode } from "./constants.js";
 import {
   DEFAULT_DELIVERY_MODE,
@@ -223,19 +224,28 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
     if (!result.ok) return result;
 
     const mapped = mapNexusToKoi(result.value);
-    if (mapped === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: "EXTERNAL",
-          message: "Nexus returned message with unknown kind",
-          retryable: false,
-          context: { kind: result.value.kind },
-        },
-      };
+    if (mapped !== undefined) {
+      return { ok: true, value: mapped };
     }
 
-    return { ok: true, value: mapped };
+    // Nexus returned the message with a kind we don't recognize in the reverse
+    // mapping. The send itself succeeded (HTTP 200) — the message was delivered.
+    // Fall back to constructing the AgentMessage from the original input + the
+    // server-assigned id/timestamp rather than failing the entire operation.
+    return {
+      ok: true,
+      value: {
+        id: brandMessageId(result.value.id),
+        from: brandAgentId(result.value.sender),
+        to: brandAgentId(result.value.recipient),
+        kind: message.kind,
+        type: message.type,
+        payload: message.payload,
+        createdAt: result.value.createdAt,
+        ...(message.correlationId !== undefined ? { correlationId: message.correlationId } : {}),
+        ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
+      },
+    };
   };
 
   const onMessage = (handler: MessageHandler): (() => void) => {
