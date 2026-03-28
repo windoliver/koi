@@ -383,10 +383,8 @@ describe("createDebugInstrumentation", () => {
       expect(execSpan?.name).toBe("exec");
       expect(execSpan?.hook).toBe("toolExec");
       expect(execSpan?.children).toHaveLength(2);
-      expect(execSpan?.children?.[0]?.label ?? execSpan?.children?.[0]?.name).toBe(
-        "tool-exec:validate",
-      );
-      expect(execSpan?.children?.[1]?.label ?? execSpan?.children?.[1]?.name).toBe("sandbox-wasm");
+      expect(execSpan?.children?.[0]?.name).toBe("tool-exec:validate");
+      expect(execSpan?.children?.[1]?.name).toBe("sandbox-wasm");
     });
 
     test("handles tool child spans with errors", () => {
