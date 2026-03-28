@@ -63,7 +63,6 @@ import type {
 } from "@koi/resolve";
 import {
   createRegistry,
-  discoverDescriptorsAuto,
   registerBundledAgents,
   registerCompanionSkills,
   resolveManifest,
@@ -244,6 +243,8 @@ export async function resolveAgent(
     allDescriptors = ALL_DESCRIPTORS;
   } else {
     // Dev mode: discover additional descriptors from packages/ directory.
+    // Dynamic import keeps discover-static.ts out of the compiled binary entirely.
+    const { discoverDescriptorsAuto } = await import("@koi/resolve");
     const packagesDir = options.packagesDir ?? detectPackagesDir();
     const discoveryResult = await discoverDescriptorsAuto(packagesDir);
 
