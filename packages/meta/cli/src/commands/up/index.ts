@@ -1162,7 +1162,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 9. ADMIN — kill stale processes on required ports before binding
   const DEFAULT_ADMIN_PORT = 3100;
-  await freePort(DEFAULT_ADMIN_PORT);
+  // Do NOT call freePort() — it kills other koi up instances running on this port.
+  // The retry loop below (lines 1384-1410) gracefully increments to the next free port.
   let stopAdmin: (() => void) | undefined;
   let adminBridge: AdminPanelBridgeResult | undefined;
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
@@ -1550,18 +1551,28 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const controller = new AbortController();
   let shuttingDown = false;
 
-  function shutdown(): void {
+  function shutdown(reason?: string): void {
     if (shuttingDown) {
       process.stderr.write("\nForce exit.\n");
       process.exit(1);
     }
     shuttingDown = true;
-    output.info("\nShutting down...");
+    process.stderr.write(`\n[shutdown] triggered by: ${reason ?? "unknown"}\n`);
+    output.info("Shutting down...");
     controller.abort();
   }
 
-  process.on("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGHUP", () => shutdown("SIGHUP"));
+  process.on("uncaughtException", (err) => {
+    process.stderr.write(`[shutdown] uncaughtException: ${err.message}\n${err.stack ?? ""}\n`);
+    shutdown("uncaughtException");
+  });
+  process.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    process.stderr.write(`[shutdown] unhandledRejection: ${msg}\n`);
+  });
 
   // Separate concurrency guards for TUI (AG-UI bridge) and channel handlers.
   // This allows TUI and channels (Telegram, Slack, etc.) to process messages
@@ -1576,6 +1587,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     tuiProcessing = true;
     try {
       const text = extractTextFromBlocks(msg.content);
+      process.stderr.write(`[dispatch] message received: "${text.slice(0, 50)}..."\n`);
       if (text.trim() === "") return;
       const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
       // Expand stateless-normalized blocks ([user]: ..., [assistant]: ...)
@@ -1584,9 +1596,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
       const input: EngineInput = { kind: "messages", messages: expanded };
       const deltas: string[] = [];
       let turnCount = 0;
+      process.stderr.write(`[dispatch] starting runtime.run()...\n`);
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);
         if (event.kind === "done") {
+          process.stderr.write(
+            `[dispatch] done: stopReason=${event.output.stopReason} turns=${String(event.output.metrics.turns)}\n`,
+          );
           if (event.output.stopReason === "error") {
             const errMeta = event.output.metadata as Record<string, unknown> | undefined;
             const errMsg =
@@ -1689,8 +1705,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`error: chat dispatch failed: ${message}\n`);
+      process.stderr.write(`[dispatch] ERROR: ${message}\n`);
+      if (error instanceof Error && error.stack) {
+        process.stderr.write(
+          `[dispatch] stack: ${error.stack.split("\n").slice(0, 3).join("\n")}\n`,
+        );
+      }
     } finally {
+      process.stderr.write(`[dispatch] finished, tuiProcessing=false\n`);
       tuiProcessing = false;
     }
   });
