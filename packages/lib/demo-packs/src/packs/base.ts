@@ -75,7 +75,7 @@ async function seedBase(ctx: SeedContext): Promise<SeedResult> {
   const nexusCount = nexusResult.ok ? nexusResult.value.succeeded : 0;
 
   const counts: Record<string, number> = { files: 2, nexus: nexusCount };
-  const summary = ["Bootstrap files ready in .koi/" + (nexusCount > 0 ? " and Nexus" : "")];
+  const summary = [`Bootstrap files ready in .koi/${nexusCount > 0 ? " and Nexus" : ""}`];
 
   if (ctx.verbose) {
     summary.push(`  wrote ${instructionsPath}`);
@@ -91,6 +91,13 @@ async function seedBase(ctx: SeedContext): Promise<SeedResult> {
   return { ok: true, counts, summary };
 }
 
+async function checkBaseSeeded(ctx: SeedContext): Promise<boolean> {
+  const result = await ctx.nexusClient.rpc<{ readonly exists: boolean }>("exists", {
+    path: `/agents/${ctx.agentName}/SOUL.md`,
+  });
+  return result.ok && result.value.exists;
+}
+
 export const BASE_PACK: DemoPack = {
   id: "base",
   name: "Base",
@@ -98,5 +105,6 @@ export const BASE_PACK: DemoPack = {
   requires: [],
   agentRoles: [],
   seed: seedBase,
+  checkSeeded: checkBaseSeeded,
   prompts: ["What can you help me with?", "Describe your capabilities."],
 } as const;
