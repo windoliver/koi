@@ -947,11 +947,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
   }
 
   // Activate L3 stacks based on preset flags
-  // Upgrade store backends to Nexus when Nexus is available
+  // Upgrade store backends to Nexus when Nexus is available,
+  // but respect explicit user overrides from manifest stacks config
   const effectiveStacks = {
     ...preset.stacks,
     ...(nexus.baseUrl !== undefined
-      ? { threadStoreBackend: "nexus" as const, aceStoreBackend: "nexus" as const }
+      ? {
+          threadStoreBackend: preset.stacks.threadStoreBackend ?? ("nexus" as const),
+          aceStoreBackend: preset.stacks.aceStoreBackend ?? ("nexus" as const),
+        }
       : {}),
     // Auto-enable sandboxStack when the manifest declares a sandbox config
     ...(manifest.codeSandbox !== undefined ? { sandboxStack: true as const } : {}),
@@ -1783,31 +1787,59 @@ export async function runUp(flags: UpFlags): Promise<void> {
 /**
  * Create a lightweight model call function for the ACE reflector/curator.
  *
- * Uses Anthropic Claude Haiku for speed and cost efficiency. Returns undefined
+ * Supports both Anthropic (direct) and OpenRouter. Returns undefined
  * when no API key is available (ACE falls back to stat-only pipeline).
  */
 async function createAceModelCall(): Promise<
   ((messages: readonly import("@koi/core/message").InboundMessage[]) => Promise<string>) | undefined
 > {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (apiKey === undefined || apiKey.length === 0) return undefined;
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
-  const { createAnthropicAdapter } = await import("@koi/model-router");
-  const adapter = createAnthropicAdapter({ apiKey });
-  const aceModel = "claude-haiku-4-5-20251001";
+  // Prefer OpenRouter if available (works with any provider key)
+  if (openRouterKey !== undefined && openRouterKey.length > 0) {
+    const model = "anthropic/claude-3.5-haiku";
+    return async (messages) => {
+      const mapped = messages.map((m) => ({
+        role: "user" as const,
+        content: m.content.map((c) => (c.kind === "text" ? c.text : JSON.stringify(c))).join("\n"),
+      }));
+      const resp = await globalThis.fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openRouterKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model, messages: mapped, max_tokens: 1024 }),
+      });
+      if (!resp.ok) return "";
+      const json = (await resp.json()) as {
+        readonly choices?: readonly { readonly message?: { readonly content?: string } }[];
+      };
+      return json.choices?.[0]?.message?.content ?? "";
+    };
+  }
 
-  return async (messages) => {
-    const koiMessages = messages.map((m) => ({
-      ...m,
-      content: m.content.map((c) =>
-        c.kind === "text" ? c : { kind: "text" as const, text: JSON.stringify(c) },
-      ),
-    }));
-    const response = await adapter.complete({
-      messages: koiMessages,
-      model: aceModel,
-      maxTokens: 1024,
-    });
-    return typeof response.content === "string" ? response.content : "";
-  };
+  // Fall back to Anthropic SDK if ANTHROPIC_API_KEY is a real Anthropic key
+  if (anthropicKey !== undefined && anthropicKey.length > 0 && !anthropicKey.startsWith("sk-or-")) {
+    const { createAnthropicAdapter } = await import("@koi/model-router");
+    const adapter = createAnthropicAdapter({ apiKey: anthropicKey });
+    const aceModel = "claude-haiku-4-5-20251001";
+    return async (messages) => {
+      const koiMessages = messages.map((m) => ({
+        ...m,
+        content: m.content.map((c) =>
+          c.kind === "text" ? c : { kind: "text" as const, text: JSON.stringify(c) },
+        ),
+      }));
+      const response = await adapter.complete({
+        messages: koiMessages,
+        model: aceModel,
+        maxTokens: 1024,
+      });
+      return typeof response.content === "string" ? response.content : "";
+    };
+  }
+
+  return undefined;
 }

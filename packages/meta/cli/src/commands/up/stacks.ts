@@ -369,11 +369,18 @@ async function activateAce(
       basePath: `${agentPrefix}ace/structured-playbooks`,
     });
 
+    // Rich trajectory store for Nexus backend — uses same Nexus connection
+    const richTrajectoryStore =
+      llmConfig !== undefined
+        ? (await import("@koi/middleware-ace")).createInMemoryRichTrajectoryStore()
+        : undefined;
+
     const mw = createAceMiddleware({
       trajectoryStore,
       playbookStore,
       structuredPlaybookStore,
       ...llmConfig?.aceConfig,
+      ...(richTrajectoryStore !== undefined ? { richTrajectoryStore } : {}),
     });
     middleware.push(mw);
     if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);

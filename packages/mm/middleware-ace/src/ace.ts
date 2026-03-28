@@ -14,9 +14,11 @@ import type { InboundMessage } from "@koi/core/message";
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   ToolHandler,
   ToolRequest,
@@ -81,6 +83,59 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
   let cachedStatPlaybooks: readonly Playbook[] | undefined;
   let cachedStructuredPlaybooks: readonly StructuredPlaybook[] | undefined;
 
+  /** Shared playbook loading + injection logic for both wrapModelCall and wrapModelStream. */
+  async function enrichRequestWithPlaybooks(request: ModelRequest): Promise<ModelRequest> {
+    // Load stat-based playbooks (cached per session)
+    if (cachedStatPlaybooks === undefined) {
+      const listOptions: {
+        readonly tags?: readonly string[];
+        readonly minConfidence?: number;
+      } = {
+        ...(config.playbookTags !== undefined ? { tags: config.playbookTags } : {}),
+        minConfidence: config.minPlaybookConfidence ?? DEFAULT_MIN_PLAYBOOK_CONFIDENCE,
+      };
+      cachedStatPlaybooks = await config.playbookStore.list(listOptions);
+    }
+
+    // Load structured playbooks if LLM pipeline enabled
+    if (
+      llmEnabled &&
+      cachedStructuredPlaybooks === undefined &&
+      config.structuredPlaybookStore !== undefined
+    ) {
+      const tagOptions =
+        config.playbookTags !== undefined ? { tags: config.playbookTags } : undefined;
+      cachedStructuredPlaybooks = await config.structuredPlaybookStore.list(tagOptions);
+    }
+
+    // Select stat-based playbooks within token budget
+    const totalBudget = config.maxInjectionTokens ?? DEFAULT_MAX_INJECTION_TOKENS;
+    const selected = selectPlaybooks(cachedStatPlaybooks ?? [], {
+      maxTokens: totalBudget,
+      clock,
+    });
+
+    // Compute stat token usage, derive remaining budget for structured playbooks
+    const statTokensUsed = selected.reduce((sum, pb) => sum + estimateTokens(pb.strategy), 0);
+    const remainingBudget = totalBudget - statTokensUsed;
+    const filteredStructured = await selectStructuredPlaybooks(
+      cachedStructuredPlaybooks ?? [],
+      remainingBudget,
+    );
+
+    // Build enriched request
+    const enrichedRequest = buildEnrichedRequest(request, selected, filteredStructured, clock);
+
+    const totalPlaybookCount = selected.length + filteredStructured.length;
+    activePlaybookCount = totalPlaybookCount;
+
+    if (selected.length > 0 || filteredStructured.length > 0) {
+      config.onInject?.(selected);
+    }
+
+    return enrichedRequest;
+  }
+
   const middleware: KoiMiddleware = {
     name: "ace",
     priority: 350,
@@ -113,53 +168,7 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      // Load stat-based playbooks (cached per session)
-      if (cachedStatPlaybooks === undefined) {
-        const listOptions: {
-          readonly tags?: readonly string[];
-          readonly minConfidence?: number;
-        } = {
-          ...(config.playbookTags !== undefined ? { tags: config.playbookTags } : {}),
-          minConfidence: config.minPlaybookConfidence ?? DEFAULT_MIN_PLAYBOOK_CONFIDENCE,
-        };
-        cachedStatPlaybooks = await config.playbookStore.list(listOptions);
-      }
-
-      // Load structured playbooks if LLM pipeline enabled
-      if (
-        llmEnabled &&
-        cachedStructuredPlaybooks === undefined &&
-        config.structuredPlaybookStore !== undefined
-      ) {
-        const tagOptions =
-          config.playbookTags !== undefined ? { tags: config.playbookTags } : undefined;
-        cachedStructuredPlaybooks = await config.structuredPlaybookStore.list(tagOptions);
-      }
-
-      // Select stat-based playbooks within token budget
-      const totalBudget = config.maxInjectionTokens ?? DEFAULT_MAX_INJECTION_TOKENS;
-      const selected = selectPlaybooks(cachedStatPlaybooks ?? [], {
-        maxTokens: totalBudget,
-        clock,
-      });
-
-      // Compute stat token usage, derive remaining budget for structured playbooks
-      const statTokensUsed = selected.reduce((sum, pb) => sum + estimateTokens(pb.strategy), 0);
-      const remainingBudget = totalBudget - statTokensUsed;
-      const filteredStructured = await selectStructuredPlaybooks(
-        cachedStructuredPlaybooks ?? [],
-        remainingBudget,
-      );
-
-      // Build enriched request
-      const enrichedRequest = buildEnrichedRequest(request, selected, filteredStructured, clock);
-
-      const totalPlaybookCount = selected.length + filteredStructured.length;
-      activePlaybookCount = totalPlaybookCount;
-
-      if (selected.length > 0 || filteredStructured.length > 0) {
-        config.onInject?.(selected);
-      }
+      const enrichedRequest = await enrichRequestWithPlaybooks(request);
 
       // Execute and record outcome
       const start = clock();
@@ -174,6 +183,43 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
         return response;
       } catch (e: unknown) {
         recordOutcome(ctx, "model_call", request.model ?? "unknown", start, "failure");
+        throw e;
+      }
+    },
+
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      const enrichedRequest = await enrichRequestWithPlaybooks(request);
+
+      const start = clock();
+      // let: accumulate response text from stream deltas for citation extraction
+      let responseText = "";
+      // let: track model name from done chunk
+      let modelName = request.model ?? "unknown";
+      try {
+        for await (const chunk of next(enrichedRequest)) {
+          if (chunk.kind === "text_delta") {
+            responseText += chunk.delta;
+          }
+          if (chunk.kind === "done") {
+            const resp = (chunk as { readonly response?: ModelResponse }).response;
+            if (resp !== undefined) {
+              modelName = resp.model;
+              if (typeof resp.content === "string") {
+                responseText = resp.content;
+              }
+            }
+          }
+          yield chunk;
+        }
+
+        const bulletIds = extractCitedBulletIds(responseText);
+        recordOutcome(ctx, "model_call", modelName, start, "success", bulletIds);
+      } catch (e: unknown) {
+        recordOutcome(ctx, "model_call", modelName, start, "failure");
         throw e;
       }
     },
