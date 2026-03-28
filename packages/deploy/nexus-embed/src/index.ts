@@ -7,7 +7,12 @@
  */
 
 export { resolveNexusBinary } from "./binary-resolver.js";
-export { deriveDataDir, ensureNexusRunning } from "./ensure-running.js";
+export {
+  deriveDataDir,
+  ensureNexusRunning,
+  readSharedNexusKey,
+  writeSharedNexusKey,
+} from "./ensure-running.js";
 export { pollHealth, probeHealth } from "./health-check.js";
 export type { NexusInitOptions, NexusLifecycleOptions, NexusUpResult } from "./nexus-lifecycle.js";
 export { nexusDown, nexusInit, nexusStop, nexusUp, readRuntimeState } from "./nexus-lifecycle.js";

@@ -212,6 +212,12 @@ export async function nexusUp(
   // doesn't have one — callers should prefer the sk-* key for database auth.
   const apiKey = runtimeState?.api_key || yamlConfig.apiKey;
 
+  // Write to shared location so other worktrees can discover the key
+  if (apiKey !== undefined) {
+    const { writeSharedNexusKey } = await import("./ensure-running.js");
+    writeSharedNexusKey(apiKey);
+  }
+
   return { ok: true, value: { baseUrl, apiKey, autoInitialized } };
 }
 

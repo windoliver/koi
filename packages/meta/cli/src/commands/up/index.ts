@@ -662,6 +662,16 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const nexus = nexusResolution.state;
   const autonomous = autonomousResolution.result;
 
+  // Ensure NEXUS_API_KEY is set for ALL presets (not just embed-auth).
+  // resolveNexusOrWarn → createNexusStack → ensureNexusRunning may have
+  // set it in env (via our nexus-stack.ts fix), but if not, probe for it.
+  if (process.env.NEXUS_API_KEY === undefined && nexus.baseUrl !== undefined) {
+    const probed = await probeExistingNexus(workspaceRoot);
+    if (probed?.apiKey !== undefined) {
+      process.env.NEXUS_API_KEY = probed.apiKey;
+    }
+  }
+
   // Temporal contribution (inline — temporal resolution doesn't have its own bootstrap fn)
   const temporalContribution: StackContribution =
     temporalAdmin !== undefined

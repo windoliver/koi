@@ -26,14 +26,18 @@ import { pollHealth, probeHealth } from "./health-check.js";
 import { cleanStalePid, isProcessAlive, readPid, removePid, writePid } from "./pid-manager.js";
 import type { ConnectionState, EmbedConfig, EmbedResult } from "./types.js";
 
-/** Read the API key from .state.json in the data directory (if available).
- *  Falls back to scanning all known data directories for a matching port's state. */
+/** Read the API key from multiple sources:
+ *  1. Local .state.json  2. Shared key file  3. Scan all data dirs */
 function readApiKeyFromState(dataDir: string, port?: number): string | undefined {
-  // Try the local data dir first
+  // 1. Local state
   const localKey = readApiKeyFromStateFile(join(dataDir, ".state.json"));
   if (localKey !== undefined) return localKey;
 
-  // If local dir doesn't have state, scan all data dirs for a matching port
+  // 2. Shared key (written by whichever session started Nexus via nexusUp)
+  const sharedKey = readSharedNexusKey();
+  if (sharedKey !== undefined) return sharedKey;
+
+  // 3. Scan all data dirs for a matching port
   if (port !== undefined) {
     try {
       const nexusDir = join(homedir(), ".koi", "nexus");
@@ -68,6 +72,32 @@ function readApiKeyFromStateFile(statePath: string): string | undefined {
     const raw = readFileSync(statePath, "utf-8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return typeof parsed.api_key === "string" ? parsed.api_key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const NEXUS_SHARED_KEY_FILE = ".current-key";
+
+/** Write the API key to a shared location so other worktrees can discover it. */
+export function writeSharedNexusKey(apiKey: string): void {
+  try {
+    const nexusDir = join(homedir(), ".koi", "nexus");
+    const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+    mkdirSync(nexusDir, { recursive: true });
+    writeFileSync(join(nexusDir, NEXUS_SHARED_KEY_FILE), apiKey, "utf-8");
+  } catch {
+    /* best effort */
+  }
+}
+
+/** Read the shared API key written by any worktree that started Nexus. */
+export function readSharedNexusKey(): string | undefined {
+  try {
+    const keyPath = join(homedir(), ".koi", "nexus", NEXUS_SHARED_KEY_FILE);
+    if (!existsSync(keyPath)) return undefined;
+    const content = readFileSync(keyPath, "utf-8").trim();
+    return content.length > 0 ? content : undefined;
   } catch {
     return undefined;
   }
