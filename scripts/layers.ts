@@ -79,7 +79,6 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/auto-harness",
   "@koi/autonomous",
   "@koi/channels",
-  "@koi/cli",
   "@koi/community-registry",
   "@koi/context-arena",
   "@koi/data-source-stack",
@@ -105,4 +104,4 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
  * L4 — single distributable package that absorbs all L3 + orphaned L2.
  * Published as the unscoped `koi` package.
  */
-export const L4_PACKAGES: ReadonlySet<string> = new Set(["koi"]);
+export const L4_PACKAGES: ReadonlySet<string> = new Set(["koi", "@koi/cli"]);
