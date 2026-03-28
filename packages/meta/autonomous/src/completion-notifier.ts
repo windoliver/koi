@@ -23,6 +23,9 @@ import type {
   MailboxComponent,
 } from "@koi/core";
 import type { OnCompletedCallback, OnFailedCallback } from "@koi/long-running";
+import type { RetrySendConfig } from "./retry-send.js";
+import { sendWithRetry } from "./retry-send.js";
+import type { AutonomousLogger } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -35,6 +38,10 @@ export interface CompletionNotifierConfig {
   readonly agentId: AgentId;
   /** Mailbox used to deliver the notification message. */
   readonly mailbox: MailboxComponent;
+  /** Retry configuration for transient send failures. */
+  readonly retry?: RetrySendConfig | undefined;
+  /** Optional logger for notification diagnostics. */
+  readonly logger?: AutonomousLogger | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,13 +120,25 @@ function buildFailureMessage(
 export function createCompletionNotifier(
   config: CompletionNotifierConfig,
 ): CompletionNotifierCallbacks {
+  const retryConfig: RetrySendConfig = {
+    ...config.retry,
+    logger: config.retry?.logger ?? config.logger,
+  };
+
   const onCompleted: OnCompletedCallback = async (status: HarnessStatus): Promise<void> => {
     const message = buildCompletionMessage(config, status);
-    const result = await config.mailbox.send(message);
+    const result = await sendWithRetry(config.mailbox, message, retryConfig);
     if (!result.ok) {
-      console.warn(
-        `[autonomous] Failed to send completion notification to ${config.initiatorId}: ${result.error.message}`,
-      );
+      const logger = config.logger;
+      if (logger !== undefined) {
+        logger.warn(
+          `Failed to send completion notification to ${config.initiatorId}: ${result.error.message}`,
+        );
+      } else {
+        console.warn(
+          `[autonomous] Failed to send completion notification to ${config.initiatorId}: ${result.error.message}`,
+        );
+      }
     }
   };
 
@@ -128,11 +147,18 @@ export function createCompletionNotifier(
     error: KoiError,
   ): Promise<void> => {
     const message = buildFailureMessage(config, status, error);
-    const result = await config.mailbox.send(message);
+    const result = await sendWithRetry(config.mailbox, message, retryConfig);
     if (!result.ok) {
-      console.warn(
-        `[autonomous] Failed to send failure notification to ${config.initiatorId}: ${result.error.message}`,
-      );
+      const logger = config.logger;
+      if (logger !== undefined) {
+        logger.warn(
+          `Failed to send failure notification to ${config.initiatorId}: ${result.error.message}`,
+        );
+      } else {
+        console.warn(
+          `[autonomous] Failed to send failure notification to ${config.initiatorId}: ${result.error.message}`,
+        );
+      }
     }
   };
 
