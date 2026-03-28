@@ -14,8 +14,3 @@ prompt
 plan-work.md
 demo-strategy.md
 koi.yaml
-agents/
-.koi/
-nexus-data
-nexus-stack.yml
-nexus.yaml
