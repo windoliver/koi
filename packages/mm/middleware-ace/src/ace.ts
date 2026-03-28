@@ -267,7 +267,11 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
 
       try {
         // Persist trajectory
-        await config.trajectoryStore.append(ctx.sessionId, entries);
+        try {
+          await config.trajectoryStore.append(ctx.sessionId, entries);
+        } catch (storeErr: unknown) {
+          throw storeErr;
+        }
 
         // Get session count for frequency normalization
         const sessions = await config.trajectoryStore.listSessions({
