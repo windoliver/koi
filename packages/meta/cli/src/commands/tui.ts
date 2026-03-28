@@ -433,13 +433,24 @@ export async function runTui(flags: TuiFlags): Promise<void> {
     }
     // Force cooked mode in case renderer.destroy() didn't run
     if (process.stdin.isTTY) {
-      process.stdin.setRawMode(false);
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // stdin may already be closed (e.g., tmux pane detached, fd invalidated)
+      }
     }
   };
   process.on("exit", restoreTerminal);
   process.on("uncaughtException", (err) => {
+    // Ignore setRawMode errors — these occur in tmux when stdin fd is
+    // invalidated during renderer transitions (errno 9 = EBADF).
+    // The OpenTUI library throws from renderer.destroy() which we can't
+    // catch directly. Swallow these so the process continues.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("setRawMode")) return;
+
     restoreTerminal();
-    process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`Fatal: ${msg}\n`);
     process.exit(1);
   });
 
