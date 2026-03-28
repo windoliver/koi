@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/long-running API surface . has stable type surface 1`] = `
-"import { InboxPolicy, InboxComponent, ComponentProvider, CheckpointPolicy, KoiMiddleware, HarnessId, TaskBoardSnapshot, HarnessSnapshot, Result, InboundMessage, KoiError, PruningPolicy, AgentId, HarnessSnapshotStore, SessionPersistence, EngineState, AgentRegistry, HarnessStatus, EngineInput, EngineMetrics, TaskItemId, TaskResult, ProcessState, TransitionReason, HarnessPhase, MailboxComponent, Tool, ThreadPruningPolicy, ChainCompactor, ThreadSnapshot } from '@koi/core';
+"import { InboxPolicy, InboxComponent, ComponentProvider, CheckpointPolicy, KoiMiddleware, HarnessId, TaskBoardSnapshot, HarnessSnapshot, Result, InboundMessage, KoiError, TaskBoard, SpawnFn, DeliveryPolicy, TaskItemId, PruningPolicy, AgentId, HarnessSnapshotStore, SessionPersistence, EngineState, AgentRegistry, HarnessStatus, EngineInput, EngineMetrics, TaskResult, ProcessState, TransitionReason, HarnessPhase, MailboxComponent, Tool, ThreadPruningPolicy, ChainCompactor, ThreadSnapshot } from '@koi/core';
 
 /**
  * Autonomous provider — attaches InboxComponent to agents (Decision 4C).
@@ -103,6 +103,37 @@ declare function buildResumeContext(snapshot: HarnessSnapshot, config: {
 }): Result<readonly InboundMessage[], KoiError>;
 
 /**
+ * Delegation bridge — auto-dispatch spawn tasks from the task board.
+ *
+ * Implements the Symphony single-authority + claimed-set pattern:
+ * 1. Scan board.ready() for delegation === "spawn" tasks
+ * 2. Claim via board.assign() before dispatching (prevents duplicate dispatch)
+ * 3. Spawn with DEFERRED delivery policy
+ * 4. On result: complete or fail with retry
+ * 5. Cascade: re-check for newly unblocked tasks
+ */
+
+interface DelegationBridgeConfig {
+    readonly spawn: SpawnFn;
+    readonly deliveryPolicy?: DeliveryPolicy | undefined;
+    readonly maxConcurrency?: number | undefined;
+    readonly laneConcurrency?: ReadonlyMap<string, number> | undefined;
+    readonly maxOutputPerTask?: number | undefined;
+    readonly maxUpstreamContextPerTask?: number | undefined;
+    readonly onTaskDispatched?: ((taskId: TaskItemId) => void) | undefined;
+    readonly onTaskCompleted?: ((taskId: TaskItemId) => void) | undefined;
+}
+interface DelegationBridge {
+    /** Scan and dispatch ready spawn tasks. Returns updated board. */
+    readonly dispatchReady: (board: TaskBoard) => Promise<TaskBoard>;
+    /** Abort all in-flight spawns. */
+    readonly abort: () => void;
+    /** Number of currently in-flight spawns. */
+    readonly inFlightCount: () => number;
+}
+declare function createDelegationBridge(config: DelegationBridgeConfig): DelegationBridge;
+
+/**
  * L2-local configuration and interface types for @koi/long-running.
  *
  * These types are internal to the package — L0 types live in @koi/core/harness.
@@ -146,7 +177,11 @@ interface LongRunningHarness {
     readonly resume: () => Promise<Result<ResumeResult, KoiError>>;
     readonly pause: (sessionResult: SessionResult) => Promise<Result<void, KoiError>>;
     readonly fail: (error: KoiError) => Promise<Result<void, KoiError>>;
+    /** Transition a task from "pending" to "assigned" for spawn delegation. */
+    readonly assignTask: (taskId: TaskItemId, agentId: AgentId) => Promise<Result<void, KoiError>>;
     readonly completeTask: (taskId: TaskItemId, result: TaskResult) => Promise<Result<void, KoiError>>;
+    /** Mark an assigned task as failed. Retryable errors go back to pending. */
+    readonly failTask: (taskId: TaskItemId, error: KoiError) => Promise<Result<void, KoiError>>;
     readonly status: () => HarnessStatus;
     readonly createMiddleware: () => KoiMiddleware;
     readonly dispose: () => Promise<void>;
@@ -294,6 +329,6 @@ declare function createTaskTools(config: TaskToolsConfig): readonly Tool[];
  */
 declare function createThreadCompactor(policy?: ThreadPruningPolicy): ChainCompactor<ThreadSnapshot>;
 
-export { type AutonomousProviderConfig, type CheckpointMiddlewareConfig, DEFAULT_LONG_RUNNING_CONFIG, type InboxMiddlewareConfig, type LongRunningConfig, type LongRunningHarness, type OnCompletedCallback, type OnFailedCallback, type PlanAutonomousConfig, type ResumeResult, type SaveStateCallback, type SessionResult, type StartResult, type TaskToolsConfig, buildInitialPrompt, buildResumeContext, computeCheckpointId, createAutonomousProvider, createCheckpointMiddleware, createInboxMiddleware, createLongRunningHarness, createPlanAutonomousProvider, createTaskTools, createThreadCompactor, mapProcessStateToHarnessPhase, shouldSoftCheckpoint };
+export { type AutonomousProviderConfig, type CheckpointMiddlewareConfig, DEFAULT_LONG_RUNNING_CONFIG, type DelegationBridge, type DelegationBridgeConfig, type InboxMiddlewareConfig, type LongRunningConfig, type LongRunningHarness, type OnCompletedCallback, type OnFailedCallback, type PlanAutonomousConfig, type ResumeResult, type SaveStateCallback, type SessionResult, type StartResult, type TaskToolsConfig, buildInitialPrompt, buildResumeContext, computeCheckpointId, createAutonomousProvider, createCheckpointMiddleware, createDelegationBridge, createInboxMiddleware, createLongRunningHarness, createPlanAutonomousProvider, createTaskTools, createThreadCompactor, mapProcessStateToHarnessPhase, shouldSoftCheckpoint };
 "
 `;

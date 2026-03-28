@@ -22,8 +22,8 @@ describe("createNexusClient", () => {
     test("sends POST to /api/v2/ipc/send with correct body", async () => {
       const envelope = {
         id: "msg-1",
-        from: "a",
-        to: "b",
+        sender: "a",
+        recipient: "b",
         kind: "task",
         createdAt: "2026-01-01T00:00:00Z",
         type: "test",
@@ -35,7 +35,7 @@ describe("createNexusClient", () => {
       globalThis.fetch = mockFetch as unknown as typeof fetch;
 
       const client = createNexusClient({ baseUrl: BASE_URL });
-      const body = { from: "a", to: "b", kind: "task", type: "test", payload: { x: 1 } };
+      const body = { sender: "a", recipient: "b", kind: "task", type: "test", payload: { x: 1 } };
       const result = await client.sendMessage(body);
 
       expect(result.ok).toBe(true);
@@ -57,7 +57,13 @@ describe("createNexusClient", () => {
       globalThis.fetch = mockFetch as unknown as typeof fetch;
 
       const client = createNexusClient({ baseUrl: BASE_URL, authToken: "secret-token" });
-      await client.sendMessage({ from: "a", to: "b", kind: "task", type: "t", payload: {} });
+      await client.sendMessage({
+        sender: "a",
+        recipient: "b",
+        kind: "task",
+        type: "t",
+        payload: {},
+      });
 
       const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
       const headers = opts.headers as Record<string, string>;
@@ -70,8 +76,8 @@ describe("createNexusClient", () => {
 
       const client = createNexusClient({ baseUrl: BASE_URL });
       const result = await client.sendMessage({
-        from: "a",
-        to: "b",
+        sender: "a",
+        recipient: "b",
         kind: "task",
         type: "t",
         payload: {},
@@ -89,8 +95,8 @@ describe("createNexusClient", () => {
 
       const client = createNexusClient({ baseUrl: BASE_URL });
       const result = await client.sendMessage({
-        from: "a",
-        to: "b",
+        sender: "a",
+        recipient: "b",
         kind: "task",
         type: "t",
         payload: {},
@@ -109,8 +115,8 @@ describe("createNexusClient", () => {
 
       const client = createNexusClient({ baseUrl: BASE_URL });
       const result = await client.sendMessage({
-        from: "a",
-        to: "b",
+        sender: "a",
+        recipient: "b",
         kind: "task",
         type: "t",
         payload: {},
@@ -129,8 +135,8 @@ describe("createNexusClient", () => {
 
       const client = createNexusClient({ baseUrl: BASE_URL });
       const result = await client.sendMessage({
-        from: "a",
-        to: "b",
+        sender: "a",
+        recipient: "b",
         kind: "task",
         type: "t",
         payload: {},
@@ -150,8 +156,8 @@ describe("createNexusClient", () => {
         messages: [
           {
             id: "m1",
-            from: "a",
-            to: "b",
+            sender: "a",
+            recipient: "b",
             kind: "task",
             createdAt: "2026-01-01T00:00:00Z",
             type: "t",
@@ -235,8 +241,8 @@ describe("createNexusClient", () => {
         fetch: injectedFetch as unknown as typeof fetch,
       });
       const result = await client.sendMessage({
-        from: "a",
-        to: "b",
+        sender: "a",
+        recipient: "b",
         kind: "task",
         type: "t",
         payload: {},

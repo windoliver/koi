@@ -30,14 +30,20 @@ const NEXUS_TO_KOI: Readonly<Record<string, MessageKind>> = {
 
 /** Map a Koi AgentMessageInput to a Nexus send request. */
 export function mapKoiToNexus(msg: AgentMessageInput): NexusSendRequest {
+  const nexusKind = KOI_TO_NEXUS[msg.kind];
   return {
-    from: msg.from as string,
-    to: msg.to as string,
-    kind: KOI_TO_NEXUS[msg.kind],
+    sender: msg.from as string,
+    recipient: msg.to as string,
+    kind: nexusKind,
     ...(msg.correlationId !== undefined ? { correlationId: msg.correlationId as string } : {}),
     ...(msg.ttlSeconds !== undefined ? { ttlSeconds: msg.ttlSeconds } : {}),
-    type: msg.type,
-    payload: msg.payload as Record<string, unknown>,
+    // Nexus `type` is an enum matching `kind`. The Koi `msg.type` (e.g., "task.completed")
+    // is a sub-classification that goes in the payload as `subType`.
+    type: nexusKind,
+    payload: {
+      ...(msg.payload as Record<string, unknown>),
+      ...(msg.type !== msg.kind ? { subType: msg.type } : {}),
+    },
     ...(msg.metadata !== undefined ? { metadata: msg.metadata as Record<string, unknown> } : {}),
   };
 }
@@ -49,16 +55,23 @@ export function mapNexusToKoi(envelope: NexusMessageEnvelope): AgentMessage | un
 
   return {
     id: messageId(envelope.id),
-    from: agentId(envelope.from),
-    to: agentId(envelope.to),
+    from: agentId(envelope.sender),
+    to: agentId(envelope.recipient),
     kind,
     ...(envelope.correlationId !== undefined
       ? { correlationId: messageId(envelope.correlationId) }
       : {}),
     createdAt: envelope.createdAt,
     ...(envelope.ttlSeconds !== undefined ? { ttlSeconds: envelope.ttlSeconds } : {}),
-    type: envelope.type,
-    payload: envelope.payload as JsonObject,
+    // Nexus `type` is the kind enum. The Koi sub-type may be in payload.subType.
+    type:
+      typeof (envelope.payload as Record<string, unknown>).subType === "string"
+        ? ((envelope.payload as Record<string, unknown>).subType as string)
+        : envelope.type,
+    payload: (() => {
+      const { subType: _, ...rest } = envelope.payload as Record<string, unknown>;
+      return rest as JsonObject;
+    })(),
     ...(envelope.metadata !== undefined ? { metadata: envelope.metadata as JsonObject } : {}),
   };
 }

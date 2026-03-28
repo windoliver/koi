@@ -1132,7 +1132,21 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
     syntaxStyle.destroy();
     if (tuiRenderer !== null) {
-      tuiRenderer.destroy();
+      // Guard against EBADF (errno: 9) when stdin is already closed during
+      // process shutdown. The OpenTUI renderer's finalizeDestroy() calls
+      // setRawMode(false) which emits an error event on the stdin TTY stream
+      // when the file descriptor is gone. Without a listener, Node treats this
+      // as an uncaught error and crashes the process.
+      //
+      // The listener is NOT removed — the renderer's process.on('exit') handler
+      // also calls destroy(), which runs after stop() returns. Keeping the guard
+      // prevents the crash in both the explicit and implicit destroy paths.
+      process.stdin.on("error", () => {});
+      try {
+        tuiRenderer.destroy();
+      } catch {
+        // Non-fatal — process is exiting
+      }
       tuiRenderer = null;
     }
   }

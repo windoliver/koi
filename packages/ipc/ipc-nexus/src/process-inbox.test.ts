@@ -19,8 +19,8 @@ function createMockClient(messages: readonly NexusMessageEnvelope[]): NexusClien
 
 const ENVELOPE_A: NexusMessageEnvelope = {
   id: "msg-1",
-  from: "a",
-  to: "b",
+  sender: "a",
+  recipient: "b",
   kind: "task",
   createdAt: "2026-01-01T00:00:00Z",
   type: "test",
@@ -29,8 +29,8 @@ const ENVELOPE_A: NexusMessageEnvelope = {
 
 const ENVELOPE_B: NexusMessageEnvelope = {
   id: "msg-2",
-  from: "c",
-  to: "b",
+  sender: "c",
+  recipient: "b",
   kind: "event",
   createdAt: "2026-01-01T00:01:00Z",
   type: "deploy",

@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils-mocks API surface . has stable type surface 1`] = `
-"import { ProcessId, AgentManifest, ProcessState, TerminationOutcome, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, CompositeArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, MemoryResult, MemoryRecallOptions, MemoryStoreOptions, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, InboundMessage as InboundMessage$1, PolicyEvaluator, PolicyRequestKind, ConstraintChecker, ComplianceRecorder, ViolationStore, GovernanceCheck, GovernanceEvent, GovernanceSnapshot, GovernanceVariable, SensorReading, GovernanceBackend, GovernanceController, ContextSummary, HarnessId, TaskBoardSnapshot, Result as Result$1, KoiError as KoiError$1, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware, BrickRegistryBackend, SkillRegistryBackend, VersionIndexBackend } from '@koi/core';
+"import { ProcessId, AgentManifest, ProcessState, TerminationOutcome, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, CompositeArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, MemoryResult, MemoryRecallOptions, MemoryStoreOptions, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, InboundMessage as InboundMessage$1, PolicyEvaluator, PolicyRequestKind, ConstraintChecker, ComplianceRecorder, ViolationStore, GovernanceCheck, GovernanceEvent, GovernanceSnapshot, GovernanceVariable, SensorReading, GovernanceBackend, GovernanceController, ContextSummary, HarnessId, TaskBoardSnapshot, Result as Result$1, KoiError as KoiError$1, TaskItemId, AgentId, TaskResult, HarnessStatus, KoiMiddleware, BrickRegistryBackend, SkillRegistryBackend, VersionIndexBackend } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
 import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse } from '@koi/core/middleware';
@@ -382,7 +382,9 @@ interface MockLongRunningHarness {
     readonly resume: () => Promise<Result$1<unknown, KoiError$1>>;
     readonly pause: (sessionResult: unknown) => Promise<Result$1<void, KoiError$1>>;
     readonly fail: (error: KoiError$1) => Promise<Result$1<void, KoiError$1>>;
+    readonly assignTask: (taskId: TaskItemId, agentId: AgentId) => Promise<Result$1<void, KoiError$1>>;
     readonly completeTask: (taskId: TaskItemId, result: TaskResult) => Promise<Result$1<void, KoiError$1>>;
+    readonly failTask: (taskId: TaskItemId, error: KoiError$1) => Promise<Result$1<void, KoiError$1>>;
     readonly status: () => HarnessStatus;
     readonly createMiddleware: () => KoiMiddleware;
     readonly dispose: () => Promise<void>;

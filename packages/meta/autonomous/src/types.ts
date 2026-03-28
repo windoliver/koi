@@ -9,6 +9,7 @@ import type {
   ForgeStore,
   InboxPolicy,
   KoiMiddleware,
+  SpawnFn,
   ThreadStore,
 } from "@koi/core";
 import type { HarnessScheduler } from "@koi/harness-scheduler";
@@ -59,6 +60,13 @@ export interface AutonomousAgentParts {
    * Created via createAutoHarnessStack() from @koi/auto-harness.
    */
   readonly autoHarnessMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * Optional spawn function getter for delegation bridge dispatch. When the
+   * getter returns a SpawnFn, tasks with `delegation: "spawn"` are auto-dispatched
+   * to worker agents via the delegation bridge. Deferred via getter because SpawnFn
+   * requires engine runtime context that isn't available at construction time.
+   */
+  readonly getSpawn?: (() => SpawnFn | undefined) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +82,7 @@ export interface AutonomousAgent {
   readonly middleware: () => readonly KoiMiddleware[];
   /** Component providers (inbox, plan_autonomous). */
   readonly providers: () => readonly ComponentProvider[];
-  /** Dispose all parts in correct order (scheduler first, then harness). */
+  /** Dispose all parts in correct order (bridge abort, scheduler, harness). */
   readonly dispose: () => Promise<void>;
   /** Agent resolver -- auto-created from forgeStore if not provided explicitly. */
   readonly agentResolver?: AgentResolver | undefined;

@@ -52,6 +52,19 @@ const PLAN_AUTONOMOUS_SCHEMA: JsonObject = {
               "Omit or pass [] for tasks that can run immediately. " +
               "Tasks sharing no dependencies may run in parallel.",
           },
+          delegation: {
+            type: "string",
+            enum: ["self", "spawn"],
+            description:
+              'How this task is executed. "self" (default): you complete it yourself via task_complete. ' +
+              '"spawn": dispatched to a worker agent automatically.',
+          },
+          agentType: {
+            type: "string",
+            description:
+              'For spawn-delegated tasks, the type of worker agent to use (e.g. "researcher", "coder"). ' +
+              'Defaults to "worker" if omitted.',
+          },
         },
         required: ["id", "description"],
       },
@@ -69,12 +82,16 @@ interface RawTaskInput {
   readonly id?: unknown;
   readonly description?: unknown;
   readonly dependencies?: unknown;
+  readonly delegation?: unknown;
+  readonly agentType?: unknown;
 }
 
 interface ValidatedTask {
   readonly id: TaskItemId;
   readonly description: string;
   readonly dependencies: readonly TaskItemId[];
+  readonly delegation: "self" | "spawn";
+  readonly agentType: string | undefined;
 }
 
 /** Check whether a dependency graph contains a cycle using iterative DFS. */
@@ -158,10 +175,14 @@ function validateTasks(raw: unknown): TaskValidationResult {
           .filter((d): d is string => typeof d === "string")
           .map(taskItemId)
       : [];
+    const delegation = item.delegation === "spawn" ? "spawn" : "self";
+    const agentType = typeof item.agentType === "string" ? item.agentType : undefined;
     parsed.push({
       id: taskItemId(item.id),
       description: item.description,
       dependencies: deps,
+      delegation,
+      agentType,
     });
   }
 
@@ -239,12 +260,14 @@ export function createPlanAutonomousProvider(config: PlanAutonomousConfig): Comp
             id: t.id,
             description: t.description,
             dependencies: t.dependencies,
+            delegation: t.delegation,
+            ...(t.agentType !== undefined ? { agentType: t.agentType } : {}),
             priority: 0,
             maxRetries: 3,
             retries: 0,
-            // "assigned" — in self-escalation mode the copilot IS the worker,
-            // so tasks are immediately assignable. completeTask() requires "assigned".
-            status: "assigned",
+            // "assigned" for self-delegation — the copilot IS the worker.
+            // "pending" for spawn-delegation — the bridge will assign a worker.
+            status: t.delegation === "spawn" ? "pending" : "assigned",
           })),
           results: [],
         };

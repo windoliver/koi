@@ -1151,6 +1151,7 @@
         "@koi/long-running": "workspace:*",
         "@koi/manifest": "workspace:*",
         "@koi/starter": "workspace:*",
+        "@koi/task-board": "workspace:*",
       },
       "devDependencies": {
         "@koi/snapshot-chain-store": "workspace:*",

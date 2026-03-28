@@ -15,8 +15,8 @@ import { DEFAULT_NEXUS_BASE_URL, DEFAULT_TIMEOUT_MS } from "./constants.js";
 
 export interface NexusMessageEnvelope {
   readonly id: string;
-  readonly from: string;
-  readonly to: string;
+  readonly sender: string;
+  readonly recipient: string;
   readonly kind: string;
   readonly correlationId?: string | undefined;
   readonly createdAt: string;
@@ -27,8 +27,8 @@ export interface NexusMessageEnvelope {
 }
 
 export interface NexusSendRequest {
-  readonly from: string;
-  readonly to: string;
+  readonly sender: string;
+  readonly recipient: string;
   readonly kind: string;
   readonly correlationId?: string | undefined;
   readonly ttlSeconds?: number | undefined;

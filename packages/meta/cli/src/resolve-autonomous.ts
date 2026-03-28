@@ -12,7 +12,6 @@
 
 import type {
   AgentId,
-  AgentMessageInput,
   ComponentProvider,
   EngineMetrics,
   HarnessSnapshot,
@@ -20,16 +19,13 @@ import type {
   KoiError,
   KoiMiddleware,
   MailboxComponent,
-  PendingFrame,
-  RecoveryPlan,
   Result,
-  SessionFilter,
-  SessionPersistence,
-  SessionRecord,
+  SpawnFn,
 } from "@koi/core";
 import { agentId, harnessId } from "@koi/core";
 import type { HarnessAdminClientLike } from "@koi/dashboard-api";
 import type { StackContribution } from "./contribution-graph.js";
+import { createInMemorySessionPersistence } from "./in-memory-session-persistence.js";
 
 // ---------------------------------------------------------------------------
 // Result
@@ -65,6 +61,12 @@ export interface AutonomousResult {
    * after the scheduler.
    */
   readonly bindSessionRunner: (runner: (resumeResult: unknown) => Promise<void>) => void;
+  /**
+   * Bind a spawn function for delegation bridge dispatch. Once bound, tasks
+   * with `delegation: "spawn"` are auto-dispatched to worker agents.
+   * Deferred because SpawnFn requires engine runtime context.
+   */
+  readonly bindSpawn: (spawn: SpawnFn) => void;
 }
 
 /** Autonomous resolution result bundled with contribution metadata. */
@@ -85,107 +87,6 @@ function isAutonomousEnabled(manifest: { readonly autonomous?: unknown }): boole
   }
   const obj = autonomous as Record<string, unknown>;
   return obj.enabled === true;
-}
-
-// ---------------------------------------------------------------------------
-// In-memory SessionPersistence (CLI-only, no persistence across restarts)
-// ---------------------------------------------------------------------------
-
-function createInMemorySessionPersistence(): SessionPersistence {
-  const sessions = new Map<string, SessionRecord>();
-  const frames = new Map<string, PendingFrame[]>();
-
-  const ok = <T>(value: T): { readonly ok: true; readonly value: T } => ({
-    ok: true,
-    value,
-  });
-
-  const notFound = (
-    id: string,
-  ): {
-    readonly ok: false;
-    readonly error: {
-      readonly code: "NOT_FOUND";
-      readonly message: string;
-      readonly retryable: false;
-    };
-  } => ({
-    ok: false,
-    error: { code: "NOT_FOUND", message: `Session ${id} not found`, retryable: false },
-  });
-
-  return {
-    saveSession: (record) => {
-      sessions.set(record.sessionId, record);
-      return ok(undefined);
-    },
-
-    loadSession: (sid) => {
-      const record = sessions.get(sid);
-      if (record === undefined) return notFound(sid);
-      return ok(record);
-    },
-
-    removeSession: (sid) => {
-      sessions.delete(sid);
-      frames.delete(sid);
-      return ok(undefined);
-    },
-
-    listSessions: (filter?: SessionFilter) => {
-      const all = [...sessions.values()];
-      if (filter === undefined) return ok(all);
-      const filtered = all.filter((s) => {
-        if (filter.agentId !== undefined && s.agentId !== filter.agentId) return false;
-        return true;
-      });
-      return ok(filtered);
-    },
-
-    savePendingFrame: (frame) => {
-      const existing = frames.get(frame.sessionId) ?? [];
-      frames.set(frame.sessionId, [...existing, frame]);
-      return ok(undefined);
-    },
-
-    loadPendingFrames: (sid) => {
-      const arr = frames.get(sid) ?? [];
-      const sorted = [...arr].sort((a, b) => a.orderIndex - b.orderIndex);
-      return ok(sorted);
-    },
-
-    clearPendingFrames: (sid) => {
-      frames.delete(sid);
-      return ok(undefined);
-    },
-
-    removePendingFrame: (frameId) => {
-      for (const [sid, arr] of frames) {
-        const filtered = arr.filter((f) => f.frameId !== frameId);
-        if (filtered.length !== arr.length) {
-          frames.set(sid, filtered);
-        }
-      }
-      return ok(undefined);
-    },
-
-    recover: (): {
-      readonly ok: true;
-      readonly value: RecoveryPlan;
-    } => {
-      const allSessions = [...sessions.values()];
-      const pendingFrames = new Map<string, readonly PendingFrame[]>();
-      for (const [sid, arr] of frames) {
-        pendingFrames.set(sid, arr);
-      }
-      return ok({ sessions: allSessions, pendingFrames, skipped: [] });
-    },
-
-    close: () => {
-      sessions.clear();
-      frames.clear();
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -238,10 +139,10 @@ export async function resolveAutonomousOrWarn(
   try {
     // Lazy imports — only loaded when autonomous mode is enabled
     const [
-      { createAutonomousAgent },
+      { createAutonomousAgent, createCompletionNotifier },
       { createLongRunningHarness },
       { createHarnessScheduler },
-      { createInMemorySnapshotChainStore },
+      { createInMemorySnapshotChainStore, createThreadStore },
     ] = await Promise.all([
       import("@koi/autonomous"),
       import("@koi/long-running"),
@@ -255,11 +156,18 @@ export async function resolveAutonomousOrWarn(
     // In-memory stores for CLI usage
     const harnessStore = createInMemorySnapshotChainStore<HarnessSnapshot>();
     const sessionPersistence = createInMemorySessionPersistence();
+    const threadSnapshotStore =
+      createInMemorySnapshotChainStore<import("@koi/core").ThreadSnapshot>();
+    const threadStore = createThreadStore({ store: threadSnapshotStore });
 
     // Deferred notification target — set after agent assembly via bindNotification().
     // let justified: mutable refs populated post-assembly when mailbox is available.
     let notifyMailbox: MailboxComponent | undefined;
     let notifyInitiatorId: AgentId | undefined;
+
+    // Deferred spawn function — set after runtime assembly via bindSpawn().
+    // let justified: mutable ref populated post-assembly when engine spawn is available.
+    let boundSpawn: SpawnFn | undefined;
 
     const harness = createLongRunningHarness({
       harnessId: hId,
@@ -267,64 +175,34 @@ export async function resolveAutonomousOrWarn(
       harnessStore,
       sessionPersistence,
       onCompleted: async (status: HarnessStatus) => {
+        if (notifyMailbox !== undefined && notifyInitiatorId !== undefined) {
+          const notifier = createCompletionNotifier({
+            initiatorId: notifyInitiatorId,
+            agentId: aId,
+            mailbox: notifyMailbox,
+          });
+          await notifier.onCompleted(status);
+        }
         const { completedTaskCount, pendingTaskCount } = status.metrics;
         const total = completedTaskCount + pendingTaskCount;
-        const summary = `Autonomous plan completed. ${String(completedTaskCount)}/${String(total)} tasks done.`;
-
-        if (notifyMailbox !== undefined && notifyInitiatorId !== undefined) {
-          const message: AgentMessageInput = {
-            from: aId,
-            to: notifyInitiatorId,
-            kind: "event",
-            type: "autonomous.completed",
-            payload: {
-              harnessId: status.harnessId,
-              phase: status.phase,
-              completedTaskCount,
-              totalTaskCount: total,
-              summary,
-            },
-            metadata: { mode: "steer" },
-          };
-          const result = await notifyMailbox.send(message);
-          if (!result.ok) {
-            process.stderr.write(
-              `[autonomous] Failed to send completion notification: ${result.error.message}\n`,
-            );
-          }
-        }
-        process.stderr.write(`[autonomous] ✓ ${summary}\n`);
+        process.stderr.write(
+          `[autonomous] ✓ Autonomous plan completed. ${String(completedTaskCount)}/${String(total)} tasks done.\n`,
+        );
       },
       onFailed: async (status: HarnessStatus, error: KoiError) => {
+        if (notifyMailbox !== undefined && notifyInitiatorId !== undefined) {
+          const notifier = createCompletionNotifier({
+            initiatorId: notifyInitiatorId,
+            agentId: aId,
+            mailbox: notifyMailbox,
+          });
+          await notifier.onFailed(status, error);
+        }
         const { completedTaskCount, pendingTaskCount } = status.metrics;
         const total = completedTaskCount + pendingTaskCount;
-        const summary = `Autonomous plan failed: ${error.message}. ${String(completedTaskCount)}/${String(total)} tasks completed.`;
-
-        if (notifyMailbox !== undefined && notifyInitiatorId !== undefined) {
-          const message: AgentMessageInput = {
-            from: aId,
-            to: notifyInitiatorId,
-            kind: "event",
-            type: "autonomous.failed",
-            payload: {
-              harnessId: status.harnessId,
-              phase: status.phase,
-              completedTaskCount,
-              totalTaskCount: total,
-              errorCode: error.code,
-              errorMessage: error.message,
-              summary,
-            },
-            metadata: { mode: "steer" },
-          };
-          const result = await notifyMailbox.send(message);
-          if (!result.ok) {
-            process.stderr.write(
-              `[autonomous] Failed to send failure notification: ${result.error.message}\n`,
-            );
-          }
-        }
-        process.stderr.write(`[autonomous] ✗ ${summary}\n`);
+        process.stderr.write(
+          `[autonomous] ✗ Autonomous plan failed: ${error.message}. ${String(completedTaskCount)}/${String(total)} tasks completed.\n`,
+        );
       },
     });
 
@@ -346,7 +224,13 @@ export async function resolveAutonomousOrWarn(
       },
     });
 
-    const agent = createAutonomousAgent({ harness, scheduler });
+    const agent = createAutonomousAgent({
+      harness,
+      scheduler,
+      getSpawn: () => boundSpawn,
+      threadStore,
+      taskBoardGoalStack: true,
+    });
 
     if (verbose) {
       process.stderr.write("Autonomous mode: enabled (in-memory stores)\n");
@@ -367,6 +251,9 @@ export async function resolveAutonomousOrWarn(
       pauseHarness: (sessionResult) => harness.pause(sessionResult),
       bindSessionRunner: (runner) => {
         boundSessionRunner = runner;
+      },
+      bindSpawn: (spawn: SpawnFn) => {
+        boundSpawn = spawn;
       },
     };
 

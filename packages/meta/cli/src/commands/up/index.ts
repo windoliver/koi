@@ -1064,6 +1064,12 @@ export async function runUp(flags: UpFlags): Promise<void> {
       autonomous.bindNotification(runtime.agent.pid.id, copilotMailbox);
     }
 
+    // Bind spawn function for delegation bridge dispatch.
+    // Uses spawnChildAgent to create independent child agent runtimes.
+    const { createCliSpawnFn } = await import("../../create-cli-spawn-fn.js");
+    const spawnFn = await createCliSpawnFn({ runtime, adapter });
+    autonomous.bindSpawn(spawnFn);
+
     // Bind session runner — scheduler calls this after resume() to run engine sub-sessions.
     autonomous.bindSessionRunner(async (resumeResult: unknown) => {
       const { engineInput, sessionId } = resumeResult as {

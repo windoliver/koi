@@ -21,8 +21,8 @@ describe("createNexusMailbox", () => {
     test("maps input and returns AgentMessage on success", async () => {
       const responseEnvelope = {
         id: "msg-gen-1",
-        from: "agent-a",
-        to: "agent-b",
+        sender: "agent-a",
+        recipient: "agent-b",
         kind: "task",
         createdAt: "2026-01-01T00:00:00Z",
         type: "code-review",
@@ -57,8 +57,8 @@ describe("createNexusMailbox", () => {
     test("returns error when Nexus returns unknown kind", async () => {
       const responseEnvelope = {
         id: "msg-gen-2",
-        from: "a",
-        to: "b",
+        sender: "a",
+        recipient: "b",
         kind: "unknown_protocol",
         createdAt: "2026-01-01T00:00:00Z",
         type: "t",
@@ -96,8 +96,8 @@ describe("createNexusMailbox", () => {
         messages: [
           {
             id: "m1",
-            from: "agent-c",
-            to: "agent-b",
+            sender: "agent-c",
+            recipient: "agent-b",
             kind: "event",
             createdAt: "2026-01-01T00:00:00Z",
             type: "deploy",
@@ -125,8 +125,8 @@ describe("createNexusMailbox", () => {
         messages: [
           {
             id: "m1",
-            from: "a",
-            to: "b",
+            sender: "a",
+            recipient: "b",
             kind: "task",
             createdAt: "2026-01-01T00:00:00Z",
             type: "t1",
@@ -134,8 +134,8 @@ describe("createNexusMailbox", () => {
           },
           {
             id: "m2",
-            from: "a",
-            to: "b",
+            sender: "a",
+            recipient: "b",
             kind: "event",
             createdAt: "2026-01-01T00:01:00Z",
             type: "t2",
@@ -258,7 +258,7 @@ describe("createNexusMailbox", () => {
     test("send works the same in SSE mode", async () => {
       const responseEnvelope = {
         id: "msg-sse-1",
-        from: "agent-a",
+        sender: "agent-a",
         to: "agent-b",
         kind: "task",
         createdAt: "2026-01-01T00:00:00Z",

@@ -16,11 +16,11 @@ describe("mapKoiToNexus", () => {
 
     const result = mapKoiToNexus(input);
 
-    expect(result.from).toBe("agent-a");
-    expect(result.to).toBe("agent-b");
+    expect(result.sender).toBe("agent-a");
+    expect(result.recipient).toBe("agent-b");
     expect(result.kind).toBe("task"); // request → task
-    expect(result.type).toBe("code-review");
-    expect(result.payload).toEqual({ file: "main.ts" });
+    expect(result.type).toBe("task"); // Nexus type mirrors kind
+    expect(result.payload).toEqual({ file: "main.ts", subType: "code-review" });
   });
 
   test("maps all MessageKinds to Nexus kinds", () => {
@@ -78,8 +78,8 @@ describe("mapNexusToKoi", () => {
   test("maps Nexus envelope to AgentMessage", () => {
     const envelope: NexusMessageEnvelope = {
       id: "msg-1",
-      from: "agent-a",
-      to: "agent-b",
+      sender: "agent-a",
+      recipient: "agent-b",
       kind: "task",
       createdAt: "2026-01-01T00:00:00Z",
       type: "code-review",
@@ -100,8 +100,8 @@ describe("mapNexusToKoi", () => {
   test("maps all Nexus kinds to MessageKinds", () => {
     const base: NexusMessageEnvelope = {
       id: "m",
-      from: "a",
-      to: "b",
+      sender: "a",
+      recipient: "b",
       kind: "task",
       createdAt: "2026-01-01T00:00:00Z",
       type: "t",
@@ -117,8 +117,8 @@ describe("mapNexusToKoi", () => {
   test("returns undefined for unknown kinds", () => {
     const envelope: NexusMessageEnvelope = {
       id: "m",
-      from: "a",
-      to: "b",
+      sender: "a",
+      recipient: "b",
       kind: "unknown_kind",
       createdAt: "2026-01-01T00:00:00Z",
       type: "t",
@@ -131,8 +131,8 @@ describe("mapNexusToKoi", () => {
   test("includes optional fields from envelope", () => {
     const envelope: NexusMessageEnvelope = {
       id: "m",
-      from: "a",
-      to: "b",
+      sender: "a",
+      recipient: "b",
       kind: "response",
       correlationId: "req-1",
       createdAt: "2026-01-01T00:00:00Z",

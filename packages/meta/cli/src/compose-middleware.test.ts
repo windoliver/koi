@@ -62,6 +62,7 @@ function createAutonomousResult(): AutonomousResult {
     bindNotification: () => {},
     pauseHarness: async () => ({ ok: true as const, value: undefined }),
     bindSessionRunner: () => {},
+    bindSpawn: () => {},
   };
 }
 

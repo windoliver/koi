@@ -80,7 +80,9 @@ function createControllableHarness(): ControllableHarness {
     },
     pause: async () => ({ ok: true as const, value: undefined }),
     fail: async () => ({ ok: true as const, value: undefined }),
+    assignTask: async () => ({ ok: true as const, value: undefined }),
     completeTask: async () => ({ ok: true as const, value: undefined }),
+    failTask: async () => ({ ok: true as const, value: undefined }),
     status: () => ({
       harnessId,
       phase: currentPhase as "idle" | "active" | "suspended" | "completed" | "failed",
