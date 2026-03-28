@@ -31,11 +31,11 @@ function createMockStreams(): {
  * Reads all buffered data from a PassThrough stream as a string.
  */
 function readStream(stream: PassThrough): string {
-  const chunks: Buffer[] = [];
-  let chunk: Buffer | null = stream.read() as Buffer | null;
+  const chunks: Uint8Array[] = [];
+  let chunk: Uint8Array | null = stream.read() as Uint8Array | null;
   while (chunk !== null) {
     chunks.push(chunk);
-    chunk = stream.read() as Buffer | null;
+    chunk = stream.read() as Uint8Array | null;
   }
   return Buffer.concat(chunks).toString("utf-8");
 }
@@ -616,11 +616,11 @@ function createMockCommandDeps(
     output: depOutput,
     exit: mock(() => {}),
     written() {
-      const chunks: Buffer[] = [];
-      let chunk: Buffer | null = depOutput.read() as Buffer | null;
+      const chunks: Uint8Array[] = [];
+      let chunk: Uint8Array | null = depOutput.read() as Uint8Array | null;
       while (chunk !== null) {
         chunks.push(chunk);
-        chunk = depOutput.read() as Buffer | null;
+        chunk = depOutput.read() as Uint8Array | null;
       }
       return Buffer.concat(chunks).toString("utf-8");
     },

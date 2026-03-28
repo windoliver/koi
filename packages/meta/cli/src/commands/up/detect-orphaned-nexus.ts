@@ -74,10 +74,14 @@ function listKoiNexusProjectNames(): ReadonlySet<string> {
  * Returns an empty array if Docker is unavailable or no Koi containers are running.
  */
 function listKoiNexusContainers(): readonly NexusProjectInfo[] {
-  const result = spawnSync("docker", ["ps", "--filter", "name=nexus-", "--format", "{{.Names}}"], {
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 5000,
-  });
+  const result = spawnSync(
+    "docker",
+    ["ps", "-a", "--filter", "name=nexus-", "--format", "{{.Names}}"],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5000,
+    },
+  );
 
   if (result.status !== 0 || result.stdout === null) return [];
 

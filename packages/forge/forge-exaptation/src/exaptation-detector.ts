@@ -15,6 +15,7 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -303,6 +304,11 @@ export function createExaptationDetector(config: ExaptationConfig): ExaptationHa
       }
 
       return next(request);
+    },
+
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      // Clean up session-keyed model response to prevent unbounded memory growth
+      lastModelResponseBySession.delete(ctx.sessionId);
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

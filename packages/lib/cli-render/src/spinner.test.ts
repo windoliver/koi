@@ -9,8 +9,8 @@ function createMockTTY(): PassThrough & { isTTY: true } {
 }
 
 function collectOutput(stream: PassThrough): () => string {
-  const chunks: Buffer[] = [];
-  stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const chunks: Uint8Array[] = [];
+  stream.on("data", (chunk: Uint8Array) => chunks.push(chunk));
   return () => Buffer.concat(chunks).toString("utf-8");
 }
 

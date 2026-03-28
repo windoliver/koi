@@ -29,8 +29,8 @@ function encodeMessage(message: JsonRpcMessage): string {
 describe("writeMessage", () => {
   test("writes Content-Length header and JSON body", () => {
     const output = new PassThrough();
-    const chunks: Buffer[] = [];
-    output.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const chunks: Uint8Array[] = [];
+    output.on("data", (chunk: Uint8Array) => chunks.push(chunk));
 
     writeMessage(output, { jsonrpc: "2.0", id: 1, method: "test" });
 
@@ -237,8 +237,8 @@ describe("createJsonRpcConnection", () => {
     const { clientIn, clientOut } = createStreams();
     const conn = createJsonRpcConnection(clientIn, clientOut);
 
-    const chunks: Buffer[] = [];
-    clientOut.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const chunks: Uint8Array[] = [];
+    clientOut.on("data", (chunk: Uint8Array) => chunks.push(chunk));
 
     conn.sendNotification("initialized", {});
 
