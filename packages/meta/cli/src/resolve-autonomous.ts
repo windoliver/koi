@@ -142,7 +142,7 @@ export async function resolveAutonomousOrWarn(
       { createAutonomousAgent, createCompletionNotifier },
       { createLongRunningHarness },
       { createHarnessScheduler },
-      { createInMemorySnapshotChainStore },
+      { createInMemorySnapshotChainStore, createThreadStore },
     ] = await Promise.all([
       import("@koi/autonomous"),
       import("@koi/long-running"),
@@ -156,6 +156,9 @@ export async function resolveAutonomousOrWarn(
     // In-memory stores for CLI usage
     const harnessStore = createInMemorySnapshotChainStore<HarnessSnapshot>();
     const sessionPersistence = createInMemorySessionPersistence();
+    const threadSnapshotStore =
+      createInMemorySnapshotChainStore<import("@koi/core").ThreadSnapshot>();
+    const threadStore = createThreadStore({ store: threadSnapshotStore });
 
     // Deferred notification target — set after agent assembly via bindNotification().
     // let justified: mutable refs populated post-assembly when mailbox is available.
@@ -225,6 +228,8 @@ export async function resolveAutonomousOrWarn(
       harness,
       scheduler,
       getSpawn: () => boundSpawn,
+      threadStore,
+      taskBoardGoalStack: true,
     });
 
     if (verbose) {
