@@ -16,6 +16,22 @@
  *   koi tui --refresh 10
  */
 
+// Monkey-patch stdin.setRawMode to be safe in non-TTY environments (e.g. tmux).
+// OpenTUI's renderer.destroy() calls setRawMode(false) which throws EBADF
+// (errno 9) when the stdin fd is invalidated. This patch must run before
+// any OpenTUI import to prevent the fatal throw.
+if (process.stdin.isTTY && process.stdin.setRawMode) {
+  const originalSetRawMode = process.stdin.setRawMode.bind(process.stdin);
+  process.stdin.setRawMode = (mode: boolean): typeof process.stdin => {
+    try {
+      return originalSetRawMode(mode);
+    } catch {
+      // stdin fd may be closed (tmux detach, fd invalidated)
+      return process.stdin;
+    }
+  };
+}
+
 import type { OperationResult, PhaseCallbacks, SetupWizardState } from "@koi/setup-core";
 import { KNOWN_MODELS } from "@koi/setup-core";
 import type { PresetInfo } from "@koi/tui";
