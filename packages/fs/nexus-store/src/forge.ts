@@ -19,7 +19,7 @@ import type {
   Result,
   StoreChangeEvent,
 } from "@koi/core";
-import { notFound } from "@koi/core";
+import { conflict, notFound } from "@koi/core";
 import { createListenerSet } from "@koi/event-delivery";
 import type { NexusClient } from "@koi/nexus-client";
 import { createNexusClient } from "@koi/nexus-client";
@@ -45,6 +45,10 @@ export interface NexusForgeStoreConfig {
   readonly basePath?: string;
   readonly concurrency?: number;
   readonly fetch?: typeof globalThis.fetch;
+  /** Optional integrity check callback invoked on save. Return `{ ok: false }` to reject. */
+  readonly verifyOnSave?:
+    | ((brick: import("@koi/core").BrickArtifact) => { readonly ok: boolean })
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,8 +122,25 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     const segCheck = validatePathSegment(brick.id, "Brick ID");
     if (!segCheck.ok) return segCheck;
-    const result = await writeBrick(brick);
-    if (result.ok) listeners.notify({ kind: "saved", brickId: brick.id });
+    // Write-time integrity verification (when configured)
+    if (config.verifyOnSave !== undefined) {
+      const check = config.verifyOnSave(brick);
+      if (!check.ok) {
+        return {
+          ok: false,
+          error: wrapNexusError(
+            "VALIDATION",
+            `Integrity check failed on save for ${brick.id}`,
+            undefined,
+          ),
+        };
+      }
+    }
+    // Stamp storeVersion=1 on first save (preserve existing if present)
+    const versioned: BrickArtifact =
+      brick.storeVersion !== undefined ? brick : { ...brick, storeVersion: 1 };
+    const result = await writeBrick(versioned);
+    if (result.ok) listeners.notify({ kind: "saved", brickId: versioned.id });
     return result;
   };
 
@@ -129,6 +150,14 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
     return readBrick(id);
   };
 
+  // Performance: O(N) client-side scan — globs all brick files, reads each
+  // over the network in batches, then filters in-memory. Acceptable for
+  // local/small deployments (N < ~200 bricks) but degrades linearly:
+  //   N=500:  ~50 batches, noticeable latency
+  //   N=1000: multi-second search, poor CLI UX
+  //   N=5000+: effectively unusable for interactive commands
+  // Fix: server-side search RPC or migration to a store with native query
+  // support. Blocking for the remote registry (WS4+5).
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
     const rawGlob = await client.rpc<unknown>("glob", {
       pattern: `${basePath}/*.json`,
@@ -168,9 +197,13 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
         try {
           const parsed: unknown = unwrapNexusValue(readResult.value);
           const validated = validateBrickArtifact(parsed, `nexus:search:${path}`);
-          if (!validated.ok) return undefined;
+          if (!validated.ok) {
+            console.warn(`Skipping invalid brick at ${path}: validation failed`);
+            return undefined;
+          }
           return validated.value;
-        } catch (_e: unknown) {
+        } catch (e: unknown) {
+          console.warn(`Skipping corrupt brick at ${path}: ${String(e)}`);
           return undefined;
         }
       },
@@ -205,13 +238,35 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
     return { ok: true, value: undefined };
   };
 
+  // Note: optimistic locking is client-side (read → check → write). Under
+  // concurrent multi-node writers, two callers can read the same version,
+  // both pass the check, and both write — losing one update. True atomicity
+  // requires a server-side CAS operation in Nexus (not yet implemented).
+  // For single-node or low-contention use this eliminates most real conflicts.
   const update = async (id: BrickId, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
     const segCheck = validatePathSegment(id, "Brick ID");
     if (!segCheck.ok) return segCheck;
     const loadResult = await readBrick(id);
     if (!loadResult.ok) return loadResult;
 
-    const updated = applyBrickUpdate(loadResult.value, updates);
+    // Optimistic locking: reject if version mismatch
+    if (updates.expectedVersion !== undefined) {
+      const currentVersion = loadResult.value.storeVersion ?? 0;
+      if (currentVersion !== updates.expectedVersion) {
+        return {
+          ok: false,
+          error: conflict(
+            id,
+            `Version conflict on brick ${id}: expected version ${String(updates.expectedVersion)}, current version ${String(currentVersion)}`,
+          ),
+        };
+      }
+    }
+
+    const applied = applyBrickUpdate(loadResult.value, updates);
+    // Bump storeVersion on every successful update
+    const nextVersion = (loadResult.value.storeVersion ?? 0) + 1;
+    const updated: BrickArtifact = { ...applied, storeVersion: nextVersion };
     const writeResult = await writeBrick(updated);
     if (!writeResult.ok) return writeResult;
     listeners.notify({ kind: "updated", brickId: id });

@@ -2,11 +2,13 @@ import { describe, expect, it } from "bun:test";
 import {
   EXIT_CODES,
   EXIT_CONFIG,
+  EXIT_CRITICAL,
   EXIT_ERROR,
   EXIT_NETWORK,
   EXIT_OK,
   EXIT_TIMEOUT,
   EXIT_UNAVAILABLE,
+  EXIT_WARN,
   exitCodeForError,
 } from "./exit-codes.js";
 
@@ -17,6 +19,14 @@ describe("exit codes", () => {
 
   it("EXIT_ERROR is 1", () => {
     expect(EXIT_ERROR).toBe(1);
+  });
+
+  it("EXIT_WARN is 1 (same as ERROR — different semantic domain)", () => {
+    expect(EXIT_WARN).toBe(1);
+  });
+
+  it("EXIT_CRITICAL is 2", () => {
+    expect(EXIT_CRITICAL).toBe(2);
   });
 
   it("EXIT_NETWORK is 3", () => {
@@ -35,14 +45,24 @@ describe("exit codes", () => {
     expect(EXIT_CONFIG).toBe(78);
   });
 
-  it("all exit codes are unique", () => {
-    const codes = [EXIT_OK, EXIT_ERROR, EXIT_NETWORK, EXIT_TIMEOUT, EXIT_UNAVAILABLE, EXIT_CONFIG];
+  it("primary exit codes are unique (excluding WARN which shares value with ERROR)", () => {
+    const codes = [
+      EXIT_OK,
+      EXIT_ERROR,
+      EXIT_CRITICAL,
+      EXIT_NETWORK,
+      EXIT_TIMEOUT,
+      EXIT_UNAVAILABLE,
+      EXIT_CONFIG,
+    ];
     expect(new Set(codes).size).toBe(codes.length);
   });
 
   it("EXIT_CODES object contains all codes", () => {
     expect(EXIT_CODES.OK).toBe(EXIT_OK);
     expect(EXIT_CODES.ERROR).toBe(EXIT_ERROR);
+    expect(EXIT_CODES.WARN).toBe(EXIT_WARN);
+    expect(EXIT_CODES.CRITICAL).toBe(EXIT_CRITICAL);
     expect(EXIT_CODES.NETWORK).toBe(EXIT_NETWORK);
     expect(EXIT_CODES.TIMEOUT).toBe(EXIT_TIMEOUT);
     expect(EXIT_CODES.UNAVAILABLE).toBe(EXIT_UNAVAILABLE);
@@ -85,5 +105,9 @@ describe("exitCodeForError", () => {
 
   it("maps unknown codes to EXIT_ERROR (1)", () => {
     expect(exitCodeForError("UNKNOWN_CODE")).toBe(EXIT_ERROR);
+  });
+
+  it("maps empty string to EXIT_ERROR (1)", () => {
+    expect(exitCodeForError("")).toBe(EXIT_ERROR);
   });
 });

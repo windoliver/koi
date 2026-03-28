@@ -158,6 +158,10 @@ declare function verifyBrickSignature(brick: BrickIdentityPayload, signature: Br
  * Determine the trust tier for a brick based on its signature and a set
  * of registry-trusted public keys.
  *
+ * **Note:** The "verified" tier is only meaningful once key lifecycle
+ * infrastructure (rotation, revocation, distribution) is in place.
+ * See the TODO(key-lifecycle) comment above.
+ *
  * @param signature - The brick's signature (undefined = unsigned = "local").
  * @param brick - The brick identity fields.
  * @param trustedKeys - Set of base64-encoded SPKI DER public keys trusted by the registry.

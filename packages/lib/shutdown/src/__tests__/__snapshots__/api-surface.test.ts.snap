@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/shutdown API surface . has stable type surface 1`] = `
-"export { EXIT_CODES, EXIT_CONFIG, EXIT_ERROR, EXIT_NETWORK, EXIT_OK, EXIT_TIMEOUT, EXIT_UNAVAILABLE, exitCodeForError } from './exit-codes.js';
+"export { EXIT_CODES, EXIT_CONFIG, EXIT_CRITICAL, EXIT_ERROR, EXIT_NETWORK, EXIT_OK, EXIT_TIMEOUT, EXIT_UNAVAILABLE, EXIT_WARN, exitCodeForError } from './exit-codes.js';
 
 /**
  * Graceful shutdown handler — coordinates orderly process termination.
@@ -48,6 +48,10 @@ exports[`@koi/shutdown API surface ./exit-codes has stable type surface 1`] = `
 declare const EXIT_OK = 0;
 /** Runtime error (agent crash, subsystem failure) — restart may help. */
 declare const EXIT_ERROR = 1;
+/** Warnings present but no critical failures — used by diagnostic commands (doctor, status). */
+declare const EXIT_WARN = 1;
+/** Critical failures present — used by diagnostic commands (doctor, status). */
+declare const EXIT_CRITICAL = 2;
 /** Network error (HTTP timeouts, registry unreachable). */
 declare const EXIT_NETWORK = 3;
 /** Operation timeout (probe timeouts, deadline exceeded). */
@@ -62,6 +66,8 @@ declare const EXIT_CONFIG = 78;
 declare const EXIT_CODES: {
     readonly OK: typeof EXIT_OK;
     readonly ERROR: typeof EXIT_ERROR;
+    readonly WARN: typeof EXIT_WARN;
+    readonly CRITICAL: typeof EXIT_CRITICAL;
     readonly NETWORK: typeof EXIT_NETWORK;
     readonly TIMEOUT: typeof EXIT_TIMEOUT;
     readonly UNAVAILABLE: typeof EXIT_UNAVAILABLE;
@@ -80,6 +86,6 @@ declare const EXIT_CODES: {
  */
 declare function exitCodeForError(code: string): number;
 
-export { EXIT_CODES, EXIT_CONFIG, EXIT_ERROR, EXIT_NETWORK, EXIT_OK, EXIT_TIMEOUT, EXIT_UNAVAILABLE, exitCodeForError };
+export { EXIT_CODES, EXIT_CONFIG, EXIT_CRITICAL, EXIT_ERROR, EXIT_NETWORK, EXIT_OK, EXIT_TIMEOUT, EXIT_UNAVAILABLE, EXIT_WARN, exitCodeForError };
 "
 `;

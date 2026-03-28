@@ -94,7 +94,7 @@ export async function runStatus(flags: StatusFlags): Promise<void> {
   const adminUrl = `http://localhost:${String(wave1.adminPort)}/admin/api`;
 
   // Nexus mode detection
-  const nexusMode = await inferNexusMode(manifestPath);
+  const nexusMode = resolveNexusMode(manifest.preset, manifest.demo);
 
   // Temporal: prefer admin API health, fall back to direct probe result from wave 1
   const temporalHealth = wave1.adminOk
@@ -331,19 +331,26 @@ interface AdminDetectResult {
   readonly ok: boolean;
 }
 
-/** Scan ports 3100-3109 to find the running admin API. */
+/** Scan ports 3100-3109 in parallel to find the running admin API. */
 async function detectAdminPort(timeout: number): Promise<AdminDetectResult> {
-  for (let port = 3100; port < 3110; port++) {
-    try {
-      const res = await fetch(`http://localhost:${String(port)}/admin/api/health`, {
-        signal: AbortSignal.timeout(timeout),
-      });
-      if (res.status === 200) return { port, ok: true };
-    } catch {
-      // Port not responding, try next
-    }
+  const controller = new AbortController();
+  const ports = Array.from({ length: 10 }, (_, i) => 3100 + i);
+
+  try {
+    const result = await Promise.any(
+      ports.map(async (port) => {
+        const res = await fetch(`http://localhost:${String(port)}/admin/api/health`, {
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeout)]),
+        });
+        if (res.status !== 200) throw new Error("not healthy");
+        return { port, ok: true as const };
+      }),
+    );
+    controller.abort();
+    return result;
+  } catch {
+    return { port: 3100, ok: false };
   }
-  return { port: 3100, ok: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +379,24 @@ async function probeTemporalDirect(timeout: number): Promise<TemporalHealthInfo 
   return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Admin API helper — shared fetch + timeout + error handling
+// ---------------------------------------------------------------------------
+
+async function fetchAdminJson<T>(
+  adminUrl: string,
+  path: string,
+  timeout: number,
+): Promise<T | undefined> {
+  try {
+    const res = await fetch(`${adminUrl}/${path}`, { signal: AbortSignal.timeout(timeout) });
+    if (res.status !== 200) return undefined;
+    return (await res.json()) as T;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Fetches Temporal health via the admin API's SDK-based health check.
  * Returns undefined when the admin API does not report Temporal as healthy.
@@ -380,28 +405,13 @@ async function fetchTemporalHealthViaAdmin(
   adminUrl: string,
   timeout: number,
 ): Promise<TemporalHealthInfo | undefined> {
-  try {
-    const res = await fetch(`${adminUrl}/view/temporal/health`, {
-      signal: AbortSignal.timeout(timeout),
-    });
-    if (res.status === 200) {
-      const data = (await res.json()) as {
-        readonly healthy?: boolean;
-        readonly serverAddress?: string;
-        readonly latencyMs?: number;
-      };
-      if (data.healthy === true) {
-        return {
-          healthy: true,
-          serverAddress: data.serverAddress,
-          latencyMs: data.latencyMs,
-        };
-      }
-    }
-  } catch {
-    // Admin reachable but Temporal endpoint failed
-  }
-  return undefined;
+  const data = await fetchAdminJson<{
+    readonly healthy?: boolean;
+    readonly serverAddress?: string;
+    readonly latencyMs?: number;
+  }>(adminUrl, "view/temporal/health", timeout);
+  if (data?.healthy !== true) return undefined;
+  return { healthy: true, serverAddress: data.serverAddress, latencyMs: data.latencyMs };
 }
 
 // ---------------------------------------------------------------------------
@@ -417,20 +427,17 @@ async function fetchLiveChannels(
   adminUrl: string,
   timeout: number,
 ): Promise<readonly LiveChannel[] | undefined> {
-  try {
-    const res = await fetch(`${adminUrl}/channels`, { signal: AbortSignal.timeout(timeout) });
-    if (res.status !== 200) return undefined;
-    const data = (await res.json()) as readonly {
+  const data = await fetchAdminJson<
+    readonly {
       readonly channelType?: string;
       readonly connected?: boolean;
-    }[];
-    return data.map((ch) => ({
-      name: typeof ch.channelType === "string" ? ch.channelType : "unknown",
-      status: ch.connected === true ? "connected" : "disconnected",
-    }));
-  } catch {
-    return undefined;
-  }
+    }[]
+  >(adminUrl, "channels", timeout);
+  if (data === undefined) return undefined;
+  return data.map((ch) => ({
+    name: typeof ch.channelType === "string" ? ch.channelType : "unknown",
+    status: ch.connected === true ? "connected" : "disconnected",
+  }));
 }
 
 interface DataSourceInfo {
@@ -449,42 +456,36 @@ async function fetchDataSources(
   adminUrl: string,
   timeout: number,
 ): Promise<readonly DataSourceInfo[] | undefined> {
-  try {
-    const res = await fetch(`${adminUrl}/data-sources`, { signal: AbortSignal.timeout(timeout) });
-    if (res.status !== 200) return undefined;
-    const data = (await res.json()) as {
-      readonly ok?: boolean;
-      readonly data?: readonly {
-        readonly name?: string;
-        readonly protocol?: string;
-        readonly status?: string;
-        readonly fitness?: {
-          readonly successCount?: number;
-          readonly errorCount?: number;
-          readonly successRate?: number;
-          readonly p95LatencyMs?: number;
-        };
-      }[];
-    };
-    if (data.ok !== true || data.data === undefined) return undefined;
-    return data.data.map((ds) => ({
-      name: typeof ds.name === "string" ? ds.name : "unknown",
-      protocol: typeof ds.protocol === "string" ? ds.protocol : "unknown",
-      status: typeof ds.status === "string" ? ds.status : "unknown",
-      ...(ds.fitness !== undefined
-        ? {
-            fitness: {
-              successCount: ds.fitness.successCount ?? 0,
-              errorCount: ds.fitness.errorCount ?? 0,
-              successRate: ds.fitness.successRate ?? 0,
-              p95LatencyMs: ds.fitness.p95LatencyMs,
-            },
-          }
-        : {}),
-    }));
-  } catch {
-    return undefined;
-  }
+  const data = await fetchAdminJson<{
+    readonly ok?: boolean;
+    readonly data?: readonly {
+      readonly name?: string;
+      readonly protocol?: string;
+      readonly status?: string;
+      readonly fitness?: {
+        readonly successCount?: number;
+        readonly errorCount?: number;
+        readonly successRate?: number;
+        readonly p95LatencyMs?: number;
+      };
+    }[];
+  }>(adminUrl, "data-sources", timeout);
+  if (data?.ok !== true || data.data === undefined) return undefined;
+  return data.data.map((ds) => ({
+    name: typeof ds.name === "string" ? ds.name : "unknown",
+    protocol: typeof ds.protocol === "string" ? ds.protocol : "unknown",
+    status: typeof ds.status === "string" ? ds.status : "unknown",
+    ...(ds.fitness !== undefined
+      ? {
+          fitness: {
+            successCount: ds.fitness.successCount ?? 0,
+            errorCount: ds.fitness.errorCount ?? 0,
+            successRate: ds.fitness.successRate ?? 0,
+            p95LatencyMs: ds.fitness.p95LatencyMs,
+          },
+        }
+      : {}),
+  }));
 }
 
 interface DispatchedAgentInfo {
@@ -496,21 +497,18 @@ async function fetchDispatchedAgents(
   adminUrl: string,
   timeout: number,
 ): Promise<readonly DispatchedAgentInfo[] | undefined> {
-  try {
-    const res = await fetch(`${adminUrl}/agents`, { signal: AbortSignal.timeout(timeout) });
-    if (res.status !== 200) return undefined;
-    // DashboardAgentSummary has `state: ProcessState`, not `status`
-    const data = (await res.json()) as readonly {
+  // DashboardAgentSummary has `state: ProcessState`, not `status`
+  const data = await fetchAdminJson<
+    readonly {
       readonly name?: string;
       readonly state?: string;
-    }[];
-    return data.map((a) => ({
-      name: typeof a.name === "string" ? a.name : "unknown",
-      state: typeof a.state === "string" ? a.state : "running",
-    }));
-  } catch {
-    return undefined;
-  }
+    }[]
+  >(adminUrl, "agents", timeout);
+  if (data === undefined) return undefined;
+  return data.map((a) => ({
+    name: typeof a.name === "string" ? a.name : "unknown",
+    state: typeof a.state === "string" ? a.state : "running",
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -558,18 +556,18 @@ function formatMemory(bytes: number): string {
   return `${gb.toFixed(2)} GB`;
 }
 
-/** Reads the preset field from the manifest to determine Nexus mode label. */
-async function inferNexusMode(manifestPath: string): Promise<string | undefined> {
-  try {
-    const raw = await readFile(manifestPath, "utf-8");
-    const presetMatch = /^preset:\s*(\S+)/m.exec(raw);
-    const presetId = presetMatch?.[1];
-    if (presetId === "demo" || presetId === "mesh") return "embed-auth";
-    if (presetId === "local") return "embed-lite";
-    // Infer from demo.pack presence
-    if (/^demo:\s*\n\s+pack:/m.test(raw)) return "embed-auth";
-    return undefined;
-  } catch {
-    return undefined;
+/** Determines Nexus mode label from the manifest preset and demo config. */
+function resolveNexusMode(preset: string | undefined, demo: unknown): string | undefined {
+  if (preset === "demo" || preset === "mesh") return "embed-auth";
+  if (preset === "local") return "embed-lite";
+  // Infer demo mode from demo.pack presence (matches koi up's inferPresetId)
+  if (
+    typeof demo === "object" &&
+    demo !== null &&
+    "pack" in demo &&
+    typeof (demo as { readonly pack?: unknown }).pack === "string"
+  ) {
+    return "embed-auth";
   }
+  return undefined;
 }

@@ -317,7 +317,13 @@ declare function mapBrickToIndexDoc(brick: BrickArtifact): IndexDocument;
  * - Store-level version tracking for optimistic locking on update
  */
 
-declare function createInMemoryForgeStore(): ForgeStore;
+interface InMemoryForgeStoreConfig {
+    /** Optional integrity check callback invoked on save. Return \`{ ok: false }\` to reject. */
+    readonly verifyOnSave?: ((brick: BrickArtifact) => {
+        readonly ok: boolean;
+    }) | undefined;
+}
+declare function createInMemoryForgeStore(config?: InMemoryForgeStoreConfig): ForgeStore;
 
 /**
  * Runtime enforcement of BrickRequires — checks bins, env vars, tool availability,

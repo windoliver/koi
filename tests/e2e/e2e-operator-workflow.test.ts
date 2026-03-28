@@ -10,7 +10,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -23,6 +23,12 @@ const CLI_BIN = join(REPO_ROOT, "packages/meta/cli/src/bin.ts");
 const BUN = process.execPath;
 const TIMEOUT_MS = 30_000;
 const AGENT_NAME = "e2e-smoke-agent";
+
+/**
+ * Use a random high port for health probes so tests don't collide with
+ * a real agent running on the default port (9100).
+ */
+const E2E_PORT = 49152 + Math.floor(Math.random() * 16383);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -148,6 +154,10 @@ describe("operator workflow", () => {
 
       // .env must exist (created by minimal template)
       expect(existsSync(join(initDir, ".env"))).toBe(true);
+
+      // Inject a random high port so status/doctor probes don't collide
+      // with a real agent that may be running on the default port (9100).
+      await appendFile(manifestPath, `\ndeploy:\n  port: ${String(E2E_PORT)}\n`);
     },
     TIMEOUT_MS,
   );

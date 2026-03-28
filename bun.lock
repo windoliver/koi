@@ -1293,6 +1293,10 @@
         "@temporalio/client": "1.15.0",
         "croner": "9.0.0",
       },
+      "devDependencies": {
+        "@koi/hash": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
     },
     "packages/meta/context-arena": {
       "name": "@koi/context-arena",

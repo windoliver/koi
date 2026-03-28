@@ -6,7 +6,7 @@
  */
 
 import { runDiagnostics, runRepair } from "@koi/deploy";
-import { EXIT_ERROR, EXIT_OK } from "@koi/shutdown";
+import { EXIT_CRITICAL, EXIT_OK, EXIT_WARN } from "@koi/shutdown";
 import type { DoctorFlags } from "../args.js";
 import { loadManifestOrExit } from "../load-manifest-or-exit.js";
 
@@ -80,7 +80,7 @@ export async function runDoctor(flags: DoctorFlags): Promise<void> {
     };
 
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    process.exit(report.failures > 0 ? EXIT_ERROR : EXIT_OK);
+    process.exit(report.failures > 0 ? EXIT_CRITICAL : report.warnings > 0 ? EXIT_WARN : EXIT_OK);
     return;
   }
 
@@ -127,7 +127,9 @@ export async function runDoctor(flags: DoctorFlags): Promise<void> {
     }
   }
 
+  // Text mode: exit non-zero only for failures (warnings are advisory).
+  // --json mode uses 3-tier exit (0/1/2) for structured consumers.
   if (report.failures > 0) {
-    process.exit(EXIT_ERROR);
+    process.exit(EXIT_CRITICAL);
   }
 }

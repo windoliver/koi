@@ -42,14 +42,33 @@ function versionConflictError(id: BrickId, expected: number, actual: number): Ko
 }
 
 // ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+export interface InMemoryForgeStoreConfig {
+  /** Optional integrity check callback invoked on save. Return `{ ok: false }` to reject. */
+  readonly verifyOnSave?: ((brick: BrickArtifact) => { readonly ok: boolean }) | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export function createInMemoryForgeStore(): ForgeStore {
+export function createInMemoryForgeStore(config?: InMemoryForgeStoreConfig): ForgeStore {
   const bricks = new Map<BrickId, BrickArtifact>();
   const notifier = createMemoryStoreChangeNotifier();
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
+    // Write-time integrity verification (when configured)
+    if (config?.verifyOnSave !== undefined) {
+      const check = config.verifyOnSave(brick);
+      if (!check.ok) {
+        return {
+          ok: false,
+          error: conflict(brick.id, `Integrity check failed on save for brick ${brick.id}`),
+        };
+      }
+    }
     // Stamp storeVersion=1 on first save (preserve existing if present)
     const versioned: BrickArtifact =
       brick.storeVersion !== undefined ? brick : { ...brick, storeVersion: 1 };

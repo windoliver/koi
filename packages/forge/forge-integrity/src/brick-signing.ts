@@ -162,9 +162,35 @@ export function verifyBrickSignature(
 // Trust tier classification
 // ---------------------------------------------------------------------------
 
+// TODO(key-lifecycle): The "verified" tier requires key lifecycle infrastructure
+// that does not yet exist. Before classifyTrustTier can produce meaningful
+// "verified" results in production, the following must be built:
+//
+//   1. Key generation & storage — a secure process for creating and storing
+//      the registry's Ed25519 signing key(s).
+//   2. Key distribution — a mechanism for clients to obtain the current set
+//      of trusted public keys (e.g., bundled in the binary, fetched from a
+//      pinned HTTPS endpoint, or embedded in registry API responses).
+//   3. Key rotation — a defined process for rotating keys without
+//      invalidating all previously-signed bricks (e.g., overlapping validity
+//      windows, key versioning).
+//   4. Key revocation — a way to revoke compromised keys so that bricks
+//      signed by them are downgraded from "verified" to "community".
+//
+// Until this infrastructure exists, callers will always pass an empty
+// trustedKeys set, and classifyTrustTier will never return "verified".
+// This is safe but means the trust model is effectively two-tier
+// (local | community) in practice.
+//
+// Tracked as a blocking requirement for the remote registry (WS4+5).
+
 /**
  * Determine the trust tier for a brick based on its signature and a set
  * of registry-trusted public keys.
+ *
+ * **Note:** The "verified" tier is only meaningful once key lifecycle
+ * infrastructure (rotation, revocation, distribution) is in place.
+ * See the TODO(key-lifecycle) comment above.
  *
  * @param signature - The brick's signature (undefined = unsigned = "local").
  * @param brick - The brick identity fields.
