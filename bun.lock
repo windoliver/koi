@@ -641,6 +641,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
       },
     },
     "packages/fs/tools-context-hub": {
@@ -3146,6 +3147,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
       },
       "devDependencies": {
         "@koi/sandbox": "workspace:*",
@@ -3182,6 +3184,7 @@
         "@jitl/quickjs-ng-wasmfile-release-asyncify": "0.32.0",
         "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
         "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
         "quickjs-emscripten-core": "0.32.0",
       },
     },

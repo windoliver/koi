@@ -17,6 +17,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecutionContext, SandboxError, SandboxExecutor, SandboxResult } from "@koi/core";
+import { getSpanRecorder } from "@koi/execution-context";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -451,15 +452,27 @@ export function createSubprocessExecutor(): SandboxExecutor {
         }
 
         if (!result.ok) {
-          return {
-            ok: false,
-            error: classifyError(new Error(result.error ?? "Unknown subprocess error"), durationMs),
-          };
+          const error = classifyError(
+            new Error(result.error ?? "Unknown subprocess error"),
+            durationMs,
+          );
+          getSpanRecorder()?.record({
+            label: "subprocess-executor",
+            durationMs,
+            error: error.message,
+          });
+          return { ok: false, error };
         }
 
+        getSpanRecorder()?.record({ label: "subprocess-executor", durationMs });
         return { ok: true, value: { output: result.output, durationMs } };
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
+        getSpanRecorder()?.record({
+          label: "subprocess-executor",
+          durationMs,
+          error: e instanceof Error ? e.message : String(e),
+        });
         return { ok: false, error: classifyError(e, durationMs) };
       }
     }

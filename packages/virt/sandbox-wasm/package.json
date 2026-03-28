@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/execution-context": "workspace:*",
     "quickjs-emscripten-core": "0.32.0",
     "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
     "@jitl/quickjs-ng-wasmfile-release-asyncify": "0.32.0"

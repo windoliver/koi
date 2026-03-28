@@ -17,7 +17,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/execution-context": "workspace:*"
   },
   "devDependencies": {}
 }

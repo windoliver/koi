@@ -80,6 +80,14 @@ export interface DebugInventory {
   readonly timestamp: number;
 }
 
+/** A child span reported by tool-internal packages during tool execution. */
+export interface ToolChildSpanRecord {
+  readonly label: string;
+  readonly durationMs: number;
+  readonly error?: string | undefined;
+  readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+
 export interface DebugInstrumentationConfig {
   readonly enabled: boolean;
   readonly bufferSize?: number | undefined;
@@ -141,6 +149,12 @@ export interface DebugInstrumentation {
   readonly recordChannelIO: (event: ChannelIOSpan & { readonly turnIndex: number }) => void;
   /** Record a forge refresh span (descriptor/middleware refresh timing). */
   readonly recordForgeRefresh: (event: ForgeRefreshSpan & { readonly turnIndex: number }) => void;
+  /** Record child spans from a tool execution (reported via span recorder). */
+  readonly recordToolChildSpans: (event: {
+    readonly turnIndex: number;
+    readonly toolId: string;
+    readonly children: readonly ToolChildSpanRecord[];
+  }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,13 +230,41 @@ function recordSpan(accumulators: Map<number, RawSpan[]>, turnIndex: number, spa
 // Span tree builder — groups flat spans by hook into a hierarchy
 // ---------------------------------------------------------------------------
 
+/** Convert tool child span records into DebugSpan nodes. */
+function mapToolChildSpans(
+  toolId: string,
+  records: readonly ToolChildSpanRecord[],
+): readonly DebugSpan[] {
+  return records.map((r, i) => ({
+    debugId: `toolChild:${toolId}:${String(i)}:${r.label}`,
+    name: r.label,
+    hook: "toolExec",
+    durationMs: r.durationMs,
+    source: "static" as MiddlewareSource,
+    phase: "resolve",
+    priority: 0,
+    nextCalled: true,
+    ...(r.error !== undefined ? { error: r.error } : {}),
+    tier: "critical" as VisibilityTier,
+  }));
+}
+
 /**
  * Group raw spans by their hook label to create parent/child nesting.
  *
  * Each unique hook (e.g., "wrapModelCall", "wrapToolCall") becomes a parent
  * span whose children are the individual middleware spans for that hook.
+ *
+ * Tool child spans (from sandbox executors) are attached as children of a
+ * synthetic "exec" span appended to the wrapToolCall group.
  */
-function buildSpanTree(rawSpans: readonly RawSpan[]): readonly DebugSpan[] {
+function buildSpanTree(
+  rawSpans: readonly RawSpan[],
+  toolChildren: readonly {
+    readonly toolId: string;
+    readonly children: readonly ToolChildSpanRecord[];
+  }[],
+): readonly DebugSpan[] {
   // Group by hook label, preserving insertion order
   const groups = new Map<string, RawSpan[]>();
   for (const span of rawSpans) {
@@ -237,7 +279,7 @@ function buildSpanTree(rawSpans: readonly RawSpan[]): readonly DebugSpan[] {
   const result: DebugSpan[] = [];
 
   for (const [hookLabel, spans] of groups) {
-    const children: readonly DebugSpan[] = spans.map((s) => ({
+    const children: DebugSpan[] = spans.map((s) => ({
       debugId: s.debugId,
       name: s.name,
       hook: s.hook,
@@ -250,7 +292,29 @@ function buildSpanTree(rawSpans: readonly RawSpan[]): readonly DebugSpan[] {
       ...(s.tier !== undefined ? { tier: s.tier } : {}),
     }));
 
-    const totalMs = spans.reduce((sum, s) => sum + s.durationMs, 0);
+    // Attach tool child spans to the wrapToolCall group
+    if (hookLabel === "wrapToolCall") {
+      for (const entry of toolChildren) {
+        const childSpans = mapToolChildSpans(entry.toolId, entry.children);
+        if (childSpans.length > 0) {
+          const totalChildMs = entry.children.reduce((sum, c) => sum + c.durationMs, 0);
+          children.push({
+            debugId: `toolExec:${entry.toolId}`,
+            name: entry.toolId,
+            hook: "toolExec",
+            durationMs: totalChildMs,
+            source: "static",
+            phase: "resolve",
+            priority: 0,
+            nextCalled: true,
+            tier: "critical",
+            children: childSpans,
+          });
+        }
+      }
+    }
+
+    const totalMs = children.reduce((sum, s) => sum + s.durationMs, 0);
 
     // Create parent span that groups all middleware for this hook
     result.push({
@@ -286,6 +350,10 @@ export function createDebugInstrumentation(
   const resolverAccumulators = new Map<number, ResolverSpan[]>();
   const channelAccumulators = new Map<number, ChannelIOSpan[]>();
   const forgeAccumulators = new Map<number, ForgeRefreshSpan[]>();
+  const toolChildAccumulators = new Map<
+    number,
+    { readonly toolId: string; readonly children: readonly ToolChildSpanRecord[] }[]
+  >();
   const provenanceMap = new Map<string, MiddlewareSource>();
 
   /** Per-entry inventory record keyed by debugId — avoids name collisions. */
@@ -457,6 +525,20 @@ export function createDebugInstrumentation(
     }
   }
 
+  function recordToolChildSpans(event: {
+    readonly turnIndex: number;
+    readonly toolId: string;
+    readonly children: readonly ToolChildSpanRecord[];
+  }): void {
+    const existing = toolChildAccumulators.get(event.turnIndex);
+    const entry = { toolId: event.toolId, children: event.children };
+    if (existing !== undefined) {
+      existing.push(entry);
+    } else {
+      toolChildAccumulators.set(event.turnIndex, [entry]);
+    }
+  }
+
   function onTurnEnd(turnIndex: number): void {
     const rawSpans = spanAccumulators.get(turnIndex);
     spanAccumulators.delete(turnIndex);
@@ -470,7 +552,10 @@ export function createDebugInstrumentation(
     const forgeSpans = forgeAccumulators.get(turnIndex);
     forgeAccumulators.delete(turnIndex);
 
-    const spans = buildSpanTree(rawSpans ?? []);
+    const toolChildren = toolChildAccumulators.get(turnIndex);
+    toolChildAccumulators.delete(turnIndex);
+
+    const spans = buildSpanTree(rawSpans ?? [], toolChildren ?? []);
 
     const totalDurationMs = spans.reduce((sum, s) => sum + s.durationMs, 0);
 
@@ -522,5 +607,6 @@ export function createDebugInstrumentation(
     recordResolve,
     recordChannelIO,
     recordForgeRefresh,
+    recordToolChildSpans,
   };
 }

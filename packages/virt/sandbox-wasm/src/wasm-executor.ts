@@ -10,6 +10,7 @@
  */
 
 import type { SandboxError, SandboxExecutor, SandboxResult } from "@koi/core";
+import { getSpanRecorder } from "@koi/execution-context";
 import type { QuickJSContext, QuickJSRuntime } from "quickjs-emscripten-core";
 import { classifyError } from "./classify-error.js";
 import { getModule } from "./module-loader.js";
@@ -101,7 +102,18 @@ export function createWasmSandboxExecutor(config?: WasmSandboxConfig): SandboxEx
 
       const context = runtime.newContext();
       try {
-        return evaluateInContext(context, runtime, code, serialized.json, start);
+        const result = evaluateInContext(context, runtime, code, serialized.json, start);
+        const recorder = getSpanRecorder();
+        if (recorder !== undefined) {
+          const memoryUsedBytes = result.ok ? result.value.memoryUsedBytes : undefined;
+          recorder.record({
+            label: "sandbox-wasm",
+            durationMs: performance.now() - start,
+            ...(result.ok ? {} : { error: result.error.message }),
+            ...(memoryUsedBytes !== undefined ? { metadata: { memoryUsedBytes } } : {}),
+          });
+        }
+        return result;
       } finally {
         context.dispose();
       }

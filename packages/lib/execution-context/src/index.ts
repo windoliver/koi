@@ -15,3 +15,9 @@ export {
   type ToolExecutionContext,
 } from "./execution-context.js";
 export { createSideChannel, type SideChannel } from "./side-channel.js";
+export {
+  type ChildSpanRecord,
+  getSpanRecorder,
+  runWithSpanRecorder,
+  type SpanRecorder,
+} from "./span-context.js";

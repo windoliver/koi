@@ -330,6 +330,176 @@ describe("createDebugInstrumentation", () => {
     });
   });
 
+  describe("recordToolChildSpans", () => {
+    test("attaches child spans to wrapToolCall group", () => {
+      const provMap = new Map<string, MiddlewareSource>([["sandbox", "static"]]);
+      const phaseMap = new Map<string, string>([["sandbox", "intercept"]]);
+      const priorityMap = new Map<string, number>([["sandbox", 100]]);
+
+      const entry = {
+        name: "sandbox",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+
+      const wrapped = instrumentation.wrapEntries(
+        [entry],
+        "wrapToolCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+
+      const ctx = stubCtx(0);
+      const wrappedHook = wrapped[0];
+      if (wrappedHook !== undefined) {
+        wrappedHook.hook(ctx, "req", (r) => r);
+      }
+
+      // Record child spans from tool execution
+      instrumentation.recordToolChildSpans({
+        turnIndex: 0,
+        toolId: "exec",
+        children: [
+          { label: "tool-exec:validate", durationMs: 0.5 },
+          { label: "sandbox-wasm", durationMs: 12.3 },
+        ],
+      });
+
+      instrumentation.onTurnEnd(0);
+
+      const trace = instrumentation.getTrace(0);
+      expect(trace).toBeDefined();
+      expect(trace?.spans).toHaveLength(1);
+
+      const toolCallGroup = trace?.spans[0];
+      expect(toolCallGroup?.name).toBe("wrapToolCall");
+
+      // Should have middleware span + tool exec span
+      const children = toolCallGroup?.children ?? [];
+      expect(children).toHaveLength(2); // sandbox mw + exec tool child
+      expect(children[0]?.name).toBe("sandbox");
+
+      const execSpan = children[1];
+      expect(execSpan?.name).toBe("exec");
+      expect(execSpan?.hook).toBe("toolExec");
+      expect(execSpan?.children).toHaveLength(2);
+      expect(execSpan?.children?.[0]?.label ?? execSpan?.children?.[0]?.name).toBe(
+        "tool-exec:validate",
+      );
+      expect(execSpan?.children?.[1]?.label ?? execSpan?.children?.[1]?.name).toBe("sandbox-wasm");
+    });
+
+    test("handles tool child spans with errors", () => {
+      // No middleware for this test — just child spans
+      instrumentation.recordToolChildSpans({
+        turnIndex: 0,
+        toolId: "exec",
+        children: [{ label: "sandbox-wasm", durationMs: 5.0, error: "TIMEOUT" }],
+      });
+
+      // Need at least one wrapToolCall span for the group to exist
+      const provMap = new Map<string, MiddlewareSource>([["mw", "static"]]);
+      const phaseMap = new Map<string, string>();
+      const priorityMap = new Map<string, number>();
+      const entry = {
+        name: "mw",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+      const wrapped = instrumentation.wrapEntries(
+        [entry],
+        "wrapToolCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+      wrapped[0]?.hook(stubCtx(0), "req", (r) => r);
+
+      instrumentation.onTurnEnd(0);
+
+      const trace = instrumentation.getTrace(0);
+      const toolCallGroup = trace?.spans[0];
+      const execSpan = toolCallGroup?.children?.find((c) => c.name === "exec");
+      expect(execSpan?.children?.[0]?.error).toBe("TIMEOUT");
+    });
+
+    test("ignores child spans when no wrapToolCall group exists", () => {
+      // Record child spans without any middleware executing
+      instrumentation.recordToolChildSpans({
+        turnIndex: 0,
+        toolId: "exec",
+        children: [{ label: "sandbox-wasm", durationMs: 10 }],
+      });
+
+      // Only a model call, not a tool call
+      const provMap = new Map<string, MiddlewareSource>([["mw", "static"]]);
+      const phaseMap = new Map<string, string>();
+      const priorityMap = new Map<string, number>();
+      const entry = {
+        name: "mw",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+      const wrapped = instrumentation.wrapEntries(
+        [entry],
+        "wrapModelCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+      wrapped[0]?.hook(stubCtx(0), "req", (r) => r);
+
+      instrumentation.onTurnEnd(0);
+
+      const trace = instrumentation.getTrace(0);
+      // Only the model call group, no tool exec children injected
+      expect(trace?.spans).toHaveLength(1);
+      expect(trace?.spans[0]?.name).toBe("wrapModelCall");
+      expect(trace?.spans[0]?.children).toHaveLength(1);
+      expect(trace?.spans[0]?.children?.[0]?.name).toBe("mw");
+    });
+
+    test("handles multiple tool calls in same turn", () => {
+      const provMap = new Map<string, MiddlewareSource>([["mw", "static"]]);
+      const phaseMap = new Map<string, string>();
+      const priorityMap = new Map<string, number>();
+      const entry = {
+        name: "mw",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+      const wrapped = instrumentation.wrapEntries(
+        [entry],
+        "wrapToolCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+      // Two tool calls in the same turn
+      wrapped[0]?.hook(stubCtx(0), "req1", (r) => r);
+      wrapped[0]?.hook(stubCtx(0), "req2", (r) => r);
+
+      instrumentation.recordToolChildSpans({
+        turnIndex: 0,
+        toolId: "exec",
+        children: [{ label: "sandbox-wasm", durationMs: 10 }],
+      });
+      instrumentation.recordToolChildSpans({
+        turnIndex: 0,
+        toolId: "browser",
+        children: [{ label: "puppeteer", durationMs: 200 }],
+      });
+
+      instrumentation.onTurnEnd(0);
+
+      const trace = instrumentation.getTrace(0);
+      const toolCallGroup = trace?.spans[0];
+      // 2 middleware spans + 2 tool exec spans
+      expect(toolCallGroup?.children).toHaveLength(4);
+      const execSpan = toolCallGroup?.children?.find((c) => c.name === "exec");
+      const browserSpan = toolCallGroup?.children?.find((c) => c.name === "browser");
+      expect(execSpan?.children?.[0]?.name).toBe("sandbox-wasm");
+      expect(browserSpan?.children?.[0]?.name).toBe("puppeteer");
+    });
+  });
+
   describe("disabled instrumentation", () => {
     test("wrapEntries still returns entries when enabled is true", () => {
       const provMap = new Map<string, MiddlewareSource>([["mw-a", "static"]]);
