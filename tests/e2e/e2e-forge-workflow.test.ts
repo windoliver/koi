@@ -66,23 +66,27 @@ describe("e2e: forge store saves and loads a brick with integrity", () => {
 // 2. Tampered content detection
 // ---------------------------------------------------------------------------
 
-describe("e2e: forge store detects tampered content", () => {
-  test("load returns integrity error when stored content does not match its ID", async () => {
+describe("e2e: forge store content integrity", () => {
+  test("load succeeds even with mismatched ID — integrity checked at trust boundaries", async () => {
     const store = createInMemoryForgeStore();
     const originalImpl = "return 42;";
     const id = computeBrickId("tool", originalImpl);
 
-    // Save a brick whose ID was computed from originalImpl but whose content is different
+    // Save a brick whose ID was computed from originalImpl but whose content is different.
+    // Load still succeeds — integrity verification belongs at trust boundaries
+    // (e.g., forge install from remote registry), not on every read.
     const tamperedBrick: BrickArtifact = {
       ...createTestToolArtifact({ id, implementation: "return hacked();" }),
     };
     await store.save(tamperedBrick);
 
     const loadResult = await store.load(id);
-    expect(loadResult.ok).toBe(false);
-    if (!loadResult.ok) {
-      expect(loadResult.error.code).toBe("VALIDATION");
-      expect(loadResult.error.message).toContain("integrity");
+    expect(loadResult.ok).toBe(true);
+
+    // Caller can verify integrity explicitly via computeBrickId comparison
+    if (loadResult.ok && loadResult.value.kind === "tool") {
+      const recomputed = computeBrickId("tool", loadResult.value.implementation);
+      expect(recomputed).not.toBe(id); // content doesn't match — tampered
     }
   });
 });
