@@ -108,6 +108,9 @@ function expandGroups(
   });
 }
 
+/** Marker suffix in deny reason to distinguish default-deny from explicit deny. */
+export const DEFAULT_DENY_MARKER = "(default deny)";
+
 /**
  * Pattern-based permission backend.
  * Evaluation order: deny-first, then ask, then allow, then defaultDeny.

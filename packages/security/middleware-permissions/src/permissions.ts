@@ -11,9 +11,11 @@ import type { AuditEntry } from "@koi/core";
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   ToolHandler,
   ToolRequest,
@@ -28,6 +30,7 @@ import {
   DEFAULT_APPROVAL_CACHE_TTL_MS,
   DEFAULT_CACHE_CONFIG,
 } from "./config.js";
+import { DEFAULT_DENY_MARKER } from "./engine.js";
 import { fnv1a } from "./hash.js";
 
 /** Entry in the approval (ask) cache — stores only the timestamp. */
@@ -115,6 +118,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   // with different backends produce different approval cache keys.
   // Since the backend is opaque, we use the backend object identity via a stable random tag.
   const backendFingerprint = cacheConfig !== false ? fnv1a(String(Math.random())) : 0;
+
+  // Forged tools override default-deny but respect explicit deny rules.
+  // Track names from wrapModelCall so wrapToolCall can apply the same logic
+  // (ToolRequest doesn't carry origin).
+  const forgedToolNames = new Set<string>();
 
   const capabilityFragment: CapabilityFragment = {
     label: "permissions",
@@ -275,6 +283,45 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     return results as readonly PermissionDecision[];
   }
 
+  /**
+   * Shared tool filtering for wrapModelCall and wrapModelStream.
+   * Tracks forged tool names and filters denied tools from the model request.
+   */
+  async function filterTools(ctx: TurnContext, request: ModelRequest): Promise<ModelRequest> {
+    if (!request.tools?.length) return request;
+
+    // Track forged tool names so wrapToolCall can apply the same logic.
+    for (const t of request.tools) {
+      if (t.origin === "forged") {
+        forgedToolNames.add(t.name);
+      }
+    }
+
+    const queries = request.tools.map((t) => queryForTool(ctx, t.name));
+    const startMs = clock();
+    const decisions = await resolveBatch(queries);
+    const durationMs = clock() - startMs;
+
+    // Audit each decision and filter out denied tools — keep allow + ask.
+    // Forged tools override default-deny (they passed forge verification + sandbox)
+    // but respect explicit deny rules set by operators.
+    const filtered = request.tools.filter((t, i) => {
+      const d = decisions[i];
+      if (d === undefined) return false;
+      auditDecision(ctx, t.name, d, durationMs);
+      if (d.effect !== "deny") return true;
+      // Forged tools: only filter on explicit deny, not default deny.
+      if (t.origin === "forged" && d.reason.includes(DEFAULT_DENY_MARKER)) return true;
+      return false;
+    });
+
+    if (filtered.length === request.tools.length) return request;
+    // Construct new request with filtered tools. Use Object.assign to preserve
+    // exact optional property types (spread would introduce `tools: undefined`).
+    const result: ModelRequest = Object.assign({}, request, { tools: filtered });
+    return result;
+  }
+
   return {
     name: "permissions",
     priority: 100,
@@ -291,23 +338,15 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      if (!request.tools?.length) return next(request);
+      return next(await filterTools(ctx, request));
+    },
 
-      const queries = request.tools.map((t) => queryForTool(ctx, t.name));
-      const startMs = clock();
-      const decisions = await resolveBatch(queries);
-      const durationMs = clock() - startMs;
-
-      // Audit each decision and filter out denied tools — keep allow + ask.
-      // Fail closed: missing decisions are treated as deny.
-      const filtered = request.tools.filter((t, i) => {
-        const d = decisions[i];
-        if (d === undefined) return false;
-        auditDecision(ctx, t.name, d, durationMs);
-        return d.effect !== "deny";
-      });
-
-      return next({ ...request, tools: filtered });
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      yield* next(await filterTools(ctx, request));
     },
 
     async wrapToolCall(
@@ -325,6 +364,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
 
       if (decision.effect === "deny") {
+        // Forged tools override default-deny (they passed forge verification + sandbox)
+        // but respect explicit deny rules set by operators.
+        if (forgedToolNames.has(request.toolId) && decision.reason.includes(DEFAULT_DENY_MARKER)) {
+          return next(request);
+        }
         throw KoiRuntimeError.from("PERMISSION", decision.reason, {
           context: { toolId: request.toolId },
         });

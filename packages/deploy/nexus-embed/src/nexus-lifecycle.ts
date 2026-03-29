@@ -14,8 +14,9 @@
  * - `nexusDown()` destroys the stack via `nexus down` (removes containers)
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { checkBinaryAvailable, resolveNexusBinary } from "./binary-resolver.js";
 import { DEFAULT_HOST, DEFAULT_PORT, STATE_JSON_FILE } from "./constants.js";
@@ -90,9 +91,19 @@ export async function nexusInit(
 
   // Nexus init does not accept a --port flag. If a custom port was requested,
   // patch the generated nexus.yaml to override the default ports.http value.
+  // Otherwise, derive a stable port from the workspace path so each worktree
+  // gets its own Nexus instance without port collisions.
   if (options?.port !== undefined) {
     patchNexusPort(cwd, options.port, verbose);
+  } else {
+    const derivedPort = derivePort(cwd);
+    patchNexusPort(cwd, derivedPort, verbose);
   }
+
+  // Patch data_dir to be worktree-local so each worktree gets isolated Nexus data.
+  // `nexus init` defaults to a global path (~/.koi/demo/nexus-data) which causes
+  // cross-worktree session leaking when multiple worktrees share the same Nexus.
+  patchNexusDataDir(cwd, verbose);
 
   return result;
 }
@@ -135,7 +146,14 @@ export async function nexusUp(
   const sourceDir = options?.sourceDir;
 
   const binaryCheck = await ensureBinary(sourceDir);
-  if (!binaryCheck.ok) return binaryCheck;
+  if (!binaryCheck.ok) {
+    // Fallback: if nexus CLI is unavailable but nexus.yaml + compose_file exist,
+    // run docker compose directly. This handles environments where `uv` or `nexus`
+    // isn't installed but Docker is available and the stack was previously initialized.
+    const fallbackResult = await dockerComposeFallback(cwd, verbose, host);
+    if (fallbackResult !== undefined) return fallbackResult;
+    return binaryCheck;
+  }
 
   // Auto-init if no config file exists (nexus.yaml or nexus.yml)
   let autoInitialized = false;
@@ -264,6 +282,102 @@ export async function nexusDown(
 // Internals
 // ---------------------------------------------------------------------------
 
+/**
+ * Fallback: start Nexus via `docker compose` directly when the `nexus` CLI
+ * isn't available. Reads compose_file + data_dir + ports from nexus.yaml.
+ * Returns undefined if fallback isn't possible (no nexus.yaml, no compose_file).
+ */
+async function dockerComposeFallback(
+  cwd: string,
+  verbose: boolean,
+  host: string,
+): Promise<Result<NexusUpResult, KoiError> | undefined> {
+  const configPath = findNexusConfig(cwd);
+  if (configPath === undefined) return undefined;
+
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    const composeMatch = /^compose_file:\s*['"]?(.+?)['"]?\s*$/m.exec(raw);
+    if (composeMatch?.[1] === undefined || !existsSync(composeMatch[1])) return undefined;
+    const composeFile = composeMatch[1];
+
+    // Read data_dir for volume mount
+    const dataDirMatch = /^data_dir:\s*['"]?(.+?)['"]?\s*$/m.exec(raw);
+    const dataDir = dataDirMatch?.[1] ?? join(cwd, "nexus-data");
+
+    // Read profiles
+    const profiles: string[] = [];
+    const profileSection = /^compose_profiles:\s*\n((?:\s*-\s*.+\n)*)/m.exec(raw);
+    if (profileSection?.[1] !== undefined) {
+      for (const m of profileSection[1].matchAll(/^\s*-\s*(.+)/gm)) {
+        if (m[1] !== undefined) profiles.push(m[1].trim());
+      }
+    }
+
+    // Read port + api_key
+    const config = readNexusConfig(configPath);
+
+    if (verbose) {
+      process.stderr.write(
+        `Nexus: nexus CLI unavailable, falling back to docker compose\n` +
+          `  compose_file: ${composeFile}\n` +
+          `  data_dir: ${dataDir}\n`,
+      );
+    }
+
+    // Build docker compose command with a unique project name derived from
+    // the data_dir hash. This prevents conflicts when multiple worktrees
+    // use the same compose_file but different data directories.
+    const projectHash = createHash("md5").update(dataDir).digest("hex").slice(0, 8);
+    const projectName = `nexus-${projectHash}`;
+    const args = ["compose", "-f", composeFile, "-p", projectName];
+    for (const p of profiles) {
+      args.push("--profile", p);
+    }
+    args.push("up", "-d", "--wait");
+
+    const proc = Bun.spawn(["docker", ...args], {
+      cwd,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        NEXUS_HOST_DATA_DIR: dataDir,
+        NEXUS_PORT: String(config.port),
+        NEXUS_GRPC_PORT: String(config.port + 1),
+        POSTGRES_PORT: String(config.port + 2),
+        DRAGONFLY_PORT: String(config.port + 3),
+        ZOEKT_PORT: String(config.port + 4),
+        DOCKER_CLI_HINTS: "false",
+        BUILDKIT_PROGRESS: "plain",
+      },
+    });
+
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      return {
+        ok: false,
+        error: {
+          code: "INTERNAL" as const,
+          message: `docker compose up failed (exit ${String(exitCode)}): ${stderr.slice(0, 500)}`,
+          retryable: false,
+          context: {},
+        },
+      };
+    }
+
+    const baseUrl = `http://${host}:${String(config.port)}`;
+    return {
+      ok: true,
+      value: { baseUrl, apiKey: config.apiKey, autoInitialized: false },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Run full `nexus up` with all flags (pull, build, port-strategy). */
 async function runNexusFullUp(
   options: Parameters<typeof nexusUp>[0],
@@ -374,6 +488,45 @@ function patchNexusPort(cwd: string, port: number, verbose: boolean): void {
   }
 }
 
+/**
+ * Derives a stable, unique Nexus HTTP port from the workspace path.
+ * Uses MD5 hash of the absolute path mapped to the ephemeral port range (10000–60000).
+ * This ensures each worktree gets its own port without collisions.
+ */
+function derivePort(cwd: string): number {
+  const absPath = resolve(cwd);
+  const hash = createHash("md5").update(absPath).digest("hex");
+  // Use first 4 hex chars (0–65535), map to 10000–60000 range
+  const raw = Number.parseInt(hash.slice(0, 4), 16);
+  return 10000 + (raw % 50000);
+}
+
+/**
+ * Patches data_dir in nexus.yaml to be worktree-local.
+ * `nexus init` sets data_dir to a global path (~/.koi/demo/nexus-data) regardless
+ * of the working directory. This causes all worktrees to share the same Nexus data,
+ * leaking sessions and bricks across unrelated workspaces.
+ */
+function patchNexusDataDir(cwd: string, verbose: boolean): void {
+  const configPath = findNexusConfig(cwd);
+  if (configPath === undefined) return;
+
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    const localDataDir = join(cwd, "nexus-data");
+    // Replace `data_dir: <anything>` with the worktree-local path
+    const patched = raw.replace(/^data_dir:\s*.+$/m, `data_dir: ${localDataDir}`);
+    if (patched !== raw) {
+      writeFileSync(configPath, patched, "utf-8");
+      if (verbose) {
+        process.stderr.write(`Nexus: patched data_dir to ${localDataDir} in ${configPath}\n`);
+      }
+    }
+  } catch {
+    // Non-fatal — will use the global default
+  }
+}
+
 /** Values extracted from nexus.yaml after startup. */
 interface NexusConfigValues {
   readonly port: number;
@@ -437,6 +590,22 @@ async function runNexusCommand(
     process.stderr.write(`Nexus: running ${cmd.join(" ")}\n`);
   }
 
+  // Read data_dir from nexus.yaml so Docker Compose mounts the correct volume.
+  // The compose file uses ${NEXUS_HOST_DATA_DIR:-./nexus-data} for the data mount.
+  const dataDirEnv: Record<string, string> = {};
+  const configPath = findNexusConfig(cwd);
+  if (configPath !== undefined) {
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const match = /^data_dir:\s*['"]?(.+?)['"]?\s*$/m.exec(raw);
+      if (match?.[1] !== undefined) {
+        dataDirEnv.NEXUS_HOST_DATA_DIR = match[1];
+      }
+    } catch {
+      // Non-fatal — compose will use default ./nexus-data
+    }
+  }
+
   try {
     const proc = Bun.spawn(cmd, {
       cwd,
@@ -446,6 +615,7 @@ async function runNexusCommand(
       stderr: "pipe",
       env: {
         ...process.env,
+        ...dataDirEnv,
         // Suppress Docker Compose TTY progress bars that bypass pipe redirections
         DOCKER_CLI_HINTS: "false",
         BUILDKIT_PROGRESS: "plain",

@@ -221,7 +221,7 @@ const DEFAULT_CONFIG: ForgeConfig = {
   enabled: true,
   maxForgeDepth: 1,
   maxForgesPerSession: 5,
-  defaultScope: "agent",
+  defaultScope: "global",
   defaultPolicy: DEFAULT_SANDBOXED_POLICY,
   scopePromotion: DEFAULT_SCOPE_PROMOTION,
   verification: DEFAULT_VERIFICATION,

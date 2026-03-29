@@ -1568,7 +1568,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.once("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGHUP", () => shutdown("SIGHUP"));
+  // SIGHUP is sent by tmux on session rename/detach — ignore it in interactive TUI mode.
+  // Only treat it as a shutdown signal when running headless (no TTY).
+  if (process.stdin.isTTY !== true) {
+    process.on("SIGHUP", () => shutdown("SIGHUP"));
+  } else {
+    process.on("SIGHUP", () => {});
+  }
   process.on("uncaughtException", (err) => {
     process.stderr.write(`[shutdown] uncaughtException: ${err.message}\n${err.stack ?? ""}\n`);
     shutdown("uncaughtException");
@@ -1600,7 +1606,6 @@ export async function runUp(flags: UpFlags): Promise<void> {
       const input: EngineInput = { kind: "messages", messages: expanded };
       const deltas: string[] = [];
       let turnCount = 0;
-      process.stderr.write(`[dispatch] starting runtime.run()...\n`);
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);
         if (event.kind === "done") {
