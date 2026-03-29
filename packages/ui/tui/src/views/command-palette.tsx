@@ -25,12 +25,14 @@ export interface PaletteCallbacks {
 
 /** Map a CommandMeta to a PaletteCommand (adapts ctrlShortcut to shortcut). */
 function metaToPalette(cmd: CommandMeta): PaletteCommand {
+  const shortcut = cmd.ctrlShortcut ?? cmd.shortcut;
+  const capability = cmd.requiredCapability;
   return {
     id: cmd.id,
     label: cmd.label,
     description: cmd.description,
-    shortcut: cmd.ctrlShortcut ?? cmd.shortcut,
-    requiredCapability: cmd.requiredCapability,
+    ...(shortcut !== undefined ? { shortcut } : {}),
+    ...(capability !== undefined ? { requiredCapability: capability } : {}),
   };
 }
 
