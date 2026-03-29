@@ -44,7 +44,11 @@ import {
 } from "@koi/engine-compose";
 import { createGovernanceExtension, createGovernanceProvider } from "@koi/engine-reconcile";
 import { KoiRuntimeError } from "@koi/errors";
-import { runWithExecutionContext } from "@koi/execution-context";
+import {
+  type ChildSpanRecord,
+  runWithExecutionContext,
+  runWithSpanRecorder,
+} from "@koi/execution-context";
 import { AgentEntity } from "./agent-entity.js";
 import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import { createTerminalHandlers } from "./compose-bridge.js";
@@ -384,9 +388,32 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // Also emits discovery:miss when tool lookup fails (NOT_FOUND).
         const rawToolTerminal: ToolHandler = async (request) => {
           const execCtx = { session: sessionCtx, turnIndex: currentTurnIndex };
+          const collectedSpans: ChildSpanRecord[] = [];
+          const recorder = {
+            record: (span: ChildSpanRecord): void => {
+              collectedSpans.push(span);
+            },
+          };
           try {
-            return await runWithExecutionContext(execCtx, () => baseToolTerminal(request));
+            const result = await runWithSpanRecorder(recorder, () =>
+              runWithExecutionContext(execCtx, () => baseToolTerminal(request)),
+            );
+            if (collectedSpans.length > 0) {
+              debugInstrumentation?.recordToolChildSpans({
+                turnIndex: currentTurnIndex,
+                toolId: request.toolId,
+                children: collectedSpans,
+              });
+            }
+            return result;
           } catch (e: unknown) {
+            if (collectedSpans.length > 0) {
+              debugInstrumentation?.recordToolChildSpans({
+                turnIndex: currentTurnIndex,
+                toolId: request.toolId,
+                children: collectedSpans,
+              });
+            }
             if (e instanceof KoiRuntimeError && e.code === "NOT_FOUND") {
               pendingEngineEvents.push({
                 kind: "discovery:miss",

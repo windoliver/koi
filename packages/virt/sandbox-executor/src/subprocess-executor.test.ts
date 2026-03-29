@@ -10,6 +10,8 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecutionContext } from "@koi/core";
+import type { ChildSpanRecord } from "@koi/execution-context";
+import { runWithSpanRecorder } from "@koi/execution-context";
 import {
   buildIsolatedCommand,
   createSubprocessExecutor,
@@ -264,6 +266,75 @@ describe("subprocess: network isolation integration", () => {
       }
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Span recording tests
+// ---------------------------------------------------------------------------
+
+describe("span recording", () => {
+  const executor = createSubprocessExecutor();
+
+  test("records span on successful execution", async () => {
+    const entry = await writeEntry(
+      "span-success",
+      "export default function run(input: unknown) { return 42; }\n",
+    );
+    const spans: ChildSpanRecord[] = [];
+    const recorder = {
+      record: (span: ChildSpanRecord): void => {
+        spans.push(span);
+      },
+    };
+
+    await runWithSpanRecorder(recorder, () =>
+      executor.execute("return 42;", {}, 5_000, ctx(entry)),
+    );
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.label).toBe("subprocess-executor");
+    expect(spans[0]?.durationMs).toBeGreaterThan(0);
+    expect(spans[0]?.error).toBeUndefined();
+  });
+
+  test("records span with error on failure", async () => {
+    const entry = await writeEntry(
+      "span-fail",
+      'export default function run(input: unknown) { throw new Error("fail"); }\n',
+    );
+    const spans: ChildSpanRecord[] = [];
+    const recorder = {
+      record: (span: ChildSpanRecord): void => {
+        spans.push(span);
+      },
+    };
+
+    await runWithSpanRecorder(recorder, () =>
+      executor.execute("throw 'fail';", {}, 5_000, ctx(entry)),
+    );
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.label).toBe("subprocess-executor");
+    expect(spans[0]?.error).toBeDefined();
+    expect(spans[0]?.durationMs).toBeGreaterThan(0);
+  });
+
+  test("records span via fallback path (no entryPath)", async () => {
+    const spans: ChildSpanRecord[] = [];
+    const recorder = {
+      record: (span: ChildSpanRecord): void => {
+        spans.push(span);
+      },
+    };
+
+    await runWithSpanRecorder(recorder, () => executor.execute("return 99;", {}, 5_000));
+
+    // Fallback path writes temp file then recurses — should still record
+    expect(spans.length).toBeGreaterThanOrEqual(1);
+    const subprocessSpan = spans.find((s) => s.label === "subprocess-executor");
+    expect(subprocessSpan).toBeDefined();
+    expect(subprocessSpan?.durationMs).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type { Tool, ToolExecuteOptions } from "@koi/core/ecs";
 import type { ExecutionContext } from "@koi/core/sandbox-executor";
+import { getSpanRecorder } from "@koi/execution-context";
 import {
   DEFAULT_TIMEOUT_MS,
   EXEC_TOOL_DESCRIPTOR,
@@ -34,8 +35,14 @@ export function createExecTool(config: ExecToolConfig): Tool {
     policy: DEFAULT_SANDBOXED_POLICY,
 
     async execute(args: JsonObject, _options?: ToolExecuteOptions): Promise<unknown> {
+      const validateStart = performance.now();
       const code = args.code;
       if (typeof code !== "string" || code.length === 0) {
+        getSpanRecorder()?.record({
+          label: "tool-exec:validate",
+          durationMs: performance.now() - validateStart,
+          error: "Missing or empty `code` parameter",
+        });
         return { ok: false, error: "Missing or empty `code` parameter", code: "VALIDATION" };
       }
 
@@ -43,6 +50,10 @@ export function createExecTool(config: ExecToolConfig): Tool {
       const requestedTimeout =
         typeof rawTimeout === "number" && rawTimeout > 0 ? rawTimeout : defaultTimeout;
       const timeoutMs = Math.min(requestedTimeout, maxTimeout);
+      getSpanRecorder()?.record({
+        label: "tool-exec:validate",
+        durationMs: performance.now() - validateStart,
+      });
 
       const input: unknown = args.input ?? null;
 
