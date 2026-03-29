@@ -583,7 +583,7 @@ export async function runForgePipeline(
   // Dedup check: if brick with this ID already exists, return early
   // Edits skip dedup — same content hash after no-op edit should still re-save with new provenance
   const existsResult = options?.skipDedup ? undefined : await deps.store.exists(id);
-  if (existsResult !== undefined && existsResult.ok && existsResult.value) {
+  if (existsResult?.ok && existsResult.value) {
     const forgeResult: ForgeResult = {
       id,
       kind: forgeInput.kind,

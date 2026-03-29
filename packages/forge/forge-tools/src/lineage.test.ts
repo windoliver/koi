@@ -217,7 +217,7 @@ describe("computeLineage — depth limit", () => {
 
 describe("computeLineage — store errors", () => {
   test("returns partial chain on store error mid-walk", async () => {
-    const a = brick("a");
+    // 'a' intentionally not created — simulates a missing ancestor in the store
     const b = brick("b", "a");
     const c = brick("c", "b");
     const store = mockStore([b, c]); // 'a' is missing — store.load will fail
