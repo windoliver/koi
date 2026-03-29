@@ -146,8 +146,18 @@ async function readJson<T>(client: NexusClient, path: string): Promise<T | undef
 
 async function writeJson(client: NexusClient, path: string, data: unknown): Promise<void> {
   const content = JSON.stringify(data);
-  const r = await client.rpc<null>("write", { path, content });
-  if (!r.ok) {
+  const maxRetries = 4;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const r = await client.rpc<null>("write", { path, content });
+    if (r.ok) return;
+    // Retry on rate limit (RATE_LIMIT code or "rate" in message)
+    const isRateLimit =
+      r.error.code === "RATE_LIMIT" || r.error.message.toLowerCase().includes("rate");
+    if (attempt < maxRetries && isRateLimit) {
+      // Exponential backoff: 2s, 4s, 8s, 16s
+      await new Promise((resolve) => setTimeout(resolve, 2000 * 2 ** attempt));
+      continue;
+    }
     throw new Error(r.error.message);
   }
 }
