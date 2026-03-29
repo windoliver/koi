@@ -111,8 +111,9 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
   async function writeBrick(brick: BrickArtifact): Promise<Result<void, KoiError>> {
     // Retry with backoff on 429 (Nexus rate limit). Startup writes (companion skills,
     // demo seed) can exhaust the burst budget — forge saves need resilience.
-    const MAX_RETRIES = 5;
-    const BASE_DELAY_MS = 2000;
+    // Only retry RATE_LIMIT — network errors and other failures fail fast.
+    const MAX_RETRIES = 3;
+    const BASE_DELAY_MS = 1000;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       if (attempt > 0) {
         const delay = BASE_DELAY_MS * attempt;
@@ -123,7 +124,7 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
         content: JSON.stringify(brick),
       });
       if (result.ok) return { ok: true, value: undefined };
-      if (!result.error.retryable || attempt === MAX_RETRIES) return result;
+      if (result.error.code !== "RATE_LIMIT" || attempt === MAX_RETRIES) return result;
     }
     // Unreachable but satisfies return type
     return {
