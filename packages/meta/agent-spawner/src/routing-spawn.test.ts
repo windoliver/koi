@@ -1,10 +1,18 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { AgentManifest, KoiError, SpawnFn, SpawnRequest, SpawnResult } from "@koi/core";
+import type {
+  AgentManifest,
+  KoiError,
+  ManifestAgentEntry,
+  SpawnFn,
+  SpawnRequest,
+  SpawnResult,
+} from "@koi/core";
 
 import {
   createRoutingSpawnFn,
   mapManifestToDescriptor,
   mapSandboxConfigToProfile,
+  validateManifestAgents,
 } from "./routing-spawn.js";
 import type { AgentSpawner } from "./types.js";
 
@@ -359,5 +367,193 @@ describe("createRoutingSpawnFn", () => {
 
     const call = (defaultSpawn as ReturnType<typeof mock>).mock.calls[0];
     expect(call?.[0]).toBe(request);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// namedSpawns routing
+// ---------------------------------------------------------------------------
+
+describe("createRoutingSpawnFn — namedSpawns", () => {
+  test("uses named spawn when agentName matches a key in namedSpawns", async () => {
+    const defaultSpawn = createMockDefaultSpawn();
+    const agentSpawner = createMockAgentSpawner({ ok: true, value: "unused" });
+    const namedFn: SpawnFn = mock(
+      async (_req: SpawnRequest): Promise<SpawnResult> => ({
+        ok: true,
+        output: "named-output",
+      }),
+    );
+    const namedSpawns = new Map<string, SpawnFn>([["special-agent", namedFn]]);
+
+    const routingSpawn = createRoutingSpawnFn({ defaultSpawn, agentSpawner, namedSpawns });
+
+    const result = await routingSpawn(createSpawnRequest({ agentName: "special-agent" }));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.output).toBe("named-output");
+    }
+
+    expect(namedFn).toHaveBeenCalledTimes(1);
+    expect(defaultSpawn).not.toHaveBeenCalled();
+    expect(agentSpawner.spawn).not.toHaveBeenCalled();
+  });
+
+  test("falls through to existing logic when agentName does not match namedSpawns", async () => {
+    const defaultSpawn = createMockDefaultSpawn();
+    const agentSpawner = createMockAgentSpawner({ ok: true, value: "unused" });
+    const namedFn: SpawnFn = mock(
+      async (_req: SpawnRequest): Promise<SpawnResult> => ({
+        ok: true,
+        output: "named-output",
+      }),
+    );
+    const namedSpawns = new Map<string, SpawnFn>([["other-agent", namedFn]]);
+
+    const routingSpawn = createRoutingSpawnFn({ defaultSpawn, agentSpawner, namedSpawns });
+
+    const result = await routingSpawn(createSpawnRequest({ agentName: "test-agent" }));
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.output).toBe("default-output");
+    }
+
+    expect(namedFn).not.toHaveBeenCalled();
+    expect(defaultSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  test("behaves unchanged when namedSpawns is undefined", async () => {
+    const defaultSpawn = createMockDefaultSpawn();
+    const agentSpawner = createMockAgentSpawner({ ok: true, value: "unused" });
+
+    const routingSpawn = createRoutingSpawnFn({
+      defaultSpawn,
+      agentSpawner,
+      namedSpawns: undefined,
+    });
+
+    const result = await routingSpawn(createSpawnRequest());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.output).toBe("default-output");
+    }
+
+    expect(defaultSpawn).toHaveBeenCalledTimes(1);
+    expect(agentSpawner.spawn).not.toHaveBeenCalled();
+  });
+
+  test("behaves unchanged when namedSpawns is an empty map", async () => {
+    const defaultSpawn = createMockDefaultSpawn();
+    const agentSpawner = createMockAgentSpawner({ ok: true, value: "unused" });
+
+    const routingSpawn = createRoutingSpawnFn({
+      defaultSpawn,
+      agentSpawner,
+      namedSpawns: new Map(),
+    });
+
+    const result = await routingSpawn(createSpawnRequest());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.output).toBe("default-output");
+    }
+
+    expect(defaultSpawn).toHaveBeenCalledTimes(1);
+    expect(agentSpawner.spawn).not.toHaveBeenCalled();
+  });
+
+  test("named spawn takes priority over sandbox routing", async () => {
+    const defaultSpawn = createMockDefaultSpawn();
+    const agentSpawner = createMockAgentSpawner({ ok: true, value: "sandbox-output" });
+    const namedFn: SpawnFn = mock(
+      async (_req: SpawnRequest): Promise<SpawnResult> => ({
+        ok: true,
+        output: "named-wins",
+      }),
+    );
+    const namedSpawns = new Map<string, SpawnFn>([["sandboxed-agent", namedFn]]);
+
+    const routingSpawn = createRoutingSpawnFn({ defaultSpawn, agentSpawner, namedSpawns });
+
+    // Even though the manifest has sandbox + command, the namedSpawn should win
+    const manifest = createManifest({
+      sandbox: { adapter: "e2b" },
+      metadata: { command: "claude" },
+    });
+
+    const result = await routingSpawn(
+      createSpawnRequest({ agentName: "sandboxed-agent", manifest }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.output).toBe("named-wins");
+    }
+
+    expect(namedFn).toHaveBeenCalledTimes(1);
+    expect(agentSpawner.spawn).not.toHaveBeenCalled();
+    expect(defaultSpawn).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateManifestAgents
+// ---------------------------------------------------------------------------
+
+describe("validateManifestAgents", () => {
+  test("returns ok for valid entries", () => {
+    const agents: readonly ManifestAgentEntry[] = [
+      { name: "agent-a", transport: "cli", command: "claude" },
+      { name: "agent-b", transport: "mcp", command: "mcp-server" },
+      { name: "agent-c", transport: "a2a" },
+    ];
+
+    const result = validateManifestAgents(agents);
+    expect(result.ok).toBe(true);
+  });
+
+  test("returns error when CLI transport is missing command", () => {
+    const agents: readonly ManifestAgentEntry[] = [{ name: "broken-cli", transport: "cli" }];
+
+    const result = validateManifestAgents(agents);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("broken-cli");
+      expect(result.error.message).toContain("command");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  test("passes validation when protocol is a known value", () => {
+    const agents: readonly ManifestAgentEntry[] = [
+      { name: "acp-agent", transport: "cli", command: "claude", protocol: "acp" },
+      { name: "stdio-agent", transport: "cli", command: "aider", protocol: "stdio" },
+    ];
+
+    const result = validateManifestAgents(agents);
+    expect(result.ok).toBe(true);
+  });
+
+  test("accumulates multiple errors into a single message", () => {
+    const agents: readonly ManifestAgentEntry[] = [
+      { name: "cli-no-cmd", transport: "cli" },
+      { name: "another-cli-no-cmd", transport: "cli", command: "" },
+    ];
+
+    const result = validateManifestAgents(agents);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("cli-no-cmd");
+      expect(result.error.message).toContain("another-cli-no-cmd");
+      expect(result.error.retryable).toBe(false);
+    }
   });
 });

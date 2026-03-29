@@ -16,7 +16,10 @@ import type {
   ExternalAgentDescriptor,
   ExternalAgentProtocol,
   ExternalAgentTransport,
+  KoiError,
+  ManifestAgentEntry,
   ManifestSandboxConfig,
+  Result,
   SandboxProfile,
   SpawnFn,
   SpawnRequest,
@@ -35,6 +38,12 @@ export interface RoutingSpawnConfig {
   readonly defaultSpawn: SpawnFn;
   /** Agent spawner for sandboxed external agent execution. */
   readonly agentSpawner: AgentSpawner;
+  /**
+   * Named spawn functions keyed by agent name.
+   * When a spawn request's agentName matches a key, that SpawnFn is used directly.
+   * Built from manifest.agents[] at startup.
+   */
+  readonly namedSpawns?: ReadonlyMap<string, SpawnFn> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +127,12 @@ function isValidProtocol(value: string): value is ExternalAgentProtocol {
  */
 export function createRoutingSpawnFn(config: RoutingSpawnConfig): SpawnFn {
   return async (request: SpawnRequest): Promise<SpawnResult> => {
+    // Named spawn lookup — manifest-declared external agents (e.g., ACP/external adapters)
+    if (config.namedSpawns !== undefined) {
+      const named = config.namedSpawns.get(request.agentName);
+      if (named !== undefined) return named(request);
+    }
+
     const manifest = request.manifest;
 
     if (manifest?.sandbox !== undefined) {
@@ -144,4 +159,49 @@ export function createRoutingSpawnFn(config: RoutingSpawnConfig): SpawnFn {
 
     return config.defaultSpawn(request);
   };
+}
+
+// ---------------------------------------------------------------------------
+// Manifest agent validation (startup check)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate manifest agent entries at startup.
+ *
+ * Checks:
+ * - CLI transport requires a non-empty `command`
+ * - `protocol` (when present) must be a known value
+ * - `transport` must be a known value
+ */
+export function validateManifestAgents(
+  agents: readonly ManifestAgentEntry[],
+): Result<void, KoiError> {
+  const errors: string[] = [];
+
+  for (const agent of agents) {
+    if (!isValidTransport(agent.transport)) {
+      errors.push(`Agent '${agent.name}': unsupported transport '${String(agent.transport)}'`);
+    }
+
+    if (agent.transport === "cli" && (agent.command === undefined || agent.command.length === 0)) {
+      errors.push(`Agent '${agent.name}': CLI transport requires a 'command' field`);
+    }
+
+    if (agent.protocol !== undefined && !isValidProtocol(agent.protocol)) {
+      errors.push(`Agent '${agent.name}': unsupported protocol '${String(agent.protocol)}'`);
+    }
+  }
+
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `Invalid manifest agent entries: ${errors.join("; ")}`,
+        retryable: false,
+      },
+    };
+  }
+
+  return { ok: true, value: undefined };
 }

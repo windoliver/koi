@@ -5,6 +5,8 @@
  * coding tasks to external agents in isolation.
  */
 
+// Adapter → SpawnFn wrapper
+export { createAdapterSpawnFn } from "./adapter-spawn.js";
 // Companion skill
 export {
   AGENT_SPAWNER_SKILL,
@@ -25,6 +27,7 @@ export {
   createRoutingSpawnFn,
   mapManifestToDescriptor,
   mapSandboxConfigToProfile,
+  validateManifestAgents,
 } from "./routing-spawn.js";
 export type { Semaphore } from "./semaphore.js";
 // Semaphore (exported for testing)
