@@ -296,6 +296,7 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
       ? { degeneracy: raw.degeneracy as Readonly<Record<string, DegeneracyConfig>> }
       : {}),
     ...(raw.delivery !== undefined ? { delivery: raw.delivery as DeliveryPolicy } : {}),
+    ...(raw.agents !== undefined ? { agents: raw.agents } : {}),
   };
 
   return manifest;

@@ -43,6 +43,7 @@ const KNOWN_FIELDS = [
   "degeneracy",
   "delivery",
   "nexus",
+  "agents",
 ] as const;
 
 /**

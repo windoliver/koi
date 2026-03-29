@@ -170,6 +170,15 @@ export interface RawManifest {
         readonly allowedHosts?: readonly string[] | undefined;
       }[]
     | undefined;
+  readonly agents?:
+    | readonly {
+        readonly name: string;
+        readonly transport: "cli" | "mcp" | "a2a";
+        readonly command?: string | undefined;
+        readonly protocol?: "acp" | "stdio" | undefined;
+        readonly capabilities?: readonly string[] | undefined;
+      }[]
+    | undefined;
   readonly [key: string]: unknown;
 }
 
@@ -551,6 +560,17 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     nexus: nexusSchema.optional(),
     codeSandbox: codeSandboxSchema.optional(),
     dataSources: dataSourcesSchema,
+    agents: z
+      .array(
+        z.object({
+          name: z.string(),
+          transport: z.enum(["cli", "mcp", "a2a"]),
+          command: z.string().optional(),
+          protocol: z.enum(["acp", "stdio"]).optional(),
+          capabilities: z.array(z.string()).optional(),
+        }),
+      )
+      .optional(),
   })
   .passthrough();
 
