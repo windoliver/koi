@@ -232,9 +232,8 @@ export function createNexusClient(config?: NexusClientConfig): NexusClient {
       const path = `/api/v2/ipc/inbox/${encodeURIComponent(agentId)}${qs.length > 0 ? `?${qs}` : ""}`;
 
       // The REST compatibility endpoint returns {messages: [{filename}]}, not
-      // full envelopes. We read each file via the filesystem API to get the
-      // actual message content. This is N+1 but correct — a bulk read endpoint
-      // would be a Nexus-side improvement.
+      // full envelopes. Read each file via the filesystem API and parse the
+      // JSON content to get the actual envelope. N+1 but correct.
       const listResult = await request<NexusInboxResponse>("GET", path);
       if (!listResult.ok) return listResult;
 
@@ -243,12 +242,18 @@ export function createNexusClient(config?: NexusClientConfig): NexusClient {
 
       for (const entry of listResult.value.messages) {
         const filePath = `${agentInboxPath}/${entry.filename}`;
-        const fileResult = await request<NexusMessageEnvelope>(
+        // fs/read returns {content: string, ...} — content is the raw JSON text
+        const fileResult = await request<{ readonly content: string }>(
           "GET",
           `/api/v2/fs/read?path=${encodeURIComponent(filePath)}`,
         );
         if (fileResult.ok) {
-          envelopes.push(fileResult.value);
+          try {
+            const envelope = JSON.parse(fileResult.value.content) as NexusMessageEnvelope;
+            envelopes.push(envelope);
+          } catch {
+            // Malformed JSON — skip this message
+          }
         }
       }
 

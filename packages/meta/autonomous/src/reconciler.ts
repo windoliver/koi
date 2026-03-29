@@ -67,8 +67,12 @@ export async function reconcileTaskBoard(
     const harnessItem = harnessSnapshot.items.find((i) => i.id === bridgeItem.id);
     if (harnessItem === undefined) continue;
 
-    // Already in sync — skip
-    if (harnessItem.status === bridgeItem.status) continue;
+    // Already in sync — skip.
+    // Also check retry count: a retryable failure returns the task to "pending"
+    // with incremented retries. If both are "pending" but retries differ, the
+    // harness missed the failTask() transition that advances the retry counter.
+    const retriesMatch = (harnessItem.retries ?? 0) === (bridgeItem.retries ?? 0);
+    if (harnessItem.status === bridgeItem.status && retriesMatch) continue;
 
     // Scenario 1: Bridge says completed, harness disagrees
     if (bridgeItem.status === "completed" && harnessItem.status !== "completed") {
@@ -130,6 +134,38 @@ export async function reconcileTaskBoard(
       } else {
         logger?.warn(
           `reconcile: failTask failed for ${bridgeItem.id}: ${failResult.error.message}`,
+        );
+      }
+      continue;
+    }
+
+    // Scenario 3: Retry count drift — both "pending" but retries differ.
+    // The bridge ran assign → spawn → fail(retryable) → back to pending with
+    // retries incremented. The harness missed the assign+fail transitions, so
+    // its retry counter is behind. Replay assign → fail to advance the counter.
+    if (
+      bridgeItem.status === "pending" &&
+      harnessItem.status === "pending" &&
+      (bridgeItem.retries ?? 0) > (harnessItem.retries ?? 0) &&
+      bridgeItem.error !== undefined
+    ) {
+      const workerId = bridgeItem.assignedTo ?? agentId(`worker-${bridgeItem.id}`);
+      const assignResult = await harness.assignTask(bridgeItem.id, workerId);
+      if (!assignResult.ok) {
+        logger?.warn(
+          `reconcile: cannot assign ${bridgeItem.id} for retry sync: ${assignResult.error.message}`,
+        );
+        continue;
+      }
+
+      const failResult = await harness.failTask(bridgeItem.id, bridgeItem.error);
+      if (failResult.ok) {
+        const msg = `${bridgeItem.id}: retries ${String(harnessItem.retries ?? 0)} → ${String(bridgeItem.retries ?? 0)}`;
+        details.push(msg);
+        logger?.warn(`reconciled retry drift ${msg}`);
+      } else {
+        logger?.warn(
+          `reconcile: failTask for retry sync failed for ${bridgeItem.id}: ${failResult.error.message}`,
         );
       }
     }

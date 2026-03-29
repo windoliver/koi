@@ -173,6 +173,9 @@ describe("createNexusClient", () => {
         payload: { data: "hello" },
       };
 
+      // fs/read returns {content: string} where content is the raw JSON
+      const fsReadResponse = { content: JSON.stringify(fileEnvelope) };
+
       // let justified: call index tracks sequential fetch calls
       let callIdx = 0;
       mockFetch = mock(() => {
@@ -180,7 +183,7 @@ describe("createNexusClient", () => {
         if (idx === 0) {
           return Promise.resolve(new Response(JSON.stringify(listResponse), { status: 200 }));
         }
-        return Promise.resolve(new Response(JSON.stringify(fileEnvelope), { status: 200 }));
+        return Promise.resolve(new Response(JSON.stringify(fsReadResponse), { status: 200 }));
       });
       globalThis.fetch = mockFetch as unknown as typeof fetch;
 
