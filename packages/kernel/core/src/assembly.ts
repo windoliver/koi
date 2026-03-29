@@ -7,6 +7,7 @@ import type { JsonObject } from "./common.js";
 import type { DegeneracyConfig } from "./degeneracy.js";
 import type { DelegationConfig } from "./delegation.js";
 import type { DeliveryPolicy } from "./delivery.js";
+import type { ExternalAgentProtocol, ExternalAgentTransport } from "./external-agent.js";
 import type { FilesystemPolicy, NetworkPolicy, ResourceLimits } from "./sandbox-profile.js";
 import type { SupervisionConfig } from "./supervision.js";
 import type { OutboundWebhookConfig } from "./webhook.js";
@@ -212,4 +213,31 @@ export interface AgentManifest {
    * Can be overridden per-spawn via SpawnRequest.delivery.
    */
   readonly delivery?: DeliveryPolicy | undefined;
+  /**
+   * External agents available for spawn routing. Each entry declares a
+   * named agent with transport/protocol details, resolved to an
+   * EngineAdapter at assembly time.
+   */
+  readonly agents?: readonly ManifestAgentEntry[] | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Manifest agent entry (declarative config for external agents)
+// ---------------------------------------------------------------------------
+
+/**
+ * Manifest-declared external agent for spawn routing.
+ *
+ * Lighter than ExternalAgentDescriptor — only declarative config fields,
+ * no runtime fields (source, healthy, metadata).
+ */
+export interface ManifestAgentEntry {
+  readonly name: string;
+  readonly transport: ExternalAgentTransport;
+  /** Executable command for CLI transport (e.g., "claude", "aider"). */
+  readonly command?: string | undefined;
+  /** Wire protocol: "acp" for JSON-RPC, "stdio" for raw stdin/stdout. */
+  readonly protocol?: ExternalAgentProtocol | undefined;
+  /** Declared capabilities for routing decisions. */
+  readonly capabilities?: readonly string[] | undefined;
 }

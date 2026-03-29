@@ -36,6 +36,7 @@ export type {
   ChannelIdentity,
   FilesystemSkillSource,
   ForgedSkillSource,
+  ManifestAgentEntry,
   ManifestSandboxConfig,
   ManifestSandboxPersistence,
   MiddlewareConfig,
