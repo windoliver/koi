@@ -26,6 +26,7 @@ export interface NexusResolution {
   readonly providers: readonly ComponentProvider[];
   readonly dispose: () => Promise<void>;
   readonly baseUrl: string;
+  readonly connection: ResolvedNexusConnectionLike;
   readonly search?: { readonly retriever: Retriever; readonly indexer: Indexer } | undefined;
 }
 
@@ -99,6 +100,7 @@ export async function resolveNexusStack(
     providers: bundle.providers,
     dispose: bundle.dispose,
     baseUrl: bundle.config.baseUrl,
+    connection: { baseUrl: bundle.config.baseUrl, apiKey: apiKey ?? "" },
     search:
       bundle.backends.search !== undefined
         ? { retriever: bundle.backends.search.retriever, indexer: bundle.backends.search.indexer }
@@ -117,7 +119,14 @@ const EMPTY_NEXUS = {
   dispose: undefined,
   baseUrl: undefined,
   search: undefined,
+  connection: undefined,
 } as const satisfies NexusResolvedState;
+
+/** Resolved Nexus connection (baseUrl + apiKey) for downstream consumers. */
+export interface ResolvedNexusConnectionLike {
+  readonly baseUrl: string;
+  readonly apiKey: string;
+}
 
 /** Resolved Nexus state with optional values for the dispose/baseUrl. */
 export interface NexusResolvedState {
@@ -126,6 +135,8 @@ export interface NexusResolvedState {
   readonly dispose: (() => Promise<void>) | undefined;
   readonly baseUrl: string | undefined;
   readonly search?: { readonly retriever: Retriever; readonly indexer: Indexer } | undefined;
+  /** Resolved connection config for downstream consumers (e.g., autonomous stores). */
+  readonly connection?: ResolvedNexusConnectionLike | undefined;
 }
 
 /** Resolution result bundling state and contribution metadata. */
