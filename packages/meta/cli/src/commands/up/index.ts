@@ -982,13 +982,18 @@ export async function runUp(flags: UpFlags): Promise<void> {
       : {}),
     ...(contextArenaConfig !== undefined ? { contextArenaConfig } : {}),
     aceDataDir: resolve(workspaceRoot, ".koi", "data"),
-    ...(nexusBaseUrl !== undefined || nexus.baseUrl !== undefined
-      ? { nexusBaseUrl: nexusBaseUrl ?? nexus.baseUrl }
+    ...((nexusBaseUrl ?? nexus.baseUrl) !== undefined
+      ? { nexusBaseUrl: (nexusBaseUrl ?? nexus.baseUrl) as string }
       : {}),
     ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
     agentName: manifest.name,
     ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
-    ...(effectiveStacks.ace === true ? { aceModelCall: await createAceModelCall() } : {}),
+    ...(effectiveStacks.ace === true
+      ? await (async () => {
+          const mc = await createAceModelCall();
+          return mc !== undefined ? { aceModelCall: mc } : {};
+        })()
+      : {}),
   });
 
   // Resolve manifest tools (tools.koi section) into ComponentProviders
