@@ -1193,6 +1193,7 @@
       },
       "dependencies": {
         "@clack/prompts": "0.10.0",
+        "@koi/agent-spawner": "workspace:*",
         "@koi/auto-harness": "workspace:*",
         "@koi/autonomous": "workspace:*",
         "@koi/bootstrap": "workspace:*",
@@ -1268,6 +1269,7 @@
         "@koi/nexus-store": "workspace:*",
         "@koi/node-stack": "workspace:*",
         "@koi/quality-gate": "workspace:*",
+        "@koi/registry-nexus": "workspace:*",
         "@koi/registry-remote": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/retry-stack": "workspace:*",

@@ -187,11 +187,15 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   const embedProfile = mapNexusModeToProfile(preset.nexusMode);
 
   progress("subsystems", "Resolving subsystems");
-  const [nexusResolution, autonomousResolution] = await Promise.all([
-    resolveNexusOrWarn(nexusBaseUrl, manifest.nexus?.url, verbose, embedProfile, undefined),
-    resolveAutonomousOrWarn(manifest, verbose),
-  ]);
+  const nexusResolution = await resolveNexusOrWarn(
+    nexusBaseUrl,
+    manifest.nexus?.url,
+    verbose,
+    embedProfile,
+    undefined,
+  );
   const nexus = nexusResolution.state;
+  const autonomousResolution = await resolveAutonomousOrWarn(manifest, verbose, nexus.connection);
   const autonomous = autonomousResolution.result;
 
   // ------------------------------------------------------------------

@@ -111,18 +111,20 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const deployConfig = manifest.deploy;
   const healthPort = flags.port ?? deployConfig?.port ?? 9100;
 
-  // 4. Resolve Nexus + autonomous in parallel (before forge, so search backends are available)
-  const [nexusResolution, autonomousResolution] = await Promise.all([
-    resolveNexusOrWarn(
-      flags.nexusUrl,
-      manifest.nexus?.url,
-      flags.verbose,
-      undefined,
-      flags.nexusSource,
-    ),
-    resolveAutonomousOrWarn(manifest, flags.verbose),
-  ]);
+  // 4. Resolve Nexus first, then autonomous (autonomous needs Nexus connection for persistent stores)
+  const nexusResolution = await resolveNexusOrWarn(
+    flags.nexusUrl,
+    manifest.nexus?.url,
+    flags.verbose,
+    undefined,
+    flags.nexusSource,
+  );
   const nexus = nexusResolution.state;
+  const autonomousResolution = await resolveAutonomousOrWarn(
+    manifest,
+    flags.verbose,
+    nexus.connection,
+  );
   const autonomous = autonomousResolution.result;
 
   // 4b. Bootstrap forge system (before resolution, so forgeStore is available)

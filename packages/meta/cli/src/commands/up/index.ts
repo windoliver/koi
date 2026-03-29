@@ -669,24 +669,26 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   const embedProfile = nexusStartedByUs ? undefined : mapNexusModeToProfile(preset.nexusMode);
 
-  // Resolve subsystems in parallel
+  // Resolve subsystems — Nexus first (autonomous needs its connection), then autonomous + temporal in parallel
   output.spinner.start("Resolving subsystems...");
-  const [nexusResolution, autonomousResolution, temporalAdmin] = await timer.time(
+  const [nexusResolution, [autonomousResolution, temporalAdmin]] = await timer.time(
     "subsystems",
-    () =>
-      Promise.all([
-        resolveNexusOrWarn(
-          nexusBaseUrl,
-          manifest.nexus?.url,
-          flags.verbose,
-          embedProfile,
-          flags.nexusSource,
-        ),
-        resolveAutonomousOrWarn(manifest, flags.verbose),
+    async () => {
+      const nRes = await resolveNexusOrWarn(
+        nexusBaseUrl,
+        manifest.nexus?.url,
+        flags.verbose,
+        embedProfile,
+        flags.nexusSource,
+      );
+      const rest = await Promise.all([
+        resolveAutonomousOrWarn(manifest, flags.verbose, nRes.state.connection),
         temporalUrl !== undefined
           ? resolveTemporalOrWarn(temporalUrl, flags.verbose)
           : Promise.resolve(undefined),
-      ]),
+      ]);
+      return [nRes, rest] as const;
+    },
   );
   const nexus = nexusResolution.state;
   const autonomous = autonomousResolution.result;

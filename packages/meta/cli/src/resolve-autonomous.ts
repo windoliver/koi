@@ -2,8 +2,10 @@
  * resolveAutonomousOrWarn — conditionally bootstrap autonomous agent mode.
  *
  * When the manifest declares `autonomous.enabled: true`, lazily loads
- * @koi/autonomous and its dependencies, creates in-memory stores,
- * and returns the autonomous agent with its harness for orchestration wiring.
+ * @koi/autonomous and its dependencies, creates stores (Nexus-backed when
+ * a connection is provided, in-memory otherwise), resolves manifest-declared
+ * agents as named spawn targets, and returns the autonomous agent with its
+ * harness for orchestration wiring.
  *
  * The harness is wrapped as a HarnessAdminClientLike so the orchestration
  * resolver can create dashboard views. Pause/resume are not exposed through
@@ -13,12 +15,14 @@
 import type {
   AgentId,
   ComponentProvider,
+  EngineAdapter,
   EngineMetrics,
   HarnessSnapshot,
   HarnessStatus,
   KoiError,
   KoiMiddleware,
   MailboxComponent,
+  ManifestAgentEntry,
   Result,
   SpawnFn,
 } from "@koi/core";
@@ -26,6 +30,7 @@ import { agentId, harnessId } from "@koi/core";
 import type { HarnessAdminClientLike } from "@koi/dashboard-api";
 import type { StackContribution } from "./contribution-graph.js";
 import { createInMemorySessionPersistence } from "./in-memory-session-persistence.js";
+import type { ResolvedNexusConnectionLike } from "./resolve-nexus.js";
 
 // ---------------------------------------------------------------------------
 // Result
@@ -125,6 +130,33 @@ function mapHarnessToAdminClient(harness: {
 }
 
 // ---------------------------------------------------------------------------
+// Manifest agent → EngineAdapter resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Lazily resolve a ManifestAgentEntry to an EngineAdapter.
+ *
+ * - protocol: "acp" → @koi/engine-acp (AcpAdapter for Claude Code, etc.)
+ * - protocol: "stdio" or undefined → @koi/engine-external (single-shot CLI)
+ */
+async function resolveAdapterForEntry(
+  entry: ManifestAgentEntry,
+): Promise<EngineAdapter | undefined> {
+  if (entry.command === undefined) return undefined;
+
+  if (entry.protocol === "acp") {
+    const { createAcpAdapter } = await import("@koi/engine-acp");
+    return createAcpAdapter({ command: entry.command });
+  }
+
+  const { createExternalAdapter } = await import("@koi/engine-external");
+  return createExternalAdapter({
+    command: entry.command,
+    mode: "single-shot",
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -132,8 +164,10 @@ export async function resolveAutonomousOrWarn(
   manifest: {
     readonly autonomous?: unknown;
     readonly name: string;
+    readonly agents?: readonly ManifestAgentEntry[] | undefined;
   },
   verbose?: boolean,
+  nexus?: ResolvedNexusConnectionLike | undefined,
 ): Promise<AutonomousResolutionWithContribution> {
   if (!isAutonomousEnabled(manifest)) {
     return {
@@ -151,28 +185,102 @@ export async function resolveAutonomousOrWarn(
   }
 
   try {
-    // Lazy imports — only loaded when autonomous mode is enabled
+    // Lazy imports — only loaded when autonomous mode is enabled.
+    // Nexus imports are conditional on nexus config presence (Decision #16A).
+    const hasManifestAgents = manifest.agents !== undefined && manifest.agents.length > 0;
     const [
       { createAutonomousAgent, createCompletionNotifier },
       { createLongRunningHarness },
       { createHarnessScheduler },
       { createInMemorySnapshotChainStore, createThreadStore },
+      nexusStoreModule,
+      nexusRegistryModule,
+      { withRetry },
+      adapterSpawnerModule,
     ] = await Promise.all([
       import("@koi/autonomous"),
       import("@koi/long-running"),
       import("@koi/harness-scheduler"),
       import("@koi/snapshot-chain-store"),
+      nexus !== undefined ? import("@koi/nexus-store") : Promise.resolve(undefined),
+      nexus !== undefined ? import("@koi/registry-nexus") : Promise.resolve(undefined),
+      import("@koi/errors"),
+      hasManifestAgents ? import("@koi/agent-spawner") : Promise.resolve(undefined),
     ]);
 
     const hId = harnessId(`${manifest.name}-harness`);
     const aId = agentId(`${manifest.name}-agent`);
 
-    // In-memory stores for CLI usage
-    const harnessStore = createInMemorySnapshotChainStore<HarnessSnapshot>();
-    const sessionPersistence = createInMemorySessionPersistence();
+    // --- Store initialization: Nexus-backed (persistent) or in-memory (ephemeral) ---
+    let harnessStore: import("@koi/core").SnapshotChainStore<HarnessSnapshot>;
+    let sessionPersistence: import("@koi/core").SessionPersistence;
+    let registry:
+      | Awaited<ReturnType<typeof import("@koi/registry-nexus").createNexusRegistry>>
+      | undefined;
+    const useNexus =
+      nexus !== undefined && nexusStoreModule !== undefined && nexusRegistryModule !== undefined;
+
+    if (useNexus) {
+      // Single withRetry wrapping all Nexus init (Decisions #2C, #13A)
+      const nexusStores = await withRetry(
+        async () => {
+          const store = nexusStoreModule.createNexusSnapshotStore<HarnessSnapshot>({
+            ...nexus,
+            basePath: "harness-snapshots",
+          });
+          const session = nexusStoreModule.createNexusSessionStore({
+            ...nexus,
+            basePath: "harness-sessions",
+          });
+          const reg = await nexusRegistryModule.createNexusRegistry({
+            ...nexus,
+            pollIntervalMs: 30_000, // Decision #15B
+          });
+          return { store, session, reg };
+        },
+        {
+          maxRetries: 3,
+          initialDelayMs: 2_000,
+          maxBackoffMs: 10_000,
+          backoffMultiplier: 2,
+          jitter: true,
+          jitterStrategy: "full" as const,
+        },
+      );
+      harnessStore = nexusStores.store;
+      sessionPersistence = nexusStores.session;
+      registry = nexusStores.reg;
+    } else {
+      harnessStore = createInMemorySnapshotChainStore<HarnessSnapshot>();
+      sessionPersistence = createInMemorySessionPersistence();
+      registry = undefined;
+    }
+
     const threadSnapshotStore =
       createInMemorySnapshotChainStore<import("@koi/core").ThreadSnapshot>();
     const threadStore = createThreadStore({ store: threadSnapshotStore });
+
+    // --- Manifest agent adapters: build namedSpawns map for routing ---
+    const namedSpawns = new Map<string, SpawnFn>();
+    const adapterDisposables: EngineAdapter[] = [];
+
+    if (hasManifestAgents && adapterSpawnerModule !== undefined && manifest.agents !== undefined) {
+      const { validateManifestAgents, createAdapterSpawnFn } = adapterSpawnerModule;
+      const validation = validateManifestAgents(manifest.agents);
+      if (!validation.ok) {
+        process.stderr.write(`[autonomous] warn: ${validation.error.message}\n`);
+      } else {
+        for (const entry of manifest.agents) {
+          if (entry.command === undefined) continue;
+          // Resolve adapter based on protocol
+          const adapter = await resolveAdapterForEntry(entry);
+          if (adapter !== undefined) {
+            adapterDisposables.push(adapter);
+            namedSpawns.set(entry.name, createAdapterSpawnFn(adapter));
+          }
+        }
+      }
+    }
 
     // Deferred notification target — set after agent assembly via bindNotification().
     // let justified: mutable refs populated post-assembly when mailbox is available.
@@ -186,20 +294,24 @@ export async function resolveAutonomousOrWarn(
     type TaskBoardEventEmitter = Parameters<AutonomousResult["bindDashboardEvent"]>[0];
     let boundDashboardEmitter: TaskBoardEventEmitter | undefined;
 
+    // DRY helper: get notifier if notification target is bound (Decision #5A)
+    const getNotifier = () => {
+      if (notifyMailbox === undefined || notifyInitiatorId === undefined) return undefined;
+      return createCompletionNotifier({
+        initiatorId: notifyInitiatorId,
+        agentId: aId,
+        mailbox: notifyMailbox,
+      });
+    };
+
     const harness = createLongRunningHarness({
       harnessId: hId,
       agentId: aId,
       harnessStore,
       sessionPersistence,
+      registry, // Sub-task #5: workers registered in Nexus for IPC
       onCompleted: async (status: HarnessStatus) => {
-        if (notifyMailbox !== undefined && notifyInitiatorId !== undefined) {
-          const notifier = createCompletionNotifier({
-            initiatorId: notifyInitiatorId,
-            agentId: aId,
-            mailbox: notifyMailbox,
-          });
-          await notifier.onCompleted(status);
-        }
+        await getNotifier()?.onCompleted(status);
         const { completedTaskCount, pendingTaskCount } = status.metrics;
         const total = completedTaskCount + pendingTaskCount;
         process.stderr.write(
@@ -207,14 +319,7 @@ export async function resolveAutonomousOrWarn(
         );
       },
       onFailed: async (status: HarnessStatus, error: KoiError) => {
-        if (notifyMailbox !== undefined && notifyInitiatorId !== undefined) {
-          const notifier = createCompletionNotifier({
-            initiatorId: notifyInitiatorId,
-            agentId: aId,
-            mailbox: notifyMailbox,
-          });
-          await notifier.onFailed(status, error);
-        }
+        await getNotifier()?.onFailed(status, error);
         const { completedTaskCount, pendingTaskCount } = status.metrics;
         const total = completedTaskCount + pendingTaskCount;
         process.stderr.write(
@@ -250,8 +355,9 @@ export async function resolveAutonomousOrWarn(
       onTaskBoardEvent: (event) => boundDashboardEmitter?.(event),
     });
 
+    const storeLabel = useNexus ? "Nexus-backed stores" : "in-memory stores";
     if (verbose) {
-      process.stderr.write("Autonomous mode: enabled (in-memory stores)\n");
+      process.stderr.write(`Autonomous mode: enabled (${storeLabel})\n`);
     }
 
     const autonomousResult: AutonomousResult = {
@@ -259,7 +365,14 @@ export async function resolveAutonomousOrWarn(
       middleware: agent.middleware(),
       providers: agent.providers(),
       dispose: async () => {
+        // Dispose in reverse-creation order (Decision #4A)
         await agent.dispose();
+        for (const adapter of adapterDisposables) {
+          await adapter.dispose?.();
+        }
+        if (registry !== undefined) {
+          await registry[Symbol.asyncDispose]();
+        }
         sessionPersistence.close();
       },
       bindNotification: (initiatorId: AgentId, mailbox: MailboxComponent) => {
@@ -271,7 +384,16 @@ export async function resolveAutonomousOrWarn(
         boundSessionRunner = runner;
       },
       bindSpawn: (spawn: SpawnFn) => {
-        boundSpawn = spawn;
+        // Compose with named spawns from manifest.agents[] if available
+        if (namedSpawns.size > 0) {
+          boundSpawn = async (request) => {
+            const named = namedSpawns.get(request.agentName);
+            if (named !== undefined) return named(request);
+            return spawn(request);
+          };
+        } else {
+          boundSpawn = spawn;
+        }
       },
       bindDashboardEvent: (emitter) => {
         boundDashboardEmitter = emitter;
@@ -310,12 +432,28 @@ export async function resolveAutonomousOrWarn(
         notes: ["task scheduling"],
       },
       {
-        id: "@koi/snapshot-chain-store",
+        id: useNexus ? "@koi/nexus-store" : "@koi/snapshot-chain-store",
         kind: "subsystem",
         source: "static",
-        notes: ["session persistence"],
+        notes: [useNexus ? "Nexus-backed persistence" : "in-memory persistence"],
       },
     );
+    if (useNexus) {
+      packages.push({
+        id: "@koi/registry-nexus",
+        kind: "subsystem",
+        source: "static",
+        notes: ["Nexus agent registry"],
+      });
+    }
+    if (namedSpawns.size > 0) {
+      packages.push({
+        id: "@koi/agent-spawner",
+        kind: "subsystem",
+        source: "static",
+        notes: [`${String(namedSpawns.size)} manifest agent(s)`],
+      });
+    }
 
     return {
       result: autonomousResult,
