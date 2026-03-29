@@ -158,15 +158,30 @@ describe("createNexusClient", () => {
   });
 
   describe("listInbox", () => {
-    test("sends GET to /api/v2/ipc/inbox/{agentId} and returns empty array", async () => {
-      const response = {
+    test("lists inbox filenames then reads each file to return full envelopes", async () => {
+      const listResponse = {
         agent_id: "agent-b",
         messages: [{ filename: "msg-1.json" }],
         count: 1,
       };
-      mockFetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify(response), { status: 200 })),
-      );
+      const fileEnvelope = {
+        id: "msg-1",
+        from: "agent-a",
+        to: "agent-b",
+        type: "event",
+        timestamp: "2026-01-01T00:00:00Z",
+        payload: { data: "hello" },
+      };
+
+      // let justified: call index tracks sequential fetch calls
+      let callIdx = 0;
+      mockFetch = mock(() => {
+        const idx = callIdx++;
+        if (idx === 0) {
+          return Promise.resolve(new Response(JSON.stringify(listResponse), { status: 200 }));
+        }
+        return Promise.resolve(new Response(JSON.stringify(fileEnvelope), { status: 200 }));
+      });
       globalThis.fetch = mockFetch as unknown as typeof fetch;
 
       const client = createNexusClient({ baseUrl: BASE_URL });
@@ -174,12 +189,18 @@ describe("createNexusClient", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        // REST endpoint returns filenames only — client returns empty array
-        expect(result.value).toHaveLength(0);
+        expect(result.value).toHaveLength(1);
+        expect(result.value[0]?.id).toBe("msg-1");
+        expect(result.value[0]?.from).toBe("agent-a");
       }
 
-      const [url] = mockFetch.mock.calls[0] as [string];
-      expect(url).toBe(`${BASE_URL}/api/v2/ipc/inbox/agent-b?limit=50`);
+      // First call: list inbox, second call: read file
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const [listUrl] = mockFetch.mock.calls[0] as [string];
+      expect(listUrl).toBe(`${BASE_URL}/api/v2/ipc/inbox/agent-b?limit=50`);
+      const [readUrl] = mockFetch.mock.calls[1] as [string];
+      expect(readUrl).toContain("/api/v2/fs/read");
+      expect(readUrl).toContain("msg-1.json");
     });
 
     test("URL-encodes agentId", async () => {

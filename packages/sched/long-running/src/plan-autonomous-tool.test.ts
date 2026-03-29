@@ -190,19 +190,19 @@ describe("createPlanAutonomousProvider", () => {
       execute: (args: Record<string, unknown>) => Promise<unknown>;
     };
 
-    await tool.execute({
-      tasks: [
-        { id: "t1", description: "Task with invalid delegation", delegation: "invalid" },
-        { id: "t2", description: "Task with numeric delegation", delegation: 42 },
-      ],
-    });
+    const result1 = (await tool.execute({
+      tasks: [{ id: "t1", description: "Task with invalid delegation", delegation: "invalid" }],
+    })) as Record<string, unknown>;
 
-    expect(capturedPlan).toBeDefined();
-    // Invalid values default to "self" → status "assigned"
-    expect(capturedPlan?.items[0]?.delegation).toBe("self");
-    expect(capturedPlan?.items[0]?.status).toBe("assigned");
-    expect(capturedPlan?.items[1]?.delegation).toBe("self");
-    expect(capturedPlan?.items[1]?.status).toBe("assigned");
+    // Invalid delegation values are now rejected, not silently coerced
+    expect(result1.error).toContain("invalid delegation");
+    expect(capturedPlan).toBeUndefined();
+
+    const result2 = (await tool.execute({
+      tasks: [{ id: "t2", description: "Task with numeric delegation", delegation: 42 }],
+    })) as Record<string, unknown>;
+
+    expect(result2.error).toContain("invalid delegation");
   });
 
   test("mixed plan with dependencies preserves delegation across snapshot", async () => {

@@ -231,16 +231,28 @@ export function createNexusClient(config?: NexusClientConfig): NexusClient {
       const qs = params.toString();
       const path = `/api/v2/ipc/inbox/${encodeURIComponent(agentId)}${qs.length > 0 ? `?${qs}` : ""}`;
 
-      // The REST compatibility endpoint returns filenames, not full envelopes.
-      // Return an empty array — full message content requires the Nexus RPC
-      // service which is not exposed via REST. The inbox middleware relies on
-      // SSE push notifications (not polling) for real-time message delivery.
-      const result = await request<NexusInboxResponse>("GET", path);
-      if (!result.ok) return result;
+      // The REST compatibility endpoint returns {messages: [{filename}]}, not
+      // full envelopes. We read each file via the filesystem API to get the
+      // actual message content. This is N+1 but correct — a bulk read endpoint
+      // would be a Nexus-side improvement.
+      const listResult = await request<NexusInboxResponse>("GET", path);
+      if (!listResult.ok) return listResult;
 
-      // The response has {messages: [{filename}]} — no envelope content.
-      // Return empty: callers should use SSE/onMessage for receiving messages.
-      return { ok: true, value: [] };
+      const envelopes: NexusMessageEnvelope[] = [];
+      const agentInboxPath = `agents/${encodeURIComponent(agentId)}/inbox`;
+
+      for (const entry of listResult.value.messages) {
+        const filePath = `${agentInboxPath}/${entry.filename}`;
+        const fileResult = await request<NexusMessageEnvelope>(
+          "GET",
+          `/api/v2/fs/read?path=${encodeURIComponent(filePath)}`,
+        );
+        if (fileResult.ok) {
+          envelopes.push(fileResult.value);
+        }
+      }
+
+      return { ok: true, value: envelopes };
     },
 
     inboxCount: async (agentId) => {

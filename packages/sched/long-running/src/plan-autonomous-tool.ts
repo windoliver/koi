@@ -183,6 +183,13 @@ function validateTasks(raw: unknown): TaskValidationResult {
     }
     seenIds.add(item.id);
 
+    // Validate dependencies: must be undefined, omitted, or a string array.
+    if (item.dependencies !== undefined && !Array.isArray(item.dependencies)) {
+      return {
+        ok: false,
+        error: `Task "${item.id}" has non-array dependencies: expected string[] or omit.`,
+      };
+    }
     const rawDeps = Array.isArray(item.dependencies)
       ? (item.dependencies as readonly unknown[])
       : [];
@@ -195,6 +202,18 @@ function validateTasks(raw: unknown): TaskValidationResult {
       }
     }
     const deps = rawDeps.map((d) => taskItemId(d as string));
+
+    // Validate delegation: must be "self", "spawn", or omitted (defaults to "self").
+    if (
+      item.delegation !== undefined &&
+      item.delegation !== "self" &&
+      item.delegation !== "spawn"
+    ) {
+      return {
+        ok: false,
+        error: `Task "${item.id}" has invalid delegation "${String(item.delegation)}": expected "self" or "spawn".`,
+      };
+    }
     const delegation = item.delegation === "spawn" ? "spawn" : "self";
     const agentType = typeof item.agentType === "string" ? item.agentType : undefined;
     parsed.push({
