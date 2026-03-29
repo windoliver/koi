@@ -236,4 +236,27 @@ describe("mapSendResponseToKoi", () => {
     expect(result.correlationId).toBe(messageId("req-1"));
     expect(result.metadata).toEqual({ trace: "xyz" });
   });
+
+  test("preserves ttlSeconds from original input", () => {
+    const response: NexusSendResponse = {
+      message_id: "msg-ttl",
+      path: "/ipc/a/inbox/msg-ttl.json",
+      sender: "a",
+      recipient: "b",
+      type: "task",
+    };
+
+    const input: AgentMessageInput = {
+      from: agentId("a"),
+      to: agentId("b"),
+      kind: "request",
+      type: "t",
+      payload: {},
+      ttlSeconds: 3600,
+    };
+
+    const result = mapSendResponseToKoi(response, input);
+
+    expect(result.ttlSeconds).toBe(3600);
+  });
 });

@@ -112,6 +112,7 @@ export function mapSendResponseToKoi(
     ...(originalInput.correlationId !== undefined
       ? { correlationId: originalInput.correlationId }
       : {}),
+    ...(originalInput.ttlSeconds !== undefined ? { ttlSeconds: originalInput.ttlSeconds } : {}),
     ...(originalInput.metadata !== undefined ? { metadata: originalInput.metadata } : {}),
   };
 }
