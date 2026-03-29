@@ -434,14 +434,24 @@ async function probeExistingNexus(
   workspaceRoot: string,
 ): Promise<{ readonly baseUrl: string; readonly apiKey: string } | undefined> {
   try {
-    const { join } = await import("node:path");
+    const { join, resolve } = await import("node:path");
     const { readFile } = await import("node:fs/promises");
     const raw = await readFile(join(workspaceRoot, "nexus.yaml"), "utf-8");
 
-    // Parse YAML manually (just need ports.http and api_key)
+    // Parse YAML manually (just need ports.http, api_key, and data_dir)
     const httpPortMatch = /^\s*http:\s*(\d+)/m.exec(raw);
     const apiKeyMatch = /^api_key:\s*(.+)/m.exec(raw);
     if (httpPortMatch === null || apiKeyMatch === null) return undefined;
+
+    // Verify data_dir matches this workspace to avoid reusing another worktree's Nexus
+    const dataDirMatch = /^data_dir:\s*['"]?(.+?)['"]?\s*$/m.exec(raw);
+    if (dataDirMatch?.[1] !== undefined) {
+      const expectedDataDir = join(resolve(workspaceRoot), "nexus-data");
+      if (dataDirMatch[1] !== expectedDataDir) {
+        // data_dir points to a different workspace — don't reuse
+        return undefined;
+      }
+    }
 
     const port = httpPortMatch[1];
     const apiKey = apiKeyMatch[1]?.trim() ?? "";

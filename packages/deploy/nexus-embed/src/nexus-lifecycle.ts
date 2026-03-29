@@ -15,11 +15,12 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { checkBinaryAvailable, resolveNexusBinary } from "./binary-resolver.js";
 import { DEFAULT_HOST, DEFAULT_PORT, STATE_JSON_FILE } from "./constants.js";
+import { generateNexusConfig } from "./generate-nexus-config.js";
 import type { NexusRuntimeState } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -54,19 +55,16 @@ export interface NexusUpResult {
   readonly autoInitialized: boolean;
 }
 
-/** Koi preset → Nexus preset mapping. */
-const PRESET_MAP: Readonly<Record<string, string>> = {
-  local: "local",
-  demo: "demo",
-  mesh: "shared",
-} as const;
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Scaffolds `nexus.yaml` by running `nexus init --preset <preset>`.
+ * Scaffolds `nexus.yaml` and supporting files for the Nexus Docker stack.
+ *
+ * Generates config directly in TypeScript — no external `nexus` CLI dependency.
+ * Each workspace gets a deterministic port derived from its path and a
+ * workspace-local `nexus-data/` directory for isolation.
  *
  * Maps Koi preset IDs to Nexus preset IDs:
  * - local → local, demo → demo, mesh → shared
@@ -77,35 +75,27 @@ export async function nexusInit(
 ): Promise<Result<void, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
-  const sourceDir = options?.sourceDir;
 
-  const binaryCheck = await ensureBinary(sourceDir);
-  if (!binaryCheck.ok) return binaryCheck;
-
-  const nexusPreset = PRESET_MAP[koiPreset] ?? "local";
-  const channel = options?.channel ?? "edge";
-  const args: string[] = ["init", "--preset", nexusPreset, "--force", "--channel", channel];
-
-  const result = await runNexusCommand(args, cwd, verbose, "nexus init", sourceDir);
-  if (!result.ok) return result;
-
-  // Nexus init does not accept a --port flag. If a custom port was requested,
-  // patch the generated nexus.yaml to override the default ports.http value.
-  // Otherwise, derive a stable port from the workspace path so each worktree
-  // gets its own Nexus instance without port collisions.
-  if (options?.port !== undefined) {
-    patchNexusPort(cwd, options.port, verbose);
-  } else {
-    const derivedPort = derivePort(cwd);
-    patchNexusPort(cwd, derivedPort, verbose);
+  try {
+    generateNexusConfig({
+      koiPreset,
+      cwd,
+      port: options?.port,
+      channel: options?.channel,
+      verbose,
+    });
+    return { ok: true, value: undefined };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "EXTERNAL" as const,
+        message: `Failed to generate nexus.yaml: ${err instanceof Error ? err.message : String(err)}`,
+        retryable: false,
+        context: { cwd },
+      },
+    };
   }
-
-  // Patch data_dir to be worktree-local so each worktree gets isolated Nexus data.
-  // `nexus init` defaults to a global path (~/.koi/demo/nexus-data) which causes
-  // cross-worktree session leaking when multiple worktrees share the same Nexus.
-  patchNexusDataDir(cwd, verbose);
-
-  return result;
 }
 
 /**
@@ -473,68 +463,6 @@ export function readRuntimeState(cwd: string): NexusRuntimeState | undefined {
     return parsed as NexusRuntimeState;
   } catch {
     return undefined;
-  }
-}
-
-/**
- * Patches the HTTP port in nexus.yaml after scaffolding.
- * `nexus init` does not accept a --port flag, so we patch the YAML directly.
- */
-function patchNexusPort(cwd: string, port: number, verbose: boolean): void {
-  const configPath = findNexusConfig(cwd);
-  if (configPath === undefined) return;
-
-  try {
-    const raw = readFileSync(configPath, "utf-8");
-    // Replace `  http: <number>` under the `ports:` section
-    const patched = raw.replace(/^(\s+http:\s*)\d+/m, `$1${String(port)}`);
-    if (patched !== raw) {
-      writeFileSync(configPath, patched, "utf-8");
-      if (verbose) {
-        process.stderr.write(`Nexus: patched ports.http to ${String(port)} in ${configPath}\n`);
-      }
-    }
-  } catch {
-    // Non-fatal — port will use the default
-  }
-}
-
-/**
- * Derives a stable, unique Nexus HTTP port from the workspace path.
- * Uses MD5 hash of the absolute path mapped to the ephemeral port range (10000–60000).
- * This ensures each worktree gets its own port without collisions.
- */
-function derivePort(cwd: string): number {
-  const absPath = resolve(cwd);
-  const hash = createHash("md5").update(absPath).digest("hex");
-  // Use first 4 hex chars (0–65535), map to 10000–60000 range
-  const raw = Number.parseInt(hash.slice(0, 4), 16);
-  return 10000 + (raw % 50000);
-}
-
-/**
- * Patches data_dir in nexus.yaml to be worktree-local.
- * `nexus init` sets data_dir to a global path (~/.koi/demo/nexus-data) regardless
- * of the working directory. This causes all worktrees to share the same Nexus data,
- * leaking sessions and bricks across unrelated workspaces.
- */
-function patchNexusDataDir(cwd: string, verbose: boolean): void {
-  const configPath = findNexusConfig(cwd);
-  if (configPath === undefined) return;
-
-  try {
-    const raw = readFileSync(configPath, "utf-8");
-    const localDataDir = join(cwd, "nexus-data");
-    // Replace `data_dir: <anything>` with the worktree-local path
-    const patched = raw.replace(/^data_dir:\s*.+$/m, `data_dir: ${localDataDir}`);
-    if (patched !== raw) {
-      writeFileSync(configPath, patched, "utf-8");
-      if (verbose) {
-        process.stderr.write(`Nexus: patched data_dir to ${localDataDir} in ${configPath}\n`);
-      }
-    }
-  } catch {
-    // Non-fatal — will use the global default
   }
 }
 
