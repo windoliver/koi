@@ -7,7 +7,7 @@
 
 import type { KeyEvent, SyntaxStyle } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { AgentSplitPane, type AgentPaneData } from "../components/agent-split-pane.js";
 import type { TuiStore } from "../state/store.js";
 import type { PresetInfo } from "../state/types.js";
@@ -112,12 +112,23 @@ function mapKeyEventToSequence(key: KeyEvent, paletteActive?: boolean): string |
 export function TuiRoot(props: TuiRootProps): React.ReactNode {
   const state = useStoreState(props.store);
 
+  // Signal counters for palette navigation — incremented to trigger effects
+  const [paletteNavDown, setPaletteNavDown] = useState(0);
+  const [paletteNavUp, setPaletteNavUp] = useState(0);
+  const [paletteConfirm, setPaletteConfirm] = useState(0);
+
   useKeyboard((key: KeyEvent) => {
     // In palette mode, only intercept control keys — let printable chars
     // fall through to the palette's <input> for filter typing.
     const inPalette = state.view === "palette";
     const seq = mapKeyEventToSequence(key, inPalette);
     if (seq !== null) {
+      // Intercept arrows and Enter in palette mode for select navigation
+      if (inPalette) {
+        if (seq === "\x1b[B") { setPaletteNavDown((c) => c + 1); return; }
+        if (seq === "\x1b[A") { setPaletteNavUp((c) => c + 1); return; }
+        if (seq === "\r") { setPaletteConfirm((c) => c + 1); return; }
+      }
       props.onKeyInput(seq);
     }
   });
@@ -130,9 +141,11 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
   const backgroundView = session !== null ? "console" : view === "forge" ? "forge" : "agents";
 
   // Build split pane data from agents + PTY buffers
+  // Limit visible split panes: 4 at full/compact, 2 at narrow/tooNarrow
+  const maxPanes = state.layoutTier === "full" || state.layoutTier === "compact" ? 4 : 2;
   const splitPaneData: readonly AgentPaneData[] = useMemo(() => {
     if (view !== "splitpanes") return [];
-    return agents.map((agent) => {
+    return agents.slice(0, maxPanes).map((agent) => {
       const chunks = state.ptyBuffers[agent.agentId] ?? [];
       const decoded = decodePtyChunks(chunks);
       const ptyData = decoded.length > 0 ? decoded : undefined;
@@ -143,17 +156,24 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         ptyData,
       };
     });
-  }, [view, agents, state.ptyBuffers]);
+  }, [view, agents, state.ptyBuffers, maxPanes]);
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={COLORS.bg}>
       <StatusBarView state={state} />
 
       <box flexGrow={1}>
+        {state.layoutTier === "tooNarrow" ? (
+          /* Terminal too narrow — replace all content with warning */
+          <box flexGrow={1} justifyContent="center" alignItems="center" flexDirection="column">
+            <text fg={COLORS.yellow}>{`Terminal too narrow (${String(state.cols)} cols). Minimum: 80.`}</text>
+          </box>
+        ) : (<>
+
         {/* Welcome mode */}
         {view === "welcome" && (
           <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingTop={1}>
-            <text fg={COLORS.cyan}><b>{"  Welcome to Koi"}</b></text>
+            <text fg={COLORS.accent}><b>{"  Welcome to Koi"}</b></text>
             <text fg={COLORS.white}>
               {"  Koi is a self-extending agent engine. Select a preset to get started."}
             </text>
@@ -299,6 +319,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
             focused={view === "console"}
             syntaxStyle={props.syntaxStyle}
             zoomLevel={state.zoomLevel}
+            cols={state.cols}
           />
         )}
 
@@ -340,7 +361,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         )}
 
         {(view === "forge" || (isPalette && backgroundView === "forge")) && (
-          <ForgeView state={state} focused={view === "forge"} zoomLevel={state.zoomLevel} />
+          <ForgeView state={state} focused={view === "forge"} zoomLevel={state.zoomLevel} layoutTier={state.layoutTier} />
         )}
 
         {view === "sessions" && (
@@ -452,7 +473,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           <GovernanceView governanceView={state.governanceView} focused={true} zoomLevel={state.zoomLevel} />
         )}
         {view === "cost" && (
-          <CostView costView={state.costView} focused={true} zoomLevel={state.zoomLevel} />
+          <CostView costView={state.costView} focused={true} zoomLevel={state.zoomLevel} cols={state.cols} layoutTier={state.layoutTier} />
         )}
         {view === "middleware" && (
           <MiddlewareView middlewareView={state.middlewareView} focused={true} zoomLevel={state.zoomLevel} />
@@ -489,7 +510,12 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           onCancel={props.onPaletteCancel}
           focused={isPalette}
           capabilities={state.capabilities}
+          navigateDown={paletteNavDown}
+          navigateUp={paletteNavUp}
+          confirmSignal={paletteConfirm}
         />
+
+        </>)}
       </box>
     </box>
   );

@@ -95,6 +95,8 @@ describe("createSkillStack", () => {
     expect(bundle.provider.getLevel("code-review")).toBe("metadata");
 
     bundle.unmount("code-review");
+    // unmount is now async (chained through pending promise for race safety)
+    await new Promise((r) => setTimeout(r, 0));
     expect(bundle.provider.getLevel("code-review")).toBeUndefined();
 
     bundle.dispose();

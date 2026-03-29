@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessageInput } from "@koi/core";
 import { agentId, messageId } from "@koi/core";
-import { mapKoiToNexus, mapNexusToKoi } from "./map-message.js";
-import type { NexusMessageEnvelope } from "./nexus-client.js";
+import { mapKoiToNexus, mapNexusToKoi, mapSendResponseToKoi } from "./map-message.js";
+import type { NexusMessageEnvelope, NexusSendResponse } from "./nexus-client.js";
 
 describe("mapKoiToNexus", () => {
   test("maps required fields correctly", () => {
@@ -16,14 +16,15 @@ describe("mapKoiToNexus", () => {
 
     const result = mapKoiToNexus(input);
 
-    expect(result.from).toBe("agent-a");
-    expect(result.to).toBe("agent-b");
-    expect(result.kind).toBe("task"); // request → task
-    expect(result.type).toBe("code-review");
-    expect(result.payload).toEqual({ file: "main.ts" });
+    expect(result.sender).toBe("agent-a");
+    expect(result.recipient).toBe("agent-b");
+    expect(result.type).toBe("task"); // request → task
+    expect(result.payload).toEqual({ file: "main.ts", subType: "code-review" });
+    // No "kind" field on NexusSendRequest
+    expect("kind" in result).toBe(false);
   });
 
-  test("maps all MessageKinds to Nexus kinds", () => {
+  test("maps all MessageKinds to Nexus type values", () => {
     const base: AgentMessageInput = {
       from: agentId("a"),
       to: agentId("b"),
@@ -32,10 +33,10 @@ describe("mapKoiToNexus", () => {
       payload: {},
     };
 
-    expect(mapKoiToNexus({ ...base, kind: "request" }).kind).toBe("task");
-    expect(mapKoiToNexus({ ...base, kind: "response" }).kind).toBe("response");
-    expect(mapKoiToNexus({ ...base, kind: "event" }).kind).toBe("event");
-    expect(mapKoiToNexus({ ...base, kind: "cancel" }).kind).toBe("cancel");
+    expect(mapKoiToNexus({ ...base, kind: "request" }).type).toBe("task");
+    expect(mapKoiToNexus({ ...base, kind: "response" }).type).toBe("response");
+    expect(mapKoiToNexus({ ...base, kind: "event" }).type).toBe("event");
+    expect(mapKoiToNexus({ ...base, kind: "cancel" }).type).toBe("cancel");
   });
 
   test("includes optional fields when present", () => {
@@ -52,9 +53,10 @@ describe("mapKoiToNexus", () => {
 
     const result = mapKoiToNexus(input);
 
-    expect(result.correlationId).toBe("req-1");
-    expect(result.ttlSeconds).toBe(300);
-    expect(result.metadata).toEqual({ trace: "xyz" });
+    expect(result.correlation_id).toBe("req-1");
+    expect(result.ttl_seconds).toBe(300);
+    // Metadata goes inside payload as _metadata
+    expect(result.payload._metadata).toEqual({ trace: "xyz" });
   });
 
   test("omits optional fields when undefined", () => {
@@ -68,8 +70,9 @@ describe("mapKoiToNexus", () => {
 
     const result = mapKoiToNexus(input);
 
-    expect("correlationId" in result).toBe(false);
-    expect("ttlSeconds" in result).toBe(false);
+    expect("correlation_id" in result).toBe(false);
+    expect("ttl_seconds" in result).toBe(false);
+    // No top-level metadata field on NexusSendRequest
     expect("metadata" in result).toBe(false);
   });
 });
@@ -80,10 +83,9 @@ describe("mapNexusToKoi", () => {
       id: "msg-1",
       from: "agent-a",
       to: "agent-b",
-      kind: "task",
-      createdAt: "2026-01-01T00:00:00Z",
-      type: "code-review",
-      payload: { file: "main.ts" },
+      type: "task",
+      timestamp: "2026-01-01T00:00:00Z",
+      payload: { file: "main.ts", subType: "code-review" },
     };
 
     const result = mapNexusToKoi(envelope);
@@ -93,35 +95,33 @@ describe("mapNexusToKoi", () => {
     expect(result?.from).toBe(agentId("agent-a"));
     expect(result?.to).toBe(agentId("agent-b"));
     expect(result?.kind).toBe("request"); // task → request
-    expect(result?.type).toBe("code-review");
+    expect(result?.type).toBe("code-review"); // subType extracted from payload
     expect(result?.payload).toEqual({ file: "main.ts" });
   });
 
-  test("maps all Nexus kinds to MessageKinds", () => {
+  test("maps all Nexus types to MessageKinds", () => {
     const base: NexusMessageEnvelope = {
       id: "m",
       from: "a",
       to: "b",
-      kind: "task",
-      createdAt: "2026-01-01T00:00:00Z",
-      type: "t",
+      type: "task",
+      timestamp: "2026-01-01T00:00:00Z",
       payload: {},
     };
 
-    expect(mapNexusToKoi({ ...base, kind: "task" })?.kind).toBe("request");
-    expect(mapNexusToKoi({ ...base, kind: "response" })?.kind).toBe("response");
-    expect(mapNexusToKoi({ ...base, kind: "event" })?.kind).toBe("event");
-    expect(mapNexusToKoi({ ...base, kind: "cancel" })?.kind).toBe("cancel");
+    expect(mapNexusToKoi({ ...base, type: "task" })?.kind).toBe("request");
+    expect(mapNexusToKoi({ ...base, type: "response" })?.kind).toBe("response");
+    expect(mapNexusToKoi({ ...base, type: "event" })?.kind).toBe("event");
+    expect(mapNexusToKoi({ ...base, type: "cancel" })?.kind).toBe("cancel");
   });
 
-  test("returns undefined for unknown kinds", () => {
+  test("returns undefined for unknown types", () => {
     const envelope: NexusMessageEnvelope = {
       id: "m",
       from: "a",
       to: "b",
-      kind: "unknown_kind",
-      createdAt: "2026-01-01T00:00:00Z",
-      type: "t",
+      type: "unknown_type",
+      timestamp: "2026-01-01T00:00:00Z",
       payload: {},
     };
 
@@ -133,13 +133,11 @@ describe("mapNexusToKoi", () => {
       id: "m",
       from: "a",
       to: "b",
-      kind: "response",
-      correlationId: "req-1",
-      createdAt: "2026-01-01T00:00:00Z",
-      ttlSeconds: 60,
-      type: "t",
-      payload: {},
-      metadata: { routing: "priority" },
+      type: "response",
+      correlation_id: "req-1",
+      timestamp: "2026-01-01T00:00:00Z",
+      ttl_seconds: 60,
+      payload: { _metadata: { routing: "priority" } },
     };
 
     const result = mapNexusToKoi(envelope);
@@ -161,11 +159,16 @@ describe("mapNexusToKoi", () => {
 
     const nexus = mapKoiToNexus(input);
 
-    // Simulate server adding id + createdAt
+    // Simulate server adding id + timestamp (wire format uses from/to already)
     const envelope: NexusMessageEnvelope = {
-      ...nexus,
       id: "msg-gen",
-      createdAt: "2026-01-01T00:00:00Z",
+      from: nexus.sender,
+      to: nexus.recipient,
+      type: nexus.type,
+      timestamp: "2026-01-01T00:00:00Z",
+      payload: nexus.payload,
+      ...(nexus.correlation_id !== undefined ? { correlation_id: nexus.correlation_id } : {}),
+      ...(nexus.ttl_seconds !== undefined ? { ttl_seconds: nexus.ttl_seconds } : {}),
     };
 
     const result = mapNexusToKoi(envelope);
@@ -177,5 +180,83 @@ describe("mapNexusToKoi", () => {
     expect(result?.payload).toEqual({ env: "prod" });
     expect(result?.correlationId).toBe(messageId("corr-1"));
     expect(result?.ttlSeconds).toBe(120);
+  });
+});
+
+describe("mapSendResponseToKoi", () => {
+  test("maps send response + original input to AgentMessage", () => {
+    const response: NexusSendResponse = {
+      message_id: "msg-gen-1",
+      path: "/ipc/agent-a/inbox/msg-gen-1.json",
+      sender: "agent-a",
+      recipient: "agent-b",
+      type: "task",
+    };
+
+    const input: AgentMessageInput = {
+      from: agentId("agent-a"),
+      to: agentId("agent-b"),
+      kind: "request",
+      type: "code-review",
+      payload: { file: "main.ts" },
+    };
+
+    const result = mapSendResponseToKoi(response, input);
+
+    expect(result.id).toBe(messageId("msg-gen-1"));
+    expect(result.from).toBe(agentId("agent-a"));
+    expect(result.to).toBe(agentId("agent-b"));
+    expect(result.kind).toBe("request");
+    expect(result.type).toBe("code-review");
+    expect(result.payload).toEqual({ file: "main.ts" });
+    expect(result.createdAt).toBeTruthy();
+  });
+
+  test("preserves optional fields from original input", () => {
+    const response: NexusSendResponse = {
+      message_id: "msg-gen-2",
+      path: "/ipc/a/inbox/msg-gen-2.json",
+      sender: "a",
+      recipient: "b",
+      type: "response",
+    };
+
+    const input: AgentMessageInput = {
+      from: agentId("a"),
+      to: agentId("b"),
+      kind: "response",
+      type: "t",
+      payload: {},
+      correlationId: messageId("req-1"),
+      metadata: { trace: "xyz" },
+    };
+
+    const result = mapSendResponseToKoi(response, input);
+
+    expect(result.correlationId).toBe(messageId("req-1"));
+    expect(result.metadata).toEqual({ trace: "xyz" });
+  });
+
+  test("preserves ttlSeconds from original input", () => {
+    const response: NexusSendResponse = {
+      message_id: "msg-ttl",
+      path: "/ipc/a/inbox/msg-ttl.json",
+      sender: "a",
+      recipient: "b",
+      type: "task",
+    };
+
+    const input: AgentMessageInput = {
+      from: agentId("a"),
+      to: agentId("b"),
+      kind: "request",
+      type: "t",
+      payload: {},
+      ttlSeconds: 3600,
+    };
+
+    const result = mapSendResponseToKoi(response, input);
+
+    expect(result.ttlSeconds).toBe(3600);
   });
 });

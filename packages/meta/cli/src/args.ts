@@ -77,6 +77,8 @@ export interface DeployFlags extends BaseFlags {
 export interface StatusFlags extends BaseFlags {
   readonly command: "status";
   readonly manifest: string | undefined;
+  readonly timeout: number | undefined;
+  readonly json: boolean;
 }
 
 export interface StopFlags extends BaseFlags {
@@ -85,6 +87,8 @@ export interface StopFlags extends BaseFlags {
   readonly nexus: boolean;
   /** Destroy Nexus containers instead of pausing (passes `nexus down` instead of `nexus stop`). */
   readonly nexusDestroy: boolean;
+  /** Stop ALL Nexus Docker containers across all workspaces/sessions. */
+  readonly nexusAll: boolean;
 }
 
 export interface LogsFlags extends BaseFlags {
@@ -120,6 +124,7 @@ export interface DoctorFlags extends BaseFlags {
   readonly command: "doctor";
   readonly manifest: string | undefined;
   readonly repair: boolean;
+  readonly json: boolean;
 }
 
 export interface UpFlags extends BaseFlags {
@@ -370,17 +375,22 @@ export function parseStatusFlags(rest: readonly string[]): StatusFlags {
     args: rest as string[],
     options: {
       manifest: { type: "string" },
+      timeout: { type: "string" },
+      json: { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
   });
 
   const positionalManifest = positionals[0] as string | undefined;
+  const timeoutStr = values.timeout as string | undefined;
 
   return {
     command: "status" as const,
     directory: positionalManifest,
     manifest: (values.manifest as string | undefined) ?? positionalManifest,
+    timeout: timeoutStr !== undefined ? Number.parseInt(timeoutStr, 10) : undefined,
+    json: (values.json as boolean | undefined) ?? false,
   };
 }
 
@@ -391,6 +401,7 @@ export function parseStopFlags(rest: readonly string[]): StopFlags {
       manifest: { type: "string" },
       nexus: { type: "boolean", default: false },
       "nexus-destroy": { type: "boolean", default: false },
+      "nexus-all": { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -404,6 +415,7 @@ export function parseStopFlags(rest: readonly string[]): StopFlags {
     manifest: (values.manifest as string | undefined) ?? positionalManifest,
     nexus: (values.nexus as boolean | undefined) ?? false,
     nexusDestroy: (values["nexus-destroy"] as boolean | undefined) ?? false,
+    nexusAll: (values["nexus-all"] as boolean | undefined) ?? false,
   };
 }
 
@@ -653,6 +665,7 @@ export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
     options: {
       manifest: { type: "string" },
       repair: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
     },
     strict: false,
     allowPositionals: true,
@@ -665,6 +678,7 @@ export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
     directory: positionalManifest,
     manifest: (values.manifest as string | undefined) ?? positionalManifest,
     repair: (values.repair as boolean | undefined) ?? false,
+    json: (values.json as boolean | undefined) ?? false,
   };
 }
 

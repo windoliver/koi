@@ -18,6 +18,8 @@ const mockRunSeed = mock(
   }),
 );
 
+const mockCheckSeeded = mock(async (): Promise<boolean> => false);
+
 const mockGetPack = mock((id: string) => {
   if (id === "connected") {
     return {
@@ -36,6 +38,7 @@ const mockGetPack = mock((id: string) => {
         },
       ],
       seed: mockRunSeed,
+      checkSeeded: mockCheckSeeded,
       prompts: ["What did I learn?", "Show me data."],
     };
   }
@@ -59,6 +62,8 @@ beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), "demo-seed-test-"));
   mockRunSeed.mockClear();
   mockGetPack.mockClear();
+  mockCheckSeeded.mockClear();
+  mockCheckSeeded.mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -179,6 +184,77 @@ describe("seedDemoPackIfNeeded", () => {
     const markerPath = join(tempDir, ".koi", ".demo-seeded");
     expect(existsSync(markerPath)).toBe(false);
   });
+
+  test("skips seed and restores marker when checkSeeded returns true (Nexus fallback)", async () => {
+    // No marker file exists, but Nexus already has the data
+    mockCheckSeeded.mockResolvedValueOnce(true);
+
+    const result = await seedDemoPackIfNeeded(
+      "connected",
+      tempDir,
+      "test-agent",
+      makeSuccessClient(),
+      false,
+    );
+
+    expect(result.prompts).toEqual(["What did I learn?", "Show me data."]);
+    expect(mockRunSeed).not.toHaveBeenCalled();
+    expect(mockCheckSeeded).toHaveBeenCalledTimes(1);
+
+    // Marker should be restored for future fast-path
+    const markerPath = join(tempDir, ".koi", ".demo-seeded");
+    expect(existsSync(markerPath)).toBe(true);
+    expect(readFileSync(markerPath, "utf-8")).toBe("connected");
+  });
+
+  test("proceeds with seed when checkSeeded returns false", async () => {
+    mockCheckSeeded.mockResolvedValueOnce(false);
+
+    const result = await seedDemoPackIfNeeded(
+      "connected",
+      tempDir,
+      "test-agent",
+      makeSuccessClient(),
+      false,
+    );
+
+    expect(result.prompts).toEqual(["What did I learn?", "Show me data."]);
+    expect(mockCheckSeeded).toHaveBeenCalledTimes(1);
+    expect(mockRunSeed).toHaveBeenCalledTimes(1);
+  });
+
+  test("proceeds with seed when checkSeeded throws", async () => {
+    mockCheckSeeded.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+    const result = await seedDemoPackIfNeeded(
+      "connected",
+      tempDir,
+      "test-agent",
+      makeSuccessClient(),
+      false,
+    );
+
+    expect(result.prompts).toEqual(["What did I learn?", "Show me data."]);
+    expect(mockRunSeed).toHaveBeenCalledTimes(1);
+  });
+
+  test("proceeds with seed when checkSeeded times out", async () => {
+    // Simulate a hung Nexus that never resolves
+    mockCheckSeeded.mockImplementationOnce(
+      () => new Promise<boolean>(() => {}), // never resolves
+    );
+
+    const result = await seedDemoPackIfNeeded(
+      "connected",
+      tempDir,
+      "test-agent",
+      makeSuccessClient(),
+      false,
+    );
+
+    expect(result.prompts).toEqual(["What did I learn?", "Show me data."]);
+    expect(mockRunSeed).toHaveBeenCalledTimes(1);
+  }, 10_000);
 });
 
 // ---------------------------------------------------------------------------

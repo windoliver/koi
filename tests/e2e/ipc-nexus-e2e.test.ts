@@ -2,7 +2,8 @@
  * E2E: @koi/ipc-nexus — agent-to-agent messaging through a mock Nexus server.
  *
  * Validates the Nexus REST API contract by building a mock server that
- * implements all 4 endpoints, then exercises the full mailbox pipeline:
+ * implements the real Nexus wire format, then exercises the full mailbox
+ * pipeline:
  *
  *   Suite 1 — Direct mailbox adapter (createNexusMailbox):
  *     1. Agent A sends, Agent B receives via onMessage
@@ -34,30 +35,56 @@ import { createNexusMailbox } from "@koi/ipc-nexus";
 // the test's mock and the real Nexus API surface is caught independently.
 // ---------------------------------------------------------------------------
 
+/**
+ * POST /api/v2/ipc/send request body — matches real Nexus SendMessageRequest.
+ * Uses snake_case, `type` is the classification (task/response/event/cancel).
+ * NO `kind` field, NO `metadata` field on the wire.
+ */
 interface NexusSendRequest {
-  readonly from: string;
-  readonly to: string;
-  readonly kind: string;
-  readonly correlationId?: string | undefined;
-  readonly ttlSeconds?: number | undefined;
+  readonly sender: string;
+  readonly recipient: string;
   readonly type: string;
   readonly payload: Record<string, unknown>;
-  readonly metadata?: Record<string, unknown> | undefined;
+  readonly correlation_id?: string | undefined;
+  readonly ttl_seconds?: number | undefined;
+  readonly message_id?: string | undefined;
 }
 
-interface NexusMessageEnvelope extends NexusSendRequest {
+/**
+ * POST /api/v2/ipc/send response — the subset returned by Nexus.
+ * NOT the full envelope.
+ */
+interface NexusSendResponse {
+  readonly message_id: string;
+  readonly path: string;
+  readonly sender: string;
+  readonly recipient: string;
+  readonly type: string;
+}
+
+/**
+ * On-disk message envelope — the full message as stored/read from Nexus.
+ * Uses Pydantic aliases: `from`/`to` (not `sender`/`recipient`).
+ */
+interface NexusMessageEnvelope {
   readonly id: string;
-  readonly createdAt: string;
+  readonly from: string;
+  readonly to: string;
+  readonly type: string;
+  readonly payload: Record<string, unknown>;
+  readonly timestamp: string;
+  readonly correlation_id?: string | undefined;
+  readonly ttl_seconds?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
 // Mock Nexus IPC Server
 // ---------------------------------------------------------------------------
 
-/** Valid Nexus wire kinds — validates that mapKoiToNexus produces correct values. */
-const VALID_NEXUS_KINDS = new Set(["task", "response", "event", "cancel"]);
+/** Valid Nexus wire types — validates that mapKoiToNexus produces correct values. */
+const VALID_NEXUS_TYPES = new Set(["task", "response", "event", "cancel"]);
 
-/** In-memory inbox store keyed by recipient agent ID. */
+/** In-memory store keyed by recipient agent ID. Holds full envelopes internally. */
 type InboxStore = Map<string, readonly NexusMessageEnvelope[]>;
 
 // let justified: mutable server lifecycle — created/stopped per test
@@ -85,32 +112,42 @@ function createMockNexusServer(): void {
       if (req.method === "POST" && path === "/api/v2/ipc/send") {
         const body = (await req.json()) as NexusSendRequest;
 
-        // Validate Nexus wire kind — catches mapKoiToNexus contract drift
-        if (!VALID_NEXUS_KINDS.has(body.kind)) {
-          return new Response(JSON.stringify({ error: `Invalid kind: ${body.kind}` }), {
+        // Validate Nexus wire type — catches mapKoiToNexus contract drift
+        if (!VALID_NEXUS_TYPES.has(body.type)) {
+          return new Response(JSON.stringify({ error: `Invalid type: ${body.type}` }), {
             status: 400,
             headers: { "Content-Type": "application/json" },
           });
         }
 
+        const messageId = body.message_id ?? crypto.randomUUID();
+        const timestamp = new Date().toISOString();
+
+        // Store full envelope in recipient's inbox (from/to, not sender/recipient)
         const envelope: NexusMessageEnvelope = {
-          id: crypto.randomUUID(),
-          from: body.from,
-          to: body.to,
-          kind: body.kind,
+          id: messageId,
+          from: body.sender,
+          to: body.recipient,
           type: body.type,
           payload: body.payload,
-          createdAt: new Date().toISOString(),
-          ...(body.correlationId !== undefined ? { correlationId: body.correlationId } : {}),
-          ...(body.ttlSeconds !== undefined ? { ttlSeconds: body.ttlSeconds } : {}),
-          ...(body.metadata !== undefined ? { metadata: body.metadata } : {}),
+          timestamp,
+          ...(body.correlation_id !== undefined ? { correlation_id: body.correlation_id } : {}),
+          ...(body.ttl_seconds !== undefined ? { ttl_seconds: body.ttl_seconds } : {}),
         };
 
-        // Store in recipient's inbox (immutable — replace array)
-        const existing = inboxStore.get(body.to) ?? [];
-        inboxStore.set(body.to, [...existing, envelope]);
+        const existing = inboxStore.get(body.recipient) ?? [];
+        inboxStore.set(body.recipient, [...existing, envelope]);
 
-        return new Response(JSON.stringify(envelope), {
+        // Return the subset — NOT the full envelope
+        const response: NexusSendResponse = {
+          message_id: messageId,
+          path: `agents/${body.recipient}/inbox/${timestamp}_${messageId}.json`,
+          sender: body.sender,
+          recipient: body.recipient,
+          type: body.type,
+        };
+
+        return new Response(JSON.stringify(response), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -127,7 +164,7 @@ function createMockNexusServer(): void {
         });
       }
 
-      // GET /api/v2/ipc/inbox/{agentId}
+      // GET /api/v2/ipc/inbox/{agentId} — returns filenames, NOT full envelopes
       const inboxMatch = path.match(/^\/api\/v2\/ipc\/inbox\/([^/]+)$/);
       if (req.method === "GET" && inboxMatch !== null) {
         const targetId = decodeURIComponent(inboxMatch[1] ?? "");
@@ -139,20 +176,62 @@ function createMockNexusServer(): void {
         const limit =
           limitParam !== null ? Math.min(Number(limitParam), remaining.length) : remaining.length;
         const messages = remaining.slice(0, limit);
-        return new Response(JSON.stringify({ messages }), {
+
+        // Return filenames only — client must read each via /api/v2/fs/read
+        const filenames = messages.map((env) => ({
+          filename: `${env.timestamp}_${env.id}.json`,
+        }));
+
+        return new Response(
+          JSON.stringify({
+            agent_id: targetId,
+            messages: filenames,
+            count: inbox.length,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
+      // GET /api/v2/fs/read?path=... — reads an individual message file
+      if (req.method === "GET" && path === "/api/v2/fs/read") {
+        const filePath = url.searchParams.get("path");
+        if (filePath === null) {
+          return new Response(JSON.stringify({ error: "Missing path parameter" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        // Extract agent ID from path: agents/{agentId}/inbox/{filename}
+        const fsMatch = filePath.match(/^agents\/([^/]+)\/inbox\/(.+)$/);
+        if (fsMatch === null) {
+          return new Response(JSON.stringify({ error: "File not found" }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        const fsAgentId = decodeURIComponent(fsMatch[1] ?? "");
+        const filename = fsMatch[2] ?? "";
+        const inbox = inboxStore.get(fsAgentId) ?? [];
+
+        // Find the envelope matching this filename
+        const envelope = inbox.find((env) => `${env.timestamp}_${env.id}.json` === filename);
+
+        if (envelope === undefined) {
+          return new Response(JSON.stringify({ error: "File not found" }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({ content: JSON.stringify(envelope) }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
-      }
-
-      // POST /api/v2/ipc/provision/{agentId}
-      const provisionMatch = path.match(/^\/api\/v2\/ipc\/provision\/([^/]+)$/);
-      if (req.method === "POST" && provisionMatch !== null) {
-        const targetId = decodeURIComponent(provisionMatch[1] ?? "");
-        if (!inboxStore.has(targetId)) {
-          inboxStore.set(targetId, [] as readonly NexusMessageEnvelope[]);
-        }
-        return new Response(null, { status: 204 });
       }
 
       return new Response("Not Found", { status: 404 });

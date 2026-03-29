@@ -12,6 +12,11 @@ export type {
   CompletionNotifierConfig,
 } from "./completion-notifier.js";
 export { createCompletionNotifier } from "./completion-notifier.js";
+export type { ReconcileResult } from "./reconciler.js";
+export { reconcileTaskBoard } from "./reconciler.js";
+export type { RetrySendConfig } from "./retry-send.js";
+export { sendWithRetry } from "./retry-send.js";
 export type { SpawnFitnessWrapperConfig, SpawnHealthRecorder } from "./spawn-fitness-wrapper.js";
 export { createSpawnFitnessWrapper, embedBrickId } from "./spawn-fitness-wrapper.js";
-export type { AutonomousAgent, AutonomousAgentParts } from "./types.js";
+export type { AutonomousAgent, AutonomousAgentParts, AutonomousLogger } from "./types.js";
+export { createStderrLogger } from "./types.js";

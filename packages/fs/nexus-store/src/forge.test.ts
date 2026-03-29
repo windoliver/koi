@@ -177,3 +177,90 @@ describe("createNexusForgeStore — nexus-specific", () => {
     expect(events).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Optimistic locking — Issue 1A
+// ---------------------------------------------------------------------------
+
+describe("createNexusForgeStore — optimistic locking", () => {
+  function createStore(): ReturnType<typeof createNexusForgeStore> {
+    return createNexusForgeStore({
+      baseUrl: "http://fake-nexus",
+      apiKey: "test-key",
+      fetch: createFakeNexusFetch(),
+    });
+  }
+
+  test("update with correct expectedVersion succeeds", async () => {
+    const store = createStore();
+    const brick = createTestToolArtifact({ id: brickId("brick_olv1") });
+    await store.save(brick);
+
+    // After save, storeVersion is 1
+    const updateResult = await store.update(brickId("brick_olv1"), {
+      usageCount: 10,
+      expectedVersion: 1,
+    });
+    expect(updateResult.ok).toBe(true);
+
+    const loadResult = await store.load(brickId("brick_olv1"));
+    expect(loadResult.ok).toBe(true);
+    if (loadResult.ok) {
+      expect(loadResult.value.storeVersion).toBe(2);
+      expect(loadResult.value.usageCount).toBe(10);
+    }
+  });
+
+  test("update with stale expectedVersion returns CONFLICT", async () => {
+    const store = createStore();
+    const brick = createTestToolArtifact({ id: brickId("brick_olv2") });
+    await store.save(brick);
+
+    // First update bumps version to 2
+    await store.update(brickId("brick_olv2"), { usageCount: 5 });
+
+    // Stale version (1) should fail
+    const staleResult = await store.update(brickId("brick_olv2"), {
+      usageCount: 99,
+      expectedVersion: 1,
+    });
+    expect(staleResult.ok).toBe(false);
+    if (!staleResult.ok) {
+      expect(staleResult.error.code).toBe("CONFLICT");
+      expect(staleResult.error.message).toContain("version");
+    }
+  });
+
+  test("storeVersion survives JSON serialization roundtrip", async () => {
+    const store = createStore();
+    const brick = createTestToolArtifact({ id: brickId("brick_olv3") });
+    await store.save(brick);
+
+    const loadResult = await store.load(brickId("brick_olv3"));
+    expect(loadResult.ok).toBe(true);
+    if (loadResult.ok) {
+      expect(typeof loadResult.value.storeVersion).toBe("number");
+      expect(loadResult.value.storeVersion).toBe(1);
+    }
+  });
+
+  test("update without expectedVersion succeeds unconditionally", async () => {
+    const store = createStore();
+    const brick = createTestToolArtifact({ id: brickId("brick_olv4") });
+    await store.save(brick);
+
+    // Two unconditional updates should both succeed
+    const r1 = await store.update(brickId("brick_olv4"), { usageCount: 5 });
+    expect(r1.ok).toBe(true);
+
+    const r2 = await store.update(brickId("brick_olv4"), { usageCount: 10 });
+    expect(r2.ok).toBe(true);
+
+    const loadResult = await store.load(brickId("brick_olv4"));
+    expect(loadResult.ok).toBe(true);
+    if (loadResult.ok) {
+      expect(loadResult.value.usageCount).toBe(10);
+      expect(loadResult.value.storeVersion).toBe(3); // 1 (save) + 2 (updates)
+    }
+  });
+});

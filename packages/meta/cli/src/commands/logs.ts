@@ -9,20 +9,12 @@ import {
   resolveLogDir,
   resolveServiceName,
 } from "@koi/deploy";
-import { loadManifest } from "@koi/manifest";
-import { EXIT_CONFIG } from "@koi/shutdown/exit-codes";
 import type { LogsFlags } from "../args.js";
+import { loadManifestOrExit } from "../load-manifest-or-exit.js";
 
 export async function runLogs(flags: LogsFlags): Promise<void> {
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
-
-  const loadResult = await loadManifest(manifestPath);
-  if (!loadResult.ok) {
-    process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
-    process.exit(EXIT_CONFIG);
-  }
-
-  const { manifest } = loadResult.value;
+  const { manifest } = await loadManifestOrExit(manifestPath);
   const platform = detectPlatform();
   const serviceName = resolveServiceName(manifest.name);
   const system = manifest.deploy?.system ?? false;

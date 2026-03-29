@@ -14,3 +14,12 @@ prompt
 plan-work.md
 demo-strategy.md
 koi.yaml
+.claude/worktrees/
+.codex-tmp/
+concierge/
+my-agent/
+my-agent2/
+my-demo/
+my-demo2/
+my-test/
+agents/

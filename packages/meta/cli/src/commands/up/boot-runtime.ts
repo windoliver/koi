@@ -401,6 +401,11 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   // Wire forge/monitor SSE event sink now that the bridge exists
   emitDashboardEvent = adminBridge.emitEvent;
 
+  // Wire task board → SSE push: task status changes appear in TUI in real-time
+  if (autonomous !== undefined) {
+    autonomous.bindDashboardEvent(adminBridge.emitEvent);
+  }
+
   const routingChatHandler = createChatRouter({
     primaryHandler: chatBridge.handler,
     getDispatchedHandler: dispatcher.getChatHandler,

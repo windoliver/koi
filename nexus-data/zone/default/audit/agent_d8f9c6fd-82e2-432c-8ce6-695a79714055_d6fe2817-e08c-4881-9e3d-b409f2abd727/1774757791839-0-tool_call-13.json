@@ -1,0 +1,18 @@
+{
+  "timestamp": 1774757791839,
+  "sessionId": "agent:d8f9c6fd-82e2-432c-8ce6-695a79714055:d6fe2817-e08c-4881-9e3d-b409f2abd727",
+  "agentId": "d8f9c6fd-82e2-432c-8ce6-695a79714055",
+  "turnIndex": 0,
+  "kind": "tool_call",
+  "request": {
+    "toolId": "celsius_to_f",
+    "input": { "celsius": 37 },
+    "metadata": { "toolCallId": "toolu_vrtx_01E38162cWyN6qaPxgUnmEbT" },
+    "signal": {}
+  },
+  "response": {
+    "output": { "fahrenheit": 98.6 },
+    "metadata": { "toolCallId": "toolu_vrtx_01E38162cWyN6qaPxgUnmEbT" }
+  },
+  "durationMs": 55
+}

@@ -14,6 +14,8 @@
   "scripts": {
     "build": "turbo run build",
     "build:cli": "bunx turbo run build --filter=@koi/cli",
+    "build:binary": "bun scripts/build-binary.ts",
+    "build:binary:all": "bun scripts/build-binary.ts --all",
     "test": "turbo run test",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
@@ -28,6 +30,7 @@
     "layers:summary": "bun scripts/layers-graph.ts --summary",
     "scaffold:middleware": "bun scripts/scaffold-middleware.ts",
     "check:test-utils-migration": "bun scripts/check-test-utils-migration.ts",
+    "generate:descriptor-manifest": "bun scripts/generate-descriptor-manifest.ts",
     "generate:layer-docs": "bun scripts/generate-layer-docs.ts",
     "check:unused": "bunx knip",
     "check:duplicates": "bunx jscpd .",

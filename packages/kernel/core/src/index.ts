@@ -502,15 +502,18 @@ export { DEFAULT_FORGE_BUDGET } from "./forge-demand.js";
 export type {
   BrickKind,
   BrickLifecycle,
+  BrickSignature,
   ForgeScope,
   MutationPressure,
   MutationPressurePolicy,
   PolicyValidationResult,
+  TrustTier,
   TrustTransitionCaller,
 } from "./forge-types.js";
 export {
   ALL_BRICK_KINDS,
   DEFAULT_MUTATION_PRESSURE_POLICY,
+  isBrickKind,
   MAX_PIPELINE_STEPS,
   SANDBOX_REQUIRED_BY_KIND,
   VALID_LIFECYCLE_TRANSITIONS,

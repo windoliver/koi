@@ -20,6 +20,11 @@ import type { OperationResult, PhaseCallbacks, SetupWizardState } from "@koi/set
 import { KNOWN_MODELS } from "@koi/setup-core";
 import type { PresetInfo } from "@koi/tui";
 import type { TuiFlags } from "../args.js";
+import {
+  clearTerminalState,
+  restoreCrashedTerminal,
+  saveTerminalState,
+} from "../terminal-state.js";
 import type { RuntimeHandle } from "./up/boot-runtime.js";
 import type { StartStackContext } from "./up/start-stack.js";
 
@@ -136,6 +141,9 @@ async function probeAdminHealth(url: string): Promise<boolean> {
 }
 
 export async function runTui(flags: TuiFlags): Promise<void> {
+  // Recover terminal from a previous crash (SIGKILL leaves raw mode active)
+  restoreCrashedTerminal();
+
   const adminUrl = flags.url ?? DEFAULT_ADMIN_URL;
   const refreshMs = flags.refresh * 1000;
   let isWelcome = flags.mode === "welcome";
@@ -435,6 +443,7 @@ export async function runTui(flags: TuiFlags): Promise<void> {
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
     }
+    clearTerminalState();
   };
   process.on("exit", restoreTerminal);
   process.on("uncaughtException", (err) => {
@@ -446,5 +455,8 @@ export async function runTui(flags: TuiFlags): Promise<void> {
   if (!isWelcome) {
     process.stderr.write(`Connecting to ${adminUrl}…\n`);
   }
+  // Save terminal state before entering raw mode so it can be restored
+  // on next startup if the process is killed by SIGKILL (uncatchable).
+  saveTerminalState();
   await app.start();
 }

@@ -39,6 +39,10 @@ const KNOWN_FIELDS = [
   "demo",
   "dataSources",
   "codeSandbox",
+  "delegation",
+  "degeneracy",
+  "delivery",
+  "nexus",
 ] as const;
 
 /**

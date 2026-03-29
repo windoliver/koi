@@ -77,7 +77,7 @@ export function writeMessage(output: Writable, message: JsonRpcMessage): void {
 /** Maximum buffer size (10 MB) to prevent unbounded memory growth. */
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 
-const HEADER_DELIMITER_BUF = Buffer.from(HEADER_DELIMITER);
+const HEADER_DELIMITER_BUF = new Uint8Array(Buffer.from(HEADER_DELIMITER));
 
 /**
  * Creates a streaming parser that extracts JSON-RPC messages from a
@@ -93,7 +93,7 @@ export function createMessageParser(
   let buffer = Buffer.alloc(0);
 
   return (chunk: Buffer): void => {
-    buffer = Buffer.concat([buffer, chunk]);
+    buffer = Buffer.concat([new Uint8Array(buffer), new Uint8Array(chunk)]);
 
     // Guard against unbounded memory growth from misbehaving servers
     if (buffer.length > MAX_BUFFER_SIZE) {

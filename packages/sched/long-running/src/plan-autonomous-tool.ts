@@ -18,6 +18,13 @@ export interface PlanAutonomousConfig {
   readonly onPlanCreated: (plan: TaskBoardSnapshot) => void | Promise<void>;
   /** ComponentProvider priority. Default: BUNDLED (100). */
   readonly priority?: number | undefined;
+  /**
+   * Optional board getter for detecting synchronous completion.
+   * When provided and all tasks are completed after onPlanCreated returns,
+   * the tool response includes an explicit synthesis prompt so the LLM
+   * calls task_synthesize immediately.
+   */
+  readonly getTaskBoard?: (() => TaskBoardSnapshot) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +59,19 @@ const PLAN_AUTONOMOUS_SCHEMA: JsonObject = {
               "Omit or pass [] for tasks that can run immediately. " +
               "Tasks sharing no dependencies may run in parallel.",
           },
+          delegation: {
+            type: "string",
+            enum: ["self", "spawn"],
+            description:
+              'How this task is executed. "self" (default): you complete it yourself via task_complete. ' +
+              '"spawn": dispatched to a worker agent automatically.',
+          },
+          agentType: {
+            type: "string",
+            description:
+              'For spawn-delegated tasks, the type of worker agent to use (e.g. "researcher", "coder"). ' +
+              'Defaults to "worker" if omitted.',
+          },
         },
         required: ["id", "description"],
       },
@@ -69,12 +89,16 @@ interface RawTaskInput {
   readonly id?: unknown;
   readonly description?: unknown;
   readonly dependencies?: unknown;
+  readonly delegation?: unknown;
+  readonly agentType?: unknown;
 }
 
 interface ValidatedTask {
   readonly id: TaskItemId;
   readonly description: string;
   readonly dependencies: readonly TaskItemId[];
+  readonly delegation: "self" | "spawn";
+  readonly agentType: string | undefined;
 }
 
 /** Check whether a dependency graph contains a cycle using iterative DFS. */
@@ -144,8 +168,14 @@ function validateTasks(raw: unknown): TaskValidationResult {
   const parsed: ValidatedTask[] = [];
   const seenIds = new Set<string>();
 
-  for (const item of raw as readonly RawTaskInput[]) {
-    if (typeof item?.id !== "string" || typeof item?.description !== "string") continue;
+  for (let idx = 0; idx < (raw as readonly unknown[]).length; idx++) {
+    const item = (raw as readonly RawTaskInput[])[idx];
+    if (typeof item?.id !== "string" || typeof item?.description !== "string") {
+      return {
+        ok: false,
+        error: `Task at index ${String(idx)} has invalid id or description: expected strings.`,
+      };
+    }
 
     // Duplicate ID check
     if (seenIds.has(item.id)) {
@@ -153,15 +183,45 @@ function validateTasks(raw: unknown): TaskValidationResult {
     }
     seenIds.add(item.id);
 
-    const deps = Array.isArray(item.dependencies)
+    // Validate dependencies: must be undefined, omitted, or a string array.
+    if (item.dependencies !== undefined && !Array.isArray(item.dependencies)) {
+      return {
+        ok: false,
+        error: `Task "${item.id}" has non-array dependencies: expected string[] or omit.`,
+      };
+    }
+    const rawDeps = Array.isArray(item.dependencies)
       ? (item.dependencies as readonly unknown[])
-          .filter((d): d is string => typeof d === "string")
-          .map(taskItemId)
       : [];
+    for (let di = 0; di < rawDeps.length; di++) {
+      if (typeof rawDeps[di] !== "string") {
+        return {
+          ok: false,
+          error: `Task "${item.id}" has non-string dependency at index ${String(di)}: expected string.`,
+        };
+      }
+    }
+    const deps = rawDeps.map((d) => taskItemId(d as string));
+
+    // Validate delegation: must be "self", "spawn", or omitted (defaults to "self").
+    if (
+      item.delegation !== undefined &&
+      item.delegation !== "self" &&
+      item.delegation !== "spawn"
+    ) {
+      return {
+        ok: false,
+        error: `Task "${item.id}" has invalid delegation "${String(item.delegation)}": expected "self" or "spawn".`,
+      };
+    }
+    const delegation = item.delegation === "spawn" ? "spawn" : "self";
+    const agentType = typeof item.agentType === "string" ? item.agentType : undefined;
     parsed.push({
       id: taskItemId(item.id),
       description: item.description,
       dependencies: deps,
+      delegation,
+      agentType,
     });
   }
 
@@ -239,17 +299,40 @@ export function createPlanAutonomousProvider(config: PlanAutonomousConfig): Comp
             id: t.id,
             description: t.description,
             dependencies: t.dependencies,
+            delegation: t.delegation,
+            ...(t.agentType !== undefined ? { agentType: t.agentType } : {}),
             priority: 0,
             maxRetries: 3,
             retries: 0,
-            // "assigned" — in self-escalation mode the copilot IS the worker,
-            // so tasks are immediately assignable. completeTask() requires "assigned".
-            status: "assigned",
+            // "assigned" for self-delegation — the copilot IS the worker.
+            // "pending" for spawn-delegation — the bridge will assign a worker.
+            status: t.delegation === "spawn" ? "pending" : "assigned",
           })),
           results: [],
         };
 
         await config.onPlanCreated(snapshot);
+
+        // Check if all tasks completed during dispatch (synchronous spawn).
+        // When workers finish within onPlanCreated, the board is already
+        // up-to-date. Return an explicit synthesis prompt so the LLM calls
+        // task_synthesize instead of stopping or calling task_status.
+        if (config.getTaskBoard !== undefined) {
+          const board = config.getTaskBoard();
+          const completedCount = board.items.filter((i) => i.status === "completed").length;
+          const total = board.items.length;
+          if (completedCount === total && total > 0) {
+            return {
+              status: "plan_completed",
+              taskCount: total,
+              completedCount,
+              message:
+                `All ${String(total)} tasks completed successfully. ` +
+                "Call task_synthesize now to merge and present the results to the user.",
+            };
+          }
+        }
+
         return {
           status: "plan_created",
           taskCount: tasks.length,

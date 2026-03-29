@@ -1,6 +1,10 @@
 /**
  * InMemoryForgeStore — simple Map-based store for tests and development.
  * No eviction, no persistence across restarts.
+ *
+ * Features:
+ * - Content integrity verification on load (recomputes BrickId from content)
+ * - Store-level version tracking for optimistic locking on update
  */
 
 import type {
@@ -14,7 +18,7 @@ import type {
   KoiError,
   Result,
 } from "@koi/core";
-import { notFound } from "@koi/core";
+import { conflict, notFound } from "@koi/core";
 import {
   applyBrickUpdate,
   createMemoryStoreChangeNotifier,
@@ -22,22 +26,54 @@ import {
   sortBricks,
 } from "@koi/validation";
 
-// Error helpers use shared factories from @koi/core.
+// ---------------------------------------------------------------------------
+// Error helpers
+// ---------------------------------------------------------------------------
+
 function notFoundError(id: BrickId): KoiError {
   return notFound(id, `Brick not found: ${id}`);
+}
+
+function versionConflictError(id: BrickId, expected: number, actual: number): KoiError {
+  return conflict(
+    id,
+    `Version conflict on brick ${id}: expected version ${String(expected)}, current version ${String(actual)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+export interface InMemoryForgeStoreConfig {
+  /** Optional integrity check callback invoked on save. Return `{ ok: false }` to reject. */
+  readonly verifyOnSave?: ((brick: BrickArtifact) => { readonly ok: boolean }) | undefined;
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export function createInMemoryForgeStore(): ForgeStore {
+export function createInMemoryForgeStore(config?: InMemoryForgeStoreConfig): ForgeStore {
   const bricks = new Map<BrickId, BrickArtifact>();
   const notifier = createMemoryStoreChangeNotifier();
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
-    bricks.set(brick.id, brick);
-    notifier.notify({ kind: "saved", brickId: brick.id });
+    // Write-time integrity verification (when configured)
+    if (config?.verifyOnSave !== undefined) {
+      const check = config.verifyOnSave(brick);
+      if (!check.ok) {
+        return {
+          ok: false,
+          error: conflict(brick.id, `Integrity check failed on save for brick ${brick.id}`),
+        };
+      }
+    }
+    // Stamp storeVersion=1 on first save (preserve existing if present)
+    const versioned: BrickArtifact =
+      brick.storeVersion !== undefined ? brick : { ...brick, storeVersion: 1 };
+    bricks.set(versioned.id, versioned);
+    notifier.notify({ kind: "saved", brickId: versioned.id });
     return { ok: true, value: undefined };
   };
 
@@ -46,6 +82,11 @@ export function createInMemoryForgeStore(): ForgeStore {
     if (brick === undefined) {
       return { ok: false, error: notFoundError(id) };
     }
+    // Note: content integrity verification is intentionally NOT performed on
+    // every load(). Bricks may have synthetic sha256-formatted IDs (tests, manual
+    // creation) whose content doesn't match. Integrity should be verified
+    // explicitly at trust boundaries (e.g., after download from remote registry)
+    // via computeBrickId() + comparison, not on every read.
     return { ok: true, value: brick };
   };
 
@@ -75,7 +116,21 @@ export function createInMemoryForgeStore(): ForgeStore {
     if (existing === undefined) {
       return { ok: false, error: notFoundError(id) };
     }
-    bricks.set(id, applyBrickUpdate(existing, updates));
+    // Optimistic locking: reject if version mismatch
+    if (updates.expectedVersion !== undefined) {
+      const currentVersion = existing.storeVersion ?? 0;
+      if (currentVersion !== updates.expectedVersion) {
+        return {
+          ok: false,
+          error: versionConflictError(id, updates.expectedVersion, currentVersion),
+        };
+      }
+    }
+    const applied = applyBrickUpdate(existing, updates);
+    // Bump storeVersion on every successful update
+    const nextVersion = (existing.storeVersion ?? 0) + 1;
+    const versioned: BrickArtifact = { ...applied, storeVersion: nextVersion };
+    bricks.set(id, versioned);
     notifier.notify({ kind: "updated", brickId: id });
     return { ok: true, value: undefined };
   };
@@ -111,8 +166,20 @@ export function createInMemoryForgeStore(): ForgeStore {
     if (existing === undefined) {
       return { ok: false, error: notFoundError(id) };
     }
-    const merged = applyBrickUpdate(existing, { ...updates, scope: targetScope });
-    bricks.set(id, merged);
+    // Optimistic locking for promote+update too
+    if (updates.expectedVersion !== undefined) {
+      const currentVersion = existing.storeVersion ?? 0;
+      if (currentVersion !== updates.expectedVersion) {
+        return {
+          ok: false,
+          error: versionConflictError(id, updates.expectedVersion, currentVersion),
+        };
+      }
+    }
+    const applied = applyBrickUpdate(existing, { ...updates, scope: targetScope });
+    const nextVersion = (existing.storeVersion ?? 0) + 1;
+    const versioned: BrickArtifact = { ...applied, storeVersion: nextVersion };
+    bricks.set(id, versioned);
     notifier.notify({ kind: "promoted", brickId: id, scope: targetScope });
     return { ok: true, value: undefined };
   };

@@ -7,13 +7,19 @@ import { processPendingMessages } from "./process-inbox.js";
 function createMockClient(messages: readonly NexusMessageEnvelope[]): NexusClient {
   return {
     sendMessage: mock(() => {
-      const first = messages[0];
-      if (first === undefined) throw new Error("no messages");
-      return Promise.resolve({ ok: true as const, value: first });
+      return Promise.resolve({
+        ok: true as const,
+        value: {
+          message_id: "mock-send-id",
+          path: "/ipc/mock/inbox/mock-send-id.json",
+          sender: "a",
+          recipient: "b",
+          type: "task",
+        },
+      });
     }),
     listInbox: mock(() => Promise.resolve({ ok: true as const, value: messages })),
     inboxCount: mock(() => Promise.resolve({ ok: true as const, value: messages.length })),
-    provision: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
   };
 }
 
@@ -21,9 +27,8 @@ const ENVELOPE_A: NexusMessageEnvelope = {
   id: "msg-1",
   from: "a",
   to: "b",
-  kind: "task",
-  createdAt: "2026-01-01T00:00:00Z",
-  type: "test",
+  type: "task",
+  timestamp: "2026-01-01T00:00:00Z",
   payload: { x: 1 },
 };
 
@@ -31,9 +36,8 @@ const ENVELOPE_B: NexusMessageEnvelope = {
   id: "msg-2",
   from: "c",
   to: "b",
-  kind: "event",
-  createdAt: "2026-01-01T00:01:00Z",
-  type: "deploy",
+  type: "event",
+  timestamp: "2026-01-01T00:01:00Z",
   payload: { v: 2 },
 };
 
@@ -182,7 +186,18 @@ describe("processPendingMessages", () => {
 
   test("returns 0 when listInbox fails", async () => {
     const client: NexusClient = {
-      sendMessage: mock(() => Promise.resolve({ ok: true as const, value: ENVELOPE_A })),
+      sendMessage: mock(() =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            message_id: "mock-id",
+            path: "/ipc/mock/inbox/mock-id.json",
+            sender: "a",
+            recipient: "b",
+            type: "task",
+          },
+        }),
+      ),
       listInbox: mock(() =>
         Promise.resolve({
           ok: false as const,
@@ -190,7 +205,6 @@ describe("processPendingMessages", () => {
         }),
       ),
       inboxCount: mock(() => Promise.resolve({ ok: true as const, value: 0 })),
-      provision: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
     };
     const handlers = new Set<MessageHandler>([mock(() => {})]);
     const seen = new Set<string>();
@@ -199,11 +213,11 @@ describe("processPendingMessages", () => {
     expect(count).toBe(0);
   });
 
-  test("skips messages with unknown Nexus kind", async () => {
+  test("skips messages with unknown Nexus type", async () => {
     const unknownKind: NexusMessageEnvelope = {
       ...ENVELOPE_A,
       id: "msg-unknown",
-      kind: "banana",
+      type: "banana",
     };
     const client = createMockClient([unknownKind, ENVELOPE_B]);
     const handler = mock(() => {});

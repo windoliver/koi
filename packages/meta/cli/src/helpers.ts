@@ -4,7 +4,6 @@
 
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ContentBlock } from "@koi/core";
 
 export { createLocalFileSystem } from "./local-filesystem.js";
@@ -18,8 +17,7 @@ export { createLocalFileSystem } from "./local-filesystem.js";
  */
 export function resolveDashboardAssetsDir(): string | undefined {
   try {
-    const pkgUrl = import.meta.resolve("@koi/dashboard-ui/package.json");
-    const pkgPath = fileURLToPath(pkgUrl);
+    const pkgPath = require.resolve("@koi/dashboard-ui/package.json");
     return resolve(dirname(pkgPath), "dist");
   } catch {
     return undefined;

@@ -452,6 +452,16 @@ async function seedSelfImprovement(ctx: SeedContext): Promise<SeedResult> {
   return { ok: allSeeded, counts, summary, seededBricks, seededForgeEvents };
 }
 
+/** Check if the first forge event exists as a sentinel for the self-improvement pack. */
+async function checkSelfImprovementSeeded(ctx: SeedContext): Promise<boolean> {
+  const sentinel = FORGE_EVENTS[0];
+  if (sentinel === undefined) return false;
+  const result = await ctx.nexusClient.rpc<{ readonly exists: boolean }>("exists", {
+    path: `/agents/${ctx.agentName}/events/forge/${sentinel.key}`,
+  });
+  return result.ok && result.value.exists;
+}
+
 export const SELF_IMPROVEMENT_PACK: DemoPack = {
   id: "self-improvement",
   name: "Self-Improvement",
@@ -467,6 +477,7 @@ export const SELF_IMPROVEMENT_PACK: DemoPack = {
     },
   ],
   seed: seedSelfImprovement,
+  checkSeeded: checkSelfImprovementSeeded,
   staticViews: {
     seededBricks: BRICK_METADATA.map((entry) => ({
       brickId: entry.value.brickId as string,

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type {
   BrickArtifact,
   ForgeDemandSignal,
+  ForgeQuery,
   ForgeStore,
   KoiError,
   Result,
@@ -257,6 +258,34 @@ describe("createAutoForgeMiddleware", () => {
     expect(store.save).toHaveBeenCalledTimes(1);
   });
 
+  test("skips save when active brick with same name already exists", async () => {
+    const candidates = [createCandidate(["fetch", "parse"], 5, 1000)];
+    const handle = createMockCrystallizeHandle(candidates);
+
+    const existingBrick = createTestToolArtifact({ name: "fetch-then-parse" });
+    const storeWithExisting = createMockForgeStore({
+      search: mock(
+        async (): Promise<Result<readonly BrickArtifact[], KoiError>> => ({
+          ok: true,
+          value: [existingBrick],
+        }),
+      ),
+    });
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: storeWithExisting,
+      scope: "agent",
+      confidenceThreshold: 0.0,
+      clock: () => 1000,
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    expect(storeWithExisting.save).not.toHaveBeenCalled();
+  });
+
   test("saved brick has correct shape", async () => {
     const candidates = [createCandidate(["fetch", "parse"], 5, 1000)];
     const handle = createMockCrystallizeHandle(candidates);
@@ -386,6 +415,40 @@ describe("demand trigger-based dedup", () => {
     expect(searchCall.triggerText).toBe("visualize theorem");
     expect(searchCall.text).toBeUndefined();
     void descriptionOnlyBrick; // referenced for documentation
+  });
+
+  test("skips demand forge when active brick with same name exists", async () => {
+    const searchMock = mock(async (query: ForgeQuery) => {
+      if (query.name !== undefined) {
+        return {
+          ok: true as const,
+          value: [
+            createTestToolArtifact({ name: "pioneer-visualize-theorem" }),
+          ] as readonly BrickArtifact[],
+        };
+      }
+      return { ok: true as const, value: [] as readonly BrickArtifact[] };
+    });
+    const store = createMockForgeStore({
+      search: searchMock,
+    });
+    const signal = createDemandSignal();
+    const demandHandle = createDemandHandle([signal]);
+    const handle = createMockCrystallizeHandle();
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5 },
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    expect(demandHandle.dismiss).toHaveBeenCalledWith("demand-1");
+    expect(store.save).not.toHaveBeenCalled();
   });
 
   test("proceeds with forge when no existing brick matches", async () => {

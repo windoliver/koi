@@ -9,10 +9,30 @@ import type {
   ForgeStore,
   InboxPolicy,
   KoiMiddleware,
+  SpawnFn,
   ThreadStore,
 } from "@koi/core";
 import type { HarnessScheduler } from "@koi/harness-scheduler";
 import type { LongRunningHarness } from "@koi/long-running";
+
+// ---------------------------------------------------------------------------
+// Logger — thin interface for operational logging (retry, reconciliation, etc.)
+// ---------------------------------------------------------------------------
+
+export interface AutonomousLogger {
+  readonly warn: (message: string) => void;
+  readonly error: (message: string) => void;
+  readonly debug?: ((message: string) => void) | undefined;
+}
+
+/** Default logger that writes to stderr with [autonomous] prefix. */
+export function createStderrLogger(): AutonomousLogger {
+  return {
+    warn: (msg: string) => process.stderr.write(`[autonomous] ${msg}\n`),
+    error: (msg: string) => process.stderr.write(`[autonomous] ERROR: ${msg}\n`),
+    debug: (msg: string) => process.stderr.write(`[autonomous] ${msg}\n`),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Factory input — accept pre-constructed parts (instance-based)
@@ -59,6 +79,32 @@ export interface AutonomousAgentParts {
    * Created via createAutoHarnessStack() from @koi/auto-harness.
    */
   readonly autoHarnessMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * Optional spawn function getter for delegation bridge dispatch. When the
+   * getter returns a SpawnFn, tasks with `delegation: "spawn"` are auto-dispatched
+   * to worker agents via the delegation bridge. Deferred via getter because SpawnFn
+   * requires engine runtime context that isn't available at construction time.
+   */
+  readonly getSpawn?: (() => SpawnFn | undefined) | undefined;
+  /** Optional logger for autonomous operational messages (retry, reconciliation, etc.). Defaults to stderr. */
+  readonly logger?: AutonomousLogger | undefined;
+  /**
+   * Optional callback to emit dashboard events (SSE → TUI).
+   * When provided, task status changes are pushed so the TUI task board
+   * view updates in real-time without polling.
+   *
+   * Structural type to avoid importing @koi/dashboard-types — the caller
+   * (CLI) bridges to the actual DashboardEvent union.
+   */
+  readonly onTaskBoardEvent?:
+    | ((event: {
+        readonly kind: "taskboard";
+        readonly subKind: "task_status_changed";
+        readonly taskId: string;
+        readonly status: string;
+        readonly timestamp: number;
+      }) => void)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +120,7 @@ export interface AutonomousAgent {
   readonly middleware: () => readonly KoiMiddleware[];
   /** Component providers (inbox, plan_autonomous). */
   readonly providers: () => readonly ComponentProvider[];
-  /** Dispose all parts in correct order (scheduler first, then harness). */
+  /** Dispose all parts in correct order (bridge abort, scheduler, harness). */
   readonly dispose: () => Promise<void>;
   /** Agent resolver -- auto-created from forgeStore if not provided explicitly. */
   readonly agentResolver?: AgentResolver | undefined;

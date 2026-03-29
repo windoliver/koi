@@ -31,6 +31,7 @@ interface MockBot {
   readonly stop: ReturnType<typeof mock>;
   readonly handleUpdate: ReturnType<typeof mock>;
   readonly on: ReturnType<typeof mock>;
+  readonly use: ReturnType<typeof mock>;
 }
 
 function makeMockBot(): MockBot {
@@ -47,6 +48,7 @@ function makeMockBot(): MockBot {
     stop: mock(async () => {}),
     handleUpdate: mock(async () => {}),
     on: mock(() => {}),
+    use: mock(() => {}),
   };
 }
 
@@ -101,7 +103,7 @@ describe("createTelegramChannel — polling mode", () => {
     const registeredHandlers: ((...args: readonly unknown[]) => void)[] = [];
     const mockBot: MockBot = {
       ...makeMockBot(),
-      on: mock((_event: string, handler: (...args: readonly unknown[]) => void) => {
+      use: mock((handler: (...args: readonly unknown[]) => void) => {
         registeredHandlers.push(handler);
       }),
     };

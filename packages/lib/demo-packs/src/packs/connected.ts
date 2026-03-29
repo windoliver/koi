@@ -150,6 +150,16 @@ async function seedConnected(ctx: SeedContext): Promise<SeedResult> {
   return { ok: allSeeded, counts, summary };
 }
 
+/** Check if the first employee entity exists as a sentinel for the connected pack. */
+async function checkConnectedSeeded(ctx: SeedContext): Promise<boolean> {
+  const sentinel = HERB_EMPLOYEES[0];
+  if (sentinel === undefined) return false;
+  const result = await ctx.nexusClient.rpc<{ readonly exists: boolean }>("exists", {
+    path: `/agents/${ctx.agentName}/datasources/herb-employees/${sentinel.id}`,
+  });
+  return result.ok && result.value.exists;
+}
+
 export const CONNECTED_PACK: DemoPack = {
   id: "connected",
   name: "Connected (HERB Enterprise)",
@@ -169,6 +179,7 @@ export const CONNECTED_PACK: DemoPack = {
     // communication wired. Re-enable when mesh/gateway multi-agent is ready.
   ],
   seed: seedConnected,
+  checkSeeded: checkConnectedSeeded,
   prompts: [
     "How many employees does HERB have in Engineering?",
     "Which enterprise customers have the highest churn risk?",

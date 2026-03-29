@@ -22,11 +22,11 @@ function createMockDeps(overrides: Partial<CliCommandDeps> = {}): CliCommandDeps
     output,
     exit: mock(() => {}),
     written() {
-      const chunks: Buffer[] = [];
-      let chunk: Buffer | null = output.read() as Buffer | null;
+      const chunks: Uint8Array[] = [];
+      let chunk: Uint8Array | null = output.read() as Uint8Array | null;
       while (chunk !== null) {
         chunks.push(chunk);
-        chunk = output.read() as Buffer | null;
+        chunk = output.read() as Uint8Array | null;
       }
       return Buffer.concat(chunks).toString("utf-8");
     },

@@ -46,6 +46,10 @@ export function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): 
       }
     }
   }
+  // Exact case-insensitive name match (used for name-based dedup)
+  if (query.name !== undefined && brick.name.toLowerCase() !== query.name.toLowerCase()) {
+    return false;
+  }
   // Case-insensitive substring match against name + description + trigger patterns
   if (query.text !== undefined && query.text.length > 0) {
     const lower = query.text.toLowerCase();

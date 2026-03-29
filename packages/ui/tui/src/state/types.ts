@@ -147,6 +147,9 @@ export type TuiView =
 /** Panel zoom level — cycles with +/Esc. */
 export type ZoomLevel = "normal" | "half" | "full";
 
+/** Layout tier derived from terminal column count. */
+export type LayoutTier = "full" | "compact" | "narrow" | "tooNarrow";
+
 /** Admin API connection state. */
 export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
 
@@ -283,6 +286,10 @@ export interface TuiState {
   readonly forgeSelectedBrickIndex: number;
   /** Current zoom level for focused panel. */
   readonly zoomLevel: ZoomLevel;
+  /** Terminal column count (updated on resize). */
+  readonly cols: number;
+  /** Layout tier derived from cols. */
+  readonly layoutTier: LayoutTier;
   /** Available presets for the welcome screen. */
   readonly presets: readonly PresetInfo[];
   /** Selected preset index (welcome screen). */
@@ -395,6 +402,8 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     forgeSparklines: {},
     forgeSelectedBrickIndex: 0,
     zoomLevel: "normal",
+    cols: 120,
+    layoutTier: "full" as LayoutTier,
     presets: [],
     selectedPresetIndex: 0,
     activePresetDetail: null,
@@ -533,6 +542,7 @@ export type TuiAction =
     }
   | { readonly kind: "set_zoom_level"; readonly level: ZoomLevel }
   | { readonly kind: "cycle_zoom" }
+  | { readonly kind: "set_terminal_cols"; readonly cols: number }
   | {
       readonly kind: "set_presets";
       readonly presets: readonly PresetInfo[];

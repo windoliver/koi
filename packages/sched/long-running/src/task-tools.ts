@@ -319,16 +319,16 @@ export function createTaskTools(config: TaskToolsConfig): readonly Tool[] {
     policy: DEFAULT_UNSANDBOXED_POLICY,
     execute: async (_args: JsonObject): Promise<unknown> => {
       const board = config.getTaskBoard();
-      const pending = board.items.filter((i) => i.status === "pending").length;
-      const assigned = board.items.filter((i) => i.status === "assigned").length;
-      const completed = board.items.filter((i) => i.status === "completed").length;
-      const failed = board.items.filter((i) => i.status === "failed").length;
+      const counts: Record<string, number> = { pending: 0, assigned: 0, completed: 0, failed: 0 };
+      for (const item of board.items) {
+        counts[item.status] = (counts[item.status] ?? 0) + 1;
+      }
       return {
         totalTasks: board.items.length,
-        pending,
-        assigned,
-        completed,
-        failed,
+        pending: counts.pending ?? 0,
+        assigned: counts.assigned ?? 0,
+        completed: counts.completed ?? 0,
+        failed: counts.failed ?? 0,
         tasks: board.items.map((i) => ({
           id: i.id,
           description: i.description,

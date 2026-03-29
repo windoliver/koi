@@ -32,8 +32,8 @@ function generateTestKeypair(): { publicKeyB64: string; privateKeyB64: string } 
     publicKeyEncoding: { type: "spki", format: "der" },
   });
   return {
-    publicKeyB64: Buffer.from(publicKey).toString("base64"),
-    privateKeyB64: Buffer.from(privateKey).toString("base64"),
+    publicKeyB64: publicKey.toString("base64"),
+    privateKeyB64: privateKey.toString("base64"),
   };
 }
 
@@ -66,7 +66,7 @@ function signToken(
   const canonical = JSON.stringify(sortKeys(token));
   const signature = cryptoSign(
     null, // null = use key's native algorithm (Ed25519 has built-in hash)
-    Buffer.from(canonical),
+    new Uint8Array(Buffer.from(canonical)),
     { key: Buffer.from(privateKeyB64Param, "base64"), format: "der", type: "pkcs8" },
   ).toString("base64");
   return { ...token, proof: { kind: "ed25519", publicKey: publicKeyB64Param, signature } };

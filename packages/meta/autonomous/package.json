@@ -22,6 +22,7 @@
     "@koi/core": "workspace:*",
     "@koi/goal-stack": "workspace:*",
     "@koi/long-running": "workspace:*",
+    "@koi/task-board": "workspace:*",
     "@koi/starter": "workspace:*",
     "@koi/harness-scheduler": "workspace:*",
     "@koi/manifest": "workspace:*"

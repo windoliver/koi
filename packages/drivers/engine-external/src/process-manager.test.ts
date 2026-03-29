@@ -335,7 +335,7 @@ describe("spawnPtyProcess", () => {
 
     // Give a moment for data callback to fire
     await new Promise((r) => setTimeout(r, 100));
-    const output = new TextDecoder().decode(Buffer.concat(chunks));
+    const output = Buffer.concat(chunks).toString("utf-8");
     expect(output).toContain("pty-hello");
   });
 
@@ -376,7 +376,7 @@ describe("spawnPtyProcess", () => {
     proc.terminal.close();
     await proc.exited;
 
-    const output = new TextDecoder().decode(Buffer.concat(chunks));
+    const output = Buffer.concat(chunks).toString("utf-8");
     expect(output).toContain("pty-input");
   }, 10_000);
 

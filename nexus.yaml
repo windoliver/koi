@@ -1,0 +1,24 @@
+preset: demo
+data_dir: /Users/tafeng/koi/.claude/worktrees/melodic-sprouting-kahan/nexus-data
+auth: database
+tls: false
+services:
+- nexus
+- postgres
+- dragonfly
+- zoekt
+ports:
+  http: 13331
+  grpc: 13332
+  postgres: 13333
+  dragonfly: 13334
+  zoekt: 13335
+compose_profiles:
+- core
+- cache
+- search
+api_key: sk-AIvjrhyhYMZWV2h4AADR0e9NANuT0dG93-VRch4Lcpo
+compose_file: /Users/tafeng/.koi/demo/nexus-stack.yml
+image_accelerator: cpu
+image_ref: ghcr.io/nexi-lab/nexus@sha256:ce5c22b4477da2d2366746e38583b7b4121b2a78b63555e76a083f87da63fa10
+image_channel: edge

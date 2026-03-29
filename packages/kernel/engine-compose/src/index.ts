@@ -37,6 +37,7 @@ export type {
   ForgeRefreshSpan,
   MiddlewareSource,
   ResolverSpan,
+  ToolChildSpanRecord,
   VisibilityTier,
 } from "./compose-instrumentation.js";
 export { createDebugInstrumentation } from "./compose-instrumentation.js";

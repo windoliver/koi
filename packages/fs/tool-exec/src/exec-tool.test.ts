@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { SandboxError, SandboxExecutor, SandboxResult } from "@koi/core/sandbox-executor";
+import type { ChildSpanRecord } from "@koi/execution-context";
+import { runWithSpanRecorder } from "@koi/execution-context";
 import { createExecTool } from "./exec-tool.js";
 import type { ExecToolConfig } from "./types.js";
 
@@ -169,6 +171,47 @@ describe("createExecTool", () => {
       const tool = createExecTool({ executor: spy.executor });
       await tool.execute({ code: "return 1" });
       expect(firstCall(spy).context).toEqual({});
+    });
+  });
+
+  describe("span recording", () => {
+    it("records validate span on successful execution", async () => {
+      const spans: ChildSpanRecord[] = [];
+      const recorder = {
+        record: (span: ChildSpanRecord): void => {
+          spans.push(span);
+        },
+      };
+      const tool = createTool();
+
+      await runWithSpanRecorder(recorder, () => tool.execute({ code: "return 1" }));
+
+      const validateSpan = spans.find((s) => s.label === "tool-exec:validate");
+      expect(validateSpan).toBeDefined();
+      expect(validateSpan?.durationMs).toBeGreaterThanOrEqual(0);
+      expect(validateSpan?.error).toBeUndefined();
+    });
+
+    it("records validate span with error on invalid input", async () => {
+      const spans: ChildSpanRecord[] = [];
+      const recorder = {
+        record: (span: ChildSpanRecord): void => {
+          spans.push(span);
+        },
+      };
+      const tool = createTool();
+
+      await runWithSpanRecorder(recorder, () => tool.execute({}));
+
+      const validateSpan = spans.find((s) => s.label === "tool-exec:validate");
+      expect(validateSpan).toBeDefined();
+      expect(validateSpan?.error).toBe("Missing or empty `code` parameter");
+    });
+
+    it("does not throw when no recorder is active", async () => {
+      const tool = createTool();
+      const result = (await tool.execute({ code: "return 1" })) as { ok: boolean };
+      expect(result.ok).toBe(true);
     });
   });
 

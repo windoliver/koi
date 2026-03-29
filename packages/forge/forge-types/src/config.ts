@@ -194,7 +194,7 @@ const DEFAULT_VERIFICATION: VerificationConfig = {
 } as const;
 
 const DEFAULT_FORMAT: FormatConfig = {
-  enabled: false,
+  enabled: true,
   command: "biome",
   args: ["format", "--write"],
   timeoutMs: 5_000,

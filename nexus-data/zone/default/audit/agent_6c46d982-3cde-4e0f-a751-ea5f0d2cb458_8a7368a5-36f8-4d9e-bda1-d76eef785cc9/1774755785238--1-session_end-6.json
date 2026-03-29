@@ -1,0 +1,9 @@
+{
+  "timestamp": 1774755785238,
+  "sessionId": "agent:6c46d982-3cde-4e0f-a751-ea5f0d2cb458:8a7368a5-36f8-4d9e-bda1-d76eef785cc9",
+  "agentId": "6c46d982-3cde-4e0f-a751-ea5f0d2cb458",
+  "turnIndex": -1,
+  "kind": "session_end",
+  "durationMs": 0,
+  "metadata": {}
+}

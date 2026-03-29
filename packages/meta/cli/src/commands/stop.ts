@@ -14,6 +14,17 @@ import { EXIT_CONFIG } from "@koi/shutdown/exit-codes";
 import type { StopFlags } from "../args.js";
 
 export async function runStop(flags: StopFlags): Promise<void> {
+  // Stop ALL Nexus containers across all workspaces if requested (#1076)
+  if (flags.nexusAll) {
+    const { stopAllNexusStacks } = await import("./up/detect-orphaned-nexus.js");
+    const stopped = stopAllNexusStacks();
+    if (stopped < 0) {
+      process.exitCode = 1;
+    }
+    // If --nexus-all is the only intent, don't require a manifest
+    if (!flags.nexus) return;
+  }
+
   // Stop embed Nexus daemon if requested (does not require a manifest)
   if (flags.nexus) {
     await stopNexusEmbed(flags.nexusDestroy);

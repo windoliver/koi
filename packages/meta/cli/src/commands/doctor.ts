@@ -2,12 +2,13 @@
  * `koi doctor` command — diagnose service health.
  *
  * Runs a series of checks and reports issues with fix suggestions.
+ * Supports `--json` for structured output suitable for scripting.
  */
 
 import { runDiagnostics, runRepair } from "@koi/deploy";
-import { loadManifest } from "@koi/manifest";
-import { EXIT_CONFIG } from "@koi/shutdown/exit-codes";
+import { EXIT_CRITICAL, EXIT_OK, EXIT_WARN } from "@koi/shutdown";
 import type { DoctorFlags } from "../args.js";
+import { loadManifestOrExit } from "../load-manifest-or-exit.js";
 
 // ---------------------------------------------------------------------------
 // Status symbols
@@ -20,23 +21,39 @@ const SYMBOLS = {
 } as const;
 
 // ---------------------------------------------------------------------------
+// JSON output types
+// ---------------------------------------------------------------------------
+
+interface DoctorCheckJson {
+  readonly id: string;
+  readonly name: string;
+  readonly status: string;
+  readonly message: string;
+  readonly fix: string | undefined;
+}
+
+interface DoctorJsonOutput {
+  readonly checks: readonly DoctorCheckJson[];
+  readonly summary: {
+    readonly pass: number;
+    readonly warn: number;
+    readonly fail: number;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main command
 // ---------------------------------------------------------------------------
 
 export async function runDoctor(flags: DoctorFlags): Promise<void> {
   const manifestPath = flags.manifest ?? flags.directory ?? "koi.yaml";
-
-  const loadResult = await loadManifest(manifestPath);
-  if (!loadResult.ok) {
-    process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
-    process.exit(EXIT_CONFIG);
-  }
-
-  const { manifest } = loadResult.value;
+  const { manifest } = await loadManifestOrExit(manifestPath);
   const port = manifest.deploy?.port ?? 9100;
   const system = manifest.deploy?.system ?? false;
 
-  process.stdout.write(`Diagnosing "${manifest.name}"...\n\n`);
+  if (!flags.json) {
+    process.stdout.write(`Diagnosing "${manifest.name}"...\n\n`);
+  }
 
   const report = await runDiagnostics({
     agentName: manifest.name,
@@ -44,6 +61,30 @@ export async function runDoctor(flags: DoctorFlags): Promise<void> {
     port,
     logDir: manifest.deploy?.logDir,
   });
+
+  // JSON output mode
+  if (flags.json) {
+    const result: DoctorJsonOutput = {
+      checks: report.checks.map((check) => ({
+        id: check.id,
+        name: check.name,
+        status: check.status,
+        message: check.message,
+        fix: check.fix,
+      })),
+      summary: {
+        pass: report.passing,
+        warn: report.warnings,
+        fail: report.failures,
+      },
+    };
+
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exit(report.failures > 0 ? EXIT_CRITICAL : report.warnings > 0 ? EXIT_WARN : EXIT_OK);
+    return;
+  }
+
+  // Text output mode (default)
 
   // Print each check
   for (const check of report.checks) {
@@ -86,7 +127,9 @@ export async function runDoctor(flags: DoctorFlags): Promise<void> {
     }
   }
 
+  // Text mode: exit non-zero only for failures (warnings are advisory).
+  // --json mode uses 3-tier exit (0/1/2) for structured consumers.
   if (report.failures > 0) {
-    process.exit(1);
+    process.exit(EXIT_CRITICAL);
   }
 }

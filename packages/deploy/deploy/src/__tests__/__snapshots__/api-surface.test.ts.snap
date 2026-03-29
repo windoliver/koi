@@ -36,8 +36,23 @@ declare function resolveLogDir(platform: Platform, serviceName: string): string;
  * Inspired by OpenClaw's \`openclaw doctor\`.
  */
 
+/**
+ * Compile-time-safe check identifiers. Dispatch repair actions on these
+ * instead of display names so renames never silently break repair logic.
+ */
+declare const CHECK_IDS: {
+    readonly SERVICE_FILE: "service_file";
+    readonly SERVICE_STATUS: "service_status";
+    readonly HEALTH_ENDPOINT: "health_endpoint";
+    readonly READINESS_ENDPOINT: "readiness_endpoint";
+    readonly BUN_RUNTIME: "bun_runtime";
+    readonly KOI_CLI: "koi_cli";
+    readonly LOGINCTL_LINGER: "loginctl_linger";
+};
+type CheckId = (typeof CHECK_IDS)[keyof typeof CHECK_IDS];
 type CheckStatus = "pass" | "warn" | "fail";
 interface DiagnosticCheck {
+    readonly id: CheckId;
     readonly name: string;
     readonly status: CheckStatus;
     readonly message: string;
@@ -222,6 +237,6 @@ interface UninstallResult {
 }
 declare function uninstallService(config: UninstallConfig): Promise<UninstallResult>;
 
-export { type CheckStatus, type DeployConfig, type DiagnosticCheck, type DiagnosticReport, type DoctorConfig, type HealthServer, type HealthServerConfig, type InstallConfig, type InstallResult, type LaunchdTemplateConfig, type LogOptions, type Platform, type RepairResult, type ServiceInfo, type ServiceManager, type ServiceStatus, type SystemdTemplateConfig, type UninstallConfig, type UninstallResult, createHealthHandler, createHealthServer, createLaunchdManager, createSystemdManager, detectBunPath, detectKoiPath, detectPlatform, generateLaunchdPlist, generateSystemdUnit, installService, isLingerEnabled, resolveLaunchdLabel, resolveLogDir, resolveServiceDir, resolveServiceName, runDiagnostics, runRepair, uninstallService };
+export { CHECK_IDS, type CheckId, type CheckStatus, type DeployConfig, type DiagnosticCheck, type DiagnosticReport, type DoctorConfig, type HealthServer, type HealthServerConfig, type InstallConfig, type InstallResult, type LaunchdTemplateConfig, type LogOptions, type Platform, type RepairResult, type ServiceInfo, type ServiceManager, type ServiceStatus, type SystemdTemplateConfig, type UninstallConfig, type UninstallResult, createHealthHandler, createHealthServer, createLaunchdManager, createSystemdManager, detectBunPath, detectKoiPath, detectPlatform, generateLaunchdPlist, generateSystemdUnit, installService, isLingerEnabled, resolveLaunchdLabel, resolveLogDir, resolveServiceDir, resolveServiceName, runDiagnostics, runRepair, uninstallService };
 "
 `;

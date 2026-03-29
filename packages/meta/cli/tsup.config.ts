@@ -18,6 +18,7 @@ export default defineConfig({
     "@koi/retry-stack",
     "@koi/auto-harness",
     "@koi/governance",
+    "@koi/governance-memory",
     "@koi/context-arena",
     "@koi/goal-stack",
     "@koi/quality-gate",

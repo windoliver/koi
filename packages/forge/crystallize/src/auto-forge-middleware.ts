@@ -317,13 +317,12 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
         // Name-based dedup: prevent duplicate bricks with the same name.
         // Content dedup (hash) misses bricks with slightly different implementations.
         try {
-          const nameSearch = await config.forgeStore.search({
-            text: brick.name,
-            kind: "tool",
+          const nameCheck = await config.forgeStore.search({
+            name: brick.name,
             lifecycle: "active",
-            limit: 5,
+            limit: 1,
           });
-          if (nameSearch.ok && nameSearch.value.some((b) => b.name === brick.name)) {
+          if (nameCheck.ok && nameCheck.value.length > 0) {
             continue; // Active brick with same name already exists
           }
         } catch (e: unknown) {
@@ -477,13 +476,13 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
     // Content dedup (hash) misses pioneers because each attempt has different
     // timestamps/error messages, producing different hashes for the same logical brick.
     try {
-      const nameSearch = await config.forgeStore.search({
-        text: name,
-        kind: signal.suggestedBrickKind,
+      const nameCheck = await config.forgeStore.search({
+        name: brick.name,
         lifecycle: "active",
-        limit: 5,
+        limit: 1,
       });
-      if (nameSearch.ok && nameSearch.value.some((b) => b.name === name)) {
+      if (nameCheck.ok && nameCheck.value.length > 0) {
+        config.demandHandle?.dismiss(signal.id);
         return; // Active brick with same name already exists
       }
     } catch (e: unknown) {

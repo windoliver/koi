@@ -75,6 +75,14 @@ export interface DemoPack {
   readonly agentRoles: readonly AgentRole[];
   /** The seed function that provisions demo data. */
   readonly seed: (ctx: SeedContext) => Promise<SeedResult>;
+  /**
+   * Check whether this pack's data already exists in Nexus.
+   *
+   * Used as a server-side fallback when the local marker file is missing —
+   * e.g., after workspace cleanup or when Nexus data persists across Docker
+   * restarts. Returns true if a sentinel entity is present.
+   */
+  readonly checkSeeded?: ((ctx: SeedContext) => Promise<boolean>) | undefined;
   /** Known-good prompts to suggest after seeding. */
   readonly prompts: readonly string[];
   /** Static brick/forge views for already-seeded restarts (avoids re-writing to Nexus). */

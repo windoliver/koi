@@ -37,6 +37,7 @@
 import { createCatalogAgentResolver } from "@koi/catalog";
 import type {
   Agent,
+  AgentMessageInput,
   AgentResolver,
   AttachResult,
   ComponentProvider,
@@ -45,28 +46,190 @@ import type {
   InboxPolicy,
   KoiMiddleware,
   MailboxComponent,
+  TaskBoard,
+  TaskBoardSnapshot,
+  TaskItem,
   TaskItemId,
   ThreadMetrics,
 } from "@koi/core";
 import { agentId, INBOX, MAILBOX, threadId } from "@koi/core";
 import { createGoalStack, createTaskAwareDrifting, createTaskBoardSource } from "@koi/goal-stack";
+import type { DelegationBridge } from "@koi/long-running";
 import {
   createAutonomousProvider,
   createCheckpointMiddleware,
+  createDelegationBridge,
   createInboxMiddleware,
   createPlanAutonomousProvider,
   createTaskTools,
 } from "@koi/long-running";
-import type { AutonomousAgent, AutonomousAgentParts } from "./types.js";
+import { createTaskBoard } from "@koi/task-board";
+import { reconcileTaskBoard } from "./reconciler.js";
+import { sendWithRetry } from "./retry-send.js";
+import type { AutonomousAgent, AutonomousAgentParts, AutonomousLogger } from "./types.js";
+import { createStderrLogger } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Bridge helpers
+// ---------------------------------------------------------------------------
+
+/** Check if any task items in a snapshot use spawn delegation. */
+function hasSpawnTasks(snapshot: TaskBoardSnapshot): boolean {
+  return snapshot.items.some((item) => item.delegation === "spawn");
+}
+
+/** Callback to notify the copilot about per-task state changes. */
+type TaskNotifyFn = (taskId: TaskItemId, item: TaskItem, output?: string) => void;
+
+/**
+ * Hydrate a live TaskBoard from a snapshot, dispatch ready spawn tasks
+ * via the bridge, then write the updated state back to the harness.
+ *
+ * The bridge internally runs assign → spawn → complete on a transient live
+ * board. We must replay those transitions into the harness in the right order
+ * (assign before complete) because the harness enforces status preconditions.
+ */
+async function dispatchSpawnTasks(
+  bridge: DelegationBridge,
+  snapshot: TaskBoardSnapshot,
+  harness: AutonomousAgentParts["harness"],
+  notify?: TaskNotifyFn | undefined,
+  log?: AutonomousLogger | undefined,
+): Promise<TaskBoard | undefined> {
+  if (!hasSpawnTasks(snapshot)) return undefined;
+
+  const liveBoard: TaskBoard = createTaskBoard(undefined, snapshot);
+  const updatedBoard = await bridge.dispatchReady(liveBoard);
+
+  // Write transitions back to harness in correct order.
+  //
+  // The bridge runs assign → spawn → complete/fail atomically on a transient
+  // board. For retryable failures, the board goes: pending → assigned → fail →
+  // pending (with retries incremented). We detect all three cases:
+  //   1. Successful dispatch: item ended as "completed"
+  //   2. Terminal failure: item ended as "failed" (retries exhausted)
+  //   3. Retryable failure: item ended as "pending" but retries > original
+  for (const item of updatedBoard.all()) {
+    const original = snapshot.items.find((i) => i.id === item.id);
+    if (original === undefined) continue;
+
+    const wasDispatched =
+      // Moved out of pending (success or terminal failure)
+      (original.status === "pending" && item.status !== "pending") ||
+      // Retryable failure: back to pending but retries incremented
+      (original.status === "pending" &&
+        item.status === "pending" &&
+        item.retries > original.retries);
+
+    if (!wasDispatched) continue;
+
+    // Step 1: assign in harness (pending → assigned)
+    const assignResult = await harness.assignTask(
+      item.id,
+      item.assignedTo ?? agentId(`worker-${item.id}`),
+    );
+    if (!assignResult.ok) {
+      log?.warn(`assignTask failed for ${item.id}: ${assignResult.error.message}`);
+      continue;
+    }
+
+    // Step 2a: complete (assigned → completed)
+    if (item.status === "completed") {
+      const result = updatedBoard.result(item.id);
+      if (result !== undefined) {
+        const completeResult = await harness.completeTask(item.id, result);
+        if (!completeResult.ok) {
+          log?.warn(`completeTask failed for ${item.id}: ${completeResult.error.message}`);
+        } else {
+          notify?.(item.id, item, result.output);
+        }
+      }
+      continue;
+    }
+
+    // Step 2b: fail (assigned → failed or assigned → pending via retryable)
+    if (item.error !== undefined) {
+      const failResult = await harness.failTask(item.id, item.error);
+      if (!failResult.ok) {
+        log?.warn(`failTask failed for ${item.id}: ${failResult.error.message}`);
+      } else {
+        notify?.(item.id, item);
+      }
+    }
+  }
+
+  // Return bridge board for reconciliation (defense-in-depth)
+  return updatedBoard;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
 
 export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent {
   // let justified: mutable disposal guard
   let disposed = false;
 
+  const logger: AutonomousLogger = parts.logger ?? createStderrLogger();
+
   // let justified: mutable agent reference — captured at attach time by
   // the autonomous-provider so inbox getters can resolve ECS components.
   // Undefined until the first provider.attach() fires during agent assembly.
   let attachedAgent: Agent | undefined;
+
+  // Per-task notification — two channels:
+  // 1. Dashboard event (SSE → TUI task board real-time update)
+  // 2. Mailbox message (IPC → copilot inbox for engine context injection)
+  const notifyTask: TaskNotifyFn = (taskId, item, output) => {
+    // Channel 1: Dashboard event — always fire if callback wired.
+    // This pushes task status changes to the TUI via SSE so the task board
+    // view updates in real-time without polling.
+    parts.onTaskBoardEvent?.({
+      kind: "taskboard",
+      subKind: "task_status_changed",
+      taskId: taskId as string,
+      status: item.status,
+      timestamp: Date.now(),
+    });
+
+    // Channel 2: Mailbox notification — best-effort IPC to copilot inbox.
+    const mailbox = attachedAgent?.component(MAILBOX) as MailboxComponent | undefined;
+    if (mailbox === undefined) return;
+
+    const isCompleted = item.status === "completed";
+    const preview = output !== undefined ? output.slice(0, 500) : undefined;
+
+    const message: AgentMessageInput = {
+      from: agentId(parts.harness.harnessId),
+      to: attachedAgent?.pid.id ?? agentId("copilot"),
+      kind: "event",
+      type: isCompleted ? "task.completed" : "task.failed",
+      payload: {
+        taskId,
+        status: item.status,
+        agentType: item.agentType,
+        ...(preview !== undefined ? { outputPreview: preview } : {}),
+        ...(item.error !== undefined
+          ? { errorMessage: item.error.message, retryable: item.error.retryable }
+          : {}),
+      },
+      metadata: { mode: "followup" },
+    };
+
+    // Fire-and-forget with retry — notification failure logged but never blocks dispatch
+    void sendWithRetry(mailbox, message, { logger }).then((result) => {
+      if (!result.ok) {
+        logger.warn(
+          `task notification failed for ${taskId} after retries: ${result.error.message}`,
+        );
+      }
+    });
+  };
+
+  // Delegation bridge — lazily created when a plan with spawn tasks is created
+  // and a spawn function is available via the getSpawn getter.
+  // let justified: mutable ref, created on first plan with spawn tasks.
+  let bridge: DelegationBridge | undefined;
 
   // --- Build middleware list ---
   const middlewareList: KoiMiddleware[] = [parts.harness.createMiddleware()];
@@ -181,25 +344,59 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   // Plan autonomous tool provider — always included for self-escalation.
   // When the agent creates a plan, start the harness with the task board
   // then start the scheduler so it begins auto-resuming sessions.
+  // If the plan contains spawn-delegated tasks, create the delegation bridge
+  // and dispatch root tasks immediately.
   providerList.push(
     createPlanAutonomousProvider({
       onPlanCreated: async (plan) => {
-        process.stderr.write(
-          `[autonomous] plan created — ${String(plan.items.length)} tasks, starting harness\n`,
-        );
+        logger.debug?.(`plan created — ${String(plan.items.length)} tasks, starting harness`);
+
+        // Fail-fast: spawn tasks require a bound spawn function
+        if (hasSpawnTasks(plan) && parts.getSpawn?.() === undefined) {
+          throw new Error(
+            "Spawn delegation requested but no spawn function is available. " +
+              'Use delegation: "self" or bind a spawn function via bindSpawn().',
+          );
+        }
+
         const startResult = await parts.harness.start(plan);
         if (!startResult.ok) {
-          process.stderr.write(`[autonomous] harness start failed: ${startResult.error.message}\n`);
+          logger.error(`harness start failed: ${startResult.error.message}`);
           return;
         }
-        // Harness is now active. The copilot's current engine run continues —
-        // the agent can start working on tasks in this same session using
-        // task_complete. When the engine run ends, the CLI auto-pauses the
-        // harness (active → suspended), then the scheduler picks it up and
-        // resumes for subsequent sessions until all tasks are done.
-        process.stderr.write("[autonomous] harness active — scheduler starting\n");
+        logger.debug?.("harness active — scheduler starting");
         parts.scheduler.start();
+
+        // Dispatch ready spawn tasks via the delegation bridge.
+        // Lazily create the bridge on first plan with spawn tasks.
+        const spawn = parts.getSpawn?.();
+        if (hasSpawnTasks(plan) && spawn !== undefined) {
+          bridge = createDelegationBridge({ spawn });
+          logger.debug?.("delegation bridge created — dispatching spawn tasks");
+          const bridgeBoard = await dispatchSpawnTasks(
+            bridge,
+            parts.harness.status().taskBoard,
+            parts.harness,
+            notifyTask,
+            logger,
+          );
+
+          // Reconcile: defense-in-depth check that harness board matches bridge
+          // board. Catches cases where assignTask/completeTask failed during
+          // the replay loop above.
+          if (bridgeBoard !== undefined) {
+            const reconcileResult = await reconcileTaskBoard(bridgeBoard, parts.harness, logger);
+            if (reconcileResult.fixed > 0) {
+              logger.warn(
+                `reconciled ${String(reconcileResult.fixed)} task(s): ${reconcileResult.details.join(", ")}`,
+              );
+            }
+          }
+        }
       },
+      // Issue 1+2: Pass board getter so tool can detect synchronous completion
+      // and return synthesis prompt instead of generic "plan created" message.
+      getTaskBoard: () => parts.harness.status().taskBoard,
     }),
   );
 
@@ -221,21 +418,40 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
           }
           const board = parts.harness.status().taskBoard;
           const remaining = board.items.filter((i) => i.status !== "completed").length;
-          process.stderr.write(
-            `[autonomous] task_complete: ${tid} — ${String(remaining)} remaining\n`,
-          );
+          logger.debug?.(`task_complete: ${tid} — ${String(remaining)} remaining`);
+
+          // Cascade: dispatch newly-unblocked spawn tasks after a self-delegated
+          // task completes (e.g., task B depends on task A, A just finished).
+          if (bridge !== undefined) {
+            const bridgeBoard = await dispatchSpawnTasks(
+              bridge,
+              board,
+              parts.harness,
+              notifyTask,
+              logger,
+            );
+
+            // Reconcile second-wave dispatch — same drift can occur here as
+            // in the initial dispatch (assignTask/completeTask harness failures).
+            if (bridgeBoard !== undefined) {
+              const reconcileResult = await reconcileTaskBoard(bridgeBoard, parts.harness, logger);
+              if (reconcileResult.fixed > 0) {
+                logger.warn(
+                  `reconciled ${String(reconcileResult.fixed)} cascade task(s): ${reconcileResult.details.join(", ")}`,
+                );
+              }
+            }
+          }
         },
         updateTask: async () => {
           // Harness has no updateDescription method — no-op
         },
       });
-      // Only register task_complete and task_status — the essential two.
-      // task_update, task_review, task_synthesize can be added later if needed.
-      const tools = allTools.filter(
-        (t) => t.descriptor.name === "task_complete" || t.descriptor.name === "task_status",
-      );
+      // Register all task tools: task_complete, task_status, task_update,
+      // task_review, task_synthesize — the copilot needs all five to manage
+      // plan execution, review worker output, and merge final results.
       const components = new Map<string, unknown>();
-      for (const tool of tools) {
+      for (const tool of allTools) {
         components.set(`tool:${tool.descriptor.name}`, tool);
       }
       return { components, skipped: [] };
@@ -332,7 +548,8 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   const dispose = async (): Promise<void> => {
     if (disposed) return;
     disposed = true;
-    // Order: dispose scheduler first (prevents new resumes), then dispose harness
+    // Order: abort bridge (cancels in-flight spawns), then scheduler, then harness
+    bridge?.abort();
     await parts.scheduler.dispose();
     await parts.harness.dispose();
   };

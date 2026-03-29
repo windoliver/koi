@@ -10,7 +10,21 @@
  * - `koi forge uninstall <name>` Remove a brick from local store
  */
 
+import type { BrickKind } from "@koi/core";
+import { ALL_BRICK_KINDS, isBrickKind } from "@koi/core";
+import { EXIT_CONFIG, EXIT_ERROR, EXIT_NETWORK } from "@koi/shutdown";
 import type { ForgeFlags } from "../args.js";
+import { expectArg } from "../expect-arg.js";
+
+/** Validate and narrow a CLI --kind flag to BrickKind. */
+function resolveKind(raw: string | undefined): BrickKind {
+  const value = raw ?? "tool";
+  if (!isBrickKind(value)) {
+    process.stderr.write(`Invalid brick kind: "${value}". Valid: ${ALL_BRICK_KINDS.join(", ")}\n`);
+    process.exit(EXIT_CONFIG);
+  }
+  return value;
+}
 
 export async function runForge(flags: ForgeFlags): Promise<void> {
   switch (flags.subcommand) {
@@ -42,7 +56,7 @@ export async function runForge(flags: ForgeFlags): Promise<void> {
         "  koi forge update --all         Update all installed community bricks\n",
       );
       process.stderr.write("  koi forge uninstall <name>     Remove a brick from local store\n");
-      process.exit(1);
+      process.exit(EXIT_CONFIG);
   }
 }
 
@@ -86,11 +100,7 @@ async function resolveLocalStore(manifestPath: string): Promise<import("@koi/cor
 // ---------------------------------------------------------------------------
 
 async function runForgeInstall(flags: ForgeFlags): Promise<void> {
-  const name = flags.name;
-  if (name === undefined) {
-    process.stderr.write("Usage: koi forge install <name>\n");
-    process.exit(1);
-  }
+  const name = expectArg(flags.name, "name", "koi forge install <name>");
 
   const registryUrl = resolveRegistryUrl(flags);
   process.stderr.write(`Fetching "${name}" from ${registryUrl}...\n`);
@@ -98,17 +108,11 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
   const { createRemoteRegistry } = await import("@koi/registry-remote");
   const registry = createRemoteRegistry({ baseUrl: registryUrl });
 
-  const kind = (flags.kind ?? "tool") as
-    | "tool"
-    | "skill"
-    | "agent"
-    | "middleware"
-    | "channel"
-    | "composite";
+  const kind = resolveKind(flags.kind);
   const result = await registry.get(kind, name, flags.namespace);
   if (!result.ok) {
     process.stderr.write(`Failed to fetch brick "${name}": ${result.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_NETWORK);
   }
 
   const brick = result.value;
@@ -121,7 +125,7 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
     process.stderr.write(`  Content hash mismatch: ${integrityResult.kind}\n`);
     if (!flags.yes) {
       process.stderr.write("  Use --yes to install anyway (not recommended).\n");
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
     process.stderr.write("  Proceeding despite integrity failure (--yes).\n");
   }
@@ -129,35 +133,67 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
   // Verify attestation signature (when brick has one)
   if (brick.provenance.attestation !== undefined) {
     process.stderr.write("  Verifying attestation signature...\n");
-    // Use HMAC-SHA256 signer for community registry attestations
+    // Community HMAC verification key — shared, not secret. Provides weak
+    // tamper detection (anyone who reads source can forge attestations).
+    // TODO(key-lifecycle): migrate to asymmetric Ed25519 verification with
+    // proper key distribution once the registry ships (WS4+5).
     const secret = process.env.KOI_REGISTRY_SIGNING_KEY ?? "koi-community-v1";
-    const signer: import("@koi/core").SigningBackend = {
-      algorithm: "hmac-sha256",
-      sign(data: Uint8Array): Uint8Array {
-        const hasher = new Bun.CryptoHasher("sha256", secret);
-        hasher.update(data);
-        return hasher.digest();
-      },
-      verify(data: Uint8Array, signature: Uint8Array): boolean {
-        const hasher = new Bun.CryptoHasher("sha256", secret);
-        hasher.update(data);
-        const expected = hasher.digest();
-        if (expected.length !== signature.length) return false;
-        for (let i = 0; i < expected.length; i++) {
-          if (expected[i] !== signature[i]) return false;
+    {
+      // Use HMAC-SHA256 signer for community registry attestations
+      const signer: import("@koi/core").SigningBackend = {
+        algorithm: "hmac-sha256",
+        sign(data: Uint8Array): Uint8Array {
+          const hasher = new Bun.CryptoHasher("sha256", secret);
+          hasher.update(data);
+          return new Uint8Array(hasher.digest());
+        },
+        verify(data: Uint8Array, signature: Uint8Array): boolean {
+          const hasher = new Bun.CryptoHasher("sha256", secret);
+          hasher.update(data);
+          const expected = new Uint8Array(hasher.digest());
+          if (expected.length !== signature.length) return false;
+          for (let i = 0; i < expected.length; i++) {
+            if (expected[i] !== signature[i]) return false;
+          }
+          return true;
+        },
+      };
+      const attestResult = await verifyBrickAttestation(brick, signer);
+      if (attestResult.kind === "attestation_failed") {
+        process.stderr.write(`  Attestation verification failed: ${attestResult.reason}\n`);
+        if (!flags.yes) {
+          process.stderr.write("  Use --yes to install anyway (not recommended).\n");
+          process.exit(EXIT_ERROR);
         }
-        return true;
-      },
-    };
-    const attestResult = await verifyBrickAttestation(brick, signer);
-    if (attestResult.kind === "attestation_failed") {
-      process.stderr.write(`  Attestation verification failed: ${attestResult.reason}\n`);
-      if (!flags.yes) {
-        process.stderr.write("  Use --yes to install anyway (not recommended).\n");
-        process.exit(1);
+        process.stderr.write("  Proceeding despite attestation failure (--yes).\n");
       }
-      process.stderr.write("  Proceeding despite attestation failure (--yes).\n");
     }
+  }
+
+  // Verify Ed25519 brick signature and classify trust tier
+  const { classifyTrustTier } = await import("@koi/forge-integrity");
+  const registryTrustedKeysEnv = process.env.KOI_REGISTRY_TRUSTED_KEYS ?? "";
+  const trustedKeys = new Set(
+    registryTrustedKeysEnv.length > 0 ? registryTrustedKeysEnv.split(",") : [],
+  );
+
+  const trustTier = classifyTrustTier(
+    brick.signature,
+    { contentHash: brick.provenance.contentHash, kind: brick.kind, name: brick.name },
+    trustedKeys,
+  );
+  process.stderr.write(`  Trust tier: ${trustTier}\n`);
+
+  // Require confirmation for "community" tier, block "local" without --yes
+  if (trustTier === "local" && !flags.yes) {
+    process.stderr.write("  Brick is unsigned (local trust). Use --yes to install anyway.\n");
+    process.exit(EXIT_ERROR);
+  }
+  if (trustTier === "community" && !flags.yes) {
+    process.stderr.write(
+      "  Brick is signed by an unverified author. Use --yes to accept community trust.\n",
+    );
+    process.exit(EXIT_ERROR);
   }
 
   // Check dependencies against the local store
@@ -176,7 +212,7 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
     }
     if (!flags.yes) {
       process.stderr.write("  Use --yes to install anyway.\n");
-      process.exit(1);
+      process.exit(EXIT_ERROR);
     }
   }
 
@@ -185,7 +221,7 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
   const saveResult = await store.save(brick);
   if (!saveResult.ok) {
     process.stderr.write(`  Failed to save brick: ${saveResult.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   process.stderr.write(`  Installed "${brick.name}" (${brick.kind}) [${brick.id}]\n\n`);
@@ -196,16 +232,12 @@ async function runForgeInstall(flags: ForgeFlags): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function runForgePublish(flags: ForgeFlags): Promise<void> {
-  const brickIdStr = flags.name;
-  if (brickIdStr === undefined) {
-    process.stderr.write("Usage: koi forge publish <brick-id>\n");
-    process.exit(1);
-  }
+  const brickIdStr = expectArg(flags.name, "brick-id", "koi forge publish <brick-id>");
 
   const authToken = process.env.KOI_REGISTRY_TOKEN;
   if (authToken === undefined) {
     process.stderr.write("Set KOI_REGISTRY_TOKEN environment variable to publish.\n");
-    process.exit(1);
+    process.exit(EXIT_CONFIG);
   }
 
   process.stderr.write(`Loading brick "${brickIdStr}" from local store...\n`);
@@ -216,7 +248,7 @@ async function runForgePublish(flags: ForgeFlags): Promise<void> {
   const loadResult = await store.load(brickId(brickIdStr));
   if (!loadResult.ok) {
     process.stderr.write(`  Failed to load brick: ${loadResult.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   const brick = loadResult.value;
@@ -235,7 +267,7 @@ async function runForgePublish(flags: ForgeFlags): Promise<void> {
   });
   if (!publishResult.ok) {
     process.stderr.write(`  Publish failed: ${publishResult.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_NETWORK);
   }
 
   const pv = publishResult.value;
@@ -247,11 +279,7 @@ async function runForgePublish(flags: ForgeFlags): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function runForgeSearch(flags: ForgeFlags): Promise<void> {
-  const query = flags.name;
-  if (query === undefined) {
-    process.stderr.write("Usage: koi forge search <query>\n");
-    process.exit(1);
-  }
+  const query = expectArg(flags.name, "query", "koi forge search <query>");
 
   const registryUrl = resolveRegistryUrl(flags);
 
@@ -260,9 +288,7 @@ async function runForgeSearch(flags: ForgeFlags): Promise<void> {
 
   const searchQuery: import("@koi/core").BrickSearchQuery = {
     text: query,
-    ...(flags.kind !== undefined
-      ? { kind: flags.kind as "tool" | "skill" | "agent" | "middleware" | "channel" | "composite" }
-      : {}),
+    ...(flags.kind !== undefined ? { kind: resolveKind(flags.kind) } : {}),
     ...(flags.tags !== undefined ? { tags: flags.tags.split(",") } : {}),
     ...(flags.namespace !== undefined ? { namespace: flags.namespace } : {}),
   };
@@ -302,28 +328,18 @@ async function runForgeSearch(flags: ForgeFlags): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function runForgeInspect(flags: ForgeFlags): Promise<void> {
-  const name = flags.name;
-  if (name === undefined) {
-    process.stderr.write("Usage: koi forge inspect <name>\n");
-    process.exit(1);
-  }
+  const name = expectArg(flags.name, "name", "koi forge inspect <name>");
 
   const registryUrl = resolveRegistryUrl(flags);
 
   const { createRemoteRegistry } = await import("@koi/registry-remote");
   const registry = createRemoteRegistry({ baseUrl: registryUrl });
 
-  const kind = (flags.kind ?? "tool") as
-    | "tool"
-    | "skill"
-    | "agent"
-    | "middleware"
-    | "channel"
-    | "composite";
+  const kind = resolveKind(flags.kind);
   const result = await registry.get(kind, name, flags.namespace);
   if (!result.ok) {
     process.stderr.write(`Brick "${name}" not found: ${result.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_NETWORK);
   }
 
   const brick = result.value;
@@ -383,6 +399,13 @@ async function runForgeInspect(flags: ForgeFlags): Promise<void> {
   process.stdout.write("\nSecurity:\n");
   process.stdout.write(`  Origin:      ${brick.origin}\n`);
   process.stdout.write(`  Sandbox:     ${String(brick.policy.sandbox)}\n`);
+  if (brick.trustTier !== undefined) {
+    process.stdout.write(`  Trust Tier:  ${brick.trustTier}\n`);
+  }
+  if (brick.signature !== undefined) {
+    process.stdout.write(`  Signed:      ${new Date(brick.signature.signedAt).toISOString()}\n`);
+    process.stdout.write(`  Algorithm:   ${brick.signature.algorithm}\n`);
+  }
   if (brick.lastVerifiedAt !== undefined) {
     process.stdout.write(`  Verified:    ${new Date(brick.lastVerifiedAt).toISOString()}\n`);
   }
@@ -398,7 +421,7 @@ async function runForgeUpdate(flags: ForgeFlags): Promise<void> {
   if (!flags.all) {
     process.stderr.write("Usage: koi forge update --all\n");
     process.stderr.write("  Batch-check and update all installed community bricks.\n");
-    process.exit(1);
+    process.exit(EXIT_CONFIG);
   }
 
   process.stderr.write("Checking for updates...\n");
@@ -410,7 +433,7 @@ async function runForgeUpdate(flags: ForgeFlags): Promise<void> {
   const searchResult = await store.search({});
   if (!searchResult.ok) {
     process.stderr.write(`  Failed to list installed bricks: ${searchResult.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   const installed = searchResult.value.filter((b) => b.namespace !== undefined);
@@ -428,7 +451,7 @@ async function runForgeUpdate(flags: ForgeFlags): Promise<void> {
 
   if (!checkResult.ok) {
     process.stderr.write(`  Batch check failed: ${checkResult.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_NETWORK);
   }
 
   // Hashes not found in the remote registry indicate bricks with newer versions
@@ -442,23 +465,40 @@ async function runForgeUpdate(flags: ForgeFlags): Promise<void> {
 
   process.stderr.write(`Found ${needsUpdate.length} brick(s) that may have updates:\n`);
 
+  // Fetch updated bricks concurrently (up to 5 at a time)
+  const UPDATE_CONCURRENCY = 5;
+  const { mapWithConcurrency } = await import("@koi/errors");
+
+  type UpdateOutcome =
+    | { readonly status: "updated"; readonly name: string; readonly newId: string }
+    | { readonly status: "failed"; readonly name: string; readonly reason: string };
+
+  const outcomes = await mapWithConcurrency(
+    needsUpdate,
+    async (brick): Promise<UpdateOutcome> => {
+      const getResult = await registry.get(brick.kind, brick.name, brick.namespace);
+      if (!getResult.ok) {
+        return { status: "failed", name: brick.name, reason: getResult.error.message };
+      }
+
+      const saveResult = await store.save(getResult.value);
+      if (!saveResult.ok) {
+        return { status: "failed", name: brick.name, reason: saveResult.error.message };
+      }
+
+      return { status: "updated", name: brick.name, newId: getResult.value.id };
+    },
+    UPDATE_CONCURRENCY,
+  );
+
   let updatedCount = 0;
-  for (const brick of needsUpdate) {
-    process.stderr.write(`  Updating "${brick.name}"...\n`);
-    const getResult = await registry.get(brick.kind, brick.name, brick.namespace);
-    if (!getResult.ok) {
-      process.stderr.write(`    Failed: ${getResult.error.message}\n`);
-      continue;
+  for (const outcome of outcomes) {
+    if (outcome.status === "updated") {
+      updatedCount += 1;
+      process.stderr.write(`  Updated "${outcome.name}" → ${outcome.newId}\n`);
+    } else {
+      process.stderr.write(`  Failed "${outcome.name}": ${outcome.reason}\n`);
     }
-
-    const saveResult = await store.save(getResult.value);
-    if (!saveResult.ok) {
-      process.stderr.write(`    Failed to save: ${saveResult.error.message}\n`);
-      continue;
-    }
-
-    updatedCount += 1;
-    process.stderr.write(`    Updated to ${getResult.value.id}\n`);
   }
 
   process.stderr.write(`\n${updatedCount} brick(s) updated.\n\n`);
@@ -469,11 +509,7 @@ async function runForgeUpdate(flags: ForgeFlags): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function runForgeUninstall(flags: ForgeFlags): Promise<void> {
-  const name = flags.name;
-  if (name === undefined) {
-    process.stderr.write("Usage: koi forge uninstall <name>\n");
-    process.exit(1);
-  }
+  const name = expectArg(flags.name, "name", "koi forge uninstall <name>");
 
   process.stderr.write(`Removing "${name}" from local store...\n`);
 
@@ -481,13 +517,7 @@ async function runForgeUninstall(flags: ForgeFlags): Promise<void> {
   const store = await resolveLocalStore(manifestPath);
 
   // Exact match: search by kind + namespace, then filter by exact name
-  const kind = (flags.kind ?? "tool") as
-    | "tool"
-    | "skill"
-    | "agent"
-    | "middleware"
-    | "channel"
-    | "composite";
+  const kind = resolveKind(flags.kind);
   const query: import("@koi/core").ForgeQuery = {
     kind,
     ...(flags.namespace !== undefined ? { namespace: flags.namespace } : {}),
@@ -495,20 +525,20 @@ async function runForgeUninstall(flags: ForgeFlags): Promise<void> {
   const searchResult = await store.search(query);
   if (!searchResult.ok) {
     process.stderr.write(`  Search failed: ${searchResult.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   // Filter to exact name match (not substring)
   const found = searchResult.value.find((b) => b.name === name);
   if (found === undefined) {
     process.stderr.write(`  Brick "${kind}:${name}" not found in local store.\n`);
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   const removeResult = await store.remove(found.id);
   if (!removeResult.ok) {
     process.stderr.write(`  Failed to remove: ${removeResult.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
   process.stderr.write(`  Removed "${found.name}" (${found.kind}) [${found.id}]\n\n`);

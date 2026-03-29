@@ -128,6 +128,16 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
 
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let reactRoot: Root | null = null;
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Throttled resize handler — fires at most once per 100ms. */
+  function handleResize(): void {
+    if (resizeTimer !== undefined) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      resizeTimer = undefined;
+      store.dispatch({ kind: "set_terminal_cols", cols: process.stdout.columns ?? 120 });
+    }, 100);
+  }
   let lastView: import("../state/types.js").TuiView = mode === "welcome" ? "welcome" : "agents";
 
   const fetchDeps = { store, client };
@@ -985,6 +995,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     });
     reactRoot = createRoot(tuiRenderer);
 
+    // Set initial terminal width and listen for resize
+    store.dispatch({ kind: "set_terminal_cols", cols: process.stdout.columns ?? 120 });
+    process.stdout.on("resize", handleResize);
+
     if (mode === "welcome") {
       if (configPresets !== undefined && configPresets.length > 0) {
         store.dispatch({ kind: "set_presets", presets: configPresets });
@@ -1105,6 +1119,11 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     debouncedRefresh.cancel();
     debouncedPersist.flush();
     cancelActiveStream();
+    process.stdout.removeListener("resize", handleResize);
+    if (resizeTimer !== undefined) {
+      clearTimeout(resizeTimer);
+      resizeTimer = undefined;
+    }
     await persistCurrentSession(store, client).catch(() => {});
     stopEventStream();
     if (reactRoot !== null) {
@@ -1113,7 +1132,21 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     }
     syntaxStyle.destroy();
     if (tuiRenderer !== null) {
-      tuiRenderer.destroy();
+      // Guard against EBADF (errno: 9) when stdin is already closed during
+      // process shutdown. The OpenTUI renderer's finalizeDestroy() calls
+      // setRawMode(false) which emits an error event on the stdin TTY stream
+      // when the file descriptor is gone. Without a listener, Node treats this
+      // as an uncaught error and crashes the process.
+      //
+      // The listener is NOT removed — the renderer's process.on('exit') handler
+      // also calls destroy(), which runs after stop() returns. Keeping the guard
+      // prevents the crash in both the explicit and implicit destroy paths.
+      process.stdin.on("error", () => {});
+      try {
+        tuiRenderer.destroy();
+      } catch {
+        // Non-fatal — process is exiting
+      }
       tuiRenderer = null;
     }
   }
