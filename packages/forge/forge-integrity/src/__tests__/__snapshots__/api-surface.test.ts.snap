@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-integrity API surface . has stable type surface 1`] = `
-"import { DataClassification, ContentMarker, ForgeProvenance, SigningBackend, BrickKind, TrustTier, BrickSignature, Result, BrickId, ForgeStore, BrickArtifact, InTotoStatementV1 } from '@koi/core';
+"import { DataClassification, ContentMarker, BrickId, EvolutionKind, ForgeProvenance, SigningBackend, BrickKind, TrustTier, BrickSignature, Result, ForgeStore, BrickArtifact, InTotoStatementV1 } from '@koi/core';
 import { ForgeInput, ForgeContext, VerificationReport, ForgeConfig, ForgeError } from '@koi/forge-types';
 import { Ed25519KeyPair } from '@koi/crypto-utils';
 export { Ed25519KeyPair } from '@koi/crypto-utils';
@@ -25,6 +25,8 @@ interface CreateProvenanceOptions {
     readonly finishedAt: number;
     readonly classification?: DataClassification;
     readonly contentMarkers?: readonly ContentMarker[];
+    readonly parentBrickId?: BrickId | undefined;
+    readonly evolutionKind?: EvolutionKind | undefined;
 }
 /**
  * Build a ForgeProvenance struct from forge pipeline outputs.

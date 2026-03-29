@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
-"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, CompanionSkillDefinition, ComponentProvider, StoreChangeNotifier, KoiError, BrickRegistryWriter, Resolver, BrickRequires, BrickSummary, EngineAdapter } from '@koi/core';
+"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, CompanionSkillDefinition, ComponentProvider, StoreChangeNotifier, KoiError, BrickRegistryWriter, Resolver, BrickRequires, BrickSummary, EvolutionKind, EngineAdapter } from '@koi/core';
 import { ForgeError, DriftChecker, ForgeDeps, ForgeInput, ArtifactBuilder, ForgeResult, ForgeToolInput, DelegateOptions, AgentArtifact, SandboxExecutor as SandboxExecutor$1 } from '@koi/forge-types';
 export { ArtifactBuilder, DelegateOptions, ForgeDeps } from '@koi/forge-types';
 import { BrickDescriptor } from '@koi/resolve';
@@ -420,6 +420,8 @@ interface ParsedBaseInput {
     readonly classification?: "public" | "internal" | "secret" | undefined;
     readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[] | undefined;
     readonly trigger?: readonly string[] | undefined;
+    readonly parentBrickId?: string | undefined;
+    readonly evolutionKind?: "fix" | "derived" | "captured" | undefined;
 }
 /**
  * Maps parsed test cases into the ForgeInput test case shape.
@@ -461,6 +463,8 @@ declare function mapParsedBaseFields(parsed: ParsedBaseInput): {
     readonly classification?: "public" | "internal" | "secret";
     readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
     readonly trigger?: readonly string[];
+    readonly parentBrickId?: BrickId;
+    readonly evolutionKind?: EvolutionKind;
 };
 declare function runForgePipeline(forgeInput: ForgeInput, deps: ForgeDeps, buildArtifact: ArtifactBuilder): Promise<Result<ForgeResult, ForgeError>>;
 declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;

@@ -387,6 +387,8 @@ export interface ForgeQuery {
   readonly triggerText?: string;
   /** Filter by community namespace (e.g., "@author"). */
   readonly namespace?: string;
+  /** Filter by parent brick ID for lineage queries. */
+  readonly parentBrickId?: BrickId;
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +476,12 @@ export interface ForgeStore {
     targetScope: ForgeScope,
     updates: BrickUpdate,
   ) => Promise<Result<void, KoiError>>;
+  /**
+   * Walk the parentBrickId chain to return the full ancestor lineage.
+   * Returns bricks ordered from the given brick to the oldest ancestor.
+   * Optional — not all backends support efficient lineage queries.
+   */
+  readonly lineage?: (id: BrickId) => Promise<Result<readonly BrickArtifact[], KoiError>>;
   /** Optional typed watch for store mutations. Returns unsubscribe. */
   readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
   /** Clean up resources (filesystem watchers, timers). Not all backends hold resources. */
