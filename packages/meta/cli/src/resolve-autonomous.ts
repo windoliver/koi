@@ -136,13 +136,21 @@ function mapHarnessToAdminClient(harness: {
 /**
  * Lazily resolve a ManifestAgentEntry to an EngineAdapter.
  *
+ * Only CLI transport is currently supported:
  * - protocol: "acp" → @koi/engine-acp (AcpAdapter for Claude Code, etc.)
  * - protocol: "stdio" or undefined → @koi/engine-external (single-shot CLI)
+ *
+ * Returns undefined for unsupported transports (mcp, a2a) so callers
+ * can log a warning instead of silently routing through the wrong runtime.
  */
 async function resolveAdapterForEntry(
   entry: ManifestAgentEntry,
 ): Promise<EngineAdapter | undefined> {
   if (entry.command === undefined) return undefined;
+
+  // Only CLI transport is supported for adapter resolution.
+  // MCP and A2A require their own adapter implementations (future work).
+  if (entry.transport !== "cli") return undefined;
 
   if (entry.protocol === "acp") {
     const { createAcpAdapter } = await import("@koi/engine-acp");
@@ -266,19 +274,27 @@ export async function resolveAutonomousOrWarn(
 
     if (hasManifestAgents && adapterSpawnerModule !== undefined && manifest.agents !== undefined) {
       const { validateManifestAgents, createAdapterSpawnFn } = adapterSpawnerModule;
+      // Log validation warnings but continue per-entry (don't let one bad entry disable all)
       const validation = validateManifestAgents(manifest.agents);
       if (!validation.ok) {
         process.stderr.write(`[autonomous] warn: ${validation.error.message}\n`);
-      } else {
-        for (const entry of manifest.agents) {
-          if (entry.command === undefined) continue;
-          // Resolve adapter based on protocol
-          const adapter = await resolveAdapterForEntry(entry);
-          if (adapter !== undefined) {
-            adapterDisposables.push(adapter);
-            namedSpawns.set(entry.name, createAdapterSpawnFn(adapter));
+      }
+
+      for (const entry of manifest.agents) {
+        if (entry.command === undefined) continue;
+        if (entry.transport === "cli" && entry.command.length === 0) continue;
+        // Resolve adapter — returns undefined for unsupported transports (mcp, a2a)
+        const adapter = await resolveAdapterForEntry(entry);
+        if (adapter === undefined) {
+          if (entry.transport !== "cli") {
+            process.stderr.write(
+              `[autonomous] warn: agent '${entry.name}' uses unsupported transport '${entry.transport}' — skipping\n`,
+            );
           }
+          continue;
         }
+        adapterDisposables.push(adapter);
+        namedSpawns.set(entry.name, createAdapterSpawnFn(adapter));
       }
     }
 
