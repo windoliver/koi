@@ -23,6 +23,7 @@ import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
   createForgeTool,
+  extractPipelineOptions,
   mapParsedBaseFields,
   parseAgentInput,
   runForgePipeline,
@@ -107,6 +108,14 @@ const FORGE_AGENT_DESCRIPTOR = {
             description: "Whether this brick requires network access at runtime (default: false)",
           },
         },
+      },
+      parentBrickId: {
+        type: "string",
+        description: "Parent brick ID — set when deriving from an existing brick",
+      },
+      evolutionKind: {
+        type: "string",
+        description: "Evolution kind: 'fix', 'derived', or 'captured'",
       },
     },
     required: ["name", "description"],
@@ -215,11 +224,16 @@ async function forgeAgentHandler(
     ...mapParsedBaseFields(parsed.value),
   };
 
-  const result = await runForgePipeline(forgeInput, deps, (report: VerificationReport) => ({
-    ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
-    kind: "agent" as const,
-    manifestYaml,
-  }));
+  const result = await runForgePipeline(
+    forgeInput,
+    deps,
+    (report: VerificationReport) => ({
+      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
+      kind: "agent" as const,
+      manifestYaml,
+    }),
+    extractPipelineOptions(parsed.value),
+  );
 
   return { result, resolvedEngine };
 }

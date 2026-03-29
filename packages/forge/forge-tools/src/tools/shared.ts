@@ -13,7 +13,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
-import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type {
   ArtifactBuilder,
   DelegateOptions,
@@ -103,6 +103,10 @@ export interface ParsedBaseInput {
   readonly classification?: "public" | "internal" | "secret" | undefined;
   readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[] | undefined;
   readonly trigger?: readonly string[] | undefined;
+  /** Parent brick ID — set when this brick is derived from an existing brick. */
+  readonly parentBrickId?: string | undefined;
+  /** How this brick relates to its parent: "fix", "derived", or "captured". */
+  readonly evolutionKind?: "fix" | "derived" | "captured" | undefined;
 }
 
 export interface ParsedToolInput extends ParsedBaseInput {
@@ -172,6 +176,8 @@ const baseInputFields = {
   classification: z.enum(["public", "internal", "secret"]).optional(),
   contentMarkers: z.array(z.enum(["credentials", "pii", "phi", "payment"])).optional(),
   trigger: z.array(z.string()).optional(),
+  parentBrickId: z.string().optional(),
+  evolutionKind: z.enum(["fix", "derived", "captured"]).optional(),
 };
 
 const forgeToolInputSchema = z.object({
@@ -412,6 +418,22 @@ export function mapParsedBaseFields(parsed: ParsedBaseInput): {
     ...(parsed.classification !== undefined ? { classification: parsed.classification } : {}),
     ...(parsed.contentMarkers !== undefined ? { contentMarkers: parsed.contentMarkers } : {}),
     ...(parsed.trigger !== undefined ? { trigger: parsed.trigger } : {}),
+  };
+}
+
+/**
+ * Extracts PipelineOptions from parsed input.
+ * Returns undefined when no evolution fields are present (most forges).
+ */
+export function extractPipelineOptions(parsed: ParsedBaseInput): PipelineOptions | undefined {
+  if (parsed.parentBrickId === undefined || parsed.evolutionKind === undefined) {
+    return undefined;
+  }
+  return {
+    evolution: {
+      parentBrickId: brickId(parsed.parentBrickId),
+      evolutionKind: parsed.evolutionKind,
+    },
   };
 }
 

@@ -11,6 +11,7 @@ import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
   createForgeTool,
+  extractPipelineOptions,
   mapParsedBaseFields,
   mapParsedTestCases,
   parseToolInput,
@@ -93,6 +94,14 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
           retries: { type: "number" },
         },
       },
+      parentBrickId: {
+        type: "string",
+        description: "Parent brick ID — set when deriving from an existing brick",
+      },
+      evolutionKind: {
+        type: "string",
+        description: "Evolution kind: 'fix', 'derived', or 'captured'",
+      },
     },
     required: ["name", "description", "inputSchema"],
   },
@@ -161,14 +170,19 @@ async function forgeToolHandler(
   };
 
   // Placeholder id — pipeline replaces with content-addressed hash
-  return runForgePipeline(forgeInput, deps, (report: VerificationReport) => ({
-    ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
-    kind: "tool" as const,
-    implementation: forgeInput.implementation,
-    inputSchema: forgeInput.inputSchema,
-    ...(forgeInput.outputSchema !== undefined ? { outputSchema: forgeInput.outputSchema } : {}),
-    ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
-  }));
+  return runForgePipeline(
+    forgeInput,
+    deps,
+    (report: VerificationReport) => ({
+      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
+      kind: "tool" as const,
+      implementation: forgeInput.implementation,
+      inputSchema: forgeInput.inputSchema,
+      ...(forgeInput.outputSchema !== undefined ? { outputSchema: forgeInput.outputSchema } : {}),
+      ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
+    }),
+    extractPipelineOptions(parsed.value),
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
   createForgeTool,
+  extractPipelineOptions,
   mapParsedBaseFields,
   parseSkillInput,
   runForgePipeline,
@@ -74,6 +75,14 @@ const FORGE_SKILL_CONFIG: ForgeToolConfig = {
         description:
           "Optional JSON Schema for skill configuration (e.g., data source connection params)",
       },
+      parentBrickId: {
+        type: "string",
+        description: "Parent brick ID — set when deriving from an existing brick",
+      },
+      evolutionKind: {
+        type: "string",
+        description: "Evolution kind: 'fix', 'derived', or 'captured'",
+      },
     },
     required: ["name", "description", "body"],
   },
@@ -119,11 +128,16 @@ async function forgeSkillHandler(
     ? { ...forgeInput, tags: [`datasource:${forgeInput.name}`, ...forgeInput.tags] }
     : forgeInput;
 
-  return runForgePipeline(inputForPipeline, deps, (report: VerificationReport) => ({
-    ...buildBaseFields(brickId("placeholder"), inputForPipeline, report, deps),
-    kind: "skill" as const,
-    content: generatedContent,
-  }));
+  return runForgePipeline(
+    inputForPipeline,
+    deps,
+    (report: VerificationReport) => ({
+      ...buildBaseFields(brickId("placeholder"), inputForPipeline, report, deps),
+      kind: "skill" as const,
+      content: generatedContent,
+    }),
+    extractPipelineOptions(parsed.value),
+  );
 }
 
 // ---------------------------------------------------------------------------

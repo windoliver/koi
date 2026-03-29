@@ -449,6 +449,10 @@ interface ParsedBaseInput {
     readonly classification?: "public" | "internal" | "secret" | undefined;
     readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[] | undefined;
     readonly trigger?: readonly string[] | undefined;
+    /** Parent brick ID — set when this brick is derived from an existing brick. */
+    readonly parentBrickId?: string | undefined;
+    /** How this brick relates to its parent: "fix", "derived", or "captured". */
+    readonly evolutionKind?: "fix" | "derived" | "captured" | undefined;
 }
 /**
  * Maps parsed test cases into the ForgeInput test case shape.
@@ -491,6 +495,11 @@ declare function mapParsedBaseFields(parsed: ParsedBaseInput): {
     readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
     readonly trigger?: readonly string[];
 };
+/**
+ * Extracts PipelineOptions from parsed input.
+ * Returns undefined when no evolution fields are present (most forges).
+ */
+declare function extractPipelineOptions(parsed: ParsedBaseInput): PipelineOptions | undefined;
 /** Optional parameters for pipeline customization (e.g., edit flow). */
 interface PipelineOptions {
     /** Override the default starting version ("0.0.1") for edited bricks. */
@@ -644,6 +653,6 @@ declare function createRunSkillScriptTool(deps: RunSkillScriptDeps): Tool;
 
 declare function createSearchForgeTool(deps: ForgeDeps): Tool;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, FORGE_COMPANION_SKILL, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type LineageResult, type NetworkPolicy, type OnForgeAgentSpawn, type PipelineOptions, type RequiresCheckResult, type RunSkillScriptDeps, type RunSkillScriptResult, type SkillInstructions, type SkillMdInput, type SkillMetadata, type SkillReferenceProvider, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, computeLineage, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeCompanionSkillProvider, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createRunSkillScriptTool, createSearchForgeTool, createSkillReferenceProvider, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapBrickToIndexDoc, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust, runForgePipeline };
+export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, FORGE_COMPANION_SKILL, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type LineageResult, type NetworkPolicy, type OnForgeAgentSpawn, type PipelineOptions, type RequiresCheckResult, type RunSkillScriptDeps, type RunSkillScriptResult, type SkillInstructions, type SkillMdInput, type SkillMetadata, type SkillReferenceProvider, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, computeLineage, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeCompanionSkillProvider, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createRunSkillScriptTool, createSearchForgeTool, createSkillReferenceProvider, delegateImplementation, descriptor, extractPipelineOptions, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapBrickToIndexDoc, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust, runForgePipeline };
 "
 `;

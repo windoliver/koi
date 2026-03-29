@@ -113,6 +113,7 @@ export type {
 } from "./tools/shared.js";
 export {
   createForgeTool,
+  extractPipelineOptions,
   mapParsedBaseFields,
   mapParsedTestCases,
   runForgePipeline,
