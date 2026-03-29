@@ -416,7 +416,7 @@ describe("forge_edit — notification", () => {
       implementation: "return 1;",
     });
     const store = mockStore([tool]);
-    const deps = makeDeps({ store, notifier: undefined });
+    const deps = makeDeps({ store });
 
     const result = await executeEdit(deps, {
       brickId: "no-notify-tool",
