@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-types API surface . has stable type surface 1`] = `
-"import { SandboxExecutor, Result, GovernanceController, ForgeStore, DataClassification, ContentMarker, ForgeProvenance, SigningBackend, BrickKind, ForgeScope, ToolPolicy, TrustTransitionCaller, BrickRequires, TestCase, StoreChangeNotifier, EngineAdapter, KoiError, ExternalAgentDescriptor, BrickArtifact, BrickDriftContext, BrickId, ToolDescriptor, ToolOrigin, BrickLifecycle, TrailConfig } from '@koi/core';
+"import { SandboxExecutor, Result, GovernanceController, ForgeStore, DataClassification, ContentMarker, ForgeEvolution, ForgeProvenance, SigningBackend, BrickKind, ForgeScope, ToolPolicy, TrustTransitionCaller, BrickRequires, TestCase, StoreChangeNotifier, EngineAdapter, KoiError, ExternalAgentDescriptor, BrickArtifact, BrickDriftContext, BrickId, ToolDescriptor, ToolOrigin, BrickLifecycle, TrailConfig } from '@koi/core';
 export { AgentArtifact, BrickArtifact, BrickArtifactBase, BrickKind, BrickLifecycle, BrickRequires, CompositeArtifact, ForgeQuery, ForgeScope, ImplementationArtifact, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SkillArtifact, TestCase, ToolArtifact } from '@koi/core';
 import { Retriever } from '@koi/search-provider';
 
@@ -177,6 +177,8 @@ interface CreateProvenanceOptions {
     readonly finishedAt: number;
     readonly classification?: DataClassification;
     readonly contentMarkers?: readonly ContentMarker[];
+    /** Evolution lineage — set when brick is derived from an existing brick. */
+    readonly evolution?: ForgeEvolution;
 }
 
 /**

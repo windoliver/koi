@@ -6,7 +6,7 @@
  * Koi-native vocabulary; SLSA serialization lives in L2 (@koi/forge).
  */
 
-import type { BrickSource } from "./brick-snapshot.js";
+import type { BrickId, BrickSource } from "./brick-snapshot.js";
 
 // ---------------------------------------------------------------------------
 // Data classification
@@ -101,6 +101,29 @@ export interface ForgeAttestationSignature {
 }
 
 // ---------------------------------------------------------------------------
+// Evolution tracking — lineage from parent bricks
+// ---------------------------------------------------------------------------
+
+/** How a brick evolved from its parent. */
+export type EvolutionKind = "fix" | "derived" | "captured";
+
+/**
+ * Evolution metadata linking a brick to its parent.
+ *
+ * Present when a brick was created by editing (fix), specializing (derived),
+ * or crystallizing patterns from (captured) an existing brick.
+ * Absent for bricks forged from scratch.
+ */
+export interface ForgeEvolution {
+  /** Content-addressed ID of the parent brick this was derived from. */
+  readonly parentBrickId: BrickId;
+  /** How this brick relates to its parent. */
+  readonly evolutionKind: EvolutionKind;
+  /** Human-readable description of why this evolution was made. */
+  readonly description?: string;
+}
+
+// ---------------------------------------------------------------------------
 // ForgeProvenance (top-level — replaces createdBy/createdAt)
 // ---------------------------------------------------------------------------
 
@@ -114,6 +137,8 @@ export interface ForgeProvenance {
   readonly contentMarkers: readonly ContentMarker[];
   readonly contentHash: string;
   readonly attestation?: ForgeAttestationSignature;
+  /** Evolution lineage — present when derived from another brick. */
+  readonly evolution?: ForgeEvolution;
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 import type {
   ContentMarker,
   DataClassification,
+  ForgeEvolution,
   ForgeProvenance,
   ForgeRunMetadata,
   ForgeVerificationSummary,
@@ -108,6 +109,8 @@ export interface CreateProvenanceOptions {
   readonly finishedAt: number;
   readonly classification?: DataClassification;
   readonly contentMarkers?: readonly ContentMarker[];
+  /** Evolution lineage — set when brick is derived from an existing brick. */
+  readonly evolution?: ForgeEvolution;
 }
 
 /**
@@ -163,6 +166,7 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
     classification,
     contentMarkers,
     contentHash,
+    ...(options.evolution !== undefined ? { evolution: options.evolution } : {}),
   };
 }
 

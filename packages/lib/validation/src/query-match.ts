@@ -60,6 +60,13 @@ export function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): 
       return false;
     }
   }
+  // Evolution lineage — filter by parent brick ID
+  if (
+    query.parentBrickId !== undefined &&
+    brick.provenance.evolution?.parentBrickId !== query.parentBrickId
+  ) {
+    return false;
+  }
   // Namespace filter — exact match
   if (query.namespace !== undefined && brick.namespace !== query.namespace) {
     return false;

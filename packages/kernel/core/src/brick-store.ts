@@ -370,6 +370,8 @@ export interface ForgeQuery {
   readonly tags?: readonly string[];
   /** Matches against `provenance.metadata.agentId`. */
   readonly createdBy?: string;
+  /** Filter by parent brick ID — returns bricks evolved from this parent. */
+  readonly parentBrickId?: BrickId;
   readonly classification?: DataClassification;
   readonly contentMarkers?: readonly ContentMarker[];
   /** Exact case-insensitive match against brick name. Used for name-based dedup. */
@@ -480,6 +482,18 @@ export interface ForgeStore {
   readonly dispose?: () => void;
 }
 
+/** Project a full BrickArtifact to a lightweight BrickSummary (~20 tokens). */
+export function toBrickSummary(brick: BrickArtifact): BrickSummary {
+  return {
+    id: brick.id,
+    kind: brick.kind,
+    name: brick.name,
+    description: brick.description,
+    tags: brick.tags,
+    ...(brick.trigger !== undefined ? { trigger: brick.trigger } : {}),
+  };
+}
+
 /**
  * Search for brick summaries with automatic fallback.
  * Uses `store.searchSummaries()` when available, otherwise falls back
@@ -494,17 +508,7 @@ export async function searchSummariesWithFallback(
   }
   const result = await store.search(query);
   if (!result.ok) return result;
-  const summaries: readonly BrickSummary[] = result.value.map(
-    (brick): BrickSummary => ({
-      id: brick.id,
-      kind: brick.kind,
-      name: brick.name,
-      description: brick.description,
-      tags: brick.tags,
-      ...(brick.trigger !== undefined ? { trigger: brick.trigger } : {}),
-    }),
-  );
-  return { ok: true, value: summaries };
+  return { ok: true, value: result.value.map(toBrickSummary) };
 }
 
 // ---------------------------------------------------------------------------

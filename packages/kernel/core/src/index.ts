@@ -132,6 +132,7 @@ export {
   DEFAULT_TRAIL_CONFIG,
   DEFAULT_TRAIL_STRENGTH,
   searchSummariesWithFallback,
+  toBrickSummary,
 } from "./brick-store.js";
 // browser driver — cross-engine abstraction for browser automation
 export type {
@@ -720,9 +721,11 @@ export { ALL_CHANGE_TARGETS, PROPOSAL_GATE_REQUIREMENTS, proposalId } from "./pr
 export type {
   ContentMarker,
   DataClassification,
+  EvolutionKind,
   ForgeAttestationSignature,
   ForgeBuildDefinition,
   ForgeBuilder,
+  ForgeEvolution,
   ForgeProvenance,
   ForgeResourceRef,
   ForgeRunMetadata,

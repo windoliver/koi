@@ -7,7 +7,7 @@
  */
 
 import type { BrickArtifact, BrickId, BrickSummary, Result, Tool } from "@koi/core";
-import { DEFAULT_BRICK_FITNESS } from "@koi/core";
+import { brickId, DEFAULT_BRICK_FITNESS, toBrickSummary } from "@koi/core";
 import type { ForgeError, ForgeQuery } from "@koi/forge-types";
 import { filterByAgentScope, staticError } from "@koi/forge-types";
 import { computeBrickFitness, sortBricks } from "@koi/validation";
@@ -38,6 +38,7 @@ const searchInputSchema = z
     lifecycle: z.string().optional(),
     tags: z.array(z.string()).optional(),
     createdBy: z.string().optional(),
+    parentBrickId: z.string().optional(),
     text: z.string().optional(),
     limit: z.number().optional(),
     orderBy: z.string().optional(),
@@ -71,6 +72,10 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
       lifecycle: { type: "string" },
       tags: { type: "array", items: { type: "string" } },
       createdBy: { type: "string" },
+      parentBrickId: {
+        type: "string",
+        description: "Filter by parent brick ID — returns bricks evolved from this parent.",
+      },
       text: { type: "string", description: "Substring match (legacy). Prefer `query`." },
       limit: { type: "number" },
       orderBy: {
@@ -218,17 +223,7 @@ async function retrieverSearch(
 
     // Summary mode: project to lightweight BrickSummary[] (~20 tokens/brick)
     if (detail === "summary") {
-      const summaries: readonly BrickSummary[] = truncated.map(
-        (b): BrickSummary => ({
-          id: b.id,
-          kind: b.kind,
-          name: b.name,
-          description: b.description,
-          tags: b.tags,
-          ...(b.trigger !== undefined ? { trigger: b.trigger } : {}),
-        }),
-      );
-      return { ok: true, value: summaries };
+      return { ok: true, value: truncated.map(toBrickSummary) };
     }
 
     return { ok: true, value: truncated };
@@ -262,6 +257,7 @@ async function storeSearch(
     raw.lifecycle !== undefined ? { lifecycle: raw.lifecycle } : null,
     raw.tags !== undefined ? { tags: raw.tags } : null,
     raw.createdBy !== undefined ? { createdBy: raw.createdBy } : null,
+    raw.parentBrickId !== undefined ? { parentBrickId: brickId(raw.parentBrickId) } : null,
     query !== undefined ? { text: query } : null,
     clampedMin !== undefined ? { minFitnessScore: clampedMin } : null,
   );
@@ -284,17 +280,7 @@ async function storeSearch(
 
   // Summary mode: project to lightweight BrickSummary[] (~20 tokens/brick)
   if (detail === "summary") {
-    const summaries: readonly BrickSummary[] = ranked.map(
-      (b): BrickSummary => ({
-        id: b.id,
-        kind: b.kind,
-        name: b.name,
-        description: b.description,
-        tags: b.tags,
-        ...(b.trigger !== undefined ? { trigger: b.trigger } : {}),
-      }),
-    );
-    return { ok: true, value: summaries };
+    return { ok: true, value: ranked.map(toBrickSummary) };
   }
 
   return { ok: true, value: ranked };
@@ -336,6 +322,10 @@ function postFilterByMetadata(
   // createdBy matches provenance.metadata.agentId (matches query-match.ts)
   if (raw.createdBy !== undefined) {
     filtered = filtered.filter((b) => b.provenance.metadata.agentId === raw.createdBy);
+  }
+  // parentBrickId matches provenance.evolution.parentBrickId (matches query-match.ts)
+  if (raw.parentBrickId !== undefined) {
+    filtered = filtered.filter((b) => b.provenance.evolution?.parentBrickId === raw.parentBrickId);
   }
 
   return filtered;

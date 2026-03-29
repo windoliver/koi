@@ -67,6 +67,9 @@ export function mapBrickToIndexDoc(brick: BrickArtifact): IndexDocument {
       scope: brick.scope,
       lifecycle: brick.lifecycle,
       tags: brick.tags,
+      ...(brick.provenance.evolution?.parentBrickId !== undefined
+        ? { parentBrickId: brick.provenance.evolution.parentBrickId }
+        : {}),
     },
   };
 }

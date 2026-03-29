@@ -627,6 +627,80 @@ describe("search_forge — trigger matching", () => {
 });
 
 // ---------------------------------------------------------------------------
+// parentBrickId filter tests
+// ---------------------------------------------------------------------------
+
+describe("search_forge — parentBrickId filter", () => {
+  test("store path: parentBrickId is included in ForgeQuery", async () => {
+    const store = mockStore([]);
+    const pipeline = mockPipeline();
+    const deps = makeDeps({ store, pipeline });
+
+    await executeSearch(deps, { parentBrickId: "parent-id" });
+    // Verify the ForgeQuery passed to store.search includes parentBrickId
+    const searchCall = (store.search as ReturnType<typeof mock>).mock.calls[0];
+    expect(searchCall?.[0]).toHaveProperty("parentBrickId", "parent-id");
+  });
+
+  test("retriever path: post-filters by parentBrickId", async () => {
+    const child = createTestToolArtifact({
+      id: brickId("child"),
+      name: "evolved-tool",
+      provenance: {
+        ...createTestToolArtifact().provenance,
+        evolution: {
+          parentBrickId: brickId("parent"),
+          evolutionKind: "derived" as const,
+        },
+      },
+    });
+    const unrelated = createTestToolArtifact({
+      id: brickId("other"),
+      name: "unrelated-tool",
+    });
+    const store = mockStore([child, unrelated]);
+    const retriever = mockRetriever([
+      { id: "child" as string, score: 0.9, content: "evolved", metadata: {}, source: "nexus" },
+      { id: "other" as string, score: 0.8, content: "unrelated", metadata: {}, source: "nexus" },
+    ]);
+    (store.load as ReturnType<typeof mock>).mockImplementation(async (id: BrickId) => {
+      if (id === brickId("child")) return { ok: true, value: child };
+      if (id === brickId("other")) return { ok: true, value: unrelated };
+      return { ok: false, error: { code: "NOT_FOUND", message: "not found", retryable: false } };
+    });
+    const pipeline = mockPipeline();
+    const deps = makeDeps({ store, retriever, pipeline });
+
+    const result = await executeSearch(deps, { query: "tool", parentBrickId: "parent" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(1);
+      expect(result.value[0]?.name).toBe("evolved-tool");
+    }
+  });
+
+  test("retriever path: parentBrickId with no matches returns empty", async () => {
+    const tool = createTestToolArtifact({ id: brickId("t1"), name: "lonely-tool" });
+    const store = mockStore([tool]);
+    const retriever = mockRetriever([
+      { id: "t1" as string, score: 0.9, content: "lonely", metadata: {}, source: "nexus" },
+    ]);
+    (store.load as ReturnType<typeof mock>).mockImplementation(async (id: BrickId) => {
+      if (id === brickId("t1")) return { ok: true, value: tool };
+      return { ok: false, error: { code: "NOT_FOUND", message: "not found", retryable: false } };
+    });
+    const pipeline = mockPipeline();
+    const deps = makeDeps({ store, retriever, pipeline });
+
+    const result = await executeSearch(deps, { query: "tool", parentBrickId: "nonexistent" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mock pipeline for governance pre-check bypass
 // ---------------------------------------------------------------------------
 

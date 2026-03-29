@@ -6,61 +6,14 @@
  * (immutable — new content-addressed BrickId).
  */
 
-import type {
-  BrickArtifact,
-  BrickId,
-  ForgeProvenance,
-  JsonObject,
-  Result,
-  Tool,
-  ToolDescriptor,
-} from "@koi/core";
+import type { BrickArtifact, BrickId, JsonObject, Result, Tool, ToolDescriptor } from "@koi/core";
 import { brickId, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { applyEdit } from "@koi/edit-match";
-import type { ForgeError, ForgeInput, ForgePipeline } from "@koi/forge-types";
+import type { ForgeError, ForgeInput } from "@koi/forge-types";
 import { staticError, storeError } from "@koi/forge-types";
-import { computeBrickId } from "@koi/hash";
 import { z } from "zod";
 import type { ForgeDeps } from "./shared.js";
-
-// ---------------------------------------------------------------------------
-// Pipeline-aware helpers — L2 package uses pipeline (no direct cross-L2 imports)
-// ---------------------------------------------------------------------------
-
-function getVerify(deps: ForgeDeps): ForgePipeline["verify"] {
-  if (deps.pipeline === undefined) {
-    throw new Error("ForgePipeline is required in @koi/forge-tools");
-  }
-  return deps.pipeline.verify;
-}
-
-function getCreateProvenance(deps: ForgeDeps): ForgePipeline["createProvenance"] {
-  if (deps.pipeline === undefined) {
-    throw new Error("ForgePipeline is required in @koi/forge-tools");
-  }
-  return deps.pipeline.createProvenance;
-}
-
-function getSignAttestation(deps: ForgeDeps): ForgePipeline["signAttestation"] {
-  if (deps.pipeline === undefined) {
-    throw new Error("ForgePipeline is required in @koi/forge-tools");
-  }
-  return deps.pipeline.signAttestation;
-}
-
-function getExtractBrickContent(deps: ForgeDeps): ForgePipeline["extractBrickContent"] {
-  if (deps.pipeline === undefined) {
-    throw new Error("ForgePipeline is required in @koi/forge-tools");
-  }
-  return deps.pipeline.extractBrickContent;
-}
-
-function getCheckGovernance(deps: ForgeDeps): ForgePipeline["checkGovernance"] {
-  if (deps.pipeline === undefined) {
-    throw new Error("ForgePipeline is required in @koi/forge-tools");
-  }
-  return deps.pipeline.checkGovernance;
-}
+import { requirePipeline, runForgePipeline } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Input validation
@@ -195,69 +148,40 @@ async function forgeEditHandler(
     };
   }
 
-  // Re-run verification pipeline
-  const verifyResult = await getVerify(deps)(
+  // Delegate to the shared pipeline — handles verify → ID → provenance → sign → save → notify
+  const pipelineResult = await runForgePipeline(
     forgeInput,
-    deps.context,
-    deps.executor,
-    deps.verifiers,
-    deps.config,
-  );
-  if (!verifyResult.ok) {
-    return { ok: false, error: verifyResult.error };
-  }
-
-  // Compute new content-addressed ID
-  const { kind, content } = getExtractBrickContent(deps)(updatedBrick);
-  const newId = computeBrickId(kind, content, updatedBrick.files);
-
-  // Build new provenance
-  const startedAt = Date.now();
-  // let justified: provenance may be signed in-place below
-  let provenance = getCreateProvenance(deps)({
-    input: forgeInput,
-    context: deps.context,
-    report: verifyResult.value,
-    config: deps.config,
-    contentHash: newId,
-    invocationId: newId,
-    startedAt,
-    finishedAt: Date.now(),
-  });
-
-  if (deps.signer !== undefined) {
-    provenance = await getSignAttestation(deps)(provenance, deps.signer);
-  }
-
-  // Save new brick (immutable — new ID)
-  const newArtifact = withNewIdentity(
-    updatedBrick,
-    newId,
-    provenance,
-    incrementVersion(brick.version),
+    deps,
+    () => stripProvenanceFields(updatedBrick),
+    {
+      version: incrementVersion(brick.version),
+      skipDedup: true, // Edits always produce a new brick
+      evolution: {
+        parentBrickId: brick.id,
+        evolutionKind: "fix",
+        ...(parsed.value.description !== undefined
+          ? { description: parsed.value.description }
+          : {}),
+      },
+    },
   );
 
-  const saveResult = await deps.store.save(newArtifact);
-  if (!saveResult.ok) {
-    return {
-      ok: false,
-      error: storeError("SAVE_FAILED", `Failed to save edited brick: ${saveResult.error.message}`),
-    };
-  }
-
-  // Notify cross-agent cache invalidation after successful save
-  if (deps.notifier !== undefined) {
-    void Promise.resolve(
-      deps.notifier.notify({ kind: "saved", brickId: newId, scope: deps.config.defaultScope }),
-    ).catch(() => {
-      // Swallow — notifier failure is non-fatal
-    });
+  if (!pipelineResult.ok) {
+    // Map pipeline errors to forge-edit error format
+    const err = pipelineResult.error;
+    if (err.stage === "store" && err.code === "SAVE_FAILED") {
+      return {
+        ok: false,
+        error: storeError("SAVE_FAILED", err.message),
+      };
+    }
+    return pipelineResult;
   }
 
   return {
     ok: true,
     value: {
-      id: newId,
+      id: pipelineResult.value.id,
       strategy: editResult.match.strategy,
       confidence: editResult.match.confidence,
     },
@@ -313,28 +237,20 @@ function buildForgeInputFromArtifact(brick: BrickArtifact): ForgeInput | undefin
   }
 }
 
-/** Create a new immutable artifact with updated identity fields. */
-function withNewIdentity(
-  brick: BrickArtifact,
-  newId: BrickId,
-  provenance: ForgeProvenance,
-  version: string,
-): BrickArtifact {
-  const now = Date.now();
-  switch (brick.kind) {
-    case "tool":
-      return { ...brick, id: newId, provenance, version, lastVerifiedAt: now };
-    case "skill":
-      return { ...brick, id: newId, provenance, version, lastVerifiedAt: now };
-    case "middleware":
-      return { ...brick, id: newId, provenance, version, lastVerifiedAt: now };
-    case "channel":
-      return { ...brick, id: newId, provenance, version, lastVerifiedAt: now };
-    case "agent":
-      return { ...brick, id: newId, provenance, version, lastVerifiedAt: now };
-    case "composite":
-      return { ...brick, id: newId, provenance, version, lastVerifiedAt: now };
-  }
+/**
+ * Strip provenance and identity fields from an artifact for the pipeline builder.
+ * Pipeline will re-assign id, provenance, and version after verification + signing.
+ */
+function stripProvenanceFields(brick: BrickArtifact): Omit<BrickArtifact, "provenance"> {
+  // Justified: spreading a discriminated union and omitting 'provenance' preserves the kind
+  // discriminant, but TypeScript cannot prove this statically for Omit<Union, K>.
+  const {
+    provenance: _prov,
+    storeVersion: _sv,
+    lastVerifiedAt: _lv,
+    ...rest
+  } = brick as BrickArtifact & Record<string, unknown>;
+  return rest as Omit<BrickArtifact, "provenance">;
 }
 
 /** Increment a semver patch version: "0.0.1" → "0.0.2". */
@@ -378,7 +294,11 @@ const FORGE_EDIT_DESCRIPTOR: ToolDescriptor = {
 
 export function createForgeEditTool(deps: ForgeDeps): Tool {
   const execute = async (input: JsonObject): Promise<unknown> => {
-    const govResult = await getCheckGovernance(deps)(deps.context, deps.config, "forge_edit");
+    const govResult = await requirePipeline(deps).checkGovernance(
+      deps.context,
+      deps.config,
+      "forge_edit",
+    );
     if (!govResult.ok) {
       return { ok: false, error: govResult.error };
     }

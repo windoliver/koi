@@ -7,6 +7,7 @@ import type {
   BrickArtifactBase,
   BrickId,
   BrickRequires,
+  ForgeEvolution,
   JsonObject,
   Result,
   Tool,
@@ -39,7 +40,7 @@ import { z } from "zod";
  * attestation) go through the injected ForgePipeline. The L3 bundle
  * (@koi/forge) wires this via createForgePipeline().
  */
-function requirePipeline(deps: ForgeDeps): ForgePipeline {
+export function requirePipeline(deps: ForgeDeps): ForgePipeline {
   if (deps.pipeline === undefined) {
     throw new Error(
       "ForgePipeline is required in @koi/forge-tools — provide via createForgePipeline() from @koi/forge",
@@ -475,10 +476,21 @@ function computeArtifactId(
 // Re-export for backward compat.
 export type { ArtifactBuilder } from "@koi/forge-types";
 
+/** Optional parameters for pipeline customization (e.g., edit flow). */
+export interface PipelineOptions {
+  /** Override the default starting version ("0.0.1") for edited bricks. */
+  readonly version?: string;
+  /** Evolution lineage linking this brick to a parent. */
+  readonly evolution?: ForgeEvolution;
+  /** Skip dedup check — edits always produce a new brick even with same content hash. */
+  readonly skipDedup?: boolean;
+}
+
 export async function runForgePipeline(
   forgeInput: ForgeInput,
   deps: ForgeDeps,
   buildArtifact: ArtifactBuilder,
+  options?: PipelineOptions,
 ): Promise<Result<ForgeResult, ForgeError>> {
   const startedAt = Date.now();
 
@@ -569,8 +581,9 @@ export async function runForgePipeline(
   const artifactWithId = { ...artifactBody, id };
 
   // Dedup check: if brick with this ID already exists, return early
-  const existsResult = await deps.store.exists(id);
-  if (existsResult.ok && existsResult.value) {
+  // Edits skip dedup — same content hash after no-op edit should still re-save with new provenance
+  const existsResult = options?.skipDedup ? undefined : await deps.store.exists(id);
+  if (existsResult !== undefined && existsResult.ok && existsResult.value) {
     const forgeResult: ForgeResult = {
       id,
       kind: forgeInput.kind,
@@ -615,6 +628,7 @@ export async function runForgePipeline(
     ...(forgeInput.contentMarkers !== undefined
       ? { contentMarkers: forgeInput.contentMarkers }
       : {}),
+    ...(options?.evolution !== undefined ? { evolution: options.evolution } : {}),
   });
 
   // Sign attestation if signer is available
@@ -628,6 +642,7 @@ export async function runForgePipeline(
   const artifactWithProvenance = {
     ...artifactWithId,
     provenance,
+    ...(options?.version !== undefined ? { version: options.version } : {}),
   } as BrickArtifact;
 
   const saveResult = await deps.store.save(artifactWithProvenance);

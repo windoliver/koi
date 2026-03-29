@@ -12,6 +12,7 @@ import type {
   BrickKind,
   ContentMarker,
   DataClassification,
+  ForgeEvolution,
   ForgeProvenance,
   ForgeStore,
   GovernanceController,
@@ -137,4 +138,6 @@ export interface CreateProvenanceOptions {
   readonly finishedAt: number;
   readonly classification?: DataClassification;
   readonly contentMarkers?: readonly ContentMarker[];
+  /** Evolution lineage — set when brick is derived from an existing brick. */
+  readonly evolution?: ForgeEvolution;
 }

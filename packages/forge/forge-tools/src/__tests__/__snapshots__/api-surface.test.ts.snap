@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
-"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, CompanionSkillDefinition, ComponentProvider, StoreChangeNotifier, KoiError, BrickRegistryWriter, Resolver, BrickRequires, BrickSummary, EngineAdapter } from '@koi/core';
+"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, ToolPolicy, CompanionSkillDefinition, ComponentProvider, StoreChangeNotifier, KoiError, BrickRegistryWriter, Resolver, BrickRequires, BrickSummary, ForgeEvolution, EngineAdapter } from '@koi/core';
 import { ForgeError, DriftChecker, ForgeDeps, ForgeInput, ArtifactBuilder, ForgeResult, ForgeToolInput, DelegateOptions, AgentArtifact, SandboxExecutor as SandboxExecutor$1 } from '@koi/forge-types';
 export { ArtifactBuilder, DelegateOptions, ForgeDeps } from '@koi/forge-types';
 import { BrickDescriptor } from '@koi/resolve';
@@ -293,6 +293,35 @@ interface SkillMdInput {
 declare function generateSkillMd(input: SkillMdInput): string;
 
 /**
+ * computeLineage — walk the evolution chain from a brick back to its root ancestor.
+ *
+ * Pure utility function operating on ForgeStore.load() — no store interface changes needed.
+ * Returns the ancestor chain in order from root → ... → brick (oldest first).
+ */
+
+/**
+ * Result of a lineage computation.
+ *
+ * \`chain\` is ordered root-first: [root, ..., parent, brick].
+ * \`partial\` is true when the chain was truncated (missing parent or depth limit reached).
+ */
+interface LineageResult {
+    /** Ancestor chain ordered root-first (oldest → newest). */
+    readonly chain: readonly BrickArtifact[];
+    /** True if the chain is incomplete (missing parent, store error, or depth limit). */
+    readonly partial: boolean;
+}
+/**
+ * Walk the \`parentBrickId\` chain from a brick back to its root ancestor.
+ *
+ * - Returns the full chain root-first: [root, ..., parent, brick]
+ * - Stops at depth limit (default 50) to prevent infinite traversal
+ * - Detects cycles (brick appearing twice in chain) and stops
+ * - Returns partial chain with \`partial: true\` on missing parent or store error
+ */
+declare function computeLineage(store: ForgeStore, startId: BrickId, maxDepth?: number): Promise<Result<LineageResult, KoiError>>;
+
+/**
  * mapBrickToIndexDoc — maps a BrickArtifact to an IndexDocument for search indexing.
  *
  * Pure function: no side effects, no I/O. Used by the indexing subscriber
@@ -462,7 +491,16 @@ declare function mapParsedBaseFields(parsed: ParsedBaseInput): {
     readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
     readonly trigger?: readonly string[];
 };
-declare function runForgePipeline(forgeInput: ForgeInput, deps: ForgeDeps, buildArtifact: ArtifactBuilder): Promise<Result<ForgeResult, ForgeError>>;
+/** Optional parameters for pipeline customization (e.g., edit flow). */
+interface PipelineOptions {
+    /** Override the default starting version ("0.0.1") for edited bricks. */
+    readonly version?: string;
+    /** Evolution lineage linking this brick to a parent. */
+    readonly evolution?: ForgeEvolution;
+    /** Skip dedup check — edits always produce a new brick even with same content hash. */
+    readonly skipDedup?: boolean;
+}
+declare function runForgePipeline(forgeInput: ForgeInput, deps: ForgeDeps, buildArtifact: ArtifactBuilder, options?: PipelineOptions): Promise<Result<ForgeResult, ForgeError>>;
 declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;
 
 /**
@@ -606,6 +644,6 @@ declare function createRunSkillScriptTool(deps: RunSkillScriptDeps): Tool;
 
 declare function createSearchForgeTool(deps: ForgeDeps): Tool;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, FORGE_COMPANION_SKILL, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type RunSkillScriptDeps, type RunSkillScriptResult, type SkillInstructions, type SkillMdInput, type SkillMetadata, type SkillReferenceProvider, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeCompanionSkillProvider, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createRunSkillScriptTool, createSearchForgeTool, createSkillReferenceProvider, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapBrickToIndexDoc, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust, runForgePipeline };
+export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, FORGE_COMPANION_SKILL, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type LineageResult, type NetworkPolicy, type OnForgeAgentSpawn, type PipelineOptions, type RequiresCheckResult, type RunSkillScriptDeps, type RunSkillScriptResult, type SkillInstructions, type SkillMdInput, type SkillMetadata, type SkillReferenceProvider, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, computeLineage, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeCompanionSkillProvider, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createRunSkillScriptTool, createSearchForgeTool, createSkillReferenceProvider, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapBrickToIndexDoc, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust, runForgePipeline };
 "
 `;

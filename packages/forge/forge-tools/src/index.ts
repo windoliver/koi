@@ -45,7 +45,9 @@ export { createForgeResolver } from "./forge-resolver.js";
 // SKILL.md generation
 export type { SkillMdInput } from "./generate-skill-md.js";
 export { generateSkillMd } from "./generate-skill-md.js";
-
+// lineage — evolution chain traversal
+export type { LineageResult } from "./lineage.js";
+export { computeLineage } from "./lineage.js";
 // index document mapping — BrickArtifact → IndexDocument for search indexing
 export { mapBrickToIndexDoc } from "./map-brick-to-index-doc.js";
 
@@ -107,6 +109,7 @@ export type {
   DelegateOptions,
   ForgeDeps,
   ForgeToolConfig,
+  PipelineOptions,
 } from "./tools/shared.js";
 export {
   createForgeTool,

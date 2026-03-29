@@ -187,4 +187,37 @@ describe("mapBrickToIndexDoc", () => {
 
     expect(doc.content).toBe("plain-tool Empty triggers");
   });
+
+  // --- evolution lineage ---
+
+  test("includes parentBrickId in metadata when brick has evolution", () => {
+    const brick = createTestToolArtifact({
+      id: brickId("evolved-tool"),
+      name: "evolved",
+      description: "An evolved tool",
+      provenance: {
+        ...createTestToolArtifact().provenance,
+        evolution: {
+          parentBrickId: brickId("parent-id"),
+          evolutionKind: "fix" as const,
+        },
+      },
+    });
+    const doc = mapBrickToIndexDoc(brick);
+
+    expect(doc.metadata?.parentBrickId).toBe("parent-id");
+    // parentBrickId should NOT be in content (hashes are noise for BM25/vector)
+    expect(doc.content).not.toContain("parent-id");
+  });
+
+  test("omits parentBrickId from metadata when brick has no evolution", () => {
+    const brick = createTestToolArtifact({
+      id: brickId("root-tool"),
+      name: "root",
+      description: "A root tool",
+    });
+    const doc = mapBrickToIndexDoc(brick);
+
+    expect(doc.metadata?.parentBrickId).toBeUndefined();
+  });
 });
