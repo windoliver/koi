@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { ChildSpanRecord } from "@koi/execution-context";
+import { runWithSpanRecorder } from "@koi/execution-context";
 import { createWasmSandboxExecutor } from "./wasm-executor.js";
 
 describe("createWasmSandboxExecutor", () => {
@@ -188,6 +190,49 @@ describe("createWasmSandboxExecutor", () => {
     if (result.ok) {
       expect(result.value.output).toBe("undefined");
     }
+  });
+
+  // --- span recording ---
+
+  test("records span on successful execution", async () => {
+    const spans: ChildSpanRecord[] = [];
+    const recorder = {
+      record: (span: ChildSpanRecord): void => {
+        spans.push(span);
+      },
+    };
+
+    await runWithSpanRecorder(recorder, () => executor.execute("1 + 2", {}, 5_000));
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.label).toBe("sandbox-wasm");
+    expect(spans[0]?.durationMs).toBeGreaterThan(0);
+    expect(spans[0]?.error).toBeUndefined();
+    expect(spans[0]?.metadata?.memoryUsedBytes).toBeGreaterThan(0);
+  });
+
+  test("records span with error on failure", async () => {
+    const spans: ChildSpanRecord[] = [];
+    const recorder = {
+      record: (span: ChildSpanRecord): void => {
+        spans.push(span);
+      },
+    };
+
+    await runWithSpanRecorder(recorder, () =>
+      executor.execute("throw new Error('boom')", {}, 5_000),
+    );
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.label).toBe("sandbox-wasm");
+    expect(spans[0]?.error).toBeDefined();
+    expect(spans[0]?.durationMs).toBeGreaterThan(0);
+  });
+
+  test("does not record span outside recorder scope", async () => {
+    // No runWithSpanRecorder — should not throw, just silently skip
+    const result = await executor.execute("1 + 1", {}, 5_000);
+    expect(result.ok).toBe(true);
   });
 
   test("respects custom config", async () => {
