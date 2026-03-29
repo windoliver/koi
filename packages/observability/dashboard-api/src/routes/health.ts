@@ -30,9 +30,26 @@ export interface DashboardCapabilities {
 }
 
 export function handleHealth(capabilities?: DashboardCapabilities): Response {
+  // Flatten capabilities to match the client's expected shape.
+  // Client expects: { temporal, scheduler, taskboard, harness, forge, gateway, nexus, governance }
+  // Server has: { orchestration: { temporal, scheduler, taskBoard, harness }, fileSystem, ... }
+  const flatCapabilities =
+    capabilities !== undefined
+      ? {
+          temporal: capabilities.orchestration.temporal,
+          scheduler: capabilities.orchestration.scheduler,
+          taskboard: capabilities.orchestration.taskBoard,
+          harness: capabilities.orchestration.harness,
+          forge: capabilities.runtimeViews,
+          gateway: capabilities.runtimeViews,
+          nexus: capabilities.fileSystem,
+          governance: capabilities.governance,
+        }
+      : undefined;
+
   return jsonResponse({
     status: "ok",
     uptimeMs: Date.now() - startedAt,
-    ...(capabilities !== undefined ? { capabilities } : {}),
+    ...(flatCapabilities !== undefined ? { capabilities: flatCapabilities } : {}),
   });
 }

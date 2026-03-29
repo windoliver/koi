@@ -82,118 +82,6 @@ export function createDelegationBridge(config: DelegationBridgeConfig): Delegati
   // let justified: mutable in-flight counter
   let inFlight = 0;
 
-  async function dispatchOne(
-    task: TaskItem,
-    board: TaskBoard,
-  ): Promise<{ readonly board: TaskBoard; readonly cascadeNeeded: boolean }> {
-    // Step 0: Check abort before claiming — prevents orphan assigned tasks
-    if (controller.signal.aborted) {
-      return { board, cascadeNeeded: false };
-    }
-
-    const agentName = task.agentType ?? "worker";
-    const workerAgentId: AgentId = brandAgentId(`worker-${task.id}`);
-
-    // Step 1: Claim — assign before dispatch (Symphony claimed-set pattern)
-    const assignResult = board.assign(task.id, workerAgentId);
-    if (!assignResult.ok) {
-      // Race/conflict — another process claimed it; skip
-      return { board, cascadeNeeded: false };
-    }
-
-    const assignedBoard = assignResult.value;
-
-    // Step 2: Build upstream context from completed dependencies
-    const upstreamResults: TaskResult[] = [];
-    for (const depId of task.dependencies) {
-      const depResult = assignedBoard.result(depId);
-      if (depResult !== undefined) {
-        upstreamResults.push(depResult);
-      }
-    }
-    const contextBlock = formatUpstreamContext(upstreamResults, maxUpstreamContext);
-    const description =
-      contextBlock.length > 0 ? `${contextBlock}\n\n${task.description}` : task.description;
-
-    config.onTaskDispatched?.(task.id);
-
-    // Step 3: Acquire semaphore + spawn
-    await semaphore.acquire(task.agentType);
-    inFlight += 1;
-
-    try {
-      if (controller.signal.aborted) {
-        return { board: assignedBoard, cascadeNeeded: false };
-      }
-
-      const result = await config.spawn({
-        description,
-        agentName,
-        signal: controller.signal,
-        taskId: task.id,
-        agentId: workerAgentId,
-        delivery: deliveryPolicy,
-      });
-
-      if (result.ok) {
-        // Clean success → complete
-        const output =
-          result.output.length > maxOutput
-            ? `${result.output.slice(0, maxOutput)}... (truncated)`
-            : result.output;
-
-        const completeResult = assignedBoard.complete(task.id, {
-          taskId: task.id,
-          output,
-          durationMs: 0,
-          workerId: workerAgentId,
-        });
-
-        config.onTaskCompleted?.(task.id);
-
-        if (completeResult.ok) {
-          return { board: completeResult.value, cascadeNeeded: true };
-        }
-        return { board: assignedBoard, cascadeNeeded: false };
-      }
-
-      // Clean failure (worker returned error) → fail with retryable
-      const failResult = assignedBoard.fail(task.id, {
-        code: "EXTERNAL",
-        message: result.error.message,
-        retryable: true,
-      });
-
-      if (failResult.ok) {
-        return { board: failResult.value, cascadeNeeded: false };
-      }
-      return { board: assignedBoard, cascadeNeeded: false };
-    } catch (e: unknown) {
-      // Abnormal failure (throw/timeout) → fail + exponential backoff flag
-      const message = e instanceof Error ? e.message : String(e);
-      const item = assignedBoard.get(task.id);
-      const retries = item?.retries ?? 0;
-
-      const failResult = assignedBoard.fail(task.id, {
-        code: "EXTERNAL",
-        message: `Spawn abnormal failure: ${message}`,
-        retryable: true,
-        context: {
-          backoffMs: computeBackoff(retries + 1),
-          abnormal: true,
-        },
-      });
-
-      if (failResult.ok) {
-        return { board: failResult.value, cascadeNeeded: false };
-      }
-      return { board: assignedBoard, cascadeNeeded: false };
-    } finally {
-      inFlight -= 1;
-      semaphore.release(task.agentType);
-    }
-  }
-
   async function dispatchReady(board: TaskBoard): Promise<TaskBoard> {
     // let justified: board is mutated through immutable replacements in the loop
     let currentBoard = board;
@@ -206,14 +94,130 @@ export function createDelegationBridge(config: DelegationBridgeConfig): Delegati
 
       if (readySpawnTasks.length === 0) break;
 
-      // Dispatch sequentially — board.assign/complete/fail return new board
-      // instances, so concurrent dispatch would fork from a stale snapshot.
-      // The semaphore already limits concurrency; correctness > throughput.
+      // Phase 1 (sequential): Claim all ready tasks via board.assign().
+      // This is fast (microseconds) and must be sequential because each
+      // assign returns a new immutable board snapshot.
+      const claimed: Array<{ readonly task: TaskItem; readonly board: TaskBoard }> = [];
       for (const task of readySpawnTasks) {
-        const result = await dispatchOne(task, currentBoard);
-        currentBoard = result.board;
-        if (result.cascadeNeeded) {
-          changed = true;
+        if (controller.signal.aborted) break;
+
+        const agentName = task.agentType ?? "worker";
+        const workerAgentId: AgentId = brandAgentId(`worker-${task.id}`);
+
+        const assignResult = currentBoard.assign(task.id, workerAgentId);
+        if (!assignResult.ok) continue; // Race/conflict — skip
+
+        currentBoard = assignResult.value;
+        claimed.push({
+          task: { ...task, assignedTo: workerAgentId } as TaskItem,
+          board: currentBoard,
+        });
+        void agentName; // used in phase 2 via task.agentType
+      }
+
+      if (claimed.length === 0) break;
+
+      // Phase 2 (parallel): Spawn all claimed tasks concurrently.
+      // The semaphore limits actual concurrency. Each spawn is independent
+      // because claiming already happened.
+      const spawnResults = await Promise.all(
+        claimed.map(async ({ task }) => {
+          const agentName = task.agentType ?? "worker";
+          const workerAgentId: AgentId = brandAgentId(`worker-${task.id}`);
+
+          // Build upstream context from completed dependencies
+          const upstreamResults: TaskResult[] = [];
+          for (const depId of task.dependencies) {
+            const depResult = currentBoard.result(depId);
+            if (depResult !== undefined) {
+              upstreamResults.push(depResult);
+            }
+          }
+          const contextBlock = formatUpstreamContext(upstreamResults, maxUpstreamContext);
+          const description =
+            contextBlock.length > 0 ? `${contextBlock}\n\n${task.description}` : task.description;
+
+          config.onTaskDispatched?.(task.id);
+
+          await semaphore.acquire(task.agentType);
+          inFlight += 1;
+
+          try {
+            if (controller.signal.aborted) {
+              return { taskId: task.id, ok: false as const, cascadeNeeded: false };
+            }
+
+            const result = await config.spawn({
+              description,
+              agentName,
+              signal: controller.signal,
+              taskId: task.id,
+              agentId: workerAgentId,
+              delivery: deliveryPolicy,
+            });
+
+            if (result.ok) {
+              const output =
+                result.output.length > maxOutput
+                  ? `${result.output.slice(0, maxOutput)}... (truncated)`
+                  : result.output;
+              return {
+                taskId: task.id,
+                ok: true as const,
+                cascadeNeeded: true,
+                output,
+                workerId: workerAgentId,
+                durationMs: 0,
+              };
+            }
+
+            return {
+              taskId: task.id,
+              ok: false as const,
+              cascadeNeeded: false,
+              error: { code: "EXTERNAL" as const, message: result.error.message, retryable: true },
+            };
+          } catch (e: unknown) {
+            const message = e instanceof Error ? e.message : String(e);
+            const item = currentBoard.get(task.id);
+            const retries = item?.retries ?? 0;
+            return {
+              taskId: task.id,
+              ok: false as const,
+              cascadeNeeded: false,
+              error: {
+                code: "EXTERNAL" as const,
+                message: `Spawn abnormal failure: ${message}`,
+                retryable: true,
+                context: { backoffMs: computeBackoff(retries + 1), abnormal: true },
+              },
+            };
+          } finally {
+            inFlight -= 1;
+            semaphore.release(task.agentType);
+          }
+        }),
+      );
+
+      // Phase 3 (sequential): Apply spawn results back to the board.
+      for (const sr of spawnResults) {
+        if (sr.ok) {
+          const completeResult = currentBoard.complete(sr.taskId, {
+            taskId: sr.taskId,
+            output: sr.output,
+            durationMs: sr.durationMs,
+            workerId: sr.workerId,
+          });
+          config.onTaskCompleted?.(sr.taskId);
+          if (completeResult.ok) {
+            currentBoard = completeResult.value;
+            changed = true;
+          }
+        } else if (sr.error !== undefined) {
+          const failResult = currentBoard.fail(sr.taskId, sr.error);
+          if (failResult.ok) {
+            currentBoard = failResult.value;
+          }
         }
       }
     }

@@ -16,6 +16,25 @@ import type { HarnessScheduler } from "@koi/harness-scheduler";
 import type { LongRunningHarness } from "@koi/long-running";
 
 // ---------------------------------------------------------------------------
+// Logger — thin interface for operational logging (retry, reconciliation, etc.)
+// ---------------------------------------------------------------------------
+
+export interface AutonomousLogger {
+  readonly warn: (message: string) => void;
+  readonly error: (message: string) => void;
+  readonly debug?: ((message: string) => void) | undefined;
+}
+
+/** Default logger that writes to stderr with [autonomous] prefix. */
+export function createStderrLogger(): AutonomousLogger {
+  return {
+    warn: (msg: string) => process.stderr.write(`[autonomous] ${msg}\n`),
+    error: (msg: string) => process.stderr.write(`[autonomous] ERROR: ${msg}\n`),
+    debug: (msg: string) => process.stderr.write(`[autonomous] ${msg}\n`),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Factory input — accept pre-constructed parts (instance-based)
 // ---------------------------------------------------------------------------
 
@@ -67,6 +86,25 @@ export interface AutonomousAgentParts {
    * requires engine runtime context that isn't available at construction time.
    */
   readonly getSpawn?: (() => SpawnFn | undefined) | undefined;
+  /** Optional logger for autonomous operational messages (retry, reconciliation, etc.). Defaults to stderr. */
+  readonly logger?: AutonomousLogger | undefined;
+  /**
+   * Optional callback to emit dashboard events (SSE → TUI).
+   * When provided, task status changes are pushed so the TUI task board
+   * view updates in real-time without polling.
+   *
+   * Structural type to avoid importing @koi/dashboard-types — the caller
+   * (CLI) bridges to the actual DashboardEvent union.
+   */
+  readonly onTaskBoardEvent?:
+    | ((event: {
+        readonly kind: "taskboard";
+        readonly subKind: "task_status_changed";
+        readonly taskId: string;
+        readonly status: string;
+        readonly timestamp: number;
+      }) => void)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------

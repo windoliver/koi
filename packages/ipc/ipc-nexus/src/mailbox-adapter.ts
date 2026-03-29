@@ -31,7 +31,7 @@ import {
   DEFAULT_SSE_FALLBACK_CHECK_MS,
   DEFAULT_TIMEOUT_MS,
 } from "./constants.js";
-import { mapKoiToNexus, mapNexusToKoi } from "./map-message.js";
+import { mapKoiToNexus, mapNexusToKoi, mapSendResponseToKoi } from "./map-message.js";
 import type { NexusClient } from "./nexus-client.js";
 import { createNexusClient } from "./nexus-client.js";
 import type { HandlerErrorCallback, MessageHandler } from "./process-inbox.js";
@@ -85,6 +85,10 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
   const client: NexusClient = createNexusClient({ baseUrl, timeoutMs, authToken });
   const handlers = new Set<MessageHandler>();
   const seen = createSeenBuffer(seenCapacity);
+
+  // Note: inbox provisioning is automatic during Nexus agent registration
+  // (AgentRegistrationService.register → Step 5). No explicit provision call
+  // needed — the inbox exists as long as the agent is registered in Nexus.
 
   // let justified: mutable delivery state
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -217,20 +221,10 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
     const result = await client.sendMessage(nexusReq);
     if (!result.ok) return result;
 
-    const mapped = mapNexusToKoi(result.value);
-    if (mapped === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: "EXTERNAL",
-          message: "Nexus returned message with unknown kind",
-          retryable: false,
-          context: { kind: result.value.kind },
-        },
-      };
-    }
-
-    return { ok: true, value: mapped };
+    // Send response is a subset (message_id, path, sender, recipient, type)
+    // — not a full envelope. Use the dedicated mapper that reconstructs the
+    // full AgentMessage from the response + original input.
+    return { ok: true, value: mapSendResponseToKoi(result.value, message) };
   };
 
   const onMessage = (handler: MessageHandler): (() => void) => {

@@ -267,6 +267,13 @@ interface PlanAutonomousConfig {
     readonly onPlanCreated: (plan: TaskBoardSnapshot) => void | Promise<void>;
     /** ComponentProvider priority. Default: BUNDLED (100). */
     readonly priority?: number | undefined;
+    /**
+     * Optional board getter for detecting synchronous completion.
+     * When provided and all tasks are completed after onPlanCreated returns,
+     * the tool response includes an explicit synthesis prompt so the LLM
+     * calls task_synthesize immediately.
+     */
+    readonly getTaskBoard?: (() => TaskBoardSnapshot) | undefined;
 }
 /**
  * Create a ComponentProvider that registers the \`plan_autonomous\` tool at assembly time.

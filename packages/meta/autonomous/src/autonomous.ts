@@ -64,7 +64,10 @@ import {
   createTaskTools,
 } from "@koi/long-running";
 import { createTaskBoard } from "@koi/task-board";
-import type { AutonomousAgent, AutonomousAgentParts } from "./types.js";
+import { reconcileTaskBoard } from "./reconciler.js";
+import { sendWithRetry } from "./retry-send.js";
+import type { AutonomousAgent, AutonomousAgentParts, AutonomousLogger } from "./types.js";
+import { createStderrLogger } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Bridge helpers
@@ -91,8 +94,9 @@ async function dispatchSpawnTasks(
   snapshot: TaskBoardSnapshot,
   harness: AutonomousAgentParts["harness"],
   notify?: TaskNotifyFn | undefined,
-): Promise<void> {
-  if (!hasSpawnTasks(snapshot)) return;
+  log?: AutonomousLogger | undefined,
+): Promise<TaskBoard | undefined> {
+  if (!hasSpawnTasks(snapshot)) return undefined;
 
   const liveBoard: TaskBoard = createTaskBoard(undefined, snapshot);
   const updatedBoard = await bridge.dispatchReady(liveBoard);
@@ -125,9 +129,7 @@ async function dispatchSpawnTasks(
       item.assignedTo ?? agentId(`worker-${item.id}`),
     );
     if (!assignResult.ok) {
-      process.stderr.write(
-        `[autonomous] assignTask failed for ${item.id}: ${assignResult.error.message}\n`,
-      );
+      log?.warn(`assignTask failed for ${item.id}: ${assignResult.error.message}`);
       continue;
     }
 
@@ -137,9 +139,7 @@ async function dispatchSpawnTasks(
       if (result !== undefined) {
         const completeResult = await harness.completeTask(item.id, result);
         if (!completeResult.ok) {
-          process.stderr.write(
-            `[autonomous] completeTask failed for ${item.id}: ${completeResult.error.message}\n`,
-          );
+          log?.warn(`completeTask failed for ${item.id}: ${completeResult.error.message}`);
         } else {
           notify?.(item.id, item, result.output);
         }
@@ -148,19 +148,18 @@ async function dispatchSpawnTasks(
     }
 
     // Step 2b: fail (assigned → failed or assigned → pending via retryable)
-    // For both terminal and retryable failures, call failTask which handles
-    // the retry-count check and status transition internally.
     if (item.error !== undefined) {
       const failResult = await harness.failTask(item.id, item.error);
       if (!failResult.ok) {
-        process.stderr.write(
-          `[autonomous] failTask failed for ${item.id}: ${failResult.error.message}\n`,
-        );
+        log?.warn(`failTask failed for ${item.id}: ${failResult.error.message}`);
       } else {
         notify?.(item.id, item);
       }
     }
   }
+
+  // Return bridge board for reconciliation (defense-in-depth)
+  return updatedBoard;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,14 +170,29 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   // let justified: mutable disposal guard
   let disposed = false;
 
+  const logger: AutonomousLogger = parts.logger ?? createStderrLogger();
+
   // let justified: mutable agent reference — captured at attach time by
   // the autonomous-provider so inbox getters can resolve ECS components.
   // Undefined until the first provider.attach() fires during agent assembly.
   let attachedAgent: Agent | undefined;
 
-  // Per-task notification — sends mailbox messages when spawn tasks complete/fail.
-  // The copilot receives these on its next turn via inbox-middleware.
+  // Per-task notification — two channels:
+  // 1. Dashboard event (SSE → TUI task board real-time update)
+  // 2. Mailbox message (IPC → copilot inbox for engine context injection)
   const notifyTask: TaskNotifyFn = (taskId, item, output) => {
+    // Channel 1: Dashboard event — always fire if callback wired.
+    // This pushes task status changes to the TUI via SSE so the task board
+    // view updates in real-time without polling.
+    parts.onTaskBoardEvent?.({
+      kind: "taskboard",
+      subKind: "task_status_changed",
+      taskId: taskId as string,
+      status: item.status,
+      timestamp: Date.now(),
+    });
+
+    // Channel 2: Mailbox notification — best-effort IPC to copilot inbox.
     const mailbox = attachedAgent?.component(MAILBOX) as MailboxComponent | undefined;
     if (mailbox === undefined) return;
 
@@ -202,11 +216,11 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
       metadata: { mode: "followup" },
     };
 
-    // Fire-and-forget — notification failure should never block dispatch
-    void mailbox.send(message).then((result) => {
+    // Fire-and-forget with retry — notification failure logged but never blocks dispatch
+    void sendWithRetry(mailbox, message, { logger }).then((result) => {
       if (!result.ok) {
-        process.stderr.write(
-          `[autonomous] task notification failed for ${taskId}: ${result.error.message}\n`,
+        logger.warn(
+          `task notification failed for ${taskId} after retries: ${result.error.message}`,
         );
       }
     });
@@ -335,9 +349,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   providerList.push(
     createPlanAutonomousProvider({
       onPlanCreated: async (plan) => {
-        process.stderr.write(
-          `[autonomous] plan created — ${String(plan.items.length)} tasks, starting harness\n`,
-        );
+        logger.debug?.(`plan created — ${String(plan.items.length)} tasks, starting harness`);
 
         // Fail-fast: spawn tasks require a bound spawn function
         if (hasSpawnTasks(plan) && parts.getSpawn?.() === undefined) {
@@ -349,15 +361,10 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
 
         const startResult = await parts.harness.start(plan);
         if (!startResult.ok) {
-          process.stderr.write(`[autonomous] harness start failed: ${startResult.error.message}\n`);
+          logger.error(`harness start failed: ${startResult.error.message}`);
           return;
         }
-        // Harness is now active. The copilot's current engine run continues —
-        // the agent can start working on tasks in this same session using
-        // task_complete. When the engine run ends, the CLI auto-pauses the
-        // harness (active → suspended), then the scheduler picks it up and
-        // resumes for subsequent sessions until all tasks are done.
-        process.stderr.write("[autonomous] harness active — scheduler starting\n");
+        logger.debug?.("harness active — scheduler starting");
         parts.scheduler.start();
 
         // Dispatch ready spawn tasks via the delegation bridge.
@@ -365,17 +372,31 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
         const spawn = parts.getSpawn?.();
         if (hasSpawnTasks(plan) && spawn !== undefined) {
           bridge = createDelegationBridge({ spawn });
-          process.stderr.write(
-            "[autonomous] delegation bridge created — dispatching spawn tasks\n",
-          );
-          await dispatchSpawnTasks(
+          logger.debug?.("delegation bridge created — dispatching spawn tasks");
+          const bridgeBoard = await dispatchSpawnTasks(
             bridge,
             parts.harness.status().taskBoard,
             parts.harness,
             notifyTask,
+            logger,
           );
+
+          // Reconcile: defense-in-depth check that harness board matches bridge
+          // board. Catches cases where assignTask/completeTask failed during
+          // the replay loop above.
+          if (bridgeBoard !== undefined) {
+            const reconcileResult = await reconcileTaskBoard(bridgeBoard, parts.harness, logger);
+            if (reconcileResult.fixed > 0) {
+              logger.warn(
+                `reconciled ${String(reconcileResult.fixed)} task(s): ${reconcileResult.details.join(", ")}`,
+              );
+            }
+          }
         }
       },
+      // Issue 1+2: Pass board getter so tool can detect synchronous completion
+      // and return synthesis prompt instead of generic "plan created" message.
+      getTaskBoard: () => parts.harness.status().taskBoard,
     }),
   );
 
@@ -397,14 +418,29 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
           }
           const board = parts.harness.status().taskBoard;
           const remaining = board.items.filter((i) => i.status !== "completed").length;
-          process.stderr.write(
-            `[autonomous] task_complete: ${tid} — ${String(remaining)} remaining\n`,
-          );
+          logger.debug?.(`task_complete: ${tid} — ${String(remaining)} remaining`);
 
           // Cascade: dispatch newly-unblocked spawn tasks after a self-delegated
           // task completes (e.g., task B depends on task A, A just finished).
           if (bridge !== undefined) {
-            await dispatchSpawnTasks(bridge, board, parts.harness, notifyTask);
+            const bridgeBoard = await dispatchSpawnTasks(
+              bridge,
+              board,
+              parts.harness,
+              notifyTask,
+              logger,
+            );
+
+            // Reconcile second-wave dispatch — same drift can occur here as
+            // in the initial dispatch (assignTask/completeTask harness failures).
+            if (bridgeBoard !== undefined) {
+              const reconcileResult = await reconcileTaskBoard(bridgeBoard, parts.harness, logger);
+              if (reconcileResult.fixed > 0) {
+                logger.warn(
+                  `reconciled ${String(reconcileResult.fixed)} cascade task(s): ${reconcileResult.details.join(", ")}`,
+                );
+              }
+            }
           }
         },
         updateTask: async () => {

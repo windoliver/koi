@@ -108,6 +108,7 @@ function deriveTaskBoardFromHarness(
   harness: HarnessAdminClientLike,
 ): TaskBoardAdminClientLike | undefined {
   try {
+    // Verify the harness has a taskBoard shape at resolve time
     const status = harness.status();
     const s = status as unknown as Record<string, unknown>;
     const board = s.taskBoard as
@@ -116,12 +117,23 @@ function deriveTaskBoardFromHarness(
     if (board === undefined || board === null) return undefined;
     if (!Array.isArray(board.items)) return undefined;
 
+    // Return LAZY closures that read the CURRENT harness state on each call.
+    // The initial check above validates the shape, but all()/completed() must
+    // re-read harness.status().taskBoard to reflect live plan progress —
+    // otherwise the snapshot is frozen at resolve time (before any plan exists).
     return {
-      all: () => board.items as unknown as ReturnType<TaskBoardAdminClientLike["all"]>,
-      completed: () =>
-        Array.isArray(board.results)
-          ? (board.results as unknown as ReturnType<TaskBoardAdminClientLike["completed"]>)
-          : [],
+      all: () => {
+        const current = harness.status() as unknown as Record<string, unknown>;
+        const tb = current.taskBoard as { readonly items?: unknown } | undefined;
+        return (tb?.items ?? []) as unknown as ReturnType<TaskBoardAdminClientLike["all"]>;
+      },
+      completed: () => {
+        const current = harness.status() as unknown as Record<string, unknown>;
+        const tb = current.taskBoard as { readonly results?: unknown } | undefined;
+        return Array.isArray(tb?.results)
+          ? (tb.results as unknown as ReturnType<TaskBoardAdminClientLike["completed"]>)
+          : [];
+      },
     };
   } catch {
     return undefined;
