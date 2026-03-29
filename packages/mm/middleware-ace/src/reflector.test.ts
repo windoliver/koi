@@ -99,15 +99,13 @@ describe("createDefaultReflector", () => {
     expect(result.bulletTags).toHaveLength(0);
   });
 
-  test("returns safe defaults for malformed LLM response", async () => {
+  test("throws on malformed LLM response", async () => {
     const modelCall = async (): Promise<string> => "not valid json at all {{{}}}";
 
     const reflector = createDefaultReflector(modelCall);
-    const result = await reflector.analyze(makeInput());
-
-    expect(result.rootCause).toBe("");
-    expect(result.keyInsight).toBe("");
-    expect(result.bulletTags).toEqual([]);
+    await expect(reflector.analyze(makeInput())).rejects.toThrow(
+      "ACE reflector: failed to parse LLM response",
+    );
   });
 
   test("propagates error when LLM throws", async () => {

@@ -8,7 +8,11 @@
 import type { TokenEstimator } from "@koi/core/context";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
-import type { RichTrajectoryStep, RichTrajectoryStore } from "@koi/core/rich-trajectory";
+import type {
+  RichTrajectoryStep,
+  RichTrajectoryStore,
+  TrajectoryDocumentStore,
+} from "@koi/core/rich-trajectory";
 import type { CuratorAdapter } from "./curator.js";
 import type { ParseFailureCallback, ReflectorAdapter } from "./reflector.js";
 import type { PlaybookStore, StructuredPlaybookStore, TrajectoryStore } from "./stores.js";
@@ -62,11 +66,16 @@ export interface AceConfig {
   readonly playbookTokenBudget?: number;
   readonly tokenEstimator?: TokenEstimator;
 
-  // Rich trajectory (optional — enhances LLM pipeline with fuller context)
+  // ATIF document store (canonical trajectory persistence)
+  /** ATIF-backed document store for conversation-scoped rich trajectory data.
+   *  When set, replaces richTrajectoryStore as the canonical trajectory store. */
+  readonly atifStore?: TrajectoryDocumentStore;
+
+  // Rich trajectory (legacy — use atifStore instead)
   /** Async function that returns rich trajectory steps for a session.
    *  Typically backed by an Audit→ACE adapter. */
   readonly richTrajectorySource?: (sessionId: string) => Promise<readonly RichTrajectoryStep[]>;
-  /** Store for persisting rich trajectory data. */
+  /** @deprecated Use atifStore instead. */
   readonly richTrajectoryStore?: RichTrajectoryStore;
   /** Days to retain rich trajectory data. Default: 30. */
   readonly richTrajectoryRetentionDays?: number;
@@ -278,7 +287,19 @@ export function validateAceConfig(config: unknown): Result<AceConfig, KoiError> 
     };
   }
 
-  // Optional store: richTrajectoryStore
+  // Optional store: atifStore (TrajectoryDocumentStore)
+  if (c.atifStore !== undefined) {
+    if (!isStoreLike(c.atifStore, ["append", "getDocument", "getStepRange", "getSize", "prune"])) {
+      return {
+        ok: false,
+        error: validationError(
+          "atifStore must implement append, getDocument, getStepRange, getSize, and prune",
+        ),
+      };
+    }
+  }
+
+  // Optional store: richTrajectoryStore (legacy)
   if (c.richTrajectoryStore !== undefined) {
     if (!isStoreLike(c.richTrajectoryStore, ["append", "getSession", "prune"])) {
       return {

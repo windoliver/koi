@@ -26,8 +26,10 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
-import { estimateTokens } from "@koi/token-estimator";
+import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
 import { trackAceStores } from "./ace-stores.js";
+import type { AtifWriteBehindBuffer } from "./atif-buffer.js";
+import { createAtifWriteBehindBuffer } from "./atif-buffer.js";
 import type { AceConfig } from "./config.js";
 import { selectPlaybooks, selectStructuredPlaybooks } from "./injector.js";
 import { createLlmPipeline, createStatPipeline, isLlmPipelineEnabled } from "./pipeline.js";
@@ -39,13 +41,42 @@ const DEFAULT_MAX_INJECTION_TOKENS = 500;
 const DEFAULT_MIN_PLAYBOOK_CONFIDENCE = 0.3;
 const DEFAULT_MAX_BUFFER_ENTRIES = 1000;
 
+/** Default error handler for LLM pipeline failures — logs to console.warn. */
+function defaultLlmPipelineErrorHandler(error: unknown, sessionId: string): void {
+  console.warn(`ACE: LLM pipeline failed for session ${sessionId}`, error);
+}
+
+/** Handle for controlling ACE middleware from external code (e.g., ace_reflect tool). */
+export interface AceMiddlewareHandle {
+  /** The middleware instance. */
+  readonly middleware: KoiMiddleware;
+  /** Invalidate the cached structured playbooks, forcing a reload on the next model call. */
+  readonly invalidatePlaybookCache: () => void;
+}
+
 /** Creates the ACE middleware instance. */
-export function createAceMiddleware(config: AceConfig): KoiMiddleware {
+export function createAceMiddleware(config: AceConfig): KoiMiddleware;
+/** Creates the ACE middleware instance with a handle for external control. */
+export function createAceMiddleware(
+  config: AceConfig,
+  options: { readonly withHandle: true },
+): AceMiddlewareHandle;
+export function createAceMiddleware(
+  config: AceConfig,
+  options?: { readonly withHandle: true },
+): KoiMiddleware | AceMiddlewareHandle {
   const clock = config.clock ?? Date.now;
   const buffer = createTrajectoryBuffer(config.maxBufferEntries ?? DEFAULT_MAX_BUFFER_ENTRIES);
   const llmEnabled = isLlmPipelineEnabled(config);
   const statPipeline = createStatPipeline(config);
   const llmPipeline = llmEnabled ? createLlmPipeline(config) : undefined;
+
+  // ATIF write-behind buffer for per-call rich trajectory recording
+  const atifBuffer: AtifWriteBehindBuffer | undefined =
+    config.atifStore !== undefined ? createAtifWriteBehindBuffer(config.atifStore) : undefined;
+
+  // let: monotonically increasing step index for ATIF document
+  let nextStepIndex = 0;
 
   function recordEntry(entry: TrajectoryEntry): void {
     const evicted = buffer.record(entry);
@@ -74,6 +105,43 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
     });
   }
 
+  /** Record a rich trajectory step to the ATIF write-behind buffer. */
+  function recordRichStep(
+    ctx: TurnContext,
+    kind: RichTrajectoryStep["kind"],
+    identifier: string,
+    startMs: number,
+    outcome: RichTrajectoryStep["outcome"],
+    request?: RichTrajectoryStep["request"],
+    response?: RichTrajectoryStep["response"],
+    error?: RichTrajectoryStep["error"],
+    metrics?: RichTrajectoryStep["metrics"],
+    bulletIds?: readonly string[],
+  ): void {
+    if (atifBuffer === undefined) return;
+
+    const docId = ctx.session.conversationId ?? ctx.session.sessionId;
+    const stepIndex = nextStepIndex++;
+    const durationMs = clock() - startMs;
+
+    const step: RichTrajectoryStep = {
+      stepIndex,
+      timestamp: clock(),
+      source: kind === "model_call" ? "agent" : "tool",
+      kind,
+      identifier,
+      outcome,
+      durationMs,
+      ...(request !== undefined ? { request } : {}),
+      ...(response !== undefined ? { response } : {}),
+      ...(error !== undefined ? { error } : {}),
+      ...(metrics !== undefined ? { metrics } : {}),
+      ...(bulletIds !== undefined && bulletIds.length > 0 ? { bulletIds } : {}),
+    };
+
+    atifBuffer.append(docId, step);
+  }
+
   // let: mutable — updated after each playbook injection to reflect current count
   let activePlaybookCount = 0;
 
@@ -86,7 +154,29 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
 
   /** Shared playbook loading + injection logic for both wrapModelCall and wrapModelStream. */
   async function enrichRequestWithPlaybooks(request: ModelRequest): Promise<ModelRequest> {
-    // Load stat-based playbooks (cached per session)
+    const totalBudget = config.maxInjectionTokens ?? DEFAULT_MAX_INJECTION_TOKENS;
+
+    // When LLM pipeline is enabled, structured playbooks are the primary
+    // learning output — stat playbooks are demoted (Decision #4: stat as fallback).
+    if (llmEnabled && config.structuredPlaybookStore !== undefined) {
+      // Load structured playbooks (cached per session)
+      if (cachedStructuredPlaybooks === undefined) {
+        const tagOptions =
+          config.playbookTags !== undefined ? { tags: config.playbookTags } : undefined;
+        cachedStructuredPlaybooks = await config.structuredPlaybookStore.list(tagOptions);
+      }
+
+      const filteredStructured = await selectStructuredPlaybooks(
+        cachedStructuredPlaybooks ?? [],
+        totalBudget,
+      );
+
+      const enrichedRequest = buildEnrichedRequest(request, [], filteredStructured, clock);
+      activePlaybookCount = filteredStructured.length;
+      return enrichedRequest;
+    }
+
+    // Fallback: stat-based playbooks only (no LLM pipeline)
     if (cachedStatPlaybooks === undefined) {
       const listOptions: {
         readonly tags?: readonly string[];
@@ -98,39 +188,15 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       cachedStatPlaybooks = await config.playbookStore.list(listOptions);
     }
 
-    // Load structured playbooks if LLM pipeline enabled
-    if (
-      llmEnabled &&
-      cachedStructuredPlaybooks === undefined &&
-      config.structuredPlaybookStore !== undefined
-    ) {
-      const tagOptions =
-        config.playbookTags !== undefined ? { tags: config.playbookTags } : undefined;
-      cachedStructuredPlaybooks = await config.structuredPlaybookStore.list(tagOptions);
-    }
-
-    // Select stat-based playbooks within token budget
-    const totalBudget = config.maxInjectionTokens ?? DEFAULT_MAX_INJECTION_TOKENS;
     const selected = selectPlaybooks(cachedStatPlaybooks ?? [], {
       maxTokens: totalBudget,
       clock,
     });
 
-    // Compute stat token usage, derive remaining budget for structured playbooks
-    const statTokensUsed = selected.reduce((sum, pb) => sum + estimateTokens(pb.strategy), 0);
-    const remainingBudget = totalBudget - statTokensUsed;
-    const filteredStructured = await selectStructuredPlaybooks(
-      cachedStructuredPlaybooks ?? [],
-      remainingBudget,
-    );
+    const enrichedRequest = buildEnrichedRequest(request, selected, [], clock);
+    activePlaybookCount = selected.length;
 
-    // Build enriched request
-    const enrichedRequest = buildEnrichedRequest(request, selected, filteredStructured, clock);
-
-    const totalPlaybookCount = selected.length + filteredStructured.length;
-    activePlaybookCount = totalPlaybookCount;
-
-    if (selected.length > 0 || filteredStructured.length > 0) {
+    if (selected.length > 0) {
       config.onInject?.(selected);
     }
 
@@ -181,9 +247,39 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
         const bulletIds = extractCitedBulletIds(responseText);
 
         recordOutcome(ctx, "model_call", response.model, start, "success", bulletIds);
+
+        // Record rich trajectory step to ATIF buffer
+        recordRichStep(
+          ctx,
+          "model_call",
+          response.model,
+          start,
+          "success",
+          undefined, // request content captured by audit adapter if configured
+          responseText.length > 0 ? { text: responseText } : undefined,
+          undefined,
+          response.usage !== undefined
+            ? {
+                promptTokens: response.usage.inputTokens,
+                completionTokens: response.usage.outputTokens,
+              }
+            : undefined,
+          bulletIds,
+        );
+
         return response;
       } catch (e: unknown) {
         recordOutcome(ctx, "model_call", request.model ?? "unknown", start, "failure");
+        recordRichStep(
+          ctx,
+          "model_call",
+          request.model ?? "unknown",
+          start,
+          "failure",
+          undefined,
+          undefined,
+          { text: e instanceof Error ? e.message : String(e) },
+        );
         throw e;
       }
     },
@@ -248,9 +344,32 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
         const response = await next(request);
         recordOutcome(ctx, "tool_call", request.toolId, start, "success");
         toolCallCount++;
+
+        // Record rich trajectory step to ATIF buffer
+        const responseText = typeof response.output === "string" ? response.output : undefined;
+        recordRichStep(
+          ctx,
+          "tool_call",
+          request.toolId,
+          start,
+          "success",
+          { data: request.input },
+          responseText !== undefined ? { text: responseText } : undefined,
+        );
+
         return response;
       } catch (e: unknown) {
         recordOutcome(ctx, "tool_call", request.toolId, start, "failure");
+        recordRichStep(
+          ctx,
+          "tool_call",
+          request.toolId,
+          start,
+          "failure",
+          { data: request.input },
+          undefined,
+          { text: e instanceof Error ? e.message : String(e) },
+        );
         throw e;
       }
     },
@@ -262,16 +381,18 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       cachedStatPlaybooks = undefined;
       cachedStructuredPlaybooks = undefined;
 
+      // Flush ATIF write-behind buffer before reflection reads
+      if (atifBuffer !== undefined) {
+        const docId = ctx.conversationId ?? ctx.sessionId;
+        await atifBuffer.flush(docId);
+      }
+
       const entries = buffer.flush();
       if (entries.length === 0) return;
 
       try {
         // Persist trajectory
-        try {
-          await config.trajectoryStore.append(ctx.sessionId, entries);
-        } catch (storeErr: unknown) {
-          throw storeErr;
-        }
+        await config.trajectoryStore.append(ctx.sessionId, entries);
 
         // Get session count for frequency normalization
         const sessions = await config.trajectoryStore.listSessions({
@@ -287,11 +408,11 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
 
         // Fire-and-forget LLM pipeline if configured (Decision #13)
         if (llmPipeline !== undefined) {
+          const errorHandler = config.onLlmPipelineError ?? defaultLlmPipelineErrorHandler;
           void llmPipeline
             .consolidate(entries, ctx.sessionId, sessionCount, clock, buffer)
-            .then(() => {})
             .catch((e: unknown) => {
-              config.onLlmPipelineError?.(e, ctx.sessionId);
+              errorHandler(e, ctx.sessionId);
             });
         }
       } catch (e: unknown) {
@@ -310,6 +431,15 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       ? { structuredPlaybookStore: config.structuredPlaybookStore }
       : {}),
   });
+
+  if (options?.withHandle === true) {
+    return {
+      middleware,
+      invalidatePlaybookCache(): void {
+        cachedStructuredPlaybooks = undefined;
+      },
+    };
+  }
 
   return middleware;
 }

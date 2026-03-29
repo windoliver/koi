@@ -136,7 +136,7 @@ function parseReflectionResponse(
     return { rootCause, keyInsight, bulletTags };
   } catch (e: unknown) {
     onParseFailure?.(raw, e, "reflector");
-    return { rootCause: "", keyInsight: "", bulletTags: [] };
+    throw new Error("ACE reflector: failed to parse LLM response", { cause: e });
   }
 }
 

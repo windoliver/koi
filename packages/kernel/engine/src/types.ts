@@ -132,6 +132,8 @@ export interface CreateKoiOptions {
   readonly userId?: string;
   /** Channel adapter package name (e.g. "@koi/channel-telegram"). Injected into SessionContext. */
   readonly channelId?: string;
+  /** Stable conversation ID that spans multiple runtime.run() calls. Injected into SessionContext. */
+  readonly conversationId?: string;
   /** Process group to assign this agent to. Recorded in the registry entry and ProcessId. */
   readonly groupId?: AgentGroupId | undefined;
   /** Debug instrumentation configuration. When enabled, records per-middleware timing spans. */

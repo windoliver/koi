@@ -297,7 +297,7 @@ describe("createDefaultCurator", () => {
     expect(ops[0]).toEqual({ kind: "add", section: "str", content: "New insight" });
   });
 
-  test("returns empty array for malformed LLM response", async () => {
+  test("throws on malformed LLM response", async () => {
     const modelCall = async (): Promise<string> => "not valid json";
 
     const curator = createDefaultCurator(modelCall);
@@ -307,8 +307,9 @@ describe("createDefaultCurator", () => {
       tokenBudget: 10000,
     };
 
-    const ops = await curator.curate(input);
-    expect(ops).toHaveLength(0);
+    await expect(curator.curate(input)).rejects.toThrow(
+      "ACE curator: failed to parse LLM response",
+    );
   });
 
   test("filters out operations with unknown section names", async () => {

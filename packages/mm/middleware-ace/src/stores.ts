@@ -1,48 +1,24 @@
 /**
  * Store interfaces and implementations for ACE middleware.
  *
- * Provides in-memory (testing) and SQLite (production) backends.
+ * Interfaces are re-exported from @koi/ace-types (L0u).
+ * In-memory implementations provided here for testing and reference.
  * Shared CRUD logic is extracted into createMapStore<T> to avoid
  * duplication across store types (Decision 5A).
  */
 
+import type {
+  Playbook,
+  PlaybookStore,
+  StructuredPlaybook,
+  StructuredPlaybookStore,
+  TrajectoryEntry,
+  TrajectoryStore,
+} from "@koi/ace-types";
 import type { RichTrajectoryStep, RichTrajectoryStore } from "@koi/core/rich-trajectory";
-import type { Playbook, StructuredPlaybook, TrajectoryEntry } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// Interfaces
-// ---------------------------------------------------------------------------
-
-/** TrajectoryStore — append-heavy, per-session trajectory storage. */
-export interface TrajectoryStore {
-  readonly append: (sessionId: string, entries: readonly TrajectoryEntry[]) => Promise<void>;
-  readonly getSession: (sessionId: string) => Promise<readonly TrajectoryEntry[]>;
-  readonly listSessions: (options?: {
-    readonly limit?: number;
-    readonly before?: number;
-  }) => Promise<readonly string[]>;
-}
-
-/** PlaybookStore — read-heavy, versioned playbook storage. */
-export interface PlaybookStore {
-  readonly get: (id: string) => Promise<Playbook | undefined>;
-  readonly list: (options?: {
-    readonly tags?: readonly string[];
-    readonly minConfidence?: number;
-  }) => Promise<readonly Playbook[]>;
-  readonly save: (playbook: Playbook) => Promise<void>;
-  readonly remove: (id: string) => Promise<boolean>;
-}
-
-/** StructuredPlaybookStore — read-heavy, structured playbook storage. */
-export interface StructuredPlaybookStore {
-  readonly get: (id: string) => Promise<StructuredPlaybook | undefined>;
-  readonly list: (options?: {
-    readonly tags?: readonly string[];
-  }) => Promise<readonly StructuredPlaybook[]>;
-  readonly save: (playbook: StructuredPlaybook) => Promise<void>;
-  readonly remove: (id: string) => Promise<boolean>;
-}
+// Re-export store interfaces from @koi/ace-types for backward compatibility
+export type { PlaybookStore, StructuredPlaybookStore, TrajectoryStore } from "@koi/ace-types";
 
 // ---------------------------------------------------------------------------
 // Generic map-backed store (Decision 5A — DRY helper)

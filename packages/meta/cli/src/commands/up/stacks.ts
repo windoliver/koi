@@ -348,10 +348,17 @@ async function activateAce(
   middleware: KoiMiddleware[],
 ): Promise<void> {
   const backend = config.stacks.aceStoreBackend ?? "memory";
-  const { createAceMiddleware } = await import("@koi/middleware-ace");
+  const { createAceMiddleware, createInMemoryAtifDocumentStore } = await import(
+    "@koi/middleware-ace"
+  );
 
   // Build LLM pipeline config when model call is available
   const llmConfig = await buildAceLlmConfig(config);
+
+  // Error handler for LLM pipeline — wired to TUI log channel
+  const onLlmPipelineError = (error: unknown, sessionId: string): void => {
+    log(config, `ACE: LLM pipeline failed for session ${sessionId}: ${String(error)}`);
+  };
 
   if (backend === "nexus" && config.nexusBaseUrl !== undefined) {
     const {
@@ -380,10 +387,12 @@ async function activateAce(
       basePath: `${agentPrefix}ace/structured-playbooks`,
     });
 
-    // Rich trajectory store for Nexus backend — uses same Nexus connection
-    const richTrajectoryStore =
+    // ATIF document store for canonical trajectory persistence
+    const atifStore =
       llmConfig !== undefined
-        ? (await import("@koi/middleware-ace")).createInMemoryRichTrajectoryStore()
+        ? createInMemoryAtifDocumentStore({
+            agentName: config.agentName ?? "koi-agent",
+          })
         : undefined;
 
     const mw = createAceMiddleware({
@@ -391,7 +400,8 @@ async function activateAce(
       playbookStore,
       structuredPlaybookStore,
       ...llmConfig?.aceConfig,
-      ...(richTrajectoryStore !== undefined ? { richTrajectoryStore } : {}),
+      ...(atifStore !== undefined ? { atifStore } : {}),
+      onLlmPipelineError,
     });
     middleware.push(mw);
     if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
@@ -417,7 +427,6 @@ async function activateAce(
       createSqliteTrajectoryStore,
       createSqlitePlaybookStore,
       createSqliteStructuredPlaybookStore,
-      createSqliteRichTrajectoryStore,
     } = await import("@koi/middleware-ace");
 
     const dbPath = resolve(dbDir, "ace.db");
@@ -425,16 +434,21 @@ async function activateAce(
     const playbookStore = createSqlitePlaybookStore({ dbPath });
     const structuredPlaybookStore = createSqliteStructuredPlaybookStore({ dbPath });
 
+    // ATIF document store for canonical trajectory persistence
+    const atifStore =
+      llmConfig !== undefined
+        ? createInMemoryAtifDocumentStore({
+            agentName: config.agentName ?? "koi-agent",
+          })
+        : undefined;
+
     const mw = createAceMiddleware({
       trajectoryStore,
       playbookStore,
       structuredPlaybookStore,
-      ...(llmConfig !== undefined
-        ? {
-            ...llmConfig.aceConfig,
-            richTrajectoryStore: createSqliteRichTrajectoryStore({ dbPath }),
-          }
-        : {}),
+      ...(llmConfig !== undefined ? llmConfig.aceConfig : {}),
+      ...(atifStore !== undefined ? { atifStore } : {}),
+      onLlmPipelineError,
     });
     middleware.push(mw);
     if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
@@ -447,23 +461,27 @@ async function activateAce(
       createInMemoryTrajectoryStore,
       createInMemoryPlaybookStore,
       createInMemoryStructuredPlaybookStore,
-      createInMemoryRichTrajectoryStore,
     } = await import("@koi/middleware-ace");
 
     const trajectoryStore = createInMemoryTrajectoryStore();
     const playbookStore = createInMemoryPlaybookStore();
     const structuredPlaybookStore = createInMemoryStructuredPlaybookStore();
 
+    // ATIF document store for canonical trajectory persistence
+    const atifStore =
+      llmConfig !== undefined
+        ? createInMemoryAtifDocumentStore({
+            agentName: config.agentName ?? "koi-agent",
+          })
+        : undefined;
+
     const mw = createAceMiddleware({
       trajectoryStore,
       playbookStore,
       structuredPlaybookStore,
-      ...(llmConfig !== undefined
-        ? {
-            ...llmConfig.aceConfig,
-            richTrajectoryStore: createInMemoryRichTrajectoryStore(),
-          }
-        : {}),
+      ...(llmConfig !== undefined ? llmConfig.aceConfig : {}),
+      ...(atifStore !== undefined ? { atifStore } : {}),
+      onLlmPipelineError,
     });
     middleware.push(mw);
     if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);

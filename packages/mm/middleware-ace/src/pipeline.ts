@@ -115,29 +115,25 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
       // Collect cited bullet IDs from trajectory
       const citedBulletIds = entries.flatMap((e) => e.bulletIds ?? []);
 
-      // Fetch full rich trajectory from source
-      const fullRichTrajectory = await fetchFullRichTrajectory(config, sessionId);
+      // Fetch rich trajectory — prefer ATIF store with delta watermark
+      const richTrajectory = await fetchRichTrajectoryForReflection(
+        config,
+        sessionId,
+        playbook,
+        maxReflectorTokens,
+      );
 
-      // Persist full (uncompressed) rich trajectory if store is configured
-      if (
-        fullRichTrajectory !== undefined &&
-        fullRichTrajectory.length > 0 &&
-        config.richTrajectoryStore !== undefined
-      ) {
-        await config.richTrajectoryStore.append(sessionId, fullRichTrajectory);
-
-        // TTL pruning — piggyback on writes
-        const retentionDays =
-          config.richTrajectoryRetentionDays ?? DEFAULT_RICH_TRAJECTORY_RETENTION_DAYS;
-        const cutoff = clock() - retentionDays * MS_PER_DAY;
-        await config.richTrajectoryStore.prune(cutoff);
+      // Legacy: persist to RichTrajectoryStore if configured (no ATIF store)
+      if (config.atifStore === undefined && config.richTrajectoryStore !== undefined) {
+        const fullRichTrajectory = await fetchFullRichTrajectory(config, sessionId);
+        if (fullRichTrajectory !== undefined && fullRichTrajectory.length > 0) {
+          await config.richTrajectoryStore.append(sessionId, fullRichTrajectory);
+          const retentionDays =
+            config.richTrajectoryRetentionDays ?? DEFAULT_RICH_TRAJECTORY_RETENTION_DAYS;
+          const cutoff = clock() - retentionDays * MS_PER_DAY;
+          await config.richTrajectoryStore.prune(cutoff);
+        }
       }
-
-      // Compress for reflector prompt (budget-aware subset of the full trajectory)
-      const richTrajectory =
-        fullRichTrajectory !== undefined && fullRichTrajectory.length > 0
-          ? compressRichTrajectory(fullRichTrajectory, maxReflectorTokens)
-          : undefined;
 
       // Reflect on trajectory (with compressed rich data if available)
       const reflection = await reflector.analyze({
@@ -161,10 +157,17 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
       // Apply delta operations
       const updated = await applyOperations(taggedPlaybook, ops, tokenBudget, clock, tokenizer);
 
+      // Update watermark to highest stepIndex in the delta
+      const maxStepIndex =
+        richTrajectory !== undefined && richTrajectory.length > 0
+          ? Math.max(...richTrajectory.map((s) => s.stepIndex))
+          : playbook.lastReflectedStepIndex;
+
       // Persist
       const final: StructuredPlaybook = {
         ...updated,
         sessionCount: updated.sessionCount + 1,
+        ...(maxStepIndex !== undefined ? { lastReflectedStepIndex: maxStepIndex } : {}),
       };
       await store.save(final);
 
@@ -172,6 +175,53 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
       config.onLlmPipelineComplete?.(sessionId);
     },
   };
+}
+
+/**
+ * Fetch rich trajectory for reflector input, using delta watermark when ATIF store is available.
+ *
+ * When ATIF store is configured:
+ *   - Reads only steps after the playbook's lastReflectedStepIndex (delta)
+ *   - Falls back to full document if watermark is corrupted (> max step index)
+ *
+ * When only richTrajectorySource is configured (legacy):
+ *   - Fetches full trajectory and compresses for reflector prompt
+ */
+async function fetchRichTrajectoryForReflection(
+  config: AceConfig,
+  sessionId: string,
+  playbook: StructuredPlaybook,
+  maxReflectorTokens: number,
+): Promise<readonly RichTrajectoryStep[] | undefined> {
+  // Prefer ATIF store with delta watermark
+  if (config.atifStore !== undefined) {
+    const watermark = playbook.lastReflectedStepIndex ?? -1;
+    const delta = await config.atifStore.getStepRange(
+      sessionId,
+      watermark + 1,
+      Number.MAX_SAFE_INTEGER,
+    );
+
+    // Corruption guard: if watermark is beyond what exists, read full document
+    if (delta.length === 0 && watermark > 0) {
+      const full = await config.atifStore.getDocument(sessionId);
+      if (full.length > 0 && watermark > Math.max(...full.map((s) => s.stepIndex))) {
+        // Watermark is corrupted — reset by reading everything
+        return compressRichTrajectory(full, maxReflectorTokens);
+      }
+      // Genuinely no new steps — return empty
+      return delta.length > 0 ? compressRichTrajectory(delta, maxReflectorTokens) : undefined;
+    }
+
+    return delta.length > 0 ? compressRichTrajectory(delta, maxReflectorTokens) : undefined;
+  }
+
+  // Legacy path: richTrajectorySource
+  const fullRichTrajectory = await fetchFullRichTrajectory(config, sessionId);
+  if (fullRichTrajectory !== undefined && fullRichTrajectory.length > 0) {
+    return compressRichTrajectory(fullRichTrajectory, maxReflectorTokens);
+  }
+  return undefined;
 }
 
 /** Fetch full (uncompressed) rich trajectory from the configured source. */

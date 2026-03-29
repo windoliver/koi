@@ -332,7 +332,7 @@ function parseCuratorResponse(
     return ops;
   } catch (e: unknown) {
     onParseFailure?.(raw, e, "curator");
-    return [];
+    throw new Error("ACE curator: failed to parse LLM response", { cause: e });
   }
 }
 

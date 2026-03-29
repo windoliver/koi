@@ -244,12 +244,17 @@ export async function bootRuntime(options: BootRuntimeOptions): Promise<RuntimeH
   // 7. Assemble runtime
   // ------------------------------------------------------------------
   progress("assemble", "Assembling runtime");
+  // Stable conversation ID for this TUI session — persists across multiple
+  // runtime.run() calls so ACE accumulates trajectory across user messages.
+  const conversationId = `conversation-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+
   const { runtime, dispose: forgeSystemDispose } = await createForgeConfiguredKoi({
     manifest,
     adapter,
     middleware: composed.middleware,
     providers: composed.providers,
     extensions: [],
+    conversationId,
     ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
     debug: { enabled: true },
     onDashboardEvent: (event: DashboardEvent) => {

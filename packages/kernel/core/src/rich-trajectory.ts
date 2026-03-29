@@ -58,12 +58,41 @@ export interface RichTrajectoryStep {
   readonly metadata?: JsonObject;
 }
 
-/** Store for rich trajectory data — append-heavy, per-session, with TTL pruning. */
+/**
+ * Store for rich trajectory data — append-heavy, per-session, with TTL pruning.
+ *
+ * @deprecated Use {@link TrajectoryDocumentStore} instead. This interface will
+ * be removed once all consumers migrate to the ATIF-backed document store.
+ */
 export interface RichTrajectoryStore {
   /** Append rich trajectory steps for a session. */
   readonly append: (sessionId: string, steps: readonly RichTrajectoryStep[]) => Promise<void>;
   /** Retrieve all rich steps for a session. */
   readonly getSession: (sessionId: string) => Promise<readonly RichTrajectoryStep[]>;
   /** Delete entries older than the given timestamp. Returns count of pruned entries. */
+  readonly prune: (olderThanMs: number) => Promise<number>;
+}
+
+/**
+ * Format-agnostic document store for rich trajectory data.
+ *
+ * Supports conversation-scoped documents that accumulate across multiple
+ * engine sessions. Implementations may use any serialization format
+ * (e.g., ATIF, JSONL) internally.
+ */
+export interface TrajectoryDocumentStore {
+  /** Append rich trajectory steps to a document. */
+  readonly append: (docId: string, steps: readonly RichTrajectoryStep[]) => Promise<void>;
+  /** Retrieve all rich steps for a document. */
+  readonly getDocument: (docId: string) => Promise<readonly RichTrajectoryStep[]>;
+  /** Retrieve a range of steps by stepIndex (inclusive start, exclusive end). */
+  readonly getStepRange: (
+    docId: string,
+    startIndex: number,
+    endIndex: number,
+  ) => Promise<readonly RichTrajectoryStep[]>;
+  /** Get the approximate size of a document in bytes. */
+  readonly getSize: (docId: string) => Promise<number>;
+  /** Delete documents older than the given timestamp. Returns count of pruned entries. */
   readonly prune: (olderThanMs: number) => Promise<number>;
 }

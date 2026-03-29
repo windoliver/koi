@@ -11,6 +11,9 @@
   ],
   "references": [
     {
+      "path": "../../lib/ace-types"
+    },
+    {
       "path": "../../kernel/core"
     },
     {
