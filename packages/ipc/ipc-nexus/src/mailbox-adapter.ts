@@ -87,10 +87,9 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
   const handlers = new Set<MessageHandler>();
   const seen = createSeenBuffer(seenCapacity);
 
-  // Auto-provision inbox on creation so incoming messages can be delivered.
-  // Fire-and-forget: provision is idempotent, failure is non-fatal (inbox may
-  // already exist or Nexus may be temporarily unavailable).
-  void client.provision(agentId as string);
+  // Note: inbox provisioning is automatic during Nexus agent registration
+  // (AgentRegistrationService.register → Step 5). No explicit provision call
+  // needed — the inbox exists as long as the agent is registered in Nexus.
 
   // let justified: mutable delivery state
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
