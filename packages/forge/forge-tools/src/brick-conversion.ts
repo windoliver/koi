@@ -43,6 +43,7 @@ export function brickToTool(
     name: brick.name,
     description: brick.description,
     inputSchema: brick.inputSchema,
+    origin: "forged",
   };
 
   // Build execution context when workspace is available

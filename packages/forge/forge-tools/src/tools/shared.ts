@@ -501,6 +501,50 @@ export async function runForgePipeline(
     }
   }
 
+  // Name-based dedup: prevent duplicate bricks with the same name.
+  // Checked before verification to save compute on known duplicates.
+  // Content dedup (hash, checked post-verify) misses bricks with slightly
+  // different implementations that serve the same logical purpose.
+  const nameSearchResult = await deps.store.search({
+    text: forgeInput.name,
+    kind: forgeInput.kind,
+    lifecycle: "active",
+    limit: 5,
+  });
+  if (nameSearchResult.ok && nameSearchResult.value.some((b) => b.name === forgeInput.name)) {
+    const existing = nameSearchResult.value.find((b) => b.name === forgeInput.name);
+    if (existing !== undefined) {
+      const forgeResult: ForgeResult = {
+        id: existing.id,
+        kind: forgeInput.kind,
+        name: forgeInput.name,
+        descriptor: {
+          name: forgeInput.name,
+          description: forgeInput.description,
+          inputSchema: forgeInput.kind === "tool" ? forgeInput.inputSchema : {},
+        },
+        origin: "forged",
+        policy: existing.policy,
+        scope: deps.config.defaultScope,
+        lifecycle: "active",
+        verificationReport: {
+          passed: true,
+          sandbox: existing.policy.sandbox,
+          totalDurationMs: 0,
+          stages: [],
+        },
+        metadata: {
+          forgedAt: startedAt,
+          forgedBy: deps.context.agentId,
+          sessionId: deps.context.sessionId,
+          depth: deps.context.depth,
+        },
+        forgesConsumed: 0,
+      };
+      return { ok: true, value: forgeResult };
+    }
+  }
+
   const verifyResult = await pipeline.verify(
     forgeInput,
     deps.context,

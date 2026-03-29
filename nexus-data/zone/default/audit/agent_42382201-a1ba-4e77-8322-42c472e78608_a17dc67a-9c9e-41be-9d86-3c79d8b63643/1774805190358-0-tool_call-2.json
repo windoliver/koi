@@ -1,0 +1,141 @@
+{
+  "timestamp": 1774805190358,
+  "sessionId": "agent:42382201-a1ba-4e77-8322-42c472e78608:a17dc67a-9c9e-41be-9d86-3c79d8b63643",
+  "agentId": "42382201-a1ba-4e77-8322-42c472e78608",
+  "turnIndex": 0,
+  "kind": "tool_call",
+  "request": {
+    "toolId": "search_forge",
+    "input": { "query": "celsius_to_f" },
+    "metadata": { "toolCallId": "toolu_vrtx_019RKBg53KCdVCWMtFoLgJyb" },
+    "signal": {}
+  },
+  "response": {
+    "output": {
+      "ok": true,
+      "value": [
+        {
+          "id": "sha256:95a29b0ac43a124037994350529e1d152519218a29776dba82ae6a31d0b60ac6",
+          "name": "celsius_to_f",
+          "description": "Converts a temperature from Celsius to Fahrenheit.",
+          "scope": "global",
+          "origin": "forged",
+          "policy": {
+            "sandbox": true,
+            "capabilities": {
+              "network": { "allow": false },
+              "filesystem": {
+                "read": ["/usr", "/bin", "/lib", "/etc", "/tmp"],
+                "write": ["/tmp/koi-sandbox-*"]
+              },
+              "resources": {
+                "maxMemoryMb": 512,
+                "timeoutMs": 30000,
+                "maxPids": 64,
+                "maxOpenFiles": 256
+              }
+            }
+          },
+          "lifecycle": "active",
+          "version": "0.0.1",
+          "tags": ["temperature", "conversion", "utility"],
+          "usageCount": 0,
+          "kind": "tool",
+          "implementation": "return { fahrenheit: input.celsius * 9/5 + 32 }",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "celsius": { "type": "number", "description": "Temperature in Celsius" }
+            },
+            "required": ["celsius"]
+          },
+          "testCases": [
+            {
+              "name": "Boiling point",
+              "input": { "celsius": 100 },
+              "expectedOutput": { "fahrenheit": 212 }
+            },
+            {
+              "name": "Freezing point",
+              "input": { "celsius": 0 },
+              "expectedOutput": { "fahrenheit": 32 }
+            },
+            {
+              "name": "Body temperature",
+              "input": { "celsius": 37 },
+              "expectedOutput": { "fahrenheit": 98.6 }
+            }
+          ],
+          "provenance": {
+            "source": {
+              "origin": "forged",
+              "forgedBy": "0788eed3-6db1-4b43-8438-8625fd5fabec",
+              "sessionId": "up:koi-demo:0"
+            },
+            "buildDefinition": {
+              "buildType": "koi.forge/tool/v1",
+              "externalParameters": {
+                "kind": "tool",
+                "name": "celsius_to_f",
+                "description": "Converts a temperature from Celsius to Fahrenheit.",
+                "tags": ["temperature", "conversion", "utility"],
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "celsius": { "type": "number", "description": "Temperature in Celsius" }
+                  },
+                  "required": ["celsius"]
+                },
+                "implementation": "return { fahrenheit: input.celsius * 9/5 + 32 }",
+                "testCases": [
+                  {
+                    "name": "Boiling point",
+                    "input": { "celsius": 100 },
+                    "expectedOutput": { "fahrenheit": 212 }
+                  },
+                  {
+                    "name": "Freezing point",
+                    "input": { "celsius": 0 },
+                    "expectedOutput": { "fahrenheit": 32 }
+                  },
+                  {
+                    "name": "Body temperature",
+                    "input": { "celsius": 37 },
+                    "expectedOutput": { "fahrenheit": 98.6 }
+                  }
+                ]
+              }
+            },
+            "builder": { "id": "koi.forge/pipeline/v1" },
+            "metadata": {
+              "invocationId": "sha256:95a29b0ac43a124037994350529e1d152519218a29776dba82ae6a31d0b60ac6",
+              "startedAt": 1774754879583,
+              "finishedAt": 1774754880801,
+              "sessionId": "up:koi-demo:0",
+              "agentId": "0788eed3-6db1-4b43-8438-8625fd5fabec",
+              "depth": 0
+            },
+            "verification": {
+              "passed": true,
+              "sandbox": true,
+              "totalDurationMs": 293.92062499999884,
+              "stageResults": [
+                { "stage": "static", "passed": true, "durationMs": 0.8549590000038734 },
+                { "stage": "format", "passed": true, "durationMs": 0.0009580000041751191 },
+                { "stage": "resolve", "passed": true, "durationMs": 0.0006250000005820766 },
+                { "stage": "sandbox", "passed": true, "durationMs": 0.0417500000000004 },
+                { "stage": "self_test", "passed": true, "durationMs": 242.24270900001284 },
+                { "stage": "trust", "passed": true, "durationMs": 0.0032500000088475645 }
+              ]
+            },
+            "classification": "public",
+            "contentMarkers": [],
+            "contentHash": "sha256:95a29b0ac43a124037994350529e1d152519218a29776dba82ae6a31d0b60ac6"
+          }
+        }
+      ]
+    },
+    "metadata": { "toolCallId": "toolu_vrtx_019RKBg53KCdVCWMtFoLgJyb" }
+  },
+  "durationMs": 5771
+}

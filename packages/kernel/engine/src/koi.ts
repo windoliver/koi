@@ -861,6 +861,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               turns: 0,
               durationMs: Date.now() - sessionStartedAt,
             },
+            metadata: { errorMessage: error.message },
           },
         };
         yield doneEvent;

@@ -283,6 +283,8 @@ export interface ToolDescriptor {
   readonly description: string;
   readonly inputSchema: JsonObject;
   readonly tags?: readonly string[];
+  /** How this tool entered the system. Absent for legacy callers (treated as "primordial"). */
+  readonly origin?: ToolOrigin;
 }
 
 /**

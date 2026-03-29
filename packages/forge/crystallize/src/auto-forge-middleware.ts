@@ -314,13 +314,21 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
         // Save to store — StoreChangeEvent triggers hot-attach in L1
         const brick = mapDescriptorToBrick(descriptor, now);
 
-        // Name-based dedup — skip if an active brick with the same name exists
-        const nameCheck = await config.forgeStore.search({
-          name: brick.name,
-          lifecycle: "active",
-          limit: 1,
-        });
-        if (nameCheck.ok && nameCheck.value.length > 0) continue;
+        // Name-based dedup: prevent duplicate bricks with the same name.
+        // Content dedup (hash) misses bricks with slightly different implementations.
+        try {
+          const nameCheck = await config.forgeStore.search({
+            name: brick.name,
+            lifecycle: "active",
+            limit: 1,
+          });
+          if (nameCheck.ok && nameCheck.value.length > 0) {
+            continue; // Active brick with same name already exists
+          }
+        } catch (e: unknown) {
+          // Non-fatal: proceed with forge if search fails (fail-open)
+          onError(e);
+        }
 
         // Pre-save gate (e.g., mutation pressure check injected by L3)
         if (config.beforeSave !== undefined) {
@@ -464,15 +472,22 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       provenance,
     });
 
-    // Name-based dedup — skip if an active brick with the same name exists
-    const nameCheck = await config.forgeStore.search({
-      name: brick.name,
-      lifecycle: "active",
-      limit: 1,
-    });
-    if (nameCheck.ok && nameCheck.value.length > 0) {
-      config.demandHandle?.dismiss(signal.id);
-      return;
+    // Name-based dedup: prevent duplicate pioneer bricks with the same name.
+    // Content dedup (hash) misses pioneers because each attempt has different
+    // timestamps/error messages, producing different hashes for the same logical brick.
+    try {
+      const nameCheck = await config.forgeStore.search({
+        name: brick.name,
+        lifecycle: "active",
+        limit: 1,
+      });
+      if (nameCheck.ok && nameCheck.value.length > 0) {
+        config.demandHandle?.dismiss(signal.id);
+        return; // Active brick with same name already exists
+      }
+    } catch (e: unknown) {
+      // Non-fatal: proceed with forge if search fails (fail-open)
+      onError(e);
     }
 
     // Pre-save gate (e.g., mutation pressure check injected by L3)

@@ -217,6 +217,12 @@ async function activateGovernance(
             "ask_user",
             "execute_code",
             "execute_script",
+            // Forge tools — allowed when forge.enabled is true in manifest
+            "forge_tool",
+            "forge_skill",
+            "forge_edit",
+            "search_forge",
+            "promote_forge",
             "plan_autonomous",
             "task_complete",
             "task_status",

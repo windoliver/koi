@@ -1,0 +1,71 @@
+{
+  "timestamp": 1774753008100,
+  "sessionId": "agent:6a7d13dd-48d5-4352-a2f4-c61d6bfd94e7:a9c93f1f-ae3a-496d-b925-5a338a7b5e21",
+  "agentId": "6a7d13dd-48d5-4352-a2f4-c61d6bfd94e7",
+  "turnIndex": 3,
+  "kind": "tool_call",
+  "request": {
+    "toolId": "forge_tool",
+    "input": {
+      "name": "celsius_to_f",
+      "description": "Converts a temperature value from Celsius to Fahrenheit using the standard formula: F = (C × 9/5) + 32",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "celsius": { "type": "number", "description": "Temperature in Celsius to convert" }
+        },
+        "required": ["celsius"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "celsius": { "type": "number", "description": "Original temperature in Celsius" },
+          "fahrenheit": { "type": "number", "description": "Converted temperature in Fahrenheit" }
+        },
+        "required": ["celsius", "fahrenheit"]
+      },
+      "implementation": "\n({ celsius }) => {\n  const fahrenheit = (celsius * 9 / 5) + 32;\n  return { celsius, fahrenheit };\n}\n",
+      "testCases": [
+        {
+          "name": "Freezing point",
+          "input": { "celsius": 0 },
+          "expectedOutput": { "celsius": 0, "fahrenheit": 32 }
+        },
+        {
+          "name": "Boiling point",
+          "input": { "celsius": 100 },
+          "expectedOutput": { "celsius": 100, "fahrenheit": 212 }
+        },
+        {
+          "name": "Body temperature",
+          "input": { "celsius": 37 },
+          "expectedOutput": { "celsius": 37, "fahrenheit": 98.6 }
+        },
+        {
+          "name": "Below zero",
+          "input": { "celsius": -40 },
+          "expectedOutput": { "celsius": -40, "fahrenheit": -40 }
+        }
+      ],
+      "tags": ["temperature", "conversion", "math", "utility"],
+      "trigger": ["convert celsius", "celsius to fahrenheit", "temperature conversion"]
+    },
+    "metadata": { "toolCallId": "toolu_vrtx_01DJTGxuoBiLq6uU831t7nvs" },
+    "signal": {}
+  },
+  "response": {
+    "output": {
+      "ok": false,
+      "error": {
+        "stage": "self_test",
+        "code": "TEST_FAILED",
+        "message": "1 test case(s) failed",
+        "failures": [
+          { "testName": "Freezing point", "expected": { "celsius": 0, "fahrenheit": 32 } }
+        ]
+      }
+    },
+    "metadata": { "toolCallId": "toolu_vrtx_01DJTGxuoBiLq6uU831t7nvs" }
+  },
+  "durationMs": 120
+}

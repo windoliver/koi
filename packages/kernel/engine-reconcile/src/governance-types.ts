@@ -19,6 +19,8 @@ export interface GovernanceConfig {
   readonly errorRate: {
     readonly windowMs: number;
     readonly threshold: number;
+    /** Minimum tool calls in the window before enforcing threshold. Default: 3. */
+    readonly minSampleSize?: number | undefined;
   };
   readonly cost: {
     /** Maximum cost in USD before violation. Set 0 to disable. */
@@ -43,6 +45,7 @@ export const DEFAULT_GOVERNANCE_CONFIG: GovernanceConfig = Object.freeze({
   errorRate: Object.freeze({
     windowMs: 60_000,
     threshold: 0.5,
+    minSampleSize: 3,
   }),
   cost: Object.freeze({
     maxCostUsd: 0, // disabled by default

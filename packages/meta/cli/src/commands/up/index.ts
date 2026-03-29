@@ -10,6 +10,7 @@ import { createCliChannel } from "@koi/channel-cli";
 import { createCliOutput, createTimer } from "@koi/cli-render";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineInput, InboundMessage } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { AgentCostEntry, CostSnapshot, DashboardEvent } from "@koi/dashboard-types";
@@ -766,9 +767,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
       if (nexus.baseUrl !== undefined) {
         try {
           const { createNexusForgeStore } = await import("@koi/nexus-store");
+          const nexusKey = process.env.NEXUS_API_KEY ?? "";
+          if (nexusKey === "") {
+            process.stderr.write("warn: NEXUS_API_KEY not set — forge store will fail auth\n");
+          }
           preForgeStore = createNexusForgeStore({
             baseUrl: nexus.baseUrl,
-            apiKey: process.env.NEXUS_API_KEY ?? "",
+            apiKey: nexusKey,
             basePath: `agents/${manifest.name}/bricks`,
           });
           activeStorage.forge = "nexus";
@@ -1218,7 +1223,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 9. ADMIN — kill stale processes on required ports before binding
   const DEFAULT_ADMIN_PORT = 3100;
-  await freePort(DEFAULT_ADMIN_PORT);
+  // Do NOT call freePort() — it kills other koi up instances running on this port.
+  // The retry loop below (lines 1384-1410) gracefully increments to the next free port.
   let stopAdmin: (() => void) | undefined;
   let adminBridge: AdminPanelBridgeResult | undefined;
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
@@ -1332,6 +1338,41 @@ export async function runUp(flags: UpFlags): Promise<void> {
               ),
             }
           : {}),
+      ...(forgeBootstrap !== undefined
+        ? {
+            forgeCommands: {
+              async promoteBrick(id: string) {
+                const r = await forgeBootstrap.store.update(brickId(id), { lifecycle: "active" });
+                return r.ok ? ({ ok: true, value: undefined } as const) : r;
+              },
+              async demoteBrick(id: string) {
+                const r = await forgeBootstrap.store.update(brickId(id), {
+                  policy: {
+                    sandbox: true,
+                    capabilities: {
+                      network: { allow: false },
+                      filesystem: {
+                        read: ["/usr", "/bin", "/lib", "/etc", "/tmp"],
+                        write: ["/tmp/koi-sandbox-*"],
+                      },
+                      resources: {
+                        maxMemoryMb: 512,
+                        timeoutMs: 30000,
+                        maxPids: 64,
+                        maxOpenFiles: 256,
+                      },
+                    },
+                  },
+                });
+                return r.ok ? ({ ok: true, value: undefined } as const) : r;
+              },
+              async quarantineBrick(id: string) {
+                const r = await forgeBootstrap.store.update(brickId(id), { lifecycle: "failed" });
+                return r.ok ? ({ ok: true, value: undefined } as const) : r;
+              },
+            },
+          }
+        : {}),
       ...(debugApi !== undefined
         ? {
             debug: {
@@ -1618,18 +1659,34 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const controller = new AbortController();
   let shuttingDown = false;
 
-  function shutdown(): void {
+  function shutdown(reason?: string): void {
     if (shuttingDown) {
       process.stderr.write("\nForce exit.\n");
       process.exit(1);
     }
     shuttingDown = true;
-    output.info("\nShutting down...");
+    process.stderr.write(`\n[shutdown] triggered by: ${reason ?? "unknown"}\n`);
+    output.info("Shutting down...");
     controller.abort();
   }
 
-  process.on("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  // SIGHUP is sent by tmux on session rename/detach — ignore it in interactive TUI mode.
+  // Only treat it as a shutdown signal when running headless (no TTY).
+  if (process.stdin.isTTY !== true) {
+    process.on("SIGHUP", () => shutdown("SIGHUP"));
+  } else {
+    process.on("SIGHUP", () => {});
+  }
+  process.on("uncaughtException", (err) => {
+    process.stderr.write(`[shutdown] uncaughtException: ${err.message}\n${err.stack ?? ""}\n`);
+    shutdown("uncaughtException");
+  });
+  process.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    process.stderr.write(`[shutdown] unhandledRejection: ${msg}\n`);
+  });
 
   // Separate concurrency guards for TUI (AG-UI bridge) and channel handlers.
   // This allows TUI and channels (Telegram, Slack, etc.) to process messages
@@ -1644,6 +1701,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     tuiProcessing = true;
     try {
       const text = extractTextFromBlocks(msg.content);
+      process.stderr.write(`[dispatch] message received: "${text.slice(0, 50)}..."\n`);
       if (text.trim() === "") return;
       const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
       // Expand stateless-normalized blocks ([user]: ..., [assistant]: ...)
@@ -1655,6 +1713,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);
         if (event.kind === "done") {
+          process.stderr.write(
+            `[dispatch] done: stopReason=${event.output.stopReason} turns=${String(event.output.metrics.turns)}\n`,
+          );
           if (event.output.stopReason === "error") {
             const errMeta = event.output.metadata as Record<string, unknown> | undefined;
             const errMsg =
@@ -1757,8 +1818,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`error: chat dispatch failed: ${message}\n`);
+      process.stderr.write(`[dispatch] ERROR: ${message}\n`);
+      if (error instanceof Error && error.stack) {
+        process.stderr.write(
+          `[dispatch] stack: ${error.stack.split("\n").slice(0, 3).join("\n")}\n`,
+        );
+      }
     } finally {
+      process.stderr.write(`[dispatch] finished, tuiProcessing=false\n`);
       tuiProcessing = false;
     }
   });

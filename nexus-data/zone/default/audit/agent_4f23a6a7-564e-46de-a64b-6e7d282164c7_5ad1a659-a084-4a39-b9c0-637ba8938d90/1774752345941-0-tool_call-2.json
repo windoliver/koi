@@ -1,0 +1,75 @@
+{
+  "timestamp": 1774752345941,
+  "sessionId": "agent:4f23a6a7-564e-46de-a64b-6e7d282164c7:5ad1a659-a084-4a39-b9c0-637ba8938d90",
+  "agentId": "4f23a6a7-564e-46de-a64b-6e7d282164c7",
+  "turnIndex": 0,
+  "kind": "tool_call",
+  "request": {
+    "toolId": "forge_tool",
+    "input": {
+      "name": "celsius_to_f",
+      "description": "Converts a temperature value from Celsius to Fahrenheit using the standard formula: F = (C × 9/5) + 32",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "celsius": { "type": "number", "description": "Temperature in Celsius to convert" }
+        },
+        "required": ["celsius"]
+      },
+      "implementation": "\nconst { celsius } = input;\nconst fahrenheit = (celsius * 9 / 5) + 32;\nreturn { celsius, fahrenheit };\n",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "celsius": { "type": "number", "description": "Original temperature in Celsius" },
+          "fahrenheit": { "type": "number", "description": "Converted temperature in Fahrenheit" }
+        },
+        "required": ["celsius", "fahrenheit"]
+      },
+      "testCases": [
+        {
+          "name": "Boiling point of water",
+          "input": { "celsius": 100 },
+          "expectedOutput": { "celsius": 100, "fahrenheit": 212 }
+        },
+        {
+          "name": "Freezing point of water",
+          "input": { "celsius": 0 },
+          "expectedOutput": { "celsius": 0, "fahrenheit": 32 }
+        },
+        {
+          "name": "Body temperature",
+          "input": { "celsius": 37 },
+          "expectedOutput": { "celsius": 37, "fahrenheit": 98.6 }
+        },
+        {
+          "name": "Absolute zero",
+          "input": { "celsius": -273.15 },
+          "expectedOutput": { "celsius": -273.15, "fahrenheit": -459.67 }
+        }
+      ],
+      "tags": ["temperature", "conversion", "math", "utility"],
+      "trigger": ["convert celsius", "celsius to fahrenheit", "temperature conversion"]
+    },
+    "metadata": { "toolCallId": "toolu_vrtx_012ciFJPuBmHusfNgohgVkmh" },
+    "signal": {}
+  },
+  "response": {
+    "output": {
+      "ok": false,
+      "error": {
+        "stage": "self_test",
+        "code": "TEST_FAILED",
+        "message": "1 test case(s) failed",
+        "failures": [
+          {
+            "testName": "Absolute zero",
+            "expected": { "celsius": -273.15, "fahrenheit": -459.67 },
+            "actual": { "celsius": -273.15, "fahrenheit": -459.66999999999996 }
+          }
+        ]
+      }
+    },
+    "metadata": { "toolCallId": "toolu_vrtx_012ciFJPuBmHusfNgohgVkmh" }
+  },
+  "durationMs": 413
+}

@@ -135,6 +135,10 @@ export interface BridgeOptions {
   readonly governanceCommands?:
     | Pick<CommandDispatcher, "listGovernanceQueue" | "reviewGovernance">
     | undefined;
+  /** Optional forge brick lifecycle commands (promote, demote, quarantine). */
+  readonly forgeCommands?:
+    | Pick<CommandDispatcher, "promoteBrick" | "demoteBrick" | "quarantineBrick">
+    | undefined;
 }
 
 /** Registration entry for a dispatched agent. */
@@ -850,6 +854,17 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
       : {}),
     ...(options.governanceCommands?.reviewGovernance !== undefined
       ? { reviewGovernance: options.governanceCommands.reviewGovernance }
+      : {}),
+
+    // Forge brick lifecycle commands
+    ...(options.forgeCommands?.promoteBrick !== undefined
+      ? { promoteBrick: options.forgeCommands.promoteBrick }
+      : {}),
+    ...(options.forgeCommands?.demoteBrick !== undefined
+      ? { demoteBrick: options.forgeCommands.demoteBrick }
+      : {}),
+    ...(options.forgeCommands?.quarantineBrick !== undefined
+      ? { quarantineBrick: options.forgeCommands.quarantineBrick }
       : {}),
   };
 

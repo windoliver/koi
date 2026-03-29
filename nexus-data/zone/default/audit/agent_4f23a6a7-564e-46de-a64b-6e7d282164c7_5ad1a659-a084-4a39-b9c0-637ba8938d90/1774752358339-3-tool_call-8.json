@@ -1,0 +1,18 @@
+{
+  "timestamp": 1774752358339,
+  "sessionId": "agent:4f23a6a7-564e-46de-a64b-6e7d282164c7:5ad1a659-a084-4a39-b9c0-637ba8938d90",
+  "agentId": "4f23a6a7-564e-46de-a64b-6e7d282164c7",
+  "turnIndex": 3,
+  "kind": "tool_call",
+  "request": {
+    "toolId": "search_forge",
+    "input": { "query": "celsius to fahrenheit temperature conversion", "kind": "tool" },
+    "metadata": { "toolCallId": "toolu_vrtx_01SfQkDyFh3QynyFzqAStWPa" },
+    "signal": {}
+  },
+  "response": {
+    "output": { "ok": true, "value": [] },
+    "metadata": { "toolCallId": "toolu_vrtx_01SfQkDyFh3QynyFzqAStWPa" }
+  },
+  "durationMs": 7505
+}

@@ -253,8 +253,11 @@ export function createForgeDemandDetector(config: ForgeDemandConfig): ForgeDeman
     for (const pattern of patterns) {
       const match = pattern.exec(responseText);
       if (match !== null) {
-        const capability = match[0];
-        capabilityGapCounts.set(capability, (capabilityGapCounts.get(capability) ?? 0) + 1);
+        // Normalize key by pattern source — different phrasings of the same gap
+        // (e.g., "I don't have a PDF tool" vs "I don't have a chart tool") should
+        // count together since they match the same pattern.
+        const key = pattern.source;
+        capabilityGapCounts.set(key, (capabilityGapCounts.get(key) ?? 0) + 1);
       }
     }
   }

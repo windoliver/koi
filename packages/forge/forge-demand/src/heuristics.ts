@@ -20,11 +20,12 @@ import type {
 
 /** Model response patterns indicating the LLM cannot find a suitable tool. */
 export const DEFAULT_CAPABILITY_GAP_PATTERNS: readonly RegExp[] = [
-  /I don'?t have (?:a |any )?tool/i,
-  /no (?:available |suitable )?tool (?:for|to|that)/i,
+  /I don'?t (?:currently )?have (?:a |any )?\w* ?tool/i,
+  /no (?:available |suitable )?\w* ?tool (?:for|to|that|in)/i,
   /I(?:'m| am) unable to .+ because .+ (?:tool|capability)/i,
   /I lack the (?:tool|capability|ability) to/i,
   /there (?:is|are) no (?:tool|function)s? (?:available )?(?:for|to)/i,
+  /don'?t (?:currently )?have .{0,30}(?:tool|capability)/i,
 ];
 
 // ---------------------------------------------------------------------------
@@ -74,12 +75,13 @@ export function detectCapabilityGap(
   for (const pattern of patterns) {
     const match = pattern.exec(responseText);
     if (match !== null) {
-      const capability = match[0];
-      const count = gapCounts.get(capability) ?? 0;
+      // Use pattern.source as key (matches updateGapCounts normalization)
+      const key = pattern.source;
+      const count = gapCounts.get(key) ?? 0;
       if (count >= threshold) {
         return {
           kind: "capability_gap",
-          requiredCapability: capability,
+          requiredCapability: match[0],
         };
       }
     }

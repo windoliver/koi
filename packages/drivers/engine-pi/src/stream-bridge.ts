@@ -425,10 +425,11 @@ export function createBridgeStreamFn(
       } catch (error: unknown) {
         // Clean up nonce entry if terminal was never reached (prevents memory leak)
         piParamsStore.delete(nonce);
+        const errText = error instanceof Error ? error.message : String(error);
         const errMessage: AssistantMessage = {
           ...builder.partial,
           stopReason: "error",
-          errorMessage: error instanceof Error ? error.message : String(error),
+          errorMessage: errText,
         };
         stream.push({ type: "error", reason: "error", error: errMessage });
         stream.end(errMessage);
