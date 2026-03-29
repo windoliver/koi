@@ -354,24 +354,25 @@ async function activateAce(
       createNexusStructuredPlaybookStore,
     } = await import("@koi/nexus-store");
 
-    const agentPrefix = config.agentName !== undefined ? `agents/${config.agentName}/` : "";
     // Use config key, fall back to env var (set during Nexus startup), never empty string
     const nexusApiKey = config.nexusApiKey ?? process.env.NEXUS_API_KEY ?? "";
     if (nexusApiKey.length === 0) {
       log(config, "Stack: ace — Nexus API key is empty, falling back to sqlite");
     }
+    // ACE store paths are zone-relative — the Nexus zone prefix already scopes
+    // writes under the agent's namespace, so we don't add agents/<name>/ prefix.
     const nexusBase = { baseUrl: config.nexusBaseUrl, apiKey: nexusApiKey };
     const trajectoryStore = createNexusTrajectoryStore({
       ...nexusBase,
-      basePath: `${agentPrefix}ace/trajectories`,
+      basePath: "ace/trajectories",
     });
     const playbookStore = createNexusPlaybookStore({
       ...nexusBase,
-      basePath: `${agentPrefix}ace/playbooks`,
+      basePath: "ace/playbooks",
     });
     const structuredPlaybookStore = createNexusStructuredPlaybookStore({
       ...nexusBase,
-      basePath: `${agentPrefix}ace/structured-playbooks`,
+      basePath: "ace/structured-playbooks",
     });
 
     // Rich trajectory store for Nexus backend — uses same Nexus connection

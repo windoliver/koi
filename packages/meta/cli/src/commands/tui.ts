@@ -20,7 +20,7 @@
 // OpenTUI's renderer.destroy() calls setRawMode(false) which throws EBADF
 // (errno 9) when the stdin fd is invalidated. This patch must run before
 // any OpenTUI import to prevent the fatal throw.
-if (process.stdin.isTTY && process.stdin.setRawMode) {
+if (process.stdin.setRawMode) {
   const originalSetRawMode = process.stdin.setRawMode.bind(process.stdin);
   process.stdin.setRawMode = (mode: boolean): typeof process.stdin => {
     try {
