@@ -19,7 +19,6 @@ import type {
   MessageFilter,
   Result,
 } from "@koi/core";
-import { agentId as brandAgentId, messageId as brandMessageId } from "@koi/core";
 import type { DeliveryMode } from "./constants.js";
 import {
   DEFAULT_DELIVERY_MODE,
@@ -32,7 +31,7 @@ import {
   DEFAULT_SSE_FALLBACK_CHECK_MS,
   DEFAULT_TIMEOUT_MS,
 } from "./constants.js";
-import { mapKoiToNexus, mapNexusToKoi } from "./map-message.js";
+import { mapKoiToNexus, mapNexusToKoi, mapSendResponseToKoi } from "./map-message.js";
 import type { NexusClient } from "./nexus-client.js";
 import { createNexusClient } from "./nexus-client.js";
 import type { HandlerErrorCallback, MessageHandler } from "./process-inbox.js";
@@ -222,29 +221,10 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
     const result = await client.sendMessage(nexusReq);
     if (!result.ok) return result;
 
-    const mapped = mapNexusToKoi(result.value);
-    if (mapped !== undefined) {
-      return { ok: true, value: mapped };
-    }
-
-    // Nexus returned the message with a kind we don't recognize in the reverse
-    // mapping. The send itself succeeded (HTTP 200) — the message was delivered.
-    // Fall back to constructing the AgentMessage from the original input + the
-    // server-assigned id/timestamp rather than failing the entire operation.
-    return {
-      ok: true,
-      value: {
-        id: brandMessageId(result.value.id),
-        from: brandAgentId(result.value.sender),
-        to: brandAgentId(result.value.recipient),
-        kind: message.kind,
-        type: message.type,
-        payload: message.payload,
-        createdAt: result.value.createdAt,
-        ...(message.correlationId !== undefined ? { correlationId: message.correlationId } : {}),
-        ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
-      },
-    };
+    // Send response is a subset (message_id, path, sender, recipient, type)
+    // — not a full envelope. Use the dedicated mapper that reconstructs the
+    // full AgentMessage from the response + original input.
+    return { ok: true, value: mapSendResponseToKoi(result.value, message) };
   };
 
   const onMessage = (handler: MessageHandler): (() => void) => {

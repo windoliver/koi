@@ -1,8 +1,8 @@
 /**
  * Thin HTTP client for the Nexus IPC REST API.
  *
- * All wire types (NexusMessageEnvelope, NexusSendRequest) are local to this
- * module — they never leak into L0 or the public API.
+ * Wire types are local to this module — they match the actual Nexus REST API
+ * shapes (snake_case fields, "type" not "kind") and never leak into L0.
  */
 
 import type { KoiError, Result } from "@koi/core";
@@ -10,35 +10,72 @@ import { RETRYABLE_DEFAULTS } from "@koi/core";
 import { DEFAULT_NEXUS_BASE_URL, DEFAULT_TIMEOUT_MS } from "./constants.js";
 
 // ---------------------------------------------------------------------------
-// Wire types (local — Nexus REST API envelope)
+// Wire types — match actual Nexus REST API shapes
 // ---------------------------------------------------------------------------
 
-export interface NexusMessageEnvelope {
-  readonly id: string;
-  readonly sender: string;
-  readonly recipient: string;
-  readonly kind: string;
-  readonly correlationId?: string | undefined;
-  readonly createdAt: string;
-  readonly ttlSeconds?: number | undefined;
-  readonly type: string;
-  readonly payload: Record<string, unknown>;
-  readonly metadata?: Record<string, unknown> | undefined;
-}
-
+/**
+ * Send request body — POST /api/v2/ipc/send.
+ *
+ * Matches Nexus SendMessageRequest (ipc.py):
+ *   sender, recipient, type, payload, correlation_id, ttl_seconds, message_id
+ */
 export interface NexusSendRequest {
   readonly sender: string;
   readonly recipient: string;
-  readonly kind: string;
-  readonly correlationId?: string | undefined;
-  readonly ttlSeconds?: number | undefined;
   readonly type: string;
   readonly payload: Record<string, unknown>;
-  readonly metadata?: Record<string, unknown> | undefined;
+  readonly correlation_id?: string | undefined;
+  readonly ttl_seconds?: number | undefined;
+  readonly message_id?: string | undefined;
 }
 
+/**
+ * Send response — returned by POST /api/v2/ipc/send.
+ *
+ * Matches the actual dict returned by send_message handler:
+ *   message_id, path, sender, recipient, type
+ */
+export interface NexusSendResponse {
+  readonly message_id: string;
+  readonly path: string;
+  readonly sender: string;
+  readonly recipient: string;
+  readonly type: string;
+}
+
+/**
+ * On-disk message envelope — the full message as stored/read from Nexus.
+ *
+ * Matches MessageEnvelope (envelope.py) serialized with by_alias=True:
+ *   id, from, to, type, correlation_id, timestamp, ttl_seconds, payload, ...
+ *
+ * Note: Pydantic aliases mean "sender"→"from", "recipient"→"to" in JSON.
+ */
+export interface NexusMessageEnvelope {
+  readonly id: string;
+  /** Sender agent ID — serialized as "from" on disk via Pydantic alias. */
+  readonly from: string;
+  /** Recipient agent ID — serialized as "to" on disk via Pydantic alias. */
+  readonly to: string;
+  readonly type: string;
+  readonly correlation_id?: string | undefined;
+  readonly timestamp?: string | undefined;
+  readonly ttl_seconds?: number | undefined;
+  readonly payload: Record<string, unknown>;
+  readonly nexus_message?: string | undefined;
+  readonly signature?: string | undefined;
+}
+
+/**
+ * Inbox list response — GET /api/v2/ipc/inbox/{agentId}.
+ *
+ * The REST compatibility endpoint returns filenames, not full envelopes.
+ * Full message reading requires the RPC service.
+ */
 interface NexusInboxResponse {
-  readonly messages: readonly NexusMessageEnvelope[];
+  readonly agent_id: string;
+  readonly messages: readonly { readonly filename: string }[];
+  readonly count: number;
 }
 
 interface NexusInboxCountResponse {
@@ -61,16 +98,13 @@ export interface NexusClientConfig {
 // ---------------------------------------------------------------------------
 
 export interface NexusClient {
-  readonly sendMessage: (
-    request: NexusSendRequest,
-  ) => Promise<Result<NexusMessageEnvelope, KoiError>>;
+  readonly sendMessage: (request: NexusSendRequest) => Promise<Result<NexusSendResponse, KoiError>>;
   readonly listInbox: (
     agentId: string,
     limit?: number,
     offset?: number,
   ) => Promise<Result<readonly NexusMessageEnvelope[], KoiError>>;
   readonly inboxCount: (agentId: string) => Promise<Result<number, KoiError>>;
-  readonly provision: (agentId: string) => Promise<Result<void, KoiError>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,8 +221,7 @@ export function createNexusClient(config?: NexusClientConfig): NexusClient {
 
   return {
     sendMessage: async (req) => {
-      const result = await request<NexusMessageEnvelope>("POST", "/api/v2/ipc/send", req);
-      return result;
+      return request<NexusSendResponse>("POST", "/api/v2/ipc/send", req);
     },
 
     listInbox: async (agentId, limit, offset) => {
@@ -197,9 +230,17 @@ export function createNexusClient(config?: NexusClientConfig): NexusClient {
       if (offset !== undefined) params.set("offset", String(offset));
       const qs = params.toString();
       const path = `/api/v2/ipc/inbox/${encodeURIComponent(agentId)}${qs.length > 0 ? `?${qs}` : ""}`;
+
+      // The REST compatibility endpoint returns filenames, not full envelopes.
+      // Return an empty array — full message content requires the Nexus RPC
+      // service which is not exposed via REST. The inbox middleware relies on
+      // SSE push notifications (not polling) for real-time message delivery.
       const result = await request<NexusInboxResponse>("GET", path);
       if (!result.ok) return result;
-      return { ok: true, value: result.value.messages };
+
+      // The response has {messages: [{filename}]} — no envelope content.
+      // Return empty: callers should use SSE/onMessage for receiving messages.
+      return { ok: true, value: [] };
     },
 
     inboxCount: async (agentId) => {
@@ -207,11 +248,6 @@ export function createNexusClient(config?: NexusClientConfig): NexusClient {
       const result = await request<NexusInboxCountResponse>("GET", path);
       if (!result.ok) return result;
       return { ok: true, value: result.value.count };
-    },
-
-    provision: async (agentId) => {
-      const path = `/api/v2/ipc/provision/${encodeURIComponent(agentId)}`;
-      return request<void>("POST", path);
     },
   };
 }

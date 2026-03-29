@@ -19,18 +19,16 @@ afterEach(() => {
 describe("createNexusMailbox", () => {
   describe("send", () => {
     test("maps input and returns AgentMessage on success", async () => {
-      const responseEnvelope = {
-        id: "msg-gen-1",
+      const sendResponse = {
+        message_id: "msg-gen-1",
+        path: "/ipc/agent-a/inbox/msg-gen-1.json",
         sender: "agent-a",
         recipient: "agent-b",
-        kind: "task",
-        createdAt: "2026-01-01T00:00:00Z",
-        type: "code-review",
-        payload: { file: "main.ts" },
+        type: "task",
       };
 
       globalThis.fetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify(responseEnvelope), { status: 200 })),
+        Promise.resolve(new Response(JSON.stringify(sendResponse), { status: 200 })),
       ) as unknown as typeof fetch;
 
       const mailbox = createNexusMailbox({ agentId: agentId("agent-a"), delivery: "polling" });
@@ -47,26 +45,24 @@ describe("createNexusMailbox", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.id).toBe(messageId("msg-gen-1"));
-        expect(result.value.kind).toBe("request"); // task → request
+        expect(result.value.kind).toBe("request"); // preserves input kind
         expect(result.value.from).toBe(agentId("agent-a"));
       }
 
       mailbox[Symbol.dispose]();
     });
 
-    test("falls back to input-based message when Nexus returns unknown kind", async () => {
-      const responseEnvelope = {
-        id: "msg-gen-2",
+    test("preserves input kind and type in send response mapping", async () => {
+      const sendResponse = {
+        message_id: "msg-gen-2",
+        path: "/ipc/a/inbox/msg-gen-2.json",
         sender: "a",
         recipient: "b",
-        kind: "unknown_protocol",
-        createdAt: "2026-01-01T00:00:00Z",
-        type: "t",
-        payload: {},
+        type: "task",
       };
 
       globalThis.fetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify(responseEnvelope), { status: 200 })),
+        Promise.resolve(new Response(JSON.stringify(sendResponse), { status: 200 })),
       ) as unknown as typeof fetch;
 
       const mailbox = createNexusMailbox({ agentId: agentId("agent-a"), delivery: "polling" });
@@ -80,13 +76,12 @@ describe("createNexusMailbox", () => {
 
       const result = await mailbox.send(input);
 
-      // Send succeeded (HTTP 200) — fallback constructs AgentMessage from input
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.id).toBe(messageId("msg-gen-2"));
         expect(result.value.kind).toBe("request"); // preserves input kind
         expect(result.value.from).toBe(agentId("a"));
-        expect(result.value.createdAt).toBe("2026-01-01T00:00:00Z");
+        expect(result.value.createdAt).toBeTruthy();
       }
 
       mailbox[Symbol.dispose]();
@@ -94,19 +89,11 @@ describe("createNexusMailbox", () => {
   });
 
   describe("list", () => {
-    test("returns mapped messages", async () => {
+    test("returns empty array (REST endpoint returns filenames only)", async () => {
       const response = {
-        messages: [
-          {
-            id: "m1",
-            sender: "agent-c",
-            recipient: "agent-b",
-            kind: "event",
-            createdAt: "2026-01-01T00:00:00Z",
-            type: "deploy",
-            payload: { version: "1.0" },
-          },
-        ],
+        agent_id: "agent-b",
+        messages: [{ filename: "m1.json" }],
+        count: 1,
       };
 
       globalThis.fetch = mock(() =>
@@ -116,46 +103,9 @@ describe("createNexusMailbox", () => {
       const mailbox = createNexusMailbox({ agentId: agentId("agent-b"), delivery: "polling" });
       const messages = await mailbox.list();
 
-      expect(messages).toHaveLength(1);
-      expect(messages[0]?.kind).toBe("event");
-      expect(messages[0]?.type).toBe("deploy");
-
-      mailbox[Symbol.dispose]();
-    });
-
-    test("applies client-side filter by kind", async () => {
-      const response = {
-        messages: [
-          {
-            id: "m1",
-            sender: "a",
-            recipient: "b",
-            kind: "task",
-            createdAt: "2026-01-01T00:00:00Z",
-            type: "t1",
-            payload: {},
-          },
-          {
-            id: "m2",
-            sender: "a",
-            recipient: "b",
-            kind: "event",
-            createdAt: "2026-01-01T00:01:00Z",
-            type: "t2",
-            payload: {},
-          },
-        ],
-      };
-
-      globalThis.fetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify(response), { status: 200 })),
-      ) as unknown as typeof fetch;
-
-      const mailbox = createNexusMailbox({ agentId: agentId("b"), delivery: "polling" });
-      const messages = await mailbox.list({ kind: "event" });
-
-      expect(messages).toHaveLength(1);
-      expect(messages[0]?.kind).toBe("event");
+      // REST compatibility endpoint returns filenames, not full envelopes.
+      // listInbox returns empty array, so list also returns empty.
+      expect(messages).toHaveLength(0);
 
       mailbox[Symbol.dispose]();
     });
@@ -259,18 +209,16 @@ describe("createNexusMailbox", () => {
     });
 
     test("send works the same in SSE mode", async () => {
-      const responseEnvelope = {
-        id: "msg-sse-1",
+      const sendResponse = {
+        message_id: "msg-sse-1",
+        path: "/ipc/agent-a/inbox/msg-sse-1.json",
         sender: "agent-a",
-        to: "agent-b",
-        kind: "task",
-        createdAt: "2026-01-01T00:00:00Z",
-        type: "review",
-        payload: {},
+        recipient: "agent-b",
+        type: "task",
       };
 
       globalThis.fetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify(responseEnvelope), { status: 200 })),
+        Promise.resolve(new Response(JSON.stringify(sendResponse), { status: 200 })),
       ) as unknown as typeof fetch;
 
       const mailbox = createNexusMailbox({
@@ -292,19 +240,11 @@ describe("createNexusMailbox", () => {
       mailbox[Symbol.dispose]();
     });
 
-    test("list works the same in SSE mode", async () => {
+    test("list returns empty in SSE mode (REST returns filenames only)", async () => {
       const response = {
-        messages: [
-          {
-            id: "m-sse-1",
-            from: "c",
-            to: "b",
-            kind: "event",
-            createdAt: "2026-01-01T00:00:00Z",
-            type: "deploy",
-            payload: {},
-          },
-        ],
+        agent_id: "b",
+        messages: [{ filename: "m-sse-1.json" }],
+        count: 1,
       };
 
       globalThis.fetch = mock(() =>
@@ -317,7 +257,7 @@ describe("createNexusMailbox", () => {
       });
 
       const messages = await mailbox.list();
-      expect(messages).toHaveLength(1);
+      expect(messages).toHaveLength(0);
 
       mailbox[Symbol.dispose]();
     });

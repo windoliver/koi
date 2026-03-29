@@ -20,27 +20,28 @@ afterEach(() => {
 describe("createNexusClient", () => {
   describe("sendMessage", () => {
     test("sends POST to /api/v2/ipc/send with correct body", async () => {
-      const envelope = {
-        id: "msg-1",
+      const sendResponse = {
+        message_id: "msg-1",
+        path: "/ipc/a/inbox/msg-1.json",
         sender: "a",
         recipient: "b",
-        kind: "task",
-        createdAt: "2026-01-01T00:00:00Z",
-        type: "test",
-        payload: { x: 1 },
+        type: "task",
       };
       mockFetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify(envelope), { status: 200 })),
+        Promise.resolve(new Response(JSON.stringify(sendResponse), { status: 200 })),
       );
       globalThis.fetch = mockFetch as unknown as typeof fetch;
 
       const client = createNexusClient({ baseUrl: BASE_URL });
-      const body = { sender: "a", recipient: "b", kind: "task", type: "test", payload: { x: 1 } };
+      const body = { sender: "a", recipient: "b", type: "task", payload: { x: 1 } };
       const result = await client.sendMessage(body);
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value.id).toBe("msg-1");
+        expect(result.value.message_id).toBe("msg-1");
+        expect(result.value.sender).toBe("a");
+        expect(result.value.recipient).toBe("b");
+        expect(result.value.type).toBe("task");
       }
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -52,7 +53,18 @@ describe("createNexusClient", () => {
 
     test("includes authorization header when authToken provided", async () => {
       mockFetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify({ id: "x" }), { status: 200 })),
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              message_id: "x",
+              path: "/p",
+              sender: "a",
+              recipient: "b",
+              type: "task",
+            }),
+            { status: 200 },
+          ),
+        ),
       );
       globalThis.fetch = mockFetch as unknown as typeof fetch;
 
@@ -60,8 +72,7 @@ describe("createNexusClient", () => {
       await client.sendMessage({
         sender: "a",
         recipient: "b",
-        kind: "task",
-        type: "t",
+        type: "task",
         payload: {},
       });
 
@@ -78,8 +89,7 @@ describe("createNexusClient", () => {
       const result = await client.sendMessage({
         sender: "a",
         recipient: "b",
-        kind: "task",
-        type: "t",
+        type: "task",
         payload: {},
       });
 
@@ -97,8 +107,7 @@ describe("createNexusClient", () => {
       const result = await client.sendMessage({
         sender: "a",
         recipient: "b",
-        kind: "task",
-        type: "t",
+        type: "task",
         payload: {},
       });
 
@@ -117,8 +126,7 @@ describe("createNexusClient", () => {
       const result = await client.sendMessage({
         sender: "a",
         recipient: "b",
-        kind: "task",
-        type: "t",
+        type: "task",
         payload: {},
       });
 
@@ -137,8 +145,7 @@ describe("createNexusClient", () => {
       const result = await client.sendMessage({
         sender: "a",
         recipient: "b",
-        kind: "task",
-        type: "t",
+        type: "task",
         payload: {},
       });
 
@@ -151,19 +158,11 @@ describe("createNexusClient", () => {
   });
 
   describe("listInbox", () => {
-    test("sends GET to /api/v2/ipc/inbox/{agentId}", async () => {
+    test("sends GET to /api/v2/ipc/inbox/{agentId} and returns empty array", async () => {
       const response = {
-        messages: [
-          {
-            id: "m1",
-            sender: "a",
-            recipient: "b",
-            kind: "task",
-            createdAt: "2026-01-01T00:00:00Z",
-            type: "t",
-            payload: {},
-          },
-        ],
+        agent_id: "agent-b",
+        messages: [{ filename: "msg-1.json" }],
+        count: 1,
       };
       mockFetch = mock(() =>
         Promise.resolve(new Response(JSON.stringify(response), { status: 200 })),
@@ -175,8 +174,8 @@ describe("createNexusClient", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value).toHaveLength(1);
-        expect(result.value[0]?.id).toBe("m1");
+        // REST endpoint returns filenames only — client returns empty array
+        expect(result.value).toHaveLength(0);
       }
 
       const [url] = mockFetch.mock.calls[0] as [string];
@@ -185,7 +184,11 @@ describe("createNexusClient", () => {
 
     test("URL-encodes agentId", async () => {
       mockFetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify({ messages: [] }), { status: 200 })),
+        Promise.resolve(
+          new Response(JSON.stringify({ agent_id: "agent/special", messages: [], count: 0 }), {
+            status: 200,
+          }),
+        ),
       );
       globalThis.fetch = mockFetch as unknown as typeof fetch;
 
@@ -214,26 +217,21 @@ describe("createNexusClient", () => {
     });
   });
 
-  describe("provision", () => {
-    test("sends POST to /api/v2/ipc/provision/{agentId}", async () => {
-      mockFetch = mock(() => Promise.resolve(new Response(null, { status: 204 })));
-      globalThis.fetch = mockFetch as unknown as typeof fetch;
-
-      const client = createNexusClient({ baseUrl: BASE_URL });
-      const result = await client.provision("agent-x");
-
-      expect(result.ok).toBe(true);
-
-      const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-      expect(url).toBe(`${BASE_URL}/api/v2/ipc/provision/agent-x`);
-      expect(opts.method).toBe("POST");
-    });
-  });
-
   describe("injectable fetch", () => {
     test("uses injected fetch instead of globalThis.fetch", async () => {
       const injectedFetch = mock(() =>
-        Promise.resolve(new Response(JSON.stringify({ id: "injected" }), { status: 200 })),
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              message_id: "injected",
+              path: "/p",
+              sender: "a",
+              recipient: "b",
+              type: "task",
+            }),
+            { status: 200 },
+          ),
+        ),
       );
 
       const client = createNexusClient({
@@ -243,8 +241,7 @@ describe("createNexusClient", () => {
       const result = await client.sendMessage({
         sender: "a",
         recipient: "b",
-        kind: "task",
-        type: "t",
+        type: "task",
         payload: {},
       });
 
