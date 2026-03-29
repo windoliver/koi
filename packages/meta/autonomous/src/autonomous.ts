@@ -199,7 +199,7 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
           ? { errorMessage: item.error.message, retryable: item.error.retryable }
           : {}),
       },
-      metadata: { mode: "followup" },
+      metadata: { mode: item.status === "completed" ? "steer" : "followup" },
     };
 
     // Fire-and-forget — notification failure should never block dispatch

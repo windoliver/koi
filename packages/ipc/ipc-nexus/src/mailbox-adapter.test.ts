@@ -17,6 +17,62 @@ afterEach(() => {
 });
 
 describe("createNexusMailbox", () => {
+  describe("auto-provision", () => {
+    test("calls provision on creation to ensure inbox exists", () => {
+      const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
+      );
+
+      const mailbox = createNexusMailbox({ agentId: agentId("agent-x"), delivery: "polling" });
+
+      // Provision should have been called as fire-and-forget
+      const calls = fetchMock.mock.calls as Array<
+        [string | URL | Request, RequestInit | undefined]
+      >;
+      const provisionCall = calls.find(
+        (c) => typeof c[0] === "string" && c[0].includes("/provision/agent-x"),
+      );
+      expect(provisionCall).toBeDefined();
+
+      mailbox[Symbol.dispose]();
+    });
+
+    test("does not throw when provision returns 409 (already exists)", () => {
+      const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
+      fetchMock.mockImplementation((url: string | URL | Request) => {
+        const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        if (urlStr.includes("/provision/")) {
+          return Promise.resolve(new Response("Conflict", { status: 409 }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ messages: [] }), { status: 200 }));
+      });
+
+      // Should not throw even when provision returns 409
+      const mailbox = createNexusMailbox({ agentId: agentId("agent-y"), delivery: "polling" });
+      expect(mailbox).toBeDefined();
+
+      mailbox[Symbol.dispose]();
+    });
+
+    test("does not throw when provision network request fails", () => {
+      const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
+      fetchMock.mockImplementation((url: string | URL | Request) => {
+        const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        if (urlStr.includes("/provision/")) {
+          return Promise.reject(new Error("Network error"));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ messages: [] }), { status: 200 }));
+      });
+
+      // Should not throw even when provision fails completely
+      const mailbox = createNexusMailbox({ agentId: agentId("agent-z"), delivery: "polling" });
+      expect(mailbox).toBeDefined();
+
+      mailbox[Symbol.dispose]();
+    });
+  });
+
   describe("send", () => {
     test("maps input and returns AgentMessage on success", async () => {
       const responseEnvelope = {

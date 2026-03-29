@@ -59,6 +59,23 @@ const ZOOM_LABELS: Readonly<Record<ZoomLevel, string>> = {
   full: "FULL",
 } as const;
 
+/** Format compact task status from the task board snapshot. */
+function formatTaskStatus(snapshot: import("@koi/dashboard-types").TaskBoardSnapshot | null): string | undefined {
+  if (snapshot === null || snapshot.items.length === 0) return undefined;
+  const total = snapshot.items.length;
+  const completed = snapshot.items.filter((i) => i.status === "completed").length;
+  const running = snapshot.items.filter((i) => i.status === "assigned").length;
+  const failed = snapshot.items.filter((i) => i.status === "failed").length;
+  const pending = total - completed - running - failed;
+
+  if (completed === total) return `Tasks: ${String(total)}/${String(total)} done`;
+  const parts: string[] = [];
+  if (running > 0) parts.push(`${String(running)} running`);
+  if (pending > 0) parts.push(`${String(pending)} pending`);
+  if (failed > 0) parts.push(`${String(failed)} failed`);
+  return `Tasks: ${String(completed)}/${String(total)} done${parts.length > 0 ? `, ${parts.join(", ")}` : ""}`;
+}
+
 /** View display names for the tab bar (primary views only — keeps line 1 compact). */
 const VIEW_LABELS: Readonly<Partial<Record<TuiView, string>>> = {
   agents: "1:Agents",
@@ -83,6 +100,10 @@ export function StatusBarView(props: StatusBarViewProps): React.ReactNode {
   const zoomLabel = ZOOM_LABELS[state.zoomLevel];
   const hint = VIEW_HINTS[state.view];
   const isWelcome = state.view === "welcome" || state.view === "presetdetail";
+  const taskStatus = useMemo(
+    () => formatTaskStatus(state.taskBoardView.snapshot),
+    [state.taskBoardView.snapshot],
+  );
 
   return (
     <box height={2} flexDirection="column" backgroundColor={COLORS.bg}>
@@ -137,6 +158,12 @@ export function StatusBarView(props: StatusBarViewProps): React.ReactNode {
                 </>
               );
             })()}
+            {taskStatus !== undefined && (
+              <>
+                <text fg={COLORS.dim}>{" │ "}</text>
+                <text fg={COLORS.yellow}>{`[${taskStatus}]`}</text>
+              </>
+            )}
             <text>{" "}</text>
           </>
         )}

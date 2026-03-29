@@ -67,6 +67,8 @@ function buildCompletionMessage(
       completedTaskCount,
       totalTaskCount: total,
       summary: `Autonomous plan completed. ${String(completedTaskCount)}/${String(total)} tasks done.`,
+      instruction:
+        "All autonomous tasks completed. Call task_synthesize to merge and present the results to the user.",
     },
     metadata: { mode: "steer" },
   };
@@ -92,6 +94,8 @@ function buildFailureMessage(
       errorCode: error.code,
       errorMessage: error.message,
       summary: `Autonomous plan failed: ${error.message}. ${String(completedTaskCount)}/${String(total)} tasks completed before failure.`,
+      instruction:
+        "Some autonomous tasks failed. Call task_status to check results, then task_synthesize to present what succeeded.",
     },
     metadata: { mode: "steer" },
   };
