@@ -10,6 +10,7 @@ import { createCliChannel } from "@koi/channel-cli";
 import { createCliOutput, createTimer } from "@koi/cli-render";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineInput, InboundMessage } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { AgentCostEntry, CostSnapshot, DashboardEvent } from "@koi/dashboard-types";
@@ -1318,12 +1319,12 @@ export async function runUp(flags: UpFlags): Promise<void> {
       ...(forgeBootstrap !== undefined
         ? {
             forgeCommands: {
-              async promoteBrick(brickId: string) {
-                const r = await forgeBootstrap.store.update(brickId, { lifecycle: "active" });
+              async promoteBrick(id: string) {
+                const r = await forgeBootstrap.store.update(brickId(id), { lifecycle: "active" });
                 return r.ok ? ({ ok: true, value: undefined } as const) : r;
               },
-              async demoteBrick(brickId: string) {
-                const r = await forgeBootstrap.store.update(brickId, {
+              async demoteBrick(id: string) {
+                const r = await forgeBootstrap.store.update(brickId(id), {
                   policy: {
                     sandbox: true,
                     capabilities: {
@@ -1343,8 +1344,8 @@ export async function runUp(flags: UpFlags): Promise<void> {
                 });
                 return r.ok ? ({ ok: true, value: undefined } as const) : r;
               },
-              async quarantineBrick(brickId: string) {
-                const r = await forgeBootstrap.store.update(brickId, { lifecycle: "failed" });
+              async quarantineBrick(id: string) {
+                const r = await forgeBootstrap.store.update(brickId(id), { lifecycle: "failed" });
                 return r.ok ? ({ ok: true, value: undefined } as const) : r;
               },
             },

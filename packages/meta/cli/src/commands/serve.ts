@@ -19,7 +19,7 @@ import type {
   InboundMessage,
   KoiMiddleware,
 } from "@koi/core";
-import { sessionId } from "@koi/core";
+import { brickId, sessionId } from "@koi/core";
 import type { AdminPanelBridgeResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { DashboardEvent } from "@koi/dashboard-types";
@@ -452,14 +452,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       ...(forgeBootstrap !== undefined
         ? {
             forgeCommands: {
-              async promoteBrick(brickId: string) {
-                const result = await forgeBootstrap.store.update(brickId, {
+              async promoteBrick(id: string) {
+                const result = await forgeBootstrap.store.update(brickId(id), {
                   lifecycle: "active",
                 });
                 return result.ok ? ({ ok: true, value: undefined } as const) : result;
               },
-              async demoteBrick(brickId: string) {
-                const result = await forgeBootstrap.store.update(brickId, {
+              async demoteBrick(id: string) {
+                const result = await forgeBootstrap.store.update(brickId(id), {
                   policy: {
                     sandbox: true,
                     capabilities: {
@@ -479,8 +479,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
                 });
                 return result.ok ? ({ ok: true, value: undefined } as const) : result;
               },
-              async quarantineBrick(brickId: string) {
-                const result = await forgeBootstrap.store.update(brickId, {
+              async quarantineBrick(id: string) {
+                const result = await forgeBootstrap.store.update(brickId(id), {
                   lifecycle: "failed",
                 });
                 return result.ok ? ({ ok: true, value: undefined } as const) : result;
