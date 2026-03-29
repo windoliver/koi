@@ -15,6 +15,7 @@ const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   agents: "↑↓:navigate  Enter:select  Ctrl+G:forge  Ctrl+P:commands  1-5:tabs  q:quit",
   agentprocfs: "Esc:back  Ctrl+P:commands",
   channels: "j/k:scroll  Esc:back  Ctrl+P:commands",
+  channelspicker: "j/k:navigate  Space:toggle  Enter:confirm  Esc:back",
   consent: "[y] approve  [n] deny  [d] details  Esc:dismiss",
   console: "Type message  Enter:send  Esc:back  Ctrl+P:commands",
   cost: "j/k:scroll  Esc:back  Ctrl+P:commands",

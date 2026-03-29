@@ -107,6 +107,7 @@ export type TuiView =
   | "agents"
   | "agentprocfs"
   | "channels"
+  | "channelspicker"
   | "consent"
   | "console"
   | "cost"
@@ -361,6 +362,8 @@ export interface TuiState {
   readonly demoPacks: readonly { readonly id: string; readonly description: string }[];
   /** Whether /stop confirmation is pending. */
   readonly pendingStopConfirm: boolean;
+  /** Lifecycle messages buffered when no active session exists. Flushed on session open. */
+  readonly pendingLifecycleMessages: readonly import("@koi/dashboard-client").ChatMessage[];
   /** Selected Nexus mode during wizard: "skip", "docker", "source", "remote". */
   readonly nexusConfigMode: NexusConfigMode;
   /** Focused index in Nexus config picker. */
@@ -449,6 +452,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     capabilities: null,
     demoPacks: [],
     pendingStopConfirm: false,
+    pendingLifecycleMessages: [],
     nexusConfigMode: "docker" as NexusConfigMode,
     nexusConfigFocusedIndex: 0,
     nexusSourcePath: "~/nexus",

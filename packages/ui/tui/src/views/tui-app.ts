@@ -325,19 +325,21 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     checkConsentPromptsHelper(batch, eventForwardDeps);
   }
 
+  /** View that was active before the palette opened, so we can return to it. */
+  let viewBeforePalette: TuiView = "agents";
+
   function togglePalette(): void {
     if (store.getState().view === "palette") {
       hidePalette();
     } else if (store.getState().view !== "palette") {
+      viewBeforePalette = store.getState().view;
       store.dispatch({ kind: "set_view", view: "palette" });
     }
   }
 
   function hidePalette(): void {
     if (store.getState().view !== "palette") return;
-    const session = store.getState().activeSession;
-    const targetView: TuiView = session !== null ? "console" : "agents";
-    store.dispatch({ kind: "set_view", view: targetView });
+    store.dispatch({ kind: "set_view", view: viewBeforePalette });
   }
 
   async function openSessionPicker(): Promise<void> {
@@ -570,8 +572,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       if (currentView === "sourcedetail") {
         store.dispatch({ kind: "set_view", view: "datasources" });
       } else if (store.getState().selectedPresetId !== null) {
-        // In wizard flow: datasources back → channels
-        store.dispatch({ kind: "set_view", view: "channels" });
+        // In wizard flow: datasources back → channel picker
+        store.dispatch({ kind: "set_view", view: "channelspicker" });
       } else {
         store.dispatch({ kind: "set_view", view: "agents" });
       }
@@ -737,7 +739,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     addonsBack: () => {
       const presetId = store.getState().selectedPresetId;
-      store.dispatch({ kind: "set_view", view: presetId === "local" ? "datasources" : "channels" });
+      store.dispatch({
+        kind: "set_view",
+        view: presetId === "local" ? "datasources" : "channelspicker",
+      });
     },
     nexusConfigConfirm: () => {
       // Select the focused option and proceed to start
@@ -765,11 +770,11 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "nameinput" });
     },
     engineConfirm: () => {
-      store.dispatch({ kind: "set_view", view: "channels" });
+      store.dispatch({ kind: "set_view", view: "channelspicker" });
     },
     engineSkip: () => {
       store.dispatch({ kind: "set_selected_engine", engine: undefined });
-      store.dispatch({ kind: "set_view", view: "channels" });
+      store.dispatch({ kind: "set_view", view: "channelspicker" });
     },
     engineBack: () => {
       store.dispatch({ kind: "set_view", view: "model" });

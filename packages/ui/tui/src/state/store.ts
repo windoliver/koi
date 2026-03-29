@@ -91,8 +91,20 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         selectedAgentIndex: Math.max(0, Math.min(action.index, state.agents.length - 1)),
       };
 
-    case "set_session":
+    case "set_session": {
+      // Flush any buffered lifecycle messages into the new session
+      if (action.session !== null && state.pendingLifecycleMessages.length > 0) {
+        const flushed = [...action.session.messages, ...state.pendingLifecycleMessages].slice(
+          -MAX_SESSION_MESSAGES,
+        );
+        return {
+          ...state,
+          activeSession: { ...action.session, messages: flushed },
+          pendingLifecycleMessages: [],
+        };
+      }
       return { ...state, activeSession: action.session };
+    }
 
     case "append_tokens": {
       if (state.activeSession === null) return state;
@@ -127,7 +139,18 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "add_message": {
-      if (state.activeSession === null) return state;
+      if (state.activeSession === null) {
+        // No active session — buffer lifecycle messages so they aren't silently dropped
+        if (action.message.kind === "lifecycle") {
+          return {
+            ...state,
+            pendingLifecycleMessages: [...state.pendingLifecycleMessages, action.message].slice(
+              -20,
+            ),
+          };
+        }
+        return state;
+      }
       const messages = [...state.activeSession.messages, action.message].slice(
         -MAX_SESSION_MESSAGES,
       );

@@ -49,7 +49,7 @@ export const DEFAULT_COMMANDS: readonly PaletteCommand[] = [
   { id: "skills", label: "/skills", description: "Show installed skills" },
   { id: "channels", label: "/channels", description: "Show channel connections" },
   { id: "system", label: "/system", description: "Show system metrics and events" },
-  { id: "nexus", label: "/nexus", description: "Show Nexus file/namespace events", shortcut: "Ctrl+F" },
+  { id: "nexus", label: "/nexus", description: "Show Nexus file/namespace events" },
   { id: "gateway", label: "/gateway", description: "Show gateway topology", requiredCapability: "gateway" },
   { id: "middleware", label: "/middleware", description: "Show middleware chain for active agent" },
   { id: "temporal", label: "/temporal", description: "Show Temporal workflows", requiredCapability: "temporal" },

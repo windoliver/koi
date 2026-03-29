@@ -122,3 +122,27 @@ describe("filterCommandsByCapabilities", () => {
     expect(ids).not.toContain("scheduler");
   });
 });
+
+describe("shortcut consistency", () => {
+  test("no duplicate shortcuts across commands", () => {
+    const shortcuts = DEFAULT_COMMANDS.filter((c) => c.shortcut !== undefined).map((c) => ({
+      id: c.id,
+      shortcut: c.shortcut,
+    }));
+    const seen = new Map<string, string>();
+    for (const { id, shortcut } of shortcuts) {
+      const existing = seen.get(shortcut as string);
+      if (existing !== undefined) {
+        throw new Error(`Shortcut "${shortcut}" is claimed by both "${existing}" and "${id}"`);
+      }
+      seen.set(shortcut as string, id);
+    }
+  });
+
+  test("Ctrl+F is only on /files, not /nexus", () => {
+    const nexus = DEFAULT_COMMANDS.find((c) => c.id === "nexus");
+    const files = DEFAULT_COMMANDS.find((c) => c.id === "files");
+    expect(nexus?.shortcut).toBeUndefined();
+    expect(files?.shortcut).toBe("Ctrl+F");
+  });
+});

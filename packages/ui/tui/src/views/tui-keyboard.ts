@@ -416,8 +416,8 @@ export function createKeyboardHandler(
       return false;
     }
 
-    // Channels step — j/k, Space toggle, Enter confirm, Esc back
-    if (view === "channels") {
+    // Channels picker (wizard step) — j/k, Space toggle, Enter confirm, Esc back
+    if (view === "channelspicker") {
       if (sequence === "j" || sequence === "\x1b[B") {
         store.dispatch({
           kind: "set_channel_focused_index",
