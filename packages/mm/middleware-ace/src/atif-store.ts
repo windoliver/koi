@@ -92,7 +92,7 @@ export function createAtifDocumentStore(
       const newAtifDoc = mapRichTrajectoryToAtif(steps, {
         sessionId: docId,
         agentName: config.agentName,
-        agentVersion: config.agentVersion,
+        ...(config.agentVersion !== undefined ? { agentVersion: config.agentVersion } : {}),
       });
 
       // Merge steps into existing document

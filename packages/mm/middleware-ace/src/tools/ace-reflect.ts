@@ -89,7 +89,7 @@ export function createAceReflectTool(config: AceReflectToolConfig): Tool {
 
   const policy: ToolPolicy = DEFAULT_UNSANDBOXED_POLICY;
 
-  async function execute(args: JsonObject): Promise<{ readonly content: string }> {
+  async function execute(args: JsonObject): Promise<unknown> {
     const now = clock();
 
     // Check 1: in-flight
@@ -170,7 +170,7 @@ export function createAceReflectTool(config: AceReflectToolConfig): Tool {
 
   const tool: Tool = {
     descriptor,
-    origin: "@koi/middleware-ace",
+    origin: "primordial",
     policy,
     execute,
   };
