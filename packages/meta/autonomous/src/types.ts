@@ -88,6 +88,23 @@ export interface AutonomousAgentParts {
   readonly getSpawn?: (() => SpawnFn | undefined) | undefined;
   /** Optional logger for autonomous operational messages (retry, reconciliation, etc.). Defaults to stderr. */
   readonly logger?: AutonomousLogger | undefined;
+  /**
+   * Optional callback to emit dashboard events (SSE → TUI).
+   * When provided, task status changes are pushed so the TUI task board
+   * view updates in real-time without polling.
+   *
+   * Structural type to avoid importing @koi/dashboard-types — the caller
+   * (CLI) bridges to the actual DashboardEvent union.
+   */
+  readonly onTaskBoardEvent?:
+    | ((event: {
+        readonly kind: "taskboard";
+        readonly subKind: "task_status_changed";
+        readonly taskId: string;
+        readonly status: string;
+        readonly timestamp: number;
+      }) => void)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------

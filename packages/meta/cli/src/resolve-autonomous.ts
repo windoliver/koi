@@ -67,6 +67,20 @@ export interface AutonomousResult {
    * Deferred because SpawnFn requires engine runtime context.
    */
   readonly bindSpawn: (spawn: SpawnFn) => void;
+  /**
+   * Bind a dashboard event callback for real-time TUI task board updates.
+   * When bound, task status changes push events via SSE to the TUI.
+   * Deferred because the dashboard bridge is created after the autonomous agent.
+   */
+  readonly bindDashboardEvent: (
+    emitter: (event: {
+      readonly kind: "taskboard";
+      readonly subKind: "task_status_changed";
+      readonly taskId: string;
+      readonly status: string;
+      readonly timestamp: number;
+    }) => void,
+  ) => void;
 }
 
 /** Autonomous resolution result bundled with contribution metadata. */
@@ -168,6 +182,9 @@ export async function resolveAutonomousOrWarn(
     // Deferred spawn function — set after runtime assembly via bindSpawn().
     // let justified: mutable ref populated post-assembly when engine spawn is available.
     let boundSpawn: SpawnFn | undefined;
+    // let justified: deferred dashboard event emitter, bound after bridge is created
+    type TaskBoardEventEmitter = Parameters<AutonomousResult["bindDashboardEvent"]>[0];
+    let boundDashboardEmitter: TaskBoardEventEmitter | undefined;
 
     const harness = createLongRunningHarness({
       harnessId: hId,
@@ -230,6 +247,7 @@ export async function resolveAutonomousOrWarn(
       getSpawn: () => boundSpawn,
       threadStore,
       taskBoardGoalStack: true,
+      onTaskBoardEvent: (event) => boundDashboardEmitter?.(event),
     });
 
     if (verbose) {
@@ -254,6 +272,9 @@ export async function resolveAutonomousOrWarn(
       },
       bindSpawn: (spawn: SpawnFn) => {
         boundSpawn = spawn;
+      },
+      bindDashboardEvent: (emitter) => {
+        boundDashboardEmitter = emitter;
       },
     };
 

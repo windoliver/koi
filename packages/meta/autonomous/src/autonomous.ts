@@ -177,9 +177,22 @@ export function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAg
   // Undefined until the first provider.attach() fires during agent assembly.
   let attachedAgent: Agent | undefined;
 
-  // Per-task notification — sends mailbox messages when spawn tasks complete/fail.
-  // Uses sendWithRetry for at-least-once delivery semantics.
+  // Per-task notification — two channels:
+  // 1. Dashboard event (SSE → TUI task board real-time update)
+  // 2. Mailbox message (IPC → copilot inbox for engine context injection)
   const notifyTask: TaskNotifyFn = (taskId, item, output) => {
+    // Channel 1: Dashboard event — always fire if callback wired.
+    // This pushes task status changes to the TUI via SSE so the task board
+    // view updates in real-time without polling.
+    parts.onTaskBoardEvent?.({
+      kind: "taskboard",
+      subKind: "task_status_changed",
+      taskId: taskId as string,
+      status: item.status,
+      timestamp: Date.now(),
+    });
+
+    // Channel 2: Mailbox notification — best-effort IPC to copilot inbox.
     const mailbox = attachedAgent?.component(MAILBOX) as MailboxComponent | undefined;
     if (mailbox === undefined) return;
 

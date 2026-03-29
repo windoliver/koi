@@ -1350,6 +1350,11 @@ export async function runUp(flags: UpFlags): Promise<void> {
     // Wire forge/monitor SSE event sink now that the bridge exists
     emitDashboardEvent = adminBridge.emitEvent;
 
+    // Wire task board → SSE push: task status changes appear in TUI in real-time
+    if (autonomous !== undefined) {
+      autonomous.bindDashboardEvent(adminBridge.emitEvent);
+    }
+
     // Wire governance → SSE push: when a tool call is blocked, emit immediately
     if (activatedStacks.governanceCommands?.setOnEnqueue) {
       activatedStacks.governanceCommands.setOnEnqueue((item) => {
