@@ -8,6 +8,15 @@ import type { PlaybookBullet, PlaybookSection, StructuredPlaybook } from "./type
 
 const BULLET_ID_PATTERN = /\[([a-z]+-\d{5})\]/g;
 
+/** Normalize a bullet ID: LLMs sometimes strip brackets from `[str-00000]`. */
+export function normalizeBulletId(id: string, validIds: ReadonlySet<string>): string | undefined {
+  if (validIds.has(id)) return id;
+  // Try adding brackets: "str-00000" → "[str-00000]"
+  const bracketed = `[${id}]`;
+  if (validIds.has(bracketed)) return bracketed;
+  return undefined;
+}
+
 /** Generate a bracketed bullet ID: `[slug-NNNNN]`. */
 export function createBulletId(sectionSlug: string, index: number): string {
   return `[${sectionSlug}-${String(index).padStart(5, "0")}]`;

@@ -8,8 +8,9 @@
 import type { TokenEstimator } from "@koi/core/context";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { RichTrajectoryStep, RichTrajectoryStore } from "@koi/core/rich-trajectory";
 import type { CuratorAdapter } from "./curator.js";
-import type { ReflectorAdapter } from "./reflector.js";
+import type { ParseFailureCallback, ReflectorAdapter } from "./reflector.js";
 import type { PlaybookStore, StructuredPlaybookStore, TrajectoryStore } from "./stores.js";
 import type { AggregatedStats, CurationCandidate, Playbook, TrajectoryEntry } from "./types.js";
 
@@ -49,6 +50,10 @@ export interface AceConfig {
   readonly onInject?: (playbooks: readonly Playbook[]) => void;
   readonly onBufferEvict?: (evictedCount: number) => void;
   readonly onLlmPipelineError?: (error: unknown, sessionId: string) => void;
+  /** Called when the LLM pipeline finishes successfully. */
+  readonly onLlmPipelineComplete?: (sessionId: string) => void;
+  /** Called when reflector/curator JSON parsing fails. */
+  readonly onParseFailure?: ParseFailureCallback;
 
   // 3-agent ACE pipeline (optional — stat-based pipeline used when absent)
   readonly reflector?: ReflectorAdapter;
@@ -56,6 +61,17 @@ export interface AceConfig {
   readonly structuredPlaybookStore?: StructuredPlaybookStore;
   readonly playbookTokenBudget?: number;
   readonly tokenEstimator?: TokenEstimator;
+
+  // Rich trajectory (optional — enhances LLM pipeline with fuller context)
+  /** Async function that returns rich trajectory steps for a session.
+   *  Typically backed by an Audit→ACE adapter. */
+  readonly richTrajectorySource?: (sessionId: string) => Promise<readonly RichTrajectoryStep[]>;
+  /** Store for persisting rich trajectory data. */
+  readonly richTrajectoryStore?: RichTrajectoryStore;
+  /** Days to retain rich trajectory data. Default: 30. */
+  readonly richTrajectoryRetentionDays?: number;
+  /** Max tokens for the reflector prompt's trajectory section. Default: 4000. */
+  readonly maxReflectorTokens?: number;
 
   // Testability
   readonly clock?: () => number;
@@ -177,6 +193,18 @@ export function validateAceConfig(config: unknown): Result<AceConfig, KoiError> 
       integer: true,
       message: "playbookTokenBudget must be a positive integer",
     },
+    {
+      field: "richTrajectoryRetentionDays",
+      min: 1,
+      integer: true,
+      message: "richTrajectoryRetentionDays must be a positive integer",
+    },
+    {
+      field: "maxReflectorTokens",
+      min: 1,
+      integer: true,
+      message: "maxReflectorTokens must be a positive integer",
+    },
   ];
 
   for (const check of numericChecks) {
@@ -250,6 +278,24 @@ export function validateAceConfig(config: unknown): Result<AceConfig, KoiError> 
     };
   }
 
+  // Optional store: richTrajectoryStore
+  if (c.richTrajectoryStore !== undefined) {
+    if (!isStoreLike(c.richTrajectoryStore, ["append", "getSession", "prune"])) {
+      return {
+        ok: false,
+        error: validationError("richTrajectoryStore must implement append, getSession, and prune"),
+      };
+    }
+  }
+
+  // Optional function: richTrajectorySource
+  if (c.richTrajectorySource !== undefined && typeof c.richTrajectorySource !== "function") {
+    return {
+      ok: false,
+      error: validationError("richTrajectorySource must be a function"),
+    };
+  }
+
   // Optional function: callbacks
   const callbackFields = [
     "onRecord",
@@ -257,6 +303,8 @@ export function validateAceConfig(config: unknown): Result<AceConfig, KoiError> 
     "onInject",
     "onBufferEvict",
     "onLlmPipelineError",
+    "onLlmPipelineComplete",
+    "onParseFailure",
   ] as const;
   for (const field of callbackFields) {
     if (c[field] !== undefined && typeof c[field] !== "function") {

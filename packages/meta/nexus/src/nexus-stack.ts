@@ -27,7 +27,8 @@ import { validateNexusStackConfig } from "./validate-config.js";
 export async function createNexusStack(config: NexusStackConfig): Promise<NexusBundle> {
   // let — resolved from embed mode when baseUrl is missing
   let resolvedBaseUrl = config.baseUrl;
-  const resolvedApiKey = config.apiKey ?? "";
+  // let justified: may be updated from embed result when caller didn't provide a key
+  let resolvedApiKey = config.apiKey ?? "";
 
   if (!resolvedBaseUrl || resolvedBaseUrl.trim() === "") {
     // Lazy import to avoid loading embed deps when in remote mode
@@ -41,7 +42,15 @@ export async function createNexusStack(config: NexusStackConfig): Promise<NexusB
       throw new Error(embedResult.error.message, { cause: embedResult.error });
     }
     resolvedBaseUrl = embedResult.value.baseUrl;
-    // apiKey stays undefined for embed mode (no auth)
+    // Use embed-provided API key when caller didn't specify one.
+    // Docker-based Nexus always requires auth (even embed-lite profiles).
+    if (embedResult.value.apiKey !== undefined && resolvedApiKey.length === 0) {
+      resolvedApiKey = embedResult.value.apiKey;
+      // Propagate to env so downstream consumers (ACE stores, forge, etc.) can use it
+      if (process.env.NEXUS_API_KEY === undefined) {
+        process.env.NEXUS_API_KEY = resolvedApiKey;
+      }
+    }
   }
 
   // Validate the resolved config

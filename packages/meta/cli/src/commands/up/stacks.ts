@@ -75,6 +75,12 @@ export interface StackActivationConfig {
   readonly nexusApiKey?: string;
   /** Agent name for scoping Nexus ACE store paths (e.g. "agents/{name}/ace/..."). */
   readonly agentName?: string;
+  /** Model call for ACE reflector/curator LLM pipeline. When provided, enables the
+   *  3-agent ACE pipeline (reflector → curator → structured playbooks) with rich
+   *  trajectory support via an internal audit observer. */
+  readonly aceModelCall?: (
+    messages: readonly import("@koi/core/message").InboundMessage[],
+  ) => Promise<string>;
   /**
    * Sandbox config from the manifest `sandbox` field.
    * Required when sandboxStack is enabled. Passed to `createCloudSandbox()`.
@@ -344,6 +350,9 @@ async function activateAce(
   const backend = config.stacks.aceStoreBackend ?? "memory";
   const { createAceMiddleware } = await import("@koi/middleware-ace");
 
+  // Build LLM pipeline config when model call is available
+  const llmConfig = await buildAceLlmConfig(config);
+
   if (backend === "nexus" && config.nexusBaseUrl !== undefined) {
     const {
       createNexusTrajectoryStore,
@@ -351,8 +360,13 @@ async function activateAce(
       createNexusStructuredPlaybookStore,
     } = await import("@koi/nexus-store");
 
+    // Use config key, fall back to env var (set during Nexus startup), never empty string
+    const nexusApiKey = config.nexusApiKey ?? process.env.NEXUS_API_KEY ?? "";
+    if (nexusApiKey.length === 0) {
+      log(config, "Stack: ace — Nexus API key is empty, falling back to sqlite");
+    }
     const agentPrefix = config.agentName !== undefined ? `agents/${config.agentName}/` : "";
-    const nexusBase = { baseUrl: config.nexusBaseUrl, apiKey: config.nexusApiKey ?? "" };
+    const nexusBase = { baseUrl: config.nexusBaseUrl, apiKey: nexusApiKey };
     const trajectoryStore = createNexusTrajectoryStore({
       ...nexusBase,
       basePath: `${agentPrefix}ace/trajectories`,
@@ -366,9 +380,25 @@ async function activateAce(
       basePath: `${agentPrefix}ace/structured-playbooks`,
     });
 
-    const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
+    // Rich trajectory store for Nexus backend — uses same Nexus connection
+    const richTrajectoryStore =
+      llmConfig !== undefined
+        ? (await import("@koi/middleware-ace")).createInMemoryRichTrajectoryStore()
+        : undefined;
+
+    const mw = createAceMiddleware({
+      trajectoryStore,
+      playbookStore,
+      structuredPlaybookStore,
+      ...llmConfig?.aceConfig,
+      ...(richTrajectoryStore !== undefined ? { richTrajectoryStore } : {}),
+    });
     middleware.push(mw);
-    log(config, `Stack: ace (backend=nexus, url=${config.nexusBaseUrl})`);
+    if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
+    log(
+      config,
+      `Stack: ace (backend=nexus, url=${config.nexusBaseUrl}${llmConfig !== undefined ? ", llm-pipeline=on" : ""})`,
+    );
     return;
   }
 
@@ -387,6 +417,7 @@ async function activateAce(
       createSqliteTrajectoryStore,
       createSqlitePlaybookStore,
       createSqliteStructuredPlaybookStore,
+      createSqliteRichTrajectoryStore,
     } = await import("@koi/middleware-ace");
 
     const dbPath = resolve(dbDir, "ace.db");
@@ -394,24 +425,101 @@ async function activateAce(
     const playbookStore = createSqlitePlaybookStore({ dbPath });
     const structuredPlaybookStore = createSqliteStructuredPlaybookStore({ dbPath });
 
-    const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
+    const mw = createAceMiddleware({
+      trajectoryStore,
+      playbookStore,
+      structuredPlaybookStore,
+      ...(llmConfig !== undefined
+        ? {
+            ...llmConfig.aceConfig,
+            richTrajectoryStore: createSqliteRichTrajectoryStore({ dbPath }),
+          }
+        : {}),
+    });
     middleware.push(mw);
-    log(config, `Stack: ace (backend=sqlite, db=${dbPath})`);
+    if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
+    log(
+      config,
+      `Stack: ace (backend=sqlite, db=${dbPath}${llmConfig !== undefined ? ", llm-pipeline=on" : ""})`,
+    );
   } else {
     const {
       createInMemoryTrajectoryStore,
       createInMemoryPlaybookStore,
       createInMemoryStructuredPlaybookStore,
+      createInMemoryRichTrajectoryStore,
     } = await import("@koi/middleware-ace");
 
     const trajectoryStore = createInMemoryTrajectoryStore();
     const playbookStore = createInMemoryPlaybookStore();
     const structuredPlaybookStore = createInMemoryStructuredPlaybookStore();
 
-    const mw = createAceMiddleware({ trajectoryStore, playbookStore, structuredPlaybookStore });
+    const mw = createAceMiddleware({
+      trajectoryStore,
+      playbookStore,
+      structuredPlaybookStore,
+      ...(llmConfig !== undefined
+        ? {
+            ...llmConfig.aceConfig,
+            richTrajectoryStore: createInMemoryRichTrajectoryStore(),
+          }
+        : {}),
+    });
     middleware.push(mw);
-    log(config, `Stack: ace (backend=memory)`);
+    if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
+    log(config, `Stack: ace (backend=memory${llmConfig !== undefined ? ", llm-pipeline=on" : ""})`);
   }
+}
+
+/**
+ * Build the ACE LLM pipeline config (reflector + curator + rich trajectory).
+ *
+ * Returns undefined when aceModelCall is not configured, which means only
+ * the stat-based pipeline runs.
+ */
+async function buildAceLlmConfig(config: StackActivationConfig): Promise<
+  | {
+      readonly aceConfig: {
+        readonly reflector: import("@koi/middleware-ace").ReflectorAdapter;
+        readonly curator: import("@koi/middleware-ace").CuratorAdapter;
+        readonly richTrajectorySource: (
+          sessionId: string,
+        ) => Promise<readonly import("@koi/core/rich-trajectory").RichTrajectoryStep[]>;
+        readonly playbookTokenBudget: number;
+        readonly maxReflectorTokens: number;
+      };
+      readonly auditMiddleware: KoiMiddleware;
+    }
+  | undefined
+> {
+  if (config.aceModelCall === undefined) return undefined;
+
+  const { createDefaultReflector, createDefaultCurator, createAuditTrajectoryAdapter } =
+    await import("@koi/middleware-ace");
+  const { createInMemoryAuditSink } = await import("@koi/middleware-audit");
+  const { createAuditMiddleware } = await import("@koi/middleware-audit");
+
+  // Create a lightweight in-memory audit sink shared between the audit
+  // observer middleware and the ACE adapter. This sink captures full
+  // request/response payloads that the adapter transforms into rich
+  // trajectory steps.
+  const sink = createInMemoryAuditSink();
+  const auditMiddleware = createAuditMiddleware({ sink });
+
+  const reflector = createDefaultReflector(config.aceModelCall);
+  const curator = createDefaultCurator(config.aceModelCall);
+  const richTrajectorySource = createAuditTrajectoryAdapter({ sink });
+
+  return {
+    aceConfig: {
+      reflector,
+      curator,
+      richTrajectorySource,
+      playbookTokenBudget: 2000,
+      maxReflectorTokens: 4000,
+    },
+    auditMiddleware,
+  };
 }
 
 async function activateSandboxStack(

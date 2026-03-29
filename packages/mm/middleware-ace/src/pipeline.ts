@@ -2,6 +2,7 @@
  * Pipeline strategy — stat-based vs LLM pipeline auto-selected by config.
  */
 
+import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
 import type { AceConfig } from "./config.js";
 import { createDefaultConsolidator } from "./consolidator.js";
 import { applyOperations } from "./curator.js";
@@ -14,6 +15,21 @@ import type { StructuredPlaybook, TrajectoryEntry } from "./types.js";
 const DEFAULT_MIN_CURATION_SCORE = 0.1;
 const DEFAULT_RECENCY_DECAY_LAMBDA = 0.01;
 const DEFAULT_PLAYBOOK_TOKEN_BUDGET = 2000;
+const DEFAULT_MAX_REFLECTOR_TOKENS = 4000;
+const DEFAULT_RICH_TRAJECTORY_RETENTION_DAYS = 30;
+const MS_PER_DAY = 86_400_000;
+
+/** Create a tokenizer function from AceConfig, normalizing sync/async. */
+export function createTokenizerFn(
+  config: AceConfig,
+): ((text: string) => number | Promise<number>) | undefined {
+  if (config.tokenEstimator === undefined) return undefined;
+  const estimator = config.tokenEstimator;
+  return async (text: string): Promise<number> => {
+    const result = estimator.estimateText(text);
+    return (await result) ?? 0;
+  };
+}
 
 /** Pipeline interface for end-of-session consolidation. */
 export interface ConsolidationPipeline {
@@ -67,13 +83,8 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
   const curator = config.curator;
   const store = config.structuredPlaybookStore;
   const tokenBudget = config.playbookTokenBudget ?? DEFAULT_PLAYBOOK_TOKEN_BUDGET;
-  const tokenizer =
-    config.tokenEstimator !== undefined
-      ? async (text: string): Promise<number> => {
-          const result = config.tokenEstimator?.estimateText(text);
-          return (await result) ?? 0;
-        }
-      : undefined;
+  const tokenizer = createTokenizerFn(config);
+  const maxReflectorTokens = config.maxReflectorTokens ?? DEFAULT_MAX_REFLECTOR_TOKENS;
 
   return {
     async consolidate(entries, sessionId, _sessionCount, clock): Promise<void> {
@@ -104,9 +115,34 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
       // Collect cited bullet IDs from trajectory
       const citedBulletIds = entries.flatMap((e) => e.bulletIds ?? []);
 
-      // Reflect on trajectory
+      // Fetch full rich trajectory from source
+      const fullRichTrajectory = await fetchFullRichTrajectory(config, sessionId);
+
+      // Persist full (uncompressed) rich trajectory if store is configured
+      if (
+        fullRichTrajectory !== undefined &&
+        fullRichTrajectory.length > 0 &&
+        config.richTrajectoryStore !== undefined
+      ) {
+        await config.richTrajectoryStore.append(sessionId, fullRichTrajectory);
+
+        // TTL pruning — piggyback on writes
+        const retentionDays =
+          config.richTrajectoryRetentionDays ?? DEFAULT_RICH_TRAJECTORY_RETENTION_DAYS;
+        const cutoff = clock() - retentionDays * MS_PER_DAY;
+        await config.richTrajectoryStore.prune(cutoff);
+      }
+
+      // Compress for reflector prompt (budget-aware subset of the full trajectory)
+      const richTrajectory =
+        fullRichTrajectory !== undefined && fullRichTrajectory.length > 0
+          ? compressRichTrajectory(fullRichTrajectory, maxReflectorTokens)
+          : undefined;
+
+      // Reflect on trajectory (with compressed rich data if available)
       const reflection = await reflector.analyze({
         trajectory: entries,
+        ...(richTrajectory !== undefined ? { richTrajectory } : {}),
         citedBulletIds,
         outcome,
         playbook,
@@ -131,7 +167,127 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
         sessionCount: updated.sessionCount + 1,
       };
       await store.save(final);
+
+      // Signal pipeline completion
+      config.onLlmPipelineComplete?.(sessionId);
     },
+  };
+}
+
+/** Fetch full (uncompressed) rich trajectory from the configured source. */
+async function fetchFullRichTrajectory(
+  config: AceConfig,
+  sessionId: string,
+): Promise<readonly RichTrajectoryStep[] | undefined> {
+  if (config.richTrajectorySource === undefined) return undefined;
+
+  const steps = await config.richTrajectorySource(sessionId);
+  if (steps.length === 0) return undefined;
+
+  return steps;
+}
+
+/**
+ * Budget-aware trajectory compression for reflector input.
+ *
+ * Priority order:
+ *  1. Entries with failures or retries (most learning value)
+ *  2. Entries with cited bullet IDs (credit assignment)
+ *  3. Most recent entries (recency)
+ *
+ * Tool observation payloads are truncated to stay within budget.
+ */
+export function compressRichTrajectory(
+  steps: readonly RichTrajectoryStep[],
+  maxTokens: number,
+): readonly RichTrajectoryStep[] {
+  if (steps.length === 0) return [];
+
+  // Roughly 4 chars per token
+  const maxChars = maxTokens * 4;
+
+  // Sort by priority: failures first, then cited, then recency
+  const prioritized = [...steps].sort((a, b) => {
+    const aPriority = stepPriority(a);
+    const bPriority = stepPriority(b);
+    if (aPriority !== bPriority) return bPriority - aPriority;
+    // Within same priority, prefer more recent
+    return b.timestamp - a.timestamp;
+  });
+
+  const result: RichTrajectoryStep[] = [];
+  // let: tracks accumulated character count for budget enforcement
+  let totalChars = 0;
+
+  for (const step of prioritized) {
+    const stepChars = estimateStepChars(step);
+    if (totalChars + stepChars > maxChars && result.length > 0) {
+      // Try truncating content to fit
+      const truncated = truncateStep(step, maxChars - totalChars);
+      if (truncated !== undefined) {
+        result.push(truncated);
+        totalChars += estimateStepChars(truncated);
+      }
+      break;
+    }
+    result.push(step);
+    totalChars += stepChars;
+  }
+
+  // Re-sort by step index for chronological order in prompt
+  return result.sort((a, b) => a.stepIndex - b.stepIndex);
+}
+
+function stepPriority(step: RichTrajectoryStep): number {
+  if (step.outcome === "failure" || step.outcome === "retry") return 3;
+  if (step.bulletIds !== undefined && step.bulletIds.length > 0) return 2;
+  return 1;
+}
+
+function estimateStepChars(step: RichTrajectoryStep): number {
+  // let: mutable accumulator for character count
+  let chars = 50; // baseline for metadata
+  chars += step.request?.text?.length ?? 0;
+  chars += step.response?.text?.length ?? 0;
+  chars += step.error?.text?.length ?? 0;
+  chars += step.reasoningContent?.length ?? 0;
+  return chars;
+}
+
+const MAX_CONTENT_CHARS = 500;
+
+function truncateStep(step: RichTrajectoryStep, maxChars: number): RichTrajectoryStep | undefined {
+  if (maxChars < 100) return undefined; // too small to be useful
+
+  const truncateContent = (
+    content: RichTrajectoryStep["request"],
+  ): RichTrajectoryStep["request"] => {
+    if (content === undefined) return undefined;
+    if (content.text === undefined) return content;
+    const limit = Math.min(MAX_CONTENT_CHARS, maxChars / 3);
+    if (content.text.length <= limit) return content;
+    return {
+      ...content,
+      text: `${content.text.slice(0, limit)}...`,
+      truncated: true,
+      originalSize: content.originalSize ?? content.text.length,
+    };
+  };
+
+  const truncatedRequest = truncateContent(step.request);
+  const truncatedResponse = truncateContent(step.response);
+  const truncatedError = truncateContent(step.error);
+  const truncatedReasoning =
+    step.reasoningContent !== undefined && step.reasoningContent.length > MAX_CONTENT_CHARS
+      ? `${step.reasoningContent.slice(0, MAX_CONTENT_CHARS)}...`
+      : step.reasoningContent;
+
+  return {
+    ...step,
+    ...(truncatedRequest !== undefined ? { request: truncatedRequest } : {}),
+    ...(truncatedResponse !== undefined ? { response: truncatedResponse } : {}),
+    ...(truncatedError !== undefined ? { error: truncatedError } : {}),
+    ...(truncatedReasoning !== undefined ? { reasoningContent: truncatedReasoning } : {}),
   };
 }
 
@@ -185,12 +341,5 @@ export function estimatePlaybookTokens(
   playbook: StructuredPlaybook,
   config: AceConfig,
 ): number | Promise<number> {
-  const tokenizer =
-    config.tokenEstimator !== undefined
-      ? async (text: string): Promise<number> => {
-          const result = config.tokenEstimator?.estimateText(text);
-          return (await result) ?? 0;
-        }
-      : undefined;
-  return estimateStructuredTokens(playbook, tokenizer);
+  return estimateStructuredTokens(playbook, createTokenizerFn(config));
 }

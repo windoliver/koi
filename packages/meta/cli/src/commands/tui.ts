@@ -16,6 +16,22 @@
  *   koi tui --refresh 10
  */
 
+// Monkey-patch stdin.setRawMode to be safe in non-TTY environments (e.g. tmux).
+// OpenTUI's renderer.destroy() calls setRawMode(false) which throws EBADF
+// (errno 9) when the stdin fd is invalidated. This patch must run before
+// any OpenTUI import to prevent the fatal throw.
+if (process.stdin.setRawMode) {
+  const originalSetRawMode = process.stdin.setRawMode.bind(process.stdin);
+  process.stdin.setRawMode = (mode: boolean): typeof process.stdin => {
+    try {
+      return originalSetRawMode(mode);
+    } catch {
+      // stdin fd may be closed (tmux detach, fd invalidated)
+      return process.stdin;
+    }
+  };
+}
+
 import type { OperationResult, PhaseCallbacks, SetupWizardState } from "@koi/setup-core";
 import { KNOWN_MODELS } from "@koi/setup-core";
 import type { PresetInfo } from "@koi/tui";
@@ -441,14 +457,25 @@ export async function runTui(flags: TuiFlags): Promise<void> {
     }
     // Force cooked mode in case renderer.destroy() didn't run
     if (process.stdin.isTTY) {
-      process.stdin.setRawMode(false);
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // stdin may already be closed (e.g., tmux pane detached, fd invalidated)
+      }
     }
     clearTerminalState();
   };
   process.on("exit", restoreTerminal);
   process.on("uncaughtException", (err) => {
+    // Ignore setRawMode errors — these occur in tmux when stdin fd is
+    // invalidated during renderer transitions (errno 9 = EBADF).
+    // The OpenTUI library throws from renderer.destroy() which we can't
+    // catch directly. Swallow these so the process continues.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("setRawMode")) return;
+
     restoreTerminal();
-    process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`Fatal: ${msg}\n`);
     process.exit(1);
   });
 

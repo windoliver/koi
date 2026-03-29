@@ -23,6 +23,8 @@ export interface AuditEntry {
 export interface AuditSink {
   readonly log: (entry: AuditEntry) => Promise<void>;
   readonly flush?: () => Promise<void>;
+  /** Query audit entries for a session. Optional — enables rich trajectory adapters. */
+  readonly query?: (sessionId: string) => Promise<readonly AuditEntry[]>;
 }
 
 export interface RedactionRule {

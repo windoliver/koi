@@ -19,6 +19,12 @@ import type { NexusClient } from "@koi/nexus-client";
 import { createNexusClient } from "@koi/nexus-client";
 import { validatePathSegment } from "./shared/nexus-helpers.js";
 
+/** Sanitize a string for use as a Nexus filename — replace colons with underscores.
+ *  Nexus list/glob RPCs don't index files with colons in the name. */
+function sanitizeFilename(name: string): string {
+  return name.replace(/:/g, "_");
+}
+
 // ---------------------------------------------------------------------------
 // Shared config
 // ---------------------------------------------------------------------------
@@ -139,8 +145,21 @@ async function readJson<T>(client: NexusClient, path: string): Promise<T | undef
 }
 
 async function writeJson(client: NexusClient, path: string, data: unknown): Promise<void> {
-  const r = await client.rpc<null>("write", { path, content: JSON.stringify(data) });
-  if (!r.ok) throw new Error(r.error.message);
+  const content = JSON.stringify(data);
+  const maxRetries = 4;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const r = await client.rpc<null>("write", { path, content });
+    if (r.ok) return;
+    // Retry on rate limit (RATE_LIMIT code or "rate" in message)
+    const isRateLimit =
+      r.error.code === "RATE_LIMIT" || r.error.message.toLowerCase().includes("rate");
+    if (attempt < maxRetries && isRateLimit) {
+      // Exponential backoff: 2s, 4s, 8s, 16s
+      await new Promise((resolve) => setTimeout(resolve, 2000 * 2 ** attempt));
+      continue;
+    }
+    throw new Error(r.error.message);
+  }
 }
 
 async function deleteJson(client: NexusClient, path: string): Promise<boolean> {
@@ -183,7 +202,7 @@ export function createNexusTrajectoryStore(config: NexusAceStoreConfig): NexusTr
   });
 
   function sessionPath(sessionId: string): string {
-    return `${basePath}/${sessionId}.json`;
+    return `${basePath}/${sanitizeFilename(sessionId)}.json`;
   }
 
   const append = async (sessionId: string, entries: readonly TrajectoryEntry[]): Promise<void> => {
@@ -233,7 +252,7 @@ export function createNexusPlaybookStore(config: NexusAceStoreConfig): NexusPlay
   });
 
   function playbookPath(id: string): string {
-    return `${basePath}/${id}.json`;
+    return `${basePath}/${sanitizeFilename(id)}.json`;
   }
 
   const get = async (id: string): Promise<Playbook | undefined> => {
@@ -295,7 +314,7 @@ export function createNexusStructuredPlaybookStore(
   });
 
   function playbookPath(id: string): string {
-    return `${basePath}/${id}.json`;
+    return `${basePath}/${sanitizeFilename(id)}.json`;
   }
 
   const get = async (id: string): Promise<StructuredPlaybook | undefined> => {

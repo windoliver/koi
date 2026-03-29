@@ -5,6 +5,10 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
+  "exclude": [
+    "src/__tests__/run-rich-trajectory-e2e.ts",
+    "src/__tests__/e2e-rich-trajectory-koi.test.ts"
+  ],
   "references": [
     {
       "path": "../../kernel/core"

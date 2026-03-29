@@ -47,6 +47,8 @@ export interface EmbedResult {
   readonly spawned: boolean;
   /** PID of the Nexus process (if known). */
   readonly pid: number | undefined;
+  /** API key for the running Nexus instance (from .state.json or nexus.yaml). */
+  readonly apiKey: string | undefined;
 }
 
 /** Persisted connection state stored in embed.json. */

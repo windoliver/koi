@@ -6,6 +6,7 @@
  * duplication across store types (Decision 5A).
  */
 
+import type { RichTrajectoryStep, RichTrajectoryStore } from "@koi/core/rich-trajectory";
 import type { Playbook, StructuredPlaybook, TrajectoryEntry } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,39 @@ export function createInMemoryTrajectoryStore(): TrajectoryStore {
       const ids = [...sessions.keys()];
       const limit = options?.limit ?? ids.length;
       return ids.slice(0, limit);
+    },
+  };
+}
+
+/** Creates an in-memory RichTrajectoryStore for testing and reference. */
+export function createInMemoryRichTrajectoryStore(): RichTrajectoryStore {
+  const sessions = new Map<
+    string,
+    { readonly steps: readonly RichTrajectoryStep[]; readonly timestamp: number }
+  >();
+
+  return {
+    async append(sessionId: string, steps: readonly RichTrajectoryStep[]): Promise<void> {
+      const existing = sessions.get(sessionId);
+      const merged = existing !== undefined ? [...existing.steps, ...steps] : [...steps];
+      const timestamp = steps.length > 0 ? Math.max(...steps.map((s) => s.timestamp)) : Date.now();
+      sessions.set(sessionId, { steps: merged, timestamp });
+    },
+
+    async getSession(sessionId: string): Promise<readonly RichTrajectoryStep[]> {
+      return sessions.get(sessionId)?.steps ?? [];
+    },
+
+    async prune(olderThanMs: number): Promise<number> {
+      // let: mutable counter for pruned entries
+      let pruned = 0;
+      for (const [id, data] of sessions) {
+        if (data.timestamp < olderThanMs) {
+          sessions.delete(id);
+          pruned += data.steps.length;
+        }
+      }
+      return pruned;
     },
   };
 }

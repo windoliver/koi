@@ -690,6 +690,16 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const nexus = nexusResolution.state;
   const autonomous = autonomousResolution.result;
 
+  // Ensure NEXUS_API_KEY is set for ALL presets (not just embed-auth).
+  // resolveNexusOrWarn → createNexusStack → ensureNexusRunning may have
+  // set it in env (via our nexus-stack.ts fix), but if not, probe for it.
+  if (process.env.NEXUS_API_KEY === undefined && nexus.baseUrl !== undefined) {
+    const probed = await probeExistingNexus(workspaceRoot);
+    if (probed?.apiKey !== undefined) {
+      process.env.NEXUS_API_KEY = probed.apiKey;
+    }
+  }
+
   // Temporal contribution (inline — temporal resolution doesn't have its own bootstrap fn)
   const temporalContribution: StackContribution =
     temporalAdmin !== undefined
@@ -975,11 +985,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
   }
 
   // Activate L3 stacks based on preset flags
-  // Upgrade store backends to Nexus when Nexus is available
+  // Upgrade store backends to Nexus when Nexus is available,
+  // but respect explicit user overrides from manifest stacks config
   const effectiveStacks = {
     ...preset.stacks,
     ...(nexus.baseUrl !== undefined
-      ? { threadStoreBackend: "nexus" as const, aceStoreBackend: "nexus" as const }
+      ? {
+          threadStoreBackend: preset.stacks.threadStoreBackend ?? ("nexus" as const),
+          aceStoreBackend: preset.stacks.aceStoreBackend ?? ("nexus" as const),
+        }
       : {}),
     // Auto-enable sandboxStack when the manifest declares a sandbox config
     ...(manifest.codeSandbox !== undefined ? { sandboxStack: true as const } : {}),
@@ -996,10 +1010,18 @@ export async function runUp(flags: UpFlags): Promise<void> {
       : {}),
     ...(contextArenaConfig !== undefined ? { contextArenaConfig } : {}),
     aceDataDir: resolve(workspaceRoot, ".koi", "data"),
-    ...(nexusBaseUrl !== undefined ? { nexusBaseUrl } : {}),
+    ...((nexusBaseUrl ?? nexus.baseUrl) !== undefined
+      ? { nexusBaseUrl: (nexusBaseUrl ?? nexus.baseUrl) as string }
+      : {}),
     ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
     agentName: manifest.name,
     ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
+    ...(effectiveStacks.ace === true
+      ? await (async () => {
+          const mc = await createAceModelCall();
+          return mc !== undefined ? { aceModelCall: mc } : {};
+        })()
+      : {}),
   });
 
   // Resolve manifest tools (tools.koi section) into ComponentProviders
@@ -1860,4 +1882,64 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // Use `nexus down` or `docker compose down` to explicitly stop them.
 
   output.info("Goodbye.");
+}
+
+/**
+ * Create a lightweight model call function for the ACE reflector/curator.
+ *
+ * Supports both Anthropic (direct) and OpenRouter. Returns undefined
+ * when no API key is available (ACE falls back to stat-only pipeline).
+ */
+async function createAceModelCall(): Promise<
+  ((messages: readonly import("@koi/core/message").InboundMessage[]) => Promise<string>) | undefined
+> {
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+
+  // Prefer OpenRouter if available (works with any provider key)
+  if (openRouterKey !== undefined && openRouterKey.length > 0) {
+    const model = "anthropic/claude-3.5-haiku";
+    return async (messages) => {
+      const mapped = messages.map((m) => ({
+        role: "user" as const,
+        content: m.content.map((c) => (c.kind === "text" ? c.text : JSON.stringify(c))).join("\n"),
+      }));
+      const resp = await globalThis.fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openRouterKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model, messages: mapped, max_tokens: 1024 }),
+      });
+      if (!resp.ok) return "";
+      const json = (await resp.json()) as {
+        readonly choices?: readonly { readonly message?: { readonly content?: string } }[];
+      };
+      return json.choices?.[0]?.message?.content ?? "";
+    };
+  }
+
+  // Fall back to Anthropic SDK if ANTHROPIC_API_KEY is a real Anthropic key
+  if (anthropicKey !== undefined && anthropicKey.length > 0 && !anthropicKey.startsWith("sk-or-")) {
+    const { createAnthropicAdapter } = await import("@koi/model-router");
+    const adapter = createAnthropicAdapter({ apiKey: anthropicKey });
+    const aceModel = "claude-haiku-4-5-20251001";
+    return async (messages) => {
+      const koiMessages = messages.map((m) => ({
+        ...m,
+        content: m.content.map((c) =>
+          c.kind === "text" ? c : { kind: "text" as const, text: JSON.stringify(c) },
+        ),
+      }));
+      const response = await adapter.complete({
+        messages: koiMessages,
+        model: aceModel,
+        maxTokens: 1024,
+      });
+      return typeof response.content === "string" ? response.content : "";
+    };
+  }
+
+  return undefined;
 }
