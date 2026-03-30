@@ -238,6 +238,7 @@ export function createKeyboardHandler(
     }
 
     // 1-5 — switch primary tabs (Agents, Console, Forge, Sources, Sessions)
+    // Skip when in console view — digits should be typed into the message input, not switch tabs.
     const TAB_KEYS: Readonly<Record<string, string>> = {
       "1": "agents",
       "2": "console",
@@ -245,7 +246,7 @@ export function createKeyboardHandler(
       "4": "datasources",
       "5": "sessions",
     };
-    if (sequence in TAB_KEYS) {
+    if (sequence in TAB_KEYS && view !== "console" && view !== "nameinput") {
       const target = TAB_KEYS[sequence] as string;
       // Console requires an active agent session
       if (target === "console" && store.getState().activeSession === null) return true;
