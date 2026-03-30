@@ -136,9 +136,9 @@ describe("StatusBarView", () => {
         ...store.getState().taskBoardView,
         snapshot: {
           nodes: [
-            { taskId: "t1", label: "Task 1", status: "completed" },
-            { taskId: "t2", label: "Task 2", status: "running" },
-            { taskId: "t3", label: "Task 3", status: "pending" },
+            { taskId: "t1", label: "Task 1", status: "completed" as const },
+            { taskId: "t2", label: "Task 2", status: "running" as const },
+            { taskId: "t3", label: "Task 3", status: "pending" as const },
           ],
           edges: [],
           timestamp: Date.now(),
