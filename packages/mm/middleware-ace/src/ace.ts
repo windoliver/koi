@@ -59,6 +59,8 @@ export interface AceMiddlewareHandle {
   readonly llmPipeline: ConsolidationPipeline | undefined;
   /** The compact trajectory buffer (for ace_reflect). */
   readonly trajectoryBuffer: import("./trajectory-buffer.js").TrajectoryBuffer;
+  /** Get the current conversation/session ID for ATIF document lookups. */
+  readonly getConversationId: () => string;
 }
 
 /** Creates the ACE middleware instance. */
@@ -85,6 +87,9 @@ export function createAceMiddleware(
   // let: monotonically increasing step index for ATIF document
   let nextStepIndex = 0;
 
+  // let: track the current conversation/session ID for ace_reflect
+  let currentConversationId = "unknown";
+
   function recordEntry(entry: TrajectoryEntry): void {
     const evicted = buffer.record(entry);
     config.onRecord?.(entry);
@@ -110,6 +115,11 @@ export function createAceMiddleware(
       durationMs: clock() - startMs,
       ...(bulletIds !== undefined && bulletIds.length > 0 ? { bulletIds } : {}),
     });
+  }
+
+  /** Update the tracked conversation ID from the current context. */
+  function trackConversationId(ctx: TurnContext): void {
+    currentConversationId = ctx.session.conversationId ?? ctx.session.sessionId;
   }
 
   /** Record a rich trajectory step to the ATIF write-behind buffer. */
@@ -242,6 +252,7 @@ export function createAceMiddleware(
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
+      trackConversationId(ctx);
       const enrichedRequest = await enrichRequestWithPlaybooks(request);
 
       // Execute and record outcome
@@ -296,6 +307,7 @@ export function createAceMiddleware(
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
+      trackConversationId(ctx);
       const enrichedRequest = await enrichRequestWithPlaybooks(request);
 
       const start = clock();
@@ -385,6 +397,7 @@ export function createAceMiddleware(
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
+      trackConversationId(ctx);
       const start = clock();
       try {
         const response = await next(request);
@@ -490,6 +503,7 @@ export function createAceMiddleware(
       atifBuffer,
       llmPipeline,
       trajectoryBuffer: buffer,
+      getConversationId: () => currentConversationId,
     };
   }
 

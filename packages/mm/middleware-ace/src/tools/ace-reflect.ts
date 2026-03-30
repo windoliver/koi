@@ -34,8 +34,8 @@ export interface AceReflectToolConfig {
   readonly aceHandle: AceMiddlewareHandle;
   /** Trajectory buffer for compact entries. */
   readonly trajectoryBuffer: TrajectoryBuffer;
-  /** Document ID for the current conversation's ATIF document. */
-  readonly conversationId: string;
+  /** Resolves the current conversation's ATIF document ID at call time. */
+  readonly getConversationId: () => string;
   /** Minimum seconds between reflections. Default: 30. */
   readonly cooldownMs?: number;
   /** Minimum steps between reflections. Default: 10. */
@@ -146,7 +146,7 @@ export function createAceReflectTool(config: AceReflectToolConfig): Tool {
 
   async function runReflection(_reason: string | undefined, startedAt: number): Promise<void> {
     // Flush buffer so all recent steps are persisted
-    await config.atifBuffer.flush(config.conversationId);
+    await config.atifBuffer.flush(config.getConversationId());
 
     // Get compact trajectory entries for the pipeline
     const entries = config.trajectoryBuffer.flush();
@@ -154,7 +154,7 @@ export function createAceReflectTool(config: AceReflectToolConfig): Tool {
     // Run the LLM pipeline (reflector → curator → apply with watermark)
     await config.llmPipeline.consolidate(
       entries,
-      config.conversationId,
+      config.getConversationId(),
       1, // sessionCount not meaningful for mid-session reflection
       clock,
       config.trajectoryBuffer,

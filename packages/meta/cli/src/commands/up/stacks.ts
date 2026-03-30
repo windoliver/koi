@@ -429,7 +429,7 @@ async function activateAce(
           atifStore,
           aceHandle: handle,
           trajectoryBuffer: handle.trajectoryBuffer,
-          conversationId: "default",
+          getConversationId: handle.getConversationId,
         });
         providers.push(
           createAceToolsProvider({

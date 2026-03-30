@@ -49,7 +49,7 @@ describe("createAceReflectTool", () => {
       atifStore: createMockStore(),
       aceHandle: createMockHandle(),
       trajectoryBuffer: createTrajectoryBuffer(1000),
-      conversationId: "conv-1",
+      getConversationId: () => "conv-1",
       clock: () => 1000,
     });
 
@@ -74,7 +74,7 @@ describe("createAceReflectTool", () => {
       atifStore: createMockStore(),
       aceHandle: createMockHandle(),
       trajectoryBuffer: createTrajectoryBuffer(1000),
-      conversationId: "conv-1",
+      getConversationId: () => "conv-1",
       clock: () => 1000,
     });
 
@@ -98,7 +98,7 @@ describe("createAceReflectTool", () => {
       atifStore: createMockStore(),
       aceHandle: createMockHandle(),
       trajectoryBuffer: createTrajectoryBuffer(1000),
-      conversationId: "conv-1",
+      getConversationId: () => "conv-1",
       cooldownMs: 5000,
       cooldownSteps: 3,
       clock: () => now,
@@ -128,7 +128,7 @@ describe("createAceReflectTool", () => {
       atifStore: createMockStore(),
       aceHandle: createMockHandle(),
       trajectoryBuffer: createTrajectoryBuffer(1000),
-      conversationId: "conv-1",
+      getConversationId: () => "conv-1",
       clock: () => 1000,
     });
 
@@ -149,7 +149,7 @@ describe("createAceReflectTool", () => {
       atifStore: createMockStore(),
       aceHandle: handle,
       trajectoryBuffer: createTrajectoryBuffer(1000),
-      conversationId: "conv-1",
+      getConversationId: () => "conv-1",
       clock: () => 1000,
     });
 
@@ -176,7 +176,7 @@ describe("createAceReflectTool", () => {
       atifStore: createMockStore(),
       aceHandle: createMockHandle(),
       trajectoryBuffer: createTrajectoryBuffer(1000),
-      conversationId: "conv-1",
+      getConversationId: () => "conv-1",
       clock: () => 1000,
       onReflectionError: (e) => errors.push(e),
     });
@@ -198,7 +198,7 @@ describe("createAceReflectTool", () => {
       atifStore: createMockStore(),
       aceHandle: createMockHandle(),
       trajectoryBuffer: createTrajectoryBuffer(1000),
-      conversationId: "conv-1",
+      getConversationId: () => "conv-1",
     });
 
     expect(tool.descriptor.name).toBe("ace_reflect");
