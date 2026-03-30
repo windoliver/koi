@@ -4,7 +4,7 @@
  */
 
 import type { ComponentEvent, KoiError, KoiMiddleware, Result, SkillConfig } from "@koi/core";
-import { fsSkill } from "@koi/core";
+import { brickId, fsSkill } from "@koi/core";
 import type { ScanFinding } from "@koi/skill-scanner";
 import {
   createSkillActivatorMiddleware,
@@ -100,12 +100,25 @@ export async function createSkillStack(config: SkillStackConfig): Promise<SkillS
     forgeUnsub = forgeProvider.watch((event: ComponentEvent) => {
       if (event.kind === "attached" && event.componentKey.startsWith("brick:skill:")) {
         const name = event.componentKey.slice("brick:skill:".length);
-        // Create a forged skill config and mount it
+        if (name.length === 0) return;
         const skill: SkillConfig = {
           name,
-          source: { kind: "forged", brickId: name as never },
+          source: { kind: "forged", brickId: brickId(name) },
         };
-        void provider.mount(skill, basePath, findingCallback);
+        provider.mount(skill, basePath, findingCallback).then(
+          (result) => {
+            if (!result.ok) {
+              console.warn(
+                `[skill-stack] Failed to mount forged skill "${name}": ${result.error.message}`,
+              );
+            }
+          },
+          (err: unknown) => {
+            console.warn(
+              `[skill-stack] Mount error for forged skill "${name}": ${err instanceof Error ? err.message : String(err)}`,
+            );
+          },
+        );
       }
     });
     disposables.push(() => forgeUnsub?.());
