@@ -9,6 +9,20 @@ import { PanelChrome } from "../components/panel-chrome.js";
 import type { NexusBrowserState } from "../state/domain-types.js";
 import { COLORS } from "../theme.js";
 
+const MAX_PREVIEW_LINES = 40;
+
+/** Pretty-print JSON content for the file preview. Falls back to raw lines. */
+function formatPreview(raw: string): readonly string[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const pretty = JSON.stringify(parsed, null, 2);
+    return pretty.split("\n").slice(0, MAX_PREVIEW_LINES);
+  } catch {
+    // Not JSON — show raw lines
+    return raw.split("\n").filter((l: string) => l.trim() !== "").slice(0, MAX_PREVIEW_LINES);
+  }
+}
+
 export interface NexusBrowserViewProps {
   readonly nexusBrowser: NexusBrowserState;
   readonly focused: boolean;
@@ -70,7 +84,7 @@ export function NexusBrowserView(props: NexusBrowserViewProps): React.ReactNode 
           <box height={1}>
             <text fg={COLORS.green}><b>{" File Preview"}</b></text>
           </box>
-          {fileContent.split("\n").filter((l: string) => l.trim() !== "").map((line: string, i: number) => (
+          {formatPreview(fileContent).map((line: string, i: number) => (
             <box key={i} height={1}>
               <text fg={COLORS.dim}>{`   ${line}`}</text>
             </box>
