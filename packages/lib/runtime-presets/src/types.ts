@@ -83,6 +83,8 @@ export interface PresetStacks {
   readonly rlmStack?: boolean;
   /** Enable data source discovery and tools (query_datasource, probe_schema). */
   readonly dataSourceStack?: boolean;
+  /** Enable Nexus-backed agent workspace (filesystem, scope enforcement, semantic search). */
+  readonly workspaceStack?: boolean;
 }
 
 /** A complete runtime preset definition. */

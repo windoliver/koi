@@ -932,6 +932,25 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
+  // Workspace stack — Nexus-backed agent workspace (non-fatal, gated on preset flag)
+  let workspaceBundle: import("@koi/workspace-stack").WorkspaceStackBundle | undefined;
+  if (preset.stacks.workspaceStack === true && nexus.baseUrl !== undefined) {
+    try {
+      const { createWorkspaceStack } = await import("@koi/workspace-stack");
+      const { agentId } = await import("@koi/core/ecs");
+      workspaceBundle = createWorkspaceStack({
+        nexusBaseUrl: nexus.baseUrl,
+        nexusApiKey: process.env.NEXUS_API_KEY ?? "",
+        agentId: agentId(manifest.name),
+      });
+      if (flags.verbose) {
+        process.stderr.write("  Workspace-stack: wired (nexus)\n");
+      }
+    } catch {
+      // Workspace stack is non-fatal
+    }
+  }
+
   // Wire context-arena conversation persistence (Decision 1A, 2A)
   // let justified: mutable message buffer so context-arena squash middleware can
   // partition tool results; updated per-message in the channel onMessage handler.
@@ -1314,6 +1333,10 @@ export async function runUp(flags: UpFlags): Promise<void> {
         },
       },
       fileSystem: await (async () => {
+        if (workspaceBundle !== undefined) {
+          activeStorage.vfs = "nexus";
+          return workspaceBundle.backend;
+        }
         const vfs = await createVfsBackend(workspaceRoot, nexus.baseUrl, manifest.name);
         activeStorage.vfs = vfs.backend;
         return vfs.fs;
