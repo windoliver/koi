@@ -304,13 +304,25 @@ export function createAceMiddleware(
         recordOutcome(ctx, "model_call", response.model, start, "success", bulletIds);
 
         // Record rich trajectory step to ATIF buffer
+        // Capture all messages as request text for ATIF
+        const reqText = request.messages
+          .map((m) =>
+            m.content
+              .filter(
+                (b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text",
+              )
+              .map((b) => b.text)
+              .join("\n"),
+          )
+          .filter((t) => t.length > 0)
+          .join("\n---\n");
         recordRichStep(
           ctx,
           "model_call",
           response.model,
           start,
           "success",
-          undefined, // request content captured by audit adapter if configured
+          reqText.length > 0 ? { text: reqText } : undefined,
           responseText.length > 0 ? { text: responseText } : undefined,
           undefined,
           response.usage !== undefined
@@ -375,13 +387,25 @@ export function createAceMiddleware(
             recordOutcome(ctx, "model_call", modelName, start, "success", bulletIds);
 
             // Record rich trajectory step for streaming model calls
+            // Capture all user messages as request text for ATIF
+            const requestText = request.messages
+              .map((m) =>
+                m.content
+                  .filter(
+                    (b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text",
+                  )
+                  .map((b) => b.text)
+                  .join("\n"),
+              )
+              .filter((t) => t.length > 0)
+              .join("\n---\n");
             recordRichStep(
               ctx,
               "model_call",
               modelName,
               start,
               "success",
-              undefined,
+              requestText.length > 0 ? { text: requestText } : undefined,
               responseText.length > 0 ? { text: responseText } : undefined,
               undefined,
               resp?.usage !== undefined

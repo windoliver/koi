@@ -148,6 +148,13 @@ function mapStepToAtif(step: RichTrajectoryStep): AtifStep {
     ...(step.request?.text !== undefined ? { message: step.request.text } : {}),
     ...(step.reasoningContent !== undefined ? { reasoning_content: step.reasoningContent } : {}),
     ...(step.kind === "tool_call" ? mapToolCallToAtif(step) : {}),
+    ...(step.kind === "model_call" && step.response?.text !== undefined
+      ? {
+          observation: {
+            results: [{ content: step.response.text }],
+          },
+        }
+      : {}),
     ...(step.metrics !== undefined ? { metrics: mapMetricsToAtif(step.metrics) } : {}),
     duration_ms: step.durationMs,
     outcome: step.outcome,
