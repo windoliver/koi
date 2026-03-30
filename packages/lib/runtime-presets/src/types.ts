@@ -81,6 +81,8 @@ export interface PresetStacks {
   readonly filesystem?: boolean;
   /** Enable RLM stack (rlm_process tool for large-input virtualization). */
   readonly rlmStack?: boolean;
+  /** Enable data source discovery and tools (query_datasource, probe_schema). */
+  readonly dataSourceStack?: boolean;
 }
 
 /** A complete runtime preset definition. */
