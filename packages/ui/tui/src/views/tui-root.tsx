@@ -33,6 +33,7 @@ import { GatewayView } from "./gateway-view.js";
 import { GovernanceView } from "./governance-view.js";
 import { HandoffView } from "./handoff-view.js";
 import { HarnessView } from "./harness-view.js";
+import { HelpView } from "./help-view.js";
 import { LogView } from "./log-view.js";
 import { MailboxView } from "./mailbox-view.js";
 import { MiddlewareView } from "./middleware-view.js";
@@ -102,7 +103,9 @@ function mapKeyEventToSequence(key: KeyEvent, paletteActive?: boolean): string |
   if (paletteActive === true) return null;
   // Single-char keys for view-specific shortcuts (includes 1-5 for tab switching)
   const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "l", "+", "?", " ", "r", "1", "2", "3", "4", "5"];
-  if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
+  // Allow shift for ? (Shift+/ on most keyboards)
+  const allowShift = key.name === "?";
+  if (!key.ctrl && !key.meta && (allowShift || !key.shift) && SINGLE_KEYS.includes(key.name)) {
     return key.name;
   }
   return null;
@@ -501,6 +504,11 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         )}
         {view === "files" && (
           <NexusBrowserView nexusBrowser={state.nexusBrowser} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+
+        {/* Help overlay */}
+        {view === "help" && (
+          <HelpView currentView={state.viewHistory[state.viewHistory.length - 1] ?? "agents"} />
         )}
 
         {/* Command palette overlay */}

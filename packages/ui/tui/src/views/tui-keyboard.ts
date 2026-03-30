@@ -162,6 +162,22 @@ export function createKeyboardHandler(
       return true;
     }
 
+    // ? — toggle help overlay (not in welcome/wizard/palette views)
+    if (
+      sequence === "?" &&
+      view !== "welcome" &&
+      view !== "nameinput" &&
+      view !== "palette" &&
+      view !== "presetdetail"
+    ) {
+      if (view === "help") {
+        store.dispatch({ kind: "navigate_back" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "help" });
+      }
+      return true;
+    }
+
     // + — cycle zoom level
     if (sequence === "+") {
       store.dispatch({ kind: "cycle_zoom" });
@@ -643,6 +659,10 @@ export function createKeyboardHandler(
 
     // Escape — context-dependent back/close
     if (sequence === "\x1b") {
+      if (view === "help") {
+        store.dispatch({ kind: "navigate_back" });
+        return true;
+      }
       if (view === "palette") {
         callbacks.togglePalette();
         return true;

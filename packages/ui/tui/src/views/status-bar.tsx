@@ -36,6 +36,7 @@ const VIEW_HINTS: Readonly<Record<TuiView, string>> = {
   governance: "j/k:navigate  [a] approve  [d] deny  Esc:back",
   handoffs: "j/k:scroll  Esc:back  Ctrl+P:commands",
   harness: "j/k:scroll  [p] pause/resume  Esc:back  Ctrl+P:commands",
+  help: "?:close  Esc:close",
   logs: "l:cycle-level  Esc:back",
   mailbox: "j/k:scroll  Esc:back  Ctrl+P:commands",
   middleware: "Esc:back  Ctrl+P:commands",
