@@ -128,6 +128,49 @@ describe("StatusBarView", () => {
     expect(frame).not.toContain("●");
   });
 
+  test("shows task status when task board has items", async () => {
+    const store = makeStore();
+    const state = {
+      ...store.getState(),
+      taskBoardView: {
+        ...store.getState().taskBoardView,
+        snapshot: {
+          nodes: [
+            { taskId: "t1", label: "Task 1", status: "completed" as const },
+            { taskId: "t2", label: "Task 2", status: "running" as const },
+            { taskId: "t3", label: "Task 3", status: "pending" as const },
+          ],
+          edges: [],
+          timestamp: Date.now(),
+        },
+      },
+    };
+
+    const { captureCharFrame, renderOnce } = await testRender(
+      <StatusBarView state={state} />,
+      { width: 160, height: 3 },
+    );
+
+    await renderOnce();
+    const frame = captureCharFrame();
+    expect(frame).toContain("Tasks:");
+    expect(frame).toContain("1/3 done");
+  });
+
+  test("hides task status when task board is empty", async () => {
+    const store = makeStore();
+    const state = store.getState();
+
+    const { captureCharFrame, renderOnce } = await testRender(
+      <StatusBarView state={state} />,
+      { width: 120, height: 3 },
+    );
+
+    await renderOnce();
+    const frame = captureCharFrame();
+    expect(frame).not.toContain("Tasks:");
+  });
+
   test("shows capability dots at full width", async () => {
     const store = makeStore();
     const state = {

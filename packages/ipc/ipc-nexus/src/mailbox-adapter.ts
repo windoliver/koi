@@ -83,6 +83,17 @@ export function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent
   } = config;
 
   const client: NexusClient = createNexusClient({ baseUrl, timeoutMs, authToken });
+
+  // Auto-provision inbox — ensures mailbox.send() won't 404 for this agent.
+  // Idempotent: Nexus returns 409 if already provisioned, which is fine.
+  void fetch(`${baseUrl}/api/v2/ipc/provision/${encodeURIComponent(agentId as string)}`, {
+    method: "POST",
+    headers: authToken !== undefined ? { Authorization: `Bearer ${authToken}` } : {},
+    signal: AbortSignal.timeout(timeoutMs),
+  }).catch(() => {
+    // Non-fatal — inbox may already exist or Nexus may be temporarily unavailable
+  });
+
   const handlers = new Set<MessageHandler>();
   const seen = createSeenBuffer(seenCapacity);
 
