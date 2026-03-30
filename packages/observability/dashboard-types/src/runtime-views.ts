@@ -467,3 +467,19 @@ export interface RuntimeViewDataSource {
       }
     | undefined;
 }
+
+// ---------------------------------------------------------------------------
+// Workspace context — cwd, paths, ports for debugging
+// ---------------------------------------------------------------------------
+
+export interface WorkspaceContextResponse {
+  readonly cwd: string;
+  readonly koiYamlPath: string;
+  readonly nexusYamlPath: string | undefined;
+  readonly nexusDataDir: string | undefined;
+  readonly nexusContainerProject: string | undefined;
+  readonly nexusPort: number | undefined;
+  readonly nexusBaseUrl: string | undefined;
+  readonly adminPort: number;
+  readonly presetId: string;
+}

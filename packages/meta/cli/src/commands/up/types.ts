@@ -34,4 +34,13 @@ export interface BannerInfo {
   readonly discoveredSources: readonly { readonly name: string; readonly protocol: string }[];
   readonly prompts: readonly string[];
   readonly storage?: StorageBackendInfo | undefined;
+  readonly workspace?: WorkspaceBannerInfo | undefined;
+}
+
+export interface WorkspaceBannerInfo {
+  readonly cwd: string;
+  readonly koiYamlPath: string;
+  readonly nexusYamlPath: string | undefined;
+  readonly nexusDataDir: string | undefined;
+  readonly nexusPort: number | undefined;
 }
