@@ -90,6 +90,13 @@ export function createAceMiddleware(
   // let: track the current conversation/session ID for ace_reflect
   let currentConversationId = "unknown";
 
+  // Auto-reflection: trigger LLM pipeline every N model calls within a session
+  const autoReflectInterval = config.autoReflectInterval ?? 5;
+  // let: count model calls since last reflection
+  let modelCallsSinceReflect = 0;
+  // let: prevent concurrent auto-reflections
+  let autoReflectInFlight = false;
+
   function recordEntry(entry: TrajectoryEntry): void {
     const evicted = buffer.record(entry);
     config.onRecord?.(entry);
@@ -120,6 +127,33 @@ export function createAceMiddleware(
   /** Update the tracked conversation ID from the current context. */
   function trackConversationId(ctx: TurnContext): void {
     currentConversationId = ctx.session.conversationId ?? ctx.session.sessionId;
+  }
+
+  /** Auto-trigger mid-session reflection after N model calls. Fire-and-forget. */
+  function maybeAutoReflect(): void {
+    if (llmPipeline === undefined || atifBuffer === undefined) return;
+    modelCallsSinceReflect++;
+    if (modelCallsSinceReflect < autoReflectInterval) return;
+    if (autoReflectInFlight) return;
+
+    autoReflectInFlight = true;
+    modelCallsSinceReflect = 0;
+    const docId = currentConversationId;
+    const errorHandler = config.onLlmPipelineError ?? defaultLlmPipelineErrorHandler;
+
+    void (async () => {
+      try {
+        await atifBuffer.flush(docId);
+        const entries = buffer.flush();
+        await llmPipeline.consolidate(entries, docId, 1, clock, buffer);
+        // Invalidate playbook cache so next model call picks up new bullets
+        cachedStructuredPlaybooks = undefined;
+      } catch (e: unknown) {
+        errorHandler(e, docId);
+      } finally {
+        autoReflectInFlight = false;
+      }
+    })();
   }
 
   /** Record a rich trajectory step to the ATIF write-behind buffer. */
@@ -285,6 +319,7 @@ export function createAceMiddleware(
           bulletIds,
         );
 
+        maybeAutoReflect();
         return response;
       } catch (e: unknown) {
         recordOutcome(ctx, "model_call", request.model ?? "unknown", start, "failure");
@@ -355,6 +390,7 @@ export function createAceMiddleware(
               bulletIds,
             );
 
+            maybeAutoReflect();
             recorded = true;
           }
           yield chunk;
@@ -435,6 +471,7 @@ export function createAceMiddleware(
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       toolCallCount = 0;
+      modelCallsSinceReflect = 0;
 
       // Clear playbook caches
       cachedStatPlaybooks = undefined;

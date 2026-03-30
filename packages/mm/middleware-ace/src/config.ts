@@ -82,6 +82,10 @@ export interface AceConfig {
   /** Max tokens for the reflector prompt's trajectory section. Default: 4000. */
   readonly maxReflectorTokens?: number;
 
+  // Auto-reflection
+  /** Auto-trigger mid-session reflection every N model calls. Default: 5. Set to 0 to disable. */
+  readonly autoReflectInterval?: number;
+
   // Testability
   readonly clock?: () => number;
 
