@@ -154,7 +154,7 @@ async function resolveAdapterForEntry(
 
   if (entry.protocol === "acp") {
     const { createAcpAdapter } = await import("@koi/engine-acp");
-    return createAcpAdapter({ command: entry.command });
+    return createAcpAdapter({ command: entry.command, args: ["--acp"] });
   }
 
   const { createExternalAdapter } = await import("@koi/engine-external");
