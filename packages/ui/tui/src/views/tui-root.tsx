@@ -391,7 +391,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         )}
 
         {/* Channel selection step (wizard flow) */}
-        {view === "channels" && state.selectedPresetId !== null && (
+        {view === "channelspicker" && (
           <ChannelsStepView
             channels={[...KNOWN_CHANNELS]}
             selected={[...state.selectedChannels]}
@@ -445,7 +445,7 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         {view === "skills" && (
           <SkillsView skillsView={state.skillsView} focused={true} zoomLevel={state.zoomLevel} />
         )}
-        {view === "channels" && state.selectedPresetId === null && (
+        {view === "channels" && (
           <ChannelsView channelsView={state.channelsView} focused={true} zoomLevel={state.zoomLevel} />
         )}
         {view === "system" && (
@@ -514,6 +514,15 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           navigateUp={paletteNavUp}
           confirmSignal={paletteConfirm}
         />
+
+        {/* Toast notification — transient feedback overlay */}
+        {state.toast !== null && (
+          <box height={1} flexDirection="row" justifyContent="center">
+            <text fg={state.toast.kind === "success" ? "#22C55E" : "#EF4444"}>
+              {state.toast.kind === "success" ? " ✓ " : " ✘ "}{state.toast.message}
+            </text>
+          </box>
+        )}
 
         </>)}
       </box>

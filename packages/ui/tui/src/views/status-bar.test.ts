@@ -64,4 +64,24 @@ describe("composeStatusBarText", () => {
     });
     expect(text).toContain("Esc:close");
   });
+
+  test("shows channelspicker wizard hints distinct from channels runtime view", () => {
+    const wizardText = composeStatusBarText({
+      connectionStatus: "connected",
+      agentName: "a1",
+      view: "channelspicker",
+      agentCount: 1,
+    });
+    expect(wizardText).toContain("Space:toggle");
+    expect(wizardText).toContain("Enter:confirm");
+
+    const runtimeText = composeStatusBarText({
+      connectionStatus: "connected",
+      agentName: "a1",
+      view: "channels",
+      agentCount: 1,
+    });
+    expect(runtimeText).toContain("j/k:scroll");
+    expect(runtimeText).not.toContain("Space:toggle");
+  });
 });
