@@ -23,6 +23,13 @@ export interface ToolConfig {
   readonly options?: JsonObject;
   readonly version?: string;
   readonly publisher?: string;
+  /**
+   * Package name that exports a `ToolRegistration` for auto-resolution.
+   * When present, the engine imports this package at assembly time and
+   * auto-wires its ComponentProvider. When absent, the tool must be
+   * provided via an explicit ComponentProvider in CreateKoiOptions.providers.
+   */
+  readonly package?: string | undefined;
 }
 
 /** Filesystem skill — loaded from SKILL.md on disk. */

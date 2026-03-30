@@ -310,6 +310,86 @@ export interface Tool {
   readonly execute: (args: JsonObject, options?: ToolExecuteOptions) => Promise<unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// Tool registration — self-describing L2 tool packages
+// ---------------------------------------------------------------------------
+
+/** Read-only environment accessor for availability checks. */
+export type EnvReader = Readonly<Record<string, string | undefined>>;
+
+/**
+ * Factory descriptor for a single tool within a ToolRegistration.
+ * L2 packages export one ToolFactory per tool they provide.
+ */
+export interface ToolFactory {
+  /** Tool name — must match the name used in ToolDescriptor and manifest ToolConfig. */
+  readonly name: string;
+  /** Create the Tool instance. Receives the agent entity and optional per-tool config. */
+  readonly create: (agent: Agent, options?: JsonObject) => Tool | Promise<Tool>;
+}
+
+/**
+ * Self-describing registration descriptor exported by L2 tool packages.
+ *
+ * Each L2 package exports a `registration` const satisfying this type.
+ * The engine discovers registrations via the manifest `package` field
+ * and auto-wires ComponentProviders during assembly.
+ */
+export interface ToolRegistration {
+  /** Human-readable provider name (used in conflict diagnostics). */
+  readonly name: string;
+  /** Tool factories — one per tool this package provides. */
+  readonly tools: readonly ToolFactory[];
+  /**
+   * Availability gate. Returns true when the tools can be used.
+   * Receives a read-only env snapshot (defaults to `process.env`).
+   * When absent, tools are always available.
+   * Fail-closed: if the check throws, tools are treated as unavailable.
+   */
+  readonly checkAvailability?: (env: EnvReader) => boolean | Promise<boolean>;
+}
+
+// ---------------------------------------------------------------------------
+// Toolset tag convention — categorize tools via tags
+// ---------------------------------------------------------------------------
+
+/**
+ * Well-known toolset tag prefixes for tool categorization.
+ * Convention: use `toolset:<category>` as a tag value on ToolDescriptor.
+ *
+ * Example: `tags: ["toolset:scheduling"]` on a scheduler tool descriptor.
+ */
+export const TOOLSET_TAGS = {
+  /** Scheduling, task management, cron jobs */
+  SCHEDULING: "toolset:scheduling",
+  /** Code forging, brick creation, self-extension */
+  FORGE: "toolset:forge",
+  /** Web fetch, search, API calls */
+  WEB: "toolset:web",
+  /** GitHub PR lifecycle, CI */
+  GITHUB: "toolset:github",
+  /** Capability discovery and catalog search */
+  CATALOG: "toolset:catalog",
+  /** User interaction, elicitation, approval */
+  INTERACTION: "toolset:interaction",
+  /** Context retrieval, documentation lookup */
+  CONTEXT: "toolset:context",
+  /** Memory store, recall, search */
+  MEMORY: "toolset:memory",
+  /** Filesystem read, write, edit, search */
+  FILESYSTEM: "toolset:filesystem",
+  /** Observability, audit, monitoring */
+  OBSERVABILITY: "toolset:observability",
+} as const;
+
+/** Union type of all well-known toolset tags. */
+export type ToolsetTag = (typeof TOOLSET_TAGS)[keyof typeof TOOLSET_TAGS];
+
+/** Type guard: returns true if a tag string is a toolset tag (starts with "toolset:"). */
+export function isToolsetTag(tag: string): boolean {
+  return tag.startsWith("toolset:");
+}
+
 export interface SkillMetadata {
   readonly name: string;
   readonly description: string;
