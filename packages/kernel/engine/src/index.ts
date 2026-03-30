@@ -138,6 +138,8 @@ export {
 
 // errors
 export { KoiRuntimeError } from "@koi/errors";
+// tool registration (re-export from L0u for convenience)
+export { createProviderFromRegistration } from "@koi/tool-registration";
 // agent entity
 export type { AssemblyConflict, AssemblyResult } from "./agent-entity.js";
 export { AgentEntity } from "./agent-entity.js";
@@ -178,6 +180,9 @@ export { createResultPruner } from "./result-pruner.js";
 export { spawnChildAgent } from "./spawn-child.js";
 // spawn ledger
 export { createInMemorySpawnLedger } from "./spawn-ledger.js";
+// tool auto-resolution
+export type { PackageResolver } from "./tool-auto-resolve.js";
+export { resolveToolPackages, validateManifestTools } from "./tool-auto-resolve.js";
 // types
 export type {
   CreateKoiOptions,

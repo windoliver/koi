@@ -31,6 +31,7 @@ import type {
   StoreChangeEvent,
   Tool,
   ToolDescriptor,
+  ToolRegistration,
 } from "@koi/core";
 import type {
   DebugInstrumentationConfig,
@@ -136,6 +137,16 @@ export interface CreateKoiOptions {
   readonly groupId?: AgentGroupId | undefined;
   /** Debug instrumentation configuration. When enabled, records per-middleware timing spans. */
   readonly debug?: DebugInstrumentationConfig | undefined;
+  /**
+   * Package resolver for auto-wiring tool registrations.
+   * When manifest tools have a `package` field, this function imports the package
+   * and returns its ToolRegistration export. Defaults to dynamic `import()`.
+   *
+   * Injectable for testing — tests provide a mock resolver instead of real imports.
+   */
+  readonly resolvePackage?: (
+    packageName: string,
+  ) => Promise<{ readonly registration: ToolRegistration }>;
 }
 
 export interface KoiRuntime {

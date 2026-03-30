@@ -49,11 +49,13 @@ import {
   runWithExecutionContext,
   runWithSpanRecorder,
 } from "@koi/execution-context";
+import { createProviderFromRegistration } from "@koi/tool-registration";
 import { AgentEntity } from "./agent-entity.js";
 import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import { createTerminalHandlers } from "./compose-bridge.js";
 import { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 import { createTurnContext, generatePid, unrefTimer } from "./koi-helpers.js";
+import { resolveToolPackages, validateManifestTools } from "./tool-auto-resolve.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
 
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
@@ -71,14 +73,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
   const { manifest, adapter, middleware = [], providers = [], forge } = options;
 
+  // --- 0b. Auto-resolve tool packages declared in manifest ---
+  const autoResolvedProviders = await resolveToolPackages(
+    manifest,
+    options.resolvePackage,
+    createProviderFromRegistration,
+  );
+
   // --- 1. Assemble the agent entity (with governance provider) ---
   const pid = generatePid(manifest, {
     ...(options.parentPid !== undefined ? { parent: options.parentPid } : {}),
     ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
   });
   const governanceProvider = createGovernanceProvider(options.governance);
-  const allProviders = [governanceProvider, ...providers];
+  const allProviders = [governanceProvider, ...autoResolvedProviders, ...providers];
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);
+
+  // --- 1b. Validate manifest tools exist after assembly ---
+  validateManifestTools(manifest, agent, conflicts);
 
   // --- 2. Compose kernel extensions (governance + default guards) ---
   const governanceExt = createGovernanceExtension();

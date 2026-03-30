@@ -18,7 +18,8 @@
     "@koi/event-delivery": "workspace:*",
     "@koi/execution-context": "workspace:*",
     "@koi/hash": "workspace:*",
-    "@koi/session-repair": "workspace:*"
+    "@koi/session-repair": "workspace:*",
+    "@koi/tool-registration": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine-acp": "workspace:*",
