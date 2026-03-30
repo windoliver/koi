@@ -59,6 +59,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/test-utils-mocks",
   "@koi/test-utils-store-contracts",
   "@koi/token-estimator",
+  "@koi/tool-registration",
   "@koi/validation",
   "@koi/variant-selection",
   "@koi/welford-stats",

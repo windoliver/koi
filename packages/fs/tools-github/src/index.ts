@@ -42,6 +42,8 @@ export type { GithubProviderConfig } from "./github-component-provider.js";
 export { createGithubProvider } from "./github-component-provider.js";
 // error mapping
 export { isRecord, mapErrorResult, parseGhError, parseGhJson } from "./parse-gh-error.js";
+// registration
+export { createGithubRegistration } from "./registration.js";
 export type { MockGhResponse } from "./test-helpers.js";
 // test helpers
 export {

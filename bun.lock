@@ -827,6 +827,7 @@
         "@koi/execution-context": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/session-repair": "workspace:*",
+        "@koi/tool-registration": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine-acp": "workspace:*",
@@ -1082,6 +1083,13 @@
         "@koi/core": "workspace:*",
         "@koi/gateway-types": "workspace:*",
         "@koi/test-utils-mocks": "workspace:*",
+      },
+    },
+    "packages/lib/tool-registration": {
+      "name": "@koi/tool-registration",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/lib/validation": {
@@ -4291,6 +4299,8 @@
     "@koi/tool-browser": ["@koi/tool-browser@workspace:packages/fs/tool-browser"],
 
     "@koi/tool-exec": ["@koi/tool-exec@workspace:packages/fs/tool-exec"],
+
+    "@koi/tool-registration": ["@koi/tool-registration@workspace:packages/lib/tool-registration"],
 
     "@koi/tool-squash": ["@koi/tool-squash@workspace:packages/mm/tool-squash"],
 

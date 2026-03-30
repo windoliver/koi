@@ -47,6 +47,8 @@ export {
 // provider
 export type { ContextHubOperation, ContextHubProviderConfig } from "./provider.js";
 export { createContextHubProvider, OPERATIONS } from "./provider.js";
+// registration
+export { createContextHubRegistration } from "./registration.js";
 // skill
 export { CONTEXT_HUB_SKILL, CONTEXT_HUB_SKILL_CONTENT, CONTEXT_HUB_SKILL_NAME } from "./skill.js";
 // tool factories — for advanced usage (custom tool composition)

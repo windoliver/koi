@@ -8,6 +8,8 @@
 
 export { createAskUserTool } from "./ask-user-tool.js";
 export { createAskUserProvider } from "./provider.js";
+// registration
+export { createAskUserRegistration } from "./registration.js";
 export type { AskUserConfig, ElicitationHandler } from "./types.js";
 export {
   ASK_USER_TOOL_DESCRIPTOR,

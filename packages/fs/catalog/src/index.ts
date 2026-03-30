@@ -40,6 +40,8 @@ export type { CatalogProviderConfig } from "./component-provider.js";
 // Component provider factory
 export { createCatalogComponentProvider } from "./component-provider.js";
 export { fanOut } from "./fan-out.js";
+// Tool registration (self-describing registration descriptor)
+export { createCatalogRegistration } from "./registration.js";
 export type { AttachConfig } from "./tools/attach-capability.js";
 export { createAttachCapabilityTool } from "./tools/attach-capability.js";
 // Tool factories (for direct use without ComponentProvider)

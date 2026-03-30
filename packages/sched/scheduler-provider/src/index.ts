@@ -35,6 +35,8 @@ export {
   DEFAULT_QUERY_LIMIT,
   OPERATIONS,
 } from "./constants.js";
+// registration (ToolRegistration pattern)
+export { createSchedulerRegistration } from "./registration.js";
 // provider
 export type { SchedulerProviderConfig } from "./scheduler-component-provider.js";
 export { createSchedulerProvider } from "./scheduler-component-provider.js";
