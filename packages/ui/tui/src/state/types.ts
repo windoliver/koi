@@ -122,6 +122,7 @@ export type TuiView =
   | "governance"
   | "handoffs"
   | "harness"
+  | "help"
   | "logs"
   | "mailbox"
   | "middleware"

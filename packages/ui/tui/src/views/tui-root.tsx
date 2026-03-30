@@ -33,6 +33,7 @@ import { GatewayView } from "./gateway-view.js";
 import { GovernanceView } from "./governance-view.js";
 import { HandoffView } from "./handoff-view.js";
 import { HarnessView } from "./harness-view.js";
+import { HelpView } from "./help-view.js";
 import { LogView } from "./log-view.js";
 import { MailboxView } from "./mailbox-view.js";
 import { MiddlewareView } from "./middleware-view.js";
@@ -501,6 +502,11 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
         )}
         {view === "files" && (
           <NexusBrowserView nexusBrowser={state.nexusBrowser} focused={true} zoomLevel={state.zoomLevel} />
+        )}
+
+        {/* Help overlay */}
+        {view === "help" && (
+          <HelpView currentView={state.viewHistory[state.viewHistory.length - 1] ?? "agents"} />
         )}
 
         {/* Command palette overlay */}
