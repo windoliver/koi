@@ -171,12 +171,19 @@ export function createAceMiddleware(
     error?: RichTrajectoryStep["error"],
     metrics?: RichTrajectoryStep["metrics"],
     bulletIds?: readonly string[],
+    toolDefinitions?: readonly { readonly name: string; readonly description: string }[],
   ): void {
     if (atifBuffer === undefined) return;
 
     const docId = ctx.session.conversationId ?? ctx.session.sessionId;
     const stepIndex = nextStepIndex++;
     const durationMs = clock() - startMs;
+
+    // Store tool definitions in metadata so they appear in the ATIF document
+    const metadata =
+      toolDefinitions !== undefined && toolDefinitions.length > 0
+        ? ({ tools: toolDefinitions } as import("@koi/core/common").JsonObject)
+        : undefined;
 
     const step: RichTrajectoryStep = {
       stepIndex,
@@ -191,6 +198,7 @@ export function createAceMiddleware(
       ...(error !== undefined ? { error } : {}),
       ...(metrics !== undefined ? { metrics } : {}),
       ...(bulletIds !== undefined && bulletIds.length > 0 ? { bulletIds } : {}),
+      ...(metadata !== undefined ? { metadata } : {}),
     };
 
     atifBuffer.append(docId, step);
@@ -332,6 +340,7 @@ export function createAceMiddleware(
               }
             : undefined,
           bulletIds,
+          request.tools?.map((t) => ({ name: t.name, description: t.description })),
         );
 
         maybeAutoReflect();
@@ -415,6 +424,7 @@ export function createAceMiddleware(
                   }
                 : undefined,
               bulletIds,
+              request.tools?.map((t) => ({ name: t.name, description: t.description })),
             );
 
             maybeAutoReflect();
