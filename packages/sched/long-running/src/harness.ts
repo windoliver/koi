@@ -250,8 +250,39 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
       registeredAt: now,
       priority: 10,
     };
-    const registered = await registry.register(entry);
-    registryGeneration = registered.status.generation;
+    try {
+      const registered = await registry.register(entry);
+      registryGeneration = registered.status.generation;
+    } catch (e: unknown) {
+      // Agent may already exist in Nexus VFS from a previous session that
+      // crashed without cleanup. The in-memory projection is empty (fresh
+      // boot), so deregister() won't work. Force-deregister by clearing
+      // the stale entry, then re-register.
+      const msg = e instanceof Error ? e.message : "";
+      if (msg.includes("already exists") || msg.includes("Already exists")) {
+        // Force-deregister clears both projection and Nexus VFS
+        try {
+          await registry.deregister(agentId);
+        } catch {
+          /* noop */
+        }
+        // If deregister skipped (not in projection), the stale VFS entry
+        // remains. register() will fail again — that's acceptable; the
+        // harness proceeds without registry tracking for this session.
+        try {
+          const retried = await registry.register(entry);
+          registryGeneration = retried.status.generation;
+        } catch {
+          // Proceed without registry — spawn still works, just no CAS
+          // lifecycle tracking for this session.
+          process.stderr.write(
+            `[harness] warn: could not register ${agentId} in Nexus (stale entry). Proceeding without registry tracking.\n`,
+          );
+        }
+        return;
+      }
+      throw e;
+    }
   }
 
   /**
@@ -309,9 +340,18 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     if (!persistResult.ok) return persistResult;
 
     // Register in registry at "created", then transition to "running"
-    await registryRegister(now);
+    try {
+      await registryRegister(now);
+    } catch (regErr: unknown) {
+      const msg = regErr instanceof Error ? regErr.message : String(regErr);
+      process.stderr.write(`[harness] registryRegister failed: ${msg}\n`);
+      // Continue without registry — spawn delegation still works
+    }
     const transResult = await registryTransition("running", { kind: "assembly_complete" });
-    if (!transResult.ok) return transResult;
+    if (!transResult.ok) {
+      // Non-fatal: log but don't block activation
+      process.stderr.write(`[harness] registryTransition failed: ${transResult.error.message}\n`);
+    }
 
     phase = "active";
     turnCount = 0;
