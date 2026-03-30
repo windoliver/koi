@@ -103,7 +103,9 @@ function mapKeyEventToSequence(key: KeyEvent, paletteActive?: boolean): string |
   if (paletteActive === true) return null;
   // Single-char keys for view-specific shortcuts (includes 1-5 for tab switching)
   const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "l", "+", "?", " ", "r", "1", "2", "3", "4", "5"];
-  if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
+  // Allow shift for ? (Shift+/ on most keyboards)
+  const allowShift = key.name === "?";
+  if (!key.ctrl && !key.meta && (allowShift || !key.shift) && SINGLE_KEYS.includes(key.name)) {
     return key.name;
   }
   return null;
