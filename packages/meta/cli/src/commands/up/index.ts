@@ -1246,6 +1246,28 @@ export async function runUp(flags: UpFlags): Promise<void> {
   let adminReady = false;
   // let justified: mutable port, may be incremented if DEFAULT_ADMIN_PORT is busy
   let boundPort = DEFAULT_ADMIN_PORT;
+  // let justified: workspace context populated in try block, used in banner outside it
+  let workspaceContext: {
+    readonly cwd: string;
+    readonly koiYamlPath: string;
+    readonly nexusYamlPath: string | undefined;
+    readonly nexusDataDir: string | undefined;
+    readonly nexusContainerProject: string | undefined;
+    readonly nexusPort: number | undefined;
+    readonly nexusBaseUrl: string | undefined;
+    readonly adminPort: number;
+    readonly presetId: string;
+  } = {
+    cwd: workspaceRoot,
+    koiYamlPath: manifestPath,
+    nexusYamlPath: undefined,
+    nexusDataDir: undefined,
+    nexusContainerProject: undefined,
+    nexusPort: undefined,
+    nexusBaseUrl: nexus.baseUrl,
+    adminPort: boundPort,
+    presetId,
+  };
 
   try {
     const channelNames = channels.map((ch) => ch.name);
@@ -1307,7 +1329,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
         return undefined;
       }
     })();
-    const workspaceContext = {
+    workspaceContext = {
       cwd: workspaceRoot,
       koiYamlPath: manifestPath,
       nexusYamlPath: nexusYamlExists ? nexusYamlCandidate : undefined,
@@ -1317,7 +1339,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       nexusBaseUrl: nexus.baseUrl,
       adminPort: boundPort,
       presetId,
-    } as const;
+    };
 
     const debugApi = runtime.debug;
     adminBridge = createAdminPanelBridge({
