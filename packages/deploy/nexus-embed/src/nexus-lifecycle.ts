@@ -167,6 +167,12 @@ export async function nexusUp(
     configPath = findNexusConfig(cwd) ?? join(cwd, "nexus.yaml");
   }
 
+  // Always validate data_dir points to ${cwd}/nexus-data — even when nexus.yaml
+  // pre-exists. A stale nexus.yaml (e.g., copied from another worktree or symlinked
+  // from ~/.koi/demo/) may point to a different worktree's data dir, causing
+  // cross-worktree contamination and Nexus write failures.
+  patchNexusDataDir(cwd, verbose);
+
   // Clear NEXUS_API_KEY from the environment before starting Docker.
   // The nexus.yaml api_key uses nx_admin_* format which the database auth
   // provider rejects (requires sk-* prefix). By clearing it, the container
