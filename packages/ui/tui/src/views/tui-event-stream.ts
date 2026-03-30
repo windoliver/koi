@@ -598,6 +598,8 @@ export interface NewViewCallbacks {
   readonly nexusBrowserSelectPrev: () => void;
   readonly nexusBrowserOpen: () => void;
   readonly nexusBrowserBack: () => void;
+  readonly nexusPreviewScrollDown: () => void;
+  readonly nexusPreviewScrollUp: () => void;
   readonly scratchpadOpen: () => void;
 }
 
@@ -664,6 +666,12 @@ export function createNewViewCallbacks(deps: DomainActionDeps): NewViewCallbacks
           view: store.getState().activeSession !== null ? "console" : "agents",
         });
       }
+    },
+    nexusPreviewScrollDown: () => {
+      store.dispatch({ kind: "scroll_nexus_preview", delta: 5 });
+    },
+    nexusPreviewScrollUp: () => {
+      store.dispatch({ kind: "scroll_nexus_preview", delta: -5 });
     },
     scratchpadOpen: () => {
       const sv = store.getState().scratchpadView;

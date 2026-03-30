@@ -734,7 +734,20 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_nexus_browser_content":
       return {
         ...state,
-        nexusBrowser: { ...state.nexusBrowser, fileContent: action.content, loading: false },
+        nexusBrowser: {
+          ...state.nexusBrowser,
+          fileContent: action.content,
+          loading: false,
+          previewScrollOffset: 0,
+        },
+      };
+    case "scroll_nexus_preview":
+      return {
+        ...state,
+        nexusBrowser: {
+          ...state.nexusBrowser,
+          previewScrollOffset: Math.max(0, state.nexusBrowser.previewScrollOffset + action.delta),
+        },
       };
     case "set_nexus_browser_loading":
       return { ...state, nexusBrowser: { ...state.nexusBrowser, loading: action.loading } };

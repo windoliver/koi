@@ -730,6 +730,7 @@ export type TuiAction =
   | { readonly kind: "set_nexus_browser_content"; readonly content: string | null }
   | { readonly kind: "set_nexus_browser_loading"; readonly loading: boolean }
   | { readonly kind: "select_nexus_browser_entry"; readonly index: number }
+  | { readonly kind: "scroll_nexus_preview"; readonly delta: number }
   // ─── Debug view actions ─────────────────────────────────────────────
   | {
       readonly kind: "set_debug_inventory";

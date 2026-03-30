@@ -221,6 +221,8 @@ export interface NexusBrowserState {
   readonly selectedIndex: number;
   readonly fileContent: string | null;
   readonly loading: boolean;
+  /** Scroll offset for the file preview pane. */
+  readonly previewScrollOffset: number;
 }
 
 /** Visibility tier for debug span filtering. */
@@ -354,7 +356,14 @@ export function createInitialMailboxView(): MailboxViewState {
 }
 
 export function createInitialNexusBrowser(): NexusBrowserState {
-  return { entries: [], path: "/", selectedIndex: 0, fileContent: null, loading: false };
+  return {
+    entries: [],
+    path: "/",
+    selectedIndex: 0,
+    fileContent: null,
+    loading: false,
+    previewScrollOffset: 0,
+  };
 }
 
 export function createInitialDebugView(): DebugViewState {

@@ -2,24 +2,22 @@
  * Nexus browser view — file tree with directory listing and content preview.
  *
  * Shows breadcrumb path, directory entries with selection highlighting,
- * and file content preview when a file is selected.
+ * and scrollable file content preview when a file is selected.
  */
 
 import { PanelChrome } from "../components/panel-chrome.js";
 import type { NexusBrowserState } from "../state/domain-types.js";
 import { COLORS } from "../theme.js";
 
-const MAX_PREVIEW_LINES = 40;
-
 /** Pretty-print JSON content for the file preview. Falls back to raw lines. */
 function formatPreview(raw: string): readonly string[] {
   try {
     const parsed = JSON.parse(raw) as unknown;
     const pretty = JSON.stringify(parsed, null, 2);
-    return pretty.split("\n").slice(0, MAX_PREVIEW_LINES);
+    return pretty.split("\n");
   } catch {
     // Not JSON — show raw lines
-    return raw.split("\n").filter((l: string) => l.trim() !== "").slice(0, MAX_PREVIEW_LINES);
+    return raw.split("\n").filter((l: string) => l.trim() !== "");
   }
 }
 
@@ -31,9 +29,19 @@ export interface NexusBrowserViewProps {
 
 export function NexusBrowserView(props: NexusBrowserViewProps): React.ReactNode {
   const { entries, path, selectedIndex, fileContent, loading } = props.nexusBrowser;
-  const VISIBLE_ROWS = 14;
-  const scrollOffset = Math.max(0, selectedIndex - VISIBLE_ROWS + 1);
-  const visible = entries.slice(scrollOffset, scrollOffset + VISIBLE_ROWS);
+  const previewScrollOffset = (props.nexusBrowser as { readonly previewScrollOffset?: number }).previewScrollOffset ?? 0;
+
+  // When a file is selected, shrink the directory listing to make room for preview
+  const hasPreview = fileContent !== null;
+  const DIRECTORY_ROWS = hasPreview ? 6 : 14;
+  const dirScrollOffset = Math.max(0, selectedIndex - DIRECTORY_ROWS + 1);
+  const visibleEntries = entries.slice(dirScrollOffset, dirScrollOffset + DIRECTORY_ROWS);
+
+  // Preview gets remaining space — show as many lines as the terminal allows
+  const PREVIEW_VISIBLE = hasPreview ? 30 : 0;
+  const previewLines = hasPreview ? formatPreview(fileContent) : [];
+  const visiblePreview = previewLines.slice(previewScrollOffset, previewScrollOffset + PREVIEW_VISIBLE);
+  const previewTotal = previewLines.length;
 
   return (
     <PanelChrome
@@ -57,8 +65,8 @@ export function NexusBrowserView(props: NexusBrowserViewProps): React.ReactNode 
         <box height={1}>
           <text fg={COLORS.dim}>{" Name                           Size     Modified"}</text>
         </box>
-        {visible.map((entry, i) => {
-          const actualIdx = scrollOffset + i;
+        {visibleEntries.map((entry, i) => {
+          const actualIdx = dirScrollOffset + i;
           const isSelected = actualIdx === selectedIndex;
           const icon = entry.isDirectory ? "/" : " ";
           const size = entry.size !== undefined
@@ -78,13 +86,18 @@ export function NexusBrowserView(props: NexusBrowserViewProps): React.ReactNode 
         })}
       </box>
 
-      {/* File content preview */}
-      {fileContent !== null && (
+      {/* File content preview with scroll indicator */}
+      {hasPreview && (
         <box flexDirection="column" marginTop={1}>
           <box height={1}>
-            <text fg={COLORS.green}><b>{" File Preview"}</b></text>
+            <text fg={COLORS.green}>
+              <b>{` File Preview`}</b>
+              {previewTotal > PREVIEW_VISIBLE
+                ? ` (${String(previewScrollOffset + 1)}-${String(Math.min(previewScrollOffset + PREVIEW_VISIBLE, previewTotal))} of ${String(previewTotal)} lines)`
+                : ` (${String(previewTotal)} lines)`}
+            </text>
           </box>
-          {formatPreview(fileContent).map((line: string, i: number) => (
+          {visiblePreview.map((line: string, i: number) => (
             <box key={i} height={1}>
               <text fg={COLORS.dim}>{`   ${line}`}</text>
             </box>
