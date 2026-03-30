@@ -95,9 +95,34 @@ export function createAtifDocumentStore(
         ...(config.agentVersion !== undefined ? { agentVersion: config.agentVersion } : {}),
       });
 
-      // Merge steps into existing document
+      // Extract agent-level info from steps (model name, tool definitions)
+      const modelName = steps.find((s) => s.kind === "model_call")?.identifier;
+      const toolDefs = steps
+        .filter((s) => s.metadata !== undefined)
+        .flatMap((s) => {
+          const tools = (s.metadata as Record<string, unknown>)?.tools;
+          return Array.isArray(tools)
+            ? (tools as readonly { readonly name: string; readonly description?: string }[])
+            : [];
+        });
+
+      // Merge steps into existing document, enriching agent metadata
       const merged: AtifDocument = {
         ...doc,
+        agent: {
+          ...doc.agent,
+          ...(modelName !== undefined && doc.agent.model_name === undefined
+            ? { model_name: modelName }
+            : {}),
+          ...(toolDefs.length > 0 && doc.agent.tool_definitions === undefined
+            ? {
+                tool_definitions: toolDefs.map((t) => ({
+                  name: t.name,
+                  ...(t.description !== undefined ? { description: t.description } : {}),
+                })),
+              }
+            : {}),
+        },
         steps: [...doc.steps, ...newAtifDoc.steps],
       };
 

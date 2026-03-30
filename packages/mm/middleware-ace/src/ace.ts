@@ -172,6 +172,7 @@ export function createAceMiddleware(
     metrics?: RichTrajectoryStep["metrics"],
     bulletIds?: readonly string[],
     toolDefinitions?: readonly { readonly name: string; readonly description: string }[],
+    reasoningContent?: string,
   ): void {
     if (atifBuffer === undefined) return;
 
@@ -197,6 +198,9 @@ export function createAceMiddleware(
       ...(response !== undefined ? { response } : {}),
       ...(error !== undefined ? { error } : {}),
       ...(metrics !== undefined ? { metrics } : {}),
+      ...(reasoningContent !== undefined && reasoningContent.length > 0
+        ? { reasoningContent }
+        : {}),
       ...(bulletIds !== undefined && bulletIds.length > 0 ? { bulletIds } : {}),
       ...(metadata !== undefined ? { metadata } : {}),
     };
@@ -374,12 +378,17 @@ export function createAceMiddleware(
       let responseText = "";
       // let: track model name from done chunk
       let modelName = request.model ?? "unknown";
+      // let: accumulate thinking/reasoning content
+      let reasoningText = "";
       // let: track whether we recorded the outcome (generator may be aborted early)
       let recorded = false;
       try {
         for await (const chunk of next(enrichedRequest)) {
           if (chunk.kind === "text_delta") {
             responseText += chunk.delta;
+          }
+          if (chunk.kind === "thinking_delta") {
+            reasoningText += (chunk as { readonly delta: string }).delta;
           }
           if (chunk.kind === "done") {
             const resp = (chunk as { readonly response?: ModelResponse }).response;
@@ -425,6 +434,7 @@ export function createAceMiddleware(
                 : undefined,
               bulletIds,
               request.tools?.map((t) => ({ name: t.name, description: t.description })),
+              reasoningText.length > 0 ? reasoningText : undefined,
             );
 
             maybeAutoReflect();
