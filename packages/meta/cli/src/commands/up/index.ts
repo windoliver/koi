@@ -1035,7 +1035,17 @@ export async function runUp(flags: UpFlags): Promise<void> {
       : {}),
     ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
     agentName: manifest.name,
-    ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
+    ...(manifest.codeSandbox !== undefined
+      ? { sandboxConfig: manifest.codeSandbox }
+      : typeof preset.manifestOverrides.codeSandbox === "object" &&
+          preset.manifestOverrides.codeSandbox !== null
+        ? {
+            sandboxConfig: preset.manifestOverrides.codeSandbox as {
+              readonly provider: string;
+              readonly [key: string]: unknown;
+            },
+          }
+        : {}),
     ...(effectiveStacks.ace === true
       ? await (async () => {
           const mc = await createAceModelCall();
