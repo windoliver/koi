@@ -627,6 +627,104 @@ describe("search_forge — trigger matching", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Blended ranking tests — retriever relevance × fitness
+// ---------------------------------------------------------------------------
+
+describe("search_forge — blended ranking", () => {
+  test("high-fitness brick outranks high-relevance brick at default alpha", async () => {
+    const nowMs = Date.now();
+    // highRelevance: retriever score 0.95 but low fitness (2 success, 8 errors)
+    const highRelevance = createTestToolArtifact({
+      id: brickId("hr"),
+      name: "high-relevance",
+      fitness: {
+        successCount: 2,
+        errorCount: 8,
+        latency: { samples: [100], count: 10, cap: 200 },
+        lastUsedAt: nowMs,
+      },
+    });
+    // highFitness: retriever score 0.70 but high fitness (90 success, 0 errors)
+    const highFitness = createTestToolArtifact({
+      id: brickId("hf"),
+      name: "high-fitness",
+      fitness: {
+        successCount: 90,
+        errorCount: 0,
+        latency: { samples: [50], count: 90, cap: 200 },
+        lastUsedAt: nowMs,
+      },
+    });
+    const store = mockStore([highRelevance, highFitness]);
+    const retriever = mockRetriever([
+      { id: "hr" as string, score: 0.95, content: "high-relevance", metadata: {}, source: "nexus" },
+      { id: "hf" as string, score: 0.7, content: "high-fitness", metadata: {}, source: "nexus" },
+    ]);
+    (store.load as ReturnType<typeof mock>).mockImplementation(async (id: BrickId) => {
+      if (id === brickId("hr")) return { ok: true, value: highRelevance };
+      if (id === brickId("hf")) return { ok: true, value: highFitness };
+      return { ok: false, error: { code: "NOT_FOUND", message: "not found", retryable: false } };
+    });
+    const pipeline = mockPipeline();
+    const deps = makeDeps({ store, retriever, pipeline });
+
+    const result = await executeSearch(deps, { query: "some tool" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(2);
+      // highFitness should outrank highRelevance due to blended score
+      expect(result.value[0]?.name).toBe("high-fitness");
+      expect(result.value[1]?.name).toBe("high-relevance");
+    }
+  });
+
+  test("alpha=1.0 gives pure relevance ranking (backward compatible)", async () => {
+    const nowMs = Date.now();
+    const lowRelevance = createTestToolArtifact({
+      id: brickId("lr"),
+      name: "low-relevance",
+      fitness: {
+        successCount: 100,
+        errorCount: 0,
+        latency: { samples: [10], count: 100, cap: 200 },
+        lastUsedAt: nowMs,
+      },
+    });
+    const highRelevance = createTestToolArtifact({
+      id: brickId("hr"),
+      name: "high-relevance",
+      fitness: {
+        successCount: 1,
+        errorCount: 9,
+        latency: { samples: [500], count: 10, cap: 200 },
+        lastUsedAt: nowMs,
+      },
+    });
+    const store = mockStore([lowRelevance, highRelevance]);
+    const retriever = mockRetriever([
+      { id: "hr" as string, score: 0.99, content: "high-relevance", metadata: {}, source: "nexus" },
+      { id: "lr" as string, score: 0.3, content: "low-relevance", metadata: {}, source: "nexus" },
+    ]);
+    (store.load as ReturnType<typeof mock>).mockImplementation(async (id: BrickId) => {
+      if (id === brickId("lr")) return { ok: true, value: lowRelevance };
+      if (id === brickId("hr")) return { ok: true, value: highRelevance };
+      return { ok: false, error: { code: "NOT_FOUND", message: "not found", retryable: false } };
+    });
+    const pipeline = mockPipeline();
+    const deps = makeDeps({ store, retriever, pipeline });
+
+    const result = await executeSearch(deps, { query: "some tool", rankingAlpha: 1.0 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(2);
+      // Pure relevance: highRelevance (0.99) > lowRelevance (0.30)
+      expect(result.value[0]?.name).toBe("high-relevance");
+      expect(result.value[1]?.name).toBe("low-relevance");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mock pipeline for governance pre-check bypass
 // ---------------------------------------------------------------------------
 
