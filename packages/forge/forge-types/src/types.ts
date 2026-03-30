@@ -14,6 +14,7 @@ import type {
   ContentMarker,
   DataClassification,
   EngineAdapter,
+  EvolutionKind,
   ExternalAgentDescriptor,
   ForgeScope,
   ForgeStore,
@@ -116,6 +117,10 @@ export interface ForgeInputBase {
   readonly contentMarkers?: readonly ContentMarker[];
   /** Activation trigger patterns — natural language phrases declaring when this brick is relevant. */
   readonly trigger?: readonly string[];
+  /** Parent brick this was evolved from. Undefined for original bricks. */
+  readonly parentBrickId?: BrickId | undefined;
+  /** How this brick was derived from its parent. */
+  readonly evolutionKind?: EvolutionKind | undefined;
 }
 
 export interface ForgeToolInput extends ForgeInputBase {

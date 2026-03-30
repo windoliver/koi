@@ -7,12 +7,13 @@ import type {
   BrickArtifactBase,
   BrickId,
   BrickRequires,
+  EvolutionKind,
   JsonObject,
   Result,
   Tool,
   ToolDescriptor,
 } from "@koi/core";
-import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import type {
   ArtifactBuilder,
   DelegateOptions,
@@ -102,6 +103,8 @@ export interface ParsedBaseInput {
   readonly classification?: "public" | "internal" | "secret" | undefined;
   readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[] | undefined;
   readonly trigger?: readonly string[] | undefined;
+  readonly parentBrickId?: string | undefined;
+  readonly evolutionKind?: "fix" | "derived" | "captured" | undefined;
 }
 
 export interface ParsedToolInput extends ParsedBaseInput {
@@ -171,6 +174,8 @@ const baseInputFields = {
   classification: z.enum(["public", "internal", "secret"]).optional(),
   contentMarkers: z.array(z.enum(["credentials", "pii", "phi", "payment"])).optional(),
   trigger: z.array(z.string()).optional(),
+  parentBrickId: z.string().optional(),
+  evolutionKind: z.enum(["fix", "derived", "captured"]).optional(),
 };
 
 const forgeToolInputSchema = z.object({
@@ -375,6 +380,8 @@ export function mapParsedBaseFields(parsed: ParsedBaseInput): {
   readonly classification?: "public" | "internal" | "secret";
   readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
   readonly trigger?: readonly string[];
+  readonly parentBrickId?: BrickId;
+  readonly evolutionKind?: EvolutionKind;
 } {
   return {
     ...(parsed.tags !== undefined ? { tags: parsed.tags } : {}),
@@ -411,6 +418,8 @@ export function mapParsedBaseFields(parsed: ParsedBaseInput): {
     ...(parsed.classification !== undefined ? { classification: parsed.classification } : {}),
     ...(parsed.contentMarkers !== undefined ? { contentMarkers: parsed.contentMarkers } : {}),
     ...(parsed.trigger !== undefined ? { trigger: parsed.trigger } : {}),
+    ...(parsed.parentBrickId !== undefined ? { parentBrickId: brickId(parsed.parentBrickId) } : {}),
+    ...(parsed.evolutionKind !== undefined ? { evolutionKind: parsed.evolutionKind } : {}),
   };
 }
 
@@ -615,6 +624,8 @@ export async function runForgePipeline(
     ...(forgeInput.contentMarkers !== undefined
       ? { contentMarkers: forgeInput.contentMarkers }
       : {}),
+    ...(forgeInput.parentBrickId !== undefined ? { parentBrickId: forgeInput.parentBrickId } : {}),
+    ...(forgeInput.evolutionKind !== undefined ? { evolutionKind: forgeInput.evolutionKind } : {}),
   });
 
   // Sign attestation if signer is available

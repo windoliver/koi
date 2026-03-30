@@ -6,7 +6,7 @@
  * Koi-native vocabulary; SLSA serialization lives in L2 (@koi/forge).
  */
 
-import type { BrickSource } from "./brick-snapshot.js";
+import type { BrickId, BrickSource } from "./brick-snapshot.js";
 
 // ---------------------------------------------------------------------------
 // Data classification
@@ -28,6 +28,13 @@ export interface SigningBackend {
   readonly sign: (data: Uint8Array) => Uint8Array | Promise<Uint8Array>;
   readonly verify: (data: Uint8Array, signature: Uint8Array) => boolean | Promise<boolean>;
 }
+
+// ---------------------------------------------------------------------------
+// Evolution kind — how a brick was derived from its parent
+// ---------------------------------------------------------------------------
+
+/** How a brick evolved from its parent. */
+export type EvolutionKind = "fix" | "derived" | "captured";
 
 // ---------------------------------------------------------------------------
 // Build definition (what inputs + config produced this brick)
@@ -113,6 +120,10 @@ export interface ForgeProvenance {
   readonly classification: DataClassification;
   readonly contentMarkers: readonly ContentMarker[];
   readonly contentHash: string;
+  /** Parent brick this was evolved from. Undefined for original bricks. */
+  readonly parentBrickId?: BrickId | undefined;
+  /** How this brick was derived from its parent. */
+  readonly evolutionKind?: EvolutionKind | undefined;
   readonly attestation?: ForgeAttestationSignature;
 }
 

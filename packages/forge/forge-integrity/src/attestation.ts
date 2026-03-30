@@ -6,8 +6,10 @@
  */
 
 import type {
+  BrickId,
   ContentMarker,
   DataClassification,
+  EvolutionKind,
   ForgeProvenance,
   ForgeRunMetadata,
   ForgeVerificationSummary,
@@ -108,6 +110,8 @@ export interface CreateProvenanceOptions {
   readonly finishedAt: number;
   readonly classification?: DataClassification;
   readonly contentMarkers?: readonly ContentMarker[];
+  readonly parentBrickId?: BrickId | undefined;
+  readonly evolutionKind?: EvolutionKind | undefined;
 }
 
 /**
@@ -163,6 +167,8 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
     classification,
     contentMarkers,
     contentHash,
+    ...(options.parentBrickId !== undefined ? { parentBrickId: options.parentBrickId } : {}),
+    ...(options.evolutionKind !== undefined ? { evolutionKind: options.evolutionKind } : {}),
   };
 }
 

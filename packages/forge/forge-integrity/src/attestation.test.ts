@@ -3,7 +3,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ForgeProvenance, SigningBackend } from "@koi/core";
+import type { BrickId, ForgeProvenance, SigningBackend } from "@koi/core";
+import { brickId } from "@koi/core";
 import type {
   ForgeContext,
   ForgeInput,
@@ -250,6 +251,26 @@ describe("createForgeProvenance", () => {
 
     expect(provenance.classification).toBe("internal");
     expect(provenance.contentMarkers).toEqual(["pii", "payment"]);
+  });
+
+  test("includes parentBrickId and evolutionKind when provided", () => {
+    const parentId = brickId("sha256:parent-brick-001") as BrickId;
+    const options = createTestOptions({
+      parentBrickId: parentId,
+      evolutionKind: "fix",
+    });
+    const provenance = createForgeProvenance(options);
+
+    expect(provenance.parentBrickId).toBe(parentId);
+    expect(provenance.evolutionKind).toBe("fix");
+  });
+
+  test("omits parentBrickId and evolutionKind when not provided", () => {
+    const options = createTestOptions();
+    const provenance = createForgeProvenance(options);
+
+    expect(provenance.parentBrickId).toBeUndefined();
+    expect(provenance.evolutionKind).toBeUndefined();
   });
 });
 

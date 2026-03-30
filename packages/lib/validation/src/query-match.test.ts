@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { BrickArtifactBase, ForgeQuery } from "@koi/core";
+import type { BrickArtifactBase, BrickId, ForgeQuery } from "@koi/core";
 import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { matchesBrickQuery } from "./query-match.js";
@@ -203,5 +203,29 @@ describe("matchesBrickQuery", () => {
     });
     expect(matchesBrickQuery(brick, { kind: "skill", triggerText: "visualize" })).toBe(true);
     expect(matchesBrickQuery(brick, { kind: "tool", triggerText: "visualize" })).toBe(false);
+  });
+
+  // --- parentBrickId lineage filter ---
+
+  test("filters by parentBrickId", () => {
+    const parentId = brickId("sha256:parent-brick-001") as BrickId;
+    const brick = createBrickBase({
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        parentBrickId: parentId,
+        evolutionKind: "fix",
+      },
+    });
+    expect(matchesBrickQuery(brick, { parentBrickId: parentId })).toBe(true);
+    expect(matchesBrickQuery(brick, { parentBrickId: brickId("sha256:other") as BrickId })).toBe(
+      false,
+    );
+  });
+
+  test("parentBrickId filter excludes bricks without a parent", () => {
+    const brick = createBrickBase();
+    expect(matchesBrickQuery(brick, { parentBrickId: brickId("sha256:any") as BrickId })).toBe(
+      false,
+    );
   });
 });

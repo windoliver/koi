@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-types API surface . has stable type surface 1`] = `
-"import { SandboxExecutor, Result, GovernanceController, ForgeStore, DataClassification, ContentMarker, ForgeProvenance, SigningBackend, BrickKind, ForgeScope, ToolPolicy, TrustTransitionCaller, BrickRequires, TestCase, StoreChangeNotifier, EngineAdapter, KoiError, ExternalAgentDescriptor, BrickArtifact, BrickDriftContext, BrickId, ToolDescriptor, ToolOrigin, BrickLifecycle, TrailConfig } from '@koi/core';
+"import { SandboxExecutor, Result, GovernanceController, ForgeStore, DataClassification, ContentMarker, ForgeProvenance, SigningBackend, BrickKind, ForgeScope, ToolPolicy, TrustTransitionCaller, BrickRequires, BrickId, EvolutionKind, TestCase, StoreChangeNotifier, EngineAdapter, KoiError, ExternalAgentDescriptor, BrickArtifact, BrickDriftContext, ToolDescriptor, ToolOrigin, BrickLifecycle, TrailConfig } from '@koi/core';
 export { AgentArtifact, BrickArtifact, BrickArtifactBase, BrickKind, BrickLifecycle, BrickRequires, CompositeArtifact, ForgeQuery, ForgeScope, ImplementationArtifact, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SkillArtifact, TestCase, ToolArtifact } from '@koi/core';
 import { Retriever } from '@koi/search-provider';
 
@@ -248,6 +248,10 @@ interface ForgeInputBase {
     readonly contentMarkers?: readonly ContentMarker[];
     /** Activation trigger patterns — natural language phrases declaring when this brick is relevant. */
     readonly trigger?: readonly string[];
+    /** Parent brick this was evolved from. Undefined for original bricks. */
+    readonly parentBrickId?: BrickId | undefined;
+    /** How this brick was derived from its parent. */
+    readonly evolutionKind?: EvolutionKind | undefined;
 }
 interface ForgeToolInput extends ForgeInputBase {
     readonly kind: "tool";
