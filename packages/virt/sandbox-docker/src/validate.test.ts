@@ -9,12 +9,12 @@ const mockClient: DockerClient = {
 };
 
 describe("validateDockerConfig", () => {
-  test("returns error when client not provided", () => {
+  test("auto-creates default client when not provided", () => {
     const result = validateDockerConfig({});
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
-      expect(result.error.message).toContain("client");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.client).toBeDefined();
+      expect(result.value.socketPath).toBe("/var/run/docker.sock");
     }
   });
 
