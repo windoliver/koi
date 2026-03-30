@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
-"import { RuntimeViewDataSource, CommandDispatcher, DetailedStatusResponse, DemoPackSummary, DashboardDataSource, DashboardConfig, DashboardEvent, DataSourceSummary, DataSourceFitnessSummary } from '@koi/dashboard-types';
+"import { RuntimeViewDataSource, CommandDispatcher, DetailedStatusResponse, DemoPackSummary, DashboardDataSource, WorkspaceContextResponse, DashboardConfig, DashboardEvent, DataSourceSummary, DataSourceFitnessSummary } from '@koi/dashboard-types';
 import { FileSystemBackend, AgentId, DataSourceDescriptor } from '@koi/core';
 
 /**
@@ -321,6 +321,8 @@ interface DashboardHandlerOptions {
     readonly agentChatHandler?: AgentChatHandler;
     /** Service management callbacks for shutdown, status, demo, deploy. When absent, returns 501. */
     readonly serviceManagement?: ServiceManagementCallbacks;
+    /** Optional workspace context for debugging (cwd, paths, ports). */
+    readonly workspaceContext?: WorkspaceContextResponse | undefined;
 }
 interface DashboardHandlerResult {
     readonly handler: (req: Request) => Promise<Response | null>;
@@ -410,6 +412,8 @@ interface BridgeOptions {
     readonly governanceCommands?: Pick<CommandDispatcher, "listGovernanceQueue" | "reviewGovernance"> | undefined;
     /** Optional forge brick lifecycle commands (promote, demote, quarantine). */
     readonly forgeCommands?: Pick<CommandDispatcher, "promoteBrick" | "demoteBrick" | "quarantineBrick"> | undefined;
+    /** Optional workspace context for debugging (cwd, paths, ports). */
+    readonly workspaceContext?: WorkspaceContextResponse | undefined;
 }
 /** Registration entry for a dispatched agent. */
 interface DispatchedAgentEntry {
