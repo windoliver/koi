@@ -325,7 +325,10 @@ export async function resolveAutonomousOrWarn(
       agentId: aId,
       harnessStore,
       sessionPersistence,
-      registry, // Sub-task #5: workers registered in Nexus for IPC
+      // Registry disabled until nexi-lab/nexus#3524 is resolved — Nexus
+      // state machine rejects REGISTERED→CONNECTED transition on fresh agents.
+      // Spawn delegation works without registry (no CAS lifecycle tracking).
+      registry: undefined,
       onCompleted: async (status: HarnessStatus) => {
         await getNotifier()?.onCompleted(status);
         const { completedTaskCount, pendingTaskCount } = status.metrics;
