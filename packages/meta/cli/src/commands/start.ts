@@ -316,6 +316,13 @@ export async function runStart(flags: StartFlags): Promise<void> {
       : {}),
   });
 
+  // 6a.5. Bind spawn for autonomous delegation (requires runtime + adapter)
+  if (autonomous !== undefined) {
+    const { createCliSpawnFn } = await import("../create-cli-spawn-fn.js");
+    const spawnFn = await createCliSpawnFn({ runtime, adapter });
+    autonomous.bindSpawn(spawnFn);
+  }
+
   // 6b. Set up AbortController early — needed by commandDeps for /cancel
   const controller = new AbortController();
   let shuttingDown = false; // let: mutated by signal handler
