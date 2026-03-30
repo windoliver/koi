@@ -855,7 +855,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const contextExt = createContextExtension(contextConfig);
   const extensions = contextExt !== undefined ? [contextExt] : [];
 
-  // Data source auto-discovery (non-fatal)
+  // Data source auto-discovery (non-fatal, gated on preset flag)
   let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
   let dataSourceTools: readonly import("@koi/core").Tool[] = [];
   let discoveredSourceNames: readonly { readonly name: string; readonly protocol: string }[] = [];
@@ -876,56 +876,60 @@ export async function runUp(flags: UpFlags): Promise<void> {
         patterns: readonly string[],
       ) => readonly { readonly descriptor: import("@koi/core").DataSourceDescriptor }[])
     | undefined;
-  try {
-    const { createDataSourceStack } = await import("@koi/data-source-stack");
-    const manifestEntries = (manifest as unknown as Record<string, unknown>).dataSources as
-      | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
-      | undefined;
-    const dsStack = await createDataSourceStack({
-      manifestEntries,
-      env: process.env,
-      consent: createInteractiveConsent(output),
-    });
-    if (dsStack.discoveredSources.length === 0) {
-      output.info("No data sources found — add MCP servers to koi.yaml or set credentials in .env");
-    } else {
-      dataSourceProvider = dsStack.provider;
-      dataSourceTools = dsStack.tools;
-      discoveredSourceNames = dsStack.discoveredSources.map((s) => ({
-        name: s.name,
-        protocol: s.protocol,
-      }));
-      // Build summaries for the dashboard bridge
-      const manifestNames = new Set((manifestEntries ?? []).map((e) => e.name));
-      discoveredSourceSummaries = dsStack.discoveredSources.map((s) => ({
-        name: s.name,
-        protocol: s.protocol,
-        status: "approved" as const,
-        source: manifestNames.has(s.name)
-          ? ("manifest" as const)
-          : s.mcpToolName !== undefined
-            ? ("mcp" as const)
-            : ("env" as const),
-      }));
-      discoveredDescriptors = dsStack.discoveredSources;
+  if (preset.stacks.dataSourceStack === true) {
+    try {
+      const { createDataSourceStack } = await import("@koi/data-source-stack");
+      const manifestEntries = (manifest as unknown as Record<string, unknown>).dataSources as
+        | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
+        | undefined;
+      const dsStack = await createDataSourceStack({
+        manifestEntries,
+        env: process.env,
+        consent: createInteractiveConsent(output),
+      });
+      if (dsStack.discoveredSources.length === 0) {
+        output.info(
+          "No data sources found — add MCP servers to koi.yaml or set credentials in .env",
+        );
+      } else {
+        dataSourceProvider = dsStack.provider;
+        dataSourceTools = dsStack.tools;
+        discoveredSourceNames = dsStack.discoveredSources.map((s) => ({
+          name: s.name,
+          protocol: s.protocol,
+        }));
+        // Build summaries for the dashboard bridge
+        const manifestNames = new Set((manifestEntries ?? []).map((e) => e.name));
+        discoveredSourceSummaries = dsStack.discoveredSources.map((s) => ({
+          name: s.name,
+          protocol: s.protocol,
+          status: "approved" as const,
+          source: manifestNames.has(s.name)
+            ? ("manifest" as const)
+            : s.mcpToolName !== undefined
+              ? ("mcp" as const)
+              : ("env" as const),
+        }));
+        discoveredDescriptors = dsStack.discoveredSources;
 
-      // Print credential fallback guidance for sources needing auth
-      for (const source of dsStack.discoveredSources) {
-        if (source.auth?.ref !== undefined && process.env[source.auth.ref] === undefined) {
-          output.warn(
-            `Source "${source.name}" needs credential — set ${source.auth.ref} in your environment`,
-          );
+        // Print credential fallback guidance for sources needing auth
+        for (const source of dsStack.discoveredSources) {
+          if (source.auth?.ref !== undefined && process.env[source.auth.ref] === undefined) {
+            output.warn(
+              `Source "${source.name}" needs credential — set ${source.auth.ref} in your environment`,
+            );
+          }
         }
       }
+      // Capture executor for schema probing in dashboard bridge
+      const { executeDataSourceQuery } = await import("@koi/data-source-stack");
+      dataSourceExecutorFn = executeDataSourceQuery;
+      // Capture probeEnv for rescan callback (avoids L2→L2 import in bridge)
+      const { probeEnv } = await import("@koi/data-source-discovery");
+      probeEnvFn = probeEnv;
+    } catch {
+      // Data source discovery is non-fatal
     }
-    // Capture executor for schema probing in dashboard bridge
-    const { executeDataSourceQuery } = await import("@koi/data-source-stack");
-    dataSourceExecutorFn = executeDataSourceQuery;
-    // Capture probeEnv for rescan callback (avoids L2→L2 import in bridge)
-    const { probeEnv } = await import("@koi/data-source-discovery");
-    probeEnvFn = probeEnv;
-  } catch {
-    // Data source discovery is non-fatal
   }
 
   // Wire context-arena conversation persistence (Decision 1A, 2A)

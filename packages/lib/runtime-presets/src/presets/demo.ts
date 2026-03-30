@@ -36,6 +36,7 @@ export const DEMO_PRESET: RuntimePreset = {
     governance: true,
     filesystem: true,
     rlmStack: true,
+    dataSourceStack: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },
