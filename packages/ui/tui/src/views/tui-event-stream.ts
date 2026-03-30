@@ -18,6 +18,24 @@ import {
 import type { TuiStore } from "../state/store.js";
 import type { TuiState, TuiView } from "../state/types.js";
 
+/** Decode Nexus content — handles raw strings, {content: string}, and {__type__: "bytes"} envelopes. */
+function decodeNexusContent(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (typeof raw !== "object" || raw === null) return String(raw);
+  const obj = raw as Record<string, unknown>;
+  // Unwrap { content: ... } wrapper from fsRead
+  const inner = "content" in obj ? obj.content : raw;
+  if (typeof inner === "string") return inner;
+  // Decode Nexus bytes envelope
+  if (typeof inner === "object" && inner !== null) {
+    const envelope = inner as Record<string, unknown>;
+    if (envelope.__type__ === "bytes" && typeof envelope.data === "string") {
+      return Buffer.from(envelope.data as string, "base64").toString("utf-8");
+    }
+  }
+  return String(inner);
+}
+
 /** Map a TuiView to its domain key for scroll dispatching. */
 export function viewToDomainKey(view: TuiView): string | null {
   const map: Readonly<Record<string, string>> = {
@@ -547,14 +565,10 @@ export function nexusBrowserNavigate(
       .fsRead(path)
       .then((r) => {
         if (!r.ok) return;
-        // fsRead returns { content, editable } but client types it as string
+        // fsRead returns { content, editable } but client types it as string.
+        // Content may be a Nexus bytes envelope {__type__: "bytes", data: "base64..."}.
         const raw = r.value as unknown;
-        const text =
-          typeof raw === "string"
-            ? raw
-            : typeof raw === "object" && raw !== null && "content" in raw
-              ? String((raw as Record<string, unknown>).content)
-              : String(raw);
+        const text = decodeNexusContent(raw);
         deps.store.dispatch({ kind: "set_nexus_browser_content", content: text });
       })
       .catch(() => {});
