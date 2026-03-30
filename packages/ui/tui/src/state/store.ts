@@ -401,7 +401,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "hydrate_forge": {
       const bricks: Record<string, TuiBrickSummary> = {};
       for (const brick of action.bricks) {
-        bricks[brick.brickId] = { name: brick.name, status: brick.status, fitness: brick.fitness };
+        bricks[brick.brickId] = {
+          name: brick.name,
+          status: brick.status,
+          fitness: brick.fitness,
+          ...(brick.version !== undefined ? { version: brick.version } : {}),
+          ...(brick.parentBrickId !== undefined ? { parentBrickId: brick.parentBrickId } : {}),
+          ...(brick.evolutionKind !== undefined ? { evolutionKind: brick.evolutionKind } : {}),
+          ...(brick.evolutionDescription !== undefined
+            ? { evolutionDescription: brick.evolutionDescription }
+            : {}),
+        };
       }
       const events =
         action.events.length > MAX_FORGE_EVENTS
