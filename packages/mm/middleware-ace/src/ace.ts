@@ -143,9 +143,12 @@ export function createAceMiddleware(
 
     void (async () => {
       try {
+        // Flush ATIF buffer so rich trajectory is persisted for the reflector.
+        // Do NOT flush the compact buffer — onSessionEnd needs those entries.
         await atifBuffer.flush(docId);
-        const entries = buffer.flush();
-        await llmPipeline.consolidate(entries, docId, 1, clock, buffer);
+        // Pass empty entries — the LLM pipeline reads rich trajectory from ATIF store
+        // via getStepRange (watermark-based delta). Compact entries are only for stat pipeline.
+        await llmPipeline.consolidate([], docId, 1, clock, buffer);
         // Invalidate playbook cache so next model call picks up new bullets
         cachedStructuredPlaybooks = undefined;
       } catch (e: unknown) {
