@@ -13,11 +13,12 @@ import type {
   DashboardConfig,
   DashboardDataSource,
   RuntimeViewDataSource,
+  WorkspaceContextResponse,
 } from "@koi/dashboard-types";
 import { DEFAULT_DASHBOARD_CONFIG } from "@koi/dashboard-types";
 import { applyCors, getCorsHeaders, handlePreflight } from "./middleware/cors.js";
 import type { RouteParams } from "./router.js";
-import { createRouter, errorResponse } from "./router.js";
+import { createRouter, errorResponse, jsonResponse } from "./router.js";
 import { handleGetAgent, handleListAgents, handleTerminateAgent } from "./routes/agents.js";
 import { handleChannels } from "./routes/channels.js";
 import {
@@ -121,6 +122,8 @@ export interface DashboardHandlerOptions {
   readonly agentChatHandler?: AgentChatHandler;
   /** Service management callbacks for shutdown, status, demo, deploy. When absent, returns 501. */
   readonly serviceManagement?: ServiceManagementCallbacks;
+  /** Optional workspace context for debugging (cwd, paths, ports). */
+  readonly workspaceContext?: WorkspaceContextResponse | undefined;
 }
 
 export interface DashboardHandlerResult {
@@ -140,8 +143,15 @@ export function createDashboardHandler(
   const options: DashboardHandlerOptions =
     "listAgents" in dataSourceOrOptions ? { dataSource: dataSourceOrOptions } : dataSourceOrOptions;
 
-  const { dataSource, fileSystem, runtimeViews, commands, agentChatHandler, serviceManagement } =
-    options;
+  const {
+    dataSource,
+    fileSystem,
+    runtimeViews,
+    commands,
+    agentChatHandler,
+    serviceManagement,
+    workspaceContext,
+  } = options;
   const editablePaths =
     options.editablePaths ?? (fileSystem !== undefined ? createDefaultEditablePaths() : undefined);
 
@@ -196,6 +206,14 @@ export function createDashboardHandler(
   }> = [
     // Core routes (always available)
     { method: "GET", pattern: "/health", handler: (_req, _params) => handleHealth(capabilities) },
+    {
+      method: "GET",
+      pattern: "/workspace",
+      handler: (_req, _params) =>
+        workspaceContext !== undefined
+          ? jsonResponse(workspaceContext)
+          : errorResponse("NOT_FOUND", "Workspace context not available", 404),
+    },
     {
       method: "GET",
       pattern: "/agents",

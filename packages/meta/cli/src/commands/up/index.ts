@@ -5,7 +5,8 @@
  * This orchestrator wires them together with spinners and colored output.
  */
 
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
 import { createCliOutput, createTimer } from "@koi/cli-render";
 import { createContextExtension } from "@koi/context";
@@ -1281,6 +1282,43 @@ export async function runUp(flags: UpFlags): Promise<void> {
     });
     adminDispatcher = dispatcher;
 
+    // Collect workspace context for admin API and banner
+    const nexusYamlCandidate = join(workspaceRoot, "nexus.yaml");
+    const nexusYamlExists = existsSync(nexusYamlCandidate);
+    const nexusDataDirValue = nexusYamlExists
+      ? (() => {
+          try {
+            const raw = readFileSync(nexusYamlCandidate, "utf-8");
+            return /^data_dir:\s*['"]?(.+?)['"]?\s*$/m.exec(raw)?.[1];
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
+    const nexusPortValue =
+      nexus.baseUrl !== undefined
+        ? Number.parseInt(new URL(nexus.baseUrl).port, 10) || undefined
+        : undefined;
+    const nexusContainerProjectValue = await (async () => {
+      try {
+        const { readRuntimeState } = await import("@koi/nexus-embed");
+        return readRuntimeState(workspaceRoot)?.project_name;
+      } catch {
+        return undefined;
+      }
+    })();
+    const workspaceContext = {
+      cwd: workspaceRoot,
+      koiYamlPath: manifestPath,
+      nexusYamlPath: nexusYamlExists ? nexusYamlCandidate : undefined,
+      nexusDataDir: nexusDataDirValue,
+      nexusContainerProject: nexusContainerProjectValue,
+      nexusPort: nexusPortValue,
+      nexusBaseUrl: nexus.baseUrl,
+      adminPort: boundPort,
+      presetId,
+    } as const;
+
     const debugApi = runtime.debug;
     adminBridge = createAdminPanelBridge({
       agentName: manifest.name,
@@ -1422,6 +1460,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
             },
           }
         : {}),
+      workspaceContext,
     });
 
     // Wire forge/monitor SSE event sink now that the bridge exists
@@ -1537,6 +1576,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 11. BANNER
   timer.print();
+
   printBanner({
     agentName: manifest.name,
     presetId,
@@ -1563,6 +1603,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
           : inferBackend(preset.stacks.aceStoreBackend, nexus.baseUrl),
       forge: activeStorage.forge as "nexus" | "memory",
       vfs: activeStorage.vfs as "nexus" | "local",
+    },
+    workspace: {
+      cwd: workspaceContext.cwd,
+      koiYamlPath: workspaceContext.koiYamlPath,
+      nexusYamlPath: workspaceContext.nexusYamlPath,
+      nexusDataDir: workspaceContext.nexusDataDir,
+      nexusPort: workspaceContext.nexusPort,
     },
   });
 
