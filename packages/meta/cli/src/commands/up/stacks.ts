@@ -348,9 +348,8 @@ async function activateAce(
   middleware: KoiMiddleware[],
 ): Promise<void> {
   const backend = config.stacks.aceStoreBackend ?? "memory";
-  const { createAceMiddleware, createInMemoryAtifDocumentStore } = await import(
-    "@koi/middleware-ace"
-  );
+  const { createAceMiddleware, createAtifDocumentStore, createInMemoryAtifDocumentStore } =
+    await import("@koi/middleware-ace");
 
   // Build LLM pipeline config when model call is available
   const llmConfig = await buildAceLlmConfig(config);
@@ -365,6 +364,7 @@ async function activateAce(
       createNexusTrajectoryStore,
       createNexusPlaybookStore,
       createNexusStructuredPlaybookStore,
+      createNexusAtifDelegate,
     } = await import("@koi/nexus-store");
 
     // Use config key, fall back to env var (set during Nexus startup), never empty string
@@ -387,12 +387,16 @@ async function activateAce(
       basePath: `${agentPrefix}ace/structured-playbooks`,
     });
 
-    // ATIF document store for canonical trajectory persistence
+    // ATIF document store — Nexus-backed for persistent rich trajectory
     const atifStore =
       llmConfig !== undefined
-        ? createInMemoryAtifDocumentStore({
-            agentName: config.agentName ?? "koi-agent",
-          })
+        ? createAtifDocumentStore(
+            { agentName: config.agentName ?? "koi-agent" },
+            createNexusAtifDelegate({
+              ...nexusBase,
+              basePath: `${agentPrefix}ace/atif-documents`,
+            }) as import("@koi/middleware-ace").AtifDocumentDelegate,
+          )
         : undefined;
 
     const mw = createAceMiddleware({

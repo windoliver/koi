@@ -15,11 +15,13 @@
 
 export type {
   NexusAceStoreConfig,
+  NexusJsonDocumentDelegate,
   NexusPlaybookStore,
   NexusStructuredPlaybookStore,
   NexusTrajectoryStore,
 } from "./ace.js";
 export {
+  createNexusAtifDelegate,
   createNexusPlaybookStore,
   createNexusStructuredPlaybookStore,
   createNexusTrajectoryStore,

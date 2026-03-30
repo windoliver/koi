@@ -281,3 +281,64 @@ export function createNexusStructuredPlaybookStore(
 
   return { get, list, save, remove };
 }
+
+// ---------------------------------------------------------------------------
+// NexusAtifDocumentDelegate — generic JSON document persistence for ATIF
+// ---------------------------------------------------------------------------
+
+const DEFAULT_ATIF_PATH = "ace/atif-documents";
+
+/**
+ * Generic JSON document delegate backed by Nexus NFS.
+ *
+ * Structurally compatible with @koi/middleware-ace AtifDocumentDelegate.
+ * Stores each document as a JSON file at `{basePath}/{docId}.json`.
+ */
+export interface NexusJsonDocumentDelegate {
+  readonly read: (docId: string) => Promise<unknown | undefined>;
+  readonly write: (docId: string, doc: unknown) => Promise<void>;
+  readonly list: () => Promise<readonly string[]>;
+  readonly delete: (docId: string) => Promise<boolean>;
+}
+
+/** Create a Nexus-backed JSON document delegate for ATIF document storage. */
+export function createNexusAtifDelegate(config: NexusAceStoreConfig): NexusJsonDocumentDelegate {
+  const basePath = config.basePath ?? DEFAULT_ATIF_PATH;
+  const client = createNexusClient({
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    fetch: config.fetch,
+  });
+
+  function docPath(docId: string): string {
+    return `${basePath}/${sanitizeFilename(docId)}.json`;
+  }
+
+  return {
+    async read(docId: string): Promise<unknown | undefined> {
+      const segCheck = validatePathSegment(docId, "ATIF document ID");
+      if (!segCheck.ok) return undefined;
+      return readJson<unknown>(client, docPath(docId));
+    },
+
+    async write(docId: string, doc: unknown): Promise<void> {
+      const segCheck = validatePathSegment(docId, "ATIF document ID");
+      if (!segCheck.ok) throw new Error(segCheck.error.message);
+      await writeJson(client, docPath(docId), doc);
+    },
+
+    async list(): Promise<readonly string[]> {
+      const paths = await globPaths(client, `${basePath}/*.json`);
+      return paths.map((p) => {
+        const fileName = p.split("/").pop() ?? "";
+        return fileName.replace(".json", "");
+      });
+    },
+
+    async delete(docId: string): Promise<boolean> {
+      const segCheck = validatePathSegment(docId, "ATIF document ID");
+      if (!segCheck.ok) return false;
+      return deleteJson(client, docPath(docId));
+    },
+  };
+}
