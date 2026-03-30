@@ -135,6 +135,37 @@ describe("VIEW_COMMAND_MAP", () => {
       expect(hint).not.toContain("Ctrl+P");
     }
   });
+
+  test("console shows Type message and Enter:send", () => {
+    const hint = getViewCommands("console").footerHint;
+    expect(hint).toContain("Type message");
+    expect(hint).toContain("Enter:send");
+  });
+
+  test("palette shows Esc:close, not Esc:back", () => {
+    const hint = getViewCommands("palette").footerHint;
+    expect(hint).toContain("Esc:close");
+    expect(hint).not.toContain("Esc:back");
+    expect(hint).toContain("Enter:select");
+  });
+
+  test("splitpanes shows Tab:focus-next and +:cycle-zoom", () => {
+    const hint = getViewCommands("splitpanes").footerHint;
+    expect(hint).toContain("Tab:focus-next");
+    expect(hint).toContain("Enter:zoom");
+    expect(hint).toContain("+:cycle-zoom");
+  });
+
+  test("welcome shows ?:details and q:quit", () => {
+    const hint = getViewCommands("welcome").footerHint;
+    expect(hint).toContain("?:details");
+    expect(hint).toContain("q:quit");
+  });
+
+  test("progress shows Starting Koi", () => {
+    const hint = getViewCommands("progress").footerHint;
+    expect(hint).toContain("Starting Koi");
+  });
 });
 
 describe("getPaletteCommands", () => {

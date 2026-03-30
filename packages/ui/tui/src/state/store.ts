@@ -146,18 +146,12 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       };
 
     case "set_session": {
-      // Flush any buffered lifecycle messages into the new session
-      if (action.session !== null && state.pendingLifecycleMessages.length > 0) {
-        const flushed = [...action.session.messages, ...state.pendingLifecycleMessages].slice(
-          -MAX_SESSION_MESSAGES,
-        );
-        return {
-          ...state,
-          activeSession: { ...action.session, messages: flushed },
-          pendingLifecycleMessages: [],
-        };
+      // Clear stale lifecycle buffer when switching sessions to avoid
+      // leaking messages from one context into an unrelated session
+      if (action.session === null) {
+        return { ...state, activeSession: null, pendingLifecycleMessages: [] };
       }
-      return { ...state, activeSession: action.session };
+      return { ...state, activeSession: action.session, pendingLifecycleMessages: [] };
     }
 
     case "append_tokens": {

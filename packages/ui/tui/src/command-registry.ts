@@ -713,8 +713,28 @@ const NAVIGABLE_VIEWS: ReadonlySet<TuiView> = new Set([
   "channelspicker",
 ]);
 
+/**
+ * Views with non-standard footer hints that the builder can't generate.
+ * These take precedence over buildFooterHint().
+ */
+const FOOTER_OVERRIDES: Readonly<Partial<Record<TuiView, string>>> = {
+  console: "Type message  Enter:send  Esc:back  Ctrl+P:commands",
+  palette: "↑↓:navigate  Enter:select  Esc:close",
+  splitpanes: "Tab:focus-next  Enter:zoom  Esc:back  +:cycle-zoom",
+  welcome: "j/k:navigate  Enter:select  ?:details  q:quit",
+  presetdetail: "Enter:select  Esc:back  q:quit",
+  nameinput: "Enter:confirm  Esc:back",
+  engine: "Enter:confirm  s:skip  Esc:back",
+  progress: "Starting Koi…",
+  nexus: "j/k:scroll  Esc:back  Ctrl+F:close  Ctrl+P:commands",
+  sourcedetail: "Esc:back  [a] approve",
+};
+
 /** Build a footer hint string for a given view. */
 function buildFooterHint(view: TuiView): string {
+  // Use override if available (views with non-standard hints)
+  const override = FOOTER_OVERRIDES[view];
+  if (override !== undefined) return override;
   const parts: string[] = [];
 
   // Navigation prefix
