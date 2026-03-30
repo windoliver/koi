@@ -19,7 +19,7 @@ afterEach(() => {
 describe("createNexusMailbox", () => {
   describe("auto-provision", () => {
     test("calls provision on creation to ensure inbox exists", () => {
-      const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
+      const fetchMock = globalThis.fetch as unknown as ReturnType<typeof mock>;
       fetchMock.mockImplementation(() =>
         Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
       );
@@ -39,7 +39,7 @@ describe("createNexusMailbox", () => {
     });
 
     test("does not throw when provision returns 409 (already exists)", () => {
-      const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
+      const fetchMock = globalThis.fetch as unknown as ReturnType<typeof mock>;
       fetchMock.mockImplementation((url: string | URL | Request) => {
         const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
         if (urlStr.includes("/provision/")) {
@@ -56,7 +56,7 @@ describe("createNexusMailbox", () => {
     });
 
     test("does not throw when provision network request fails", () => {
-      const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
+      const fetchMock = globalThis.fetch as unknown as ReturnType<typeof mock>;
       fetchMock.mockImplementation((url: string | URL | Request) => {
         const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
         if (urlStr.includes("/provision/")) {
