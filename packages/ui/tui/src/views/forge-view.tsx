@@ -138,20 +138,36 @@ export function ForgeView(props: ForgeViewProps): React.ReactNode {
           const isSelected = i === selectedIdx;
           const badge = brickStatusConfig(brick.status);
 
+          const versionLabel = brick.version !== undefined ? ` v${brick.version}` : "";
+          const evolutionLabel =
+            brick.evolutionKind !== undefined
+              ? ` ← ${brick.evolutionKind}${brick.evolutionDescription !== undefined ? `: ${brick.evolutionDescription}` : ""}`
+              : "";
+
           return (
-            <box key={brickId} height={1} flexDirection="row">
-              <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
-                {isSelected ? " ▸" : "  "}
-                {` ${truncate(brick.name, nameWidth)} `}
-              </text>
-              <text fg={isSelected ? COLORS.cyan : badge.color}>
-                {badge.label.padEnd(18).slice(0, 18)}
-              </text>
-              <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
-                {` ${fitnessLabel.padEnd(6)}`}
-              </text>
-              {sparklineStr.length > 0 && (
-                <text fg={sparklineColor}>{sparklineStr}</text>
+            <box key={brickId} height={isSelected && brick.evolutionKind !== undefined ? 2 : 1} flexDirection="column">
+              <box height={1} flexDirection="row">
+                <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
+                  {isSelected ? " ▸" : "  "}
+                  {` ${truncate(brick.name, nameWidth)} `}
+                </text>
+                <text fg={isSelected ? COLORS.cyan : badge.color}>
+                  {badge.label.padEnd(18).slice(0, 18)}
+                </text>
+                <text {...(isSelected ? { fg: COLORS.cyan } : {})}>
+                  {` ${fitnessLabel.padEnd(6)}`}
+                </text>
+                {sparklineStr.length > 0 && (
+                  <text fg={sparklineColor}>{sparklineStr}</text>
+                )}
+                {versionLabel.length > 0 && (
+                  <text fg={COLORS.dim}>{versionLabel}</text>
+                )}
+              </box>
+              {isSelected && evolutionLabel.length > 0 && (
+                <box height={1}>
+                  <text fg={COLORS.yellow}>{`     ${evolutionLabel}`}</text>
+                </box>
               )}
             </box>
           );
