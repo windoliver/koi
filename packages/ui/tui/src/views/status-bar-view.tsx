@@ -61,11 +61,11 @@ const ZOOM_LABELS: Readonly<Record<ZoomLevel, string>> = {
 
 /** Format compact task status from the task board snapshot. */
 function formatTaskStatus(snapshot: import("@koi/dashboard-types").TaskBoardSnapshot | null): string | undefined {
-  if (snapshot === null || snapshot.items.length === 0) return undefined;
-  const total = snapshot.items.length;
-  const completed = snapshot.items.filter((i) => i.status === "completed").length;
-  const running = snapshot.items.filter((i) => i.status === "assigned").length;
-  const failed = snapshot.items.filter((i) => i.status === "failed").length;
+  if (snapshot === null || snapshot.nodes.length === 0) return undefined;
+  const total = snapshot.nodes.length;
+  const completed = snapshot.nodes.filter((n: { readonly status: string }) => n.status === "completed").length;
+  const running = snapshot.nodes.filter((n: { readonly status: string }) => n.status === "running").length;
+  const failed = snapshot.nodes.filter((n: { readonly status: string }) => n.status === "failed").length;
   const pending = total - completed - running - failed;
 
   if (completed === total) return `Tasks: ${String(total)}/${String(total)} done`;

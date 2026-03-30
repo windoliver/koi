@@ -135,12 +135,13 @@ describe("StatusBarView", () => {
       taskBoardView: {
         ...store.getState().taskBoardView,
         snapshot: {
-          items: [
-            { id: "t1", description: "Task 1", status: "completed", delegation: "self", retries: 0 },
-            { id: "t2", description: "Task 2", status: "assigned", delegation: "spawn", retries: 0 },
-            { id: "t3", description: "Task 3", status: "pending", delegation: "self", retries: 0 },
+          nodes: [
+            { taskId: "t1", label: "Task 1", status: "completed" },
+            { taskId: "t2", label: "Task 2", status: "running" },
+            { taskId: "t3", label: "Task 3", status: "pending" },
           ],
-          results: [],
+          edges: [],
+          timestamp: Date.now(),
         },
       },
     };
