@@ -365,6 +365,30 @@ When considering adding a dependency:
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
 
+## Tmux (parallel agent safety)
+
+Multiple Claude Code agents run in parallel across worktrees. **Always** prefix tmux session names with the worktree slug to avoid conflicts:
+
+```bash
+WORKTREE=$(basename "$PWD")   # e.g. "zany-popping-fountain"
+tmux new-session -d -s "${WORKTREE}-koi" 'bun run packages/meta/cli/src/bin.ts up'
+tmux capture-pane -t "${WORKTREE}-koi" -p
+tmux send-keys -t "${WORKTREE}-koi" 'hello' Enter
+```
+
+| Correct | Wrong |
+|---------|-------|
+| `zany-popping-fountain-koi` | `koi` |
+| `melodic-sprouting-kahan-nexus` | `nexus` |
+| `${WORKTREE}-e2e` | `e2e`, `test`, `ace-test` |
+
+**Never** use bare generic names. Another agent **will** rename or kill your session.
+
+When tmux is unreliable, use the admin HTTP API as fallback:
+```bash
+curl -s http://localhost:3100/admin/api/health
+```
+
 ## Git
 
 - Commit format: `<type>: <description>` (feat, fix, refactor, docs, test, chore, perf, ci)
