@@ -346,10 +346,16 @@ async function activateContextArena(
 async function activateAce(
   config: StackActivationConfig,
   middleware: KoiMiddleware[],
+  providers: ComponentProvider[],
 ): Promise<void> {
   const backend = config.stacks.aceStoreBackend ?? "memory";
-  const { createAceMiddleware, createAtifDocumentStore, createInMemoryAtifDocumentStore } =
-    await import("@koi/middleware-ace");
+  const {
+    createAceMiddleware,
+    createAceReflectTool,
+    createAceToolsProvider,
+    createAtifDocumentStore,
+    createInMemoryAtifDocumentStore,
+  } = await import("@koi/middleware-ace");
 
   // Build LLM pipeline config when model call is available
   const llmConfig = await buildAceLlmConfig(config);
@@ -399,19 +405,50 @@ async function activateAce(
           )
         : undefined;
 
-    const mw = createAceMiddleware({
+    const aceFullConfig = {
       trajectoryStore,
       playbookStore,
       structuredPlaybookStore,
       ...llmConfig?.aceConfig,
       ...(atifStore !== undefined ? { atifStore } : {}),
       onLlmPipelineError,
-    });
-    middleware.push(mw);
-    if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
+    };
+
+    // When LLM pipeline + ATIF store are available, create with handle for ace_reflect
+    if (llmConfig !== undefined && atifStore !== undefined) {
+      const handle = createAceMiddleware(aceFullConfig, { withHandle: true });
+      middleware.push(handle.middleware);
+      middleware.push(llmConfig.auditMiddleware);
+
+      // Register ace_reflect tool via a ComponentProvider
+      if (handle.atifBuffer !== undefined && handle.llmPipeline !== undefined) {
+        const reflectTool = createAceReflectTool({
+          atifBuffer: handle.atifBuffer,
+          llmPipeline: handle.llmPipeline,
+          structuredPlaybookStore,
+          atifStore,
+          aceHandle: handle,
+          trajectoryBuffer: handle.trajectoryBuffer,
+          conversationId: "default",
+        });
+        providers.push(
+          createAceToolsProvider({
+            playbookStore,
+            structuredPlaybookStore,
+            aceReflectTool: reflectTool,
+            includeCompanionSkill: false,
+          }),
+        );
+      }
+    } else {
+      const mw = createAceMiddleware(aceFullConfig);
+      middleware.push(mw);
+      if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
+    }
+
     log(
       config,
-      `Stack: ace (backend=nexus, url=${config.nexusBaseUrl}${llmConfig !== undefined ? ", llm-pipeline=on" : ""})`,
+      `Stack: ace (backend=nexus, url=${config.nexusBaseUrl}${llmConfig !== undefined ? ", llm-pipeline=on, ace_reflect=on" : ""})`,
     );
     return;
   }
@@ -858,7 +895,7 @@ export async function activatePresetStacks(
 
   if (config.stacks.ace === true) {
     const before = middleware.length;
-    await tryActivate("ace", () => activateAce(config, middleware));
+    await tryActivate("ace", () => activateAce(config, middleware, providers));
     if (middleware.length > before) {
       contributions.push({
         id: "ace",

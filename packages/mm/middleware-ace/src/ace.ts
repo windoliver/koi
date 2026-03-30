@@ -32,6 +32,7 @@ import type { AtifWriteBehindBuffer } from "./atif-buffer.js";
 import { createAtifWriteBehindBuffer } from "./atif-buffer.js";
 import type { AceConfig } from "./config.js";
 import { selectPlaybooks, selectStructuredPlaybooks } from "./injector.js";
+import type { ConsolidationPipeline } from "./pipeline.js";
 import { createLlmPipeline, createStatPipeline, isLlmPipelineEnabled } from "./pipeline.js";
 import { extractCitedBulletIds, serializeForInjection } from "./playbook.js";
 import { createTrajectoryBuffer } from "./trajectory-buffer.js";
@@ -52,6 +53,12 @@ export interface AceMiddlewareHandle {
   readonly middleware: KoiMiddleware;
   /** Invalidate the cached structured playbooks, forcing a reload on the next model call. */
   readonly invalidatePlaybookCache: () => void;
+  /** The ATIF write-behind buffer (for ace_reflect flush-before-read). */
+  readonly atifBuffer: AtifWriteBehindBuffer | undefined;
+  /** The LLM consolidation pipeline (for ace_reflect delta reflection). */
+  readonly llmPipeline: ConsolidationPipeline | undefined;
+  /** The compact trajectory buffer (for ace_reflect). */
+  readonly trajectoryBuffer: import("./trajectory-buffer.js").TrajectoryBuffer;
 }
 
 /** Creates the ACE middleware instance. */
@@ -480,6 +487,9 @@ export function createAceMiddleware(
       invalidatePlaybookCache(): void {
         cachedStructuredPlaybooks = undefined;
       },
+      atifBuffer,
+      llmPipeline,
+      trajectoryBuffer: buffer,
     };
   }
 
