@@ -62,12 +62,28 @@ export type NexusStructuredPlaybookStore = StructuredPlaybookStore;
 // ---------------------------------------------------------------------------
 
 async function readJson<T>(client: NexusClient, path: string): Promise<T | undefined> {
-  const r = await client.rpc<string>("read", { path });
+  const r = await client.rpc<unknown>("read", { path });
   if (!r.ok) {
     if (r.error.code === "EXTERNAL" || r.error.code === "NOT_FOUND") return undefined;
     throw new Error(r.error.message);
   }
-  return JSON.parse(r.value) as T;
+  // Nexus NFS returns {__type__: "bytes", data: "base64..."} for file reads.
+  // Decode the bytes to a UTF-8 string before JSON-parsing.
+  const raw = r.value;
+  if (typeof raw === "string") return JSON.parse(raw) as T;
+  if (
+    typeof raw === "object" &&
+    raw !== null &&
+    (raw as Record<string, unknown>).__type__ === "bytes"
+  ) {
+    const b64 = (raw as Record<string, unknown>).data;
+    if (typeof b64 === "string") {
+      const decoded = Buffer.from(b64, "base64").toString("utf-8");
+      return JSON.parse(decoded) as T;
+    }
+  }
+  // Fallback: raw is already a parsed object (unlikely but safe)
+  return raw as T;
 }
 
 async function writeJson(client: NexusClient, path: string, data: unknown): Promise<void> {
