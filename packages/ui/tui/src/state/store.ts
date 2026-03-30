@@ -145,14 +145,8 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         selectedAgentIndex: Math.max(0, Math.min(action.index, state.agents.length - 1)),
       };
 
-    case "set_session": {
-      // Clear stale lifecycle buffer when switching sessions to avoid
-      // leaking messages from one context into an unrelated session
-      if (action.session === null) {
-        return { ...state, activeSession: null, pendingLifecycleMessages: [] };
-      }
-      return { ...state, activeSession: action.session, pendingLifecycleMessages: [] };
-    }
+    case "set_session":
+      return { ...state, activeSession: action.session };
 
     case "append_tokens": {
       if (state.activeSession === null) return state;
@@ -188,14 +182,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
 
     case "add_message": {
       if (state.activeSession === null) {
-        // No active session — buffer lifecycle messages so they aren't silently dropped
+        // No active session — surface lifecycle messages as toasts so they're visible
         if (action.message.kind === "lifecycle") {
-          return {
-            ...state,
-            pendingLifecycleMessages: [...state.pendingLifecycleMessages, action.message].slice(
-              -20,
-            ),
-          };
+          const id = (state.toast?.id ?? 0) + 1;
+          const event = "event" in action.message ? String(action.message.event) : "";
+          return { ...state, toast: { id, message: event, kind: "success" } };
         }
         return state;
       }

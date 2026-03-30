@@ -377,8 +377,6 @@ export interface TuiState {
   readonly pendingStopConfirm: boolean;
   /** Transient toast notification — auto-clears after timeout. */
   readonly toast: ToastState | null;
-  /** Lifecycle messages buffered when no active session exists. Flushed on session open. */
-  readonly pendingLifecycleMessages: readonly import("@koi/dashboard-client").ChatMessage[];
   /** Selected Nexus mode during wizard: "skip", "docker", "source", "remote". */
   readonly nexusConfigMode: NexusConfigMode;
   /** Focused index in Nexus config picker. */
@@ -469,7 +467,6 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     demoPacks: [],
     pendingStopConfirm: false,
     toast: null,
-    pendingLifecycleMessages: [],
     nexusConfigMode: "docker" as NexusConfigMode,
     nexusConfigFocusedIndex: 0,
     nexusSourcePath: "~/nexus",

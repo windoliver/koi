@@ -571,10 +571,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       const currentView = store.getState().view;
       if (currentView === "sourcedetail") {
         store.dispatch({ kind: "set_view", view: "datasources" });
-      } else if (store.getState().setupRunning) {
-        // Only route back to channel picker during active wizard setup
-        store.dispatch({ kind: "set_view", view: "channelspicker" });
+      } else if (store.getState().view === "agents") {
+        // Already at agents, no-op
       } else {
+        // Use nav stack for back navigation (works for both wizard and runtime)
         store.dispatch({ kind: "navigate_back" });
       }
     },
@@ -599,8 +599,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       if (source !== undefined) viewDataSourceSchema(source.name, dsDeps).catch(() => {});
     },
     dataSourcesContinue: () => {
-      // Only advance wizard during active setup (not post-setup /sources)
-      if (store.getState().setupRunning) {
+      // Advance to addons step during wizard (selectedPresetId is set during wizard flow)
+      if (store.getState().selectedPresetId !== null) {
         store.dispatch({ kind: "set_view", view: "addons" });
       }
     },
