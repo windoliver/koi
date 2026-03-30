@@ -599,11 +599,11 @@ export function createKeyboardHandler(
         callbacks.nexusBrowserOpen();
         return true;
       }
-      if (sequence === "]") {
+      if (sequence === "]" || sequence === "n") {
         callbacks.nexusPreviewScrollDown();
         return true;
       }
-      if (sequence === "[") {
+      if (sequence === "[" || sequence === "p") {
         callbacks.nexusPreviewScrollUp();
         return true;
       }
