@@ -10,14 +10,40 @@ import type { NexusBrowserState } from "../state/domain-types.js";
 import { COLORS } from "../theme.js";
 
 /** Pretty-print JSON content for the file preview. Falls back to raw lines. */
+const MAX_LINE_WIDTH = 100;
+
+/** Wrap long lines at a character limit. */
+function wrapLines(lines: readonly string[], maxWidth: number): readonly string[] {
+  const result: string[] = [];
+  for (const line of lines) {
+    if (line.length <= maxWidth) {
+      result.push(line);
+    } else {
+      // Wrap at maxWidth, preserving indent
+      const indent = line.match(/^(\s*)/)?.[1] ?? "";
+      let remaining = line;
+      while (remaining.length > maxWidth) {
+        result.push(remaining.slice(0, maxWidth));
+        remaining = indent + "  " + remaining.slice(maxWidth);
+      }
+      if (remaining.length > 0) result.push(remaining);
+    }
+  }
+  return result;
+}
+
+/** Pretty-print JSON with long string wrapping. Falls back to raw lines. */
 function formatPreview(raw: string): readonly string[] {
   try {
     const parsed = JSON.parse(raw) as unknown;
     const pretty = JSON.stringify(parsed, null, 2);
-    return pretty.split("\n");
+    return wrapLines(pretty.split("\n"), MAX_LINE_WIDTH);
   } catch {
     // Not JSON — show raw lines
-    return raw.split("\n").filter((l: string) => l.trim() !== "");
+    return wrapLines(
+      raw.split("\n").filter((l: string) => l.trim() !== ""),
+      MAX_LINE_WIDTH,
+    );
   }
 }
 
