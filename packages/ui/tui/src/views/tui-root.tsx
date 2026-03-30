@@ -515,6 +515,15 @@ export function TuiRoot(props: TuiRootProps): React.ReactNode {
           confirmSignal={paletteConfirm}
         />
 
+        {/* Toast notification — transient feedback overlay */}
+        {state.toast !== null && (
+          <box height={1} flexDirection="row" justifyContent="center">
+            <text fg={state.toast.kind === "success" ? "#22C55E" : "#EF4444"}>
+              {state.toast.kind === "success" ? " ✓ " : " ✘ "}{state.toast.message}
+            </text>
+          </box>
+        )}
+
         </>)}
       </box>
     </box>

@@ -147,6 +147,19 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     fetchDataForViewFn(s.view, fetchDeps);
   });
 
+  // Auto-clear toasts after 3 seconds
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  store.subscribe((s) => {
+    if (s.toast !== null) {
+      if (toastTimer !== null) clearTimeout(toastTimer);
+      const toastId = s.toast.id;
+      toastTimer = setTimeout(() => {
+        store.dispatch({ kind: "clear_toast", id: toastId });
+        toastTimer = null;
+      }, 3000);
+    }
+  });
+
   function addLifecycleMessage(event: string): void {
     store.dispatch({
       kind: "add_message",
