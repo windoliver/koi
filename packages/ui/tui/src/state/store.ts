@@ -39,7 +39,32 @@ import {
 } from "./domain-reducers.js";
 import { reduceService } from "./service-reducer.js";
 import type { TuiBrickSummary } from "./types.js";
-import { MAX_SESSION_MESSAGES, type TuiAction, type TuiState, type ZoomLevel } from "./types.js";
+import {
+  MAX_SESSION_MESSAGES,
+  MAX_VIEW_HISTORY,
+  type TuiAction,
+  type TuiState,
+  type TuiView,
+  type ZoomLevel,
+} from "./types.js";
+
+/** Views that are overlays — they don't push to the navigation stack. */
+const OVERLAY_VIEWS: ReadonlySet<TuiView> = new Set([
+  "palette",
+  "consent",
+  "sourcedetail",
+  "presetdetail",
+  // Wizard steps are linear flows, not stack-navigable
+  "welcome",
+  "nameinput",
+  "addons",
+  "model",
+  "engine",
+  "channelspicker",
+  "nexusconfig",
+  "progress",
+]);
+
 import { reduceWizard } from "./wizard-reducer.js";
 
 const MAX_FORGE_EVENTS = 200;
@@ -71,8 +96,37 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
   if (serviceResult !== undefined) return { ...state, ...serviceResult };
 
   switch (action.kind) {
-    case "set_view":
+    case "set_view": {
+      // Push current view to history stack (if not an overlay and not same view)
+      if (
+        !OVERLAY_VIEWS.has(action.view) &&
+        !OVERLAY_VIEWS.has(state.view) &&
+        state.view !== action.view
+      ) {
+        const history = [...state.viewHistory, state.view].slice(-MAX_VIEW_HISTORY);
+        return { ...state, view: action.view, viewHistory: history };
+      }
       return { ...state, view: action.view };
+    }
+
+    case "navigate_back": {
+      if (state.viewHistory.length === 0) return { ...state, view: "agents" };
+      const history = state.viewHistory.slice(0, -1);
+      const target = state.viewHistory[state.viewHistory.length - 1] as TuiView;
+      return { ...state, view: target, viewHistory: history };
+    }
+
+    case "show_toast": {
+      // Auto-incrementing ID prevents cross-view race conditions on clear
+      const id = (state.toast?.id ?? 0) + 1;
+      return { ...state, toast: { id, message: action.message, kind: action.toastKind } };
+    }
+
+    case "clear_toast": {
+      // Only clear if the ID matches (prevents clearing a newer toast)
+      if (state.toast === null || state.toast.id !== action.id) return state;
+      return { ...state, toast: null };
+    }
 
     case "set_agents":
       return {

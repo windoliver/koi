@@ -627,7 +627,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       });
     },
     navigateBack: () => {
-      // Finding 2 fix: from temporal detail, go back to list (not exit view)
+      // Intra-view detail: clear detail state without leaving the view
       if (
         store.getState().view === "temporal" &&
         store.getState().temporalView.workflowDetail !== null
@@ -635,8 +635,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         store.dispatch({ kind: "set_temporal_workflow_detail", detail: null });
         return;
       }
-      const session = store.getState().activeSession;
-      store.dispatch({ kind: "set_view", view: session !== null ? "console" : "agents" });
+      // Pop navigation stack (falls back to "agents" when empty)
+      store.dispatch({ kind: "navigate_back" });
     },
     domainScrollUp: () => {
       scrollDomain(-1);
