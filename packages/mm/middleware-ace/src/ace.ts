@@ -316,6 +316,26 @@ export function createAceMiddleware(
             // recording to after the loop.
             const bulletIds = extractCitedBulletIds(responseText);
             recordOutcome(ctx, "model_call", modelName, start, "success", bulletIds);
+
+            // Record rich trajectory step for streaming model calls
+            recordRichStep(
+              ctx,
+              "model_call",
+              modelName,
+              start,
+              "success",
+              undefined,
+              responseText.length > 0 ? { text: responseText } : undefined,
+              undefined,
+              resp?.usage !== undefined
+                ? {
+                    promptTokens: resp.usage.inputTokens,
+                    completionTokens: resp.usage.outputTokens,
+                  }
+                : undefined,
+              bulletIds,
+            );
+
             recorded = true;
           }
           yield chunk;
@@ -325,10 +345,29 @@ export function createAceMiddleware(
         if (!recorded) {
           const bulletIds = extractCitedBulletIds(responseText);
           recordOutcome(ctx, "model_call", modelName, start, "success", bulletIds);
+          recordRichStep(
+            ctx,
+            "model_call",
+            modelName,
+            start,
+            "success",
+            undefined,
+            responseText.length > 0 ? { text: responseText } : undefined,
+          );
         }
       } catch (e: unknown) {
         if (!recorded) {
           recordOutcome(ctx, "model_call", modelName, start, "failure");
+          recordRichStep(
+            ctx,
+            "model_call",
+            request.model ?? "unknown",
+            start,
+            "failure",
+            undefined,
+            undefined,
+            { text: e instanceof Error ? e.message : String(e) },
+          );
         }
         throw e;
       }
@@ -407,12 +446,15 @@ export function createAceMiddleware(
         buffer.resetStats();
 
         // Fire-and-forget LLM pipeline if configured (Decision #13)
+        // Use conversationId as the document key so the pipeline reads
+        // from the same ATIF document that per-call recording writes to.
         if (llmPipeline !== undefined) {
+          const atifDocId = ctx.conversationId ?? ctx.sessionId;
           const errorHandler = config.onLlmPipelineError ?? defaultLlmPipelineErrorHandler;
           void llmPipeline
-            .consolidate(entries, ctx.sessionId, sessionCount, clock, buffer)
+            .consolidate(entries, atifDocId, sessionCount, clock, buffer)
             .catch((e: unknown) => {
-              errorHandler(e, ctx.sessionId);
+              errorHandler(e, atifDocId);
             });
         }
       } catch (e: unknown) {

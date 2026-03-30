@@ -1058,6 +1058,10 @@ export async function runUp(flags: UpFlags): Promise<void> {
   // let justified: mutable ref set when adminBridge is created
   let emitDashboardEvent: ((event: DashboardEvent) => void) | undefined;
 
+  // Stable conversation ID for this TUI session — persists across multiple
+  // runtime.run() calls so ACE accumulates trajectory across user messages.
+  const conversationId = `conversation-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+
   const { runtime } = await timer.time("runtime", () =>
     createForgeConfiguredKoi({
       manifest,
@@ -1065,6 +1069,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
       middleware: composed.middleware,
       providers: composed.providers,
       extensions,
+      conversationId,
       ...(forgeBootstrap !== undefined ? { forge: forgeBootstrap.runtime } : {}),
       debug: { enabled: true },
       onDashboardEvent: (event: DashboardEvent) => {
