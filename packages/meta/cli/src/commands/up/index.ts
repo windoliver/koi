@@ -984,6 +984,31 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
+  // IPC stack — messaging, delegation, scratchpad, federation (non-fatal, gated on preset flag)
+  let ipcBundle: import("@koi/ipc-stack").IpcBundle | undefined;
+  if (preset.stacks.ipcStack === true) {
+    try {
+      const { createIpcStack } = await import("@koi/ipc-stack");
+      ipcBundle = createIpcStack({
+        preset: "local",
+        spawn: async () => {
+          throw new Error("IPC spawn not available yet — bind after runtime assembly");
+        },
+      });
+      if (flags.verbose) {
+        process.stderr.write(
+          `  IPC-stack: wired (${ipcBundle.config.messagingKind} messaging, ${String(ipcBundle.config.providerCount)} providers, ${String(ipcBundle.config.middlewareCount)} middleware)\n`,
+        );
+      }
+    } catch (e: unknown) {
+      if (flags.verbose) {
+        process.stderr.write(
+          `  IPC-stack: skipped (${e instanceof Error ? e.message : String(e)})\n`,
+        );
+      }
+    }
+  }
+
   // Wire context-arena conversation persistence (Decision 1A, 2A)
   // let justified: mutable message buffer so context-arena squash middleware can
   // partition tool results; updated per-message in the channel onMessage handler.
@@ -1133,11 +1158,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
     presetMiddleware: [
       ...activatedStacks.middleware,
       ...(skillStackBundle !== undefined ? skillStackBundle.middleware : []),
+      ...(ipcBundle !== undefined ? ipcBundle.middlewares : []),
     ],
     presetProviders: [
       ...activatedStacks.providers,
       ...manifestToolProviders,
       ...(skillStackBundle !== undefined ? [skillStackBundle.provider] : []),
+      ...(ipcBundle !== undefined ? ipcBundle.providers : []),
     ],
     presetContributions: [...activatedStacks.contributions, ...bootstrapContributions],
   });
@@ -2099,6 +2126,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
   await runtime.dispose();
   if (contextArenaDispose !== undefined) await contextArenaDispose();
   for (const dispose of activatedStacks.disposables) await dispose();
+  if (ipcBundle !== undefined) {
+    for (const d of ipcBundle.disposables) d[Symbol.dispose]();
+  }
   if (stopNode !== undefined) await stopNode();
   if (stopGateway !== undefined) await stopGateway();
   if (autonomous !== undefined) await autonomous.dispose();

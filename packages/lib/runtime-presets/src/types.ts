@@ -87,6 +87,8 @@ export interface PresetStacks {
   readonly workspaceStack?: boolean;
   /** Enable skill discovery, progressive loading, and hot-plug. */
   readonly skillStack?: boolean;
+  /** Enable IPC stack (messaging, delegation, scratchpad, federation). */
+  readonly ipcStack?: boolean;
 }
 
 /** A complete runtime preset definition. */
