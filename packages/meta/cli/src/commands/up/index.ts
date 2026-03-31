@@ -984,17 +984,49 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
+  // Agent spawner — sandboxed multi-agent delegation (non-fatal, gated on preset flag)
+  let agentSpawnerInstance: import("@koi/agent-spawner").AgentSpawner | undefined;
+  if (preset.stacks.agentSpawner === true) {
+    try {
+      const sandboxConfig = manifest.codeSandbox ?? preset.manifestOverrides?.codeSandbox;
+      if (sandboxConfig !== undefined) {
+        const { createCloudSandbox } = await import("@koi/sandbox-stack");
+        const adapterResult = await createCloudSandbox(
+          sandboxConfig as import("@koi/sandbox-stack").CloudSandboxConfig,
+        );
+        if (adapterResult.ok) {
+          const { createAgentSpawner } = await import("@koi/agent-spawner");
+          agentSpawnerInstance = createAgentSpawner({ adapter: adapterResult.value });
+          if (flags.verbose) {
+            process.stderr.write("  Agent-spawner: wired\n");
+          }
+        }
+      }
+    } catch {
+      // Agent spawner is non-fatal
+    }
+  }
+
   // IPC stack — messaging, delegation, scratchpad, federation (non-fatal, gated on preset flag)
   let ipcBundle: import("@koi/ipc-stack").IpcBundle | undefined;
   if (preset.stacks.ipcStack === true) {
     try {
       const { createIpcStack } = await import("@koi/ipc-stack");
-      ipcBundle = createIpcStack({
-        preset: "local",
-        spawn: async () => {
-          throw new Error("IPC spawn not available yet — bind after runtime assembly");
-        },
-      });
+      // Build spawn function: routing spawn if agent-spawner is available, placeholder otherwise
+      let spawnFn: import("@koi/core").SpawnFn = async () => {
+        throw new Error("IPC spawn not available — enable agentSpawner in preset stacks");
+      };
+      if (agentSpawnerInstance !== undefined) {
+        const { createRoutingSpawnFn } = await import("@koi/agent-spawner");
+        spawnFn = createRoutingSpawnFn({
+          defaultSpawn: async (request) => ({
+            ok: true,
+            output: `In-process spawn not implemented for "${request.agentName}"`,
+          }),
+          agentSpawner: agentSpawnerInstance,
+        });
+      }
+      ipcBundle = createIpcStack({ preset: "local", spawn: spawnFn });
       if (flags.verbose) {
         process.stderr.write(
           `  IPC-stack: wired (${ipcBundle.config.messagingKind} messaging, ${String(ipcBundle.config.providerCount)} providers, ${String(ipcBundle.config.middlewareCount)} middleware)\n`,
@@ -2134,6 +2166,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (autonomous !== undefined) await autonomous.dispose();
   forgeBootstrap?.dispose();
   if (skillStackBundle !== undefined) skillStackBundle.dispose();
+  if (agentSpawnerInstance !== undefined) await agentSpawnerInstance.dispose();
   if (sandboxBridge !== undefined) await sandboxBridge.dispose();
   if (nexus.dispose !== undefined) await nexus.dispose();
   // Nexus containers are NOT stopped on quit — they persist data across sessions.

@@ -89,6 +89,8 @@ export interface PresetStacks {
   readonly skillStack?: boolean;
   /** Enable IPC stack (messaging, delegation, scratchpad, federation). */
   readonly ipcStack?: boolean;
+  /** Enable agent spawner for multi-agent delegation via sandboxed containers. */
+  readonly agentSpawner?: boolean;
 }
 
 /** A complete runtime preset definition. */

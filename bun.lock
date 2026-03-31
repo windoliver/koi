@@ -1201,6 +1201,7 @@
       },
       "dependencies": {
         "@clack/prompts": "0.10.0",
+        "@koi/agent-spawner": "workspace:*",
         "@koi/auto-harness": "workspace:*",
         "@koi/autonomous": "workspace:*",
         "@koi/bootstrap": "workspace:*",
@@ -1244,6 +1245,7 @@
         "@koi/governance": "workspace:*",
         "@koi/governance-memory": "workspace:*",
         "@koi/harness-scheduler": "workspace:*",
+        "@koi/ipc-stack": "workspace:*",
         "@koi/long-running": "workspace:*",
         "@koi/manifest": "workspace:*",
         "@koi/middleware-ace": "workspace:*",

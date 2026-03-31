@@ -41,6 +41,7 @@ export const DEMO_PRESET: RuntimePreset = {
     workspaceStack: true,
     skillStack: true,
     ipcStack: true,
+    agentSpawner: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },
