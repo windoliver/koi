@@ -41,6 +41,8 @@ export interface DebugSpan {
   readonly name: string;
   readonly hook: string;
   readonly durationMs: number;
+  /** Milliseconds from the turn start to when this span began executing. */
+  readonly startOffsetMs?: number | undefined;
   readonly source: MiddlewareSource;
   readonly phase: string;
   readonly priority: number;
@@ -102,6 +104,7 @@ interface RawSpan {
   readonly name: string;
   readonly hook: string;
   readonly durationMs: number;
+  readonly startOffsetMs: number;
   readonly source: MiddlewareSource;
   readonly phase: string;
   readonly priority: number;
@@ -284,6 +287,7 @@ function buildSpanTree(
       name: s.name,
       hook: s.hook,
       durationMs: s.durationMs,
+      startOffsetMs: s.startOffsetMs,
       source: s.source,
       phase: s.phase,
       priority: s.priority,
@@ -314,7 +318,9 @@ function buildSpanTree(
       }
     }
 
-    const totalMs = children.reduce((sum, s) => sum + s.durationMs, 0);
+    // Outermost middleware duration = wall-clock time for the entire onion chain
+    const totalMs = children[0]?.durationMs ?? 0;
+    const groupOffsetMs = children[0]?.startOffsetMs;
 
     // Create parent span that groups all middleware for this hook
     result.push({
@@ -322,6 +328,7 @@ function buildSpanTree(
       name: hookLabel,
       hook: hookLabel,
       durationMs: totalMs,
+      ...(groupOffsetMs !== undefined ? { startOffsetMs: groupOffsetMs } : {}),
       source: "static",
       phase: "resolve",
       priority: 0,
@@ -347,6 +354,8 @@ export function createDebugInstrumentation(
   const bufferSize = config.bufferSize ?? DEFAULT_BUFFER_SIZE;
   const traceBuffer = createDebugRingBuffer<DebugTurnTrace>(bufferSize);
   const spanAccumulators = new Map<number, RawSpan[]>();
+  /** Records the first performance.now() seen per turn — all span offsets are relative to this. */
+  const turnStartTimes = new Map<number, number>();
   const resolverAccumulators = new Map<number, ResolverSpan[]>();
   const channelAccumulators = new Map<number, ChannelIOSpan[]>();
   const forgeAccumulators = new Map<number, ForgeRefreshSpan[]>();
@@ -415,6 +424,11 @@ export function createDebugInstrumentation(
 
       const wrappedHook = (ctx: TurnContext, req: Req, next: (r: Req) => Res): Res => {
         const start = performance.now();
+        // Establish turn baseline on first span seen for this turn
+        if (!turnStartTimes.has(ctx.turnIndex)) {
+          turnStartTimes.set(ctx.turnIndex, start);
+        }
+        const startOffsetMs = start - (turnStartTimes.get(ctx.turnIndex) ?? start);
         // let justified: mutable flag toggled by next() call tracking
         let nextCalled = false;
         const trackedNext = (r: Req): Res => {
@@ -436,6 +450,7 @@ export function createDebugInstrumentation(
                   name: entry.name,
                   hook: hookLabel,
                   durationMs: performance.now() - start,
+                  startOffsetMs,
                   source,
                   phase,
                   priority,
@@ -450,6 +465,7 @@ export function createDebugInstrumentation(
                   name: entry.name,
                   hook: hookLabel,
                   durationMs: performance.now() - start,
+                  startOffsetMs,
                   source,
                   phase,
                   priority,
@@ -467,6 +483,7 @@ export function createDebugInstrumentation(
             name: entry.name,
             hook: hookLabel,
             durationMs: performance.now() - start,
+            startOffsetMs,
             source,
             phase,
             priority,
@@ -480,6 +497,7 @@ export function createDebugInstrumentation(
             name: entry.name,
             hook: hookLabel,
             durationMs: performance.now() - start,
+            startOffsetMs,
             source,
             phase,
             priority,
@@ -542,6 +560,7 @@ export function createDebugInstrumentation(
   function onTurnEnd(turnIndex: number): void {
     const rawSpans = spanAccumulators.get(turnIndex);
     spanAccumulators.delete(turnIndex);
+    turnStartTimes.delete(turnIndex);
 
     const resolverSpans = resolverAccumulators.get(turnIndex);
     resolverAccumulators.delete(turnIndex);

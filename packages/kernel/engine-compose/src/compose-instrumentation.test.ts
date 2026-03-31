@@ -498,6 +498,195 @@ describe("createDebugInstrumentation", () => {
     });
   });
 
+  describe("startOffsetMs", () => {
+    test("captures start offset relative to first span in turn", () => {
+      const provMap = new Map<string, MiddlewareSource>([["mw-a", "static"]]);
+      const phaseMap = new Map<string, string>([["mw-a", "resolve"]]);
+      const priorityMap = new Map<string, number>([["mw-a", 500]]);
+
+      const entry = {
+        name: "mw-a",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+
+      const wrapped = instrumentation.wrapEntries(
+        [entry],
+        "wrapModelCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+
+      const ctx = stubCtx(0);
+      wrapped[0]?.hook(ctx, "req", (r) => r);
+      instrumentation.onTurnEnd(0);
+
+      const trace = instrumentation.getTrace(0);
+      expect(trace).toBeDefined();
+      const child = trace?.spans[0]?.children?.[0];
+      expect(child?.startOffsetMs).toBeDefined();
+      // First span in turn should have offset >= 0
+      expect(child?.startOffsetMs).toBeGreaterThanOrEqual(0);
+    });
+
+    test("offsets are monotonically non-decreasing for sequential hooks", () => {
+      const provMap = new Map<string, MiddlewareSource>([["mw-a", "static"]]);
+      const phaseMap = new Map<string, string>([["mw-a", "resolve"]]);
+      const priorityMap = new Map<string, number>([["mw-a", 500]]);
+
+      const entryModel = {
+        name: "mw-a",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+      const entryTool = {
+        name: "mw-a",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+
+      const wrappedModel = instrumentation.wrapEntries(
+        [entryModel],
+        "wrapModelCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+      const wrappedTool = instrumentation.wrapEntries(
+        [entryTool],
+        "wrapToolCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+
+      const ctx = stubCtx(0);
+      wrappedModel[0]?.hook(ctx, "req", (r) => r);
+      wrappedTool[0]?.hook(ctx, "req", (r) => r);
+      instrumentation.onTurnEnd(0);
+
+      const trace = instrumentation.getTrace(0);
+      expect(trace).toBeDefined();
+      expect(trace?.spans).toHaveLength(2);
+      const modelGroupOffset = trace?.spans[0]?.startOffsetMs ?? 0;
+      const toolGroupOffset = trace?.spans[1]?.startOffsetMs ?? 0;
+      // Tool call happens after model call, so offset should be >= model offset
+      expect(toolGroupOffset).toBeGreaterThanOrEqual(modelGroupOffset);
+    });
+
+    test("parent group inherits outermost child offset", () => {
+      const provMap = new Map<string, MiddlewareSource>([["mw-a", "static"]]);
+      const phaseMap = new Map<string, string>([["mw-a", "resolve"]]);
+      const priorityMap = new Map<string, number>([["mw-a", 500]]);
+
+      const entry = {
+        name: "mw-a",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+
+      const wrapped = instrumentation.wrapEntries(
+        [entry],
+        "wrapModelCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+
+      wrapped[0]?.hook(stubCtx(0), "req", (r) => r);
+      instrumentation.onTurnEnd(0);
+
+      const trace = instrumentation.getTrace(0);
+      const group = trace?.spans[0];
+      const child = group?.children?.[0];
+      expect(group?.startOffsetMs).toBe(child?.startOffsetMs);
+    });
+  });
+
+  describe("totalDurationMs accuracy", () => {
+    test("parent group durationMs equals outermost middleware duration", () => {
+      const provMap = new Map<string, MiddlewareSource>([
+        ["outer", "static"],
+        ["inner", "static"],
+      ]);
+      const phaseMap = new Map<string, string>([
+        ["outer", "resolve"],
+        ["inner", "resolve"],
+      ]);
+      const priorityMap = new Map<string, number>([
+        ["outer", 100],
+        ["inner", 200],
+      ]);
+
+      const outerEntry = {
+        name: "outer",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+      const innerEntry = {
+        name: "inner",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+
+      const wrapped = instrumentation.wrapEntries(
+        [outerEntry, innerEntry],
+        "wrapModelCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+
+      const ctx = stubCtx(0);
+      // Simulate onion: outer wraps inner
+      wrapped[0]?.hook(ctx, "req", (r) => r);
+      wrapped[1]?.hook(ctx, "req", (r) => r);
+      instrumentation.onTurnEnd(0);
+
+      const trace = instrumentation.getTrace(0);
+      const group = trace?.spans[0];
+      expect(group).toBeDefined();
+      // Parent durationMs should equal the first child (outermost) — not the sum
+      expect(group?.durationMs).toBe(group?.children?.[0]?.durationMs);
+    });
+
+    test("totalDurationMs sums across hook groups", () => {
+      const provMap = new Map<string, MiddlewareSource>([["mw", "static"]]);
+      const phaseMap = new Map<string, string>([["mw", "resolve"]]);
+      const priorityMap = new Map<string, number>([["mw", 500]]);
+
+      const modelEntry = {
+        name: "mw",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+      const toolEntry = {
+        name: "mw",
+        hook: (_ctx: TurnContext, req: string, next: (r: string) => string): string => next(req),
+      };
+
+      const wrappedModel = instrumentation.wrapEntries(
+        [modelEntry],
+        "wrapModelCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+      const wrappedTool = instrumentation.wrapEntries(
+        [toolEntry],
+        "wrapToolCall",
+        provMap,
+        phaseMap,
+        priorityMap,
+      );
+
+      const ctx = stubCtx(0);
+      wrappedModel[0]?.hook(ctx, "req", (r) => r);
+      wrappedTool[0]?.hook(ctx, "req", (r) => r);
+      instrumentation.onTurnEnd(0);
+
+      const trace = instrumentation.getTrace(0);
+      expect(trace).toBeDefined();
+      // totalDurationMs should be the sum of individual group durations
+      const groupSum = (trace?.spans ?? []).reduce((sum, s) => sum + s.durationMs, 0);
+      expect(trace?.totalDurationMs).toBe(groupSum);
+    });
+  });
+
   describe("disabled instrumentation", () => {
     test("wrapEntries still returns entries when enabled is true", () => {
       const provMap = new Map<string, MiddlewareSource>([["mw-a", "static"]]);

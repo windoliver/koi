@@ -8,6 +8,7 @@ import { agentId } from "@koi/core";
 import type { RuntimeViewDataSource } from "@koi/dashboard-types";
 import {
   handleAgentProcfs,
+  handleDebugTrace,
   handleGatewayTopology,
   handleMiddlewareChain,
   handleProcessTree,
@@ -114,5 +115,113 @@ describe("handleGatewayTopology", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect((body.data as Record<string, unknown>).nodeCount).toBe(1);
+  });
+});
+
+describe("handleDebugTrace", () => {
+  const MOCK_TRACE = {
+    turnIndex: 0,
+    totalDurationMs: 42,
+    spans: [
+      {
+        debugId: "group:wrapModelCall",
+        name: "wrapModelCall",
+        hook: "wrapModelCall",
+        durationMs: 42,
+        startOffsetMs: 0,
+        source: "static",
+        phase: "resolve",
+        priority: 0,
+        nextCalled: true,
+        tier: "critical",
+        children: [],
+      },
+    ],
+    timestamp: Date.now(),
+  };
+
+  test("returns trace for valid turn", async () => {
+    const views = createMockViews({
+      debug: {
+        getInventory: () => ({ agentId: "a1", items: [], timestamp: Date.now() }),
+        getTrace: (_agentId, turnIndex) => (turnIndex === 0 ? MOCK_TRACE : undefined),
+      },
+    });
+    const res = await handleDebugTrace(
+      makeReq("/view/debug/a1/trace/0"),
+      { id: "a1", turn: "0" },
+      views,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect((body.data as Record<string, unknown>).turnIndex).toBe(0);
+    expect((body.data as Record<string, unknown>).totalDurationMs).toBe(42);
+  });
+
+  test("returns 404 for missing turn", async () => {
+    const views = createMockViews({
+      debug: {
+        getInventory: () => ({ agentId: "a1", items: [], timestamp: Date.now() }),
+        getTrace: () => undefined,
+      },
+    });
+    const res = await handleDebugTrace(
+      makeReq("/view/debug/a1/trace/99"),
+      { id: "a1", turn: "99" },
+      views,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("returns 400 for negative turn index", async () => {
+    const views = createMockViews({
+      debug: {
+        getInventory: () => ({ agentId: "a1", items: [], timestamp: Date.now() }),
+        getTrace: () => undefined,
+      },
+    });
+    const res = await handleDebugTrace(
+      makeReq("/view/debug/a1/trace/-1"),
+      { id: "a1", turn: "-1" },
+      views,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 400 for non-numeric turn index", async () => {
+    const views = createMockViews({
+      debug: {
+        getInventory: () => ({ agentId: "a1", items: [], timestamp: Date.now() }),
+        getTrace: () => undefined,
+      },
+    });
+    const res = await handleDebugTrace(
+      makeReq("/view/debug/a1/trace/abc"),
+      { id: "a1", turn: "abc" },
+      views,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("returns 501 when debug is not enabled", async () => {
+    const views = createMockViews();
+    // createMockViews has no debug source by default
+    const res = await handleDebugTrace(
+      makeReq("/view/debug/a1/trace/0"),
+      { id: "a1", turn: "0" },
+      views,
+    );
+    expect(res.status).toBe(501);
+  });
+
+  test("returns 400 when agent id is missing", async () => {
+    const views = createMockViews({
+      debug: {
+        getInventory: () => ({ agentId: "a1", items: [], timestamp: Date.now() }),
+        getTrace: () => undefined,
+      },
+    });
+    const res = await handleDebugTrace(makeReq("/view/debug//trace/0"), { turn: "0" }, views);
+    expect(res.status).toBe(400);
   });
 });

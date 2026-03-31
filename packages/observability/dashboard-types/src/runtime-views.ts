@@ -269,6 +269,8 @@ export interface DebugSpanResponse {
   readonly name: string;
   readonly hook: string;
   readonly durationMs: number;
+  /** Milliseconds from the turn start to when this span began executing. */
+  readonly startOffsetMs?: number | undefined;
   readonly source: string;
   readonly phase: string;
   readonly priority: number;

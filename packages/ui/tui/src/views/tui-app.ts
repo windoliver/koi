@@ -841,22 +841,31 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         openAgentConsole(agent.agentId);
       }
     },
-    refetchDebugTrace: () => {
-      const sess = store.getState().activeSession;
-      if (sess !== null) {
-        const turnIndex = store.getState().debugView.selectedTurnIndex;
-        store.dispatch({ kind: "set_debug_loading", loading: true });
-        client
-          .getDebugTrace(sess.agentId as string, turnIndex)
-          .then((r) => {
-            if (r.ok) store.dispatch({ kind: "set_debug_trace", trace: r.value });
-            else store.dispatch({ kind: "set_debug_trace", trace: null });
-          })
-          .catch(() => {
-            store.dispatch({ kind: "set_debug_loading", loading: false });
-          });
-      }
-    },
+    refetchDebugTrace: (() => {
+      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+      return (): void => {
+        if (debounceTimer !== null) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          const sess = store.getState().activeSession;
+          if (sess !== null) {
+            const turnIndex = store.getState().debugView.selectedTurnIndex;
+            store.dispatch({ kind: "set_debug_loading", loading: true });
+            client
+              .getDebugTrace(sess.agentId as string, turnIndex)
+              .then((r) => {
+                // Guard against stale responses from rapid n/p navigation
+                if (turnIndex !== store.getState().debugView.selectedTurnIndex) return;
+                if (r.ok) store.dispatch({ kind: "set_debug_trace", trace: r.value });
+                else store.dispatch({ kind: "set_debug_trace", trace: null });
+              })
+              .catch(() => {
+                store.dispatch({ kind: "set_debug_trace", trace: null });
+              });
+          }
+        }, 50);
+      };
+    })(),
   });
 
   function handleConsoleInput(text: string): void {

@@ -189,7 +189,7 @@ function WaterfallPanel(props: {
     return s.tier === "critical" || s.tier === undefined;
   });
 
-  const maxDuration = Math.max(...visibleSpans.map((s) => s.durationMs), 1);
+  const maxDuration = visibleSpans.reduce((max, s) => Math.max(max, s.durationMs), 1);
 
   return (
     <box flexDirection="column">

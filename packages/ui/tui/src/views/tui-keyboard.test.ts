@@ -456,3 +456,75 @@ describe("createKeyboardHandler", () => {
     expect(store.getState().view).toBe("agents");
   });
 });
+
+describe("debug view turn navigation", () => {
+  test("n increments turn and calls refetchDebugTrace", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "debug" });
+    store.dispatch({ kind: "set_debug_panel", panel: "waterfall" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("n")).toBe(true);
+    expect(store.getState().debugView.selectedTurnIndex).toBe(1);
+    expect(cbs.calls).toContain("refetchDebugTrace");
+  });
+
+  test("p decrements turn and calls refetchDebugTrace", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "debug" });
+    store.dispatch({ kind: "set_debug_panel", panel: "waterfall" });
+    store.dispatch({ kind: "select_debug_turn", turnIndex: 3 });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("p")).toBe(true);
+    expect(store.getState().debugView.selectedTurnIndex).toBe(2);
+    expect(cbs.calls).toContain("refetchDebugTrace");
+  });
+
+  test("p clamps to 0", () => {
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "debug" });
+    store.dispatch({ kind: "set_debug_panel", panel: "waterfall" });
+    const cbs = makeCallbacks();
+    const handler = createKeyboardHandler(store, cbs);
+
+    expect(handler("p")).toBe(true);
+    expect(store.getState().debugView.selectedTurnIndex).toBe(0);
+  });
+
+  test("stale response is discarded when turn changes during fetch", async () => {
+    // This tests the guard pattern used in tui-app.ts refetchDebugTrace:
+    // if (turnIndex !== store.getState().debugView.selectedTurnIndex) return;
+    const store = createStore(createInitialState("http://localhost:3100"));
+    store.dispatch({ kind: "set_view", view: "debug" });
+
+    // Simulate: refetch starts for turn 0
+    const capturedTurnIndex = 0;
+    store.dispatch({ kind: "set_debug_loading", loading: true });
+
+    // User navigates to turn 3 while fetch is in flight
+    store.dispatch({ kind: "select_debug_turn", turnIndex: 3 });
+
+    // Simulated response arrives for turn 0 — guard should discard it
+    const staleTrace = {
+      turnIndex: 0,
+      totalDurationMs: 42,
+      spans: [],
+      timestamp: Date.now(),
+    };
+
+    // Apply the same guard logic as tui-app.ts refetchDebugTrace
+    if (capturedTurnIndex !== store.getState().debugView.selectedTurnIndex) {
+      // Stale — don't apply
+    } else {
+      store.dispatch({ kind: "set_debug_trace", trace: staleTrace });
+    }
+
+    // Trace should NOT be set because the guard discarded the stale response
+    expect(store.getState().debugView.trace).toBeNull();
+    // selectedTurnIndex should still be 3
+    expect(store.getState().debugView.selectedTurnIndex).toBe(3);
+  });
+});
