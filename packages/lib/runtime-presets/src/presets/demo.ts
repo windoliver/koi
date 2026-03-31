@@ -38,6 +38,7 @@ export const DEMO_PRESET: RuntimePreset = {
     rlmStack: true,
     dataSourceStack: true,
     sandboxStack: true,
+    workspaceStack: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },
