@@ -760,6 +760,7 @@ export type {
   RichStepMetrics,
   RichTrajectoryStep,
   RichTrajectoryStore,
+  TrajectoryDocumentStore,
 } from "./rich-trajectory.js";
 // run report — structured summary of an autonomous agent run
 export type {

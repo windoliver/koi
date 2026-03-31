@@ -15,7 +15,7 @@ import type { Playbook, StructuredPlaybook, TrajectoryEntry } from "./types.js";
 // Schema version
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 function ensureSchema(db: ReturnType<typeof openDb>): void {
   const version = db.query("PRAGMA user_version").get() as { readonly user_version: number };
@@ -98,6 +98,14 @@ function ensureSchema(db: ReturnType<typeof openDb>): void {
     )
   `);
   db.run("CREATE INDEX IF NOT EXISTS idx_rich_trajectories_ts ON rich_trajectories(timestamp)");
+
+  // v3: add watermark column to structured_playbooks
+  // ALTER TABLE ADD COLUMN is safe to re-run — fails silently if column exists
+  try {
+    db.run("ALTER TABLE structured_playbooks ADD COLUMN last_reflected_step_index INTEGER");
+  } catch {
+    // Column already exists — ignore
+  }
 
   db.run(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
 }
@@ -313,8 +321,8 @@ export function createSqliteStructuredPlaybookStore(
       const upsert = db.transaction(() => {
         db.run(
           `INSERT OR REPLACE INTO structured_playbooks
-            (id, title, sections, source, created_at, updated_at, session_count)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            (id, title, sections, source, created_at, updated_at, session_count, last_reflected_step_index)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             playbook.id,
             playbook.title,
@@ -323,6 +331,7 @@ export function createSqliteStructuredPlaybookStore(
             playbook.createdAt,
             playbook.updatedAt,
             playbook.sessionCount,
+            playbook.lastReflectedStepIndex ?? null,
           ],
         );
         db.run("DELETE FROM structured_playbook_tags WHERE playbook_id = ?", [playbook.id]);
@@ -424,6 +433,7 @@ interface StructuredPlaybookRow {
   readonly created_at: number;
   readonly updated_at: number;
   readonly session_count: number;
+  readonly last_reflected_step_index: number | null;
 }
 
 function rowToTrajectoryEntry(row: TrajectoryRow): TrajectoryEntry {
@@ -480,5 +490,8 @@ function rowToStructuredPlaybook(
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     sessionCount: row.session_count,
+    ...(row.last_reflected_step_index !== null
+      ? { lastReflectedStepIndex: row.last_reflected_step_index }
+      : {}),
   };
 }

@@ -18,6 +18,10 @@ export interface SessionContext {
   readonly agentId: string;
   readonly sessionId: SessionId;
   readonly runId: RunId;
+  /** Stable ID for the copilot conversation that spans multiple engine sessions.
+   *  Set once at conversation start, reused across all runtime.run() calls.
+   *  When absent, sessionId is used as the fallback scope. */
+  readonly conversationId?: string;
   /** Authenticated user identity. Injected by L1 when provided in CreateKoiOptions. */
   readonly userId?: string;
   /** Injected by L1 at session start — package name of the active channel adapter (e.g. "@koi/channel-telegram"). */

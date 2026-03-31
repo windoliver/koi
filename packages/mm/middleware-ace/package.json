@@ -11,6 +11,7 @@
     }
   },
   "dependencies": {
+    "@koi/ace-types": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/resolve": "workspace:*",
     "@koi/sqlite-utils": "workspace:*",

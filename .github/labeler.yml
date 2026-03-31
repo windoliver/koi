@@ -18,6 +18,7 @@
 "layer:L0u":
   - changed-files:
     - any-glob-to-any-file:
+      - "packages/**/ace-types/**"
       - "packages/**/acp-protocol/**"
       - "packages/**/channel-base/**"
       - "packages/**/cli-commands/**"
@@ -98,6 +99,7 @@
   - changed-files:
     - any-glob-to-any-file:
       - "packages/**"
+      - "!packages/**/ace-types/**"
       - "!packages/**/acp-protocol/**"
       - "!packages/**/agent-spawner/**"
       - "!packages/**/auto-harness/**"

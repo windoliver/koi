@@ -411,6 +411,7 @@
       "name": "@koi/nexus-store",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/ace-types": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/event-delivery": "workspace:*",
         "@koi/hash": "workspace:*",
@@ -893,6 +894,13 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/lib/ace-types": {
+      "name": "@koi/ace-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/lib/cli-commands": {
@@ -1996,6 +2004,7 @@
       "name": "@koi/middleware-ace",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/ace-types": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/sqlite-utils": "workspace:*",
@@ -3835,6 +3844,8 @@
     "@keyv/bigmap": ["@keyv/bigmap@1.3.1", "", { "dependencies": { "hashery": "^1.4.0", "hookified": "^1.15.0" }, "peerDependencies": { "keyv": "^5.6.0" } }, "sha512-WbzE9sdmQtKy8vrNPa9BRnwZh5UF4s1KTmSK0KUVLo3eff5BlQNNWDnFOouNpKfPKDnms9xynJjsMYjMaT/aFQ=="],
 
     "@keyv/serialize": ["@keyv/serialize@1.1.1", "", {}, "sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA=="],
+
+    "@koi/ace-types": ["@koi/ace-types@workspace:packages/lib/ace-types"],
 
     "@koi/acp": ["@koi/acp@workspace:packages/net/acp"],
 

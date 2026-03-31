@@ -35,6 +35,7 @@
     }
   },
   "dependencies": {
+    "@koi/ace-types": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/event-delivery": "workspace:*",
     "@koi/hash": "workspace:*",

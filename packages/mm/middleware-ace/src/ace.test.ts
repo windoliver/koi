@@ -424,9 +424,9 @@ describe("createAceMiddleware", () => {
 
   // --- Structured playbook budget tests ---
   describe("structured playbook budget", () => {
-    test("structured playbooks respect shared budget with stat playbooks", async () => {
+    test("when LLM pipeline enabled, stat playbooks are demoted and structured get full budget", async () => {
       const playbookStore = createInMemoryPlaybookStore();
-      // Stat playbook: ~100 tokens (400 chars)
+      // Stat playbook: ~100 tokens (400 chars) — should be demoted when LLM enabled
       await playbookStore.save({
         id: "pb-stat",
         title: "Stat Strategy",
@@ -478,7 +478,7 @@ describe("createAceMiddleware", () => {
         structuredPlaybookStore: structuredStore,
         reflector: mockReflector,
         curator: mockCurator,
-        maxInjectionTokens: 120, // Only enough for the stat playbook (~100 tokens)
+        maxInjectionTokens: 300, // Enough for the structured playbook
       });
 
       const ctx = {
@@ -496,13 +496,13 @@ describe("createAceMiddleware", () => {
       });
 
       expect(capturedRequest).toBeDefined();
-      // The enriched request should have the stat playbook but not the structured one
-      // (budget exhausted by stat playbook)
+      // When LLM pipeline is enabled, structured playbooks are primary —
+      // stat playbooks are demoted (Decision #4: stat as fallback)
       const injected = capturedRequest?.messages[0];
       expect(injected?.senderId).toBe("system:ace");
       if (injected?.content[0]?.kind === "text") {
-        expect(injected.content[0].text).toContain("Stat Strategy");
-        expect(injected.content[0].text).not.toContain("Large Structured");
+        expect(injected.content[0].text).toContain("Big Section");
+        expect(injected.content[0].text).not.toContain("Stat Strategy");
       }
     });
   });

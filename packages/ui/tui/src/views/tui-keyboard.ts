@@ -53,6 +53,8 @@ export interface KeyboardCallbacks {
   readonly nexusBrowserSelectPrev: () => void;
   readonly nexusBrowserOpen: () => void;
   readonly nexusBrowserBack: () => void;
+  readonly nexusPreviewScrollDown: () => void;
+  readonly nexusPreviewScrollUp: () => void;
   readonly scratchpadOpen: () => void;
   readonly presetSelect: () => void;
   readonly presetDetails: () => void;
@@ -621,7 +623,7 @@ export function createKeyboardHandler(
       }
     }
 
-    // Nexus file browser — j/k navigate, Enter open, Esc/Backspace back
+    // Nexus file browser — j/k navigate, Enter open, Esc/Backspace back, [/] scroll preview
     if (view === "files") {
       if (sequence === "j" || sequence === "\x1b[B") {
         callbacks.nexusBrowserSelectNext();
@@ -633,6 +635,14 @@ export function createKeyboardHandler(
       }
       if (sequence === "\r") {
         callbacks.nexusBrowserOpen();
+        return true;
+      }
+      if (sequence === "]" || sequence === "n") {
+        callbacks.nexusPreviewScrollDown();
+        return true;
+      }
+      if (sequence === "[" || sequence === "p") {
+        callbacks.nexusPreviewScrollUp();
         return true;
       }
     }
