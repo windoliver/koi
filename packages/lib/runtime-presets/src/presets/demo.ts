@@ -40,6 +40,7 @@ export const DEMO_PRESET: RuntimePreset = {
     sandboxStack: true,
     workspaceStack: true,
     skillStack: true,
+    ipcStack: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },

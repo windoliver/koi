@@ -39,6 +39,7 @@ const STACK_KEYS = [
   "forge",
   "autoHarness",
   "governance",
+  "ipcStack",
 ] as const;
 
 /** String-keyed backend fields in the stacks section. */
