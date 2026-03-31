@@ -326,9 +326,7 @@ export async function resolveAutonomousOrWarn(
       agentId: aId,
       harnessStore,
       sessionPersistence,
-      // Registry disabled until nexi-lab/nexus#3524 is resolved — Nexus
-      // state machine rejects REGISTERED→CONNECTED transition on fresh agents.
-      // Spawn delegation works without registry (no CAS lifecycle tracking).
+      // Registry disabled until nexi-lab/nexus#3524 is resolved.
       registry: undefined,
       onCompleted: async (status: HarnessStatus) => {
         await getNotifier()?.onCompleted(status);
