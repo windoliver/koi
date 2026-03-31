@@ -962,7 +962,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
         basePath: resolve(dirname(manifestPath)),
         preset: "standard",
         watch: true,
-        store: forgeBootstrap?.store as import("@koi/core").ForgeStore | undefined,
+        ...(forgeBootstrap !== undefined
+          ? { store: forgeBootstrap.store as import("@koi/core").ForgeStore }
+          : {}),
       });
       if (flags.verbose) {
         const meta = skillStackBundle.config;
