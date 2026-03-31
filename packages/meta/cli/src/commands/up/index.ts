@@ -952,6 +952,29 @@ export async function runUp(flags: UpFlags): Promise<void> {
     }
   }
 
+  // Skill stack — progressive skill loading, hot-plug, gating (non-fatal, gated on preset flag)
+  let skillStackBundle: import("@koi/skill-stack").SkillStackBundle | undefined;
+  if (preset.stacks.skillStack === true) {
+    try {
+      const { createSkillStack } = await import("@koi/skill-stack");
+      skillStackBundle = await createSkillStack({
+        skills: manifest.skills ?? [],
+        basePath: resolve(dirname(manifestPath)),
+        preset: "standard",
+        watch: true,
+        store: forgeBootstrap?.store as import("@koi/core").ForgeStore | undefined,
+      });
+      if (flags.verbose) {
+        const meta = skillStackBundle.config;
+        process.stderr.write(
+          `  Skill-stack: wired (preset=${meta.preset}, skills=${String(meta.skillCount)})\n`,
+        );
+      }
+    } catch {
+      // Skill stack is non-fatal
+    }
+  }
+
   // Wire context-arena conversation persistence (Decision 1A, 2A)
   // let justified: mutable message buffer so context-arena squash middleware can
   // partition tool results; updated per-message in the channel onMessage handler.
@@ -1098,8 +1121,15 @@ export async function runUp(flags: UpFlags): Promise<void> {
     chatBridge,
     dataSourceProvider,
     dataSourceTools,
-    presetMiddleware: activatedStacks.middleware,
-    presetProviders: [...activatedStacks.providers, ...manifestToolProviders],
+    presetMiddleware: [
+      ...activatedStacks.middleware,
+      ...(skillStackBundle !== undefined ? skillStackBundle.middleware : []),
+    ],
+    presetProviders: [
+      ...activatedStacks.providers,
+      ...manifestToolProviders,
+      ...(skillStackBundle !== undefined ? [skillStackBundle.provider] : []),
+    ],
     presetContributions: [...activatedStacks.contributions, ...bootstrapContributions],
   });
 
@@ -2064,6 +2094,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   if (stopGateway !== undefined) await stopGateway();
   if (autonomous !== undefined) await autonomous.dispose();
   forgeBootstrap?.dispose();
+  if (skillStackBundle !== undefined) skillStackBundle.dispose();
   if (sandboxBridge !== undefined) await sandboxBridge.dispose();
   if (nexus.dispose !== undefined) await nexus.dispose();
   // Nexus containers are NOT stopped on quit — they persist data across sessions.

@@ -85,6 +85,8 @@ export interface PresetStacks {
   readonly dataSourceStack?: boolean;
   /** Enable Nexus-backed agent workspace (filesystem, scope enforcement, semantic search). */
   readonly workspaceStack?: boolean;
+  /** Enable skill discovery, progressive loading, and hot-plug. */
+  readonly skillStack?: boolean;
 }
 
 /** A complete runtime preset definition. */
