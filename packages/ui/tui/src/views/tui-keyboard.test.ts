@@ -233,6 +233,9 @@ function makeCallbacks(): KeyboardCallbacks & {
     refetchDebugTrace: () => {
       mutableCalls.push("refetchDebugTrace");
     },
+    refreshForge: () => {
+      mutableCalls.push("refreshForge");
+    },
   };
 }
 

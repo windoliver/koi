@@ -175,6 +175,10 @@ export interface TuiBrickSummary {
   readonly name: string;
   readonly status: string;
   readonly fitness: number;
+  readonly version?: string;
+  readonly parentBrickId?: string;
+  readonly evolutionKind?: string;
+  readonly evolutionDescription?: string;
 }
 
 /** Preset info for the welcome screen. */
@@ -559,6 +563,10 @@ export type TuiAction =
         readonly name: string;
         readonly status: string;
         readonly fitness: number;
+        readonly version?: string;
+        readonly parentBrickId?: string;
+        readonly evolutionKind?: string;
+        readonly evolutionDescription?: string;
       }[];
       readonly events: readonly ForgeDashboardEvent[];
     }

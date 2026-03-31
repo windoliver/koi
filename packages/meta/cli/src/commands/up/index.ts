@@ -217,6 +217,13 @@ function createForgeViewSource(
             sampleCount: (brick.fitness?.successCount ?? 0) + (brick.fitness?.errorCount ?? 0),
             createdAt: brick.provenance.metadata.startedAt,
             lastUpdatedAt: brick.fitness?.lastUsedAt ?? brick.provenance.metadata.startedAt,
+            version: brick.version,
+            ...(brick.provenance.parentBrickId !== undefined
+              ? { parentBrickId: brick.provenance.parentBrickId }
+              : {}),
+            ...(brick.provenance.evolutionKind !== undefined
+              ? { evolutionKind: brick.provenance.evolutionKind }
+              : {}),
           }))
         : [];
 

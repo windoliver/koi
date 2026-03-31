@@ -85,6 +85,7 @@ export interface KeyboardCallbacks {
   readonly openSessionPicker: () => void;
   readonly newSession: () => void;
   readonly refetchDebugTrace: () => void;
+  readonly refreshForge: () => void;
 }
 
 /** Domain views that support j/k scroll (hoisted to avoid re-creation per keypress). */
@@ -238,6 +239,7 @@ export function createKeyboardHandler(
     }
 
     // 1-5 — switch primary tabs (Agents, Console, Forge, Sources, Sessions)
+    // Skip when in console view — digits should be typed into the message input, not switch tabs.
     const TAB_KEYS: Readonly<Record<string, string>> = {
       "1": "agents",
       "2": "console",
@@ -245,7 +247,7 @@ export function createKeyboardHandler(
       "4": "datasources",
       "5": "sessions",
     };
-    if (sequence in TAB_KEYS) {
+    if (sequence in TAB_KEYS && view !== "console" && view !== "nameinput") {
       const target = TAB_KEYS[sequence] as string;
       // Console requires an active agent session
       if (target === "console" && store.getState().activeSession === null) return true;
@@ -255,6 +257,10 @@ export function createKeyboardHandler(
         return true;
       }
       store.dispatch({ kind: "set_view", view: target as import("../state/types.js").TuiView });
+      // Forge tab: refresh bricks from admin API to pick up newly forged bricks
+      if (target === "forge") {
+        callbacks.refreshForge();
+      }
       return true;
     }
 

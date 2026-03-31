@@ -249,6 +249,11 @@ export interface ForgeBrickView {
   readonly sampleCount: number;
   readonly createdAt: number;
   readonly lastUpdatedAt: number;
+  /** Evolution lineage — present when brick was derived from another. */
+  readonly parentBrickId?: string;
+  readonly evolutionKind?: "fix" | "derived" | "captured";
+  readonly evolutionDescription?: string;
+  readonly version?: string;
 }
 
 export interface ForgeStats {
