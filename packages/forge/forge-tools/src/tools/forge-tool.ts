@@ -31,7 +31,11 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
       name: { type: "string" },
       description: { type: "string" },
       inputSchema: { type: "object" },
-      implementation: { type: "string" },
+      implementation: {
+        type: "string",
+        description:
+          "JavaScript function body executed via new Function('input', code). Must use 'return { ... }' to return results. Do NOT use export/import/module.exports — the sandbox is not a module environment. Example: 'return { result: input.x * 2 }'",
+      },
       testCases: {
         type: "array",
         items: {
