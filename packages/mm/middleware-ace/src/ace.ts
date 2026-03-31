@@ -126,7 +126,9 @@ export function createAceMiddleware(
 
   /** Update the tracked conversation ID from the current context. */
   function trackConversationId(ctx: TurnContext): void {
-    currentConversationId = ctx.session.conversationId ?? ctx.session.sessionId;
+    if (ctx.session !== undefined) {
+      currentConversationId = ctx.session.conversationId ?? ctx.session.sessionId;
+    }
   }
 
   /** Auto-trigger mid-session reflection after N model calls. Fire-and-forget. */

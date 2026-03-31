@@ -37,6 +37,10 @@ function createMockHandle(): AceMiddlewareHandle {
   return {
     middleware: { name: "ace", priority: 350, describeCapabilities: () => undefined },
     invalidatePlaybookCache: mock(() => {}),
+    atifBuffer: undefined,
+    llmPipeline: undefined,
+    trajectoryBuffer: createTrajectoryBuffer(1000),
+    getConversationId: () => "conv-1",
   };
 }
 
@@ -54,7 +58,10 @@ describe("createAceReflectTool", () => {
     });
 
     const result = await tool.execute({ reason: "testing" } as JsonObject);
-    const parsed = JSON.parse(result.content) as Record<string, unknown>;
+    const parsed = JSON.parse((result as { readonly content: string }).content) as Record<
+      string,
+      unknown
+    >;
     expect(parsed.status).toBe("queued");
     expect(parsed.reason).toBe("testing");
   });
@@ -80,12 +87,16 @@ describe("createAceReflectTool", () => {
 
     // First call — accepted
     const result1 = await tool.execute({} as JsonObject);
-    expect(JSON.parse(result1.content).status).toBe("queued");
+    expect(JSON.parse((result1 as { readonly content: string }).content).status).toBe("queued");
 
     // Second call immediately — should be skipped (in-flight)
     const result2 = await tool.execute({} as JsonObject);
-    expect(JSON.parse(result2.content).status).toBe("skipped");
-    expect(JSON.parse(result2.content).reason).toBe("reflection already in progress");
+    const parsed2 = JSON.parse((result2 as { readonly content: string }).content) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed2.status).toBe("skipped");
+    expect(parsed2.reason).toBe("reflection already in progress");
   });
 
   test("returns skipped during cooldown period", async () => {
@@ -106,7 +117,7 @@ describe("createAceReflectTool", () => {
 
     // First call — accepted
     const result1 = await tool.execute({} as JsonObject);
-    expect(JSON.parse(result1.content).status).toBe("queued");
+    expect(JSON.parse((result1 as { readonly content: string }).content).status).toBe("queued");
 
     // Wait for async reflection to complete
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -114,7 +125,10 @@ describe("createAceReflectTool", () => {
     // 2 seconds later, 0 steps — both cooldown conditions active
     now = 3000;
     const result2 = await tool.execute({} as JsonObject);
-    const parsed = JSON.parse(result2.content) as Record<string, unknown>;
+    const parsed = JSON.parse((result2 as { readonly content: string }).content) as Record<
+      string,
+      unknown
+    >;
     expect(parsed.status).toBe("skipped");
     expect(parsed.reason).toBe("cooldown active");
   });
