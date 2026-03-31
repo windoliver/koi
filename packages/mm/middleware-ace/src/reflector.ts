@@ -71,11 +71,14 @@ function buildReflectorPrompt(input: ReflectorInput): string {
           .join("\n")
       : "";
 
+  const isSuccess = input.outcome === "success";
+
   return [
     "You are an expert analyst diagnosing an AI agent's performance during a task session.",
     "",
-    "**Your job:** Analyze the agent's execution trajectory to identify what went well,",
-    "what went wrong, and what the agent should do differently next time.",
+    isSuccess
+      ? "**The session was SUCCESSFUL.** Your primary job is to TAG existing playbook bullets as helpful, harmful, or neutral based on this trajectory. Only generate a new key_insight if the agent discovered a genuinely novel technique not already in the playbook."
+      : "**The session had FAILURES.** Your job is to diagnose what went wrong, identify the root cause, and suggest what the agent should do differently next time.",
     "",
     "**Important context about the agent's environment:**",
     "- The agent uses tools (fs_read, fs_write, fs_list, etc.) to interact with the filesystem",
@@ -97,10 +100,10 @@ function buildReflectorPrompt(input: ReflectorInput): string {
     "**Respond with a JSON object containing these fields:**",
     "",
     '- "reasoning": Your detailed chain-of-thought analysis of the trajectory (2-3 sentences)',
-    '- "error_identification": What specifically went wrong, or "none" if the session was successful',
-    '- "root_cause_analysis": WHY the error occurred, or what made the successful approach work',
-    '- "correct_approach": What the agent should have done differently (be specific about tool calls)',
-    '- "key_insight": One actionable strategy the agent should remember for similar future tasks',
+    '- "error_identification": What specifically went wrong, or "none" if successful',
+    '- "root_cause_analysis": WHY the error occurred, or "session was successful" if no errors',
+    '- "correct_approach": What the agent should have done differently, or "no changes needed" if successful',
+    '- "key_insight": One actionable NEW strategy NOT already in the playbook. Set to "" (empty) if the session was successful and the playbook already covers this pattern',
     '- "bulletTags": Array of { "id": "<bullet-id>", "tag": "helpful" | "harmful" | "neutral" } for each cited playbook bullet',
     "",
     "**Guidelines:**",
