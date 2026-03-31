@@ -81,13 +81,13 @@ describe("delta watermark tracking", () => {
       structuredPlaybookStore,
       reflector: {
         analyze: async (_input) => {
-          const raw = await modelCall([]);
+          const raw = await modelCall();
           return JSON.parse(raw) as ReturnType<typeof JSON.parse>;
         },
       },
       curator: {
         curate: async () => {
-          const raw = await modelCall([]);
+          const raw = await modelCall();
           return JSON.parse(raw) as ReturnType<typeof JSON.parse>;
         },
       },
