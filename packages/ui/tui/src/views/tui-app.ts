@@ -857,6 +857,9 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
           });
       }
     },
+    refreshForge: () => {
+      refreshForge().catch(() => {});
+    },
   });
 
   function handleConsoleInput(text: string): void {

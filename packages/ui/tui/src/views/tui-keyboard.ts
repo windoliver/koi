@@ -85,6 +85,7 @@ export interface KeyboardCallbacks {
   readonly openSessionPicker: () => void;
   readonly newSession: () => void;
   readonly refetchDebugTrace: () => void;
+  readonly refreshForge: () => void;
 }
 
 /** Domain views that support j/k scroll (hoisted to avoid re-creation per keypress). */
@@ -256,6 +257,10 @@ export function createKeyboardHandler(
         return true;
       }
       store.dispatch({ kind: "set_view", view: target as import("../state/types.js").TuiView });
+      // Forge tab: refresh bricks from admin API to pick up newly forged bricks
+      if (target === "forge") {
+        callbacks.refreshForge();
+      }
       return true;
     }
 
