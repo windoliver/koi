@@ -39,12 +39,11 @@ describe("createDockerAdapter", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("returns error without injected client", () => {
+  test("auto-creates default client when none injected", () => {
     const result = createDockerAdapter({});
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
-      expect(result.error.message).toContain("client");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.name).toBe("docker");
     }
   });
 

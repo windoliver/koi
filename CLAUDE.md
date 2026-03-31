@@ -81,7 +81,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 **When creating or editing feature packages (L2):**
 - Import from `@koi/core` (L0) and L0-utility packages (L0u) only — never from `@koi/engine` or other L2 packages
-- L0u packages (38 total — canonical list in `scripts/layers.ts`): `@koi/acp-protocol`, `@koi/channel-base`, `@koi/crystallize`, `@koi/crypto-utils`, `@koi/dashboard-types`, `@koi/delegation`, `@koi/delegation-nexus`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/failure-context`, `@koi/file-resolution`, `@koi/forge-types`, `@koi/gateway-types`, `@koi/git-utils`, `@koi/harness-scheduler`, `@koi/hash`, `@koi/manifest`, `@koi/name-resolution`, `@koi/nexus-client`, `@koi/preset-resolver`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/sandbox-wasm`, `@koi/scope`, `@koi/search-provider`, `@koi/session-repair`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/task-board`, `@koi/test-utils`, `@koi/token-estimator`, `@koi/validation`, `@koi/variant-selection`, `@koi/welford-stats`
+- L0u packages (39 total — canonical list in `scripts/layers.ts`): `@koi/ace-types`, `@koi/acp-protocol`, `@koi/channel-base`, `@koi/crystallize`, `@koi/crypto-utils`, `@koi/dashboard-types`, `@koi/delegation`, `@koi/delegation-nexus`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/failure-context`, `@koi/file-resolution`, `@koi/forge-types`, `@koi/gateway-types`, `@koi/git-utils`, `@koi/harness-scheduler`, `@koi/hash`, `@koi/manifest`, `@koi/name-resolution`, `@koi/nexus-client`, `@koi/preset-resolver`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/sandbox-wasm`, `@koi/scope`, `@koi/search-provider`, `@koi/session-repair`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/task-board`, `@koi/test-utils`, `@koi/token-estimator`, `@koi/validation`, `@koi/variant-selection`, `@koi/welford-stats`
 - L0u packages may import from `@koi/core` and from peer L0u packages
 - Each L2 package is independent and swappable
 - Examples: channel adapters, middleware implementations, engine adapters, MCP bridge
@@ -364,6 +364,30 @@ When considering adding a dependency:
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
+## Tmux (parallel agent safety)
+
+Multiple Claude Code agents run in parallel across worktrees. **Always** prefix tmux session names with the worktree slug to avoid conflicts:
+
+```bash
+WORKTREE=$(basename "$PWD")   # e.g. "zany-popping-fountain"
+tmux new-session -d -s "${WORKTREE}-koi" 'bun run packages/meta/cli/src/bin.ts up'
+tmux capture-pane -t "${WORKTREE}-koi" -p
+tmux send-keys -t "${WORKTREE}-koi" 'hello' Enter
+```
+
+| Correct | Wrong |
+|---------|-------|
+| `zany-popping-fountain-koi` | `koi` |
+| `melodic-sprouting-kahan-nexus` | `nexus` |
+| `${WORKTREE}-e2e` | `e2e`, `test`, `ace-test` |
+
+**Never** use bare generic names. Another agent **will** rename or kill your session.
+
+When tmux is unreliable, use the admin HTTP API as fallback:
+```bash
+curl -s http://localhost:3100/admin/api/health
+```
 
 ## Git
 

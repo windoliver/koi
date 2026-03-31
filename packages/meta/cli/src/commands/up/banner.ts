@@ -54,6 +54,24 @@ export function printBanner(info: BannerInfo): void {
     );
   }
 
+  if (info.workspace !== undefined) {
+    const ws = info.workspace;
+    err.write("\n");
+    err.write(`  ${bold("Workspace:")}\n`);
+    err.write(`    cwd:           ${ws.cwd}\n`);
+    err.write(`    koi.yaml:      ${ws.koiYamlPath}\n`);
+    if (ws.nexusYamlPath !== undefined) {
+      err.write(`    nexus.yaml:    ${ws.nexusYamlPath}\n`);
+    }
+    if (ws.nexusDataDir !== undefined) {
+      err.write(`    nexus data:    ${ws.nexusDataDir}\n`);
+    }
+    if (ws.nexusPort !== undefined) {
+      err.write(`    nexus port:    ${String(ws.nexusPort)}\n`);
+    }
+    err.write(`    admin port:    ${String(info.adminPort)}\n`);
+  }
+
   if (info.prompts.length > 0) {
     err.write("\n");
     err.write("Try:\n");

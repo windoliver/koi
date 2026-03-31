@@ -13,8 +13,9 @@
  */
 
 // Main factory
+export type { AceMiddlewareHandle } from "./ace.js";
 export { createAceMiddleware } from "./ace.js";
-// ACE tools provider (ComponentProvider for list_playbooks + self-forge skill)
+// ACE tools provider (ComponentProvider for list_playbooks + ace_reflect + self-forge skill)
 export type { AceToolsProviderConfig } from "./ace-tools-provider.js";
 export { createAceToolsProvider } from "./ace-tools-provider.js";
 // ATIF import/export
@@ -31,6 +32,16 @@ export type {
   AtifToolDefinition,
 } from "./atif.js";
 export { mapAtifToRichTrajectory, mapRichTrajectoryToAtif } from "./atif.js";
+// ATIF write-behind buffer
+export type { AtifWriteBehindBuffer, AtifWriteBehindBufferConfig } from "./atif-buffer.js";
+export { createAtifWriteBehindBuffer } from "./atif-buffer.js";
+// ATIF document store
+export type { AtifDocumentDelegate, AtifDocumentStoreConfig } from "./atif-store.js";
+export {
+  createAtifDocumentStore,
+  createInMemoryAtifDelegate,
+  createInMemoryAtifDocumentStore,
+} from "./atif-store.js";
 // Audit adapter
 export type { AuditTrajectoryAdapterConfig } from "./audit-adapter.js";
 export {
@@ -47,14 +58,11 @@ export { createDefaultConsolidator } from "./consolidator.js";
 // Curator (LLM-powered pipeline)
 export type { CuratorAdapter, CuratorModelCall } from "./curator.js";
 export { applyOperations, createDefaultCurator } from "./curator.js";
-
 // Descriptor + store accessor
 export type { AceStores } from "./descriptor.js";
 export { descriptor, getAceStores } from "./descriptor.js";
-
 // Injector
 export { selectPlaybooks } from "./injector.js";
-
 // Pipeline
 export type { ConsolidationPipeline } from "./pipeline.js";
 export {
@@ -64,7 +72,6 @@ export {
   createTokenizerFn,
   isLlmPipelineEnabled,
 } from "./pipeline.js";
-
 // Playbook operations (structured playbooks)
 export {
   computeBulletValue,
@@ -76,7 +83,6 @@ export {
   normalizeBulletId,
   serializeForInjection,
 } from "./playbook.js";
-
 // Reflector
 export type { ParseFailureCallback, ReflectorAdapter, ReflectorModelCall } from "./reflector.js";
 export { createDefaultReflector, formatRichTrajectory } from "./reflector.js";
@@ -107,6 +113,9 @@ export {
   createSqliteStructuredPlaybookStore,
   createSqliteTrajectoryStore,
 } from "./stores-sqlite.js";
+// ace_reflect tool
+export type { AceReflectToolConfig } from "./tools/ace-reflect.js";
+export { createAceReflectTool } from "./tools/ace-reflect.js";
 // list_playbooks tool
 export type { ListPlaybooksToolConfig } from "./tools/list-playbooks.js";
 export { createListPlaybooksTool } from "./tools/list-playbooks.js";
@@ -115,7 +124,7 @@ export { createListPlaybooksTool } from "./tools/list-playbooks.js";
 export type { TrajectoryBuffer } from "./trajectory-buffer.js";
 export { createTrajectoryBuffer } from "./trajectory-buffer.js";
 
-// Types
+// Types (re-exported from @koi/ace-types L0u for backward compatibility)
 export type {
   AceFeedback,
   AggregatedStats,

@@ -50,6 +50,10 @@ export interface AtifStep {
   readonly tool_calls?: readonly AtifToolCall[];
   readonly observation?: AtifObservation;
   readonly metrics?: AtifStepMetrics;
+  /** Duration of this step in milliseconds (Koi extension to ATIF v1.6). */
+  readonly duration_ms?: number;
+  /** Step outcome (Koi extension to ATIF v1.6). When absent, inferred heuristically. */
+  readonly outcome?: "success" | "failure" | "retry";
   readonly extra?: JsonObject;
 }
 
@@ -144,7 +148,16 @@ function mapStepToAtif(step: RichTrajectoryStep): AtifStep {
     ...(step.request?.text !== undefined ? { message: step.request.text } : {}),
     ...(step.reasoningContent !== undefined ? { reasoning_content: step.reasoningContent } : {}),
     ...(step.kind === "tool_call" ? mapToolCallToAtif(step) : {}),
+    ...(step.kind === "model_call" && step.response?.text !== undefined
+      ? {
+          observation: {
+            results: [{ content: step.response.text }],
+          },
+        }
+      : {}),
     ...(step.metrics !== undefined ? { metrics: mapMetricsToAtif(step.metrics) } : {}),
+    duration_ms: step.durationMs,
+    outcome: step.outcome,
     ...(step.metadata !== undefined ? { extra: step.metadata } : {}),
   };
 
@@ -253,8 +266,8 @@ function mapAtifStepToRich(step: AtifStep): RichTrajectoryStep {
     source: step.source,
     kind,
     identifier,
-    outcome: determineOutcome(step),
-    durationMs: 0, // ATIF does not capture duration directly
+    outcome: step.outcome ?? determineOutcome(step),
+    durationMs: step.duration_ms ?? 0,
     ...(step.message !== undefined ? { request: { text: step.message } } : {}),
     ...(response !== undefined ? { response } : {}),
     ...(step.reasoning_content !== undefined ? { reasoningContent: step.reasoning_content } : {}),

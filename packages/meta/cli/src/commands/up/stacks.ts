@@ -352,18 +352,31 @@ async function activateContextArena(
 async function activateAce(
   config: StackActivationConfig,
   middleware: KoiMiddleware[],
+  providers: ComponentProvider[],
 ): Promise<void> {
   const backend = config.stacks.aceStoreBackend ?? "memory";
-  const { createAceMiddleware } = await import("@koi/middleware-ace");
+  const {
+    createAceMiddleware,
+    createAceReflectTool,
+    createAceToolsProvider,
+    createAtifDocumentStore,
+    createInMemoryAtifDocumentStore,
+  } = await import("@koi/middleware-ace");
 
   // Build LLM pipeline config when model call is available
   const llmConfig = await buildAceLlmConfig(config);
+
+  // Error handler for LLM pipeline — wired to TUI log channel
+  const onLlmPipelineError = (error: unknown, sessionId: string): void => {
+    log(config, `ACE: LLM pipeline failed for session ${sessionId}: ${String(error)}`);
+  };
 
   if (backend === "nexus" && config.nexusBaseUrl !== undefined) {
     const {
       createNexusTrajectoryStore,
       createNexusPlaybookStore,
       createNexusStructuredPlaybookStore,
+      createNexusAtifDelegate,
     } = await import("@koi/nexus-store");
 
     // Use config key, fall back to env var (set during Nexus startup), never empty string
@@ -386,24 +399,62 @@ async function activateAce(
       basePath: `${agentPrefix}ace/structured-playbooks`,
     });
 
-    // Rich trajectory store for Nexus backend — uses same Nexus connection
-    const richTrajectoryStore =
+    // ATIF document store — Nexus-backed for persistent rich trajectory
+    const atifStore =
       llmConfig !== undefined
-        ? (await import("@koi/middleware-ace")).createInMemoryRichTrajectoryStore()
+        ? createAtifDocumentStore(
+            { agentName: config.agentName ?? "koi-agent" },
+            createNexusAtifDelegate({
+              ...nexusBase,
+              basePath: `${agentPrefix}ace/atif-documents`,
+            }) as import("@koi/middleware-ace").AtifDocumentDelegate,
+          )
         : undefined;
 
-    const mw = createAceMiddleware({
+    const aceFullConfig = {
       trajectoryStore,
       playbookStore,
       structuredPlaybookStore,
       ...llmConfig?.aceConfig,
-      ...(richTrajectoryStore !== undefined ? { richTrajectoryStore } : {}),
-    });
-    middleware.push(mw);
-    if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
+      ...(atifStore !== undefined ? { atifStore } : {}),
+      onLlmPipelineError,
+    };
+
+    // When LLM pipeline + ATIF store are available, create with handle for ace_reflect
+    if (llmConfig !== undefined && atifStore !== undefined) {
+      const handle = createAceMiddleware(aceFullConfig, { withHandle: true });
+      middleware.push(handle.middleware);
+      middleware.push(llmConfig.auditMiddleware);
+
+      // Register ace_reflect tool via a ComponentProvider
+      if (handle.atifBuffer !== undefined && handle.llmPipeline !== undefined) {
+        const reflectTool = createAceReflectTool({
+          atifBuffer: handle.atifBuffer,
+          llmPipeline: handle.llmPipeline,
+          structuredPlaybookStore,
+          atifStore,
+          aceHandle: handle,
+          trajectoryBuffer: handle.trajectoryBuffer,
+          getConversationId: handle.getConversationId,
+        });
+        providers.push(
+          createAceToolsProvider({
+            playbookStore,
+            structuredPlaybookStore,
+            aceReflectTool: reflectTool,
+            includeCompanionSkill: false,
+          }),
+        );
+      }
+    } else {
+      const mw = createAceMiddleware(aceFullConfig);
+      middleware.push(mw);
+      if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
+    }
+
     log(
       config,
-      `Stack: ace (backend=nexus, url=${config.nexusBaseUrl}${llmConfig !== undefined ? ", llm-pipeline=on" : ""})`,
+      `Stack: ace (backend=nexus, url=${config.nexusBaseUrl}${llmConfig !== undefined ? ", llm-pipeline=on, ace_reflect=on" : ""})`,
     );
     return;
   }
@@ -423,7 +474,6 @@ async function activateAce(
       createSqliteTrajectoryStore,
       createSqlitePlaybookStore,
       createSqliteStructuredPlaybookStore,
-      createSqliteRichTrajectoryStore,
     } = await import("@koi/middleware-ace");
 
     const dbPath = resolve(dbDir, "ace.db");
@@ -431,16 +481,21 @@ async function activateAce(
     const playbookStore = createSqlitePlaybookStore({ dbPath });
     const structuredPlaybookStore = createSqliteStructuredPlaybookStore({ dbPath });
 
+    // ATIF document store for canonical trajectory persistence
+    const atifStore =
+      llmConfig !== undefined
+        ? createInMemoryAtifDocumentStore({
+            agentName: config.agentName ?? "koi-agent",
+          })
+        : undefined;
+
     const mw = createAceMiddleware({
       trajectoryStore,
       playbookStore,
       structuredPlaybookStore,
-      ...(llmConfig !== undefined
-        ? {
-            ...llmConfig.aceConfig,
-            richTrajectoryStore: createSqliteRichTrajectoryStore({ dbPath }),
-          }
-        : {}),
+      ...(llmConfig !== undefined ? llmConfig.aceConfig : {}),
+      ...(atifStore !== undefined ? { atifStore } : {}),
+      onLlmPipelineError,
     });
     middleware.push(mw);
     if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
@@ -453,23 +508,27 @@ async function activateAce(
       createInMemoryTrajectoryStore,
       createInMemoryPlaybookStore,
       createInMemoryStructuredPlaybookStore,
-      createInMemoryRichTrajectoryStore,
     } = await import("@koi/middleware-ace");
 
     const trajectoryStore = createInMemoryTrajectoryStore();
     const playbookStore = createInMemoryPlaybookStore();
     const structuredPlaybookStore = createInMemoryStructuredPlaybookStore();
 
+    // ATIF document store for canonical trajectory persistence
+    const atifStore =
+      llmConfig !== undefined
+        ? createInMemoryAtifDocumentStore({
+            agentName: config.agentName ?? "koi-agent",
+          })
+        : undefined;
+
     const mw = createAceMiddleware({
       trajectoryStore,
       playbookStore,
       structuredPlaybookStore,
-      ...(llmConfig !== undefined
-        ? {
-            ...llmConfig.aceConfig,
-            richTrajectoryStore: createInMemoryRichTrajectoryStore(),
-          }
-        : {}),
+      ...(llmConfig !== undefined ? llmConfig.aceConfig : {}),
+      ...(atifStore !== undefined ? { atifStore } : {}),
+      onLlmPipelineError,
     });
     middleware.push(mw);
     if (llmConfig !== undefined) middleware.push(llmConfig.auditMiddleware);
@@ -842,7 +901,7 @@ export async function activatePresetStacks(
 
   if (config.stacks.ace === true) {
     const before = middleware.length;
-    await tryActivate("ace", () => activateAce(config, middleware));
+    await tryActivate("ace", () => activateAce(config, middleware, providers));
     if (middleware.length > before) {
       contributions.push({
         id: "ace",

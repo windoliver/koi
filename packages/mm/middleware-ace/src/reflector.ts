@@ -54,20 +54,63 @@ function buildReflectorPrompt(input: ReflectorInput): string {
       : formatCompactTrajectory(input.trajectory);
 
   const citedSection =
-    input.citedBulletIds.length > 0 ? `\nCited bullet IDs: ${input.citedBulletIds.join(", ")}` : "";
+    input.citedBulletIds.length > 0
+      ? `\nPlaybook bullet IDs cited by the agent: ${input.citedBulletIds.join(", ")}`
+      : "";
+
+  const playbookSection =
+    input.playbook.sections.flatMap((s) => s.bullets).length > 0
+      ? "\nCurrent playbook bullets:\n" +
+        input.playbook.sections
+          .flatMap((s) =>
+            s.bullets.map(
+              (b) =>
+                `  ${b.id} (helpful=${String(b.helpful)} harmful=${String(b.harmful)}): ${b.content}`,
+            ),
+          )
+          .join("\n")
+      : "";
+
+  const isSuccess = input.outcome === "success";
 
   return [
-    "You are analyzing an agent session trajectory to identify patterns.",
-    `Overall outcome: ${input.outcome}`,
+    "You are an expert analyst diagnosing an AI agent's performance during a task session.",
     "",
-    "Recent actions:",
+    isSuccess
+      ? "**The session was SUCCESSFUL.** Your primary job is to TAG existing playbook bullets as helpful, harmful, or neutral based on this trajectory. Only generate a new key_insight if the agent discovered a genuinely novel technique not already in the playbook."
+      : "**The session had FAILURES.** Your job is to diagnose what went wrong, identify the root cause, and suggest what the agent should do differently next time.",
+    "",
+    "**Important context about the agent's environment:**",
+    "- The agent uses tools (fs_read, fs_write, fs_list, etc.) to interact with the filesystem",
+    "- Some middleware runs AUTOMATICALLY and is NOT the agent's choice:",
+    "  - rlm-virtualize: auto-virtualizes large tool outputs (agent must call rlm_examine to read them)",
+    "  - compactor: auto-compresses old context when token limit is reached",
+    "  - permissions: auto-blocks unauthorized tool calls",
+    "  - governance: auto-evaluates policy rules",
+    "- Focus your analysis on AGENT DECISIONS (which tools to call, in what order, how to handle errors)",
+    "- Do NOT recommend middleware behavior — the agent cannot control it",
+    "",
+    `Overall session outcome: ${input.outcome}`,
+    "",
+    "Agent's execution trace:",
     trajectorySection,
     citedSection,
+    playbookSection,
     "",
-    "Respond with a JSON object containing:",
-    '- "rootCause": A single sentence explaining the root cause of the outcome.',
-    '- "keyInsight": A single actionable insight for future sessions.',
-    '- "bulletTags": An array of { "id": "<bullet-id>", "tag": "helpful" | "harmful" | "neutral" } for each cited bullet ID.',
+    "**Respond with a JSON object containing these fields:**",
+    "",
+    '- "reasoning": Your detailed chain-of-thought analysis of the trajectory (2-3 sentences)',
+    '- "error_identification": What specifically went wrong, or "none" if successful',
+    '- "root_cause_analysis": WHY the error occurred, or "session was successful" if no errors',
+    '- "correct_approach": What the agent should have done differently, or "no changes needed" if successful',
+    '- "key_insight": One actionable NEW strategy NOT already in the playbook. Set to "" (empty) if the session was successful and the playbook already covers this pattern',
+    '- "bulletTags": Array of { "id": "<bullet-id>", "tag": "helpful" | "harmful" | "neutral" } for each cited playbook bullet',
+    "",
+    "**Guidelines:**",
+    "- Be SPECIFIC: name exact tools, files, and error messages",
+    "- Be ACTIONABLE: the insight must be something the agent can actually do differently",
+    "- Do NOT suggest middleware changes — focus on agent-level tool usage and strategy",
+    "- If the session was fully successful with no issues, focus on what made it efficient",
     "",
     "Respond with ONLY the JSON object, no markdown fences.",
   ].join("\n");
@@ -129,14 +172,25 @@ function parseReflectionResponse(
     const cleaned = raw.replace(/^```json?\s*|\s*```$/g, "").trim();
     const parsed = JSON.parse(cleaned) as Record<string, unknown>;
 
-    const rootCause = typeof parsed.rootCause === "string" ? parsed.rootCause : "";
-    const keyInsight = typeof parsed.keyInsight === "string" ? parsed.keyInsight : "";
-    const bulletTags = parseBulletTags(parsed.bulletTags, citedBulletIds);
+    // Support both old format (rootCause) and new format (root_cause_analysis)
+    const rootCause =
+      typeof parsed.root_cause_analysis === "string"
+        ? parsed.root_cause_analysis
+        : typeof parsed.rootCause === "string"
+          ? parsed.rootCause
+          : "";
+    const keyInsight =
+      typeof parsed.key_insight === "string"
+        ? parsed.key_insight
+        : typeof parsed.keyInsight === "string"
+          ? parsed.keyInsight
+          : "";
+    const bulletTags = parseBulletTags(parsed.bulletTags ?? parsed.bullet_tags, citedBulletIds);
 
     return { rootCause, keyInsight, bulletTags };
   } catch (e: unknown) {
     onParseFailure?.(raw, e, "reflector");
-    return { rootCause: "", keyInsight: "", bulletTags: [] };
+    throw new Error("ACE reflector: failed to parse LLM response", { cause: e });
   }
 }
 

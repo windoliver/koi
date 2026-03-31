@@ -15,6 +15,14 @@
  * No cross-L2 import is needed — the CLI (L3) wires them together.
  */
 
+import type {
+  Playbook,
+  PlaybookStore,
+  StructuredPlaybook,
+  StructuredPlaybookStore,
+  TrajectoryEntry,
+  TrajectoryStore,
+} from "@koi/ace-types";
 import type { NexusClient } from "@koi/nexus-client";
 import { createNexusClient } from "@koi/nexus-client";
 import { validatePathSegment } from "./shared/nexus-helpers.js";
@@ -37,111 +45,45 @@ export interface NexusAceStoreConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Trajectory types (structurally compatible with @koi/middleware-ace)
+// Store type aliases (for backward compatibility with named exports)
 // ---------------------------------------------------------------------------
 
-/** Trajectory entry — mirrors @koi/middleware-ace TrajectoryEntry. */
-interface TrajectoryEntry {
-  readonly turnIndex: number;
-  readonly timestamp: number;
-  readonly kind: "model_call" | "tool_call";
-  readonly identifier: string;
-  readonly outcome: "success" | "failure" | "retry";
-  readonly durationMs: number;
-  readonly metadata?: Readonly<Record<string, unknown>>;
-  readonly bulletIds?: readonly string[];
-}
+/** Nexus-backed TrajectoryStore — implements @koi/ace-types TrajectoryStore. */
+export type NexusTrajectoryStore = TrajectoryStore;
 
-/** Structurally compatible with @koi/middleware-ace TrajectoryStore. */
-export interface NexusTrajectoryStore {
-  readonly append: (sessionId: string, entries: readonly TrajectoryEntry[]) => Promise<void>;
-  readonly getSession: (sessionId: string) => Promise<readonly TrajectoryEntry[]>;
-  readonly listSessions: (options?: {
-    readonly limit?: number;
-    readonly before?: number;
-  }) => Promise<readonly string[]>;
-}
+/** Nexus-backed PlaybookStore — implements @koi/ace-types PlaybookStore. */
+export type NexusPlaybookStore = PlaybookStore;
 
-// ---------------------------------------------------------------------------
-// Playbook types (structurally compatible with @koi/middleware-ace)
-// ---------------------------------------------------------------------------
-
-type PlaybookSource = "curated" | "manual" | "imported";
-
-interface Playbook {
-  readonly id: string;
-  readonly title: string;
-  readonly strategy: string;
-  readonly tags: readonly string[];
-  readonly confidence: number;
-  readonly source: PlaybookSource;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-  readonly sessionCount: number;
-}
-
-/** Structurally compatible with @koi/middleware-ace PlaybookStore. */
-export interface NexusPlaybookStore {
-  readonly get: (id: string) => Promise<Playbook | undefined>;
-  readonly list: (options?: {
-    readonly tags?: readonly string[];
-    readonly minConfidence?: number;
-  }) => Promise<readonly Playbook[]>;
-  readonly save: (playbook: Playbook) => Promise<void>;
-  readonly remove: (id: string) => Promise<boolean>;
-}
-
-// ---------------------------------------------------------------------------
-// Structured playbook types (structurally compatible with @koi/middleware-ace)
-// ---------------------------------------------------------------------------
-
-interface PlaybookBullet {
-  readonly id: string;
-  readonly content: string;
-  readonly helpful: number;
-  readonly harmful: number;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-}
-
-interface PlaybookSection {
-  readonly name: string;
-  readonly slug: string;
-  readonly bullets: readonly PlaybookBullet[];
-}
-
-interface StructuredPlaybook {
-  readonly id: string;
-  readonly title: string;
-  readonly sections: readonly PlaybookSection[];
-  readonly tags: readonly string[];
-  readonly source: PlaybookSource;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-  readonly sessionCount: number;
-}
-
-/** Structurally compatible with @koi/middleware-ace StructuredPlaybookStore. */
-export interface NexusStructuredPlaybookStore {
-  readonly get: (id: string) => Promise<StructuredPlaybook | undefined>;
-  readonly list: (options?: {
-    readonly tags?: readonly string[];
-  }) => Promise<readonly StructuredPlaybook[]>;
-  readonly save: (playbook: StructuredPlaybook) => Promise<void>;
-  readonly remove: (id: string) => Promise<boolean>;
-}
+/** Nexus-backed StructuredPlaybookStore — implements @koi/ace-types StructuredPlaybookStore. */
+export type NexusStructuredPlaybookStore = StructuredPlaybookStore;
 
 // ---------------------------------------------------------------------------
 // JSON I/O helpers
 // ---------------------------------------------------------------------------
 
 async function readJson<T>(client: NexusClient, path: string): Promise<T | undefined> {
-  const r = await client.rpc<string>("read", { path });
+  const r = await client.rpc<unknown>("read", { path });
   if (!r.ok) {
     if (r.error.code === "EXTERNAL" || r.error.code === "NOT_FOUND") return undefined;
     throw new Error(r.error.message);
   }
-  return JSON.parse(r.value) as T;
+  // Nexus NFS returns {__type__: "bytes", data: "base64..."} for file reads.
+  // Decode the bytes to a UTF-8 string before JSON-parsing.
+  const raw = r.value;
+  if (typeof raw === "string") return JSON.parse(raw) as T;
+  if (
+    typeof raw === "object" &&
+    raw !== null &&
+    (raw as Record<string, unknown>).__type__ === "bytes"
+  ) {
+    const b64 = (raw as Record<string, unknown>).data;
+    if (typeof b64 === "string") {
+      const decoded = Buffer.from(b64, "base64").toString("utf-8");
+      return JSON.parse(decoded) as T;
+    }
+  }
+  // Fallback: raw is already a parsed object (unlikely but safe)
+  return raw as T;
 }
 
 async function writeJson(client: NexusClient, path: string, data: unknown): Promise<void> {
@@ -354,4 +296,65 @@ export function createNexusStructuredPlaybookStore(
   };
 
   return { get, list, save, remove };
+}
+
+// ---------------------------------------------------------------------------
+// NexusAtifDocumentDelegate — generic JSON document persistence for ATIF
+// ---------------------------------------------------------------------------
+
+const DEFAULT_ATIF_PATH = "ace/atif-documents";
+
+/**
+ * Generic JSON document delegate backed by Nexus NFS.
+ *
+ * Structurally compatible with @koi/middleware-ace AtifDocumentDelegate.
+ * Stores each document as a JSON file at `{basePath}/{docId}.json`.
+ */
+export interface NexusJsonDocumentDelegate {
+  readonly read: (docId: string) => Promise<unknown | undefined>;
+  readonly write: (docId: string, doc: unknown) => Promise<void>;
+  readonly list: () => Promise<readonly string[]>;
+  readonly delete: (docId: string) => Promise<boolean>;
+}
+
+/** Create a Nexus-backed JSON document delegate for ATIF document storage. */
+export function createNexusAtifDelegate(config: NexusAceStoreConfig): NexusJsonDocumentDelegate {
+  const basePath = config.basePath ?? DEFAULT_ATIF_PATH;
+  const client = createNexusClient({
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    fetch: config.fetch,
+  });
+
+  function docPath(docId: string): string {
+    return `${basePath}/${sanitizeFilename(docId)}.json`;
+  }
+
+  return {
+    async read(docId: string): Promise<unknown | undefined> {
+      const segCheck = validatePathSegment(docId, "ATIF document ID");
+      if (!segCheck.ok) return undefined;
+      return readJson<unknown>(client, docPath(docId));
+    },
+
+    async write(docId: string, doc: unknown): Promise<void> {
+      const segCheck = validatePathSegment(docId, "ATIF document ID");
+      if (!segCheck.ok) throw new Error(segCheck.error.message);
+      await writeJson(client, docPath(docId), doc);
+    },
+
+    async list(): Promise<readonly string[]> {
+      const paths = await globPaths(client, `${basePath}/*.json`);
+      return paths.map((p) => {
+        const fileName = p.split("/").pop() ?? "";
+        return fileName.replace(".json", "");
+      });
+    },
+
+    async delete(docId: string): Promise<boolean> {
+      const segCheck = validatePathSegment(docId, "ATIF document ID");
+      if (!segCheck.ok) return false;
+      return deleteJson(client, docPath(docId));
+    },
+  };
 }

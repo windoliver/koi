@@ -232,6 +232,18 @@ describe("mapRichTrajectoryToAtif", () => {
     expect(doc.steps[0]?.timestamp).toBe(new Date(BASE_TIMESTAMP).toISOString());
   });
 
+  test("duration_ms mapped from durationMs", () => {
+    const step = createModelCallStep({ durationMs: 3500 });
+    const doc = mapRichTrajectoryToAtif([step], createOptions());
+    expect(doc.steps[0]?.duration_ms).toBe(3500);
+  });
+
+  test("outcome mapped directly", () => {
+    const step = createModelCallStep({ outcome: "retry" });
+    const doc = mapRichTrajectoryToAtif([step], createOptions());
+    expect(doc.steps[0]?.outcome).toBe("retry");
+  });
+
   test("tool call without response has no observation", () => {
     const { response: _, ...noResponse } = createToolCallStep();
     const step: RichTrajectoryStep = noResponse;
@@ -378,12 +390,28 @@ describe("mapAtifToRichTrajectory", () => {
     expect(steps[0]?.reasoningContent).toBe("I need to think carefully...");
   });
 
-  test("durationMs defaults to 0 (ATIF does not capture duration)", () => {
+  test("durationMs defaults to 0 when duration_ms absent in ATIF step", () => {
     const doc = createMinimalAtifDoc({
       steps: [createAtifModelStep()],
     });
     const steps = mapAtifToRichTrajectory(doc);
     expect(steps[0]?.durationMs).toBe(0);
+  });
+
+  test("durationMs read from duration_ms when present", () => {
+    const doc = createMinimalAtifDoc({
+      steps: [createAtifModelStep({ duration_ms: 2500 })],
+    });
+    const steps = mapAtifToRichTrajectory(doc);
+    expect(steps[0]?.durationMs).toBe(2500);
+  });
+
+  test("outcome read from explicit field when present", () => {
+    const doc = createMinimalAtifDoc({
+      steps: [createAtifModelStep({ outcome: "retry" })],
+    });
+    const steps = mapAtifToRichTrajectory(doc);
+    expect(steps[0]?.outcome).toBe("retry");
   });
 
   test("outcome inferred as success when model step has message", () => {
@@ -530,7 +558,7 @@ describe("roundtrip fidelity", () => {
     expect(imported[0]?.request?.text).toBe("Multi-line\nrequest\twith special chars: {}");
   });
 
-  test("durationMs and outcome get defaults after roundtrip (lossy fields)", () => {
+  test("durationMs and outcome preserved through roundtrip", () => {
     const original = createModelCallStep({
       durationMs: 5000,
       outcome: "retry",
@@ -540,11 +568,9 @@ describe("roundtrip fidelity", () => {
     const doc = mapRichTrajectoryToAtif([original], createOptions());
     const imported = mapAtifToRichTrajectory(doc);
 
-    // durationMs is always 0 from ATIF (not directly represented)
-    expect(imported[0]?.durationMs).toBe(0);
-    // outcome is inferred, not preserved; "retry" is not representable in ATIF
-    // With a message present, it infers "success"
-    expect(imported[0]?.outcome).toBe("success");
+    // duration_ms and outcome are now explicit ATIF fields (Koi extension)
+    expect(imported[0]?.durationMs).toBe(5000);
+    expect(imported[0]?.outcome).toBe("retry");
   });
 
   test("timestamp roundtrips through ISO 8601 conversion", () => {

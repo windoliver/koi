@@ -1,12 +1,12 @@
 /**
  * createAceToolsProvider — builds a ComponentProvider that registers
- * the list_playbooks tool at agent attach() time.
+ * the list_playbooks tool (and optionally ace_reflect) at agent attach() time.
  *
  * Follows the forge tools provider pattern: separate ComponentProvider
  * from the ACE middleware itself (middleware = system, provider = component factory).
  */
 
-import type { Agent, ComponentProvider, SkillComponent } from "@koi/core";
+import type { Agent, ComponentProvider, SkillComponent, Tool } from "@koi/core";
 import { skillToken } from "@koi/core";
 import { SELF_FORGE_SKILL } from "./self-forge-skill.js";
 import type { PlaybookStore, StructuredPlaybookStore } from "./stores.js";
@@ -26,6 +26,11 @@ export interface AceToolsProviderConfig {
    * the agent if they don't exist. Default: `true`.
    */
   readonly includeCompanionSkill?: boolean | undefined;
+  /**
+   * Pre-built ace_reflect tool. When provided, it is registered alongside
+   * list_playbooks. Only available when the LLM pipeline is enabled.
+   */
+  readonly aceReflectTool?: Tool | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,8 +56,8 @@ const SELF_FORGE_SKILL_COMPONENT: SkillComponent = {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a ComponentProvider that registers the list_playbooks tool
- * and the self-forge companion skill at attach() time.
+ * Build a ComponentProvider that registers the list_playbooks tool,
+ * optionally ace_reflect, and the self-forge companion skill at attach() time.
  */
 export function createAceToolsProvider(config: AceToolsProviderConfig): ComponentProvider {
   return {
@@ -69,6 +74,11 @@ export function createAceToolsProvider(config: AceToolsProviderConfig): Componen
           structuredPlaybookStore: config.structuredPlaybookStore,
         }),
       );
+
+      // ace_reflect tool (only when LLM pipeline is enabled)
+      if (config.aceReflectTool !== undefined) {
+        components.set("tool:ace_reflect", config.aceReflectTool);
+      }
 
       // Self-forge companion skill — only when forge tools are available.
       // The skill content references forge_skill, forge_tool, search_forge;

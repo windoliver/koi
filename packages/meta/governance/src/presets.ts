@@ -21,7 +21,14 @@ const OPEN: GovernancePresetSpec = Object.freeze({
 
 const STANDARD: GovernancePresetSpec = Object.freeze({
   permissionRules: Object.freeze({
-    allow: Object.freeze(["group:fs_read", "group:web", "group:browser", "group:lsp"]),
+    allow: Object.freeze([
+      "group:fs_read",
+      "group:web",
+      "group:browser",
+      "group:lsp",
+      "ace_reflect",
+      "list_playbooks",
+    ]),
     deny: Object.freeze(["group:fs_delete"]),
     ask: Object.freeze(["group:runtime"]),
   }),

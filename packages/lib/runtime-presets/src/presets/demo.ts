@@ -37,10 +37,12 @@ export const DEMO_PRESET: RuntimePreset = {
     filesystem: true,
     rlmStack: true,
     dataSourceStack: true,
+    sandboxStack: true,
     workspaceStack: true,
   },
   manifestOverrides: {
     autonomous: { enabled: true },
     forge: { enabled: true },
+    codeSandbox: { provider: "docker" },
   },
 } as const;

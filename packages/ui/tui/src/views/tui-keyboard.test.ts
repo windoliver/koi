@@ -167,6 +167,12 @@ function makeCallbacks(): KeyboardCallbacks & {
     nexusBrowserBack: () => {
       mutableCalls.push("nexusBrowserBack");
     },
+    nexusPreviewScrollDown: () => {
+      mutableCalls.push("nexusPreviewScrollDown");
+    },
+    nexusPreviewScrollUp: () => {
+      mutableCalls.push("nexusPreviewScrollUp");
+    },
     scratchpadOpen: () => {
       mutableCalls.push("scratchpadOpen");
     },

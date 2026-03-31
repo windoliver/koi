@@ -55,7 +55,7 @@ export interface ViewCommands {
 // ─── Global Commands ────────────────────────────────────────────────
 // Available in most/all views (Ctrl shortcuts, zoom, quit).
 
-const GLOBAL_COMMANDS: readonly CommandMeta[] = [
+export const GLOBAL_COMMANDS: readonly CommandMeta[] = [
   {
     id: "palette",
     label: "/commands",
@@ -804,6 +804,7 @@ export const VIEW_COMMAND_MAP: Readonly<Record<TuiView, ViewCommands>> = /* @__P
     "governance",
     "handoffs",
     "harness",
+    "help",
     "logs",
     "mailbox",
     "middleware",

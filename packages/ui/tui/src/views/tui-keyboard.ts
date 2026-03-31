@@ -53,6 +53,8 @@ export interface KeyboardCallbacks {
   readonly nexusBrowserSelectPrev: () => void;
   readonly nexusBrowserOpen: () => void;
   readonly nexusBrowserBack: () => void;
+  readonly nexusPreviewScrollDown: () => void;
+  readonly nexusPreviewScrollUp: () => void;
   readonly scratchpadOpen: () => void;
   readonly presetSelect: () => void;
   readonly presetDetails: () => void;
@@ -159,6 +161,22 @@ export function createKeyboardHandler(
     // Ctrl+N — new session with current/first agent
     if (sequence === "\x0E") {
       callbacks.newSession();
+      return true;
+    }
+
+    // ? — toggle help overlay (not in welcome/wizard/palette views)
+    if (
+      sequence === "?" &&
+      view !== "welcome" &&
+      view !== "nameinput" &&
+      view !== "palette" &&
+      view !== "presetdetail"
+    ) {
+      if (view === "help") {
+        store.dispatch({ kind: "navigate_back" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "help" });
+      }
       return true;
     }
 
@@ -605,7 +623,7 @@ export function createKeyboardHandler(
       }
     }
 
-    // Nexus file browser — j/k navigate, Enter open, Esc/Backspace back
+    // Nexus file browser — j/k navigate, Enter open, Esc/Backspace back, [/] scroll preview
     if (view === "files") {
       if (sequence === "j" || sequence === "\x1b[B") {
         callbacks.nexusBrowserSelectNext();
@@ -617,6 +635,14 @@ export function createKeyboardHandler(
       }
       if (sequence === "\r") {
         callbacks.nexusBrowserOpen();
+        return true;
+      }
+      if (sequence === "]" || sequence === "n") {
+        callbacks.nexusPreviewScrollDown();
+        return true;
+      }
+      if (sequence === "[" || sequence === "p") {
+        callbacks.nexusPreviewScrollUp();
         return true;
       }
     }
@@ -643,6 +669,10 @@ export function createKeyboardHandler(
 
     // Escape — context-dependent back/close
     if (sequence === "\x1b") {
+      if (view === "help") {
+        store.dispatch({ kind: "navigate_back" });
+        return true;
+      }
       if (view === "palette") {
         callbacks.togglePalette();
         return true;
