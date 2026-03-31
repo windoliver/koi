@@ -160,6 +160,7 @@ async function resolveAdapterForEntry(
   const { createExternalAdapter } = await import("@koi/engine-external");
   return createExternalAdapter({
     command: entry.command,
+    args: ["-p", "--dangerously-skip-permissions"],
     mode: "single-shot",
   });
 }
