@@ -218,14 +218,11 @@ function createForgeViewSource(
             createdAt: brick.provenance.metadata.startedAt,
             lastUpdatedAt: brick.fitness?.lastUsedAt ?? brick.provenance.metadata.startedAt,
             version: brick.version,
-            ...(brick.provenance.evolution !== undefined
-              ? {
-                  parentBrickId: brick.provenance.evolution.parentBrickId,
-                  evolutionKind: brick.provenance.evolution.evolutionKind,
-                  ...(brick.provenance.evolution.description !== undefined
-                    ? { evolutionDescription: brick.provenance.evolution.description }
-                    : {}),
-                }
+            ...(brick.provenance.parentBrickId !== undefined
+              ? { parentBrickId: brick.provenance.parentBrickId }
+              : {}),
+            ...(brick.provenance.evolutionKind !== undefined
+              ? { evolutionKind: brick.provenance.evolutionKind }
               : {}),
           }))
         : [];
