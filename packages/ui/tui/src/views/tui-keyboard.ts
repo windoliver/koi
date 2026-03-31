@@ -197,13 +197,14 @@ export function createKeyboardHandler(
       }
     }
 
-    // 1-5 — switch primary tabs (Agents, Console, Forge, Sources, Sessions)
+    // 1-6 — switch primary tabs (Agents, Console, Forge, Sources, Sessions, Tasks)
     const TAB_KEYS: Readonly<Record<string, string>> = {
       "1": "agents",
       "2": "console",
       "3": "forge",
       "4": "datasources",
       "5": "sessions",
+      "6": "taskboard",
     };
     if (sequence in TAB_KEYS) {
       const target = TAB_KEYS[sequence] as string;

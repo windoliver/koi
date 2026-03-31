@@ -100,8 +100,8 @@ function mapKeyEventToSequence(key: KeyEvent, paletteActive?: boolean): string |
   if (key.name === "down" || key.name === "ArrowDown") return "\x1b[B";
   // When command palette is open, let printable keys fall through to filter input
   if (paletteActive === true) return null;
-  // Single-char keys for view-specific shortcuts (includes 1-5 for tab switching)
-  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "l", "+", "?", " ", "r", "1", "2", "3", "4", "5"];
+  // Single-char keys for view-specific shortcuts (includes 1-6 for tab switching)
+  const SINGLE_KEYS = ["q", "a", "s", "j", "k", "y", "n", "d", "p", "t", "l", "+", "?", " ", "r", "1", "2", "3", "4", "5", "6"];
   if (!key.ctrl && !key.meta && !key.shift && SINGLE_KEYS.includes(key.name)) {
     return key.name;
   }
