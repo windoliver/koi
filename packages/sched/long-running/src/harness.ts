@@ -669,9 +669,13 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     if (!persistResult.ok) return persistResult;
 
     if (allDone) {
-      // Transition to terminated with success outcome
+      // Transition to terminated with success outcome (best-effort — nexi-lab/nexus#3576)
       const transResult = await registryTransition("terminated", { kind: "completed" });
-      if (!transResult.ok) return transResult;
+      if (!transResult.ok) {
+        process.stderr.write(
+          `[harness] completeTask registry transition failed: ${transResult.error.message}\n`,
+        );
+      }
       phase = "completed";
 
       // Fire completion callback — best-effort, errors logged but never propagated
@@ -783,12 +787,16 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     const persistResult = await persistSnapshot(snapshot);
     if (!persistResult.ok) return persistResult;
 
-    // Transition to terminated with error outcome
+    // Transition to terminated with error outcome (best-effort — nexi-lab/nexus#3576)
     const transResult = await registryTransition("terminated", {
       kind: "error",
       cause: error.message,
     });
-    if (!transResult.ok) return transResult;
+    if (!transResult.ok) {
+      process.stderr.write(
+        `[harness] failTask registry transition failed: ${transResult.error.message}\n`,
+      );
+    }
     phase = "failed";
 
     // Fire failure callback — best-effort, errors logged but never propagated
