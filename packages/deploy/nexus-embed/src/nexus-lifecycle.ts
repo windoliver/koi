@@ -15,7 +15,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { checkBinaryAvailable, resolveNexusBinary } from "./binary-resolver.js";
@@ -171,7 +171,21 @@ export async function nexusUp(
   // pre-exists. A stale nexus.yaml (e.g., copied from another worktree or symlinked
   // from ~/.koi/demo/) may point to a different worktree's data dir, causing
   // cross-worktree contamination and Nexus write failures.
-  patchNexusDataDir(cwd, verbose);
+  if (configPath !== undefined) {
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const localDataDir = join(cwd, "nexus-data");
+      const patched = raw.replace(/^data_dir:\s*.+$/m, `data_dir: ${localDataDir}`);
+      if (patched !== raw) {
+        writeFileSync(configPath, patched, "utf-8");
+        if (verbose) {
+          process.stderr.write(`Nexus: patched data_dir to ${localDataDir}\n`);
+        }
+      }
+    } catch {
+      // Non-fatal — will use whatever data_dir is in nexus.yaml
+    }
+  }
 
   // Clear NEXUS_API_KEY from the environment before starting Docker.
   // The nexus.yaml api_key uses nx_admin_* format which the database auth
