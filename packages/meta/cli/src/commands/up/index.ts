@@ -191,6 +191,24 @@ function expandLabeledBlocks(msg: InboundMessage): readonly InboundMessage[] {
   });
 }
 
+/**
+ * Deduplicate bricks by name — keep only the latest version of each.
+ * When a brick is edited via forge_edit, a new version is created with the
+ * same name. The Forge tab should show one row per brick, not one per version.
+ */
+function deduplicateBricksByName(
+  bricks: readonly import("@koi/dashboard-types").ForgeBrickView[],
+): readonly import("@koi/dashboard-types").ForgeBrickView[] {
+  const latestByName = new Map<string, import("@koi/dashboard-types").ForgeBrickView>();
+  for (const brick of bricks) {
+    const existing = latestByName.get(brick.name);
+    if (existing === undefined || brick.lastUpdatedAt > existing.lastUpdatedAt) {
+      latestByName.set(brick.name, brick);
+    }
+  }
+  return [...latestByName.values()];
+}
+
 /** Creates a forge view data source from a ForgeStore + optional seeded bricks. */
 function createForgeViewSource(
   store: import("@koi/core").ForgeStore,
@@ -220,9 +238,11 @@ function createForgeViewSource(
           }))
         : [];
 
-      if (liveBricks.length > 0) return liveBricks;
+      // Deduplicate by name — keep only the latest version of each brick
+      // so the Forge tab shows one row per brick, not one per version.
+      if (liveBricks.length > 0) return deduplicateBricksByName(liveBricks);
       // Fall back to seeded brick data from demo packs
-      return seededBricks;
+      return deduplicateBricksByName(seededBricks);
     },
     async getStats() {
       const result = await store.search({});
@@ -271,7 +291,7 @@ function createSeededOnlyForgeViewSource(
 } {
   return {
     async listBricks() {
-      return seededBricks;
+      return deduplicateBricksByName(seededBricks);
     },
     async getStats() {
       return {
