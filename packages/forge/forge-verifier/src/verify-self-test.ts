@@ -20,34 +20,39 @@ import { selfTestError } from "@koi/forge-types";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  if (typeof a !== typeof b) return false;
-  if (typeof a !== "object") return false;
+/**
+ * Subset match: every key in `expected` must exist in `actual` with a matching
+ * value, but `actual` may contain additional keys. This allows forge_edit to
+ * add output fields without breaking existing test expectations.
+ *
+ * Primitives and arrays still use strict equality.
+ */
+function isSubsetMatch(actual: unknown, expected: unknown): boolean {
+  if (actual === expected) return true;
+  if (expected === null || actual === null) return expected === actual;
+  if (typeof expected !== typeof actual) return false;
+  if (typeof expected !== "object") return false;
 
-  // Arrays and objects are not interchangeable
-  const aIsArray = Array.isArray(a);
-  const bIsArray = Array.isArray(b);
-  if (aIsArray !== bIsArray) return false;
+  // Arrays use strict element-wise comparison (order matters)
+  const expIsArray = Array.isArray(expected);
+  const actIsArray = Array.isArray(actual);
+  if (expIsArray !== actIsArray) return false;
 
-  if (aIsArray && bIsArray) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (!deepEqual(a[i], b[i])) return false;
+  if (expIsArray && actIsArray) {
+    if (expected.length !== actual.length) return false;
+    for (let i = 0; i < expected.length; i++) {
+      if (!isSubsetMatch(actual[i], expected[i])) return false;
     }
     return true;
   }
 
-  const aObj = a as Record<string, unknown>;
-  const bObj = b as Record<string, unknown>;
-  const aKeys = Object.keys(aObj);
-  const bKeys = Object.keys(bObj);
+  // Objects: every expected key must be present and match in actual
+  const expObj = expected as Record<string, unknown>;
+  const actObj = actual as Record<string, unknown>;
 
-  if (aKeys.length !== bKeys.length) return false;
-
-  for (const key of aKeys) {
-    if (!deepEqual(aObj[key], bObj[key])) return false;
+  for (const key of Object.keys(expObj)) {
+    if (!(key in actObj)) return false;
+    if (!isSubsetMatch(actObj[key], expObj[key])) return false;
   }
   return true;
 }
@@ -84,7 +89,7 @@ async function runTestCase(
 
   if (
     testCase.expectedOutput !== undefined &&
-    !deepEqual(result.value.output, testCase.expectedOutput)
+    !isSubsetMatch(result.value.output, testCase.expectedOutput)
   ) {
     return {
       testName: testCase.name,
