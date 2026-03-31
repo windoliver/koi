@@ -246,36 +246,34 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     let currentNexusGen = registerResult.value.generation ?? 0;
 
     const targetNexusState = mapKoiToNexus(entry.status.phase);
-    // All Koi states map to a non-UNKNOWN state, so always transition to CONNECTED first
-    const connectedResult = await nexusTransition(
-      config,
-      entry.agentId,
-      "CONNECTED",
-      currentNexusGen,
-    );
-    if (!connectedResult.ok) {
-      throw new Error(
-        `Failed to transition agent ${entry.agentId} to CONNECTED in Nexus: ${connectedResult.error.message}`,
-        { cause: connectedResult.error },
-      );
-    }
-    currentNexusGen = connectedResult.value.generation ?? currentNexusGen + 1;
-
-    // If target is not CONNECTED, do a second transition
-    if (targetNexusState !== "CONNECTED") {
-      const targetResult = await nexusTransition(
+    // Attempt Nexus-side state transitions (best-effort).
+    // Nexus state machine requires REGISTERED→WARMING_UP→READY but the
+    // agent_transition RPC doesn't expose WARMING_UP as a target state
+    // (nexi-lab/nexus#3576). Skip on failure — the koi-side projection
+    // is the authority for CAS lifecycle tracking.
+    try {
+      const connectedResult = await nexusTransition(
         config,
         entry.agentId,
-        targetNexusState,
+        "CONNECTED",
         currentNexusGen,
       );
-      if (!targetResult.ok) {
-        throw new Error(
-          `Failed to transition agent ${entry.agentId} to ${targetNexusState} in Nexus: ${targetResult.error.message}`,
-          { cause: targetResult.error },
-        );
+      if (connectedResult.ok) {
+        currentNexusGen = connectedResult.value.generation ?? currentNexusGen + 1;
+        if (targetNexusState !== "CONNECTED") {
+          const targetResult = await nexusTransition(
+            config,
+            entry.agentId,
+            targetNexusState,
+            currentNexusGen,
+          );
+          if (targetResult.ok) {
+            currentNexusGen = targetResult.value.generation ?? currentNexusGen + 1;
+          }
+        }
       }
-      currentNexusGen = targetResult.value.generation ?? currentNexusGen + 1;
+    } catch {
+      // Nexus transition failed — proceed with local projection only
     }
 
     // Store in local projection with Koi generation (from entry)

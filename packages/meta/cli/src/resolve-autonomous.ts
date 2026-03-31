@@ -326,8 +326,7 @@ export async function resolveAutonomousOrWarn(
       agentId: aId,
       harnessStore,
       sessionPersistence,
-      // Registry disabled until nexi-lab/nexus#3524 is resolved.
-      registry: undefined,
+      registry,
       onCompleted: async (status: HarnessStatus) => {
         await getNotifier()?.onCompleted(status);
         const { completedTaskCount, pendingTaskCount } = status.metrics;
