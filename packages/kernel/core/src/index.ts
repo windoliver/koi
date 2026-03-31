@@ -720,6 +720,7 @@ export { ALL_CHANGE_TARGETS, PROPOSAL_GATE_REQUIREMENTS, proposalId } from "./pr
 export type {
   ContentMarker,
   DataClassification,
+  EvolutionKind,
   ForgeAttestationSignature,
   ForgeBuildDefinition,
   ForgeBuilder,

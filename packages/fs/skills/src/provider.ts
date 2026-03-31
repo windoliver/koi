@@ -497,9 +497,11 @@ export function createSkillComponentProvider(
     mountFindingCallback?: (name: string, findings: readonly ScanFinding[]) => void,
   ): Promise<Result<void, KoiError>> => {
     const op = pending.then(() => mountImpl(skill, mountBasePath, mountFindingCallback));
+    // Resolve the chain on both success and failure to maintain serialization.
+    // Callers observe errors via the returned `op` promise.
     pending = op.then(
-      () => {},
-      () => {},
+      () => undefined,
+      () => undefined,
     );
     return op;
   };

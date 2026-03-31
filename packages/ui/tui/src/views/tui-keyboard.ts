@@ -7,6 +7,7 @@
  */
 
 import type { TuiStore } from "../state/store.js";
+import type { TuiView } from "../state/types.js";
 
 /** Callbacks for keyboard actions that require app-level coordination. */
 export interface KeyboardCallbacks {
@@ -86,6 +87,27 @@ export interface KeyboardCallbacks {
   readonly refetchDebugTrace: () => void;
 }
 
+/** Domain views that support j/k scroll (hoisted to avoid re-creation per keypress). */
+const DOMAIN_SCROLLABLE_VIEWS: ReadonlySet<TuiView> = new Set([
+  "skills",
+  "channels",
+  "system",
+  "nexus",
+  "gateway",
+  "scheduler",
+  "taskboard",
+  "harness",
+  "middleware",
+  "processtree",
+  "agentprocfs",
+  "cost",
+  "debug",
+  "delegation",
+  "handoffs",
+  "mailbox",
+  "scratchpad",
+]);
+
 /**
  * Create a keyboard input handler.
  *
@@ -139,6 +161,22 @@ export function createKeyboardHandler(
     // Ctrl+N — new session with current/first agent
     if (sequence === "\x0E") {
       callbacks.newSession();
+      return true;
+    }
+
+    // ? — toggle help overlay (not in welcome/wizard/palette views)
+    if (
+      sequence === "?" &&
+      view !== "welcome" &&
+      view !== "nameinput" &&
+      view !== "palette" &&
+      view !== "presetdetail"
+    ) {
+      if (view === "help") {
+        store.dispatch({ kind: "navigate_back" });
+      } else {
+        store.dispatch({ kind: "set_view", view: "help" });
+      }
       return true;
     }
 
@@ -418,8 +456,8 @@ export function createKeyboardHandler(
       return false;
     }
 
-    // Channels step — j/k, Space toggle, Enter confirm, Esc back
-    if (view === "channels") {
+    // Channels picker (wizard step) — j/k, Space toggle, Enter confirm, Esc back
+    if (view === "channelspicker") {
       if (sequence === "j" || sequence === "\x1b[B") {
         store.dispatch({
           kind: "set_channel_focused_index",
@@ -618,26 +656,7 @@ export function createKeyboardHandler(
     }
 
     // Other domain views with j/k scroll support
-    const SCROLLABLE_VIEWS = new Set([
-      "skills",
-      "channels",
-      "system",
-      "nexus",
-      "gateway",
-      "scheduler",
-      "taskboard",
-      "harness",
-      "middleware",
-      "processtree",
-      "agentprocfs",
-      "cost",
-      "debug",
-      "delegation",
-      "handoffs",
-      "mailbox",
-      "scratchpad",
-    ]);
-    if (SCROLLABLE_VIEWS.has(view)) {
+    if (DOMAIN_SCROLLABLE_VIEWS.has(view)) {
       if (sequence === "j" || sequence === "\x1b[B") {
         callbacks.domainScrollDown();
         return true;
@@ -650,6 +669,10 @@ export function createKeyboardHandler(
 
     // Escape — context-dependent back/close
     if (sequence === "\x1b") {
+      if (view === "help") {
+        store.dispatch({ kind: "navigate_back" });
+        return true;
+      }
       if (view === "palette") {
         callbacks.togglePalette();
         return true;
@@ -678,7 +701,7 @@ export function createKeyboardHandler(
         callbacks.nexusBrowserBack();
         return true;
       }
-      if (SCROLLABLE_VIEWS.has(view) || view === "temporal" || view === "governance") {
+      if (DOMAIN_SCROLLABLE_VIEWS.has(view) || view === "temporal" || view === "governance") {
         callbacks.navigateBack();
         return true;
       }

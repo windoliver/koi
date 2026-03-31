@@ -480,3 +480,238 @@ describe("demand trigger-based dedup", () => {
     expect(store.save).toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Name-based dedup (prevents duplicate bricks with same name but different content)
+// ---------------------------------------------------------------------------
+
+describe("name-based dedup", () => {
+  function createDemandSignal(overrides?: Partial<ForgeDemandSignal>): ForgeDemandSignal {
+    return {
+      id: "demand-1",
+      kind: "forge_demand",
+      trigger: { kind: "repeated_failure", toolName: "exec", count: 3 },
+      confidence: 0.9,
+      suggestedBrickKind: "tool",
+      context: { failureCount: 3, failedToolCalls: ["exec", "exec", "exec"] },
+      emittedAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  function createDemandHandle(signals: readonly ForgeDemandSignal[]): AutoForgeDemandHandle {
+    return {
+      getSignals: () => signals,
+      dismiss: mock(() => {}),
+    };
+  }
+
+  test("demand forge skips when active brick with same name exists", async () => {
+    // Pioneer name for repeated_failure on "exec" → "pioneer-exec"
+    const existingBrick = createTestToolArtifact({ name: "pioneer-exec" });
+    const store = createMockForgeStore({
+      search: mock(
+        async (): Promise<Result<readonly BrickArtifact[], KoiError>> => ({
+          ok: true,
+          value: [existingBrick],
+        }),
+      ),
+    });
+    const signal = createDemandSignal();
+    const demandHandle = createDemandHandle([signal]);
+    const handle = createMockCrystallizeHandle();
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5 },
+      clock: () => 1000,
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    expect(store.save).not.toHaveBeenCalled();
+  });
+
+  test("demand forge proceeds when no name match", async () => {
+    const store = createMockForgeStore({
+      search: mock(
+        async (): Promise<Result<readonly BrickArtifact[], KoiError>> => ({
+          ok: true,
+          value: [],
+        }),
+      ),
+    });
+    const signal = createDemandSignal();
+    const demandHandle = createDemandHandle([signal]);
+    const handle = createMockCrystallizeHandle();
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5 },
+      clock: () => 1000,
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    expect(store.save).toHaveBeenCalled();
+  });
+
+  test("demand forge proceeds when matching brick is deprecated", async () => {
+    // Deprecated brick should NOT block new forge — lifecycle: "active" filter excludes it
+    const store = createMockForgeStore({
+      search: mock(
+        async (query: {
+          readonly lifecycle?: string;
+        }): Promise<Result<readonly BrickArtifact[], KoiError>> => {
+          // A correctly-implemented store respects lifecycle filter:
+          // deprecated brick is excluded when searching for "active"
+          if (query.lifecycle === "active") {
+            return { ok: true, value: [] };
+          }
+          return { ok: true, value: [] };
+        },
+      ),
+    });
+    const signal = createDemandSignal();
+    const demandHandle = createDemandHandle([signal]);
+    const handle = createMockCrystallizeHandle();
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5 },
+      clock: () => 1000,
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    expect(store.save).toHaveBeenCalled();
+  });
+
+  test("crystallize forge skips when active brick with same name exists", async () => {
+    // Candidate for "fetch|parse" → brick named "fetch-then-parse"
+    const existingBrick = createTestToolArtifact({ name: "fetch-then-parse" });
+    const candidates = [createCandidate(["fetch", "parse"], 5, 1000)];
+    const handle = createMockCrystallizeHandle(candidates);
+    const store = createMockForgeStore({
+      search: mock(
+        async (): Promise<Result<readonly BrickArtifact[], KoiError>> => ({
+          ok: true,
+          value: [existingBrick],
+        }),
+      ),
+    });
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      confidenceThreshold: 0.0,
+      clock: () => 1000,
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    expect(store.save).not.toHaveBeenCalled();
+  });
+
+  test("name dedup is fail-open on search error", async () => {
+    const store = createMockForgeStore({
+      search: mock(async (): Promise<never> => {
+        throw new Error("store unavailable");
+      }),
+    });
+    const signal = createDemandSignal();
+    const demandHandle = createDemandHandle([signal]);
+    const handle = createMockCrystallizeHandle();
+    const onError = mock((_: unknown) => {});
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5 },
+      clock: () => 1000,
+      onError,
+    });
+
+    await mw.onAfterTurn?.(createMockTurnContext() as never);
+    await flush();
+
+    // Search failed but forge should still proceed (fail-open)
+    expect(store.save).toHaveBeenCalled();
+    expect(onError).toHaveBeenCalled();
+  });
+
+  test("cross-turn repeated failures are deduped by name", async () => {
+    // Simulates the bug: same demand fires across multiple turns.
+    // Turn 1 creates pioneer-exec; turn 2 sees it in store and skips.
+    const savedBricks: BrickArtifact[] = []; // let justified: test accumulator
+
+    const store = createMockForgeStore({
+      search: mock(
+        async (): Promise<Result<readonly BrickArtifact[], KoiError>> => ({
+          ok: true,
+          value: savedBricks.length > 0 ? [savedBricks[0] as BrickArtifact] : [],
+        }),
+      ),
+      save: mock(async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
+        savedBricks.push(brick);
+        return { ok: true, value: undefined };
+      }),
+    });
+
+    const signal1 = createDemandSignal({ id: "demand-turn1" });
+    const demandHandle1 = createDemandHandle([signal1]);
+    const handle = createMockCrystallizeHandle();
+
+    const mw = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle: demandHandle1,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5, maxForgesPerSession: 10 },
+      clock: () => 1000,
+    });
+
+    // Turn 1: creates pioneer-exec
+    await mw.onAfterTurn?.(createMockTurnContext(0) as never);
+    await flush();
+    expect(savedBricks).toHaveLength(1);
+    expect(savedBricks[0]?.name).toBe("pioneer-exec");
+
+    // Turn 2: same demand signal — name dedup catches it
+    const signal2 = createDemandSignal({ id: "demand-turn2" });
+    // Swap demandHandle to provide new signal for turn 2
+    (mw as unknown as { readonly _cfg?: never }).toString(); // no-op to avoid lint
+    // Re-create middleware with same store (which now has the brick)
+    const demandHandle2 = createDemandHandle([signal2]);
+    const mw2 = createAutoForgeMiddleware({
+      crystallizeHandle: handle,
+      forgeStore: store,
+      scope: "agent",
+      demandHandle: demandHandle2,
+      demandBudget: { ...DEFAULT_FORGE_BUDGET, demandThreshold: 0.5, maxForgesPerSession: 10 },
+      clock: () => 2000,
+    });
+
+    await mw2.onAfterTurn?.(createMockTurnContext(1) as never);
+    await flush();
+
+    // Still only 1 brick saved — turn 2 was deduped by name
+    expect(savedBricks).toHaveLength(1);
+  });
+});

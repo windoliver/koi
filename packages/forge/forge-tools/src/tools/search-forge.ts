@@ -24,6 +24,9 @@ const VALID_ORDER_BY = new Set(["fitness", "recency", "usage"]);
 /** Over-fetch multiplier for retriever results to compensate for post-filtering. */
 const DEFAULT_OVER_FETCH_MULTIPLIER = 2;
 
+/** Default blend weight: 60% retriever relevance, 40% fitness. */
+const DEFAULT_RANKING_ALPHA = 0.6;
+
 // ---------------------------------------------------------------------------
 // Zod input schema (replaces unsafe `as ForgeQuery` cast)
 // ---------------------------------------------------------------------------
@@ -42,6 +45,7 @@ const searchInputSchema = z
     limit: z.number().optional(),
     orderBy: z.string().optional(),
     minFitnessScore: z.number().optional(),
+    rankingAlpha: z.number().min(0).max(1).optional(),
     detail: z.enum(["full", "summary"]).optional(),
   })
   .optional();
@@ -80,6 +84,11 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
       minFitnessScore: {
         type: "number",
         description: "Minimum fitness score (0-1). Bricks below this threshold are excluded.",
+      },
+      rankingAlpha: {
+        type: "number",
+        description:
+          "Blend weight for retriever results: 0-1. 1.0 = pure relevance, 0.0 = pure fitness. Default: 0.6.",
       },
       detail: {
         type: "string",
@@ -133,9 +142,11 @@ async function searchForgeHandler(
   const clampedMin =
     raw.minFitnessScore !== undefined ? Math.max(0, Math.min(1, raw.minFitnessScore)) : undefined;
 
+  const alpha = raw?.rankingAlpha ?? DEFAULT_RANKING_ALPHA;
+
   // --- Retriever path: hybrid BM25+vector search ---
   if (query !== undefined && query.length > 0 && deps.retriever !== undefined) {
-    const retrieverResult = await retrieverSearch(query, limit, raw, detail, deps);
+    const retrieverResult = await retrieverSearch(query, limit, alpha, raw, detail, deps);
     if (retrieverResult !== undefined) {
       return retrieverResult;
     }
@@ -157,6 +168,7 @@ async function searchForgeHandler(
 async function retrieverSearch(
   query: string,
   limit: number,
+  alpha: number,
   raw: NonNullable<SearchInput>,
   detail: "full" | "summary",
   deps: ForgeDeps,
@@ -183,6 +195,12 @@ async function retrieverSearch(
       return undefined;
     }
 
+    // Build retriever score map: brickId → relevance score (0-1)
+    const retrieverScores = new Map<string, number>();
+    for (const r of searchResult.value.results) {
+      retrieverScores.set(r.id, r.score);
+    }
+
     // Resolve result IDs → BrickArtifact[] via parallel store.load()
     const loadPromises = searchResult.value.results.map(async (r) => {
       const loadResult = await deps.store.load(r.id as BrickId);
@@ -190,7 +208,7 @@ async function retrieverSearch(
     });
     const loaded = await Promise.all(loadPromises);
 
-    // Filter out failed loads, preserving retriever relevance ordering
+    // Filter out failed loads
     let bricks: readonly BrickArtifact[] = loaded.filter(
       (b): b is BrickArtifact => b !== undefined,
     );
@@ -204,17 +222,28 @@ async function retrieverSearch(
     // Canonical fitness filtering — uses the same composite score as sortBricks
     // (successRate^exponent × recencyDecay × usageNorm × latencyFactor),
     // not raw success ratio, to stay consistent with the store path.
+    const nowMs = Date.now();
     if (raw.minFitnessScore !== undefined) {
       const min = Math.max(0, Math.min(1, raw.minFitnessScore));
-      const nowMs = Date.now();
       bricks = bricks.filter((b) => {
         const score = computeBrickFitness(b.fitness ?? DEFAULT_BRICK_FITNESS, nowMs);
         return score >= min;
       });
     }
 
-    // Truncate to requested limit (relevance ordering preserved from retriever)
-    const truncated = bricks.slice(0, limit);
+    // Re-rank by blended score: alpha × relevance + (1 - alpha) × fitness
+    const ranked = [...bricks].sort((a, b) => {
+      const relA = retrieverScores.get(a.id) ?? 0;
+      const relB = retrieverScores.get(b.id) ?? 0;
+      const fitA = computeBrickFitness(a.fitness ?? DEFAULT_BRICK_FITNESS, nowMs);
+      const fitB = computeBrickFitness(b.fitness ?? DEFAULT_BRICK_FITNESS, nowMs);
+      const scoreA = alpha * relA + (1 - alpha) * fitA;
+      const scoreB = alpha * relB + (1 - alpha) * fitB;
+      return scoreB - scoreA;
+    });
+
+    // Truncate to requested limit
+    const truncated = ranked.slice(0, limit);
 
     // Summary mode: project to lightweight BrickSummary[] (~20 tokens/brick)
     if (detail === "summary") {

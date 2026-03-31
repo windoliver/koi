@@ -7,6 +7,7 @@
  */
 
 export { createDockerAdapter } from "./adapter.js";
+export { createDefaultDockerClient } from "./default-client.js";
 export { createDockerInstance } from "./instance.js";
 export type { DockerNetworkConfig } from "./network.js";
 export { resolveNetworkConfig } from "./network.js";

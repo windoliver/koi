@@ -1,0 +1,26 @@
+{
+  "timestamp": 1774752356081,
+  "sessionId": "agent:4f23a6a7-564e-46de-a64b-6e7d282164c7:5ad1a659-a084-4a39-b9c0-637ba8938d90",
+  "agentId": "4f23a6a7-564e-46de-a64b-6e7d282164c7",
+  "turnIndex": 2,
+  "kind": "tool_call",
+  "request": {
+    "toolId": "execute_script",
+    "input": {
+      "code": "var result = callTool(\"celsius_to_f\", { celsius: 100 });\nconsole.log(JSON.stringify(result));\nresult;\n"
+    },
+    "metadata": { "toolCallId": "toolu_vrtx_01PTdRVKPg873ACThYoTDDQB" },
+    "signal": {}
+  },
+  "response": {
+    "output": {
+      "ok": false,
+      "console": [],
+      "toolCallCount": 1,
+      "durationMs": 129.65625,
+      "error": "Unknown tool: celsius_to_f"
+    },
+    "metadata": { "toolCallId": "toolu_vrtx_01PTdRVKPg873ACThYoTDDQB" }
+  },
+  "durationMs": 130
+}

@@ -19,7 +19,7 @@ import type {
   InboundMessage,
   KoiMiddleware,
 } from "@koi/core";
-import { sessionId } from "@koi/core";
+import { brickId, sessionId } from "@koi/core";
 import type { AdminPanelBridgeResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { DashboardEvent } from "@koi/dashboard-types";
@@ -70,6 +70,19 @@ function deriveSessionKey(channelName: string, inbound: InboundMessage): string 
 // ---------------------------------------------------------------------------
 
 export async function runServe(flags: ServeFlags): Promise<void> {
+  // In headless --admin mode, prevent process exit from signals/rejections:
+  // - SIGHUP: parent shell sends on terminal close
+  // - SIGPIPE: broken stdout when running as background process
+  // - Unhandled rejections: AG-UI dispatch errors should not crash the server
+  if (flags.admin && process.stdin.isTTY !== true) {
+    process.on("SIGHUP", () => {}); // no-op — prevent shutdown on terminal close
+    process.on("SIGPIPE", () => {}); // no-op — prevent exit on broken stdout
+    process.on("unhandledRejection", (reason: unknown) => {
+      const msg = reason instanceof Error ? reason.message : String(reason);
+      process.stderr.write(`warn: unhandled rejection in serve: ${msg}\n`);
+    });
+  }
+
   // Validate --nexus-build / --nexus-source and run uv sync if needed
   runNexusBuildIfNeeded(flags.nexusBuild, flags.nexusSource);
 
@@ -275,9 +288,16 @@ export async function runServe(flags: ServeFlags): Promise<void> {
       : {}),
   });
 
-  // 6c. Connect resolved channels and wire per-session concurrency
-  // Empty fallback is intentional — headless serve mode has no stdin/stdout channel
-  const channels = resolved.value.channels ?? [];
+  // 6c. Connect resolved channels and wire per-session concurrency.
+  // When --admin is active and stdin is not a TTY (headless mode), skip CLI channel
+  // connection — the CLI channel reads stdin via readline, which fires 'close' on
+  // EOF from /dev/null. After the first async operation completes, Bun exits because
+  // no active I/O handles remain. The AG-UI chat bridge serves as the input channel.
+  const isTty = process.stdin.isTTY === true;
+  const channels = (resolved.value.channels ?? []).filter((ch) => {
+    if (flags.admin && !isTty && ch.name === "@koi/channel-cli") return false;
+    return true;
+  });
   for (const ch of channels) {
     await ch.connect();
   }
@@ -332,6 +352,54 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     adminDispatcher = dispatcher;
 
     const debugApi = runtime.debug;
+
+    // Forge view data source — reads live bricks from ForgeStore for the admin panel.
+    // Without this, GET /admin/api/view/forge/* returns "Forge not configured".
+    const forgeViewSource =
+      forgeBootstrap !== undefined
+        ? {
+            forge: {
+              async listBricks(): Promise<
+                readonly import("@koi/dashboard-types").ForgeBrickView[]
+              > {
+                const result = await forgeBootstrap.store.search({});
+                if (!result.ok) return [];
+                return result.value.map((brick) => ({
+                  brickId: brick.id,
+                  name: brick.name,
+                  status: (brick.lifecycle === "failed" || brick.lifecycle === "quarantined"
+                    ? "quarantined"
+                    : "active") as "active" | "deprecated" | "promoted" | "quarantined",
+                  fitness: brick.fitness?.successCount
+                    ? brick.fitness.successCount /
+                      (brick.fitness.successCount + brick.fitness.errorCount)
+                    : 0,
+                  sampleCount:
+                    (brick.fitness?.successCount ?? 0) + (brick.fitness?.errorCount ?? 0),
+                  createdAt: brick.provenance.metadata.startedAt,
+                  lastUpdatedAt: brick.fitness?.lastUsedAt ?? brick.provenance.metadata.startedAt,
+                }));
+              },
+              async getStats(): Promise<import("@koi/dashboard-types").ForgeStats> {
+                const result = await forgeBootstrap.store.search({});
+                const bricks = result.ok ? result.value : [];
+                return {
+                  totalBricks: bricks.length,
+                  activeBricks: bricks.filter((b) => b.lifecycle === "active").length,
+                  demandSignals: 0,
+                  crystallizeCandidates: 0,
+                  timestamp: Date.now(),
+                };
+              },
+              async listRecentEvents(): Promise<
+                readonly import("@koi/dashboard-types").ForgeDashboardEvent[]
+              > {
+                return [];
+              },
+            },
+          }
+        : {};
+
     adminBridge = createAdminPanelBridge({
       agentName: manifest.name,
       agentType: manifest.lifecycle ?? "copilot",
@@ -377,6 +445,46 @@ export async function runServe(flags: ServeFlags): Promise<void> {
                   adapter.engineId,
                   modelName,
                 ),
+            },
+          }
+        : {}),
+      ...forgeViewSource,
+      ...(forgeBootstrap !== undefined
+        ? {
+            forgeCommands: {
+              async promoteBrick(id: string) {
+                const result = await forgeBootstrap.store.update(brickId(id), {
+                  lifecycle: "active",
+                });
+                return result.ok ? ({ ok: true, value: undefined } as const) : result;
+              },
+              async demoteBrick(id: string) {
+                const result = await forgeBootstrap.store.update(brickId(id), {
+                  policy: {
+                    sandbox: true,
+                    capabilities: {
+                      network: { allow: false },
+                      filesystem: {
+                        read: ["/usr", "/bin", "/lib", "/etc", "/tmp"],
+                        write: ["/tmp/koi-sandbox-*"],
+                      },
+                      resources: {
+                        maxMemoryMb: 512,
+                        timeoutMs: 30000,
+                        maxPids: 64,
+                        maxOpenFiles: 256,
+                      },
+                    },
+                  },
+                });
+                return result.ok ? ({ ok: true, value: undefined } as const) : result;
+              },
+              async quarantineBrick(id: string) {
+                const result = await forgeBootstrap.store.update(brickId(id), {
+                  lifecycle: "failed",
+                });
+                return result.ok ? ({ ok: true, value: undefined } as const) : result;
+              },
             },
           }
         : {}),
@@ -548,6 +656,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     try {
       const server = Bun.serve({
         port: adminPort,
+        idleTimeout: 255, // Match koi up — SSE streams need long-lived connections
         async fetch(req: Request): Promise<Response> {
           // Try admin panel handler first (returns null for non-dashboard paths)
           const adminResponse = await dashboardResult.handler(req);
@@ -653,6 +762,14 @@ export async function runServe(flags: ServeFlags): Promise<void> {
 
   shutdown.install();
 
+  // In headless --admin mode, remove SIGHUP from the shutdown handler.
+  // The parent shell sends SIGHUP when the terminal exits — only SIGTERM/SIGINT
+  // should trigger graceful shutdown in headless mode.
+  if (flags.admin && process.stdin.isTTY !== true) {
+    process.removeAllListeners("SIGHUP");
+    process.on("SIGHUP", () => {}); // no-op
+  }
+
   // 9. Print startup info
   if (flags.verbose) {
     process.stderr.write(`Agent: ${manifest.name} v${manifest.version}\n`);
@@ -669,10 +786,13 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     `Agent "${manifest.name}" serving on port ${healthInfo.port}${adminSuffix}. Send SIGTERM to stop.\n`,
   );
 
-  // 10. Wait for abort signal (blocks until shutdown)
+  // 10. Wait for abort signal (blocks until shutdown).
+  // Keepalive prevents event loop drain in headless mode.
+  const keepalive = setInterval(() => {}, 60_000);
   await new Promise<void>((resolve) => {
     controller.signal.addEventListener("abort", () => resolve(), { once: true });
   });
+  clearInterval(keepalive);
 
   // 11. Cleanup — stop accepting new messages first, then drain in-flight work
   shutdown.uninstall();

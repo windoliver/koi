@@ -129,6 +129,20 @@ describe("createCompletionNotifier", () => {
       expect(payload?.summary).toContain("completed");
     });
 
+    test("includes task_synthesize instruction in payload", async () => {
+      const mailbox = createMockMailbox();
+      const { onCompleted } = createCompletionNotifier({
+        initiatorId: INITIATOR_ID,
+        agentId: AGENT_ID,
+        mailbox,
+      });
+
+      await onCompleted(createTestStatus());
+
+      const payload = mailbox.sentMessages[0]?.payload;
+      expect(payload?.instruction).toContain("task_synthesize");
+    });
+
     test("uses steer mode for immediate attention", async () => {
       const mailbox = createMockMailbox();
       const { onCompleted } = createCompletionNotifier({
@@ -213,6 +227,22 @@ describe("createCompletionNotifier", () => {
       expect(payload?.totalTaskCount).toBe(3);
       expect(payload?.summary).toContain("failed");
       expect(payload?.summary).toContain("2/3");
+    });
+
+    test("includes task_status and task_synthesize instruction in payload", async () => {
+      const mailbox = createMockMailbox();
+      const { onFailed } = createCompletionNotifier({
+        initiatorId: INITIATOR_ID,
+        agentId: AGENT_ID,
+        mailbox,
+      });
+
+      const error: KoiError = { code: "TIMEOUT", message: "Timed out", retryable: false };
+      await onFailed(createTestStatus({ phase: "failed" }), error);
+
+      const payload = mailbox.sentMessages[0]?.payload;
+      expect(payload?.instruction).toContain("task_status");
+      expect(payload?.instruction).toContain("task_synthesize");
     });
 
     test("uses steer mode for immediate attention", async () => {

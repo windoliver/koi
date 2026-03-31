@@ -17,6 +17,12 @@ export interface PanelChromeProps {
   readonly emptyHint?: string | undefined;
   readonly isEmpty?: boolean | undefined;
   readonly zoomLevel?: "normal" | "half" | "full" | undefined;
+  /** Error message — when set, renders error state with optional retry. */
+  readonly error?: string | undefined;
+  /** Retry callback — shown as [r] retry when error is set. */
+  readonly onRetry?: (() => void) | undefined;
+  /** Epoch timestamp of last successful data fetch — shows staleness. */
+  readonly lastUpdated?: number | undefined;
   readonly children: ReactNode;
 }
 
@@ -69,10 +75,27 @@ export function PanelChrome(props: PanelChromeProps): ReactNode {
         {props.count !== undefined && (
           <text fg={COLORS.dim}>{` (${String(props.count)})`}</text>
         )}
+        {props.lastUpdated !== undefined && (() => {
+          const ago = Math.floor((Date.now() - props.lastUpdated) / 1000);
+          if (ago > 60) {
+            const mins = Math.floor(ago / 60);
+            return <text fg={COLORS.yellow}>{` · ${String(mins)}m ago`}</text>;
+          }
+          return null;
+        })()}
+        {props.error !== undefined && (
+          <text fg={COLORS.red}>{" · error"}</text>
+        )}
       </box>
 
       {/* Content area */}
-      {props.loading === true ? (
+      {props.error !== undefined ? (
+        <CenteredPlaceholder
+          message={`✘ ${props.error}`}
+          hint={props.onRetry !== undefined ? "[r] retry    [Esc] back" : "[Esc] back"}
+          messageColor={COLORS.red}
+        />
+      ) : props.loading === true ? (
         <CenteredPlaceholder
           message={props.loadingMessage ?? "Loading…"}
           messageColor={COLORS.dim}

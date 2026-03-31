@@ -14,11 +14,13 @@
  * - `nexusDown()` destroys the stack via `nexus down` (removes containers)
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import { checkBinaryAvailable, resolveNexusBinary } from "./binary-resolver.js";
 import { DEFAULT_HOST, DEFAULT_PORT, STATE_JSON_FILE } from "./constants.js";
+import { generateNexusConfig } from "./generate-nexus-config.js";
 import type { NexusRuntimeState } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -53,19 +55,16 @@ export interface NexusUpResult {
   readonly autoInitialized: boolean;
 }
 
-/** Koi preset → Nexus preset mapping. */
-const PRESET_MAP: Readonly<Record<string, string>> = {
-  local: "local",
-  demo: "demo",
-  mesh: "shared",
-} as const;
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Scaffolds `nexus.yaml` by running `nexus init --preset <preset>`.
+ * Scaffolds `nexus.yaml` and supporting files for the Nexus Docker stack.
+ *
+ * Generates config directly in TypeScript — no external `nexus` CLI dependency.
+ * Each workspace gets a deterministic port derived from its path and a
+ * workspace-local `nexus-data/` directory for isolation.
  *
  * Maps Koi preset IDs to Nexus preset IDs:
  * - local → local, demo → demo, mesh → shared
@@ -76,25 +75,27 @@ export async function nexusInit(
 ): Promise<Result<void, KoiError>> {
   const cwd = options?.cwd ?? process.cwd();
   const verbose = options?.verbose ?? false;
-  const sourceDir = options?.sourceDir;
 
-  const binaryCheck = await ensureBinary(sourceDir);
-  if (!binaryCheck.ok) return binaryCheck;
-
-  const nexusPreset = PRESET_MAP[koiPreset] ?? "local";
-  const channel = options?.channel ?? "edge";
-  const args: string[] = ["init", "--preset", nexusPreset, "--force", "--channel", channel];
-
-  const result = await runNexusCommand(args, cwd, verbose, "nexus init", sourceDir);
-  if (!result.ok) return result;
-
-  // Nexus init does not accept a --port flag. If a custom port was requested,
-  // patch the generated nexus.yaml to override the default ports.http value.
-  if (options?.port !== undefined) {
-    patchNexusPort(cwd, options.port, verbose);
+  try {
+    generateNexusConfig({
+      koiPreset,
+      cwd,
+      port: options?.port,
+      channel: options?.channel,
+      verbose,
+    });
+    return { ok: true, value: undefined };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "EXTERNAL" as const,
+        message: `Failed to generate nexus.yaml: ${err instanceof Error ? err.message : String(err)}`,
+        retryable: false,
+        context: { cwd },
+      },
+    };
   }
-
-  return result;
 }
 
 /**
@@ -135,7 +136,14 @@ export async function nexusUp(
   const sourceDir = options?.sourceDir;
 
   const binaryCheck = await ensureBinary(sourceDir);
-  if (!binaryCheck.ok) return binaryCheck;
+  if (!binaryCheck.ok) {
+    // Fallback: if nexus CLI is unavailable but nexus.yaml + compose_file exist,
+    // run docker compose directly. This handles environments where `uv` or `nexus`
+    // isn't installed but Docker is available and the stack was previously initialized.
+    const fallbackResult = await dockerComposeFallback(cwd, verbose, host);
+    if (fallbackResult !== undefined) return fallbackResult;
+    return binaryCheck;
+  }
 
   // Auto-init if no config file exists (nexus.yaml or nexus.yml)
   let autoInitialized = false;
@@ -275,6 +283,102 @@ export async function nexusDown(
 // Internals
 // ---------------------------------------------------------------------------
 
+/**
+ * Fallback: start Nexus via `docker compose` directly when the `nexus` CLI
+ * isn't available. Reads compose_file + data_dir + ports from nexus.yaml.
+ * Returns undefined if fallback isn't possible (no nexus.yaml, no compose_file).
+ */
+async function dockerComposeFallback(
+  cwd: string,
+  verbose: boolean,
+  host: string,
+): Promise<Result<NexusUpResult, KoiError> | undefined> {
+  const configPath = findNexusConfig(cwd);
+  if (configPath === undefined) return undefined;
+
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    const composeMatch = /^compose_file:\s*['"]?(.+?)['"]?\s*$/m.exec(raw);
+    if (composeMatch?.[1] === undefined || !existsSync(composeMatch[1])) return undefined;
+    const composeFile = composeMatch[1];
+
+    // Read data_dir for volume mount
+    const dataDirMatch = /^data_dir:\s*['"]?(.+?)['"]?\s*$/m.exec(raw);
+    const dataDir = dataDirMatch?.[1] ?? join(cwd, "nexus-data");
+
+    // Read profiles
+    const profiles: string[] = [];
+    const profileSection = /^compose_profiles:\s*\n((?:\s*-\s*.+\n)*)/m.exec(raw);
+    if (profileSection?.[1] !== undefined) {
+      for (const m of profileSection[1].matchAll(/^\s*-\s*(.+)/gm)) {
+        if (m[1] !== undefined) profiles.push(m[1].trim());
+      }
+    }
+
+    // Read port + api_key
+    const config = readNexusConfig(configPath);
+
+    if (verbose) {
+      process.stderr.write(
+        `Nexus: nexus CLI unavailable, falling back to docker compose\n` +
+          `  compose_file: ${composeFile}\n` +
+          `  data_dir: ${dataDir}\n`,
+      );
+    }
+
+    // Build docker compose command with a unique project name derived from
+    // the data_dir hash. This prevents conflicts when multiple worktrees
+    // use the same compose_file but different data directories.
+    const projectHash = createHash("md5").update(dataDir).digest("hex").slice(0, 8);
+    const projectName = `nexus-${projectHash}`;
+    const args = ["compose", "-f", composeFile, "-p", projectName];
+    for (const p of profiles) {
+      args.push("--profile", p);
+    }
+    args.push("up", "-d", "--wait");
+
+    const proc = Bun.spawn(["docker", ...args], {
+      cwd,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        NEXUS_HOST_DATA_DIR: dataDir,
+        NEXUS_PORT: String(config.port),
+        NEXUS_GRPC_PORT: String(config.port + 1),
+        POSTGRES_PORT: String(config.port + 2),
+        DRAGONFLY_PORT: String(config.port + 3),
+        ZOEKT_PORT: String(config.port + 4),
+        DOCKER_CLI_HINTS: "false",
+        BUILDKIT_PROGRESS: "plain",
+      },
+    });
+
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      return {
+        ok: false,
+        error: {
+          code: "INTERNAL" as const,
+          message: `docker compose up failed (exit ${String(exitCode)}): ${stderr.slice(0, 500)}`,
+          retryable: false,
+          context: {},
+        },
+      };
+    }
+
+    const baseUrl = `http://${host}:${String(config.port)}`;
+    return {
+      ok: true,
+      value: { baseUrl, apiKey: config.apiKey, autoInitialized: false },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Run full `nexus up` with all flags (pull, build, port-strategy). */
 async function runNexusFullUp(
   options: Parameters<typeof nexusUp>[0],
@@ -362,29 +466,6 @@ export function readRuntimeState(cwd: string): NexusRuntimeState | undefined {
   }
 }
 
-/**
- * Patches the HTTP port in nexus.yaml after scaffolding.
- * `nexus init` does not accept a --port flag, so we patch the YAML directly.
- */
-function patchNexusPort(cwd: string, port: number, verbose: boolean): void {
-  const configPath = findNexusConfig(cwd);
-  if (configPath === undefined) return;
-
-  try {
-    const raw = readFileSync(configPath, "utf-8");
-    // Replace `  http: <number>` under the `ports:` section
-    const patched = raw.replace(/^(\s+http:\s*)\d+/m, `$1${String(port)}`);
-    if (patched !== raw) {
-      writeFileSync(configPath, patched, "utf-8");
-      if (verbose) {
-        process.stderr.write(`Nexus: patched ports.http to ${String(port)} in ${configPath}\n`);
-      }
-    }
-  } catch {
-    // Non-fatal — port will use the default
-  }
-}
-
 /** Values extracted from nexus.yaml after startup. */
 interface NexusConfigValues {
   readonly port: number;
@@ -448,6 +529,22 @@ async function runNexusCommand(
     process.stderr.write(`Nexus: running ${cmd.join(" ")}\n`);
   }
 
+  // Read data_dir from nexus.yaml so Docker Compose mounts the correct volume.
+  // The compose file uses ${NEXUS_HOST_DATA_DIR:-./nexus-data} for the data mount.
+  const dataDirEnv: Record<string, string> = {};
+  const configPath = findNexusConfig(cwd);
+  if (configPath !== undefined) {
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const match = /^data_dir:\s*['"]?(.+?)['"]?\s*$/m.exec(raw);
+      if (match?.[1] !== undefined) {
+        dataDirEnv.NEXUS_HOST_DATA_DIR = match[1];
+      }
+    } catch {
+      // Non-fatal — compose will use default ./nexus-data
+    }
+  }
+
   try {
     const proc = Bun.spawn(cmd, {
       cwd,
@@ -457,6 +554,7 @@ async function runNexusCommand(
       stderr: "pipe",
       env: {
         ...process.env,
+        ...dataDirEnv,
         // Suppress Docker Compose TTY progress bars that bypass pipe redirections
         DOCKER_CLI_HINTS: "false",
         BUILDKIT_PROGRESS: "plain",

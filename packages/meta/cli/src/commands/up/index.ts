@@ -5,11 +5,13 @@
  * This orchestrator wires them together with spinners and colored output.
  */
 
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
 import { createCliOutput, createTimer } from "@koi/cli-render";
 import { createContextExtension } from "@koi/context";
 import type { ChannelAdapter, EngineInput, InboundMessage } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { AdminPanelBridgeResult, DashboardHandlerResult } from "@koi/dashboard-api";
 import { createAdminPanelBridge, createDashboardHandler } from "@koi/dashboard-api";
 import type { AgentCostEntry, CostSnapshot, DashboardEvent } from "@koi/dashboard-types";
@@ -433,14 +435,24 @@ async function probeExistingNexus(
   workspaceRoot: string,
 ): Promise<{ readonly baseUrl: string; readonly apiKey: string } | undefined> {
   try {
-    const { join } = await import("node:path");
+    const { join, resolve } = await import("node:path");
     const { readFile } = await import("node:fs/promises");
     const raw = await readFile(join(workspaceRoot, "nexus.yaml"), "utf-8");
 
-    // Parse YAML manually (just need ports.http and api_key)
+    // Parse YAML manually (just need ports.http, api_key, and data_dir)
     const httpPortMatch = /^\s*http:\s*(\d+)/m.exec(raw);
     const apiKeyMatch = /^api_key:\s*(.+)/m.exec(raw);
     if (httpPortMatch === null || apiKeyMatch === null) return undefined;
+
+    // Verify data_dir matches this workspace to avoid reusing another worktree's Nexus
+    const dataDirMatch = /^data_dir:\s*['"]?(.+?)['"]?\s*$/m.exec(raw);
+    if (dataDirMatch?.[1] !== undefined) {
+      const expectedDataDir = join(resolve(workspaceRoot), "nexus-data");
+      if (dataDirMatch[1] !== expectedDataDir) {
+        // data_dir points to a different workspace — don't reuse
+        return undefined;
+      }
+    }
 
     const port = httpPortMatch[1];
     const apiKey = apiKeyMatch[1]?.trim() ?? "";
@@ -766,9 +778,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
       if (nexus.baseUrl !== undefined) {
         try {
           const { createNexusForgeStore } = await import("@koi/nexus-store");
+          const nexusKey = process.env.NEXUS_API_KEY ?? "";
+          if (nexusKey === "") {
+            process.stderr.write("warn: NEXUS_API_KEY not set — forge store will fail auth\n");
+          }
           preForgeStore = createNexusForgeStore({
             baseUrl: nexus.baseUrl,
-            apiKey: process.env.NEXUS_API_KEY ?? "",
+            apiKey: nexusKey,
             basePath: `agents/${manifest.name}/bricks`,
           });
           activeStorage.forge = "nexus";
@@ -840,7 +856,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const contextExt = createContextExtension(contextConfig);
   const extensions = contextExt !== undefined ? [contextExt] : [];
 
-  // Data source auto-discovery (non-fatal)
+  // Data source auto-discovery (non-fatal, gated on preset flag)
   let dataSourceProvider: import("@koi/core").ComponentProvider | undefined;
   let dataSourceTools: readonly import("@koi/core").Tool[] = [];
   let discoveredSourceNames: readonly { readonly name: string; readonly protocol: string }[] = [];
@@ -861,56 +877,60 @@ export async function runUp(flags: UpFlags): Promise<void> {
         patterns: readonly string[],
       ) => readonly { readonly descriptor: import("@koi/core").DataSourceDescriptor }[])
     | undefined;
-  try {
-    const { createDataSourceStack } = await import("@koi/data-source-stack");
-    const manifestEntries = (manifest as unknown as Record<string, unknown>).dataSources as
-      | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
-      | undefined;
-    const dsStack = await createDataSourceStack({
-      manifestEntries,
-      env: process.env,
-      consent: createInteractiveConsent(output),
-    });
-    if (dsStack.discoveredSources.length === 0) {
-      output.info("No data sources found — add MCP servers to koi.yaml or set credentials in .env");
-    } else {
-      dataSourceProvider = dsStack.provider;
-      dataSourceTools = dsStack.tools;
-      discoveredSourceNames = dsStack.discoveredSources.map((s) => ({
-        name: s.name,
-        protocol: s.protocol,
-      }));
-      // Build summaries for the dashboard bridge
-      const manifestNames = new Set((manifestEntries ?? []).map((e) => e.name));
-      discoveredSourceSummaries = dsStack.discoveredSources.map((s) => ({
-        name: s.name,
-        protocol: s.protocol,
-        status: "approved" as const,
-        source: manifestNames.has(s.name)
-          ? ("manifest" as const)
-          : s.mcpToolName !== undefined
-            ? ("mcp" as const)
-            : ("env" as const),
-      }));
-      discoveredDescriptors = dsStack.discoveredSources;
+  if (preset.stacks.dataSourceStack === true) {
+    try {
+      const { createDataSourceStack } = await import("@koi/data-source-stack");
+      const manifestEntries = (manifest as unknown as Record<string, unknown>).dataSources as
+        | readonly import("@koi/data-source-stack").ManifestDataSourceEntry[]
+        | undefined;
+      const dsStack = await createDataSourceStack({
+        manifestEntries,
+        env: process.env,
+        consent: createInteractiveConsent(output),
+      });
+      if (dsStack.discoveredSources.length === 0) {
+        output.info(
+          "No data sources found — add MCP servers to koi.yaml or set credentials in .env",
+        );
+      } else {
+        dataSourceProvider = dsStack.provider;
+        dataSourceTools = dsStack.tools;
+        discoveredSourceNames = dsStack.discoveredSources.map((s) => ({
+          name: s.name,
+          protocol: s.protocol,
+        }));
+        // Build summaries for the dashboard bridge
+        const manifestNames = new Set((manifestEntries ?? []).map((e) => e.name));
+        discoveredSourceSummaries = dsStack.discoveredSources.map((s) => ({
+          name: s.name,
+          protocol: s.protocol,
+          status: "approved" as const,
+          source: manifestNames.has(s.name)
+            ? ("manifest" as const)
+            : s.mcpToolName !== undefined
+              ? ("mcp" as const)
+              : ("env" as const),
+        }));
+        discoveredDescriptors = dsStack.discoveredSources;
 
-      // Print credential fallback guidance for sources needing auth
-      for (const source of dsStack.discoveredSources) {
-        if (source.auth?.ref !== undefined && process.env[source.auth.ref] === undefined) {
-          output.warn(
-            `Source "${source.name}" needs credential — set ${source.auth.ref} in your environment`,
-          );
+        // Print credential fallback guidance for sources needing auth
+        for (const source of dsStack.discoveredSources) {
+          if (source.auth?.ref !== undefined && process.env[source.auth.ref] === undefined) {
+            output.warn(
+              `Source "${source.name}" needs credential — set ${source.auth.ref} in your environment`,
+            );
+          }
         }
       }
+      // Capture executor for schema probing in dashboard bridge
+      const { executeDataSourceQuery } = await import("@koi/data-source-stack");
+      dataSourceExecutorFn = executeDataSourceQuery;
+      // Capture probeEnv for rescan callback (avoids L2→L2 import in bridge)
+      const { probeEnv } = await import("@koi/data-source-discovery");
+      probeEnvFn = probeEnv;
+    } catch {
+      // Data source discovery is non-fatal
     }
-    // Capture executor for schema probing in dashboard bridge
-    const { executeDataSourceQuery } = await import("@koi/data-source-stack");
-    dataSourceExecutorFn = executeDataSourceQuery;
-    // Capture probeEnv for rescan callback (avoids L2→L2 import in bridge)
-    const { probeEnv } = await import("@koi/data-source-discovery");
-    probeEnvFn = probeEnv;
-  } catch {
-    // Data source discovery is non-fatal
   }
 
   // Wire context-arena conversation persistence (Decision 1A, 2A)
@@ -1015,7 +1035,17 @@ export async function runUp(flags: UpFlags): Promise<void> {
       : {}),
     ...(process.env.NEXUS_API_KEY !== undefined ? { nexusApiKey: process.env.NEXUS_API_KEY } : {}),
     agentName: manifest.name,
-    ...(manifest.codeSandbox !== undefined ? { sandboxConfig: manifest.codeSandbox } : {}),
+    ...(manifest.codeSandbox !== undefined
+      ? { sandboxConfig: manifest.codeSandbox }
+      : typeof preset.manifestOverrides.codeSandbox === "object" &&
+          preset.manifestOverrides.codeSandbox !== null
+        ? {
+            sandboxConfig: preset.manifestOverrides.codeSandbox as {
+              readonly provider: string;
+              readonly [key: string]: unknown;
+            },
+          }
+        : {}),
     ...(effectiveStacks.ace === true
       ? await (async () => {
           const mc = await createAceModelCall();
@@ -1223,13 +1253,36 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 9. ADMIN — kill stale processes on required ports before binding
   const DEFAULT_ADMIN_PORT = 3100;
-  await freePort(DEFAULT_ADMIN_PORT);
+  // Do NOT call freePort() — it kills other koi up instances running on this port.
+  // The retry loop below (lines 1384-1410) gracefully increments to the next free port.
   let stopAdmin: (() => void) | undefined;
   let adminBridge: AdminPanelBridgeResult | undefined;
   let adminDispatcher: ReturnType<typeof createAgentDispatcher> | undefined;
   let adminReady = false;
   // let justified: mutable port, may be incremented if DEFAULT_ADMIN_PORT is busy
   let boundPort = DEFAULT_ADMIN_PORT;
+  // let justified: workspace context populated in try block, used in banner outside it
+  let workspaceContext: {
+    readonly cwd: string;
+    readonly koiYamlPath: string;
+    readonly nexusYamlPath: string | undefined;
+    readonly nexusDataDir: string | undefined;
+    readonly nexusContainerProject: string | undefined;
+    readonly nexusPort: number | undefined;
+    readonly nexusBaseUrl: string | undefined;
+    readonly adminPort: number;
+    readonly presetId: string;
+  } = {
+    cwd: workspaceRoot,
+    koiYamlPath: manifestPath,
+    nexusYamlPath: undefined,
+    nexusDataDir: undefined,
+    nexusContainerProject: undefined,
+    nexusPort: undefined,
+    nexusBaseUrl: nexus.baseUrl,
+    adminPort: boundPort,
+    presetId,
+  };
 
   try {
     const channelNames = channels.map((ch) => ch.name);
@@ -1265,6 +1318,43 @@ export async function runUp(flags: UpFlags): Promise<void> {
       },
     });
     adminDispatcher = dispatcher;
+
+    // Collect workspace context for admin API and banner
+    const nexusYamlCandidate = join(workspaceRoot, "nexus.yaml");
+    const nexusYamlExists = existsSync(nexusYamlCandidate);
+    const nexusDataDirValue = nexusYamlExists
+      ? (() => {
+          try {
+            const raw = readFileSync(nexusYamlCandidate, "utf-8");
+            return /^data_dir:\s*['"]?(.+?)['"]?\s*$/m.exec(raw)?.[1];
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
+    const nexusPortValue =
+      nexus.baseUrl !== undefined
+        ? Number.parseInt(new URL(nexus.baseUrl).port, 10) || undefined
+        : undefined;
+    const nexusContainerProjectValue = await (async () => {
+      try {
+        const { readRuntimeState } = await import("@koi/nexus-embed");
+        return readRuntimeState(workspaceRoot)?.project_name;
+      } catch {
+        return undefined;
+      }
+    })();
+    workspaceContext = {
+      cwd: workspaceRoot,
+      koiYamlPath: manifestPath,
+      nexusYamlPath: nexusYamlExists ? nexusYamlCandidate : undefined,
+      nexusDataDir: nexusDataDirValue,
+      nexusContainerProject: nexusContainerProjectValue,
+      nexusPort: nexusPortValue,
+      nexusBaseUrl: nexus.baseUrl,
+      adminPort: boundPort,
+      presetId,
+    };
 
     const debugApi = runtime.debug;
     adminBridge = createAdminPanelBridge({
@@ -1337,6 +1427,41 @@ export async function runUp(flags: UpFlags): Promise<void> {
               ),
             }
           : {}),
+      ...(forgeBootstrap !== undefined
+        ? {
+            forgeCommands: {
+              async promoteBrick(id: string) {
+                const r = await forgeBootstrap.store.update(brickId(id), { lifecycle: "active" });
+                return r.ok ? ({ ok: true, value: undefined } as const) : r;
+              },
+              async demoteBrick(id: string) {
+                const r = await forgeBootstrap.store.update(brickId(id), {
+                  policy: {
+                    sandbox: true,
+                    capabilities: {
+                      network: { allow: false },
+                      filesystem: {
+                        read: ["/usr", "/bin", "/lib", "/etc", "/tmp"],
+                        write: ["/tmp/koi-sandbox-*"],
+                      },
+                      resources: {
+                        maxMemoryMb: 512,
+                        timeoutMs: 30000,
+                        maxPids: 64,
+                        maxOpenFiles: 256,
+                      },
+                    },
+                  },
+                });
+                return r.ok ? ({ ok: true, value: undefined } as const) : r;
+              },
+              async quarantineBrick(id: string) {
+                const r = await forgeBootstrap.store.update(brickId(id), { lifecycle: "failed" });
+                return r.ok ? ({ ok: true, value: undefined } as const) : r;
+              },
+            },
+          }
+        : {}),
       ...(debugApi !== undefined
         ? {
             debug: {
@@ -1372,6 +1497,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
             },
           }
         : {}),
+      workspaceContext,
     });
 
     // Wire forge/monitor SSE event sink now that the bridge exists
@@ -1487,6 +1613,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
 
   // 11. BANNER
   timer.print();
+
   printBanner({
     agentName: manifest.name,
     presetId,
@@ -1513,6 +1640,13 @@ export async function runUp(flags: UpFlags): Promise<void> {
           : inferBackend(preset.stacks.aceStoreBackend, nexus.baseUrl),
       forge: activeStorage.forge as "nexus" | "memory",
       vfs: activeStorage.vfs as "nexus" | "local",
+    },
+    workspace: {
+      cwd: workspaceContext.cwd,
+      koiYamlPath: workspaceContext.koiYamlPath,
+      nexusYamlPath: workspaceContext.nexusYamlPath,
+      nexusDataDir: workspaceContext.nexusDataDir,
+      nexusPort: workspaceContext.nexusPort,
     },
   });
 
@@ -1623,18 +1757,34 @@ export async function runUp(flags: UpFlags): Promise<void> {
   const controller = new AbortController();
   let shuttingDown = false;
 
-  function shutdown(): void {
+  function shutdown(reason?: string): void {
     if (shuttingDown) {
       process.stderr.write("\nForce exit.\n");
       process.exit(1);
     }
     shuttingDown = true;
-    output.info("\nShutting down...");
+    process.stderr.write(`\n[shutdown] triggered by: ${reason ?? "unknown"}\n`);
+    output.info("Shutting down...");
     controller.abort();
   }
 
-  process.on("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  // SIGHUP is sent by tmux on session rename/detach — ignore it in interactive TUI mode.
+  // Only treat it as a shutdown signal when running headless (no TTY).
+  if (process.stdin.isTTY !== true) {
+    process.on("SIGHUP", () => shutdown("SIGHUP"));
+  } else {
+    process.on("SIGHUP", () => {});
+  }
+  process.on("uncaughtException", (err) => {
+    process.stderr.write(`[shutdown] uncaughtException: ${err.message}\n${err.stack ?? ""}\n`);
+    shutdown("uncaughtException");
+  });
+  process.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    process.stderr.write(`[shutdown] unhandledRejection: ${msg}\n`);
+  });
 
   // Separate concurrency guards for TUI (AG-UI bridge) and channel handlers.
   // This allows TUI and channels (Telegram, Slack, etc.) to process messages
@@ -1649,6 +1799,7 @@ export async function runUp(flags: UpFlags): Promise<void> {
     tuiProcessing = true;
     try {
       const text = extractTextFromBlocks(msg.content);
+      process.stderr.write(`[dispatch] message received: "${text.slice(0, 50)}..."\n`);
       if (text.trim() === "") return;
       const threadId = msg.threadId ?? `chat-${Date.now().toString(36)}`;
       // Expand stateless-normalized blocks ([user]: ..., [assistant]: ...)
@@ -1660,6 +1811,9 @@ export async function runUp(flags: UpFlags): Promise<void> {
       for await (const event of runtime.run(input)) {
         if (event.kind === "text_delta") deltas.push(event.delta);
         if (event.kind === "done") {
+          process.stderr.write(
+            `[dispatch] done: stopReason=${event.output.stopReason} turns=${String(event.output.metrics.turns)}\n`,
+          );
           if (event.output.stopReason === "error") {
             const errMeta = event.output.metadata as Record<string, unknown> | undefined;
             const errMsg =
@@ -1762,8 +1916,14 @@ export async function runUp(flags: UpFlags): Promise<void> {
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`error: chat dispatch failed: ${message}\n`);
+      process.stderr.write(`[dispatch] ERROR: ${message}\n`);
+      if (error instanceof Error && error.stack) {
+        process.stderr.write(
+          `[dispatch] stack: ${error.stack.split("\n").slice(0, 3).join("\n")}\n`,
+        );
+      }
     } finally {
+      process.stderr.write(`[dispatch] finished, tuiProcessing=false\n`);
       tuiProcessing = false;
     }
   });

@@ -78,12 +78,21 @@ export function createAguiStreamMiddleware(config: AguiStreamMiddlewareConfig): 
       // The store was registered with the client-provided RunAgentInput.runId, which
       // differs from the Koi-internal session runId assigned by createKoi.
       // Fall back to the session runId for non-AG-UI callers.
+      // Last resort: if exactly 1 run is active, use that writer (covers koi serve
+      // where dispatch uses { kind: "text" } which strips AG-UI metadata).
+      // Resolve the AG-UI runId for this stream. Try in order:
+      // 1. AG-UI runId from inbound message metadata (ideal path)
+      // 2. Koi session runId (non-AG-UI callers)
+      // 3. Single active run fallback (koi serve dispatch via { kind: "text" })
       const aguiRunId = ctx.messages[0]?.metadata?.runId;
       const runId =
         typeof aguiRunId === "string" && store.get(aguiRunId) !== undefined
           ? aguiRunId
-          : ctx.session.runId;
-      const writer = store.get(runId);
+          : store.get(ctx.session.runId) !== undefined
+            ? ctx.session.runId
+            : undefined;
+      const writer =
+        (runId !== undefined ? store.get(runId) : undefined) ?? store.getSingleActiveWriter();
 
       // If no writer is registered for this run, this middleware is a no-op
       // (e.g., the agent was triggered via a non-HTTP channel).
@@ -91,6 +100,9 @@ export function createAguiStreamMiddleware(config: AguiStreamMiddlewareConfig): 
         yield* next(request);
         return;
       }
+
+      // Use the AG-UI runId for message IDs (or fallback to session runId)
+      const effectiveRunId = runId ?? ctx.session.runId;
 
       await writeEvent(writer, { type: EventType.STEP_STARTED, stepName: "agent" });
 
@@ -102,13 +114,13 @@ export function createAguiStreamMiddleware(config: AguiStreamMiddlewareConfig): 
       // the stream ends with a "done" chunk (normal path) vs. without one (guard path)
       let stepFinished = false;
 
-      store.markTextStreamed(runId);
+      store.markTextStreamed(effectiveRunId);
 
       for await (const chunk of next(request)) {
         // Early exit: writer is gone (client disconnected mid-stream).
         // Yielding the remaining chunks would still produce them for the engine,
         // but we stop emitting to SSE to avoid wasting model API budget.
-        const currentWriter = store.get(runId);
+        const currentWriter = store.get(effectiveRunId);
         if (currentWriter === undefined) {
           // Drain the stream without writing SSE events.
           yield chunk;
@@ -118,7 +130,7 @@ export function createAguiStreamMiddleware(config: AguiStreamMiddlewareConfig): 
         switch (chunk.kind) {
           case "text_delta": {
             if (textMessageId === undefined) {
-              textMessageId = `${runId}-text`;
+              textMessageId = `${effectiveRunId}-text`;
               await writeEvent(currentWriter, {
                 type: EventType.TEXT_MESSAGE_START,
                 messageId: textMessageId,
@@ -135,7 +147,7 @@ export function createAguiStreamMiddleware(config: AguiStreamMiddlewareConfig): 
 
           case "thinking_delta": {
             if (reasoningMessageId === undefined) {
-              reasoningMessageId = `${runId}-reasoning`;
+              reasoningMessageId = `${effectiveRunId}-reasoning`;
               await writeEvent(currentWriter, {
                 type: EventType.REASONING_MESSAGE_START,
                 messageId: reasoningMessageId,
@@ -222,7 +234,7 @@ export function createAguiStreamMiddleware(config: AguiStreamMiddlewareConfig): 
       // Guard: close any still-open text/reasoning messages if the stream ended
       // without a "done" chunk (e.g., truncated or error path).
       // STEP_FINISHED was already emitted inside "done" on the normal path.
-      const finalWriter = store.get(runId);
+      const finalWriter = store.get(effectiveRunId);
       if (finalWriter !== undefined) {
         if (textMessageId !== undefined) {
           await writeEvent(finalWriter, {
@@ -248,11 +260,10 @@ export function createAguiStreamMiddleware(config: AguiStreamMiddlewareConfig): 
       next: ToolHandler,
     ): Promise<ToolResponse> => {
       const aguiRunId = ctx.messages[0]?.metadata?.runId;
-      const runId =
-        typeof aguiRunId === "string" && store.get(aguiRunId) !== undefined
-          ? aguiRunId
-          : ctx.session.runId;
-      const writer = store.get(runId);
+      const writer =
+        (typeof aguiRunId === "string" ? store.get(aguiRunId) : undefined) ??
+        store.get(ctx.session.runId) ??
+        store.getSingleActiveWriter();
 
       const response = await next(request);
 

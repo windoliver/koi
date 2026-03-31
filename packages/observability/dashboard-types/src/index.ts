@@ -151,6 +151,7 @@ export type {
   TimelineEvent,
   WorkflowDetail,
   WorkflowSummary,
+  WorkspaceContextResponse,
 } from "./runtime-views.js";
 // SSE parser
 export type { SSEEvent, SSEStreamOptions } from "./sse-parser.js";

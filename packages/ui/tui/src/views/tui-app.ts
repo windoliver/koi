@@ -147,6 +147,19 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     fetchDataForViewFn(s.view, fetchDeps);
   });
 
+  // Auto-clear toasts after 3 seconds
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  store.subscribe((s) => {
+    if (s.toast !== null) {
+      if (toastTimer !== null) clearTimeout(toastTimer);
+      const toastId = s.toast.id;
+      toastTimer = setTimeout(() => {
+        store.dispatch({ kind: "clear_toast", id: toastId });
+        toastTimer = null;
+      }, 3000);
+    }
+  });
+
   function addLifecycleMessage(event: string): void {
     store.dispatch({
       kind: "add_message",
@@ -325,19 +338,21 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     checkConsentPromptsHelper(batch, eventForwardDeps);
   }
 
+  /** View that was active before the palette opened, so we can return to it. */
+  let viewBeforePalette: TuiView = "agents";
+
   function togglePalette(): void {
     if (store.getState().view === "palette") {
       hidePalette();
     } else if (store.getState().view !== "palette") {
+      viewBeforePalette = store.getState().view;
       store.dispatch({ kind: "set_view", view: "palette" });
     }
   }
 
   function hidePalette(): void {
     if (store.getState().view !== "palette") return;
-    const session = store.getState().activeSession;
-    const targetView: TuiView = session !== null ? "console" : "agents";
-    store.dispatch({ kind: "set_view", view: targetView });
+    store.dispatch({ kind: "set_view", view: viewBeforePalette });
   }
 
   async function openSessionPicker(): Promise<void> {
@@ -569,11 +584,11 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       const currentView = store.getState().view;
       if (currentView === "sourcedetail") {
         store.dispatch({ kind: "set_view", view: "datasources" });
-      } else if (store.getState().selectedPresetId !== null) {
-        // In wizard flow: datasources back → channels
-        store.dispatch({ kind: "set_view", view: "channels" });
+      } else if (store.getState().view === "agents") {
+        // Already at agents, no-op
       } else {
-        store.dispatch({ kind: "set_view", view: "agents" });
+        // Use nav stack for back navigation (works for both wizard and runtime)
+        store.dispatch({ kind: "navigate_back" });
       }
     },
     dataSourceUp: () => {
@@ -597,7 +612,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       if (source !== undefined) viewDataSourceSchema(source.name, dsDeps).catch(() => {});
     },
     dataSourcesContinue: () => {
-      // In wizard flow: datasources → addons
+      // Advance to addons step during wizard (selectedPresetId is set during wizard flow)
       if (store.getState().selectedPresetId !== null) {
         store.dispatch({ kind: "set_view", view: "addons" });
       }
@@ -625,7 +640,7 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       });
     },
     navigateBack: () => {
-      // Finding 2 fix: from temporal detail, go back to list (not exit view)
+      // Intra-view detail: clear detail state without leaving the view
       if (
         store.getState().view === "temporal" &&
         store.getState().temporalView.workflowDetail !== null
@@ -633,8 +648,8 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
         store.dispatch({ kind: "set_temporal_workflow_detail", detail: null });
         return;
       }
-      const session = store.getState().activeSession;
-      store.dispatch({ kind: "set_view", view: session !== null ? "console" : "agents" });
+      // Pop navigation stack (falls back to "agents" when empty)
+      store.dispatch({ kind: "navigate_back" });
     },
     domainScrollUp: () => {
       scrollDomain(-1);
@@ -737,7 +752,10 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
     },
     addonsBack: () => {
       const presetId = store.getState().selectedPresetId;
-      store.dispatch({ kind: "set_view", view: presetId === "local" ? "datasources" : "channels" });
+      store.dispatch({
+        kind: "set_view",
+        view: presetId === "local" ? "datasources" : "channelspicker",
+      });
     },
     nexusConfigConfirm: () => {
       // Select the focused option and proceed to start
@@ -765,11 +783,11 @@ export function createTuiApp(config: TuiAppConfig): TuiAppHandle {
       store.dispatch({ kind: "set_view", view: "nameinput" });
     },
     engineConfirm: () => {
-      store.dispatch({ kind: "set_view", view: "channels" });
+      store.dispatch({ kind: "set_view", view: "channelspicker" });
     },
     engineSkip: () => {
       store.dispatch({ kind: "set_selected_engine", engine: undefined });
-      store.dispatch({ kind: "set_view", view: "channels" });
+      store.dispatch({ kind: "set_view", view: "channelspicker" });
     },
     engineBack: () => {
       store.dispatch({ kind: "set_view", view: "model" });

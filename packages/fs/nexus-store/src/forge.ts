@@ -109,19 +109,37 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
   }
 
   async function writeBrick(brick: BrickArtifact): Promise<Result<void, KoiError>> {
-    const result = await client.rpc<null>("write", {
-      path: brickPath(brick.id),
-      content: JSON.stringify(brick),
-    });
-    if (!result.ok) return result;
-    return { ok: true, value: undefined };
+    // Retry with backoff on 429 (Nexus rate limit). Startup writes (companion skills,
+    // demo seed) can exhaust the burst budget — forge saves need resilience.
+    // Only retry RATE_LIMIT — network errors and other failures fail fast.
+    const MAX_RETRIES = 3;
+    const BASE_DELAY_MS = 1000;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const delay = BASE_DELAY_MS * attempt;
+        await new Promise((r) => setTimeout(r, delay));
+      }
+      const result = await client.rpc<null>("write", {
+        path: brickPath(brick.id),
+        content: JSON.stringify(brick),
+      });
+      if (result.ok) return { ok: true, value: undefined };
+      if (result.error.code !== "RATE_LIMIT" || attempt === MAX_RETRIES) return result;
+    }
+    // Unreachable but satisfies return type
+    return {
+      ok: false,
+      error: { code: "INTERNAL", message: "Retry exhausted", retryable: false, context: {} },
+    };
   }
 
   // --- ForgeStore methods -------------------------------------------------
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     const segCheck = validatePathSegment(brick.id, "Brick ID");
-    if (!segCheck.ok) return segCheck;
+    if (!segCheck.ok) {
+      return segCheck;
+    }
     // Write-time integrity verification (when configured)
     if (config.verifyOnSave !== undefined) {
       const check = config.verifyOnSave(brick);
@@ -276,7 +294,14 @@ export function createNexusForgeStore(config: NexusForgeStoreConfig): ForgeStore
   const exists = async (id: BrickId): Promise<Result<boolean, KoiError>> => {
     const segCheck = validatePathSegment(id, "Brick ID");
     if (!segCheck.ok) return segCheck;
-    return client.rpc<boolean>("exists", { path: brickPath(id) });
+    // NFS exists returns { exists: boolean }, not a bare boolean.
+    const result = await client.rpc<{ readonly exists: boolean } | boolean>("exists", {
+      path: brickPath(id),
+    });
+    if (!result.ok) return result;
+    const val = result.value;
+    const boolVal = typeof val === "boolean" ? val : (val as { exists?: boolean }).exists === true;
+    return { ok: true, value: boolVal };
   };
 
   // Track unsubscribe functions for dispose

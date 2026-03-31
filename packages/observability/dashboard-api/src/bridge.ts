@@ -42,6 +42,7 @@ import type {
   MiddlewareChain,
   ProcessTreeSnapshot,
   RuntimeViewDataSource,
+  WorkspaceContextResponse,
 } from "@koi/dashboard-types";
 import type { DashboardHandlerOptions } from "./handler.js";
 
@@ -135,6 +136,12 @@ export interface BridgeOptions {
   readonly governanceCommands?:
     | Pick<CommandDispatcher, "listGovernanceQueue" | "reviewGovernance">
     | undefined;
+  /** Optional forge brick lifecycle commands (promote, demote, quarantine). */
+  readonly forgeCommands?:
+    | Pick<CommandDispatcher, "promoteBrick" | "demoteBrick" | "quarantineBrick">
+    | undefined;
+  /** Optional workspace context for debugging (cwd, paths, ports). */
+  readonly workspaceContext?: WorkspaceContextResponse | undefined;
 }
 
 /** Registration entry for a dispatched agent. */
@@ -851,6 +858,17 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     ...(options.governanceCommands?.reviewGovernance !== undefined
       ? { reviewGovernance: options.governanceCommands.reviewGovernance }
       : {}),
+
+    // Forge brick lifecycle commands
+    ...(options.forgeCommands?.promoteBrick !== undefined
+      ? { promoteBrick: options.forgeCommands.promoteBrick }
+      : {}),
+    ...(options.forgeCommands?.demoteBrick !== undefined
+      ? { demoteBrick: options.forgeCommands.demoteBrick }
+      : {}),
+    ...(options.forgeCommands?.quarantineBrick !== undefined
+      ? { quarantineBrick: options.forgeCommands.quarantineBrick }
+      : {}),
   };
 
   const updateMetrics = (metrics: {
@@ -910,6 +928,9 @@ export function createAdminPanelBridge(options: BridgeOptions): AdminPanelBridge
     runtimeViews,
     commands,
     ...(options.fileSystem !== undefined ? { fileSystem: options.fileSystem } : {}),
+    ...(options.workspaceContext !== undefined
+      ? { workspaceContext: options.workspaceContext }
+      : {}),
     emitEvent,
     updateMetrics,
     registerDispatchedAgent: (entry: DispatchedAgentEntry): void => {

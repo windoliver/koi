@@ -60,6 +60,13 @@ export interface RunContextStore {
 
   /** Number of active runs. Exposed for testing and observability. */
   readonly size: number;
+
+  /**
+   * Returns the writer for the single active run, or undefined if 0 or 2+ runs are active.
+   * Used as a last-resort fallback when the runId doesn't match (e.g., koi serve
+   * dispatches via { kind: "text" } which strips AG-UI metadata).
+   */
+  readonly getSingleActiveWriter: () => SseWriter | undefined;
 }
 
 export function createRunContextStore(): RunContextStore {
@@ -106,12 +113,19 @@ export function createRunContextStore(): RunContextStore {
 
   const hasTextStreamed = (runId: string): boolean => entries.get(runId)?.textStreamed ?? false;
 
+  const getSingleActiveWriter = (): SseWriter | undefined => {
+    if (entries.size !== 1) return undefined;
+    const first = entries.values().next().value;
+    return first?.writer;
+  };
+
   return {
     register,
     get,
     deregister,
     markTextStreamed,
     hasTextStreamed,
+    getSingleActiveWriter,
     get size() {
       return entries.size;
     },

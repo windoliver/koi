@@ -25,6 +25,9 @@ export function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): 
   if (query.createdBy !== undefined && brick.provenance.metadata.agentId !== query.createdBy) {
     return false;
   }
+  if (query.parentBrickId !== undefined && brick.provenance.parentBrickId !== query.parentBrickId) {
+    return false;
+  }
   if (
     query.classification !== undefined &&
     brick.provenance.classification !== query.classification

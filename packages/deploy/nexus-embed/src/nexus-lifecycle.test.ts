@@ -23,15 +23,16 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("nexusInit", () => {
-  test("returns error when nexus binary is unavailable", async () => {
+  test("succeeds without nexus binary (generates config directly)", async () => {
     const saved = process.env.NEXUS_COMMAND;
     process.env.NEXUS_COMMAND = "/nonexistent/nexus-fake-binary";
     try {
       const result = await nexusInit("demo", { cwd: tempDir });
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe("NOT_FOUND");
-      }
+      // nexusInit no longer shells out — it generates config in TypeScript
+      expect(result.ok).toBe(true);
+      const { existsSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      expect(existsSync(join(tempDir, "nexus.yaml"))).toBe(true);
     } finally {
       if (saved !== undefined) {
         process.env.NEXUS_COMMAND = saved;
@@ -53,23 +54,14 @@ describe("nexusInit", () => {
     expect(PRESET_MAP.mesh).toBe("shared");
   });
 
-  test("accepts port option without error", async () => {
-    const saved = process.env.NEXUS_COMMAND;
-    process.env.NEXUS_COMMAND = "/nonexistent/nexus-fake-binary";
-    try {
-      // Port option should be accepted even though binary is unavailable
-      const result = await nexusInit("demo", { cwd: tempDir, port: 3000 });
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe("NOT_FOUND");
-      }
-    } finally {
-      if (saved !== undefined) {
-        process.env.NEXUS_COMMAND = saved;
-      } else {
-        delete process.env.NEXUS_COMMAND;
-      }
-    }
+  test("applies custom port to generated config", async () => {
+    const result = await nexusInit("demo", { cwd: tempDir, port: 3000 });
+    expect(result.ok).toBe(true);
+
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const content = readFileSync(join(tempDir, "nexus.yaml"), "utf-8");
+    expect(content).toContain("http: 3000");
   });
 });
 

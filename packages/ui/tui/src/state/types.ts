@@ -107,6 +107,7 @@ export type TuiView =
   | "agents"
   | "agentprocfs"
   | "channels"
+  | "channelspicker"
   | "consent"
   | "console"
   | "cost"
@@ -121,6 +122,7 @@ export type TuiView =
   | "governance"
   | "handoffs"
   | "harness"
+  | "help"
   | "logs"
   | "mailbox"
   | "middleware"
@@ -245,9 +247,22 @@ export interface DoctorCheck {
 /** Maximum log entries kept in buffer. */
 export const MAX_LOG_BUFFER = 500;
 
+/** Maximum navigation history depth. */
+export const MAX_VIEW_HISTORY = 20;
+
+/** Transient toast notification shown on the current view. */
+export interface ToastState {
+  /** Unique ID to prevent cross-view race conditions on clear. */
+  readonly id: number;
+  readonly message: string;
+  readonly kind: "success" | "error";
+}
+
 /** Complete TUI application state. Immutable — new object on every update. */
 export interface TuiState {
   readonly view: TuiView;
+  /** Navigation history for Esc-to-go-back. Excludes overlays. */
+  readonly viewHistory: readonly TuiView[];
   readonly agents: readonly DashboardAgentSummary[];
   readonly selectedAgentIndex: number;
   /** Agent list display mode — toggled by /tree. */
@@ -361,6 +376,8 @@ export interface TuiState {
   readonly demoPacks: readonly { readonly id: string; readonly description: string }[];
   /** Whether /stop confirmation is pending. */
   readonly pendingStopConfirm: boolean;
+  /** Transient toast notification — auto-clears after timeout. */
+  readonly toast: ToastState | null;
   /** Selected Nexus mode during wizard: "skip", "docker", "source", "remote". */
   readonly nexusConfigMode: NexusConfigMode;
   /** Focused index in Nexus config picker. */
@@ -380,6 +397,7 @@ export type TuiMode = "welcome" | "boardroom";
 export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"): TuiState {
   return {
     view: mode === "welcome" ? "welcome" : "agents",
+    viewHistory: [],
     agents: [],
     selectedAgentIndex: 0,
     agentListMode: "flat" as AgentListMode,
@@ -449,6 +467,7 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
     capabilities: null,
     demoPacks: [],
     pendingStopConfirm: false,
+    toast: null,
     nexusConfigMode: "docker" as NexusConfigMode,
     nexusConfigFocusedIndex: 0,
     nexusSourcePath: "~/nexus",
@@ -462,6 +481,13 @@ export function createInitialState(adminUrl: string, mode: TuiMode = "boardroom"
 /** Discriminated union of all state-changing actions. */
 export type TuiAction =
   | { readonly kind: "set_view"; readonly view: TuiView }
+  | { readonly kind: "navigate_back" }
+  | {
+      readonly kind: "show_toast";
+      readonly message: string;
+      readonly toastKind: "success" | "error";
+    }
+  | { readonly kind: "clear_toast"; readonly id: number }
   | {
       readonly kind: "set_agents";
       readonly agents: readonly DashboardAgentSummary[];

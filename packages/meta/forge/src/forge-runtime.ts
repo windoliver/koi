@@ -248,6 +248,7 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
         name: artifact.name,
         description: artifact.description,
         inputSchema: artifact.inputSchema,
+        origin: "forged",
       });
     }
     return descriptors;
