@@ -557,6 +557,7 @@ export function createAceMiddleware(
           const errorHandler = config.onLlmPipelineError ?? defaultLlmPipelineErrorHandler;
           void llmPipeline
             .consolidate(entries, atifDocId, sessionCount, clock, buffer)
+            .then(() => {})
             .catch((e: unknown) => {
               errorHandler(e, atifDocId);
             });
