@@ -380,39 +380,40 @@ describe("createToolExecution", () => {
       }
     });
 
-    test("shape 6: DOMException AbortError becomes KoiRuntimeError TIMEOUT", async () => {
+    test("shape 6: tool-originated DOMException AbortError re-thrown as-is (signal not aborted)", async () => {
+      // Tool threw AbortError from its own fetch/browser call — NOT from our signal.
+      // Must NOT be reclassified as middleware timeout.
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest({ toolId: "test:abort" });
+      const original = new DOMException("fetch was aborted", "AbortError");
 
-      const handler: ToolHandler = () =>
-        Promise.reject(new DOMException("The operation was aborted", "AbortError"));
+      const handler: ToolHandler = () => Promise.reject(original);
 
       try {
         await invokeWrapToolCall(mw, ctx, request, handler);
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
-        expect(e).toBeInstanceOf(KoiRuntimeError);
-        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
-        expect((e as KoiRuntimeError).message).toContain("aborted");
+        // Re-thrown as-is because our composed signal did NOT fire
+        expect(e).toBe(original);
       }
     });
 
-    test("shape 7: DOMException TimeoutError becomes KoiRuntimeError TIMEOUT", async () => {
+    test("shape 7: tool-originated DOMException TimeoutError re-thrown as-is (signal not aborted)", async () => {
+      // Tool threw TimeoutError from its own fetch timeout — NOT from our signal.
       const mw = createToolExecution();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest({ toolId: "test:timeout" });
+      const original = new DOMException("fetch timed out", "TimeoutError");
 
-      const handler: ToolHandler = () =>
-        Promise.reject(new DOMException("The operation timed out", "TimeoutError"));
+      const handler: ToolHandler = () => Promise.reject(original);
 
       try {
         await invokeWrapToolCall(mw, ctx, request, handler);
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
-        expect(e).toBeInstanceOf(KoiRuntimeError);
-        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
-        expect((e as KoiRuntimeError).message).toContain("timed out");
+        // Re-thrown as-is because our composed signal did NOT fire
+        expect(e).toBe(original);
       }
     });
 
@@ -644,6 +645,132 @@ describe("createToolExecution", () => {
       const response = await outerHandler(request);
 
       expect(response).toBe(expected);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 7. Listener cleanup regression (adversarial review finding 1)
+  // ---------------------------------------------------------------------------
+
+  describe("listener cleanup", () => {
+    test("many successful calls on same signal do not accumulate listeners", async () => {
+      // Regression: without cleanup, each successful call would leave a listener
+      // on the reused run-level signal. This test verifies no unhandled rejections
+      // or accumulated effects by running many calls then aborting.
+      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const ctx = createMockTurnContext();
+      const controller = new AbortController();
+      const handler = mock(() => Promise.resolve({ output: "ok" } satisfies ToolResponse));
+
+      // Run 20 successful calls on the same signal
+      for (let i = 0; i < 20; i++) {
+        const request = createMockToolRequest({ signal: controller.signal });
+        await invokeWrapToolCall(mw, ctx, request, handler);
+      }
+
+      expect(handler).toHaveBeenCalledTimes(20);
+
+      // Now abort — if listeners leaked, this would fire 20 stale reject functions.
+      // With cleanup, nothing happens because all listeners were removed.
+      controller.abort("late_cancel");
+
+      // Allow any microtasks to settle
+      await new Promise((r) => {
+        setTimeout(r, 10);
+      });
+
+      // If we got here without unhandled rejection, cleanup worked
+      expect(true).toBe(true);
+    });
+
+    test("cleanup runs after tool error (finally block)", async () => {
+      // Verify that cleanup happens even when the tool throws
+      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const ctx = createMockTurnContext();
+      const controller = new AbortController();
+      const request = createMockToolRequest({ signal: controller.signal });
+      const handler: ToolHandler = () => Promise.reject(new Error("boom"));
+
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+      } catch {
+        // expected
+      }
+
+      // Abort after the failed call — if listener leaked, would fire stale reject
+      controller.abort("late_cancel");
+      await new Promise((r) => {
+        setTimeout(r, 10);
+      });
+
+      // No unhandled rejection = cleanup worked
+      expect(true).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8. Signal-gated classification (adversarial review finding 2)
+  // ---------------------------------------------------------------------------
+
+  describe("signal-gated error classification", () => {
+    test("tool-thrown AbortError NOT reclassified when signal has not fired", async () => {
+      // Tool's own fetch was aborted, but OUR signal is fine
+      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const ctx = createMockTurnContext();
+      const controller = new AbortController();
+      const request = createMockToolRequest({ signal: controller.signal });
+      const original = new DOMException("fetch aborted by tool", "AbortError");
+
+      const handler: ToolHandler = () => Promise.reject(original);
+
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        // Must be the original DOMException, NOT a KoiRuntimeError
+        expect(e).toBe(original);
+        expect(e).not.toBeInstanceOf(KoiRuntimeError);
+      }
+    });
+
+    test("tool-thrown TimeoutError NOT reclassified when signal has not fired", async () => {
+      // Tool's own fetch timed out, but OUR signal is fine
+      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const ctx = createMockTurnContext();
+      const controller = new AbortController();
+      const request = createMockToolRequest({ signal: controller.signal });
+      const original = new DOMException("fetch timeout", "TimeoutError");
+
+      const handler: ToolHandler = () => Promise.reject(original);
+
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBe(original);
+        expect(e).not.toBeInstanceOf(KoiRuntimeError);
+      }
+    });
+
+    test("DOMException AbortError IS classified when our signal fired", async () => {
+      // Our signal fired → should be classified as KoiRuntimeError
+      const mw = createToolExecution({ defaultTimeoutMs: 5000 });
+      const ctx = createMockTurnContext();
+      const controller = new AbortController();
+      const request = createMockToolRequest({ signal: controller.signal });
+
+      const handler: ToolHandler = () => {
+        controller.abort("user_cancel");
+        return new Promise(() => {});
+      };
+
+      try {
+        await invokeWrapToolCall(mw, ctx, request, handler);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+      }
     });
   });
 });

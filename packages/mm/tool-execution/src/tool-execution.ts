@@ -88,30 +88,60 @@ function composeSignal(
   return AbortSignal.any([parentSignal, timeoutSignal]);
 }
 
+// ---------------------------------------------------------------------------
+// Abort race with cleanup
+// ---------------------------------------------------------------------------
+
+interface AbortRace<T> {
+  readonly promise: Promise<T>;
+  readonly cleanup: () => void;
+}
+
 /**
- * Create a promise that rejects when the given signal fires.
- * Used to race against tool execution for timeout/abort enforcement.
- * The signal's reason is preserved to distinguish AbortError vs TimeoutError.
+ * Create a racing promise that rejects when the signal fires, plus a cleanup
+ * function that removes the listener. Caller MUST invoke cleanup() in a
+ * finally block to prevent listener accumulation on reused signals.
  */
-function rejectOnAbort(signal: AbortSignal): Promise<never> {
-  return new Promise<never>((_resolve, reject) => {
-    const doReject = (): void => {
-      const reason: unknown = signal.reason;
-      if (reason instanceof DOMException) {
-        reject(reason);
-      } else {
-        reject(new DOMException("The operation was aborted", "AbortError"));
-      }
+function createAbortRace(signal: AbortSignal): AbortRace<never> {
+  // If already aborted, return an immediately-rejecting promise (no listener needed)
+  if (signal.aborted) {
+    const reason: unknown = signal.reason;
+    const error =
+      reason instanceof DOMException
+        ? reason
+        : new DOMException("The operation was aborted", "AbortError");
+    return {
+      promise: Promise.reject(error),
+      cleanup: () => {},
     };
+  }
 
-    // If already aborted (race between pre-check and here), reject immediately
-    if (signal.aborted) {
-      doReject();
-      return;
+  // let justified: mutable binding swapped by doReject/cleanup to break the closure
+  let rejectFn: ((reason: unknown) => void) | undefined;
+
+  const doReject = (): void => {
+    if (rejectFn === undefined) return;
+    const reason: unknown = signal.reason;
+    if (reason instanceof DOMException) {
+      rejectFn(reason);
+    } else {
+      rejectFn(new DOMException("The operation was aborted", "AbortError"));
     }
+    rejectFn = undefined;
+  };
 
-    signal.addEventListener("abort", doReject, { once: true });
+  const promise = new Promise<never>((_resolve, reject) => {
+    rejectFn = reject;
   });
+
+  signal.addEventListener("abort", doReject, { once: true });
+
+  const cleanup = (): void => {
+    signal.removeEventListener("abort", doReject);
+    rejectFn = undefined;
+  };
+
+  return { promise, cleanup };
 }
 
 // ---------------------------------------------------------------------------
@@ -119,12 +149,20 @@ function rejectOnAbort(signal: AbortSignal): Promise<never> {
 // ---------------------------------------------------------------------------
 
 /**
- * Convert a DOMException from AbortSignal into a KoiRuntimeError.
- * Distinguishes timeout from abort via DOMException.name.
- * Non-DOMException errors are re-thrown as-is.
+ * Classify a caught error and re-throw appropriately.
+ *
+ * Only rewrites DOMException as KoiRuntimeError when the composed signal
+ * actually fired — preventing misclassification of tool-originated
+ * AbortError/TimeoutError (e.g., from fetch or browser APIs).
  */
-function rethrowAsKoiError(error: unknown, toolId: string, timeoutMs: number | undefined): never {
-  if (error instanceof DOMException) {
+function rethrowClassified(
+  error: unknown,
+  toolId: string,
+  timeoutMs: number | undefined,
+  composedSignal: AbortSignal | undefined,
+): never {
+  // Only classify DOMExceptions that came from OUR signal, not from the tool
+  if (error instanceof DOMException && composedSignal?.aborted === true) {
     if (error.name === "TimeoutError") {
       const msg =
         timeoutMs !== undefined
@@ -142,8 +180,7 @@ function rethrowAsKoiError(error: unknown, toolId: string, timeoutMs: number | u
       });
     }
   }
-  // Re-throw non-DOMException errors as-is — preserves error type for
-  // outer middleware (governance, telemetry) that inspect the thrown value.
+  // Re-throw as-is — preserves error type for outer middleware
   throw error;
 }
 
@@ -188,17 +225,23 @@ export function createToolExecution(config?: ToolExecutionConfig): KoiMiddleware
       const forwardRequest: ToolRequest =
         composedSignal !== request.signal ? { ...request, signal: composedSignal } : request;
 
-      // 5. Execute — race against signal if present
-      try {
-        const toolPromise = next(forwardRequest);
+      // 5. Execute — race against signal if present, with listener cleanup
+      if (composedSignal !== undefined) {
+        const race = createAbortRace(composedSignal);
+        try {
+          return await Promise.race([next(forwardRequest), race.promise]);
+        } catch (error: unknown) {
+          rethrowClassified(error, request.toolId, timeoutMs, composedSignal);
+        } finally {
+          race.cleanup();
+        }
+      }
 
-        // Race tool execution against signal abort when a signal exists.
-        // This ensures timeout/abort fires even if the tool ignores the signal.
-        return composedSignal !== undefined
-          ? await Promise.race([toolPromise, rejectOnAbort(composedSignal)])
-          : await toolPromise;
+      // No signal — no race needed, no cleanup needed
+      try {
+        return await next(forwardRequest);
       } catch (error: unknown) {
-        rethrowAsKoiError(error, request.toolId, timeoutMs);
+        rethrowClassified(error, request.toolId, timeoutMs, composedSignal);
       }
     },
   };
