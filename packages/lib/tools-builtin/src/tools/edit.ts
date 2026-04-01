@@ -76,6 +76,12 @@ export function createFsEditTool(
             code: "VALIDATION",
           };
         }
+        if (hunk.oldText.length === 0) {
+          return {
+            error: `edits[${String(i)}].oldText must not be empty — empty match would replace entire file`,
+            code: "VALIDATION",
+          };
+        }
         if (typeof hunk.newText !== "string") {
           return {
             error: `edits[${String(i)}].newText must be a string, got ${typeof hunk.newText}`,

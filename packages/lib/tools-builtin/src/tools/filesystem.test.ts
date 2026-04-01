@@ -119,6 +119,15 @@ describe("createFsReadTool", () => {
     expect(result.code).toBe("VALIDATION");
     expect(result.error).toContain("path");
   });
+
+  test("returns cancelled when signal is already aborted", async () => {
+    const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({ path: "/test" }, { signal: AbortSignal.abort() })) as {
+      readonly error: string;
+      readonly code: string;
+    };
+    expect(result.code).toBe("CANCELLED");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -223,6 +232,17 @@ describe("createFsEditTool", () => {
     expect(result.error).toContain("edits[0]");
   });
 
+  test("returns validation error when oldText is empty", async () => {
+    const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({
+      path: "/test",
+      edits: [{ oldText: "", newText: "bar" }],
+    })) as { readonly error: string; readonly code: string };
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("oldText");
+    expect(result.error).toContain("empty");
+  });
+
   test("returns cancelled when signal is already aborted", async () => {
     const tool = createFsEditTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute(
@@ -262,7 +282,7 @@ describe("createFsWriteTool", () => {
     expect(receivedOptions).toEqual({ createDirectories: true, overwrite: false });
   });
 
-  test("omits undefined options", async () => {
+  test("defaults overwrite to true when omitted", async () => {
     let receivedOptions: FileWriteOptions | undefined;
     const backend = {
       ...createMockBackend(),
@@ -273,7 +293,7 @@ describe("createFsWriteTool", () => {
     };
     const tool = createFsWriteTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ path: "/test", content: "x" });
-    expect(receivedOptions).toEqual({});
+    expect(receivedOptions).toEqual({ overwrite: true });
   });
 
   test("returns error on backend failure", async () => {

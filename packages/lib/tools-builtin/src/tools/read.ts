@@ -2,7 +2,14 @@
  * Tool factory for `{prefix}_read` — reads file content via a FileSystemBackend.
  */
 
-import type { FileReadOptions, FileSystemBackend, JsonObject, Tool, ToolPolicy } from "@koi/core";
+import type {
+  FileReadOptions,
+  FileSystemBackend,
+  JsonObject,
+  Tool,
+  ToolExecuteOptions,
+  ToolPolicy,
+} from "@koi/core";
 import { parseOptionalNumber, parseOptionalString, parseString } from "../parse-args.js";
 
 export function createFsReadTool(
@@ -30,7 +37,11 @@ export function createFsReadTool(
     },
     origin: "primordial",
     policy,
-    execute: async (args: JsonObject): Promise<unknown> => {
+    execute: async (args: JsonObject, execOptions?: ToolExecuteOptions): Promise<unknown> => {
+      if (execOptions?.signal?.aborted) {
+        return { error: "Operation cancelled", code: "CANCELLED" };
+      }
+
       const pathResult = parseString(args, "path");
       if (!pathResult.ok) return pathResult.err;
       const offsetResult = parseOptionalNumber(args, "offset");

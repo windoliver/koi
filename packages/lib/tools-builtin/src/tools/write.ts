@@ -59,8 +59,8 @@ export function createFsWriteTool(
       }
 
       const options: FileWriteOptions = {
+        overwrite: overwriteResult.value ?? true,
         ...(createDirsResult.value !== undefined && { createDirectories: createDirsResult.value }),
-        ...(overwriteResult.value !== undefined && { overwrite: overwriteResult.value }),
       };
       const result = await backend.write(pathResult.value, contentResult.value, options);
       if (!result.ok) {
