@@ -103,14 +103,19 @@ function readStringMeta(metadata: JsonObject | undefined, key: string): string |
  * Determine the Chat Completions role for an InboundMessage.
  *
  * TRUST BOUNDARY — privilege escalation prevention:
- * - "system" role is ONLY granted via `system:*` senderIds (engine-injected).
- *   metadata.role="system" is IGNORED to prevent callers from promoting
- *   arbitrary text to system/developer priority in the prompt hierarchy.
- * - "assistant" and "tool" are non-escalating (lower/equal to user), so
- *   metadata.role is trusted for those via L1 engine/session-repair convention.
- * - metadata.callId/toolCalls are trusted as internal L1 state. If
- *   InboundMessage ever becomes externally constructable, these fields
- *   must be moved to a separate trusted structure.
+ *
+ * System role: ONLY granted via `system:*` senderIds (engine-injected).
+ * metadata.role="system" is IGNORED — prevents user-controlled metadata
+ * from promoting arbitrary text to system/developer prompt priority.
+ *
+ * Assistant/tool roles: trusted from metadata.role per L1 convention.
+ * These are non-escalating (lower/equal privilege to user). The engine
+ * and session-repair set these fields; InboundMessage is not externally
+ * constructable. If InboundMessage ever becomes a public input type,
+ * assistant/tool metadata MUST be moved to a separate trusted structure
+ * to prevent tool-result/history injection.
+ *
+ * metadata.callId/toolCalls: trusted as L1 engine state (same caveat).
  *
  * Priority:
  * 1. senderId "system:*" → system (engine-only, not overridable)
@@ -334,8 +339,10 @@ export function buildRequestBody(
 ): Record<string, unknown> {
   const messages: ChatCompletionMessage[] = [];
 
-  // System prompt — use developer role for reasoning models if supported
-  const systemPrompt = request.metadata?.systemPrompt as string | undefined;
+  // System prompt from the trusted ModelRequest.systemPrompt field (set by L1
+  // engine from agent manifest). NOT read from generic metadata to prevent
+  // privilege escalation — user-controlled metadata must not become system prompts.
+  const systemPrompt = request.systemPrompt;
   if (systemPrompt !== undefined) {
     const role = config.compat.supportsDeveloperRole ? "developer" : "system";
     const effectiveModel = request.model ?? config.model;

@@ -146,13 +146,17 @@ interface MutableAccumulator {
 
 function processUsage(chunk: ChatCompletionChunk, acc: MutableAccumulator): ModelChunk | undefined {
   if (chunk.usage === undefined) return undefined;
-  const cachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
+  // Cache read: prefer Anthropic-specific field, fall back to OpenAI-style
+  const cacheRead =
+    chunk.usage.cache_read_input_tokens ?? chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
+  // Cache write: Anthropic-specific field (tokens written to cache this request)
+  const cacheWrite = chunk.usage.cache_creation_input_tokens ?? 0;
   // inputTokens = total prompt tokens (not reduced by cache).
-  // Cache info tracked separately in cacheReadTokens for consumers that need it.
-  // This ensures governance/accounting sees the full token count.
+  // Cache info tracked separately for consumers that need it.
   acc.inputTokens = chunk.usage.prompt_tokens ?? 0;
   acc.outputTokens = chunk.usage.completion_tokens ?? 0;
-  acc.cacheReadTokens = cachedTokens;
+  acc.cacheReadTokens = cacheRead;
+  acc.cacheWriteTokens = cacheWrite;
   acc.receivedUsage = true;
   return { kind: "usage", inputTokens: acc.inputTokens, outputTokens: acc.outputTokens };
 }

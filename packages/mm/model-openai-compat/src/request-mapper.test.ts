@@ -581,7 +581,7 @@ describe("buildRequestBody", () => {
   test("includes system prompt from metadata", () => {
     const request: ModelRequest = {
       messages: [makeMessage("hi")],
-      metadata: { systemPrompt: "You are helpful." },
+      systemPrompt: "You are helpful.",
     };
     const body = buildRequestBody(request, CONFIG);
     const messages = body.messages as Array<{ role: string; content: unknown }>;
@@ -600,7 +600,7 @@ describe("buildRequestBody", () => {
     };
     const request: ModelRequest = {
       messages: [makeMessage("hi")],
-      metadata: { systemPrompt: "System prompt." },
+      systemPrompt: "System prompt.",
     };
     const body = buildRequestBody(request, genericConfig);
     const messages = body.messages as Array<{ role: string; content: unknown }>;
@@ -619,7 +619,7 @@ describe("buildRequestBody", () => {
     };
     const request: ModelRequest = {
       messages: [makeMessage("hi")],
-      metadata: { systemPrompt: "System prompt." },
+      systemPrompt: "System prompt.",
     };
     const body = buildRequestBody(request, orConfig);
     const messages = body.messages as Array<{ role: string; content: unknown }>;

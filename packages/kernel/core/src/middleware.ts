@@ -48,6 +48,13 @@ export interface ModelRequest {
   readonly model?: string;
   readonly temperature?: number;
   readonly maxTokens?: number;
+  /**
+   * System prompt for this request. Injected by L1 engine from the agent
+   * manifest — not from user input. Mapped to system/developer role in the
+   * provider request. This is a trusted field: adapters MUST NOT read system
+   * prompts from generic `metadata` to prevent privilege escalation.
+   */
+  readonly systemPrompt?: string | undefined;
   readonly metadata?: JsonObject;
   /** Propagated abort signal — adapters should compose with their own timeout. */
   readonly signal?: AbortSignal | undefined;

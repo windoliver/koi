@@ -253,6 +253,12 @@ export interface ChatCompletionChunk {
   readonly usage?: {
     readonly prompt_tokens?: number;
     readonly completion_tokens?: number;
-    readonly prompt_tokens_details?: { readonly cached_tokens?: number };
+    readonly prompt_tokens_details?: {
+      readonly cached_tokens?: number;
+    };
+    /** Anthropic via OpenRouter: tokens written to prompt cache this request. */
+    readonly cache_creation_input_tokens?: number;
+    /** Anthropic via OpenRouter: tokens read from prompt cache this request. */
+    readonly cache_read_input_tokens?: number;
   };
 }
