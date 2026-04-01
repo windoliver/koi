@@ -128,6 +128,23 @@ export interface HttpHookConfig {
 export type HookConfig = CommandHookConfig | HttpHookConfig;
 
 // ---------------------------------------------------------------------------
+// Hook decision — structured response from hook executors
+// ---------------------------------------------------------------------------
+
+/**
+ * Decision returned by a hook execution, expressing the hook's intent.
+ *
+ * Hooks return one of:
+ * - `continue` — no opinion, proceed normally (default when no response)
+ * - `block` — stop this operation with a reason visible to the model
+ * - `modify` — patch the operation's input before proceeding
+ */
+export type HookDecision =
+  | { readonly kind: "continue" }
+  | { readonly kind: "block"; readonly reason: string }
+  | { readonly kind: "modify"; readonly patch: JsonObject };
+
+// ---------------------------------------------------------------------------
 // Hook execution result
 // ---------------------------------------------------------------------------
 
@@ -137,6 +154,7 @@ export type HookExecutionResult =
       readonly ok: true;
       readonly hookName: string;
       readonly durationMs: number;
+      readonly decision: HookDecision;
     }
   | {
       readonly ok: false;
