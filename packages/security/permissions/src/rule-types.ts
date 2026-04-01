@@ -101,3 +101,16 @@ export const PLAN_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
 export const PLAN_RULE_EVALUATED_ACTIONS: ReadonlySet<string> = new Set([
   "discover",
 ]) as ReadonlySet<string>;
+
+/**
+ * Actions that must NEVER be allowed in plan mode, regardless of config.
+ * Prevents misconfiguration from turning planning into execution.
+ */
+export const PLAN_DENIED_ACTIONS: ReadonlySet<string> = new Set([
+  "write",
+  "edit",
+  "delete",
+  "execute",
+  "bash",
+  "invoke",
+]) as ReadonlySet<string>;

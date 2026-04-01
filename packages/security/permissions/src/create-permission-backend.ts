@@ -8,7 +8,11 @@ import type { PermissionBackend, PermissionDecision, PermissionQuery } from "@ko
 import type { PlanModeOptions } from "./mode-resolver.js";
 import { resolveMode } from "./mode-resolver.js";
 import type { PermissionConfig } from "./rule-types.js";
-import { PLAN_ALLOWED_ACTIONS, PLAN_RULE_EVALUATED_ACTIONS } from "./rule-types.js";
+import {
+  PLAN_ALLOWED_ACTIONS,
+  PLAN_DENIED_ACTIONS,
+  PLAN_RULE_EVALUATED_ACTIONS,
+} from "./rule-types.js";
 
 const VALID_MODES = new Set(["default", "bypass", "plan", "auto"]);
 
@@ -27,9 +31,24 @@ export function createPermissionBackend(config: PermissionConfig): PermissionBac
     );
   }
 
+  const planAllowed = config.planAllowedActions ?? PLAN_ALLOWED_ACTIONS;
+  const planRuleEval = config.planRuleEvaluatedActions ?? PLAN_RULE_EVALUATED_ACTIONS;
+
+  // Validate that custom plan action sets don't include mutating actions.
+  for (const action of planAllowed) {
+    if (PLAN_DENIED_ACTIONS.has(action)) {
+      throw new Error(`Mutating action "${action}" cannot be added to planAllowedActions`);
+    }
+  }
+  for (const action of planRuleEval) {
+    if (PLAN_DENIED_ACTIONS.has(action)) {
+      throw new Error(`Mutating action "${action}" cannot be added to planRuleEvaluatedActions`);
+    }
+  }
+
   const planOptions: PlanModeOptions = {
-    allowedActions: config.planAllowedActions ?? PLAN_ALLOWED_ACTIONS,
-    ruleEvaluatedActions: config.planRuleEvaluatedActions ?? PLAN_RULE_EVALUATED_ACTIONS,
+    allowedActions: planAllowed,
+    ruleEvaluatedActions: planRuleEval,
   };
 
   function check(query: PermissionQuery): PermissionDecision {

@@ -121,4 +121,24 @@ describe("createPermissionBackend", () => {
     };
     expect(await backend.check(query)).toEqual({ effect: "allow" });
   });
+
+  test("rejects mutating actions in planAllowedActions", () => {
+    expect(() =>
+      createPermissionBackend({
+        mode: "plan",
+        rules: [],
+        planAllowedActions: new Set(["read", "write"]),
+      }),
+    ).toThrow('Mutating action "write" cannot be added to planAllowedActions');
+  });
+
+  test("rejects mutating actions in planRuleEvaluatedActions", () => {
+    expect(() =>
+      createPermissionBackend({
+        mode: "plan",
+        rules: [],
+        planRuleEvaluatedActions: new Set(["discover", "bash"]),
+      }),
+    ).toThrow('Mutating action "bash" cannot be added to planRuleEvaluatedActions');
+  });
 });

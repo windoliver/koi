@@ -179,6 +179,19 @@ describe("normalizeResource", () => {
   test("URIs with schemes pass through unchanged", () => {
     expect(normalizeResource("s3://bucket/key/../other")).toBe("s3://bucket/key/../other");
   });
+
+  test("normalizes backslash paths to forward slashes", () => {
+    expect(normalizeResource("src\\index.ts")).toBe("src/index.ts");
+    expect(normalizeResource("src\\..\\secrets.env")).toBe("secrets.env");
+  });
+
+  test("rejects backslash paths with unresolvable traversal", () => {
+    expect(normalizeResource("..\\secrets.txt")).toBeNull();
+  });
+
+  test("normalizes Windows-style absolute paths", () => {
+    expect(normalizeResource("C:\\secret\\..\\public.txt")).toBe("C:/public.txt");
+  });
 });
 
 // ---------------------------------------------------------------------------

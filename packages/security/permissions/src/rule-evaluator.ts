@@ -105,8 +105,8 @@ function isFilesystemPath(resource: string): boolean {
   if (resource.includes("://")) {
     return false;
   }
-  // Must contain at least one / to be path-like
-  return resource.includes("/");
+  // Must contain at least one path separator to be path-like
+  return resource.includes("/") || resource.includes("\\");
 }
 
 /**
@@ -127,8 +127,10 @@ export function normalizeResource(resource: string): string | null {
     return resource;
   }
 
-  const isAbsolute = resource.startsWith("/");
-  const segments = resource.split("/");
+  // Normalize backslashes to forward slashes for platform-agnostic matching
+  const normalized = resource.replaceAll("\\", "/");
+  const isAbsolute = normalized.startsWith("/");
+  const segments = normalized.split("/");
   const resolved: string[] = [];
 
   for (const seg of segments) {
@@ -148,8 +150,8 @@ export function normalizeResource(resource: string): string | null {
     }
   }
 
-  const normalized = resolved.join("/");
-  return isAbsolute ? `/${normalized}` : normalized;
+  const result = resolved.join("/");
+  return isAbsolute ? `/${result}` : result;
 }
 
 /**
