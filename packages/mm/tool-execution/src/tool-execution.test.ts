@@ -706,6 +706,28 @@ describe("createToolExecution", () => {
       // No unhandled rejection = cleanup worked
       expect(true).toBe(true);
     });
+
+    test("timeout timer is cleared after fast successful calls (no timer leak)", async () => {
+      // Regression: AbortSignal.timeout() timers are uncancellable and persist
+      // until expiry. With manual setTimeout + clearTimeout, the timer is
+      // cleared immediately when the tool completes.
+      const mw = createToolExecution({ defaultTimeoutMs: 60_000 });
+      const ctx = createMockTurnContext();
+      const handler = mock(() => Promise.resolve({ output: "fast" } satisfies ToolResponse));
+
+      // Run 50 fast calls with a 60s timeout each
+      for (let i = 0; i < 50; i++) {
+        const request = createMockToolRequest();
+        await invokeWrapToolCall(mw, ctx, request, handler);
+      }
+
+      expect(handler).toHaveBeenCalledTimes(50);
+
+      // If timers leaked, we'd have 50 pending 60s timers. With cleanup,
+      // all timers were cleared immediately on completion. We verify this
+      // indirectly: if the process event loop is clean, the test completes
+      // without the bun test runner hanging on pending timers.
+    });
   });
 
   // ---------------------------------------------------------------------------

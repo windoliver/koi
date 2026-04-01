@@ -2,7 +2,7 @@
  * Per-call tool execution middleware factory.
  *
  * Wraps every tool call with:
- * - Abort signal composition (parent + per-tool timeout via AbortSignal.any)
+ * - Abort signal composition (parent + per-call timeout via AbortSignal.any)
  * - Per-tool timeout enforcement via Promise.race
  * - Pre-aborted signal short-circuit
  *
@@ -54,7 +54,7 @@ function validateConfig(config: ToolExecutionConfig): void {
 }
 
 // ---------------------------------------------------------------------------
-// Signal composition
+// Signal + timeout composition
 // ---------------------------------------------------------------------------
 
 /**
@@ -70,39 +70,66 @@ function resolveTimeoutMs(
 }
 
 /**
- * Compose a parent signal with a per-call timeout.
- * Returns the original signal unchanged when no timeout is configured.
- * Returns undefined when no signal and no timeout exist.
+ * Result of composing a signal with a timeout.
+ * The caller MUST invoke cleanup() in a finally block to clear the timer
+ * and remove the abort listener — prevents timer leaks and listener
+ * accumulation on reused signals.
  */
-function composeSignal(
-  parentSignal: AbortSignal | undefined,
-  timeoutMs: number | undefined,
-): AbortSignal | undefined {
-  if (timeoutMs === undefined) {
-    return parentSignal;
-  }
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  if (parentSignal === undefined) {
-    return timeoutSignal;
-  }
-  return AbortSignal.any([parentSignal, timeoutSignal]);
-}
-
-// ---------------------------------------------------------------------------
-// Abort race with cleanup
-// ---------------------------------------------------------------------------
-
-interface AbortRace<T> {
-  readonly promise: Promise<T>;
+interface ComposedSignal {
+  readonly signal: AbortSignal;
+  /** Racing promise that rejects when the signal fires. */
+  readonly racePromise: Promise<never>;
+  /** Clear timeout timer + remove abort listener. MUST be called in finally. */
   readonly cleanup: () => void;
 }
 
 /**
- * Create a racing promise that rejects when the signal fires, plus a cleanup
- * function that removes the listener. Caller MUST invoke cleanup() in a
- * finally block to prevent listener accumulation on reused signals.
+ * Compose a parent signal with a per-call timeout, returning an abort race
+ * promise and a cleanup function that cancels the timer immediately.
+ *
+ * Uses a manual AbortController + setTimeout instead of AbortSignal.timeout()
+ * so the timer can be cleared when the tool completes — preventing timer
+ * accumulation under load with long default timeouts.
  */
-function createAbortRace(signal: AbortSignal): AbortRace<never> {
+function createComposedSignal(
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+): ComposedSignal | undefined {
+  // No timeout and no parent signal → nothing to compose
+  if (timeoutMs === undefined && parentSignal === undefined) {
+    return undefined;
+  }
+
+  // No timeout → just race against the parent signal (no timer to clean up)
+  if (timeoutMs === undefined && parentSignal !== undefined) {
+    return createAbortRace(parentSignal, undefined);
+  }
+
+  // Create a manually-managed timeout controller so we can clear the timer
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => {
+    timeoutController.abort(new DOMException("The operation timed out", "TimeoutError"));
+  }, timeoutMs);
+
+  // Compose parent + timeout signals, or just use timeout signal
+  const composedSignal =
+    parentSignal !== undefined
+      ? AbortSignal.any([parentSignal, timeoutController.signal])
+      : timeoutController.signal;
+
+  return createAbortRace(composedSignal, () => {
+    clearTimeout(timer);
+  });
+}
+
+/**
+ * Create a racing promise + cleanup from a composed signal.
+ * The optional extraCleanup callback clears any timer resources.
+ */
+function createAbortRace(
+  signal: AbortSignal,
+  extraCleanup: (() => void) | undefined,
+): ComposedSignal {
   // If already aborted, return an immediately-rejecting promise (no listener needed)
   if (signal.aborted) {
     const reason: unknown = signal.reason;
@@ -110,8 +137,10 @@ function createAbortRace(signal: AbortSignal): AbortRace<never> {
       reason instanceof DOMException
         ? reason
         : new DOMException("The operation was aborted", "AbortError");
+    extraCleanup?.();
     return {
-      promise: Promise.reject(error),
+      signal,
+      racePromise: Promise.reject(error),
       cleanup: () => {},
     };
   }
@@ -130,7 +159,7 @@ function createAbortRace(signal: AbortSignal): AbortRace<never> {
     rejectFn = undefined;
   };
 
-  const promise = new Promise<never>((_resolve, reject) => {
+  const racePromise = new Promise<never>((_resolve, reject) => {
     rejectFn = reject;
   });
 
@@ -139,9 +168,10 @@ function createAbortRace(signal: AbortSignal): AbortRace<never> {
   const cleanup = (): void => {
     signal.removeEventListener("abort", doReject);
     rejectFn = undefined;
+    extraCleanup?.();
   };
 
-  return { promise, cleanup };
+  return { signal, racePromise, cleanup };
 }
 
 // ---------------------------------------------------------------------------
@@ -218,31 +248,26 @@ export function createToolExecution(config?: ToolExecutionConfig): KoiMiddleware
       // 2. Resolve timeout for this toolId
       const timeoutMs = resolveTimeoutMs(request.toolId, toolTimeouts, defaultTimeoutMs);
 
-      // 3. Compose signal — only when timeout configured
-      const composedSignal = composeSignal(request.signal, timeoutMs);
+      // 3. Compose signal + timeout (returns undefined when no signal/timeout)
+      const composed = createComposedSignal(request.signal, timeoutMs);
 
-      // 4. Build the request to forward (only create new object if signal changed)
-      const forwardRequest: ToolRequest =
-        composedSignal !== request.signal ? { ...request, signal: composedSignal } : request;
+      if (composed !== undefined) {
+        // 4. Build request with composed signal
+        const forwardRequest: ToolRequest =
+          composed.signal !== request.signal ? { ...request, signal: composed.signal } : request;
 
-      // 5. Execute — race against signal if present, with listener cleanup
-      if (composedSignal !== undefined) {
-        const race = createAbortRace(composedSignal);
+        // 5. Execute — race against signal, clean up timer + listener on all paths
         try {
-          return await Promise.race([next(forwardRequest), race.promise]);
+          return await Promise.race([next(forwardRequest), composed.racePromise]);
         } catch (error: unknown) {
-          rethrowClassified(error, request.toolId, timeoutMs, composedSignal);
+          rethrowClassified(error, request.toolId, timeoutMs, composed.signal);
         } finally {
-          race.cleanup();
+          composed.cleanup();
         }
       }
 
-      // No signal — no race needed, no cleanup needed
-      try {
-        return await next(forwardRequest);
-      } catch (error: unknown) {
-        rethrowClassified(error, request.toolId, timeoutMs, composedSignal);
-      }
+      // No signal, no timeout — direct execution
+      return next(request);
     },
   };
 }
