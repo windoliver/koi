@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/hooks API surface . has stable type surface 1`] = `
-"import { HookConfig, HookEvent, HookExecutionResult, HookFilter, Result, KoiError, CommandHookConfig, HttpHookConfig } from '@koi/core';
+"import { HookConfig, HookEvent, HookExecutionResult, HookFilter, Result, KoiError, HookDecision, KoiMiddleware, CommandHookConfig, HttpHookConfig } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -102,6 +102,48 @@ declare function loadHooks(raw: unknown): Result<readonly HookConfig[], KoiError
 declare function loadHooksWithDiagnostics(raw: unknown): Result<LoadHooksResult, KoiError>;
 
 /**
+ * Hook middleware — bridges @koi/hooks execution into the KoiMiddleware contract.
+ *
+ * Maps engine lifecycle events to hook dispatch:
+ *   onSessionStart  → "session.started" (blocking — throws on block decision)
+ *   onSessionEnd    → "session.ended"   (awaited — block/modify ignored)
+ *   onBeforeTurn    → "turn.started"    (blocking — throws on block decision)
+ *   onAfterTurn     → "turn.ended"      (fire-and-forget, drained on session end)
+ *   wrapToolCall    → "tool.before" (blocking) + "tool.succeeded" (fire-and-forget, drained)
+ *   wrapModelCall   → "compact.before" (blocking) + "compact.after" (fire-and-forget, drained)
+ *   wrapModelStream → "compact.before" (blocking) + "compact.after" (fire-and-forget, drained)
+ *
+ * Pre-call hooks block and aggregate decisions (block > modify > continue).
+ * Post-call hooks are fire-and-forget during the turn but drained with a bounded
+ * wait before session cleanup to prevent last-turn hooks from being aborted.
+ *
+ * Phase: "resolve" (priority 400). Hooks are business logic, not permissions.
+ */
+
+/** Options for creating a hook middleware. */
+interface CreateHookMiddlewareOptions {
+    /** Validated hook configs to dispatch. Typically from \`loadHooks()\`. */
+    readonly hooks: readonly HookConfig[];
+}
+/**
+ * Aggregate hook decisions with most-restrictive-wins precedence:
+ *   block > modify > continue
+ *
+ * - First \`block\` wins immediately (short-circuits).
+ * - Multiple \`modify\` patches are merged (later patches override earlier keys).
+ * - Failed hooks (ok: false) are treated as no opinion (fail-open).
+ */
+declare function aggregateDecisions(results: readonly HookExecutionResult[]): HookDecision;
+/**
+ * Creates a KoiMiddleware that dispatches hook definitions to command/http
+ * executors during the engine lifecycle.
+ *
+ * @param options - Hook configs to register per session.
+ * @returns A KoiMiddleware at resolve phase, priority 400.
+ */
+declare function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiMiddleware;
+
+/**
  * Hook registry — session-scoped hook registration and cleanup.
  *
  * Manages the lifecycle of hooks within a session: registration on session
@@ -149,6 +191,6 @@ declare const commandHookSchema: z.ZodType<CommandHookConfig>;
 declare const httpHookSchema: z.ZodType<HttpHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { type HookRegistry, type LoadHooksResult, commandHookSchema, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchesHookFilter };
+export { type CreateHookMiddlewareOptions, type HookRegistry, type LoadHooksResult, aggregateDecisions, commandHookSchema, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchesHookFilter };
 "
 `;
