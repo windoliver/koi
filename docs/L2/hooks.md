@@ -46,6 +46,13 @@ Adding new events is additive — extend the `HOOK_EVENT_KINDS` array in
 `@koi/core`. Existing hooks are unaffected because filters use OR logic
 within the `events` field.
 
+**Forward compatibility:** The Zod schema accepts any non-empty string in
+`filter.events`, not just known `HookEventKind` values. This ensures that
+manifests referencing newly added events load successfully on nodes running
+older `@koi/hooks` versions. Compile-time type safety is enforced by
+`HookEventKind` in TypeScript — runtime validation guards structure, not
+vocabulary.
+
 ## Hook Types
 
 ### Phase 1 (this package)

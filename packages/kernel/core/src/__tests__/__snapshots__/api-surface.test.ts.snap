@@ -19,7 +19,7 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
-export { CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HookConfig, HookEvent, HookExecutionResult, HookFilter, HookType, HttpHookConfig } from './hook.js';
+export { CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, HookConfig, HookEvent, HookEventKind, HookExecutionResult, HookFilter, HookType, HttpHookConfig } from './hook.js';
 export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
@@ -2783,6 +2783,10 @@ exports[`@koi/core API surface ./hook has stable type surface 1`] = `
 
 /** Supported hook transport types. */
 type HookType = "command" | "http";
+/** Canonical list of hook lifecycle events. Single source of truth. */
+declare const HOOK_EVENT_KINDS: readonly ["session.started", "session.ended", "turn.started", "turn.ended", "tool.before", "tool.succeeded", "tool.failed", "permission.request", "permission.denied", "compact.before", "compact.after", "subagent.started", "subagent.stopped", "config.changed"];
+/** Typed hook lifecycle event discriminator. */
+type HookEventKind = (typeof HOOK_EVENT_KINDS)[number];
 /**
  * Filter conditions for hook dispatch. All specified fields must match (AND).
  * Within a field, any value can match (OR).
@@ -2791,7 +2795,7 @@ type HookType = "command" | "http";
  */
 interface HookFilter {
     /** Session event kinds to match (e.g., "session.started", "tool.succeeded"). */
-    readonly events?: readonly string[] | undefined;
+    readonly events?: readonly HookEventKind[] | undefined;
     /** Tool names to match. */
     readonly tools?: readonly string[] | undefined;
     /** Channel IDs to match. */
@@ -2802,7 +2806,7 @@ interface HookFilter {
  */
 interface HookEvent {
     /** The event kind that triggered this hook (e.g., "session.started"). */
-    readonly event: string;
+    readonly event: HookEventKind;
     /** Agent ID that owns the session. */
     readonly agentId: string;
     /** Session ID. */
@@ -2880,7 +2884,7 @@ type HookExecutionResult = {
 /** Default hook timeout in milliseconds. */
 declare const DEFAULT_HOOK_TIMEOUT_MS: 30000;
 
-export { type CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, type HookConfig, type HookEvent, type HookExecutionResult, type HookFilter, type HookType, type HttpHookConfig };
+export { type CommandHookConfig, DEFAULT_HOOK_TIMEOUT_MS, HOOK_EVENT_KINDS, type HookConfig, type HookEvent, type HookEventKind, type HookExecutionResult, type HookFilter, type HookType, type HttpHookConfig };
 "
 `;
 

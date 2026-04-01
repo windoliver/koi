@@ -5,9 +5,28 @@
  * hook type boundary (command + http). Unknown hook kinds fail clearly.
  */
 
-import type { CommandHookConfig, HookConfig, HookFilter, HttpHookConfig } from "@koi/core";
-import { HOOK_EVENT_KINDS } from "@koi/core";
+import type {
+  CommandHookConfig,
+  HookConfig,
+  HookEventKind,
+  HookFilter,
+  HttpHookConfig,
+} from "@koi/core";
 import { z } from "zod";
+
+// ---------------------------------------------------------------------------
+// Hook event kind schema — forward-compatible
+// ---------------------------------------------------------------------------
+
+/**
+ * Accepts any non-empty string at runtime for forward compatibility (newer
+ * event kinds must not brick older validators), while typing the output as
+ * `HookEventKind` so the Zod schema satisfies the L0 `HookFilter` contract.
+ */
+const hookEventKindSchema: z.ZodType<HookEventKind> = z.custom<HookEventKind>(
+  (val) => typeof val === "string" && val.length > 0,
+  { message: "Event kind must be a non-empty string" },
+);
 
 // ---------------------------------------------------------------------------
 // Hook filter schema
@@ -16,7 +35,7 @@ import { z } from "zod";
 function createHookFilterSchema(): z.ZodType<HookFilter> {
   return z.object({
     events: z
-      .array(z.enum(HOOK_EVENT_KINDS))
+      .array(hookEventKindSchema)
       .min(1, "events filter must not be empty — omit the field instead")
       .optional(),
     tools: z

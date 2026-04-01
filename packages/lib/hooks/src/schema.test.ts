@@ -46,14 +46,12 @@ describe("hookFilterSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects invalid event kind", () => {
-    const result = hookFilterSchema.safeParse({ events: ["not.a.real.event"] });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects misspelled event kind", () => {
-    const result = hookFilterSchema.safeParse({ events: ["sesion.started"] });
-    expect(result.success).toBe(false);
+  it("accepts unknown event kinds for forward compatibility", () => {
+    // Runtime validation accepts any non-empty string so that newer event
+    // kinds added to HOOK_EVENT_KINDS don't brick older validators.
+    // Compile-time safety is provided by the HookEventKind type instead.
+    const result = hookFilterSchema.safeParse({ events: ["future.event"] });
+    expect(result.success).toBe(true);
   });
 });
 
