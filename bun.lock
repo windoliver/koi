@@ -69,6 +69,15 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/config": {
+      "name": "@koi/config",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/context-manager": {
       "name": "@koi/context-manager",
       "version": "0.0.0",
@@ -333,6 +342,8 @@
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
+
+    "@koi/config": ["@koi/config@workspace:packages/lib/config"],
 
     "@koi/context-manager": ["@koi/context-manager@workspace:packages/lib/context-manager"],
 

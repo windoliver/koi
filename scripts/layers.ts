@@ -17,6 +17,7 @@ export const L0_PACKAGES: ReadonlySet<string> = new Set(["@koi/core"]);
  */
 export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/channel-base",
+  "@koi/config",
   "@koi/context-manager",
   "@koi/edit-match",
   "@koi/errors",

@@ -9,6 +9,7 @@
     { "path": "packages/kernel/engine" },
     { "path": "packages/kernel/engine-compose" },
     { "path": "packages/kernel/engine-reconcile" },
+    { "path": "packages/lib/config" },
     { "path": "packages/lib/edit-match" },
     { "path": "packages/lib/errors" },
     { "path": "packages/lib/event-delivery" },
