@@ -176,6 +176,10 @@
     "./user-model": {
       "types": "./dist/user-model.d.ts",
       "import": "./dist/user-model.js"
+    },
+    "./replacement": {
+      "types": "./dist/replacement.d.ts",
+      "import": "./dist/replacement.js"
     }
   },
   "scripts": {

@@ -38,6 +38,15 @@ export interface BackoffConfig {
   readonly cap?: number;
 }
 
+export interface ReplacementConfig {
+  /** Max tokens per individual tool result before replacement. Default: 12_500. */
+  readonly maxResultTokens?: number;
+  /** Max aggregate tokens for all tool results in a single message. Default: 50_000. */
+  readonly maxMessageTokens?: number;
+  /** Number of characters to include in the preview. Default: 2048. */
+  readonly previewChars?: number;
+}
+
 export interface CompactionManagerConfig {
   /** Context window size in tokens. Default: 200_000. */
   readonly contextWindowSize?: number;
@@ -51,6 +60,8 @@ export interface CompactionManagerConfig {
   readonly full?: FullCompactConfig;
   /** Backoff configuration for repeated failures. */
   readonly backoff?: BackoffConfig;
+  /** Content replacement configuration for large tool results. */
+  readonly replacement?: ReplacementConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +84,11 @@ export interface ResolvedConfig {
   readonly backoff: {
     readonly initialSkip: number;
     readonly cap: number;
+  };
+  readonly replacement: {
+    readonly maxResultTokens: number;
+    readonly maxMessageTokens: number;
+    readonly previewChars: number;
   };
 }
 
@@ -112,6 +128,11 @@ export const COMPACTION_DEFAULTS = {
   backoff: {
     initialSkip: 1,
     cap: 32,
+  },
+  replacement: {
+    maxResultTokens: 12_500,
+    maxMessageTokens: 50_000,
+    previewChars: 2048,
   },
 } as const;
 

@@ -761,6 +761,9 @@ export type {
   ReconciliationController,
 } from "./reconciliation.js";
 export { DEFAULT_RECONCILE_RUNNER_CONFIG } from "./reconciliation.js";
+// content replacement
+export type { ReplacementRef, ReplacementStore } from "./replacement.js";
+export { replacementRef } from "./replacement.js";
 // reputation backend — pluggable trust scoring and feedback contract
 export type {
   FeedbackKind,
