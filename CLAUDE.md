@@ -366,6 +366,16 @@ When considering adding a dependency:
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
 - **Minimalistic & Elegant**: Write the least code that solves the problem correctly. No over-engineering, no unnecessary abstraction. If it can be 10 lines, don't write 50.
 
+## Feature References
+
+When designing new features (hooks, permissions, plugins, skills, etc.), cross-reference
+with the decompiled Claude Code source for best-practice patterns and battle-tested design:
+
+- **Source**: https://github.com/sanbuphy/claude-code-source-code
+- **Key areas**: `src/utils/hooks/` (hook system), `src/schemas/` (Zod schemas), `src/utils/permissions/` (permission model), `src/utils/skills/` (skill runtime)
+- **Use for**: architectural patterns, event taxonomies, security constraints (SSRF guards, env-var allowlisting, policy tiers), hook lifecycle design
+- **Do not**: copy code verbatim — adapt patterns to Koi's layered architecture (L0/L1/L2)
+
 ## v2 Rewrite
 
 Architecture plan: `.claude/plans/v2-rewrite.md` — **read before any v2 work**.
