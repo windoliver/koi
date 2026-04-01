@@ -61,6 +61,7 @@ export type {
   LoopWarningInfo,
   SpawnPolicy,
   SpawnWarningInfo,
+  ToolExecutionConfig,
 } from "./guard-types.js";
 export {
   DEFAULT_ITERATION_LIMITS,
@@ -76,6 +77,8 @@ export {
   createSpawnGuard,
   detectRepeatingPattern,
 } from "./guards.js";
+// tool execution guard
+export { createToolExecutionGuard } from "./tool-execution-guard.js";
 // visibility filter
 export type { VisibilityFilterConfig } from "./visibility-filter.js";
 export { createVisibilityFilter } from "./visibility-filter.js";

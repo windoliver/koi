@@ -1,5 +1,5 @@
 /**
- * Tests for @koi/tool-execution — per-call tool execution middleware.
+ * Tests for tool execution guard — per-call abort propagation and timeout enforcement.
  *
  * Test groups:
  * 1. Factory & configuration (including validation)
@@ -24,7 +24,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
-import { createToolExecution } from "./tool-execution.js";
+import { createToolExecutionGuard } from "./tool-execution-guard.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -72,42 +72,42 @@ function invokeWrapToolCall(
 // 1. Factory & configuration
 // ---------------------------------------------------------------------------
 
-describe("createToolExecution", () => {
+describe("createToolExecutionGuard", () => {
   describe("factory", () => {
     test("returns a middleware with correct name", () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       expect(mw.name).toBe("koi:tool-execution");
     });
 
     test("uses resolve phase", () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       expect(mw.phase).toBe("resolve");
     });
 
     test("uses priority 100", () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       expect(mw.priority).toBe(100);
     });
 
     test("describeCapabilities returns undefined", () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       expect(mw.describeCapabilities(ctx)).toBeUndefined();
     });
 
     test("implements wrapToolCall", () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       expect(mw.wrapToolCall).toBeDefined();
       expect(typeof mw.wrapToolCall).toBe("function");
     });
 
     test("accepts empty config", () => {
-      const mw = createToolExecution({});
+      const mw = createToolExecutionGuard({});
       expect(mw.name).toBe("koi:tool-execution");
     });
 
     test("accepts valid full config", () => {
-      const mw = createToolExecution({
+      const mw = createToolExecutionGuard({
         defaultTimeoutMs: 30_000,
         toolTimeouts: { "exec:run": 60_000 },
       });
@@ -117,36 +117,38 @@ describe("createToolExecution", () => {
 
   describe("config validation", () => {
     test("rejects negative defaultTimeoutMs", () => {
-      expect(() => createToolExecution({ defaultTimeoutMs: -1 })).toThrow("finite positive");
+      expect(() => createToolExecutionGuard({ defaultTimeoutMs: -1 })).toThrow("finite positive");
     });
 
     test("rejects NaN defaultTimeoutMs", () => {
-      expect(() => createToolExecution({ defaultTimeoutMs: NaN })).toThrow("finite positive");
+      expect(() => createToolExecutionGuard({ defaultTimeoutMs: NaN })).toThrow("finite positive");
     });
 
     test("rejects Infinity defaultTimeoutMs", () => {
-      expect(() => createToolExecution({ defaultTimeoutMs: Infinity })).toThrow("finite positive");
+      expect(() => createToolExecutionGuard({ defaultTimeoutMs: Infinity })).toThrow(
+        "finite positive",
+      );
     });
 
     test("rejects zero defaultTimeoutMs", () => {
-      expect(() => createToolExecution({ defaultTimeoutMs: 0 })).toThrow("finite positive");
+      expect(() => createToolExecutionGuard({ defaultTimeoutMs: 0 })).toThrow("finite positive");
     });
 
     test("rejects invalid per-tool timeout", () => {
-      expect(() => createToolExecution({ toolTimeouts: { "bad:tool": -5 } })).toThrow(
+      expect(() => createToolExecutionGuard({ toolTimeouts: { "bad:tool": -5 } })).toThrow(
         "finite positive",
       );
     });
 
     test("rejects NaN per-tool timeout", () => {
-      expect(() => createToolExecution({ toolTimeouts: { "bad:tool": NaN } })).toThrow(
+      expect(() => createToolExecutionGuard({ toolTimeouts: { "bad:tool": NaN } })).toThrow(
         "finite positive",
       );
     });
 
     test("validation error is a KoiRuntimeError with VALIDATION code", () => {
       try {
-        createToolExecution({ defaultTimeoutMs: -1 });
+        createToolExecutionGuard({ defaultTimeoutMs: -1 });
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
         expect(e).toBeInstanceOf(KoiRuntimeError);
@@ -161,7 +163,7 @@ describe("createToolExecution", () => {
 
   describe("abort signals", () => {
     test("scenario 1: pre-aborted signal throws DOMException preserving reason", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       controller.abort("user_cancel");
@@ -185,7 +187,7 @@ describe("createToolExecution", () => {
     });
 
     test("scenario 2: parent abort during execution throws KoiRuntimeError preserving reason", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const request = createMockToolRequest({ signal: controller.signal });
@@ -207,7 +209,7 @@ describe("createToolExecution", () => {
     });
 
     test("scenario 3: per-tool timeout fires throws KoiRuntimeError TIMEOUT", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 50 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 50 });
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -226,7 +228,7 @@ describe("createToolExecution", () => {
     });
 
     test("scenario 4: race between parent abort and timeout — abort wins (pre-aborted)", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 10_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 10_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       controller.abort("user_cancel");
@@ -249,7 +251,7 @@ describe("createToolExecution", () => {
     });
 
     test("scenario 5: no signal provided — tool executes normally", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const request = createMockToolRequest({ signal: undefined });
 
@@ -263,7 +265,7 @@ describe("createToolExecution", () => {
     });
 
     test("scenario 5a: parent signal + timeout both present — tool succeeds before either fires", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const request = createMockToolRequest({ signal: controller.signal });
@@ -284,7 +286,7 @@ describe("createToolExecution", () => {
 
   describe("error propagation", () => {
     test("shape 1: standard Error re-thrown as-is", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
       const original = new Error("something broke");
@@ -300,7 +302,7 @@ describe("createToolExecution", () => {
     });
 
     test("shape 2: KoiRuntimeError re-thrown as-is", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
       const original = KoiRuntimeError.from("RATE_LIMIT", "Too many requests", { retryable: true });
@@ -318,7 +320,7 @@ describe("createToolExecution", () => {
     });
 
     test("shape 3: plain string throw re-thrown as-is", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -333,7 +335,7 @@ describe("createToolExecution", () => {
     });
 
     test("shape 4: null throw re-thrown as-is", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -348,7 +350,7 @@ describe("createToolExecution", () => {
     });
 
     test("shape 5: object with message re-thrown as-is", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
       const original = { message: "object error", statusCode: 500 };
@@ -364,7 +366,7 @@ describe("createToolExecution", () => {
     });
 
     test("shape 6: tool-originated DOMException AbortError re-thrown as-is", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
       const original = new DOMException("fetch was aborted", "AbortError");
@@ -380,7 +382,7 @@ describe("createToolExecution", () => {
     });
 
     test("shape 7: tool-originated DOMException TimeoutError re-thrown as-is", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
       const original = new DOMException("fetch timed out", "TimeoutError");
@@ -396,7 +398,7 @@ describe("createToolExecution", () => {
     });
 
     test("shape 8: non-standard DOMException re-thrown as-is", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
       const original = new DOMException("something else", "SyntaxError");
@@ -418,7 +420,7 @@ describe("createToolExecution", () => {
 
   describe("transparency", () => {
     test("successful call passes through response unchanged", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -435,7 +437,7 @@ describe("createToolExecution", () => {
     });
 
     test("successful call forwards request to handler unchanged", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const input: JsonObject = { file: "/tmp/test.txt", encoding: "utf-8" };
       const request = createMockToolRequest({
@@ -455,7 +457,7 @@ describe("createToolExecution", () => {
     });
 
     test("no metadata added to successful response", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 5000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 5000 });
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -474,7 +476,7 @@ describe("createToolExecution", () => {
 
   describe("per-tool timeouts", () => {
     test("toolTimeouts overrides defaultTimeoutMs for matching toolId", async () => {
-      const mw = createToolExecution({
+      const mw = createToolExecutionGuard({
         defaultTimeoutMs: 10_000,
         toolTimeouts: { "fast:tool": 50 },
       });
@@ -494,7 +496,7 @@ describe("createToolExecution", () => {
     });
 
     test("falls back to defaultTimeoutMs for non-matching toolId", async () => {
-      const mw = createToolExecution({
+      const mw = createToolExecutionGuard({
         defaultTimeoutMs: 50,
         toolTimeouts: { "other:tool": 60_000 },
       });
@@ -513,7 +515,7 @@ describe("createToolExecution", () => {
     });
 
     test("no timeout when neither default nor per-tool configured", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -532,7 +534,7 @@ describe("createToolExecution", () => {
 
   describe("integration with middleware chain", () => {
     test("tool errors propagate to outer middleware (governance sees failure)", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -550,7 +552,7 @@ describe("createToolExecution", () => {
     });
 
     test("timeout errors propagate to outer middleware (governance sees failure)", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 50 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 50 });
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -568,7 +570,7 @@ describe("createToolExecution", () => {
     });
 
     test("abort errors propagate to outer middleware (governance sees failure)", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       controller.abort("user_cancel");
@@ -588,7 +590,7 @@ describe("createToolExecution", () => {
     });
 
     test("successful calls propagate to outer middleware (governance sees success)", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -606,7 +608,7 @@ describe("createToolExecution", () => {
     });
 
     test("middleware composes with a pass-through wrapper", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -628,7 +630,7 @@ describe("createToolExecution", () => {
 
   describe("listener and timer cleanup", () => {
     test("many successful calls on same signal do not accumulate listeners", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const handler = mock(() => Promise.resolve({ output: "ok" } satisfies ToolResponse));
@@ -648,7 +650,7 @@ describe("createToolExecution", () => {
     });
 
     test("cleanup runs after tool error (finally block)", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const request = createMockToolRequest({ signal: controller.signal });
@@ -668,7 +670,7 @@ describe("createToolExecution", () => {
     });
 
     test("timeout timer is cleared after fast successful calls (no timer leak)", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 60_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 60_000 });
       const ctx = createMockTurnContext();
       const handler = mock(() => Promise.resolve({ output: "fast" } satisfies ToolResponse));
 
@@ -687,7 +689,7 @@ describe("createToolExecution", () => {
 
   describe("signal-gated error classification", () => {
     test("tool-thrown AbortError NOT reclassified when signal has not fired", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const request = createMockToolRequest({ signal: controller.signal });
@@ -705,7 +707,7 @@ describe("createToolExecution", () => {
     });
 
     test("tool-thrown TimeoutError NOT reclassified when signal has not fired", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const request = createMockToolRequest({ signal: controller.signal });
@@ -723,7 +725,7 @@ describe("createToolExecution", () => {
     });
 
     test("only our timeout produces KoiRuntimeError TIMEOUT", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 50 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 50 });
       const ctx = createMockTurnContext();
       const request = createMockToolRequest();
 
@@ -745,7 +747,7 @@ describe("createToolExecution", () => {
 
   describe("abort reason preservation", () => {
     test("user_cancel reason is preserved in KoiRuntimeError context", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const request = createMockToolRequest({ signal: controller.signal });
@@ -768,7 +770,7 @@ describe("createToolExecution", () => {
     });
 
     test("shutdown reason is preserved in KoiRuntimeError context", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const request = createMockToolRequest({ signal: controller.signal });
@@ -789,7 +791,7 @@ describe("createToolExecution", () => {
     });
 
     test("token_limit reason is preserved in KoiRuntimeError context", async () => {
-      const mw = createToolExecution({ defaultTimeoutMs: 30_000 });
+      const mw = createToolExecutionGuard({ defaultTimeoutMs: 30_000 });
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       const request = createMockToolRequest({ signal: controller.signal });
@@ -810,7 +812,7 @@ describe("createToolExecution", () => {
     });
 
     test("pre-aborted with shutdown reason preserves reason", async () => {
-      const mw = createToolExecution();
+      const mw = createToolExecutionGuard();
       const ctx = createMockTurnContext();
       const controller = new AbortController();
       controller.abort("shutdown");

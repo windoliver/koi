@@ -87,6 +87,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(options.loopDetection !== undefined ? { loopDetection: options.loopDetection } : {}),
     ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
+    ...(options.toolExecution !== undefined ? { toolExecution: options.toolExecution } : {}),
   });
   const brickRequiresExt = createBrickRequiresExtension();
   const allExtensions = [

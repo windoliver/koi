@@ -165,3 +165,14 @@ export const DEFAULT_SPAWN_POLICY: SpawnPolicy = Object.freeze({
   maxTotalProcesses: 20,
   spawnToolIds: DEFAULT_SPAWN_TOOL_IDS,
 });
+
+// ---------------------------------------------------------------------------
+// Tool execution config
+// ---------------------------------------------------------------------------
+
+export interface ToolExecutionConfig {
+  /** Global timeout for all tool calls in milliseconds. No timeout when absent. */
+  readonly defaultTimeoutMs?: number | undefined;
+  /** Per-tool timeout overrides. Takes precedence over defaultTimeoutMs. */
+  readonly toolTimeouts?: Readonly<Record<string, number>> | undefined;
+}
