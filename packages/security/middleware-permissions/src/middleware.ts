@@ -164,6 +164,7 @@ function decisionCacheKey(query: PermissionQuery): number {
 
 function computeApprovalCacheKey(
   backendFingerprint: number,
+  sessionId: string,
   userId: string,
   agentId: string,
   toolId: string,
@@ -171,7 +172,9 @@ function computeApprovalCacheKey(
   context: string,
 ): number {
   const sorted = sortTopLevelKeys(input);
-  return fnv1a(`${backendFingerprint}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}`);
+  return fnv1a(
+    `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}`,
+  );
 }
 
 /** Serialize turn-scoped context for inclusion in approval cache keys. */
@@ -408,9 +411,10 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     const queries = tools.map((t) => queryForTool(ctx, t.name));
     const decisions = await resolveBatch(queries);
 
-    // Track forged tools scoped to this turn
+    // Track forged tools scoped to this session+turn (composite key
+    // ensures no cross-session bypass even if turnIds are not globally unique)
     const turnForged = new Set<string>();
-    const turnKey = ctx.turnId as string;
+    const turnKey = `${ctx.session.sessionId as string}:${ctx.turnId as string}`;
 
     const sessionTracker = getTracker(ctx.session.sessionId as string);
 
@@ -467,15 +471,22 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
-      // Clear only this session's tracker — not other active sessions
+      // Clear only this session's state — not other active sessions.
+      // Backend is NOT disposed here: it is shared across sessions and
+      // owned by the middleware instance, not by any individual session.
       const sid = ctx.sessionId as string;
       const sessionTracker = trackersBySession.get(sid);
       if (sessionTracker !== undefined) {
         sessionTracker.clear();
         trackersBySession.delete(sid);
       }
-      forgedToolsByTurn.clear();
-      await backend.dispose?.();
+      // Remove forged-tool entries belonging to this session only
+      const prefix = `${sid}:`;
+      for (const key of forgedToolsByTurn.keys()) {
+        if (key.startsWith(prefix)) {
+          forgedToolsByTurn.delete(key);
+        }
+      }
     },
 
     async wrapModelCall(
@@ -514,7 +525,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         // Forged tool override: allow if denial is default-deny (not explicit).
         // Uses structured symbol flag — never parses reason text.
         // Scoped to the current turn to prevent cross-turn bypass.
-        const turnKey = ctx.turnId as string;
+        const turnKey = `${ctx.session.sessionId as string}:${ctx.turnId as string}`;
         const turnForged = forgedToolsByTurn.get(turnKey);
         if (turnForged?.has(request.toolId) && isDefaultDeny(decision)) {
           return next(request);
@@ -570,6 +581,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       const ctxStr = serializeTurnContext(ctx);
       const cacheKey = computeApprovalCacheKey(
         backendFingerprint,
+        ctx.session.sessionId as string,
         userId,
         ctx.session.agentId,
         request.toolId,
@@ -635,6 +647,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         const ctxStr = serializeTurnContext(ctx);
         const cacheKey = computeApprovalCacheKey(
           backendFingerprint,
+          ctx.session.sessionId as string,
           userId,
           ctx.session.agentId,
           request.toolId,

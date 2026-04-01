@@ -525,7 +525,7 @@ describe("createPermissionsMiddleware", () => {
   });
 
   describe("session lifecycle", () => {
-    test("onSessionEnd disposes backend and clears caches", async () => {
+    test("onSessionEnd clears session state without disposing shared backend", async () => {
       const disposeFn = mock(async () => {});
       const backend: PermissionBackend = {
         check: () => ({ effect: "allow" }),
@@ -540,7 +540,8 @@ describe("createPermissionsMiddleware", () => {
       };
 
       await mw.onSessionEnd?.(sessionCtx);
-      expect(disposeFn).toHaveBeenCalledTimes(1);
+      // Backend is shared — must NOT be disposed when a single session ends
+      expect(disposeFn).not.toHaveBeenCalled();
     });
   });
 
@@ -681,6 +682,64 @@ describe("createPermissionsMiddleware", () => {
       await expect(
         mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("forged-tool"), noopToolHandler),
       ).rejects.toThrow();
+    });
+  });
+
+  describe("cross-session isolation", () => {
+    test("approval cache is scoped per session", async () => {
+      const approvalFn = mock(
+        async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({ kind: "allow" }),
+      );
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        approvalCache: true,
+      });
+      const req = makeToolRequest("deploy", { target: "staging" });
+
+      // Approve in session A
+      await mw.wrapToolCall?.(
+        makeTurnContext({ sessionId: "s-A", requestApproval: approvalFn }),
+        req,
+        noopToolHandler,
+      );
+
+      // Same tool+input in session B — must re-prompt, not use session A cache
+      await mw.wrapToolCall?.(
+        makeTurnContext({ sessionId: "s-B", requestApproval: approvalFn }),
+        req,
+        noopToolHandler,
+      );
+
+      expect(approvalFn).toHaveBeenCalledTimes(2);
+    });
+
+    test("onSessionEnd does not dispose shared backend", async () => {
+      const disposeFn = mock(async () => {});
+      const checkFn = mock((_q: PermissionQuery) => ({ effect: "allow" as const }));
+      const backend: PermissionBackend = {
+        check: checkFn,
+        dispose: disposeFn,
+      };
+      const mw = createPermissionsMiddleware({ backend });
+
+      // End session 1
+      await mw.onSessionEnd?.({
+        agentId: "agent:test",
+        sessionId: "s-1" as never,
+        runId: "r-1" as never,
+        metadata: {},
+      });
+
+      // Backend should NOT have been disposed
+      expect(disposeFn).not.toHaveBeenCalled();
+
+      // Session 2 should still work
+      await mw.wrapToolCall?.(
+        makeTurnContext({ sessionId: "s-2" }),
+        makeToolRequest("tool"),
+        noopToolHandler,
+      );
+      expect(checkFn).toHaveBeenCalledTimes(1);
     });
   });
 });
