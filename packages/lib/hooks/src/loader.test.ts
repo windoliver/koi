@@ -184,7 +184,7 @@ describe("loadHooksWithDiagnostics", () => {
       expect(result.value.hooks).toHaveLength(1);
       expect(result.value.warnings).toHaveLength(1);
       expect(result.value.warnings[0]).toContain("future.event");
-      expect(result.value.warnings[0]).toContain("unknown event kind");
+      expect(result.value.warnings[0]).toContain("not in the built-in event set");
     }
   });
 

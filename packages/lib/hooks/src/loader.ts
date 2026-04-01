@@ -33,9 +33,8 @@ function collectEventWarnings(hooks: readonly HookConfig[]): readonly string[] {
     for (const event of hook.filter.events) {
       if (!knownEvents.has(event)) {
         warnings.push(
-          `Hook "${hook.name}": unknown event kind "${event}" — ` +
-            "this event will never fire on the current runtime version. " +
-            "Check for typos or ensure your packages are up to date.",
+          `Hook "${hook.name}": "${event}" is not in the built-in event set. ` +
+            "Check for typos, or ignore if this is a custom/third-party event.",
         );
       }
     }
