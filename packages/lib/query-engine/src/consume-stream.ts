@@ -97,10 +97,12 @@ export async function* consumeModelStream(
           inputTokens += chunk.usage.inputTokens;
           outputTokens += chunk.usage.outputTokens;
         }
+        // Preserve partial text already streamed before the error
+        const errorPartialText = textFragments.join("");
         yield {
           kind: "done",
           output: {
-            content: [],
+            content: errorPartialText.length > 0 ? [{ kind: "text", text: errorPartialText }] : [],
             stopReason: "error",
             metrics: {
               totalTokens: inputTokens + outputTokens,

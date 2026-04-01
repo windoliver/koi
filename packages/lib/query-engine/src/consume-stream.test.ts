@@ -163,9 +163,10 @@ describe("consumeModelStream", () => {
     expect(done.output.metrics.totalTokens).toBe(15);
   });
 
-  test("error chunk yields error-shaped done event", async () => {
+  test("error chunk yields error-shaped done event and preserves partial text", async () => {
     const chunks: readonly ModelChunk[] = [
-      { kind: "text_delta", delta: "partial" },
+      { kind: "text_delta", delta: "partial " },
+      { kind: "text_delta", delta: "output" },
       { kind: "error", message: "rate limit exceeded", usage: { inputTokens: 5, outputTokens: 0 } },
     ];
 
@@ -176,6 +177,18 @@ describe("consumeModelStream", () => {
     expect(last?.kind).toBe("done");
     const done = last as Extract<EngineEvent, { readonly kind: "done" }>;
     expect(done.output.stopReason).toBe("error");
+    // Partial text must be preserved even on provider error
+    expect(done.output.content).toEqual([{ kind: "text", text: "partial output" }]);
+    expect((done.output.metadata as { readonly error: string }).error).toBe("rate limit exceeded");
+  });
+
+  test("error chunk with no prior text yields empty content", async () => {
+    const chunks: readonly ModelChunk[] = [{ kind: "error", message: "auth failed" }];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events[0] as Extract<EngineEvent, { readonly kind: "done" }>;
+    expect(done.output.stopReason).toBe("error");
+    expect(done.output.content).toEqual([]);
   });
 
   test("empty stream with just done produces done event", async () => {
