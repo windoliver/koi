@@ -10,6 +10,7 @@
  */
 
 import type { AuditEntry, AuditSink } from "@koi/core";
+import type { JsonObject } from "@koi/core/common";
 import type {
   ApprovalHandler,
   CapabilityFragment,
@@ -81,7 +82,8 @@ function createDecisionCache(
     get(key) {
       const entry = entries.get(key);
       if (entry === undefined) return undefined;
-      if (clock() >= entry.expiresAt) {
+      // expiresAt === Infinity means no expiry (ttl was 0)
+      if (entry.expiresAt !== Infinity && clock() >= entry.expiresAt) {
         entries.delete(key);
         return undefined;
       }
@@ -101,7 +103,8 @@ function createDecisionCache(
         const oldest = entries.keys().next().value;
         if (oldest !== undefined) entries.delete(oldest);
       }
-      entries.set(key, { decision, expiresAt: clock() + ttl });
+      // ttl === 0 means no expiry (permanent cache until eviction or clear)
+      entries.set(key, { decision, expiresAt: ttl === 0 ? Infinity : clock() + ttl });
     },
 
     clear() {
@@ -248,11 +251,14 @@ function computeApprovalCacheKey(
   toolId: string,
   input: unknown,
   context: string | undefined,
+  requestMeta: unknown,
 ): string | undefined {
   if (context === undefined) return undefined;
   const sorted = safeSerializeInput(input);
   if (sorted === undefined) return undefined;
-  return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}`;
+  const reqMeta = requestMeta !== undefined ? safeStringify(requestMeta) : "";
+  if (reqMeta === undefined) return undefined;
+  return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}\0${reqMeta}`;
 }
 
 /** Serialize turn-scoped context for inclusion in approval cache keys. */
@@ -345,6 +351,10 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   // Backend fingerprint for approval cache key isolation (random string per instance)
   const backendFingerprint = String(Math.random());
 
+  // In-flight approval deduplication: concurrent identical ask calls
+  // coalesce onto a single pending approval instead of double-prompting
+  const inflightApprovals = new Map<string, Promise<unknown>>();
+
   // Denial trackers scoped per session (keyed by sessionId)
   const trackersBySession = new Map<string, DenialTracker>();
 
@@ -365,17 +375,27 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   // Internal helpers
   // -----------------------------------------------------------------------
 
-  function queryForTool(ctx: TurnContext, resource: string): PermissionQuery {
+  function queryForTool(
+    ctx: TurnContext,
+    resource: string,
+    requestMetadata?: JsonObject,
+  ): PermissionQuery {
     // Build principal with user/session scope for tenant isolation.
     // Uses JSON array encoding to prevent separator collisions.
     const userId = ctx.session.userId ?? "__anonymous__";
     const sessionId = ctx.session.sessionId as string;
     const principal = buildPrincipal(ctx.session.agentId, userId, sessionId);
 
-    const meta = ctx.metadata;
-    const hasKeys = Object.keys(meta).length > 0;
-    if (hasKeys) {
-      return { principal, action: "invoke", resource, context: meta };
+    // Merge turn metadata + per-request metadata into query context
+    const turnMeta = ctx.metadata;
+    const hasTurnMeta = Object.keys(turnMeta).length > 0;
+    const hasReqMeta = requestMetadata !== undefined && Object.keys(requestMetadata).length > 0;
+    if (hasTurnMeta || hasReqMeta) {
+      const merged = {
+        ...(hasTurnMeta ? turnMeta : {}),
+        ...(hasReqMeta ? { _request: requestMetadata } : {}),
+      };
+      return { principal, action: "invoke", resource, context: merged };
     }
     return { principal, action: "invoke", resource };
   }
@@ -640,7 +660,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      const query = queryForTool(ctx, request.toolId);
+      const query = queryForTool(ctx, request.toolId, request.metadata);
       const startMs = clock();
       const decision = await resolveDecision(query, ctx.session.sessionId as string);
       const durationMs = clock() - startMs;
@@ -707,6 +727,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         request.toolId,
         request.input,
         ctxStr,
+        request.metadata,
       );
 
       if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
@@ -714,29 +735,75 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
     }
 
+    // Build dedup key for in-flight coordination
+    const dedupUserId = ctx.session.userId ?? "__anonymous__";
+    const dedupCtx = serializeTurnContext(ctx);
+    const dedupKey = computeApprovalCacheKey(
+      backendFingerprint,
+      ctx.session.sessionId as string,
+      dedupUserId,
+      ctx.session.agentId,
+      request.toolId,
+      request.input,
+      dedupCtx,
+      request.metadata,
+    );
+
+    // Coalesce concurrent identical asks onto a single pending approval
+    if (dedupKey !== undefined) {
+      const inflight = inflightApprovals.get(dedupKey);
+      if (inflight !== undefined) {
+        // Another call is already waiting for approval — wait for its result
+        const rawResult = await inflight;
+        const result = validateApprovalDecision(rawResult);
+        if (result === undefined || result.kind === "deny") {
+          throw new KoiRuntimeError({
+            code: "PERMISSION",
+            message: `Tool "${request.toolId}" denied (coalesced approval)`,
+            retryable: false,
+          });
+        }
+        if (result.kind === "modify") {
+          return next({ ...request, input: result.updatedInput });
+        }
+        return next(request);
+      }
+    }
+
     // Request approval with timeout
     const ac = new AbortController();
 
+    const approvalPromise = Promise.race([
+      approvalHandler({
+        toolId: request.toolId,
+        input: request.input,
+        reason: decision.reason,
+        ...(request.metadata !== undefined ? { metadata: request.metadata } : {}),
+      }),
+      new Promise<never>((_, reject) => {
+        const timerId = setTimeout(() => {
+          reject(
+            new KoiRuntimeError({
+              code: "TIMEOUT",
+              message: `Approval for "${request.toolId}" timed out after ${approvalTimeoutMs}ms`,
+              retryable: false,
+            }),
+          );
+        }, approvalTimeoutMs);
+        ac.signal.addEventListener("abort", () => clearTimeout(timerId), { once: true });
+      }),
+    ]).finally(() => {
+      ac.abort();
+      if (dedupKey !== undefined) inflightApprovals.delete(dedupKey);
+    });
+
+    // Register in-flight so concurrent callers coalesce
+    if (dedupKey !== undefined) {
+      inflightApprovals.set(dedupKey, approvalPromise);
+    }
+
     try {
-      const rawResult = await Promise.race([
-        approvalHandler({
-          toolId: request.toolId,
-          input: request.input,
-          reason: decision.reason,
-        }),
-        new Promise<never>((_, reject) => {
-          const timerId = setTimeout(() => {
-            reject(
-              new KoiRuntimeError({
-                code: "TIMEOUT",
-                message: `Approval for "${request.toolId}" timed out after ${approvalTimeoutMs}ms`,
-                retryable: false,
-              }),
-            );
-          }, approvalTimeoutMs);
-          ac.signal.addEventListener("abort", () => clearTimeout(timerId), { once: true });
-        }),
-      ]).finally(() => ac.abort());
+      const rawResult = await approvalPromise;
 
       // Validate approval response at trust boundary — fail closed on malformed
       const approvalResult = validateApprovalDecision(rawResult);
@@ -783,6 +850,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           request.toolId,
           request.input,
           ctxStr,
+          request.metadata,
         );
         if (cacheKey !== undefined) approvalCache.set(cacheKey);
       }
