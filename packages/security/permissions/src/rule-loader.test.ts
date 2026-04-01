@@ -31,7 +31,6 @@ describe("loadRules", () => {
 
     expect(result.value[0]?.source).toBe("project");
     expect(result.value[0]?.pattern).toBe("src/**");
-    expect(result.value[0]?.compiled).toBeInstanceOf(RegExp);
   });
 
   test("returns empty array for empty sources", () => {
@@ -83,9 +82,8 @@ describe("loadRules", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // Brackets are escaped as literals, not regex character classes
-    expect(result.value[0]?.compiled.test("[invalid")).toBe(true);
-    expect(result.value[0]?.compiled.test("i")).toBe(false);
+    // Pattern passes through as-is (compilation happens in createPermissionBackend)
+    expect(result.value[0]?.pattern).toBe("[invalid");
   });
 
   test("preserves rule order within a source", () => {
@@ -118,7 +116,5 @@ describe("loadRules", () => {
 
     // Pattern should be normalized to forward slashes
     expect(result.value[0]?.pattern).toBe("C:/secret/**");
-    // Should match forward-slash normalized resources
-    expect(result.value[0]?.compiled.test("C:/secret/file.txt")).toBe(true);
   });
 });

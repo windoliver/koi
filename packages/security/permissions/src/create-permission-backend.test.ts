@@ -3,27 +3,13 @@ import { describe, expect, test } from "bun:test";
 import type { PermissionBackend, PermissionQuery } from "@koi/core";
 
 import { createPermissionBackend } from "./create-permission-backend.js";
-import { compileGlob } from "./rule-evaluator.js";
 import type { PermissionConfig } from "./rule-types.js";
 
 const config: PermissionConfig = {
   mode: "default",
   rules: [
-    {
-      pattern: "src/**",
-      action: "write",
-      effect: "allow",
-      source: "project",
-      compiled: compileGlob("src/**"),
-    },
-    {
-      pattern: "/etc/**",
-      action: "*",
-      effect: "deny",
-      reason: "system files",
-      source: "policy",
-      compiled: compileGlob("/etc/**"),
-    },
+    { pattern: "src/**", action: "write", effect: "allow", source: "project" },
+    { pattern: "/etc/**", action: "*", effect: "deny", reason: "system files", source: "policy" },
   ],
 };
 
@@ -103,15 +89,7 @@ describe("createPermissionBackend", () => {
   test("custom planAllowedActions extends plan mode vocabulary", async () => {
     const backend = createPermissionBackend({
       mode: "plan",
-      rules: [
-        {
-          pattern: "**",
-          action: "metadata",
-          effect: "allow",
-          source: "project",
-          compiled: compileGlob("**"),
-        },
-      ],
+      rules: [{ pattern: "**", action: "metadata", effect: "allow", source: "project" }],
       planAllowedActions: ["read", "metadata"],
     });
     const query: PermissionQuery = {
@@ -124,11 +102,7 @@ describe("createPermissionBackend", () => {
 
   test("rejects actions outside safe vocabulary in planAllowedActions", () => {
     expect(() =>
-      createPermissionBackend({
-        mode: "plan",
-        rules: [],
-        planAllowedActions: ["read", "write"],
-      }),
+      createPermissionBackend({ mode: "plan", rules: [], planAllowedActions: ["read", "write"] }),
     ).toThrow("not in the approved read-only vocabulary for planAllowedActions");
   });
 
@@ -146,47 +120,46 @@ describe("createPermissionBackend", () => {
     const mutableArray = ["read", "metadata"];
     const backend = createPermissionBackend({
       mode: "plan",
-      rules: [
-        {
-          pattern: "**",
-          action: "metadata",
-          effect: "allow",
-          source: "project",
-          compiled: compileGlob("**"),
-        },
-      ],
+      rules: [{ pattern: "**", action: "metadata", effect: "allow", source: "project" }],
       planAllowedActions: mutableArray,
     });
-    // Mutate the original array after construction — should have no effect
     mutableArray.pop();
     const query: PermissionQuery = {
       principal: "agent-1",
       action: "metadata",
       resource: "src/index.ts",
     };
-    // Backend should still allow metadata (uses its internal copy)
     expect(await backend.check(query)).toEqual({ effect: "allow" });
   });
 
   test("post-construction mutation of rules array does not affect backend", async () => {
     const mutableRules = [
-      {
-        pattern: "src/**",
-        action: "write",
-        effect: "allow" as const,
-        source: "project" as const,
-        compiled: compileGlob("src/**"),
-      },
+      { pattern: "src/**", action: "write", effect: "allow" as const, source: "project" as const },
     ];
     const backend = createPermissionBackend({ mode: "default", rules: mutableRules });
-    // Clear the original rules array after construction
     mutableRules.length = 0;
     const query: PermissionQuery = {
       principal: "agent-1",
       action: "write",
       resource: "src/index.ts",
     };
-    // Backend should still use its frozen copy
+    expect(await backend.check(query)).toEqual({ effect: "allow" });
+  });
+
+  test("namespace resources are not path-normalized", async () => {
+    const backend = createPermissionBackend({
+      mode: "default",
+      rules: [
+        { pattern: "agent:tenant-a/**", action: "discover", effect: "allow", source: "project" },
+      ],
+    });
+    // agent:tenant-a/../tenant-b should NOT be normalized to tenant-b
+    const query: PermissionQuery = {
+      principal: "agent-1",
+      action: "discover",
+      resource: "agent:tenant-a/../tenant-b",
+    };
+    // Should match as-is against the pattern (.. is literal in namespace)
     expect(await backend.check(query)).toEqual({ effect: "allow" });
   });
 });

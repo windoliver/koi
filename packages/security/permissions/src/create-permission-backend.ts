@@ -1,13 +1,17 @@
 /**
  * Permission backend factory — assembles rule evaluator + mode resolver
  * into a concrete PermissionBackend implementation.
+ *
+ * Rules are compiled from string patterns internally — callers never
+ * supply precompiled regexes, preventing injected compiled state.
  */
 
 import type { PermissionBackend, PermissionDecision, PermissionQuery } from "@koi/core";
 
 import type { PlanModeOptions } from "./mode-resolver.js";
 import { resolveMode } from "./mode-resolver.js";
-import type { CompiledRule, PermissionConfig } from "./rule-types.js";
+import { compileGlob } from "./rule-evaluator.js";
+import type { CompiledRule, PermissionConfig, SourcedRule } from "./rule-types.js";
 import {
   PLAN_ALLOWED_ACTIONS,
   PLAN_RULE_EVALUATED_ACTIONS,
@@ -34,10 +38,6 @@ function validatePlanActions(actions: ReadonlySet<string>, label: string): void 
 }
 
 /**
- * Deep-freeze a rules array so neither the array nor individual rule objects
- * can be mutated after backend construction.
- */
-/**
  * Recursively freeze an object and all nested objects.
  */
 function deepFreeze<T>(obj: T): T {
@@ -50,23 +50,45 @@ function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
-function freezeRules(rules: readonly CompiledRule[]): readonly CompiledRule[] {
-  const frozen = [...rules];
-  for (const rule of frozen) {
+/**
+ * Compile a sourced rule's glob patterns to RegExp.
+ * Throws on invalid glob patterns.
+ */
+function compileRule(rule: SourcedRule): CompiledRule {
+  const compiled = compileGlob(rule.pattern);
+  const compiledPrincipal =
+    rule.principal !== undefined && rule.principal !== "*"
+      ? compileGlob(rule.principal)
+      : undefined;
+  const compiledContext =
+    rule.context !== undefined
+      ? Object.fromEntries(Object.entries(rule.context).map(([k, v]) => [k, compileGlob(v)]))
+      : undefined;
+  return { ...rule, compiled, compiledPrincipal, compiledContext };
+}
+
+/**
+ * Compile, deep-freeze, and seal a rules array.
+ * Throws on invalid glob patterns in any rule.
+ */
+function compileAndFreezeRules(rules: readonly SourcedRule[]): readonly CompiledRule[] {
+  const compiled = rules.map(compileRule);
+  for (const rule of compiled) {
     deepFreeze(rule);
   }
-  return Object.freeze(frozen);
+  return Object.freeze(compiled);
 }
 
 /**
  * Create a stateless `PermissionBackend` from a permission config.
  *
- * All mutable inputs (rules, action sets) are defensively copied and frozen
- * at construction time. Post-construction mutation of the caller's original
- * objects has no effect on the backend's behavior.
+ * Rules are compiled from string patterns internally — precompiled
+ * regexes from callers are ignored. All inputs are defensively copied
+ * and frozen at construction time.
  *
- * Throws at construction time if the mode is invalid or plan-mode action
- * sets contain actions outside the approved read-only vocabulary.
+ * Throws at construction time if the mode is invalid, glob patterns
+ * are malformed, or plan-mode action sets contain actions outside
+ * the approved read-only vocabulary.
  */
 export function createPermissionBackend(config: PermissionConfig): PermissionBackend {
   const { mode } = config;
@@ -77,14 +99,13 @@ export function createPermissionBackend(config: PermissionConfig): PermissionBac
     );
   }
 
-  // Defensive copy of rules — caller cannot mutate after construction.
-  const rules = freezeRules(config.rules);
+  // Compile rules from string patterns — never trust precompiled state.
+  const rules = compileAndFreezeRules(config.rules);
 
   // Defensive copy of plan action sets from caller-provided arrays.
   const planAllowed = new Set(config.planAllowedActions ?? PLAN_ALLOWED_ACTIONS);
   const planRuleEval = new Set(config.planRuleEvaluatedActions ?? PLAN_RULE_EVALUATED_ACTIONS);
 
-  // Validate all actions are in the approved read-only vocabulary.
   validatePlanActions(planAllowed, "planAllowedActions");
   validatePlanActions(planRuleEval, "planRuleEvaluatedActions");
 

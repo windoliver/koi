@@ -11,7 +11,6 @@ export { resolveMode } from "./mode-resolver.js";
 export { compileGlob, evaluateRules, normalizeResource } from "./rule-evaluator.js";
 export { loadRules } from "./rule-loader.js";
 export type {
-  CompiledRule,
   PermissionConfig,
   PermissionMode,
   PermissionRule,

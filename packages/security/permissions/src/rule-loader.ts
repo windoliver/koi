@@ -1,14 +1,12 @@
 /**
- * Rule loader — multi-source precedence merge with Zod validation
- * and glob compilation at load time.
+ * Rule loader — multi-source precedence merge with Zod validation.
  */
 
 import type { KoiError, Result } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { z } from "zod";
 
-import { compileGlob } from "./rule-evaluator.js";
-import type { CompiledRule, PermissionRule, RuleSource } from "./rule-types.js";
+import type { PermissionRule, RuleSource, SourcedRule } from "./rule-types.js";
 import { SOURCE_PRECEDENCE } from "./rule-types.js";
 
 const permissionRuleSchema = z.object({
@@ -33,59 +31,20 @@ function validateSourceRules(
 }
 
 /**
- * Compile a sourced rule's glob pattern to a RegExp.
- * Returns a typed error if the pattern produces invalid regex.
- */
-function compileRule(rule: PermissionRule, source: RuleSource): Result<CompiledRule, KoiError> {
-  try {
-    // Normalize backslashes in patterns to forward slashes so rules match
-    // normalized resources on all platforms.
-    const normalizedPattern = rule.pattern.replaceAll("\\", "/");
-    const compiled = compileGlob(normalizedPattern);
-    const compiledPrincipal =
-      rule.principal !== undefined && rule.principal !== "*"
-        ? compileGlob(rule.principal)
-        : undefined;
-    const compiledContext =
-      rule.context !== undefined
-        ? Object.fromEntries(Object.entries(rule.context).map(([k, v]) => [k, compileGlob(v)]))
-        : undefined;
-    return {
-      ok: true,
-      value: {
-        ...rule,
-        pattern: normalizedPattern,
-        source,
-        compiled,
-        compiledPrincipal,
-        compiledContext,
-      },
-    };
-  } catch {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: `Invalid glob pattern in ${source} rules: "${rule.pattern}"`,
-        retryable: false,
-        context: { source, pattern: rule.pattern },
-      },
-    };
-  }
-}
-
-/**
  * Load and merge rules from multiple sources, sorted by precedence.
- * Glob patterns are compiled to RegExp at load time — invalid patterns
- * produce a typed error rather than crashing at evaluation time.
+ * Validates each source against the schema. Normalizes backslashes
+ * in patterns to forward slashes for platform-agnostic matching.
  *
  * Precedence order: policy > project > local > user.
  * Within each source, rules retain their original order.
+ *
+ * Returns `SourcedRule[]` — compilation to regex happens inside
+ * `createPermissionBackend()` to prevent injected compiled state.
  */
 export function loadRules(
   sources: ReadonlyMap<RuleSource, readonly PermissionRule[]>,
-): Result<readonly CompiledRule[], KoiError> {
-  const merged: CompiledRule[] = [];
+): Result<readonly SourcedRule[], KoiError> {
+  const merged: SourcedRule[] = [];
 
   for (const source of SOURCE_PRECEDENCE) {
     const rules = sources.get(source);
@@ -99,11 +58,9 @@ export function loadRules(
     }
 
     for (const rule of validation.value) {
-      const compiled = compileRule(rule, source);
-      if (!compiled.ok) {
-        return compiled;
-      }
-      merged.push(compiled.value);
+      // Normalize backslashes so rules match normalized resources on all platforms.
+      const normalizedPattern = rule.pattern.replaceAll("\\", "/");
+      merged.push({ ...rule, pattern: normalizedPattern, source });
     }
   }
 

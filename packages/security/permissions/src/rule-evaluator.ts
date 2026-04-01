@@ -105,6 +105,15 @@ function isFilesystemPath(resource: string): boolean {
   if (resource.includes("://")) {
     return false;
   }
+  // Namespaced identifiers: prefix:value (e.g., agent:foo, tool:bar)
+  // These are not filesystem paths even if the value contains slashes.
+  // Exception: single-letter prefix followed by :/ is a Windows drive (C:/).
+  const colonIndex = resource.indexOf(":");
+  const slashIndex = resource.indexOf("/");
+  const isWindowsDrive = colonIndex === 1 && /^[A-Za-z]$/.test(resource.charAt(0));
+  if (colonIndex !== -1 && !isWindowsDrive && (slashIndex === -1 || colonIndex < slashIndex)) {
+    return false;
+  }
   // Bare dot segments are filesystem traversal attempts
   if (resource === "." || resource === "..") {
     return true;

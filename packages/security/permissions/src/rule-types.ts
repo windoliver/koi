@@ -58,7 +58,7 @@ export type PermissionMode = "default" | "bypass" | "plan" | "auto";
 /** Top-level configuration for createPermissionBackend. */
 export interface PermissionConfig {
   readonly mode: PermissionMode;
-  readonly rules: readonly CompiledRule[];
+  readonly rules: readonly SourcedRule[];
   /**
    * Override the default set of actions auto-allowed in plan mode.
    * When omitted, uses `PLAN_ALLOWED_ACTIONS`.
