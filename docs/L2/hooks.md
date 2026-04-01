@@ -13,11 +13,11 @@ and manages session-scoped hook registration/cleanup. Hooks are side-effect
 triggers (run a command, call a URL) that fire in response to session lifecycle
 events.
 
-> **Phase 1 scope (standalone API):** This package provides the loader,
-> schema, registry, and executor as standalone APIs. `AgentManifest` does
-> not yet include a `hooks` field — that will be added when the engine-level
-> hook dispatch integration ships. Until then, callers use `loadHooks()` /
-> `createHookRegistry()` / `executeHooks()` directly.
+> **Phase 1 scope:** This package provides the loader, schema, registry,
+> executor, and middleware dispatch. `createHookMiddleware()` bridges hook
+> execution into the `KoiMiddleware` contract for automatic dispatch during
+> the engine lifecycle. `AgentManifest` does not yet include a `hooks`
+> field — until then, callers wire hooks via `createHookMiddleware()`.
 
 ## Hook Event Kinds
 
@@ -142,6 +142,69 @@ When no filter is specified, the hook fires on all events.
 - **Strict env-var expansion** — unresolved `${VAR}` in headers/secrets fails the hook
 - **Trusted identity** — registry binds `agentId` at registration and overwrites caller-supplied identity on execute
 
+## Middleware Dispatch
+
+`createHookMiddleware()` returns a `KoiMiddleware` that dispatches hooks
+during the engine lifecycle.
+
+### Event Mapping
+
+| Middleware hook | Event name | Decisions enforced? |
+|-----------------|------------|---------------------|
+| `onSessionStart` | `session.started` | Yes — `block` throws (session fails) |
+| `onSessionEnd` | `session.ended` | No — awaited but decisions ignored |
+| `onBeforeTurn` | `turn.started` | Yes — `block` throws (turn fails) |
+| `onAfterTurn` | `turn.ended` | No (fire-and-forget) |
+| `wrapToolCall` (pre) | `tool.before` | Yes — `block`/`modify` enforced |
+| `wrapToolCall` (post) | `tool.succeeded` | No (fire-and-forget) |
+| `wrapModelCall` (pre) | `compact.before` | Yes — `block`/`modify` enforced |
+| `wrapModelCall` (post) | `compact.after` | No (fire-and-forget) |
+| `wrapModelStream` (pre) | `compact.before` | Yes — `block`/`modify` enforced |
+| `wrapModelStream` (post) | `compact.after` | No (fire-and-forget) |
+
+### Hook Decisions
+
+Hooks return structured decisions via stdout (command) or response body (HTTP):
+
+```json
+{ "decision": "continue" }
+{ "decision": "block", "reason": "bash not allowed in this context" }
+{ "decision": "modify", "patch": { "cmd": "ls -la" } }
+```
+
+When no decision is returned (empty output, non-JSON), the hook defaults
+to `continue`. Failed hooks (non-zero exit, HTTP 5xx) are treated as no
+opinion (fail-open).
+
+### Decision Aggregation
+
+Pre-call hooks are aggregated with **most-restrictive-wins** precedence:
+`block > modify > continue`. First `block` wins immediately. Multiple
+`modify` patches are merged (later overrides earlier keys on conflict).
+
+### Model Patch Safety
+
+`modify` patches for model calls are filtered against an allowlist of
+safe fields: `model`, `temperature`, `maxTokens`, `metadata`. Core
+control fields (`messages`, `tools`, `systemPrompt`, `signal`) are
+immutable — patches targeting them are silently dropped to prevent
+hook bugs from corrupting request shape or disabling safeguards.
+
+### Phase & Priority
+
+The hook middleware runs at `resolve` phase, priority 400. Hooks are
+business logic — not a permission engine.
+
+```typescript
+import { loadHooks, createHookMiddleware } from "@koi/hooks";
+
+const result = loadHooks(manifestHooks);
+if (!result.ok) throw new Error(result.error.message);
+
+const middleware = createHookMiddleware({ hooks: result.value });
+// Wire into engine: createKoi({ middleware: [permissions, middleware, ...] })
+```
+
 ## Module Structure
 
 | File | Responsibility |
@@ -149,9 +212,10 @@ When no filter is specified, the hook fires on all events.
 | `schema.ts` | Zod schemas for hook config validation |
 | `loader.ts` | `loadHooks()` — validate raw config → typed `HookConfig[]` |
 | `registry.ts` | `HookRegistry` — session-scoped registration/cleanup |
-| `executor.ts` | `executeHooks()` — parallel/serial dispatch with timeout |
+| `executor.ts` | `executeHooks()` — parallel/serial dispatch with timeout + decision parsing |
 | `filter.ts` | `matchesHookFilter()` — event/tool/channel matching |
 | `env.ts` | `expandEnvVars()` — `${VAR}` substitution with strict validation |
+| `middleware.ts` | `createHookMiddleware()` — KoiMiddleware bridging hooks to engine lifecycle |
 
 ## Dependencies
 

@@ -594,6 +594,7 @@ export { DEFAULT_HEALTH_MONITOR_CONFIG } from "./health.js";
 export type {
   CommandHookConfig,
   HookConfig,
+  HookDecision,
   HookEvent,
   HookEventKind,
   HookEventName,
