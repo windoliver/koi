@@ -57,6 +57,9 @@ export function createFsReadTool(
         ...(encodingResult.value !== undefined && { encoding: encodingResult.value }),
       };
       const result = await backend.read(pathResult.value, options);
+      if (execOptions?.signal?.aborted) {
+        return { error: "Operation cancelled", code: "CANCELLED" };
+      }
       if (!result.ok) {
         return { error: result.error.message, code: result.error.code };
       }

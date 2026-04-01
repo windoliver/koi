@@ -103,16 +103,17 @@ export function createFsEditTool(
         edits.push({ oldText: hunk.oldText, newText: hunk.newText });
       }
 
-      // Preflight: read file and verify each oldText occurs exactly once
+      // Preflight: read file and simulate sequential application to catch
+      // interacting hunks (e.g. hunk 1 creates a new match for hunk 2)
       const readResult = await backend.read(pathResult.value);
       if (!readResult.ok) {
         return { error: readResult.error.message, code: readResult.error.code };
       }
-      const fileContent = readResult.value.content;
+      let workingContent = readResult.value.content;
       for (let i = 0; i < edits.length; i++) {
         const hunk = edits[i];
         if (hunk === undefined) continue;
-        const occurrences = countOccurrences(fileContent, hunk.oldText);
+        const occurrences = countOccurrences(workingContent, hunk.oldText);
         if (occurrences === 0) {
           return {
             error: `edits[${String(i)}].oldText not found in file`,
@@ -125,6 +126,8 @@ export function createFsEditTool(
             code: "AMBIGUOUS",
           };
         }
+        // Simulate this replacement so subsequent hunks validate against updated content
+        workingContent = workingContent.replace(hunk.oldText, hunk.newText);
       }
 
       if (execOptions?.signal?.aborted) {

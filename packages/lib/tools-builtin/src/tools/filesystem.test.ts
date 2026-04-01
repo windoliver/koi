@@ -152,6 +152,22 @@ describe("createFsReadTool", () => {
     expect(result.error).toContain("path");
   });
 
+  test("returns cancelled when signal aborts during backend read", async () => {
+    const controller = new AbortController();
+    const backend = {
+      ...createMockBackend(),
+      read: async (path: string) => {
+        controller.abort();
+        return { ok: true as const, value: { content: "should not be returned", path, size: 0 } };
+      },
+    };
+    const tool = createFsReadTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({ path: "/test" }, { signal: controller.signal })) as {
+      readonly code: string;
+    };
+    expect(result.code).toBe("CANCELLED");
+  });
+
   test("returns cancelled when signal is already aborted", async () => {
     const tool = createFsReadTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute({ path: "/test" }, { signal: AbortSignal.abort() })) as {
@@ -321,6 +337,46 @@ describe("createFsEditTool", () => {
     })) as { readonly error: string; readonly code: string };
     expect(result.code).toBe("AMBIGUOUS");
     expect(result.error).toContain("2 locations");
+  });
+
+  test("rejects interacting multi-hunk edits where earlier replacement creates ambiguity", async () => {
+    const backend = {
+      ...createMockBackend(),
+      read: (_path: string) => ({
+        ok: true as const,
+        value: { content: "foo bar", path: _path, size: 7 },
+      }),
+    };
+    const tool = createFsEditTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
+    // After "foo -> bar", content becomes "bar bar" — second hunk "bar" is now ambiguous
+    const result = (await tool.execute({
+      path: "/test",
+      edits: [
+        { oldText: "foo", newText: "bar" },
+        { oldText: "bar", newText: "baz" },
+      ],
+    })) as { readonly error: string; readonly code: string };
+    expect(result.code).toBe("AMBIGUOUS");
+    expect(result.error).toContain("edits[1]");
+  });
+
+  test("accepts non-interacting multi-hunk edits", async () => {
+    const backend = {
+      ...createMockBackend(),
+      read: (_path: string) => ({
+        ok: true as const,
+        value: { content: "aaa bbb ccc", path: _path, size: 11 },
+      }),
+    };
+    const tool = createFsEditTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute({
+      path: "/test",
+      edits: [
+        { oldText: "aaa", newText: "xxx" },
+        { oldText: "ccc", newText: "zzz" },
+      ],
+    })) as { readonly path: string; readonly hunksApplied: number };
+    expect(result.hunksApplied).toBe(2);
   });
 
   test("returns cancelled when signal is already aborted", async () => {
