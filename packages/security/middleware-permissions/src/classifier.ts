@@ -122,7 +122,9 @@ function expandGroups(
 // ---------------------------------------------------------------------------
 
 export function createPatternPermissionBackend(config: PatternBackendConfig): PermissionBackend {
-  const groups = config.groups ?? {};
+  // Merge DEFAULT_GROUPS as base, then layer caller overrides on top.
+  // This ensures group:runtime etc. work without requiring explicit groups config.
+  const groups = { ...DEFAULT_GROUPS, ...config.groups };
   const defaultDeny = config.defaultDeny ?? true;
 
   // Expand groups at construction time

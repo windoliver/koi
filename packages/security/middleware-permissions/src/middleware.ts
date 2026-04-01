@@ -203,7 +203,14 @@ function validateApprovalDecision(
     return { kind: "deny", reason: obj.reason };
   }
   if (obj.kind === "modify") {
-    if (obj.updatedInput === null || typeof obj.updatedInput !== "object") return undefined;
+    // Must be a plain JSON object — reject null, arrays, and non-objects
+    if (
+      obj.updatedInput === null ||
+      typeof obj.updatedInput !== "object" ||
+      Array.isArray(obj.updatedInput)
+    ) {
+      return undefined;
+    }
     return { kind: "modify", updatedInput: obj.updatedInput as Record<string, unknown> };
   }
   return { kind: "allow" };
@@ -240,18 +247,20 @@ function computeApprovalCacheKey(
   agentId: string,
   toolId: string,
   input: unknown,
-  context: string,
+  context: string | undefined,
 ): string | undefined {
+  if (context === undefined) return undefined;
   const sorted = safeSerializeInput(input);
   if (sorted === undefined) return undefined;
   return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}`;
 }
 
 /** Serialize turn-scoped context for inclusion in approval cache keys. */
-function serializeTurnContext(ctx: TurnContext): string {
+/** Returns undefined when metadata is not serializable — caller must skip caching. */
+function serializeTurnContext(ctx: TurnContext): string | undefined {
   const meta = ctx.metadata;
   if (Object.keys(meta).length === 0) return "";
-  return safeStringify(meta) ?? "";
+  return safeStringify(meta);
 }
 
 function safeSerializeInput(value: unknown): string | undefined {
