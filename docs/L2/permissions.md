@@ -79,8 +79,8 @@ interface PermissionConfig {
 |------|----------|
 | `default` | Evaluate rules; fallback to `ask` |
 | `bypass` | Always allow (CI, trusted automation) |
-| `plan` | Deny write actions; allow reads |
-| `auto` | Evaluate rules; fallback to `allow` (classifier refines in #1236) |
+| `plan` | Evaluate rules for reads/discover; deny writes unconditionally. Unmatched reads return `ask`. Configure allow rules for expected read paths |
+| `auto` | Evaluate rules; fallback to `ask` (classifier in #1236 may promote to `allow`) |
 
 ## Rule precedence
 

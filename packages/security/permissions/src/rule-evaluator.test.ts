@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { PermissionQuery } from "@koi/core";
 
-import { compileGlob, evaluateRules } from "./rule-evaluator.js";
+import { compileGlob, evaluateRules, normalizeResource } from "./rule-evaluator.js";
 import type { CompiledRule } from "./rule-types.js";
 
 function makeRule(
@@ -105,6 +105,40 @@ describe("compileGlob", () => {
 });
 
 // ---------------------------------------------------------------------------
+// normalizeResource
+// ---------------------------------------------------------------------------
+
+describe("normalizeResource", () => {
+  test("resolves .. traversal segments", () => {
+    expect(normalizeResource("src/../secrets.env")).toBe("secrets.env");
+  });
+
+  test("resolves . segments", () => {
+    expect(normalizeResource("src/./index.ts")).toBe("src/index.ts");
+  });
+
+  test("collapses double slashes", () => {
+    expect(normalizeResource("src//index.ts")).toBe("src/index.ts");
+  });
+
+  test("preserves absolute paths", () => {
+    expect(normalizeResource("/etc/passwd")).toBe("/etc/passwd");
+  });
+
+  test(".. at root collapses to root", () => {
+    expect(normalizeResource("/../../etc/passwd")).toBe("/etc/passwd");
+  });
+
+  test("non-path resources pass through", () => {
+    expect(normalizeResource("agent:foo")).toBe("agent:foo");
+  });
+
+  test("nested traversal is fully resolved", () => {
+    expect(normalizeResource("src/deep/../../secrets.env")).toBe("secrets.env");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // evaluateRules
 // ---------------------------------------------------------------------------
 
@@ -160,6 +194,32 @@ describe("evaluateRules", () => {
     const rules = [makeRule("lib/**", "write", "allow")];
     const decision = evaluateRules(query, rules);
     expect(decision.effect).toBe("ask");
+  });
+
+  test("path traversal does not bypass allow rules", () => {
+    const rules = [makeRule("src/**", "write", "allow")];
+    const traversalQuery: PermissionQuery = {
+      principal: "agent-1",
+      action: "write",
+      resource: "src/../secrets.env",
+    };
+    // After normalization, src/../secrets.env → secrets.env which doesn't match src/**
+    const decision = evaluateRules(traversalQuery, rules);
+    expect(decision.effect).toBe("ask");
+  });
+
+  test("path traversal does not bypass deny rules", () => {
+    const rules = [makeRule("/etc/**", "*", "deny", "policy", "system files")];
+    const traversalQuery: PermissionQuery = {
+      principal: "agent-1",
+      action: "read",
+      resource: "/safe/../../etc/passwd",
+    };
+    // After normalization → /etc/passwd which matches /etc/**
+    expect(evaluateRules(traversalQuery, rules)).toEqual({
+      effect: "deny",
+      reason: "system files",
+    });
   });
 
   test("matches rule when principal matches", () => {

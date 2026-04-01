@@ -70,19 +70,57 @@ function matchPrincipal(compiledPrincipal: RegExp | undefined, principal: string
 }
 
 /**
+ * Normalize a resource string to prevent path traversal bypasses.
+ *
+ * - Collapses `//` to `/`
+ * - Resolves `.` and `..` segments
+ * - Preserves leading `/` for absolute paths
+ *
+ * Resources containing `..` that escape the root are collapsed to the root.
+ * Non-path resources (e.g., `agent:foo`) pass through unchanged.
+ */
+export function normalizeResource(resource: string): string {
+  // Non-path resources (no / at all) pass through as-is
+  if (!resource.includes("/")) {
+    return resource;
+  }
+
+  const isAbsolute = resource.startsWith("/");
+  const segments = resource.split("/");
+  const resolved: string[] = [];
+
+  for (const seg of segments) {
+    if (seg === "." || seg === "") {
+      continue;
+    }
+    if (seg === "..") {
+      resolved.pop();
+    } else {
+      resolved.push(seg);
+    }
+  }
+
+  const normalized = resolved.join("/");
+  return isAbsolute ? `/${normalized}` : normalized;
+}
+
+/**
  * Evaluate pre-compiled rules against a query. First matching rule wins.
  *
+ * Resources are normalized before matching to prevent path traversal bypasses.
  * Returns `{ effect: "ask" }` when no rule matches.
  */
 export function evaluateRules(
   query: PermissionQuery,
   rules: readonly CompiledRule[],
 ): PermissionDecision {
+  const resource = normalizeResource(query.resource);
+
   for (const rule of rules) {
     if (
       matchPrincipal(rule.compiledPrincipal, query.principal) &&
       matchAction(rule.action, query.action) &&
-      matchResource(rule.compiled, query.resource)
+      matchResource(rule.compiled, resource)
     ) {
       if (rule.effect === "allow") {
         return { effect: "allow" };
