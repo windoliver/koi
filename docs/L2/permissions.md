@@ -49,6 +49,8 @@ interface PermissionRule {
   readonly pattern: string;       // glob pattern matched against resource
   readonly action: string;        // action name or "*" for all
   readonly effect: "allow" | "deny" | "ask";
+  readonly principal?: string;    // glob matched against query.principal (omit = match all)
+  readonly context?: Record<string, string>; // key-value glob predicates on query.context
   readonly reason?: string;
 }
 
@@ -93,30 +95,52 @@ Rules are ordered by source: **policy > project > local > user**. First matching
 ```typescript
 import { createPermissionBackend, loadRules } from "@koi/permissions";
 
-const rules = loadRules(new Map([
+const result = loadRules(new Map([
   ["policy", [{ pattern: "/etc/**", action: "*", effect: "deny", reason: "system files" }]],
   ["project", [{ pattern: "src/**", action: "write", effect: "allow" }]],
   ["user", [{ pattern: "**", action: "read", effect: "allow" }]],
 ]));
+if (!result.ok) throw new Error(result.error.message);
 
-const backend = createPermissionBackend({ mode: "default", rules });
+const backend = createPermissionBackend({ mode: "default", rules: result.value });
 
-const decision = backend.check({
-  principal: "agent-1",
-  action: "write",
-  resource: "src/index.ts",
-});
+backend.check({ principal: "agent-1", action: "write", resource: "src/index.ts" });
 // { effect: "allow" }
+
+// Zone-scoped discovery rule (key must match what callers send)
+const discoverResult = loadRules(new Map([
+  ["policy", [{
+    pattern: "agent:**",
+    action: "discover",
+    effect: "allow",
+    context: { callerZoneId: "us-east-*" }, // matches visibility-filter's context key
+  }]],
+]));
 ```
+
+---
+
+## Caller contract
+
+**Resource paths**: Callers must supply canonical resource identifiers. For filesystem
+paths, resolve symlinks before constructing the query — the evaluator performs lexical
+normalization only (`.` and `..` resolution) and cannot detect symlink escapes.
+
+**Context keys**: Context predicates use exact key matching. Known context keys used
+by existing callers:
+- `callerZoneId` — set by `createVisibilityFilter()` for zone-scoped agent discovery
 
 ---
 
 ## Testing
 
-- Glob pattern matching (exact, `*`, `**`)
+- Glob pattern matching (exact, `*`, `**`, terminal `/**` matches directory root)
 - Action exact + wildcard matching
 - First-match-wins ordering
 - Source precedence (policy overrides user)
+- Principal glob matching
+- Context predicate glob matching (zone-scoped discovery)
+- Path traversal prevention (`..'` rejection, normalization)
 - Mode behavior (bypass/plan/default/auto)
 - Contract compliance: satisfies `PermissionBackend`
 

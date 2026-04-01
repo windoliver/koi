@@ -300,14 +300,14 @@ describe("evaluateRules", () => {
   test("matches rule when context predicate matches", () => {
     const rules = [
       makeRule("agent:**", "discover", "allow", "project", undefined, undefined, {
-        zoneId: "us-east-1",
+        callerZoneId: "us-east-1",
       }),
     ];
     const contextQuery: PermissionQuery = {
       principal: "agent-1",
       action: "discover",
       resource: "agent:bot-1",
-      context: { zoneId: "us-east-1" },
+      context: { callerZoneId: "us-east-1" },
     };
     expect(evaluateRules(contextQuery, rules)).toEqual({ effect: "allow" });
   });
@@ -315,14 +315,14 @@ describe("evaluateRules", () => {
   test("skips rule when context predicate does not match", () => {
     const rules = [
       makeRule("agent:**", "discover", "allow", "project", undefined, undefined, {
-        zoneId: "us-east-1",
+        callerZoneId: "us-east-1",
       }),
     ];
     const contextQuery: PermissionQuery = {
       principal: "agent-1",
       action: "discover",
       resource: "agent:bot-1",
-      context: { zoneId: "eu-west-1" },
+      context: { callerZoneId: "eu-west-1" },
     };
     expect(evaluateRules(contextQuery, rules).effect).toBe("ask");
   });
@@ -330,7 +330,7 @@ describe("evaluateRules", () => {
   test("skips rule when context is required but query has no context", () => {
     const rules = [
       makeRule("agent:**", "discover", "allow", "project", undefined, undefined, {
-        zoneId: "us-east-*",
+        callerZoneId: "us-east-*",
       }),
     ];
     const noContextQuery: PermissionQuery = {
@@ -344,14 +344,14 @@ describe("evaluateRules", () => {
   test("context glob patterns work", () => {
     const rules = [
       makeRule("agent:**", "discover", "allow", "project", undefined, undefined, {
-        zoneId: "us-*",
+        callerZoneId: "us-*",
       }),
     ];
     const contextQuery: PermissionQuery = {
       principal: "agent-1",
       action: "discover",
       resource: "agent:bot-1",
-      context: { zoneId: "us-west-2" },
+      context: { callerZoneId: "us-west-2" },
     };
     expect(evaluateRules(contextQuery, rules)).toEqual({ effect: "allow" });
   });
@@ -359,7 +359,7 @@ describe("evaluateRules", () => {
   test("cross-zone discovery denied with zone-scoped rule", () => {
     const rules = [
       makeRule("agent:**", "discover", "deny", "policy", "cross-zone", undefined, {
-        zoneId: "us-east-*",
+        callerZoneId: "us-east-*",
       }),
       makeRule("agent:**", "discover", "allow", "user"),
     ];
@@ -367,7 +367,7 @@ describe("evaluateRules", () => {
       principal: "agent-1",
       action: "discover",
       resource: "agent:bot-1",
-      context: { zoneId: "us-east-1" },
+      context: { callerZoneId: "us-east-1" },
     };
     expect(evaluateRules(crossZoneQuery, rules)).toEqual({
       effect: "deny",
