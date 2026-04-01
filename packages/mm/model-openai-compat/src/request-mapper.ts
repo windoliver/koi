@@ -16,6 +16,12 @@ import type {
   ResolvedConfig,
 } from "./types.js";
 
+/** Options threaded through message mapping. */
+interface MapOptions {
+  readonly compat: ResolvedCompat;
+  readonly trusted: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Tool call ID normalization
 // ---------------------------------------------------------------------------
@@ -123,14 +129,21 @@ function readStringMeta(metadata: JsonObject | undefined, key: string): string |
  * 3. senderId heuristic ("assistant", "tool")
  * 4. Default to "user"
  */
-function resolveRole(msg: InboundMessage): "user" | "assistant" | "tool" | "system" {
+function resolveRole(
+  msg: InboundMessage,
+  trusted: boolean,
+): "user" | "assistant" | "tool" | "system" {
   // Engine-injected control messages — only provenance-based, not metadata
   if (msg.senderId.startsWith("system:")) return "system";
 
-  // metadata.role for non-escalating roles only (not "system")
-  const explicitRole = readStringMeta(msg.metadata, "role");
-  if (explicitRole === "assistant" || explicitRole === "tool" || explicitRole === "user") {
-    return explicitRole;
+  // metadata.role for non-escalating roles — only when trusted (L1 engine).
+  // When untrusted, metadata.role is ignored to prevent external callers
+  // from injecting fake assistant/tool turns into the transcript.
+  if (trusted) {
+    const explicitRole = readStringMeta(msg.metadata, "role");
+    if (explicitRole === "assistant" || explicitRole === "tool" || explicitRole === "user") {
+      return explicitRole;
+    }
   }
 
   // senderId heuristic fallback
@@ -149,29 +162,31 @@ function resolveRole(msg: InboundMessage): "user" | "assistant" | "tool" | "syst
  */
 function mapOneMessage(
   msg: InboundMessage,
-  compat: ResolvedCompat,
+  opts: MapOptions,
   normalizeId: (id: string) => string,
 ): ChatCompletionMessage {
   const text = extractText(msg);
-  const role = resolveRole(msg);
+  const role = resolveRole(msg, opts.trusted);
 
   if (role === "assistant") {
-    let toolCalls = msg.metadata?.toolCalls as readonly ChatCompletionToolCall[] | undefined;
+    // Only read tool-call metadata when trusted (L1 engine). Untrusted callers
+    // cannot inject fake tool_calls/callId into the transcript.
+    let toolCalls: readonly ChatCompletionToolCall[] | undefined;
+    if (opts.trusted) {
+      toolCalls = msg.metadata?.toolCalls as readonly ChatCompletionToolCall[] | undefined;
 
-    // Session-repair fallback: when full toolCalls array is absent but callId
-    // is present, reconstruct a minimal tool_calls entry. Without this,
-    // fixTranscriptOrdering would drop the following tool result as orphaned,
-    // silently losing prior tool outputs from the conversation history.
-    if (
-      (toolCalls === undefined || toolCalls.length === 0) &&
-      readStringMeta(msg.metadata, "callId") !== undefined
-    ) {
-      const callId = readStringMeta(msg.metadata, "callId")!;
-      const callName = readStringMeta(msg.metadata, "callName") ?? "unknown";
-      const callArgs = readStringMeta(msg.metadata, "callArgs") ?? "{}";
-      toolCalls = [
-        { id: callId, type: "function", function: { name: callName, arguments: callArgs } },
-      ];
+      // Session-repair fallback: reconstruct tool_calls from callId
+      if (
+        (toolCalls === undefined || toolCalls.length === 0) &&
+        readStringMeta(msg.metadata, "callId") !== undefined
+      ) {
+        const callId = readStringMeta(msg.metadata, "callId")!;
+        const callName = readStringMeta(msg.metadata, "callName") ?? "unknown";
+        const callArgs = readStringMeta(msg.metadata, "callArgs") ?? "{}";
+        toolCalls = [
+          { id: callId, type: "function", function: { name: callName, arguments: callArgs } },
+        ];
+      }
     }
 
     // Normalize tool call IDs for provider compatibility
@@ -185,9 +200,13 @@ function mapOneMessage(
 
     // Handle thinking blocks in replay: if the provider requires thinking as
     // plain text, convert thinking metadata to text content prefix.
-    const thinkingText = readStringMeta(msg.metadata, "thinking");
+    const thinkingText = opts.trusted ? readStringMeta(msg.metadata, "thinking") : undefined;
     let content = text.length > 0 ? text : null;
-    if (thinkingText !== undefined && thinkingText.length > 0 && compat.requiresThinkingAsText) {
+    if (
+      thinkingText !== undefined &&
+      thinkingText.length > 0 &&
+      opts.compat.requiresThinkingAsText
+    ) {
       content = thinkingText + (content !== null ? `\n\n${content}` : "");
     }
 
@@ -199,14 +218,16 @@ function mapOneMessage(
   }
 
   if (role === "tool") {
-    const toolCallId =
-      readStringMeta(msg.metadata, "toolCallId") ?? readStringMeta(msg.metadata, "callId");
-    const toolName = readStringMeta(msg.metadata, "toolName");
+    // Only read tool linkage metadata when trusted
+    const toolCallId = opts.trusted
+      ? (readStringMeta(msg.metadata, "toolCallId") ?? readStringMeta(msg.metadata, "callId"))
+      : undefined;
+    const toolName = opts.trusted ? readStringMeta(msg.metadata, "toolName") : undefined;
     return {
       role: "tool",
       content: text,
       ...(toolCallId !== undefined ? { tool_call_id: normalizeId(toolCallId) } : {}),
-      ...(compat.requiresToolResultName && toolName !== undefined ? { name: toolName } : {}),
+      ...(opts.compat.requiresToolResultName && toolName !== undefined ? { name: toolName } : {}),
     };
   }
 
@@ -313,6 +334,7 @@ function maybeAddPromptCacheControl(
 export function mapMessages(
   messages: readonly InboundMessage[],
   compat: ResolvedCompat,
+  trusted = false,
 ): readonly ChatCompletionMessage[] {
   const unsupported = findNonTextBlockKind(messages);
   if (unsupported !== undefined) {
@@ -322,9 +344,9 @@ export function mapMessages(
     );
   }
 
-  // Stateful normalizer scoped to this transcript — detects ID collisions
+  const opts: MapOptions = { compat, trusted };
   const normalizeId = createIdNormalizer();
-  const mapped = messages.map((msg) => mapOneMessage(msg, compat, normalizeId));
+  const mapped = messages.map((msg) => mapOneMessage(msg, opts, normalizeId));
   return fixTranscriptOrdering(mapped, compat);
 }
 
@@ -359,8 +381,8 @@ export function buildRequestBody(
     }
   }
 
-  // Conversation messages
-  messages.push(...mapMessages(request.messages, config.compat));
+  // Conversation messages — trusted flag gates metadata.role/toolCalls access
+  messages.push(...mapMessages(request.messages, config.compat, config.trustTranscriptMetadata));
 
   // Prompt caching — gated on compat flag + model prefix
   const effectiveModel = request.model ?? config.model;

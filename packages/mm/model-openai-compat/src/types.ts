@@ -69,25 +69,29 @@ function detectCompat(baseUrl: string): ResolvedCompat {
   const isChutes = baseUrl.includes("chutes.ai");
   const isCerebras = baseUrl.includes("cerebras.ai");
   const isXai = baseUrl.includes("api.x.ai");
-  const isZai = baseUrl.includes("api.z.ai");
+  const _isZai = baseUrl.includes("api.z.ai");
   const isDeepSeek = baseUrl.includes("deepseek.com");
   const isGroq = baseUrl.includes("groq.com");
-  const isOpenCode = baseUrl.includes("opencode.ai");
+  const _isOpenCode = baseUrl.includes("opencode.ai");
   const isOpenRouter = baseUrl.includes("openrouter.ai");
+  const isOpenAI = baseUrl.includes("api.openai.com");
 
-  const isNonStandard = isCerebras || isXai || isChutes || isDeepSeek || isZai || isOpenCode;
+  // Known providers that support extended OpenAI features
+  const isFullyCompatible = isOpenRouter || isOpenAI;
 
   return {
-    supportsUsageInStreaming: true,
+    // Fail-closed for unknown providers: only emit fields that the core
+    // Chat Completions spec guarantees. Optional fields (store, developer
+    // role, stream_options) are enabled only for known providers. Generic
+    // proxies often reject unrecognized fields with HTTP 400.
+    supportsUsageInStreaming: isFullyCompatible || isGroq || isCerebras || isXai,
     maxTokensField: isChutes ? "max_tokens" : "max_completion_tokens",
-    supportsStore: !isNonStandard,
-    supportsDeveloperRole: !isNonStandard,
+    supportsStore: isFullyCompatible,
+    supportsDeveloperRole: isFullyCompatible,
     requiresToolResultName: false,
     requiresAssistantAfterToolResult: false,
     requiresThinkingAsText: isGroq || isDeepSeek,
-    supportsStrictMode: true,
-    // Prompt caching only for providers that support Anthropic-style
-    // cache_control blocks. Generic endpoints would reject the payload.
+    supportsStrictMode: isFullyCompatible,
     supportsPromptCaching: isOpenRouter,
   };
 }
@@ -141,6 +145,15 @@ export interface OpenAICompatAdapterConfig {
         readonly maxDelayMs?: number | undefined;
       }
     | undefined;
+  /**
+   * Trust message metadata for transcript replay (role, toolCalls, callId).
+   *
+   * Default: false (fail-closed). When false, metadata.role, toolCalls, and
+   * callId are ignored — only senderId heuristics determine message roles.
+   * Set to true ONLY when the adapter is called from a trusted L1 engine
+   * that constructs InboundMessage internally, not from external callers.
+   */
+  readonly trustTranscriptMetadata?: boolean | undefined;
 }
 
 /** Resolved config with defaults applied. */
@@ -152,6 +165,7 @@ export interface ResolvedConfig {
   readonly compat: ResolvedCompat;
   readonly headers: Readonly<Record<string, string>>;
   readonly provider: string;
+  readonly trustTranscriptMetadata: boolean;
 }
 
 export const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
@@ -186,6 +200,7 @@ export function resolveConfig(config: OpenAICompatAdapterConfig): ResolvedConfig
     compat: resolveCompat(baseUrl, config.compat),
     headers: config.headers ?? {},
     provider: config.provider ?? "openai-compat",
+    trustTranscriptMetadata: config.trustTranscriptMetadata ?? false,
   };
 }
 

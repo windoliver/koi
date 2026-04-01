@@ -66,7 +66,15 @@ export function createOpenAICompatAdapter(config: OpenAICompatAdapterConfig): Mo
     capabilities: resolved.capabilities,
     complete: (request) => {
       lazyPrewarm();
-      return complete(resolved, request, retryConfig, () => disableKeepAlive);
+      return complete(
+        resolved,
+        request,
+        retryConfig,
+        () => disableKeepAlive,
+        (v) => {
+          disableKeepAlive = v;
+        },
+      );
     },
     stream: (request) => {
       lazyPrewarm();
@@ -94,6 +102,7 @@ async function complete(
   request: ModelRequest,
   retryConfig: RetryConfig,
   getDisableKeepAlive: () => boolean,
+  setDisableKeepAlive: (v: boolean) => void,
 ): Promise<ModelResponse> {
   let lastResponse: ModelResponse | undefined;
 
@@ -102,7 +111,7 @@ async function complete(
     request,
     retryConfig,
     getDisableKeepAlive,
-    () => {},
+    setDisableKeepAlive,
   )) {
     if (chunk.kind === "done") {
       lastResponse = chunk.response;
