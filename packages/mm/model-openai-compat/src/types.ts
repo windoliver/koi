@@ -7,7 +7,7 @@ import type { ModelCapabilities } from "@koi/core/model-provider";
 /**
  * Configuration for creating an OpenRouter-compatible model adapter.
  */
-export interface OpenRouterAdapterConfig {
+export interface OpenAICompatAdapterConfig {
   /** API key for authentication. */
   readonly apiKey: string;
   /** Provider API base URL. Defaults to OpenRouter. */
@@ -18,7 +18,7 @@ export interface OpenRouterAdapterConfig {
   readonly capabilities?: Partial<ModelCapabilities> | undefined;
   /** Additional HTTP headers for every request. */
   readonly headers?: Readonly<Record<string, string>> | undefined;
-  /** Provider name for telemetry. Defaults to "openrouter". */
+  /** Provider name for telemetry. Defaults to "openai-compat". */
   readonly provider?: string | undefined;
 }
 
@@ -43,7 +43,7 @@ export const DEFAULT_CAPABILITIES: ModelCapabilities = {
   maxOutputTokens: 4096,
 };
 
-export function resolveConfig(config: OpenRouterAdapterConfig): ResolvedConfig {
+export function resolveConfig(config: OpenAICompatAdapterConfig): ResolvedConfig {
   const capabilities = { ...DEFAULT_CAPABILITIES, ...config.capabilities };
 
   // Fail closed: do not advertise capabilities the adapter cannot serve.
@@ -61,7 +61,7 @@ export function resolveConfig(config: OpenRouterAdapterConfig): ResolvedConfig {
     model: config.model,
     capabilities,
     headers: config.headers ?? {},
-    provider: config.provider ?? "openrouter",
+    provider: config.provider ?? "openai-compat",
   };
 }
 

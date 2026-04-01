@@ -1,6 +1,6 @@
 {
-  "name": "@koi/model-openrouter",
-  "description": "Thin OpenAI-compatible model adapter for OpenRouter and other Chat Completions APIs",
+  "name": "@koi/model-openai-compat",
+  "description": "Thin OpenAI-compatible model adapter for OpenAI-compatible and other Chat Completions APIs",
   "version": "0.0.0",
   "private": true,
   "type": "module",

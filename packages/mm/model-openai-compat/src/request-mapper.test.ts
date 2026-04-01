@@ -14,7 +14,7 @@ const CONFIG: ResolvedConfig = {
   model: "test-model",
   capabilities: DEFAULT_CAPABILITIES,
   headers: {},
-  provider: "openrouter",
+  provider: "openai-compat",
 };
 
 function makeMessage(text: string, senderId = "user-1"): InboundMessage {

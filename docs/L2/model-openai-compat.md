@@ -1,6 +1,6 @@
-# @koi/model-openrouter
+# @koi/model-openai-compat
 
-> Thin OpenAI-compatible model adapter for OpenRouter and any Chat Completions API.
+> Thin OpenAI-compatible model adapter for OpenAI-compatible and any Chat Completions API.
 
 ## Layer
 
@@ -9,13 +9,13 @@ L2 — imports from `@koi/core` only.
 ## Purpose
 
 Implements the `ModelAdapter` contract from `@koi/core` for providers using the
-OpenAI Chat Completions API shape. Works with OpenRouter, direct OpenAI, Groq,
+OpenAI Chat Completions API shape. Works with OpenAI-compatible, direct OpenAI, Groq,
 xAI, and any compatible endpoint.
 
 ## Public Surface
 
 ```typescript
-createOpenRouterAdapter(config: OpenRouterAdapterConfig): ModelAdapter
+createOpenAI-compatibleAdapter(config: OpenAI-compatibleAdapterConfig): ModelAdapter
 ```
 
 ### Config
@@ -23,11 +23,11 @@ createOpenRouterAdapter(config: OpenRouterAdapterConfig): ModelAdapter
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `apiKey` | `string` | — | API key for the provider |
-| `baseUrl` | `string` | `https://openrouter.ai/api/v1` | Provider API base URL |
+| `baseUrl` | `string` | `https://openai-compat.ai/api/v1` | Provider API base URL |
 | `model` | `string` | — | Model identifier (e.g., `anthropic/claude-sonnet-4`) |
 | `capabilities` | `Partial<ModelCapabilities>` | auto-detected | Override capability flags |
 | `headers` | `Record<string, string>` | — | Additional HTTP headers |
-| `provider` | `string` | `openrouter` | Provider name for telemetry |
+| `provider` | `string` | `openai-compat` | Provider name for telemetry |
 
 ## Streaming
 

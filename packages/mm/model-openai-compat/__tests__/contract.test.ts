@@ -7,7 +7,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import type { ModelAdapter, ModelChunk, ModelRequest } from "@koi/core";
-import { createOpenRouterAdapter } from "../src/adapter.js";
+import { createOpenAICompatAdapter } from "../src/adapter.js";
 
 // ---------------------------------------------------------------------------
 // Reusable contract test runner
@@ -220,7 +220,7 @@ afterAll(() => {
 });
 
 runModelAdapterContractTests("OpenRouter", () => ({
-  adapter: createOpenRouterAdapter({
+  adapter: createOpenAICompatAdapter({
     apiKey: "contract-test-key",
     baseUrl: `http://localhost:${server.port}/v1`,
     model: "test-model",

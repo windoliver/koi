@@ -124,8 +124,8 @@
         "zod": "4.3.6",
       },
     },
-    "packages/mm/model-openrouter": {
-      "name": "@koi/model-openrouter",
+    "packages/mm/model-openai-compat": {
+      "name": "@koi/model-openai-compat",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -315,7 +315,7 @@
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
 
-    "@koi/model-openrouter": ["@koi/model-openrouter@workspace:packages/mm/model-openrouter"],
+    "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 

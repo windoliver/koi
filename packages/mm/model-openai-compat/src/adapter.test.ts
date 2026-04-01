@@ -5,7 +5,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { ModelChunk, ModelRequest } from "@koi/core";
-import { createOpenRouterAdapter } from "./adapter.js";
+import { createOpenAICompatAdapter } from "./adapter.js";
 
 // ---------------------------------------------------------------------------
 // Mock SSE server
@@ -85,7 +85,7 @@ describe("adapter: text stream", () => {
       ].join("\n"),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -127,7 +127,7 @@ describe("adapter: tool call stream", () => {
       ].join("\n"),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -166,7 +166,7 @@ describe("adapter: HTTP 429 rate limit", () => {
       }),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -196,7 +196,7 @@ describe("adapter: HTTP 401 auth error", () => {
       }),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "bad-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -230,7 +230,7 @@ describe("adapter: complete()", () => {
       ].join("\n"),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -255,7 +255,7 @@ describe("adapter: complete()", () => {
     });
 
     const controller = new AbortController();
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -276,7 +276,7 @@ describe("adapter: complete()", () => {
       body: JSON.stringify({ error: { message: "Server error" } }),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -308,7 +308,7 @@ describe("adapter: mid-stream abort", () => {
     });
 
     const controller = new AbortController();
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -357,7 +357,7 @@ describe("adapter: truncated stream detection", () => {
       ].join("\n"),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -390,7 +390,7 @@ describe("adapter: retry metadata propagation", () => {
       body: JSON.stringify({ error: { message: "Rate limited" } }),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -425,7 +425,7 @@ describe("adapter: model override in response", () => {
       ].join("\n"),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "default-model",
@@ -461,7 +461,7 @@ describe("adapter: [DONE] without finish_reason", () => {
       ].join("\n"),
     });
 
-    const adapter = createOpenRouterAdapter({
+    const adapter = createOpenAICompatAdapter({
       apiKey: "test-key",
       baseUrl: `${baseUrl}/v1`,
       model: "test-model",
@@ -488,7 +488,7 @@ describe("adapter: [DONE] without finish_reason", () => {
 describe("adapter: config validation", () => {
   test("rejects vision: true in capabilities override", () => {
     expect(() =>
-      createOpenRouterAdapter({
+      createOpenAICompatAdapter({
         apiKey: "test-key",
         baseUrl: `${baseUrl}/v1`,
         model: "test-model",

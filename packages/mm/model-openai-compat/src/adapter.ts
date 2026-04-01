@@ -8,7 +8,7 @@ import { buildRequestBody } from "./request-mapper.js";
 import { buildModelResponse, createEmptyAccumulator } from "./response-mapper.js";
 import { createStreamParser, parseSSELines } from "./stream-parser.js";
 import { mapToolDescriptors } from "./tool-mapper.js";
-import type { OpenRouterAdapterConfig, ResolvedConfig } from "./types.js";
+import type { OpenAICompatAdapterConfig, ResolvedConfig } from "./types.js";
 import { resolveConfig } from "./types.js";
 
 /**
@@ -19,7 +19,7 @@ import { resolveConfig } from "./types.js";
  * All request preparation happens before `fetch()` — zero blocking in the
  * streaming path.
  */
-export function createOpenRouterAdapter(config: OpenRouterAdapterConfig): ModelAdapter {
+export function createOpenAICompatAdapter(config: OpenAICompatAdapterConfig): ModelAdapter {
   const resolved = resolveConfig(config);
 
   const adapter: ModelAdapter = {
