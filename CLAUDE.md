@@ -410,6 +410,32 @@ bun run check:duplicates  # no copy-paste blocks
 - ALWAYS read `docs/L2/<package>.md` before modifying a package
 - ALWAYS run affected tests before submitting (`bun run test --filter=<package>`)
 
+### Harness Integration Rule (every new package)
+
+Every new v2 package PR **must** update `@koi/harness` (#1188). No exceptions.
+
+| Step | What | Why |
+|------|------|-----|
+| 1. Wire | Add package to harness assembly (replace its stub with real impl) | Harness is the integration surface |
+| 2. Debug | Add package to `HarnessDebugInfo` output (name, enabled, config) | Debug view shows what's wired |
+| 3. Golden queries | Add structural assertions to E2E golden query sets | New package must not break existing queries; add assertions for new behavior |
+| 4. VCR cassette | Re-record cassettes if model/tool behavior changed | CI replay tests must pass |
+| 5. Optional? | Document in harness config whether package is required or optional | `createHarness()` must boot with or without optional packages |
+
+**Test the harness after wiring:**
+```bash
+# Unit: harness boots with new package wired
+bun run test --filter=@koi/harness
+
+# E2E (gated): full loop with real LLM
+E2E_TESTS=1 bun run test --filter=@koi/harness
+
+# Interactive: test via CLI debug view
+bun run packages/meta/harness/bin/test-cli.ts
+```
+
+**Debug view must show** for each package: name, enabled/stubbed status, configuration summary. Use `/debug` slash command or startup banner.
+
 ## Tmux (parallel agent safety)
 
 Multiple Claude Code agents run in parallel across worktrees. **Always** prefix tmux session names with the worktree slug to avoid conflicts:
