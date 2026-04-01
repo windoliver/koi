@@ -505,6 +505,56 @@ describe("createPermissionsMiddleware", () => {
     });
   });
 
+  describe("malformed backend responses (fail-closed)", () => {
+    test("empty object from backend denies tool", async () => {
+      const backend: PermissionBackend = {
+        check: () => ({}) as PermissionDecision,
+      };
+      const mw = createPermissionsMiddleware({ backend });
+
+      await expect(
+        mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("test"), noopToolHandler),
+      ).rejects.toThrow("Malformed");
+    });
+
+    test("unknown effect from backend denies tool", async () => {
+      const backend: PermissionBackend = {
+        check: () => ({ effect: "bogus" }) as unknown as PermissionDecision,
+      };
+      const mw = createPermissionsMiddleware({ backend });
+
+      await expect(
+        mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("test"), noopToolHandler),
+      ).rejects.toThrow("Malformed");
+    });
+
+    test("deny without reason from backend denies with validation message", async () => {
+      const backend: PermissionBackend = {
+        check: () => ({ effect: "deny" }) as unknown as PermissionDecision,
+      };
+      const mw = createPermissionsMiddleware({ backend });
+
+      await expect(
+        mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("test"), noopToolHandler),
+      ).rejects.toThrow("Malformed");
+    });
+
+    test("short checkBatch response denies all uncached", async () => {
+      const backend: PermissionBackend = {
+        check: () => ({ effect: "allow" }),
+        checkBatch: () => [{ effect: "allow" }] as readonly PermissionDecision[], // short
+      };
+      const mw = createPermissionsMiddleware({ backend });
+      const handler = mock(noopModelHandler);
+
+      // Request 3 tools, batch returns only 1 — should deny the missing ones
+      await mw.wrapModelCall?.(makeTurnContext(), makeModelRequest(["a", "b", "c"]), handler);
+      const passedReq = handler.mock.calls[0]?.[0] as ModelRequest;
+      // All 3 should be denied (batch length mismatch = fail-closed for entire batch)
+      expect(passedReq.tools?.length).toBe(0);
+    });
+  });
+
   describe("middleware identity", () => {
     test("has correct name and phase", () => {
       const mw = createPermissionsMiddleware({ backend: allowAll() });

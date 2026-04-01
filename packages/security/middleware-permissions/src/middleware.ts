@@ -156,6 +156,32 @@ function createApprovalCache(
 }
 
 // ---------------------------------------------------------------------------
+// Decision validation (fail-closed on malformed backend responses)
+// ---------------------------------------------------------------------------
+
+const VALID_EFFECTS = new Set(["allow", "deny", "ask"]);
+
+const FAIL_CLOSED_DENY: PermissionDecision = {
+  effect: "deny",
+  reason: "Malformed backend decision — failing closed",
+};
+
+/**
+ * Validate a backend decision at the trust boundary. Malformed or
+ * unexpected shapes are converted to deny (fail-closed) rather than
+ * silently falling through to allow.
+ */
+function validateDecision(raw: unknown): PermissionDecision {
+  if (raw === null || typeof raw !== "object") return FAIL_CLOSED_DENY;
+  const obj = raw as Record<string, unknown>;
+  if (!VALID_EFFECTS.has(obj.effect as string)) return FAIL_CLOSED_DENY;
+  if (obj.effect === "deny" || obj.effect === "ask") {
+    if (typeof obj.reason !== "string") return FAIL_CLOSED_DENY;
+  }
+  return raw as PermissionDecision;
+}
+
+// ---------------------------------------------------------------------------
 // Cache key helpers
 // ---------------------------------------------------------------------------
 
@@ -316,7 +342,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     }
 
     try {
-      const decision = await backend.check(query);
+      const decision = validateDecision(await backend.check(query));
       if (cb !== undefined) cb.recordSuccess();
       if (decisionCache !== undefined) {
         decisionCache.set(decisionCacheKey(query), decision);
@@ -375,18 +401,28 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     // Resolve uncached queries
     const uncachedQueries = uncachedIndices.map((i) => queries[i]!);
     try {
-      let decisions: readonly PermissionDecision[];
+      let rawDecisions: readonly unknown[];
       if (backend.checkBatch !== undefined) {
-        decisions = await backend.checkBatch(uncachedQueries);
+        rawDecisions = (await backend.checkBatch(uncachedQueries)) as readonly unknown[];
       } else {
-        decisions = await Promise.all(uncachedQueries.map((q) => backend.check(q)));
+        rawDecisions = (await Promise.all(
+          uncachedQueries.map((q) => backend.check(q)),
+        )) as readonly unknown[];
       }
 
       if (cb !== undefined) cb.recordSuccess();
 
+      // Validate batch length — fail closed on mismatch
+      if (!Array.isArray(rawDecisions) || rawDecisions.length !== uncachedQueries.length) {
+        for (const i of uncachedIndices) {
+          results[i] = FAIL_CLOSED_DENY;
+        }
+        return results as readonly PermissionDecision[];
+      }
+
       for (let j = 0; j < uncachedIndices.length; j++) {
         const idx = uncachedIndices[j]!;
-        const decision = decisions[j]!;
+        const decision = validateDecision(rawDecisions[j]);
         results[idx] = decision;
         if (decisionCache !== undefined) {
           decisionCache.set(decisionCacheKey(queries[idx]!), decision);
