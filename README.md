@@ -5,95 +5,111 @@
 <h1 align="center">Koi</h1>
 
 <p align="center">
-  <strong>The self-extending agent operating system.</strong><br/>
-  238 packages. 7 contracts. One YAML file.
+  <strong>The self-evolving agent operating system.</strong><br/>
+  Agents that run 24/7, forge their own tools, and rewrite their own harness — securely.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/TypeScript-Strict-blue?logo=typescript" alt="TypeScript Strict" />
   <img src="https://img.shields.io/badge/Runtime-Bun%201.3-f9f1e1?logo=bun" alt="Bun 1.3" />
-  <img src="https://img.shields.io/badge/PRs-Welcome-brightgreen" alt="PRs Welcome" />
+<img src="https://img.shields.io/badge/PRs-Welcome-brightgreen" alt="PRs Welcome" />
 </p>
 
 <p align="center">
+  <a href="#why-koi">Why Koi</a> &middot;
   <a href="#quickstart">Quickstart</a> &middot;
-  <a href="#presets">Presets</a> &middot;
-  <a href="#what-makes-koi-different">Why Koi</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
-  <a href="#cli">CLI</a> &middot;
-  <a href="docs/user-guide.md">Docs</a> &middot;
-  <a href="#contributing">Contributing</a>
+  <a href="#roadmap">Roadmap</a> &middot;
+  <a href="docs/user-guide.md">Docs</a>
 </p>
 
 ---
 
-> **Koi is an agent operating system, not another agent framework.** Agents forge their own tools at runtime — with 4-stage verification so they can't go rogue. Talk to them across 15 channels, from CLI to Telegram to Voice to AG-UI. Rewind any agent to any checkpoint with time-travel debugging. Route tokens through Haiku → Sonnet → Opus cascade routing to cut costs 10×. Govern multi-agent delegation with HMAC-signed, scope-attenuated tokens. And query every data source — SQL, REST, filesystem — through a single path API where everything is a file.
+> **Status: Active development.** Koi's L0 contracts (types + interfaces) and architecture are stable. The v2 engine rewrite is in progress — see [Roadmap](#roadmap) for what's shipped vs. what's next. Not yet published to npm; build from source.
+
+---
+
+## Why Koi
+
+### Self-Evolving <sup>v1 shipped, v2 in progress</sup>
+
+Agents **forge new tools at runtime** when they hit a problem they can't solve. Every forged artifact passes 4-stage verification: static analysis → sandbox execution → adversarial probes → trust tier promotion. Learned patterns crystallize into reusable skills. Middleware stacks self-optimize. The agent you deploy on day 1 is not the agent running on day 30.
+
+### Always-On <sup>v1 shipped, v2 Phase 3</sup>
+
+Not request-response chatbots — **daemons**. Sleep/wake cycles, cron schedules, proactive PR monitoring, push alerts across any channel. Your agent watches GitHub overnight and briefs you on Telegram before you open your laptop.
+
+### Secure by Architecture
+
+Self-evolving agents without security is a nightmare. Koi treats security as a first-class architectural concern — not a bolt-on:
+
+- **4-stage forge verification** — static analysis → sandbox execution → adversarial probes → trust tier promotion. Forged tools run isolated before they earn trust.
+- **HMAC-signed delegation** — agents delegate to sub-agents with capability tokens that monotonically attenuate scope. A child can never exceed its parent.
+- **21 security packages** — permissions, audit trails, budget enforcement, graduated sanctions, intent capsules, cascading revocation.
+- **11 sandbox backends** — Docker, E2B, Wasm, Cloudflare Workers, Vercel, Daytona, OS sandbox.
+- **Governed by contracts** — the kernel defines what agents can do. L0 contracts are the security boundary.
+
+### Self-Harnessing <sup>v1 shipped, v2 Phase 3</sup>
+
+The feedback loop that ties it together: run → encounter novel patterns → forge tools → verify → promote through trust tiers → crystallize into manifest → harness evolves. The agent doesn't just execute — it learns what to execute, builds the tools to do it, and rewires itself.
+
+### 15 Channels <sup>v1 shipped, v2 Phase 3</sup>
+
+CLI. Telegram. Slack. Discord. WhatsApp. Voice. Email. Signal. Teams. Matrix. Mobile. AG-UI. Chat SDK. Canvas. Web. One manifest, all of them.
+
+### Everything is a File
+
+SQL, REST, filesystem, agent memory — one path API. `nexus://agents/briefer/memory` and `nexus://sources/postgres/users` are the same query.
+
+### Time Travel
+
+Snapshot any agent. Rewind to a checkpoint, fork a timeline, replay from known-good state.
+
+### Token Economics
+
+Haiku → Sonnet → Opus cascade routing. Daily budgets, circuit breakers, kill switches. Cost tracked per tool call.
+
+### MCP Compatible
+
+Every MCP server from Claude Desktop, Cursor, or VS Code works in Koi. Two lines of YAML.
+
+---
 
 ## Quickstart
 
-> **Pre-release**: Koi is not yet published to npm. Build from source — see [Development](#development).
-
 ```bash
-git clone https://github.com/windoliver/koi.git
-cd koi
-bun install
-bun run build:cli
+git clone https://github.com/windoliver/koi.git && cd koi
+bun install && bun run build:cli
 ```
 
-Create and run an agent:
-
 ```bash
-bun run koi -- init my-agent      # interactive wizard (pick a preset)
+bun run koi -- init my-agent    # interactive wizard
 cd my-agent
-bun run up                        # starts runtime + admin panel + TUI
+bun run up                      # runtime + admin + TUI
 ```
 
-The wizard asks you to pick a **preset** (local, demo, or mesh), a model, and optional channels. It generates a `koi.yaml` manifest, `.env` file, and everything needed to run.
-
-### What `koi up` starts
-
-`koi up` is the primary entry point. It orchestrates everything in one command:
-
-- Agent runtime on your configured model
-- Admin panel at `http://localhost:3100/admin`
-- Embedded Nexus (data layer) in local mode
-- TUI operator console (demo/mesh presets)
-- Health endpoint at `http://localhost:9100/health`
-- Demo data seeding (demo preset: 530 employees, 120 customers, 30 products)
+`koi up` boots Nexus (data layer), agent runtime, admin panel at `localhost:3100/admin`, and TUI console.
 
 ### The manifest is the agent
 
 ```yaml
-# koi.yaml
 name: my-agent
-version: 0.1.0
-description: My first Koi agent
 model: "anthropic:claude-sonnet-4-5-20250514"
 preset: demo
-
 channels:
   - name: "@koi/channel-cli"
-
 tools:
   koi:
     - name: "@koi/tool-ask-user"
     - name: "@koi/tools-web"
-    - name: "@koi/tool-exec"
-
 forge:
   enabled: true
-
+schedule: "0 7 * * *"
 autonomous:
   enabled: true
-
-demo:
-  pack: connected
-
-context:
-  bootstrap: true
 ```
 
-Add a channel? One line. Add an MCP server? Two lines. Add budget controls? Three lines.
+Add a channel, MCP server, or budget control — one line each:
 
 ```yaml
 channels:
@@ -106,410 +122,136 @@ middleware:
   - "@koi/middleware-pay": { budget: { daily: 0.50 } }
 ```
 
-## Presets
-
-The `koi init` wizard lets you pick a preset that controls how much infrastructure `koi up` starts:
-
-| Preset | What you get | Best for |
-|--------|-------------|----------|
-| **local** | CLI agent + Nexus (no auth). Minimal. | Learning, quick tests |
-| **demo** | Full experience: TUI, admin panel, forge, autonomous mode, demo data (HERB enterprise dataset), auto-provisioned helper agents | First-time demo, showing Koi's capabilities |
-| **mesh** | Everything in demo + gateway + multi-agent node + governance | Multi-agent orchestration |
-
-### Demo preset details
-
-The demo preset auto-seeds a fictional enterprise (HERB) into Nexus with:
-- 530 employees, 120 customers, 30 products, 20 Q&A pairs
-- Pre-computed forge brick views for the dashboard
-- A `research-helper` agent alongside your primary agent
-- Soul personality file at `.koi/SOUL.md`
-
-Start chatting immediately — try "What did I learn?" or "Show me data."
-
-## What Makes Koi Different
-
-### Forge — Self-Extension with Verification
-
-Agents create their own tools, skills, and sub-agents at runtime. Every forged artifact passes 4-stage verification: static analysis, sandbox execution, adversarial probes, and trust tier promotion. No other framework lets agents grow their own capabilities *and* keeps them safe.
-
-```yaml
-forge:
-  enabled: true
-  maxForgesPerSession: 5
-```
-
-### 15 Channels — Meet Users Where They Are
-
-CLI, Telegram, Slack, Discord, WhatsApp, Voice, Email, Signal, Teams, Matrix, Mobile, AG-UI, Chat SDK, Canvas, Web. Same agent, same manifest — just add a line.
-
-```yaml
-channels:
-  - name: "@koi/channel-cli"
-  - "@koi/channel-telegram": { token: ${TELEGRAM_BOT_TOKEN} }
-  - "@koi/channel-slack": { token: ${SLACK_BOT_TOKEN} }
-```
-
-### Time Travel — Rewind, Fork, Replay
-
-Snapshot any agent at any point. Rewind to a previous checkpoint, fork a new timeline, or replay from a known-good state. Built on an immutable snapshot chain with content-addressed storage.
-
-### Token Economics — Cascade Routing
-
-Route requests through Haiku → Sonnet → Opus based on complexity. Set daily budgets, circuit breakers, and kill switches. Pay-per-tool metering tracks cost to the individual tool call.
-
-```yaml
-middleware:
-  - "@koi/middleware-pay": { budget: { daily: 0.50 } }
-  - "@koi/middleware-circuit-breaker": { threshold: 5, window: 60 }
-```
-
-### Governed Delegation — Multi-Agent Trust
-
-Agents delegate to sub-agents with HMAC-signed tokens that monotonically attenuate scope. A child agent can never have more permissions than its parent. Cascading revocation kills an entire delegation tree in one call.
-
-```yaml
-middleware:
-  - "@koi/middleware-permissions": { default: ask }
-  - "@koi/middleware-delegation-escalation": {}
-```
-
-### Everything is a File — Nexus Unified Namespace
-
-SQL databases, REST APIs, local files, agent memory — all accessible through a single path API. Query `nexus://agents/briefer/memory/preferences` the same way you query `nexus://sources/postgres/users`. Auto-starts in embed mode (SQLite + filesystem) or connects to a shared Nexus server.
-
-```yaml
-nexus:
-  url: https://nexus.example.com
-context:
-  sources:
-    - kind: memory
-      query: "user preferences"
-```
-
-### MCP Ecosystem — Plug and Play
-
-Any MCP server works as a tool. The same servers that work in Claude Desktop, Cursor, and VS Code work in Koi — declared in two lines of YAML.
-
-```yaml
-tools:
-  mcp:
-    - name: yahoo-finance
-      command: "npx yahoo-finance-mcp"
-    - name: playwright
-      command: "npx @anthropic/mcp-server-playwright"
-```
+---
 
 ## Architecture
 
-Koi uses a strict five-layer architecture. Layer violations are build errors.
+Six layers, 245 packages. Layer violations are build errors.
 
 ```
-L0  @koi/core        Interfaces-only kernel. Types + contracts. Zero logic. Zero deps.
-L0u 44 utility pkgs   Pure functions — errors, validation, hashing, manifests. Zero business logic.
-L1  @koi/engine       Kernel runtime. Guards, lifecycle, middleware composition.
-L2  @koi/*            Feature packages. Each depends on L0/L0u only. Never on L1 or peers.
-L3  Meta-packages     Convenience bundles (e.g., @koi/starter = L0 + L1 + selected L2).
+L0   @koi/core           Contracts only. Zero logic. Zero deps.
+L0u  47 utility pkgs     Pure functions. No business logic.
+L1   @koi/engine         Kernel runtime. Lifecycle, guards, middleware.
+L2   169 feature pkgs    Import L0/L0u only. Never L1 or peers.
+L3   23 meta-packages    Wiring. The only place L1 + L2 meet.
+L4   2 distribution pkgs Publishable bundles.
 ```
 
 ### 7 Contracts
 
-The kernel defines 7 extension contracts — the syscall table of the agent OS:
-
 | Contract | Purpose | Surface |
 |----------|---------|---------|
-| **Middleware** | Sole interposition layer for model/tool calls | 7 optional hooks |
-| **Message** | Inbound/outbound data format | `ContentBlock[]` |
-| **Channel** | I/O interface to users | `send()` + `onMessage()` |
-| **Resolver** | Discovery of tools/skills/agents | `discover()` + `load()` |
-| **Assembly** | What an agent IS (manifest) | Declarative YAML config |
+| **Middleware** | Sole interposition for model + tool calls | 7 hooks |
+| **Message** | Data format | `ContentBlock[]` |
+| **Channel** | User I/O | `send()` + `onMessage()` |
+| **Resolver** | Tool/skill/agent discovery | `discover()` + `load()` |
+| **Assembly** | Agent definition | Declarative YAML |
 | **Engine** | Swappable agent loop | `stream()` |
-| **AgentRegistry** | Agent lifecycle management | CAS transitions + `watch()` |
+| **AgentRegistry** | Lifecycle management | CAS + `watch()` |
 
-Plus ECS composition: Agent = entity, Tool = component, Middleware = system.
-
-### Key Subsystems
-
-| Subsystem | Packages | What it does |
-|-----------|----------|-------------|
-| **Middleware** | 39 | Interposition for memory, retry, pay, PII, sandbox, permissions, circuit breakers, and more |
-| **Channels** | 15 | Every surface from CLI to Voice to AG-UI |
-| **Forge** | 11 | Safe self-extension: demand analysis, verification, crystallization, trust tiers |
-| **Security** | 21 | Permissions, audit, budget, delegation, graduated sanctions, intent capsules |
-| **Sandbox** | 11 | Docker, E2B, Wasm, Cloudflare Workers, Vercel, Daytona, OS sandbox, and more |
-| **Memory** | 16 | Hot/warm/cold memory, context editing, conversation, user modeling, compaction |
-| **Observability** | 12 | Dashboard, eval, tracing, monitoring, debug — real-time admin panel with SSE |
-| **IPC** | 9 | Gateway, Node, mDNS, task board, agent spawner, federation |
-| **Engines** | 7 | Pi (primary), Claude SDK, ReAct loop, external process, ACP, browser, model router |
+ECS composition: **Agent** = entity, **Tool** = component, **Middleware** = system.
 
 <details>
-<summary><strong>Linux → Koi mental model</strong></summary>
+<summary><strong>Subsystems</strong></summary>
 
-Every Koi concept maps 1:1 to a Linux kernel equivalent:
-
-| Linux | Koi | Where it lives |
-|-------|-----|----------------|
-| `task_struct` | `ProcessDescriptor` | L0 `@koi/core` |
-| Process state (RUNNING/STOPPED/ZOMBIE) | `ProcessState` + `AgentCondition[]` | L0 type, L1 state machine |
-| `/proc/PID/status` | `agent-procfs` `/agents/<id>/descriptor` | L2 sidecar |
-| `fork(2)` + `exec(2)` | `SpawnFn` | L0 contract → `@koi/execution-context` |
-| `mqueue(7)` | `MailboxComponent` | L0 contract → `ipc-local` / `ipc-nexus` |
-| Signals (SIGTERM/SIGSTOP) | `AGENT_SIGNALS` (STOP/CONT/TERM/USR1/USR2) | L0 → gateway → node → agent |
-| `cgroups` | `GovernanceVariable` readings | Governance middleware |
-| `capabilities(7)` | `DelegationGrant` | HMAC-signed, monotonically attenuated |
-| `systemd` | `SupervisionController` | L1 `@koi/engine` |
-| `/sys/` | Syscall table (7 contracts) | L0 |
-| VFS | `FileSystemBackend` + Nexus Unified Namespace | Every domain concept is a path |
-| netfilter/iptables | `KoiMiddleware` with phase typing | INTERCEPT / OBSERVE / RESOLVE |
-| Device drivers | Engine adapters | L2 |
-| Kernel modules | L2 feature packages | Independent, swappable |
+| Domain | Pkgs | Highlights |
+|--------|------|-----------|
+| Middleware | 39 | Memory, retry, pay, PII, sandbox, permissions, circuit breakers |
+| Channels | 15 | CLI to Voice to AG-UI |
+| Forge | 11 | Demand analysis, verification, crystallization, trust tiers |
+| Security | 21 | Delegation, audit, budget, graduated sanctions, intent capsules |
+| Sandbox | 11 | Docker, E2B, Wasm, CF Workers, Vercel, Daytona |
+| Memory | 16 | Hot/warm/cold, context editing, compaction |
+| Observability | 12 | Dashboard, eval, tracing, real-time SSE |
+| Multi-Agent | 9 | Gateway, federation, task board, handoff |
+| Engines | 7 | Claude SDK, ReAct, ACP, browser, model router |
 
 </details>
 
-## Manifest
+<details>
+<summary><strong>Linux kernel mental model</strong></summary>
 
-The `koi.yaml` manifest defines everything about an agent declaratively — YAML is the agent.
+| Linux | Koi |
+|-------|-----|
+| `task_struct` | `ProcessDescriptor` |
+| Process states | `ProcessState` + `AgentCondition[]` |
+| `/proc/PID/status` | `agent-procfs` |
+| `fork(2)` + `exec(2)` | `SpawnFn` |
+| `capabilities(7)` | `DelegationGrant` (HMAC, monotonic) |
+| `systemd` | `SupervisionController` |
+| VFS | Nexus Unified Namespace |
+| `netfilter` | `KoiMiddleware` (phase-typed) |
 
-```yaml
-name: daily-briefer
-version: 0.1.0
-model: "anthropic:claude-haiku-4-5-20251001"
+</details>
 
-# Nexus: auto-starts locally in embed mode (SQLite + filesystem).
-# Set nexus.url for remote/shared Nexus.
-# nexus:
-#   url: https://nexus.example.com
-
-channels:
-  - name: "@koi/channel-cli"
-  - "@koi/channel-telegram": { token: ${TELEGRAM_BOT_TOKEN} }
-
-tools:
-  koi:
-    - name: "@koi/tools-web"
-    - name: "@koi/tool-ask-user"
-  mcp:
-    - name: reddit
-      command: "npx reddit-mcp-server"
-
-middleware:
-  - "@koi/middleware-hot-memory": {}
-  - "@koi/middleware-pay": { budget: { daily: 0.50 } }
-  - "@koi/middleware-permissions": { default: ask }
-
-forge:
-  enabled: true
-  maxForgesPerSession: 5
-
-schedule: "0 7 * * *"
-
-soul: "./soul.md"
-
-context:
-  bootstrap: true
-  sources:
-    - kind: text
-      text: "You are a concise personal assistant."
-    - kind: memory
-      query: "user preferences"
-```
+---
 
 ## CLI
 
 | Command | Description |
 |---------|-------------|
-| `koi up` | Start full stack — Nexus, runtime, admin, TUI (recommended) |
-| `koi init [dir]` | Scaffold a new agent project (interactive wizard) |
-| `koi start [manifest]` | Start agent interactively (CLI only, no admin/TUI) |
-| `koi serve [manifest]` | Run agent headless (for services) |
-| `koi admin [manifest]` | Run standalone admin panel |
-| `koi demo <init\|list\|reset>` | Manage demo data |
-| `koi deploy [manifest]` | Install as OS service (launchd/systemd) |
-| `koi status [manifest]` | Check service status |
-| `koi stop [manifest]` | Stop the service (pauses Nexus for fast resume) |
-| `koi logs [manifest]` | View service logs |
-| `koi doctor [manifest]` | Diagnose service health |
-| `koi replay` | Replay agent state at a specific turn |
-| `koi tui` | Interactive terminal console |
+| `koi up` | Full stack — Nexus, runtime, admin, TUI |
+| `koi init` | Scaffold new agent |
+| `koi start` | CLI-only (lighter) |
+| `koi serve` | Headless production mode |
+| `koi deploy` | Install as OS service (launchd/systemd) |
+| `koi tui` | Attach TUI |
+| `koi replay` | Time-travel to any turn |
+| `koi doctor` | Diagnose health |
 
-### `koi init`
+---
 
-Interactive wizard that scaffolds a new agent project. Asks for preset, template, name, model, channels, and data sources. The preset determines the infrastructure profile — demo data is seeded later by `koi up`.
+## Roadmap
 
-```bash
-koi init my-agent                                    # interactive wizard
-koi init my-agent --preset demo --with telegram      # skip wizard steps
-koi init my-agent --preset local                     # lightweight local (no Docker, no auth)
-koi init my-agent --preset mesh                      # multi-agent orchestration topology
-koi init my-agent --yes                              # accept all defaults non-interactively
+```
+Phase 1 ████████░░░░░░░░  Core Engine
+Phase 2 ░░░░░░░░░░░░░░░░  Agent Intelligence
+Phase 3 ░░░░░░░░░░░░░░░░  Autonomous Infrastructure
+Phase 4 ░░░░░░░░░░░░░░░░  Federation + Sensing
 ```
 
-Under the hood, `koi init` also runs `nexus init` to scaffold `nexus.yaml` (Docker Compose config). The Nexus preset maps from the Koi preset: `local` → embedded SQLite, `demo` → Docker with auth, `mesh` → Docker shared/multi-tenant.
+**Phase 1** — Query engine, tools, permissions, hooks, context management, API client.
 
-### `koi up`
+- [ ] Single-turn text response
+- [ ] Tool call → result → continuation
+- [ ] Multi-tool concurrent + serial ordering
+- [ ] Permission deny → model adjusts
+- [ ] Permission ask → approval → execution
+- [ ] Auto-compact on context overflow
+- [ ] Time-decay microcompact
+- [ ] Large result → disk + preview
+- [ ] Abort signal propagation
+- [ ] Hook lifecycle dispatch
+- [ ] Token budget enforcement
+- [ ] Loop detection → graceful stop
 
-The primary command. Boots the full stack in one command — Nexus, primary agent, provisioned agents, channels, admin panel, and TUI.
+**Phase 2** — Sub-agents, coordinator, tasks, memory, dream extraction, skills.
 
-```bash
-koi up                                          # uses ./koi.yaml
-koi up --nexus-url https://nexus.example.com    # connect to remote Nexus (skip local)
-koi up --nexus-build --nexus-source ~/nexus      # build Nexus from source
-koi up --nexus-port 3000                        # run Nexus on a custom HTTP port
-koi up --temporal-url grpc://temporal:7233      # connect to remote Temporal
-koi up --detach                                 # run in background
-koi up --verbose --timing                       # debug output + phase timings
-```
+**Phase 3** — Kairos proactive tools, daemon, Forge self-evolution, Nexus, Temporal, all 15 channels.
 
-### `koi start`
+**Phase 4** — Multi-zone federation, sensor/embodied agents, cross-instance mobility.
 
-Lighter alternative — CLI channel only, no admin panel or TUI. Good for quick testing.
-
-```bash
-koi start                     # uses ./koi.yaml
-koi start --admin             # add admin panel
-koi start --admin --verbose   # with debug logging
-```
-
-**Nexus resolution** (priority order): `--nexus-url` flag > `NEXUS_URL` env var > `nexus.url` in koi.yaml > auto-start local embed.
-When any URL is provided, no local Nexus is started.
-
-**`--nexus-build --nexus-source <dir>`** rebuilds the Nexus Docker image from source instead of pulling from GHCR. Point `--nexus-source` to the nexus repo root (uses `<dir>/docker-compose.yml` which has the `build:` directive).
-
-**Port handling**: Nexus auto-resolves port conflicts by default (`--port-strategy=auto`). If port 2026 is taken, it picks the next free port and persists it to `nexus.yaml`. Use `--nexus-port` only when you want a specific port. Parallel worktrees get isolated Nexus instances automatically — each workspace derives a unique Docker Compose project with deterministic ports from the `data_dir` hash.
-
-**Lifecycle**: `koi stop --nexus` pauses Nexus containers (fast resume on next `koi up`). Use `koi stop --nexus --nexus-destroy` to fully remove containers and volumes.
-
-### `koi serve`
-
-Headless mode for production services. HTTP health server, graceful shutdown, conversation persistence.
-
-```bash
-koi serve --port 9100 --nexus-url https://nexus.example.com
-```
-
-### `koi deploy`
-
-Install as a background OS service with automatic restart.
-
-```bash
-koi deploy                     # user service (launchd on macOS, systemd on Linux)
-koi deploy --system            # system-wide service
-koi deploy --uninstall         # remove the service
-```
-
-## Admin Panel
-
-A browser-based UI for managing running agents, built on React 19 + Vite. Wired into the CLI via `koi up`, `koi start --admin`, `koi serve --admin`, `koi admin`, and `koi tui`.
-
-**Core views:**
-- Agent status, tool inventory, cost tracking, audit log
-- Nexus file browser (everything-is-a-file namespace tree)
-- Real-time SSE event stream
-- Runtime views: process tree, middleware chain, gateway topology
-- Commands: suspend, resume, terminate agents; retry dead-letter queue
-
-<details>
-<summary><strong>Planned features</strong></summary>
-
-- **Orchestration overlay** ([#924](https://github.com/windoliver/koi/issues/924)): Temporal workflows, scheduler kanban, task board DAG, harness checkpoints
-- **Interactive console** ([#933](https://github.com/windoliver/koi/issues/933)): Create/dispatch agents from the browser, chat via AG-UI streaming
-
-</details>
+---
 
 ## Development
 
 ```bash
-git clone https://github.com/windoliver/koi.git
-cd koi
-bun install
-bun run build:cli
-```
-
-### Running with `koi up`
-
-The repo does not place a `koi` binary on your shell `PATH`. Use `bun run koi --`:
-
-```bash
-bun run koi -- init my-agent   # scaffold inside (or outside) the repo
-cd my-agent
-bun run up                     # starts everything
-```
-
-Inside the generated agent directory, `bun run` scripts are available:
-
-```bash
-bun run up            # koi up — runtime + admin + TUI
-bun run dry-run       # validate manifest without starting
-bun run start:admin   # koi start --admin
-bun run tui           # attach TUI to running admin API
-bun run doctor        # diagnose health
-```
-
-### Prerequisites
-
-- Bun 1.3.x
-- One model provider key (e.g., `ANTHROPIC_API_KEY`)
-- If `bun install` fails at `lefthook install` because `core.hooksPath` is already set, run `lefthook install --force`
-- Local Nexus embed mode is the default when no URL is set
-- To build Nexus from source: `bun run koi -- up --nexus-build --nexus-source ~/nexus`
-- To use a custom port for Nexus: `bun run koi -- up --nexus-port 3000` (port conflicts auto-resolve by default)
-- To connect to remote Nexus: `--nexus-url`, `NEXUS_URL` env var, or `nexus.url` in koi.yaml
-
-### Toolchain
-
-| Tool | Choice |
-|------|--------|
-| Runtime | Bun 1.3.x |
-| Package manager | `bun install` |
-| Test runner | `bun:test` |
-| Build | tsup (ESM-only, `.d.ts`) |
-| Orchestration | Turborepo |
-| Lint/Format | Biome |
-
-### Building & testing
-
-```bash
-bun run build                             # full workspace build
+git clone https://github.com/windoliver/koi.git && cd koi
+bun install && bun run build:cli
 bun test                                  # all tests
 bunx turbo run test --filter=@koi/core    # single package
 ```
 
+**Requires**: Bun 1.3.x + model provider key (e.g., `ANTHROPIC_API_KEY`).
+
+---
+
 ## Contributing
 
-Contributions welcome. Please read the project's [`CLAUDE.md`](CLAUDE.md) for coding standards, architecture rules, and the anti-leak checklist before submitting PRs.
+Read [`CLAUDE.md`](CLAUDE.md) for architecture rules and coding standards. Every PR follows **Doc → Tests → Code → Refactor**. CI enforces layer checks, 80%+ coverage, and doc freshness.
 
-Key rules:
-- `@koi/core` (L0) has zero runtime code — types and interfaces only
-- L2 packages import from L0/L0u only — never from L1 or peer L2
-- All interface properties are `readonly`
-- No vendor types in L0 or L1
-- PRs under 300 lines of logic changes
-- 80% test coverage minimum
+---
 
-## Package Landscape
-
-238 packages across 19 categories:
-
-| Category | Count | Examples |
-|----------|------:|---------|
-| **Network & Channels** | 30 | 15 channel adapters, gateway, MCP bridge, webhooks, ACP |
-| **Filesystem & Storage** | 29 | Nexus stores, registries (memory/SQLite/HTTP/Nexus), skills, tools, search |
-| **Utilities** | 26 | errors, validation, crypto, hashing, event delivery, test utils |
-| **Middleware** | 22 | call limits, circuit breaker, sandbox, semantic retry, tool audit, turn ack |
-| **Meta-packages** | 22 | CLI, starter, autonomous, governance, forge, stacks (gateway, retry, sandbox, ...) |
-| **Security** | 21 | audit sinks, delegation, permissions, PII redaction, guardrails, intent capsules |
-| **Memory** | 16 | hot/warm/cold memory, context editing, compaction, user model, session repair |
-| **Observability** | 12 | dashboard (API + UI + types), eval, tracing, agent-procfs, self-test |
-| **Forge** | 11 | demand analysis, verification, crystallization, exaptation, optimizer, policy |
-| **Sandbox** | 11 | Docker, E2B, Wasm, Cloudflare, Vercel, Daytona, IPC, cloud-base |
-| **IPC** | 9 | federation, handoff, local/Nexus IPC, scratchpads, task spawn, workspaces |
-| **Kernel** | 8 | core (L0), engine (L1), engine-compose, engine-reconcile, manifest, bootstrap |
-| **Drivers** | 7 | engine-pi, engine-claude, engine-loop, engine-acp, engine-external, model-router |
-| **Scheduler** | 6 | harness scheduler, long-running, Nexus scheduler, verified loop |
-| **Deploy** | 4 | bundle, deploy (launchd/systemd), nexus-embed, node |
-| **Data Sources** | 2 | connector-forge, discovery |
-| **Exec** | 1 | Temporal orchestration |
-| **UI** | 1 | TUI (terminal interface) |
-
-## License
-
-Koi is source-available. See the repository for license details.
+<p align="center">
+  <sub>Agents that sleep, wake, forge, evolve, and govern themselves — built on contracts, not guardrails.</sub>
+</p>
