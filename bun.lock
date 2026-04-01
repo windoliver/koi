@@ -54,6 +54,15 @@
         "@koi/event-delivery": "workspace:*",
       },
     },
+    "packages/lib/context-manager": {
+      "name": "@koi/context-manager",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/lib/edit-match": {
       "name": "@koi/edit-match",
       "version": "0.0.0",
@@ -99,6 +108,13 @@
     },
     "packages/lib/hash": {
       "name": "@koi/hash",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/query-engine": {
+      "name": "@koi/query-engine",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -279,6 +295,8 @@
 
     "@jscpd/tokenizer": ["@jscpd/tokenizer@4.0.4", "", { "dependencies": { "@jscpd/core": "4.0.4", "reprism": "^0.0.11", "spark-md5": "^3.0.2" } }, "sha512-xxYYY/qaLah/FlwogEbGIxx9CjDO+G9E6qawcy26WwrflzJb6wsnhjwdneN6Wb0RNCDsqvzY+bzG453jsin4UQ=="],
 
+    "@koi/context-manager": ["@koi/context-manager@workspace:packages/lib/context-manager"],
+
     "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
 
     "@koi/edit-match": ["@koi/edit-match@workspace:packages/lib/edit-match"],
@@ -300,6 +318,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
+
+    "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 
