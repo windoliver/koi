@@ -22,6 +22,14 @@ import { resolveConfig } from "./types.js";
 export function createOpenAICompatAdapter(config: OpenAICompatAdapterConfig): ModelAdapter {
   const resolved = resolveConfig(config);
 
+  // Pre-warm TLS connection in the background to eliminate cold-start latency
+  // on the first stream()/complete() call (~300ms saving on cold connections).
+  // The fetch is fire-and-forget; failures are silently ignored.
+  void fetch(`${resolved.baseUrl}/models`, {
+    method: "HEAD",
+    headers: { Authorization: `Bearer ${resolved.apiKey}` },
+  }).catch(() => {});
+
   const adapter: ModelAdapter = {
     id: `${resolved.provider}:${resolved.model}`,
     provider: resolved.provider,
@@ -77,6 +85,7 @@ async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIter
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${config.apiKey}`,
+    Connection: "keep-alive",
     ...config.headers,
   };
 
