@@ -3,7 +3,7 @@ import type { ProcessState, RegistryEntry, RegistryEvent } from "@koi/core";
 import { agentId } from "@koi/core";
 import type { InMemoryRegistry } from "@koi/engine-reconcile";
 import { createInMemoryRegistry } from "@koi/engine-reconcile";
-import { runAgentRegistryContractTests } from "@koi/test-utils";
+import { runAgentRegistryContractTests } from "./helpers/agent-registry-contract.js";
 
 // ---------------------------------------------------------------------------
 // Shared contract suite

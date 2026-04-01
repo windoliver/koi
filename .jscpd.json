@@ -5,6 +5,7 @@
   "format": ["typescript"],
   "gitignore": true,
   "ignore": [
+    "archive",
     "node_modules",
     "dist",
     "coverage",

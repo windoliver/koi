@@ -52,6 +52,16 @@ jobs:
       - name: Check code duplication (jscpd)
         run: bun run check:duplicates
 
+      - name: Check doc gate
+        run: bun run check:doc-gate
+
+      - name: Check complexity
+        run: bun run check:complexity
+
+      - name: Check test integrity
+        if: github.event_name == 'pull_request'
+        run: bun run check:test-integrity
+
       - name: Build
         run: bun run build
 

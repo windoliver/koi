@@ -20,18 +20,6 @@ const config: KnipConfig = {
       project: ["src/**/*.ts"],
     },
 
-    // E2E tests — test files at root level
-    "tests/e2e": {
-      entry: ["**/*.test.ts"],
-      project: ["**/*.ts"],
-    },
-
-    // Recipes — test files at root level (no src/ directory)
-    "recipes/*": {
-      entry: ["*.test.ts"],
-      project: ["**/*.ts"],
-    },
-
     // Apps
     "apps/*": {
       project: ["src/**/*.ts", "src/**/*.tsx"],
