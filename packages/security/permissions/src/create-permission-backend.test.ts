@@ -122,23 +122,49 @@ describe("createPermissionBackend", () => {
     expect(await backend.check(query)).toEqual({ effect: "allow" });
   });
 
-  test("rejects mutating actions in planAllowedActions", () => {
+  test("rejects actions outside safe vocabulary in planAllowedActions", () => {
     expect(() =>
       createPermissionBackend({
         mode: "plan",
         rules: [],
         planAllowedActions: new Set(["read", "write"]),
       }),
-    ).toThrow('Mutating action "write" cannot be added to planAllowedActions');
+    ).toThrow("not in the approved read-only vocabulary for planAllowedActions");
   });
 
-  test("rejects mutating actions in planRuleEvaluatedActions", () => {
+  test("rejects actions outside safe vocabulary in planRuleEvaluatedActions", () => {
     expect(() =>
       createPermissionBackend({
         mode: "plan",
         rules: [],
         planRuleEvaluatedActions: new Set(["discover", "bash"]),
       }),
-    ).toThrow('Mutating action "bash" cannot be added to planRuleEvaluatedActions');
+    ).toThrow("not in the approved read-only vocabulary for planRuleEvaluatedActions");
+  });
+
+  test("post-construction mutation of caller set does not affect backend", async () => {
+    const mutableSet = new Set(["read", "metadata"]);
+    const backend = createPermissionBackend({
+      mode: "plan",
+      rules: [
+        {
+          pattern: "**",
+          action: "metadata",
+          effect: "allow",
+          source: "project",
+          compiled: compileGlob("**"),
+        },
+      ],
+      planAllowedActions: mutableSet,
+    });
+    // Mutate the original set after construction — should have no effect
+    mutableSet.delete("metadata");
+    const query: PermissionQuery = {
+      principal: "agent-1",
+      action: "metadata",
+      resource: "src/index.ts",
+    };
+    // Backend should still allow metadata (uses its frozen copy)
+    expect(await backend.check(query)).toEqual({ effect: "allow" });
   });
 });

@@ -99,9 +99,30 @@ export const PLAN_RULE_EVALUATED_ACTIONS: ReadonlySet<string> = Object.freeze(
 );
 
 /**
- * Actions that must NEVER be allowed in plan mode, regardless of config.
- * Prevents misconfiguration from turning planning into execution.
+ * Complete vocabulary of actions approved for use in plan mode.
+ * Custom planAllowedActions and planRuleEvaluatedActions must be
+ * subsets of this set. Any action not in this vocabulary is rejected
+ * at construction time, preventing unknown/mutating actions from
+ * being silently admitted.
+ *
+ * To add a new safe action, add it here first.
  */
-export const PLAN_DENIED_ACTIONS: ReadonlySet<string> = Object.freeze(
-  new Set(["write", "edit", "delete", "execute", "bash", "invoke"]),
+export const PLAN_SAFE_VOCABULARY: ReadonlySet<string> = Object.freeze(
+  new Set([
+    // Auto-allowed read-only actions (from PLAN_ALLOWED_ACTIONS)
+    "read",
+    "glob",
+    "grep",
+    "search",
+    "list",
+    // Rule-evaluated actions (from PLAN_RULE_EVALUATED_ACTIONS)
+    "discover",
+    // Additional safe actions that callers may add
+    "stat",
+    "metadata",
+    "lookup",
+    "describe",
+    "inspect",
+    "resolve",
+  ]),
 );

@@ -10,17 +10,32 @@ import { resolveMode } from "./mode-resolver.js";
 import type { PermissionConfig } from "./rule-types.js";
 import {
   PLAN_ALLOWED_ACTIONS,
-  PLAN_DENIED_ACTIONS,
   PLAN_RULE_EVALUATED_ACTIONS,
+  PLAN_SAFE_VOCABULARY,
 } from "./rule-types.js";
 
 const VALID_MODES = new Set(["default", "bypass", "plan", "auto"]);
 
 /**
+ * Validate that every action in a set is in the approved read-only vocabulary.
+ * Throws with a descriptive message if any action is not recognized as safe.
+ */
+function validatePlanActions(actions: ReadonlySet<string>, label: string): void {
+  for (const action of actions) {
+    if (!PLAN_SAFE_VOCABULARY.has(action)) {
+      throw new Error(
+        `Action "${action}" is not in the approved read-only vocabulary for ${label}. ` +
+          `Allowed: ${[...PLAN_SAFE_VOCABULARY].join(", ")}`,
+      );
+    }
+  }
+}
+
+/**
  * Create a stateless `PermissionBackend` from a permission config.
  *
- * Throws at construction time if the mode is invalid, preventing
- * misconfigured backends from silently failing at query time.
+ * Throws at construction time if the mode is invalid or plan-mode action
+ * sets contain actions outside the approved read-only vocabulary.
  */
 export function createPermissionBackend(config: PermissionConfig): PermissionBackend {
   const { mode, rules } = config;
@@ -31,20 +46,15 @@ export function createPermissionBackend(config: PermissionConfig): PermissionBac
     );
   }
 
-  const planAllowed = config.planAllowedActions ?? PLAN_ALLOWED_ACTIONS;
-  const planRuleEval = config.planRuleEvaluatedActions ?? PLAN_RULE_EVALUATED_ACTIONS;
+  // Defensive copy + freeze — caller cannot mutate sets after construction.
+  const planAllowed = Object.freeze(new Set(config.planAllowedActions ?? PLAN_ALLOWED_ACTIONS));
+  const planRuleEval = Object.freeze(
+    new Set(config.planRuleEvaluatedActions ?? PLAN_RULE_EVALUATED_ACTIONS),
+  );
 
-  // Validate that custom plan action sets don't include mutating actions.
-  for (const action of planAllowed) {
-    if (PLAN_DENIED_ACTIONS.has(action)) {
-      throw new Error(`Mutating action "${action}" cannot be added to planAllowedActions`);
-    }
-  }
-  for (const action of planRuleEval) {
-    if (PLAN_DENIED_ACTIONS.has(action)) {
-      throw new Error(`Mutating action "${action}" cannot be added to planRuleEvaluatedActions`);
-    }
-  }
+  // Validate all actions are in the approved read-only vocabulary.
+  validatePlanActions(planAllowed, "planAllowedActions");
+  validatePlanActions(planRuleEval, "planRuleEvaluatedActions");
 
   const planOptions: PlanModeOptions = {
     allowedActions: planAllowed,
