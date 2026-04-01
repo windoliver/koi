@@ -6,135 +6,53 @@
 
 <p align="center">
   <strong>The self-evolving agent operating system.</strong><br/>
-  Agents that run 24/7, forge their own tools, and rewrite their own harness — securely.
+  7 contracts. One YAML file.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/TypeScript-Strict-blue?logo=typescript" alt="TypeScript Strict" />
   <img src="https://img.shields.io/badge/Runtime-Bun%201.3-f9f1e1?logo=bun" alt="Bun 1.3" />
-<img src="https://img.shields.io/badge/PRs-Welcome-brightgreen" alt="PRs Welcome" />
+  <img src="https://img.shields.io/badge/PRs-Welcome-brightgreen" alt="PRs Welcome" />
 </p>
 
 <p align="center">
-  <a href="#why-koi">Why Koi</a> &middot;
   <a href="#quickstart">Quickstart</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
-  <a href="#roadmap">Roadmap</a> &middot;
+  <a href="#development">Development</a> &middot;
+  <a href="#contributing">Contributing</a> &middot;
   <a href="docs/user-guide.md">Docs</a>
 </p>
 
 ---
 
-> **Status: Active development.** Koi's L0 contracts (types + interfaces) and architecture are stable. The v2 engine rewrite is in progress — see [Roadmap](#roadmap) for what's shipped vs. what's next. Not yet published to npm; build from source.
-
----
-
-## Why Koi
-
-### Self-Evolving <sup>v1 shipped, v2 in progress</sup>
-
-Agents **forge new tools at runtime** when they hit a problem they can't solve. Every forged artifact passes 4-stage verification: static analysis → sandbox execution → adversarial probes → trust tier promotion. Learned patterns crystallize into reusable skills. Middleware stacks self-optimize. The agent you deploy on day 1 is not the agent running on day 30.
-
-### Always-On <sup>v1 shipped, v2 Phase 3</sup>
-
-Not request-response chatbots — **daemons**. Sleep/wake cycles, cron schedules, proactive PR monitoring, push alerts across any channel. Your agent watches GitHub overnight and briefs you on Telegram before you open your laptop.
-
-### Secure by Architecture
-
-Self-evolving agents without security is a nightmare. Koi treats security as a first-class architectural concern — not a bolt-on:
-
-- **4-stage forge verification** — static analysis → sandbox execution → adversarial probes → trust tier promotion. Forged tools run isolated before they earn trust.
-- **HMAC-signed delegation** — agents delegate to sub-agents with capability tokens that monotonically attenuate scope. A child can never exceed its parent.
-- **21 security packages** — permissions, audit trails, budget enforcement, graduated sanctions, intent capsules, cascading revocation.
-- **11 sandbox backends** — Docker, E2B, Wasm, Cloudflare Workers, Vercel, Daytona, OS sandbox.
-- **Governed by contracts** — the kernel defines what agents can do. L0 contracts are the security boundary.
-
-### Self-Harnessing <sup>v1 shipped, v2 Phase 3</sup>
-
-The feedback loop that ties it together: run → encounter novel patterns → forge tools → verify → promote through trust tiers → crystallize into manifest → harness evolves. The agent doesn't just execute — it learns what to execute, builds the tools to do it, and rewires itself.
-
-### 15 Channels <sup>v1 shipped, v2 Phase 3</sup>
-
-CLI. Telegram. Slack. Discord. WhatsApp. Voice. Email. Signal. Teams. Matrix. Mobile. AG-UI. Chat SDK. Canvas. Web. One manifest, all of them.
-
-### Everything is a File
-
-SQL, REST, filesystem, agent memory — one path API. `nexus://agents/briefer/memory` and `nexus://sources/postgres/users` are the same query.
-
-### Time Travel
-
-Snapshot any agent. Rewind to a checkpoint, fork a timeline, replay from known-good state.
-
-### Token Economics
-
-Haiku → Sonnet → Opus cascade routing. Daily budgets, circuit breakers, kill switches. Cost tracked per tool call.
-
-### MCP Compatible
-
-Every MCP server from Claude Desktop, Cursor, or VS Code works in Koi. Two lines of YAML.
-
----
+> **v2 scaffold** — This repo contains the kernel foundation for Koi v2. The CLI, runtime,
+> channels, and feature packages from v1 are archived under `archive/v1/` (see the
+> `v1-archive` git tag for the full v1 codebase). The v2 scaffold retains the L0 contracts,
+> L1 engine, and 11 L0u utility packages as the buildable, testable foundation for the rewrite.
 
 ## Quickstart
 
 ```bash
-git clone https://github.com/windoliver/koi.git && cd koi
-bun install && bun run build:cli
+git clone https://github.com/windoliver/koi.git
+cd koi
+bun install
+bun run build
+bun run test
 ```
 
-```bash
-bun run koi -- init my-agent    # interactive wizard
-cd my-agent
-bun run up                      # runtime + admin + TUI
-```
-
-`koi up` boots Nexus (data layer), agent runtime, admin panel at `localhost:3100/admin`, and TUI console.
-
-### The manifest is the agent
-
-```yaml
-name: my-agent
-model: "anthropic:claude-sonnet-4-5-20250514"
-preset: demo
-channels:
-  - name: "@koi/channel-cli"
-tools:
-  koi:
-    - name: "@koi/tool-ask-user"
-    - name: "@koi/tools-web"
-forge:
-  enabled: true
-schedule: "0 7 * * *"
-autonomous:
-  enabled: true
-```
-
-Add a channel, MCP server, or budget control — one line each:
-
-```yaml
-channels:
-  - "@koi/channel-telegram": { token: ${TELEGRAM_BOT_TOKEN} }
-tools:
-  mcp:
-    - name: yahoo-finance
-      command: "npx yahoo-finance-mcp"
-middleware:
-  - "@koi/middleware-pay": { budget: { daily: 0.50 } }
-```
-
----
+The scaffold currently contains 15 packages across 3 subsystems (kernel, lib, mm).
+All 705 tests pass. The CLI and runtime will be rebuilt on this foundation in subsequent phases.
 
 ## Architecture
 
-Six layers, 245 packages. Layer violations are build errors.
+Koi uses a strict five-layer architecture. Layer violations are build errors.
 
 ```
-L0   @koi/core           Contracts only. Zero logic. Zero deps.
-L0u  47 utility pkgs     Pure functions. No business logic.
-L1   @koi/engine         Kernel runtime. Lifecycle, guards, middleware.
-L2   169 feature pkgs    Import L0/L0u only. Never L1 or peers.
-L3   23 meta-packages    Wiring. The only place L1 + L2 meet.
-L4   2 distribution pkgs Publishable bundles.
+L0  @koi/core        Interfaces-only kernel. Types + contracts. Zero logic. Zero deps.
+L0u 11 utility pkgs   Pure functions — errors, validation, hashing. Zero business logic.
+L1  @koi/engine       Kernel runtime. Guards, lifecycle, middleware composition.
+L2  @koi/*            Feature packages. Each depends on L0/L0u only. Never on L1 or peers.
+L3  Meta-packages     Convenience bundles (e.g., @koi/starter = L0 + L1 + selected L2).
 ```
 
 ### 7 Contracts
@@ -149,109 +67,102 @@ L4   2 distribution pkgs Publishable bundles.
 | **Engine** | Swappable agent loop | `stream()` |
 | **AgentRegistry** | Lifecycle management | CAS + `watch()` |
 
-ECS composition: **Agent** = entity, **Tool** = component, **Middleware** = system.
+Plus ECS composition: Agent = entity, Tool = component, Middleware = system.
+
+### Retained Packages (v2 Scaffold)
+
+| Layer | Packages |
+|-------|----------|
+| **L0** | `@koi/core` |
+| **L1** | `@koi/engine`, `@koi/engine-compose`, `@koi/engine-reconcile` |
+| **L0u** | `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/session-repair`, `@koi/shutdown`, `@koi/token-estimator`, `@koi/validation` |
 
 <details>
-<summary><strong>Subsystems</strong></summary>
+<summary><strong>Linux → Koi mental model</strong></summary>
 
-| Domain | Pkgs | Highlights |
-|--------|------|-----------|
-| Middleware | 39 | Memory, retry, pay, PII, sandbox, permissions, circuit breakers |
-| Channels | 15 | CLI to Voice to AG-UI |
-| Forge | 11 | Demand analysis, verification, crystallization, trust tiers |
-| Security | 21 | Delegation, audit, budget, graduated sanctions, intent capsules |
-| Sandbox | 11 | Docker, E2B, Wasm, CF Workers, Vercel, Daytona |
-| Memory | 16 | Hot/warm/cold, context editing, compaction |
-| Observability | 12 | Dashboard, eval, tracing, real-time SSE |
-| Multi-Agent | 9 | Gateway, federation, task board, handoff |
-| Engines | 7 | Claude SDK, ReAct, ACP, browser, model router |
-
-</details>
-
-<details>
-<summary><strong>Linux kernel mental model</strong></summary>
-
-| Linux | Koi |
-|-------|-----|
-| `task_struct` | `ProcessDescriptor` |
-| Process states | `ProcessState` + `AgentCondition[]` |
-| `/proc/PID/status` | `agent-procfs` |
-| `fork(2)` + `exec(2)` | `SpawnFn` |
-| `capabilities(7)` | `DelegationGrant` (HMAC, monotonic) |
-| `systemd` | `SupervisionController` |
-| VFS | Nexus Unified Namespace |
-| `netfilter` | `KoiMiddleware` (phase-typed) |
+| Linux | Koi | Where it lives |
+|-------|-----|----------------|
+| `task_struct` | `ProcessDescriptor` | L0 `@koi/core` |
+| Process state (RUNNING/STOPPED/ZOMBIE) | `ProcessState` + `AgentCondition[]` | L0 type, L1 state machine |
+| `/proc/PID/status` | `agent-procfs` `/agents/<id>/descriptor` | L2 sidecar |
+| `fork(2)` + `exec(2)` | `SpawnFn` | L0 contract → `@koi/execution-context` |
+| `mqueue(7)` | `MailboxComponent` | L0 contract → `ipc-local` / `ipc-nexus` |
+| Signals (SIGTERM/SIGSTOP) | `AGENT_SIGNALS` (STOP/CONT/TERM/USR1/USR2) | L0 → gateway → node → agent |
+| `cgroups` | `GovernanceVariable` readings | Governance middleware |
+| `capabilities(7)` | `DelegationGrant` | HMAC-signed, monotonically attenuated |
+| `systemd` | `SupervisionController` | L1 `@koi/engine` |
+| `/sys/` | Syscall table (7 contracts) | L0 |
+| VFS | `FileSystemBackend` + Nexus Unified Namespace | Every domain concept is a path |
+| netfilter/iptables | `KoiMiddleware` with phase typing | INTERCEPT / OBSERVE / RESOLVE |
+| Device drivers | Engine adapters | L2 |
+| Kernel modules | L2 feature packages | Independent, swappable |
 
 </details>
-
----
-
-## CLI
-
-| Command | Description |
-|---------|-------------|
-| `koi up` | Full stack — Nexus, runtime, admin, TUI |
-| `koi init` | Scaffold new agent |
-| `koi start` | CLI-only (lighter) |
-| `koi serve` | Headless production mode |
-| `koi deploy` | Install as OS service (launchd/systemd) |
-| `koi tui` | Attach TUI |
-| `koi replay` | Time-travel to any turn |
-| `koi doctor` | Diagnose health |
-
----
-
-## Roadmap
-
-```
-Phase 1 ████████░░░░░░░░  Core Engine
-Phase 2 ░░░░░░░░░░░░░░░░  Agent Intelligence
-Phase 3 ░░░░░░░░░░░░░░░░  Autonomous Infrastructure
-Phase 4 ░░░░░░░░░░░░░░░░  Federation + Sensing
-```
-
-**Phase 1** — Query engine, tools, permissions, hooks, context management, API client.
-
-- [ ] Single-turn text response
-- [ ] Tool call → result → continuation
-- [ ] Multi-tool concurrent + serial ordering
-- [ ] Permission deny → model adjusts
-- [ ] Permission ask → approval → execution
-- [ ] Auto-compact on context overflow
-- [ ] Time-decay microcompact
-- [ ] Large result → disk + preview
-- [ ] Abort signal propagation
-- [ ] Hook lifecycle dispatch
-- [ ] Token budget enforcement
-- [ ] Loop detection → graceful stop
-
-**Phase 2** — Sub-agents, coordinator, tasks, memory, dream extraction, skills.
-
-**Phase 3** — Kairos proactive tools, daemon, Forge self-evolution, Nexus, Temporal, all 15 channels.
-
-**Phase 4** — Multi-zone federation, sensor/embodied agents, cross-instance mobility.
-
----
 
 ## Development
 
 ```bash
-git clone https://github.com/windoliver/koi.git && cd koi
-bun install && bun run build:cli
+git clone https://github.com/windoliver/koi.git
+cd koi
+bun install
+bun run build
+bun run test
+```
+
+### Prerequisites
+
+- Bun 1.3.x
+- If `bun install` fails at `lefthook install` because `core.hooksPath` is already set, run `lefthook install --force`
+
+### Toolchain
+
+| Tool | Choice |
+|------|--------|
+| Runtime | Bun 1.3.x |
+| Package manager | `bun install` |
+| Test runner | `bun:test` |
+| Build | tsup (ESM-only, `.d.ts`) |
+| Orchestration | Turborepo |
+| Lint/Format | Biome |
+
+### Building & testing
+
+```bash
+bun run build                             # full workspace build
 bun test                                  # all tests
 bunx turbo run test --filter=@koi/core    # single package
 ```
 
-**Requires**: Bun 1.3.x + model provider key (e.g., `ANTHROPIC_API_KEY`).
+### CI gates
 
----
+```bash
+bun run typecheck         # strict TS compilation
+bun run check             # Biome lint
+bun run check:layers      # L0/L1/L2/L3 dependency enforcement
+bun run check:doc-gate    # L2 package docs requirement
+bun run check:complexity  # file/function size limits
+bun run check:descriptions # package.json metadata
+```
 
 ## Contributing
 
-Read [`CLAUDE.md`](CLAUDE.md) for architecture rules and coding standards. Every PR follows **Doc → Tests → Code → Refactor**. CI enforces layer checks, 80%+ coverage, and doc freshness.
+Contributions welcome. Please read the project's [`CLAUDE.md`](CLAUDE.md) for coding standards, architecture rules, and the anti-leak checklist before submitting PRs.
 
----
+Key rules:
+- `@koi/core` (L0) has zero runtime code — types and interfaces only
+- L2 packages import from L0/L0u only — never from L1 or peer L2
+- All interface properties are `readonly`
+- No vendor types in L0 or L1
+- PRs under 300 lines of logic changes
+- 80% test coverage minimum
 
-<p align="center">
-  <sub>Agents that sleep, wake, forge, evolve, and govern themselves — built on contracts, not guardrails.</sub>
-</p>
+<details>
+<summary><strong>v1 feature overview (archived)</strong></summary>
+
+The v1 codebase (238 packages) included: 15 channel adapters, self-extending forge with 4-stage verification, time-travel debugging, cascade token routing, governed multi-agent delegation, Nexus unified namespace, MCP ecosystem integration, TUI, admin panel, and CLI (`koi init`, `koi up`, `koi start`, `koi serve`, `koi deploy`). See the `v1-archive` git tag or `archive/v1/` for the full source.
+
+</details>
+
+## License
+
+Koi is source-available. See the repository for license details.

@@ -22,7 +22,5 @@
     "@koi/token-estimator": "workspace:*",
     "zod": "4.3.6"
   },
-  "devDependencies": {
-    "@koi/test-utils": "workspace:*"
-  }
+  "devDependencies": {}
 }

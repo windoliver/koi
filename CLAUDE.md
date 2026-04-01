@@ -81,7 +81,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 **When creating or editing feature packages (L2):**
 - Import from `@koi/core` (L0) and L0-utility packages (L0u) only — never from `@koi/engine` or other L2 packages
-- L0u packages (39 total — canonical list in `scripts/layers.ts`): `@koi/ace-types`, `@koi/acp-protocol`, `@koi/channel-base`, `@koi/crystallize`, `@koi/crypto-utils`, `@koi/dashboard-types`, `@koi/delegation`, `@koi/delegation-nexus`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/failure-context`, `@koi/file-resolution`, `@koi/forge-types`, `@koi/gateway-types`, `@koi/git-utils`, `@koi/harness-scheduler`, `@koi/hash`, `@koi/manifest`, `@koi/name-resolution`, `@koi/nexus-client`, `@koi/preset-resolver`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/sandbox-wasm`, `@koi/scope`, `@koi/search-provider`, `@koi/session-repair`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/task-board`, `@koi/test-utils`, `@koi/token-estimator`, `@koi/validation`, `@koi/variant-selection`, `@koi/welford-stats`
+- L0u packages (11 total — canonical list in `scripts/layers.ts`): `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/session-repair`, `@koi/shutdown`, `@koi/token-estimator`, `@koi/validation`
 - L0u packages may import from `@koi/core` and from peer L0u packages
 - Each L2 package is independent and swappable
 - Examples: channel adapters, middleware implementations, engine adapters, MCP bridge
@@ -89,7 +89,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 **When creating meta-packages (L3):**
 - Only re-export from L0 + L1 + selected L2 — no new logic
-- L3 packages (canonical list in `scripts/layers.ts`): `@koi/autonomous`, `@koi/context-arena`, `@koi/governance`, `@koi/starter`
+- L3 packages (canonical list in `scripts/layers.ts`): none currently (all v1 L3 packages archived)
 
 ### Core Contracts (L0)
 

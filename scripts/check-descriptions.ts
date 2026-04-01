@@ -8,7 +8,7 @@
  * 3. Description is ≤120 characters
  * 4. Description doesn't start with "A " or "The " (anti-marketing heuristic)
  *
- * Also checks root, e2e, and recipe package.json files.
+ * Also checks root package.json.
  *
  * Usage: bun scripts/check-descriptions.ts
  */
@@ -26,15 +26,6 @@ async function collectPackageJsonPaths(): Promise<readonly string[]> {
 
   // Root
   paths.push(`${ROOT}package.json`);
-
-  // E2E
-  paths.push(`${ROOT}tests/e2e/package.json`);
-
-  // Recipes
-  const recipesGlob = new Bun.Glob("recipes/*/package.json");
-  for await (const path of recipesGlob.scan({ cwd: ROOT, absolute: true })) {
-    paths.push(path);
-  }
 
   // Workspace packages
   const pkgGlob = new Bun.Glob("packages/*/*/package.json");

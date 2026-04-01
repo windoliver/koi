@@ -5,12 +5,12 @@ import {
   DEFAULT_SANDBOXED_POLICY,
   DEFAULT_UNSANDBOXED_POLICY,
 } from "@koi/core";
-import { createTestToolArtifact } from "@koi/test-utils";
 import {
   computeBrickFitness,
   DEFAULT_FITNESS_SCORING_CONFIG,
   evaluateTrustDecay,
 } from "./fitness-scoring.js";
+import { createTestToolArtifact } from "./test-fixtures.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

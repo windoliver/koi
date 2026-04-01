@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifactBase, BrickId, ForgeQuery } from "@koi/core";
 import { brickId, DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
-import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { matchesBrickQuery } from "./query-match.js";
+import { DEFAULT_PROVENANCE } from "./test-fixtures.js";
 
 function createBrickBase(overrides?: Partial<BrickArtifactBase>): BrickArtifactBase {
   return {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_SANDBOXED_POLICY } from "@koi/core";
-import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { validateBrickArtifact } from "./brick-validation.js";
+import { DEFAULT_PROVENANCE } from "./test-fixtures.js";
 
 function validTool(): Record<string, unknown> {
   return {

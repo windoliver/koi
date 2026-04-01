@@ -45,11 +45,19 @@ export function generateLabelerYml(
   const l3Dirs = sorted(l3Packages).map(toDir);
 
   const l0uEntries = l0uDirs.map((d) => `      - "packages/**/${d}/**"`).join("\n");
-  const l3Entries = l3Dirs.map((d) => `      - "packages/**/${d}/**"`).join("\n");
 
   // L2 catch-all excludes L0 (core), L1 (engine), all L0u, and all L3 dirs.
   const excludedDirs = ["core", "engine", ...l0uDirs, ...l3Dirs].sort();
   const l2Exclusions = excludedDirs.map((d) => `      - "!packages/**/${d}/**"`).join("\n");
+
+  // L3 section is only included when there are L3 packages
+  const l3Section =
+    l3Dirs.length > 0
+      ? `\n"layer:L3":
+  - changed-files:
+    - any-glob-to-any-file:
+${l3Dirs.map((d) => `      - "packages/**/${d}/**"`).join("\n")}\n`
+      : "";
 
   return `# PR auto-labeler — assigns layer labels based on changed files.
 # Used by .github/workflows/label-layers.yml (actions/labeler@v5).
@@ -72,12 +80,7 @@ export function generateLabelerYml(
   - changed-files:
     - any-glob-to-any-file:
 ${l0uEntries}
-
-"layer:L3":
-  - changed-files:
-    - any-glob-to-any-file:
-${l3Entries}
-
+${l3Section}
 # L2 is the catch-all: any package change that is not L0, L1, L0u, or L3.
 # The negation patterns prevent L0/L1/L0u/L3 package changes from also triggering L2.
 "layer:L2":
