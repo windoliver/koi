@@ -41,8 +41,15 @@ export const HOOK_EVENT_KINDS = [
   "config.changed",
 ] as const;
 
-/** Typed hook lifecycle event discriminator. */
+/** Typed hook lifecycle event discriminator (known events). */
 export type HookEventKind = (typeof HOOK_EVENT_KINDS)[number];
+
+/**
+ * Event kind accepted by hook interfaces. Known `HookEventKind` values get
+ * autocomplete, but any string is accepted for forward compatibility with
+ * newer event kinds and custom/third-party events.
+ */
+export type HookEventName = HookEventKind | (string & {});
 
 // ---------------------------------------------------------------------------
 // Hook filter — controls which events trigger a hook
@@ -56,7 +63,7 @@ export type HookEventKind = (typeof HOOK_EVENT_KINDS)[number];
  */
 export interface HookFilter {
   /** Session event kinds to match (e.g., "session.started", "tool.succeeded"). */
-  readonly events?: readonly HookEventKind[] | undefined;
+  readonly events?: readonly HookEventName[] | undefined;
   /** Tool names to match. */
   readonly tools?: readonly string[] | undefined;
   /** Channel IDs to match. */
@@ -72,7 +79,7 @@ export interface HookFilter {
  */
 export interface HookEvent {
   /** The event kind that triggered this hook (e.g., "session.started"). */
-  readonly event: HookEventKind;
+  readonly event: HookEventName;
   /** Agent ID that owns the session. */
   readonly agentId: string;
   /** Session ID. */

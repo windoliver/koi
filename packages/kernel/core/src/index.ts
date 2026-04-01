@@ -596,6 +596,7 @@ export type {
   HookConfig,
   HookEvent,
   HookEventKind,
+  HookEventName,
   HookExecutionResult,
   HookFilter,
   HookType,
