@@ -4,22 +4,26 @@
 
 import type { PermissionDecision, PermissionQuery } from "@koi/core";
 
-import type { SourcedRule } from "./rule-types.js";
+import type { CompiledRule } from "./rule-types.js";
 
 /**
- * Test whether a resource path matches a glob pattern.
+ * Test whether a resource path matches a compiled glob regex.
+ */
+function matchResource(compiled: RegExp, resource: string): boolean {
+  return compiled.test(resource);
+}
+
+/**
+ * Convert a glob pattern string to a RegExp.
  *
  * Supports:
  * - `*`  matches any single path segment (no `/`)
  * - `**` matches zero or more path segments (including `/`)
  * - Literal characters match exactly
+ *
+ * Throws `SyntaxError` if the resulting regex is invalid.
  */
-export function matchGlob(pattern: string, resource: string): boolean {
-  const regex = globToRegex(pattern);
-  return regex.test(resource);
-}
-
-function globToRegex(pattern: string): RegExp {
+export function compileGlob(pattern: string): RegExp {
   let result = "^";
   let i = 0;
 
@@ -27,23 +31,18 @@ function globToRegex(pattern: string): RegExp {
     const char = pattern.charAt(i);
 
     if (char === "*" && pattern.charAt(i + 1) === "*") {
-      // `**` — match anything including path separators
       result += ".*";
       i += 2;
-      // Skip trailing `/` after `**`
       if (pattern.charAt(i) === "/") {
         i += 1;
       }
     } else if (char === "*") {
-      // `*` — match anything except `/`
       result += "[^/]*";
       i += 1;
     } else if (char === "?" || char === "[" || char === "]") {
-      // Pass through basic glob characters
       result += char;
       i += 1;
     } else {
-      // Escape regex special characters
       result += escapeRegex(char);
       i += 1;
     }
@@ -62,16 +61,16 @@ function matchAction(ruleAction: string, queryAction: string): boolean {
 }
 
 /**
- * Evaluate pre-sorted rules against a query. First matching rule wins.
+ * Evaluate pre-compiled rules against a query. First matching rule wins.
  *
  * Returns `{ effect: "ask" }` when no rule matches.
  */
 export function evaluateRules(
   query: PermissionQuery,
-  rules: readonly SourcedRule[],
+  rules: readonly CompiledRule[],
 ): PermissionDecision {
   for (const rule of rules) {
-    if (matchAction(rule.action, query.action) && matchGlob(rule.pattern, query.resource)) {
+    if (matchAction(rule.action, query.action) && matchResource(rule.compiled, query.resource)) {
       if (rule.effect === "allow") {
         return { effect: "allow" };
       }

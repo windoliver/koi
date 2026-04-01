@@ -7,9 +7,10 @@
 
 export { createPermissionBackend } from "./create-permission-backend.js";
 export { resolveMode } from "./mode-resolver.js";
-export { evaluateRules, matchGlob } from "./rule-evaluator.js";
+export { compileGlob, evaluateRules } from "./rule-evaluator.js";
 export { loadRules } from "./rule-loader.js";
 export type {
+  CompiledRule,
   PermissionConfig,
   PermissionMode,
   PermissionRule,
@@ -17,4 +18,4 @@ export type {
   RuleSource,
   SourcedRule,
 } from "./rule-types.js";
-export { SOURCE_PRECEDENCE, WRITE_ACTIONS } from "./rule-types.js";
+export { PLAN_ALLOWED_ACTIONS, SOURCE_PRECEDENCE } from "./rule-types.js";

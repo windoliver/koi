@@ -20,7 +20,7 @@ describe("loadRules", () => {
     expect(result.value[2]?.source).toBe("user");
   });
 
-  test("tags each rule with its source", () => {
+  test("tags each rule with its source and compiles glob", () => {
     const sources = new Map<RuleSource, readonly PermissionRule[]>([
       ["project", [{ pattern: "src/**", action: "read", effect: "allow" }]],
     ]);
@@ -31,6 +31,7 @@ describe("loadRules", () => {
 
     expect(result.value[0]?.source).toBe("project");
     expect(result.value[0]?.pattern).toBe("src/**");
+    expect(result.value[0]?.compiled).toBeInstanceOf(RegExp);
   });
 
   test("returns empty array for empty sources", () => {
@@ -54,7 +55,6 @@ describe("loadRules", () => {
 
   test("returns error for invalid rules", () => {
     const sources = new Map<RuleSource, readonly PermissionRule[]>([
-      // Empty pattern is invalid
       ["project", [{ pattern: "", action: "read", effect: "allow" }]],
     ]);
 
@@ -72,6 +72,19 @@ describe("loadRules", () => {
 
     const result = loadRules(sources);
     expect(result.ok).toBe(false);
+  });
+
+  test("returns error for invalid glob pattern", () => {
+    const sources = new Map<RuleSource, readonly PermissionRule[]>([
+      ["project", [{ pattern: "[invalid", action: "read", effect: "allow" }]],
+    ]);
+
+    const result = loadRules(sources);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.message).toContain("Invalid glob pattern");
   });
 
   test("preserves rule order within a source", () => {

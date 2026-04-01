@@ -1,12 +1,14 @@
 /**
- * Rule loader — multi-source precedence merge with Zod validation.
+ * Rule loader — multi-source precedence merge with Zod validation
+ * and glob compilation at load time.
  */
 
 import type { KoiError, Result } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { z } from "zod";
 
-import type { PermissionRule, RuleSource, SourcedRule } from "./rule-types.js";
+import { compileGlob } from "./rule-evaluator.js";
+import type { CompiledRule, PermissionRule, RuleSource } from "./rule-types.js";
 import { SOURCE_PRECEDENCE } from "./rule-types.js";
 
 const permissionRuleSchema = z.object({
@@ -29,18 +31,38 @@ function validateSourceRules(
 }
 
 /**
+ * Compile a sourced rule's glob pattern to a RegExp.
+ * Returns a typed error if the pattern produces invalid regex.
+ */
+function compileRule(rule: PermissionRule, source: RuleSource): Result<CompiledRule, KoiError> {
+  try {
+    const compiled = compileGlob(rule.pattern);
+    return { ok: true, value: { ...rule, source, compiled } };
+  } catch {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `Invalid glob pattern in ${source} rules: "${rule.pattern}"`,
+        retryable: false,
+        context: { source, pattern: rule.pattern },
+      },
+    };
+  }
+}
+
+/**
  * Load and merge rules from multiple sources, sorted by precedence.
+ * Glob patterns are compiled to RegExp at load time — invalid patterns
+ * produce a typed error rather than crashing at evaluation time.
  *
  * Precedence order: policy > project > local > user.
  * Within each source, rules retain their original order.
- *
- * Returns a `Result` — validation failures produce a typed error
- * rather than throwing.
  */
 export function loadRules(
   sources: ReadonlyMap<RuleSource, readonly PermissionRule[]>,
-): Result<readonly SourcedRule[], KoiError> {
-  const merged: SourcedRule[] = [];
+): Result<readonly CompiledRule[], KoiError> {
+  const merged: CompiledRule[] = [];
 
   for (const source of SOURCE_PRECEDENCE) {
     const rules = sources.get(source);
@@ -54,7 +76,11 @@ export function loadRules(
     }
 
     for (const rule of validation.value) {
-      merged.push({ ...rule, source });
+      const compiled = compileRule(rule, source);
+      if (!compiled.ok) {
+        return compiled;
+      }
+      merged.push(compiled.value);
     }
   }
 

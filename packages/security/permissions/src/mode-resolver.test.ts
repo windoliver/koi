@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
 import type { PermissionQuery } from "@koi/core";
-
 import { resolveMode } from "./mode-resolver.js";
-import type { SourcedRule } from "./rule-types.js";
+import { compileGlob } from "./rule-evaluator.js";
+import type { CompiledRule } from "./rule-types.js";
 
 const readQuery: PermissionQuery = {
   principal: "agent-1",
@@ -23,9 +23,33 @@ const bashQuery: PermissionQuery = {
   resource: "/bin/rm",
 };
 
-const rules: readonly SourcedRule[] = [
-  { pattern: "src/**", action: "write", effect: "allow", source: "project" },
-  { pattern: "src/**", action: "read", effect: "allow", source: "project" },
+const invokeQuery: PermissionQuery = {
+  principal: "agent-1",
+  action: "invoke",
+  resource: "some-tool",
+};
+
+const discoverQuery: PermissionQuery = {
+  principal: "agent-1",
+  action: "discover",
+  resource: "tools",
+};
+
+const rules: readonly CompiledRule[] = [
+  {
+    pattern: "src/**",
+    action: "write",
+    effect: "allow",
+    source: "project",
+    compiled: compileGlob("src/**"),
+  },
+  {
+    pattern: "src/**",
+    action: "read",
+    effect: "allow",
+    source: "project",
+    compiled: compileGlob("src/**"),
+  },
 ];
 
 describe("resolveMode", () => {
@@ -38,6 +62,14 @@ describe("resolveMode", () => {
   });
 
   describe("plan", () => {
+    test("allows read actions", () => {
+      expect(resolveMode("plan", readQuery, rules)).toEqual({ effect: "allow" });
+    });
+
+    test("allows discover actions", () => {
+      expect(resolveMode("plan", discoverQuery, rules)).toEqual({ effect: "allow" });
+    });
+
     test("denies write actions", () => {
       const decision = resolveMode("plan", writeQuery, rules);
       expect(decision.effect).toBe("deny");
@@ -48,8 +80,9 @@ describe("resolveMode", () => {
       expect(decision.effect).toBe("deny");
     });
 
-    test("allows read actions", () => {
-      expect(resolveMode("plan", readQuery, rules)).toEqual({ effect: "allow" });
+    test("denies unknown actions (deny-by-default)", () => {
+      const decision = resolveMode("plan", invokeQuery, rules);
+      expect(decision.effect).toBe("deny");
     });
   });
 
@@ -66,8 +99,15 @@ describe("resolveMode", () => {
 
   describe("auto", () => {
     test("evaluates rules for explicit allow/deny", () => {
-      const denyRules: readonly SourcedRule[] = [
-        { pattern: "src/**", action: "write", effect: "deny", reason: "locked", source: "policy" },
+      const denyRules: readonly CompiledRule[] = [
+        {
+          pattern: "src/**",
+          action: "write",
+          effect: "deny",
+          reason: "locked",
+          source: "policy",
+          compiled: compileGlob("src/**"),
+        },
       ];
       expect(resolveMode("auto", writeQuery, denyRules)).toEqual({
         effect: "deny",

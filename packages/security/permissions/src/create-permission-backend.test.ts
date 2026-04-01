@@ -3,13 +3,27 @@ import { describe, expect, test } from "bun:test";
 import type { PermissionBackend, PermissionQuery } from "@koi/core";
 
 import { createPermissionBackend } from "./create-permission-backend.js";
+import { compileGlob } from "./rule-evaluator.js";
 import type { PermissionConfig } from "./rule-types.js";
 
 const config: PermissionConfig = {
   mode: "default",
   rules: [
-    { pattern: "src/**", action: "write", effect: "allow", source: "project" },
-    { pattern: "/etc/**", action: "*", effect: "deny", reason: "system files", source: "policy" },
+    {
+      pattern: "src/**",
+      action: "write",
+      effect: "allow",
+      source: "project",
+      compiled: compileGlob("src/**"),
+    },
+    {
+      pattern: "/etc/**",
+      action: "*",
+      effect: "deny",
+      reason: "system files",
+      source: "policy",
+      compiled: compileGlob("/etc/**"),
+    },
   ],
 };
 

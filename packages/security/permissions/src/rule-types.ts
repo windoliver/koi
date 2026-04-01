@@ -28,6 +28,11 @@ export interface SourcedRule extends PermissionRule {
   readonly source: RuleSource;
 }
 
+/** A sourced rule with its glob pattern pre-compiled to a RegExp. */
+export interface CompiledRule extends SourcedRule {
+  readonly compiled: RegExp;
+}
+
 /**
  * Permission mode controls the overall decision strategy:
  * - `"default"` — evaluate rules; fall back to ask
@@ -40,7 +45,7 @@ export type PermissionMode = "default" | "bypass" | "plan" | "auto";
 /** Top-level configuration for createPermissionBackend. */
 export interface PermissionConfig {
   readonly mode: PermissionMode;
-  readonly rules: readonly SourcedRule[];
+  readonly rules: readonly CompiledRule[];
 }
 
 /** Source precedence order — index 0 is highest priority. */
@@ -51,11 +56,16 @@ export const SOURCE_PRECEDENCE: readonly RuleSource[] = [
   "user",
 ] as const;
 
-/** Actions considered "write" operations for plan-mode denial. */
-export const WRITE_ACTIONS: ReadonlySet<string> = new Set([
-  "write",
-  "edit",
-  "delete",
-  "execute",
-  "bash",
+/**
+ * Actions explicitly allowed in plan mode.
+ * Plan mode is deny-by-default — only these read-only actions are permitted.
+ * Any action not in this set is denied.
+ */
+export const PLAN_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
+  "read",
+  "glob",
+  "grep",
+  "search",
+  "list",
+  "discover",
 ]) as ReadonlySet<string>;

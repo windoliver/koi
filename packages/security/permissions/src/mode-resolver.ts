@@ -5,31 +5,31 @@
 import type { PermissionDecision, PermissionQuery } from "@koi/core";
 
 import { evaluateRules } from "./rule-evaluator.js";
-import type { PermissionMode, SourcedRule } from "./rule-types.js";
-import { WRITE_ACTIONS } from "./rule-types.js";
+import type { CompiledRule, PermissionMode } from "./rule-types.js";
+import { PLAN_ALLOWED_ACTIONS } from "./rule-types.js";
 
 /**
  * Resolve a permission decision based on the active mode.
  *
  * - `"bypass"` — always allow
- * - `"plan"`   — deny write actions, allow reads
+ * - `"plan"`   — deny-by-default; only explicitly allowed read-only actions pass
  * - `"default"` — evaluate rules, fallback to ask
  * - `"auto"`   — evaluate rules, fallback to allow
  */
 export function resolveMode(
   mode: PermissionMode,
   query: PermissionQuery,
-  rules: readonly SourcedRule[],
+  rules: readonly CompiledRule[],
 ): PermissionDecision {
   switch (mode) {
     case "bypass":
       return { effect: "allow" };
 
     case "plan": {
-      if (WRITE_ACTIONS.has(query.action)) {
-        return { effect: "deny", reason: "Write actions are denied in plan mode" };
+      if (PLAN_ALLOWED_ACTIONS.has(query.action)) {
+        return { effect: "allow" };
       }
-      return { effect: "allow" };
+      return { effect: "deny", reason: "Only read-only actions are allowed in plan mode" };
     }
 
     case "default": {
