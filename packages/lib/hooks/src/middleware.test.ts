@@ -4,10 +4,11 @@
  *
  * Uses mocked executors (spyOn executeHooks) since the executor itself is
  * already tested in hook-lifecycle.test.ts. These tests focus on:
- *   1. Lifecycle dispatch (session start/end, turn start/end)
+ *   1. Lifecycle dispatch (session start/end, turn start/end) + block enforcement
  *   2. Tool wrapping with decision aggregation
- *   3. Model wrapping with decision aggregation
+ *   3. Model wrapping (call + stream) with decision aggregation
  *   4. Fail-open on hook execution failure
+ *   5. Model patch allowlist safety
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
@@ -16,8 +17,10 @@ import type {
   HookDecision,
   HookEvent,
   HookExecutionResult,
+  ModelChunk,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   RunId,
   SessionContext,
   SessionId,
@@ -83,6 +86,29 @@ function failureResult(hookName: string, error: string): HookExecutionResult {
 /** Type-narrowing assertion — fails the test if value is undefined. */
 function assertDefined<T>(value: T | undefined): asserts value is T {
   expect(value).toBeDefined();
+}
+
+/**
+ * Helper: register session with continue decision, then set the spy to
+ * return the given results for subsequent calls.
+ */
+async function startSessionThen(
+  mw: ReturnType<typeof createHookMiddleware>,
+  spy: ReturnType<typeof spyOn>,
+  thenResults: readonly HookExecutionResult[],
+): Promise<void> {
+  spy.mockResolvedValue([]);
+  await mw.onSessionStart?.(makeSessionCtx());
+  spy.mockResolvedValue(thenResults);
+}
+
+/** Collect all chunks from an async iterable. */
+async function collectChunks(stream: AsyncIterable<ModelChunk>): Promise<readonly ModelChunk[]> {
+  const chunks: ModelChunk[] = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+  return chunks;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +192,17 @@ describe("createHookMiddleware", () => {
       expect(event.agentId).toBe("agent-1");
       expect(event.sessionId).toBe("session-1");
     });
+
+    it("throws when a session.started hook returns block decision", async () => {
+      executeSpy.mockResolvedValue([
+        successResult("quota-guard", { kind: "block", reason: "quota exceeded" }),
+      ]);
+
+      const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+      const ctx = makeSessionCtx();
+
+      await expect(mw.onSessionStart?.(ctx)).rejects.toThrow("Session blocked by hook");
+    });
   });
 
   describe("onSessionEnd", () => {
@@ -183,6 +220,17 @@ describe("createHookMiddleware", () => {
       const event = executeSpy.mock.calls[0]?.[1] as HookEvent;
       expect(event.event).toBe("session.ended");
     });
+
+    it("does not throw when a session.ended hook returns block (can't block end)", async () => {
+      const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+      const ctx = makeSessionCtx();
+      await mw.onSessionStart?.(ctx);
+
+      executeSpy.mockResolvedValue([successResult("stubborn", { kind: "block", reason: "no" })]);
+
+      // Should not throw — blocking session end is meaningless
+      await expect(mw.onSessionEnd?.(ctx)).resolves.toBeUndefined();
+    });
   });
 
   describe("onBeforeTurn", () => {
@@ -199,6 +247,18 @@ describe("createHookMiddleware", () => {
       expect(executeSpy).toHaveBeenCalledTimes(1);
       const event = executeSpy.mock.calls[0]?.[1] as HookEvent;
       expect(event.event).toBe("turn.started");
+    });
+
+    it("throws when a turn.started hook returns block decision", async () => {
+      const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+      const ctx = makeTurnCtx();
+      await mw.onSessionStart?.(ctx.session);
+
+      executeSpy.mockResolvedValue([
+        successResult("rate-limiter", { kind: "block", reason: "rate limited" }),
+      ]);
+
+      await expect(mw.onBeforeTurn?.(ctx)).rejects.toThrow("Turn blocked by hook");
     });
   });
 
@@ -257,12 +317,10 @@ describe("wrapToolCall", () => {
   });
 
   it("blocks tool call when hook returns block decision (P10)", async () => {
-    executeSpy.mockResolvedValue([
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await startSessionThen(mw, executeSpy, [
       successResult("blocker", { kind: "block", reason: "bash not allowed" }),
     ]);
-
-    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
-    await mw.onSessionStart?.(makeSessionCtx());
 
     const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
       output: "should not reach",
@@ -301,13 +359,11 @@ describe("wrapToolCall", () => {
   });
 
   it("block wins over modify when hooks disagree (most-restrictive-wins)", async () => {
-    executeSpy.mockResolvedValue([
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await startSessionThen(mw, executeSpy, [
       successResult("modifier", { kind: "modify", patch: { safe: true } }),
       successResult("blocker", { kind: "block", reason: "denied" }),
     ]);
-
-    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
-    await mw.onSessionStart?.(makeSessionCtx());
 
     const nextFn = mock<(req: ToolRequest) => Promise<ToolResponse>>().mockResolvedValue({
       output: "nope",
@@ -340,21 +396,15 @@ describe("wrapToolCall", () => {
   });
 
   it("post-call event uses effective (modified) input for audit consistency", async () => {
-    // Pre-call returns modify, then we verify the post-call event has the modified input
     let postCallEvent: HookEvent | undefined;
     let callIndex = 0;
     executeSpy.mockImplementation(async (_hooks: unknown, event: HookEvent) => {
       callIndex++;
-      if (callIndex === 1) {
-        // session start — no decision
-        return [];
-      }
+      if (callIndex === 1) return []; // session start
       if (callIndex === 2) {
-        // pre-call — modify input
         return [successResult("sanitizer", { kind: "modify", patch: { cmd: "ls -la" } })];
       }
-      // post-call — capture the event
-      postCallEvent = event;
+      postCallEvent = event; // post-call
       return [];
     });
 
@@ -370,12 +420,10 @@ describe("wrapToolCall", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     assertDefined(postCallEvent);
-    // Post-call should see the sanitized input, not the original
     expect((postCallEvent.data as Record<string, unknown>).input).toEqual({ cmd: "ls -la" });
   });
 
   it("fires post-call hooks after next() returns (fire-and-forget)", async () => {
-    // First call = pre-call (continue), second call = post-call
     let callCount = 0;
     executeSpy.mockImplementation(async () => {
       callCount++;
@@ -393,10 +441,8 @@ describe("wrapToolCall", () => {
     const request: ToolRequest = { toolId: "bash", input: {} };
     await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
 
-    // Pre-call is synchronous (awaited)
     expect(callCount).toBeGreaterThanOrEqual(1);
 
-    // Give fire-and-forget a tick
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     // Both pre-call and post-call should have fired
@@ -437,36 +483,68 @@ describe("wrapModelCall", () => {
     expect(result.content).toBe("hello");
   });
 
-  it("modifies model request fields when hook returns modify decision", async () => {
+  it("modifies only allowed model request fields (allowlist)", async () => {
     executeSpy.mockResolvedValue([
-      successResult("rerouter", { kind: "modify", patch: { model: "cheap-model" } }),
+      successResult("rerouter", {
+        kind: "modify",
+        patch: { model: "cheap-model", temperature: 0.5 },
+      }),
     ]);
 
     const mw = createHookMiddleware({ hooks: TEST_HOOKS });
     await mw.onSessionStart?.(makeSessionCtx());
 
     const nextFn = mock<(req: ModelRequest) => Promise<ModelResponse>>().mockResolvedValue({
-      content: "cheap response",
+      content: "ok",
       model: "cheap-model",
     });
 
-    const request: ModelRequest = { messages: [], model: "expensive-model" };
+    const request: ModelRequest = { messages: [], model: "expensive-model", temperature: 1.0 };
     await mw.wrapModelCall?.(makeTurnCtx(), request, nextFn);
 
     expect(nextFn).toHaveBeenCalledTimes(1);
     const passedRequest = nextFn.mock.calls[0]?.[0];
     assertDefined(passedRequest);
-    // Patch should modify the request itself, not just metadata
     expect(passedRequest.model).toBe("cheap-model");
+    expect(passedRequest.temperature).toBe(0.5);
   });
 
-  it("blocks model call when hook returns block decision", async () => {
+  it("rejects modify patches targeting immutable fields (messages, tools, systemPrompt, signal)", async () => {
     executeSpy.mockResolvedValue([
-      successResult("guard", { kind: "block", reason: "context too large" }),
+      successResult("malicious", {
+        kind: "modify",
+        patch: { messages: "corrupted", systemPrompt: "injected", signal: null },
+      }),
     ]);
 
     const mw = createHookMiddleware({ hooks: TEST_HOOKS });
     await mw.onSessionStart?.(makeSessionCtx());
+
+    const nextFn = mock<(req: ModelRequest) => Promise<ModelResponse>>().mockResolvedValue({
+      content: "safe",
+      model: "test",
+    });
+
+    const originalMessages = [{ role: "user", content: "hello" }];
+    const request: ModelRequest = {
+      messages: originalMessages as ModelRequest["messages"],
+      systemPrompt: "original",
+    };
+    await mw.wrapModelCall?.(makeTurnCtx(), request, nextFn);
+
+    expect(nextFn).toHaveBeenCalledTimes(1);
+    const passedRequest = nextFn.mock.calls[0]?.[0];
+    assertDefined(passedRequest);
+    // Immutable fields must not be overwritten
+    expect(passedRequest.messages).toBe(originalMessages);
+    expect(passedRequest.systemPrompt).toBe("original");
+  });
+
+  it("blocks model call when hook returns block decision", async () => {
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await startSessionThen(mw, executeSpy, [
+      successResult("guard", { kind: "block", reason: "context too large" }),
+    ]);
 
     const nextFn = mock<(req: ModelRequest) => Promise<ModelResponse>>().mockResolvedValue({
       content: "should not reach",
@@ -480,6 +558,92 @@ describe("wrapModelCall", () => {
     expect(nextFn).not.toHaveBeenCalled();
     expect(result.content).toContain("context too large");
     expect(result.metadata).toEqual({ blockedByHook: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapModelStream dispatch + aggregation
+// ---------------------------------------------------------------------------
+
+describe("wrapModelStream", () => {
+  let executeSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    executeSpy = spyOn(executorModule, "executeHooks").mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    executeSpy.mockRestore();
+  });
+
+  it("yields all chunks from next() when hooks return continue", async () => {
+    executeSpy.mockResolvedValue([successResult("hook-a")]);
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    async function* fakeStream(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "hello " };
+      yield { kind: "text_delta", delta: "world" };
+      yield { kind: "done", response: { content: "hello world", model: "test" } };
+    }
+    const nextFn: ModelStreamHandler = () => fakeStream();
+
+    const stream = mw.wrapModelStream?.(makeTurnCtx(), { messages: [] }, nextFn);
+    assertDefined(stream);
+    const chunks = await collectChunks(stream);
+
+    expect(chunks).toHaveLength(3);
+    expect(chunks[0]?.kind).toBe("text_delta");
+    expect(chunks[2]?.kind).toBe("done");
+  });
+
+  it("yields error chunk when hook returns block decision", async () => {
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await startSessionThen(mw, executeSpy, [
+      successResult("guard", { kind: "block", reason: "not today" }),
+    ]);
+
+    const nextFn: ModelStreamHandler = () => {
+      throw new Error("should not be called");
+    };
+
+    const stream = mw.wrapModelStream?.(makeTurnCtx(), { messages: [] }, nextFn);
+    assertDefined(stream);
+    const chunks = await collectChunks(stream);
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.kind).toBe("error");
+    if (chunks[0]?.kind === "error") {
+      expect(chunks[0].message).toContain("not today");
+    }
+  });
+
+  it("fires post-call hook after stream completes", async () => {
+    let postCallFired = false;
+    let callIndex = 0;
+    executeSpy.mockImplementation(async (_hooks: unknown, event: HookEvent) => {
+      callIndex++;
+      if (callIndex >= 3 && event.event === "model.post") {
+        postCallFired = true;
+      }
+      return [successResult("observer")];
+    });
+
+    const mw = createHookMiddleware({ hooks: TEST_HOOKS });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    async function* fakeStream(): AsyncIterable<ModelChunk> {
+      yield { kind: "text_delta", delta: "hi" };
+    }
+    const nextFn: ModelStreamHandler = () => fakeStream();
+
+    const stream = mw.wrapModelStream?.(makeTurnCtx(), { messages: [] }, nextFn);
+    assertDefined(stream);
+    await collectChunks(stream);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(postCallFired).toBe(true);
   });
 });
 

@@ -115,16 +115,18 @@ during the engine lifecycle.
 
 ### Event Mapping
 
-| Middleware hook | Event name | Blocking? |
-|-----------------|------------|-----------|
-| `onSessionStart` | `session.started` | Yes |
-| `onSessionEnd` | `session.ended` | Yes |
-| `onBeforeTurn` | `turn.started` | Yes |
+| Middleware hook | Event name | Decisions enforced? |
+|-----------------|------------|---------------------|
+| `onSessionStart` | `session.started` | Yes — `block` throws (session fails) |
+| `onSessionEnd` | `session.ended` | No — awaited but decisions ignored |
+| `onBeforeTurn` | `turn.started` | Yes — `block` throws (turn fails) |
 | `onAfterTurn` | `turn.ended` | No (fire-and-forget) |
-| `wrapToolCall` (pre) | `tool.pre` | Yes |
+| `wrapToolCall` (pre) | `tool.pre` | Yes — `block`/`modify` enforced |
 | `wrapToolCall` (post) | `tool.post` | No (fire-and-forget) |
-| `wrapModelCall` (pre) | `model.pre` | Yes |
+| `wrapModelCall` (pre) | `model.pre` | Yes — `block`/`modify` enforced |
 | `wrapModelCall` (post) | `model.post` | No (fire-and-forget) |
+| `wrapModelStream` (pre) | `model.pre` | Yes — `block`/`modify` enforced |
+| `wrapModelStream` (post) | `model.post` | No (fire-and-forget) |
 
 ### Hook Decisions
 
@@ -145,6 +147,14 @@ opinion (fail-open).
 Pre-call hooks are aggregated with **most-restrictive-wins** precedence:
 `block > modify > continue`. First `block` wins immediately. Multiple
 `modify` patches are merged (later overrides earlier keys on conflict).
+
+### Model Patch Safety
+
+`modify` patches for model calls are filtered against an allowlist of
+safe fields: `model`, `temperature`, `maxTokens`, `metadata`. Core
+control fields (`messages`, `tools`, `systemPrompt`, `signal`) are
+immutable — patches targeting them are silently dropped to prevent
+hook bugs from corrupting request shape or disabling safeguards.
 
 ### Phase & Priority
 

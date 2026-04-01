@@ -2,12 +2,13 @@
  * Hook middleware — bridges @koi/hooks execution into the KoiMiddleware contract.
  *
  * Maps engine lifecycle events to hook dispatch:
- *   onSessionStart  → "session.started"
- *   onSessionEnd    → "session.ended"
- *   onBeforeTurn    → "turn.started"
- *   onAfterTurn     → "turn.ended"
+ *   onSessionStart  → "session.started" (blocking — throws on block decision)
+ *   onSessionEnd    → "session.ended"   (awaited — block/modify ignored)
+ *   onBeforeTurn    → "turn.started"    (blocking — throws on block decision)
+ *   onAfterTurn     → "turn.ended"      (fire-and-forget)
  *   wrapToolCall    → "tool.pre" (blocking) + "tool.post" (fire-and-forget)
  *   wrapModelCall   → "model.pre" (blocking) + "model.post" (fire-and-forget)
+ *   wrapModelStream → "model.pre" (blocking) + "model.post" (fire-and-forget)
  *
  * Pre-call hooks block and aggregate decisions (block > modify > continue).
  * Post-call hooks fire-and-forget — errors are silently swallowed.
@@ -23,9 +24,11 @@ import type {
   HookExecutionResult,
   JsonObject,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   ToolHandler,
   ToolRequest,
@@ -83,6 +86,33 @@ export function aggregateDecisions(results: readonly HookExecutionResult[]): Hoo
 }
 
 // ---------------------------------------------------------------------------
+// Model request patch safety
+// ---------------------------------------------------------------------------
+
+/**
+ * Fields that hooks are allowed to patch on ModelRequest via modify decisions.
+ * Core control fields (messages, tools, systemPrompt, signal) are immutable
+ * to prevent hook bugs from corrupting request shape or disabling safeguards.
+ */
+const MODEL_PATCH_ALLOWLIST = new Set<string>(["model", "temperature", "maxTokens", "metadata"]);
+
+/**
+ * Filter a modify patch to only include allowed ModelRequest fields.
+ * Returns the filtered patch, or undefined if nothing remains after filtering.
+ */
+function filterModelPatch(patch: JsonObject): JsonObject | undefined {
+  const filtered: Record<string, unknown> = {};
+  let hasKeys = false;
+  for (const key of Object.keys(patch)) {
+    if (MODEL_PATCH_ALLOWLIST.has(key)) {
+      filtered[key] = patch[key];
+      hasKeys = true;
+    }
+  }
+  return hasKeys ? (filtered as JsonObject) : undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Middleware factory
 // ---------------------------------------------------------------------------
 
@@ -119,6 +149,50 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     });
   }
 
+  /** Build model.pre event data from a ModelRequest. */
+  function buildModelPreData(request: ModelRequest): JsonObject {
+    return {
+      model: request.model ?? "default",
+      temperature: request.temperature,
+      maxTokens: request.maxTokens,
+      messageCount: request.messages.length,
+      toolCount: request.tools?.length ?? 0,
+      hasSystemPrompt: request.systemPrompt !== undefined,
+    } as JsonObject;
+  }
+
+  /**
+   * Run model.pre hooks and return the effective request.
+   * Throws on block (for wrapModelCall) or returns a blocked ModelResponse sentinel.
+   */
+  async function dispatchModelPre(
+    sessionId: string,
+    ctx: TurnContext,
+    request: ModelRequest,
+  ): Promise<
+    | { readonly blocked: true; readonly reason: string }
+    | { readonly blocked: false; readonly request: ModelRequest }
+  > {
+    const preEvent = buildEvent(ctx.session, "model.pre", {
+      data: buildModelPreData(request),
+    });
+    const preResults = await registry.execute(sessionId, preEvent);
+    const decision = aggregateDecisions(preResults);
+
+    if (decision.kind === "block") {
+      return { blocked: true, reason: decision.reason };
+    }
+
+    if (decision.kind === "modify") {
+      const safePatch = filterModelPatch(decision.patch);
+      if (safePatch !== undefined) {
+        return { blocked: false, request: { ...request, ...safePatch } };
+      }
+    }
+
+    return { blocked: false, request };
+  }
+
   return {
     name: "hooks",
     phase: "resolve",
@@ -128,12 +202,18 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const sessionId = ctx.sessionId as string;
       registry.register(sessionId, ctx.agentId, hooks);
       const event = buildEvent(ctx, "session.started");
-      await registry.execute(sessionId, event);
+      const results = await registry.execute(sessionId, event);
+      const decision = aggregateDecisions(results);
+      if (decision.kind === "block") {
+        registry.cleanup(sessionId);
+        throw new Error(`Session blocked by hook: ${decision.reason}`);
+      }
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       const sessionId = ctx.sessionId as string;
       const event = buildEvent(ctx, "session.ended");
+      // Awaited but decisions ignored — can't meaningfully block session end
       await registry.execute(sessionId, event);
       registry.cleanup(sessionId);
     },
@@ -141,7 +221,11 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
       const sessionId = ctx.session.sessionId as string;
       const event = buildEvent(ctx.session, "turn.started");
-      await registry.execute(sessionId, event);
+      const results = await registry.execute(sessionId, event);
+      const decision = aggregateDecisions(results);
+      if (decision.kind === "block") {
+        throw new Error(`Turn blocked by hook: ${decision.reason}`);
+      }
     },
 
     async onAfterTurn(ctx: TurnContext): Promise<void> {
@@ -196,34 +280,17 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const sessionId = ctx.session.sessionId as string;
+      const preResult = await dispatchModelPre(sessionId, ctx, request);
 
-      // Pre-call: blocking dispatch with decision aggregation
-      // Include model params so hooks can inspect prompt, tools, and settings
-      const preEvent = buildEvent(ctx.session, "model.pre", {
-        data: {
-          model: request.model ?? "default",
-          temperature: request.temperature,
-          maxTokens: request.maxTokens,
-          messageCount: request.messages.length,
-          toolCount: request.tools?.length ?? 0,
-          hasSystemPrompt: request.systemPrompt !== undefined,
-        } as JsonObject,
-      });
-      const preResults = await registry.execute(sessionId, preEvent);
-      const decision = aggregateDecisions(preResults);
-
-      if (decision.kind === "block") {
+      if (preResult.blocked) {
         return {
-          content: `[Hook blocked model call: ${decision.reason}]`,
+          content: `[Hook blocked model call: ${preResult.reason}]`,
           model: request.model ?? "unknown",
           metadata: { blockedByHook: true },
         };
       }
 
-      const effectiveRequest: ModelRequest =
-        decision.kind === "modify" ? { ...request, ...decision.patch } : request;
-
-      const response = await next(effectiveRequest);
+      const response = await next(preResult.request);
 
       // Post-call: fire-and-forget
       const postEvent = buildEvent(ctx.session, "model.post", {
@@ -232,6 +299,33 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       fireAndForget(sessionId, postEvent);
 
       return response;
+    },
+
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      const sessionId = ctx.session.sessionId as string;
+      const preResult = await dispatchModelPre(sessionId, ctx, request);
+
+      if (preResult.blocked) {
+        yield {
+          kind: "error",
+          message: `Hook blocked model stream: ${preResult.reason}`,
+        };
+        return;
+      }
+
+      try {
+        yield* next(preResult.request);
+      } finally {
+        // Post-call: fire-and-forget after stream completes or errors
+        const postEvent = buildEvent(ctx.session, "model.post", {
+          data: { model: request.model ?? "default" } as JsonObject,
+        });
+        fireAndForget(sessionId, postEvent);
+      }
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
