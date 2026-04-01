@@ -12,12 +12,34 @@ import type {
   ChatCompletionMessage,
   ChatCompletionTool,
   ChatCompletionToolCall,
+  ResolvedCompat,
   ResolvedConfig,
 } from "./types.js";
 
+// ---------------------------------------------------------------------------
+// Tool call ID normalization
+// ---------------------------------------------------------------------------
+
 /**
- * Find the first non-text block kind in messages, or undefined if all text.
+ * Normalize a tool call ID for provider compatibility.
+ *
+ * Handles:
+ * - Pipe-separated IDs from OpenAI Responses API (format: `{call_id}|{id}`)
+ * - Sanitizes to allowed chars (alphanumeric, underscore, hyphen)
+ * - Truncates to 40 chars (OpenAI limit)
  */
+function normalizeToolCallId(id: string): string {
+  // Handle pipe-separated IDs — extract just the call_id part
+  const base = id.includes("|") ? (id.split("|")[0] ?? id) : id;
+  // Sanitize to allowed characters and truncate
+  return base.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+}
+
+// ---------------------------------------------------------------------------
+// Content extraction
+// ---------------------------------------------------------------------------
+
+/** Find the first non-text block kind in messages, or undefined if all text. */
 function findNonTextBlockKind(messages: readonly InboundMessage[]): string | undefined {
   for (const msg of messages) {
     for (const block of msg.content) {
@@ -27,9 +49,7 @@ function findNonTextBlockKind(messages: readonly InboundMessage[]): string | und
   return undefined;
 }
 
-/**
- * Extract text content from a message's content blocks.
- */
+/** Extract text content from a message's content blocks. */
 function extractText(msg: InboundMessage): string {
   return msg.content
     .filter((b): b is import("@koi/core").TextBlock => b.kind === "text")
@@ -43,6 +63,10 @@ function readStringMeta(metadata: JsonObject | undefined, key: string): string |
   const val = metadata[key];
   return typeof val === "string" ? val : undefined;
 }
+
+// ---------------------------------------------------------------------------
+// Role resolution
+// ---------------------------------------------------------------------------
 
 /**
  * Determine the Chat Completions role for an InboundMessage.
@@ -69,60 +93,82 @@ function resolveRole(msg: InboundMessage): "user" | "assistant" | "tool" {
   return "user";
 }
 
+// ---------------------------------------------------------------------------
+// Per-message mapping
+// ---------------------------------------------------------------------------
+
 /**
  * Map a single InboundMessage to a Chat Completions message.
  * Uses metadata.callId for tool linkage (session-repair convention).
  */
-function mapOneMessage(msg: InboundMessage): ChatCompletionMessage {
+function mapOneMessage(msg: InboundMessage, compat: ResolvedCompat): ChatCompletionMessage {
   const text = extractText(msg);
   const role = resolveRole(msg);
 
   if (role === "assistant") {
-    // Tool calls: session-repair stores callId in metadata.callId.
-    // Full tool_calls array may be in metadata.toolCalls (adapter round-trip).
     const toolCalls = msg.metadata?.toolCalls as readonly ChatCompletionToolCall[] | undefined;
-    const _callId = readStringMeta(msg.metadata, "callId");
 
-    // Only include tool_calls when the full call data is available.
-    // Session-repair synthetic messages with only callId (no name/args)
-    // cannot be faithfully represented — omit tool_calls rather than
-    // fabricating placeholder entries that providers may reject.
+    // Normalize tool call IDs for provider compatibility
+    const normalizedToolCalls =
+      toolCalls !== undefined && toolCalls.length > 0
+        ? toolCalls.map((tc) => ({
+            ...tc,
+            id: normalizeToolCallId(tc.id),
+          }))
+        : undefined;
+
+    // Handle thinking blocks in replay: if the provider requires thinking as
+    // plain text, convert thinking metadata to text content prefix.
+    const thinkingText = readStringMeta(msg.metadata, "thinking");
+    let content = text.length > 0 ? text : null;
+    if (thinkingText !== undefined && thinkingText.length > 0 && compat.requiresThinkingAsText) {
+      content = thinkingText + (content !== null ? `\n\n${content}` : "");
+    }
+
     return {
       role: "assistant",
-      content: text.length > 0 ? text : null,
-      ...(toolCalls !== undefined && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      content,
+      ...(normalizedToolCalls !== undefined ? { tool_calls: normalizedToolCalls } : {}),
     };
   }
 
   if (role === "tool") {
-    // Tool call ID: prefer metadata.toolCallId, fall back to metadata.callId
     const toolCallId =
       readStringMeta(msg.metadata, "toolCallId") ?? readStringMeta(msg.metadata, "callId");
+    const toolName = readStringMeta(msg.metadata, "toolName");
     return {
       role: "tool",
       content: text,
-      ...(toolCallId !== undefined ? { tool_call_id: toolCallId } : {}),
+      ...(toolCallId !== undefined ? { tool_call_id: normalizeToolCallId(toolCallId) } : {}),
+      ...(compat.requiresToolResultName && toolName !== undefined ? { name: toolName } : {}),
     };
   }
 
   return { role: "user", content: text };
 }
 
+// ---------------------------------------------------------------------------
+// Transcript post-processing
+// ---------------------------------------------------------------------------
+
 /**
- * Post-process mapped messages to ensure valid Chat Completions transcript ordering.
+ * Post-process mapped messages to ensure valid Chat Completions transcript.
  *
- * Fixes orphaned tool messages (role: "tool" with no preceding assistant tool_calls)
- * by converting them to user messages. This handles session-repair synthetic histories
- * where callId-only assistant messages can't carry tool_calls.
+ * 1. Drops orphaned tool messages (no preceding assistant tool_calls)
+ * 2. Inserts bridge assistant messages when provider requires assistant
+ *    between tool results and user messages
  */
-function fixOrphanedToolMessages(
+function fixTranscriptOrdering(
   messages: readonly ChatCompletionMessage[],
+  compat: ResolvedCompat,
 ): readonly ChatCompletionMessage[] {
-  // Track which tool_call IDs have been declared by assistant messages
   const declaredCallIds = new Set<string>();
   const result: ChatCompletionMessage[] = [];
 
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!;
+    const prevRole = result.length > 0 ? result[result.length - 1]?.role : undefined;
+
     if (msg.role === "assistant" && msg.tool_calls !== undefined) {
       for (const tc of msg.tool_calls) {
         declaredCallIds.add(tc.id);
@@ -132,9 +178,12 @@ function fixOrphanedToolMessages(
       if (msg.tool_call_id !== undefined && declaredCallIds.has(msg.tool_call_id)) {
         result.push(msg);
       }
-      // Orphaned tool messages are dropped entirely — tool results are
-      // privileged internal data and must not be relabeled as user input.
+      // Orphaned tool messages dropped — privileged data, not relabeled
     } else {
+      // Insert bridge assistant message if provider requires it
+      if (compat.requiresAssistantAfterToolResult && prevRole === "tool" && msg.role === "user") {
+        result.push({ role: "assistant", content: "I have processed the tool results." });
+      }
       result.push(msg);
     }
   }
@@ -142,14 +191,19 @@ function fixOrphanedToolMessages(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 /**
  * Convert Koi InboundMessage[] to OpenAI Chat Completions message array.
- * Preserves message roles based on metadata/senderId for multi-turn fidelity.
+ * Preserves message roles, normalizes tool call IDs, fixes transcript ordering.
  * Throws if messages contain non-text content blocks.
  */
-export function mapMessages(messages: readonly InboundMessage[]): readonly ChatCompletionMessage[] {
-  // Fail closed: only text blocks are supported. Reject any non-text content
-  // (image, file, button, custom) to prevent silent data loss.
+export function mapMessages(
+  messages: readonly InboundMessage[],
+  compat: ResolvedCompat,
+): readonly ChatCompletionMessage[] {
   const unsupported = findNonTextBlockKind(messages);
   if (unsupported !== undefined) {
     throw new Error(
@@ -158,12 +212,13 @@ export function mapMessages(messages: readonly InboundMessage[]): readonly ChatC
     );
   }
 
-  const mapped = messages.map(mapOneMessage);
-  return fixOrphanedToolMessages(mapped);
+  const mapped = messages.map((msg) => mapOneMessage(msg, compat));
+  return fixTranscriptOrdering(mapped, compat);
 }
 
 /**
  * Build the complete request body for the Chat Completions API.
+ * Uses compat flags to adapt to provider-specific quirks.
  */
 export function buildRequestBody(
   request: ModelRequest,
@@ -172,28 +227,39 @@ export function buildRequestBody(
 ): Record<string, unknown> {
   const messages: ChatCompletionMessage[] = [];
 
-  // System prompt from metadata or first message context
+  // System prompt — use developer role for reasoning models if supported
   const systemPrompt = request.metadata?.systemPrompt as string | undefined;
   if (systemPrompt !== undefined) {
-    messages.push({ role: "system", content: systemPrompt });
+    const role = config.compat.supportsDeveloperRole ? "developer" : "system";
+    messages.push({ role: role as "system", content: systemPrompt });
   }
 
-  // Conversation messages — preserves roles, validates content blocks
-  messages.push(...mapMessages(request.messages));
+  // Conversation messages
+  messages.push(...mapMessages(request.messages, config.compat));
 
   const body: Record<string, unknown> = {
     model: request.model ?? config.model,
     messages,
     stream: true,
-    stream_options: { include_usage: true },
   };
+
+  // Usage in streaming — conditionally enabled
+  if (config.compat.supportsUsageInStreaming) {
+    body.stream_options = { include_usage: true };
+  }
+
+  // Max tokens — field name varies by provider
+  if (request.maxTokens !== undefined) {
+    body[config.compat.maxTokensField] = request.maxTokens;
+  }
 
   if (request.temperature !== undefined) {
     body.temperature = request.temperature;
   }
 
-  if (request.maxTokens !== undefined) {
-    body.max_tokens = request.maxTokens;
+  // Store — some providers reject this field
+  if (config.compat.supportsStore) {
+    body.store = false;
   }
 
   if (tools !== undefined && tools.length > 0) {

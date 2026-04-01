@@ -79,7 +79,8 @@ async function complete(config: ResolvedConfig, request: ModelRequest): Promise<
 
 async function* stream(config: ResolvedConfig, request: ModelRequest): AsyncIterable<ModelChunk> {
   // --- All prep before fetch() (Issue #15: first-chunk latency) ---
-  const tools = request.tools !== undefined ? mapToolDescriptors(request.tools) : undefined;
+  const tools =
+    request.tools !== undefined ? mapToolDescriptors(request.tools, config.compat) : undefined;
   const body = buildRequestBody(request, config, tools);
   const url = `${config.baseUrl}/chat/completions`;
   const headers: Record<string, string> = {

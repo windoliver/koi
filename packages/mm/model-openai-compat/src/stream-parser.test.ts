@@ -123,6 +123,96 @@ describe("sanitizeUnicode", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Reasoning field variants
+// ---------------------------------------------------------------------------
+
+describe("reasoning field variants", () => {
+  test("handles 'reasoning' field", () => {
+    const chunks: ChatCompletionChunk[] = [
+      {
+        id: "gr",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              reasoning: "Thinking via reasoning",
+            } as unknown as import("./types.js").ChatCompletionChunkDelta,
+            finish_reason: null,
+          },
+        ],
+      },
+      {
+        id: "gr",
+        choices: [{ index: 0, delta: { content: "Answer" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 3 },
+      },
+    ];
+    const acc = createEmptyAccumulator("test-model");
+    const parser = createStreamParser(acc);
+    const output = feedAll(parser, chunks);
+    parser.finish();
+    const thinkingDeltas = output.filter((c) => c.kind === "thinking_delta");
+    expect(thinkingDeltas).toHaveLength(1);
+  });
+
+  test("handles 'reasoning_text' field (llama.cpp)", () => {
+    const chunks: ChatCompletionChunk[] = [
+      {
+        id: "grt",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              reasoning_text: "llama thinking",
+            } as unknown as import("./types.js").ChatCompletionChunkDelta,
+            finish_reason: null,
+          },
+        ],
+      },
+      {
+        id: "grt",
+        choices: [{ index: 0, delta: { content: "Done" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 2 },
+      },
+    ];
+    const acc = createEmptyAccumulator("test-model");
+    const parser = createStreamParser(acc);
+    const output = feedAll(parser, chunks);
+    parser.finish();
+    expect(output.filter((c) => c.kind === "thinking_delta")).toHaveLength(1);
+  });
+
+  test("deduplicates when same content in multiple fields", () => {
+    const chunks: ChatCompletionChunk[] = [
+      {
+        id: "gd",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              reasoning_content: "thinking",
+              reasoning: "thinking",
+            } as unknown as import("./types.js").ChatCompletionChunkDelta,
+            finish_reason: null,
+          },
+        ],
+      },
+      {
+        id: "gd",
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 1 },
+      },
+    ];
+    const acc = createEmptyAccumulator("test-model");
+    const parser = createStreamParser(acc);
+    const output = feedAll(parser, chunks);
+    parser.finish();
+    // Should emit ONE thinking_delta, not two
+    expect(output.filter((c) => c.kind === "thinking_delta")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edge case 1: Empty stream
 // ---------------------------------------------------------------------------
 

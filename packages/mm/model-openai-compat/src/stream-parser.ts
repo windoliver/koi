@@ -16,7 +16,11 @@ import type { ModelChunk } from "@koi/core";
 import { toolCallId } from "@koi/core";
 import type { AccumulatedResponse } from "./response-mapper.js";
 import { mapFinishReason, parseToolArguments } from "./response-mapper.js";
-import type { ChatCompletionChunk, ChatCompletionChunkToolCall } from "./types.js";
+import type {
+  ChatCompletionChunk,
+  ChatCompletionChunkDelta,
+  ChatCompletionChunkToolCall,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Parser state — discriminated union
@@ -37,6 +41,27 @@ const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF
 
 export function sanitizeUnicode(text: string): string {
   return text.replace(LONE_SURROGATE_RE, "\uFFFD");
+}
+
+// ---------------------------------------------------------------------------
+// Reasoning field detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract reasoning/thinking content from a delta, checking multiple field names.
+ * Returns the first non-empty value to avoid duplication (some providers like
+ * chutes.ai send the same content in multiple fields).
+ *
+ * Field priority: reasoning_content > reasoning > reasoning_text
+ */
+function findReasoningContent(delta: ChatCompletionChunkDelta): string | undefined {
+  const fields = [delta.reasoning_content, delta.reasoning, delta.reasoning_text];
+  for (const field of fields) {
+    if (field !== undefined && field !== null && field.length > 0) {
+      return field;
+    }
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -345,14 +370,12 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
     ctx.state = r.newState;
   }
 
-  if (
-    delta.reasoning_content !== undefined &&
-    delta.reasoning_content !== null &&
-    delta.reasoning_content.length > 0
-  ) {
-    const r = processThinkingDelta(delta.reasoning_content, ctx.state, ctx.acc, () =>
-      resetState(ctx),
-    );
+  // Check multiple reasoning field names — providers use different fields:
+  // reasoning_content (Anthropic via OpenRouter), reasoning (some compat), reasoning_text (llama.cpp)
+  // Use first non-empty to avoid duplication (some providers send same content in multiple fields)
+  const reasoningContent = findReasoningContent(delta);
+  if (reasoningContent !== undefined) {
+    const r = processThinkingDelta(reasoningContent, ctx.state, ctx.acc, () => resetState(ctx));
     output.push(...r.chunks);
     ctx.state = r.newState;
   }

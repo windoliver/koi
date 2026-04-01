@@ -5,14 +5,17 @@
 import { describe, expect, test } from "bun:test";
 import type { InboundMessage, ModelRequest } from "@koi/core";
 import { buildRequestBody, mapMessages } from "./request-mapper.js";
-import type { ResolvedConfig } from "./types.js";
-import { DEFAULT_CAPABILITIES } from "./types.js";
+import type { ResolvedCompat, ResolvedConfig } from "./types.js";
+import { DEFAULT_CAPABILITIES, resolveCompat } from "./types.js";
+
+const DEFAULT_COMPAT: ResolvedCompat = resolveCompat("https://openrouter.ai/api/v1");
 
 const CONFIG: ResolvedConfig = {
   apiKey: "test-key",
   baseUrl: "https://openrouter.ai/api/v1",
   model: "test-model",
   capabilities: DEFAULT_CAPABILITIES,
+  compat: DEFAULT_COMPAT,
   headers: {},
   provider: "openai-compat",
 };
@@ -31,7 +34,7 @@ function makeMessage(text: string, senderId = "user-1"): InboundMessage {
 
 describe("mapMessages", () => {
   test("maps user messages with correct role", () => {
-    const result = mapMessages([makeMessage("hello"), makeMessage("world")]);
+    const result = mapMessages([makeMessage("hello"), makeMessage("world")], DEFAULT_COMPAT);
     expect(result).toHaveLength(2);
     expect(result[0]?.role).toBe("user");
     expect(result[0]?.content).toBe("hello");
@@ -43,7 +46,7 @@ describe("mapMessages", () => {
       senderId: "assistant",
       timestamp: Date.now(),
     };
-    const result = mapMessages([msg]);
+    const result = mapMessages([msg], DEFAULT_COMPAT);
     expect(result[0]?.role).toBe("assistant");
     expect(result[0]?.content).toBe("I can help with that.");
   });
@@ -63,7 +66,7 @@ describe("mapMessages", () => {
         ],
       },
     };
-    const result = mapMessages([msg]);
+    const result = mapMessages([msg], DEFAULT_COMPAT);
     expect(result[0]?.role).toBe("assistant");
     expect(result[0]?.content).toBeNull();
     expect(result[0]?.tool_calls).toHaveLength(1);
@@ -88,7 +91,7 @@ describe("mapMessages", () => {
         metadata: { toolCallId: "call_1" },
       },
     ];
-    const result = mapMessages(messages);
+    const result = mapMessages(messages, DEFAULT_COMPAT);
     expect(result[1]?.role).toBe("tool");
     expect(result[1]?.content).toBe("Search result: found 3 items");
     expect(result[1]?.tool_call_id).toBe("call_1");
@@ -123,7 +126,7 @@ describe("mapMessages", () => {
         timestamp: Date.now(),
       },
     ];
-    const result = mapMessages(messages);
+    const result = mapMessages(messages, DEFAULT_COMPAT);
     expect(result.map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
   });
 
@@ -138,7 +141,7 @@ describe("mapMessages", () => {
       timestamp: Date.now(),
       metadata: { callId: "c1", synthetic: true },
     };
-    const result = mapMessages([msg]);
+    const result = mapMessages([msg], DEFAULT_COMPAT);
     expect(result[0]?.role).toBe("assistant");
     // Should NOT fabricate tool_calls from callId alone
     expect(result[0]?.tool_calls).toBeUndefined();
@@ -164,7 +167,7 @@ describe("mapMessages", () => {
         metadata: { callId: "c1" },
       },
     ];
-    const result = mapMessages(messages);
+    const result = mapMessages(messages, DEFAULT_COMPAT);
     // Only assistant remains — orphaned tool is dropped
     expect(result).toHaveLength(1);
     expect(result[0]?.role).toBe("assistant");
@@ -190,7 +193,7 @@ describe("mapMessages", () => {
         metadata: { toolCallId: "c1" },
       },
     ];
-    const result = mapMessages(messages);
+    const result = mapMessages(messages, DEFAULT_COMPAT);
     expect(result[0]?.role).toBe("assistant");
     expect(result[1]?.role).toBe("tool");
     expect(result[1]?.tool_call_id).toBe("c1");
@@ -207,7 +210,7 @@ describe("mapMessages", () => {
       timestamp: Date.now(),
       metadata: { role: "assistant" },
     };
-    const result = mapMessages([msg]);
+    const result = mapMessages([msg], DEFAULT_COMPAT);
     expect(result[0]?.role).toBe("assistant");
   });
 
@@ -217,7 +220,7 @@ describe("mapMessages", () => {
       senderId: "agent-456",
       timestamp: Date.now(),
     };
-    const result = mapMessages([msg]);
+    const result = mapMessages([msg], DEFAULT_COMPAT);
     expect(result[0]?.role).toBe("user");
   });
 
@@ -236,7 +239,7 @@ describe("mapMessages", () => {
         timestamp: Date.now(),
       },
     ];
-    expect(() => mapMessages(messages)).toThrow('"image"');
+    expect(() => mapMessages(messages, DEFAULT_COMPAT)).toThrow('"image"');
   });
 
   test("throws when file content is present", () => {
@@ -249,7 +252,7 @@ describe("mapMessages", () => {
         timestamp: Date.now(),
       },
     ];
-    expect(() => mapMessages(messages)).toThrow('"file"');
+    expect(() => mapMessages(messages, DEFAULT_COMPAT)).toThrow('"file"');
   });
 
   test("throws when button content is present", () => {
@@ -260,7 +263,7 @@ describe("mapMessages", () => {
         timestamp: Date.now(),
       },
     ];
-    expect(() => mapMessages(messages)).toThrow('"button"');
+    expect(() => mapMessages(messages, DEFAULT_COMPAT)).toThrow('"button"');
   });
 
   test("throws when custom content is present", () => {
@@ -271,7 +274,109 @@ describe("mapMessages", () => {
         timestamp: Date.now(),
       },
     ];
-    expect(() => mapMessages(messages)).toThrow('"custom"');
+    expect(() => mapMessages(messages, DEFAULT_COMPAT)).toThrow('"custom"');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tool call ID normalization
+  // ---------------------------------------------------------------------------
+
+  test("normalizes pipe-separated tool call IDs", () => {
+    const messages: readonly InboundMessage[] = [
+      {
+        content: [],
+        senderId: "assistant",
+        timestamp: Date.now(),
+        metadata: {
+          toolCalls: [
+            {
+              id: "call_abc|longbase64data+/=",
+              type: "function",
+              function: { name: "fn", arguments: "{}" },
+            },
+          ],
+        },
+      },
+      {
+        content: [{ kind: "text", text: "result" }],
+        senderId: "tool",
+        timestamp: Date.now(),
+        metadata: { toolCallId: "call_abc|longbase64data+/=" },
+      },
+    ];
+    const result = mapMessages(messages, DEFAULT_COMPAT);
+    // Pipe-separated → extract call_id part, sanitize
+    expect(result[0]?.tool_calls?.[0]?.id).toBe("call_abc");
+    expect(result[1]?.tool_call_id).toBe("call_abc");
+  });
+
+  test("truncates long tool call IDs to 40 chars", () => {
+    const longId = "a".repeat(60);
+    const messages: readonly InboundMessage[] = [
+      {
+        content: [],
+        senderId: "assistant",
+        timestamp: Date.now(),
+        metadata: {
+          toolCalls: [{ id: longId, type: "function", function: { name: "fn", arguments: "{}" } }],
+        },
+      },
+    ];
+    const result = mapMessages(messages, DEFAULT_COMPAT);
+    expect(result[0]?.tool_calls?.[0]?.id.length).toBe(40);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Thinking replay with requiresThinkingAsText
+  // ---------------------------------------------------------------------------
+
+  test("converts thinking metadata to text when requiresThinkingAsText", () => {
+    const thinkingCompat = resolveCompat("https://openrouter.ai/api/v1", {
+      requiresThinkingAsText: true,
+    });
+    const msg: InboundMessage = {
+      content: [{ kind: "text", text: "The answer is 42." }],
+      senderId: "assistant",
+      timestamp: Date.now(),
+      metadata: { thinking: "Let me calculate..." },
+    };
+    const result = mapMessages([msg], thinkingCompat);
+    expect(result[0]?.role).toBe("assistant");
+    // Thinking prepended to content
+    expect(result[0]?.content).toBe("Let me calculate...\n\nThe answer is 42.");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bridge assistant message insertion
+  // ---------------------------------------------------------------------------
+
+  test("inserts bridge assistant message when requiresAssistantAfterToolResult", () => {
+    const bridgeCompat = resolveCompat("https://openrouter.ai/api/v1", {
+      requiresAssistantAfterToolResult: true,
+    });
+    const messages: readonly InboundMessage[] = [
+      {
+        content: [],
+        senderId: "assistant",
+        timestamp: Date.now(),
+        metadata: {
+          toolCalls: [{ id: "c1", type: "function", function: { name: "fn", arguments: "{}" } }],
+        },
+      },
+      {
+        content: [{ kind: "text", text: "result" }],
+        senderId: "tool",
+        timestamp: Date.now(),
+        metadata: { toolCallId: "c1" },
+      },
+      makeMessage("What does that mean?"),
+    ];
+    const result = mapMessages(messages, bridgeCompat);
+    // assistant → tool → bridge_assistant → user
+    expect(result).toHaveLength(4);
+    expect(result[2]?.role).toBe("assistant");
+    expect(result[2]?.content).toBe("I have processed the tool results.");
+    expect(result[3]?.role).toBe("user");
   });
 });
 
@@ -314,7 +419,8 @@ describe("buildRequestBody", () => {
       maxTokens: 1024,
     };
     const body = buildRequestBody(request, CONFIG);
-    expect(body.max_tokens).toBe(1024);
+    // Default compat uses max_completion_tokens
+    expect(body.max_completion_tokens).toBe(1024);
   });
 
   test("includes tools when provided", () => {
@@ -346,7 +452,8 @@ describe("buildRequestBody", () => {
     };
     const body = buildRequestBody(request, CONFIG);
     const messages = body.messages as Array<{ role: string; content: string }>;
-    expect(messages[0]?.role).toBe("system");
+    // Default compat has supportsDeveloperRole=true → "developer" role
+    expect(messages[0]?.role).toBe("developer");
     expect(messages[0]?.content).toBe("You are helpful.");
   });
 });
