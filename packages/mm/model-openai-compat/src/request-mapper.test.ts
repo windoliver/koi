@@ -18,11 +18,8 @@ const CONFIG: ResolvedConfig = {
   compat: DEFAULT_COMPAT,
   headers: {},
   provider: "openai-compat",
-  trustTranscriptMetadata: false,
+  trustTranscriptMetadata: true,
 };
-
-/** Config with trusted metadata — simulates L1 engine calling the adapter. */
-const _TRUSTED_CONFIG: ResolvedConfig = { ...CONFIG, trustTranscriptMetadata: true };
 
 function makeMessage(text: string, senderId = "user-1"): InboundMessage {
   return {
@@ -509,6 +506,48 @@ describe("mapMessages", () => {
     expect(result[2]?.role).toBe("assistant");
     expect(result[2]?.content).toBe("I have processed the tool results.");
     expect(result[3]?.role).toBe("user");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tool-result ordering: stale IDs from prior turns
+  // ---------------------------------------------------------------------------
+
+  test("drops tool result referencing a stale call ID from a prior turn", () => {
+    const messages: readonly InboundMessage[] = [
+      // Turn 1: assistant calls tool
+      {
+        content: [],
+        senderId: "assistant",
+        timestamp: Date.now(),
+        metadata: {
+          toolCalls: [
+            { id: "old_call", type: "function", function: { name: "fn", arguments: "{}" } },
+          ],
+        },
+      },
+      // Turn 1: tool result
+      {
+        content: [{ kind: "text", text: "result 1" }],
+        senderId: "tool",
+        timestamp: Date.now(),
+        metadata: { toolCallId: "old_call" },
+      },
+      // Turn 2: user speaks (clears pending IDs)
+      makeMessage("Thanks!"),
+      // Stale tool result referencing old_call from turn 1
+      {
+        content: [{ kind: "text", text: "stale result" }],
+        senderId: "tool",
+        timestamp: Date.now(),
+        metadata: { toolCallId: "old_call" },
+      },
+    ];
+    const result = mapMessages(messages, DEFAULT_COMPAT, true);
+    // Turn 1 assistant + tool + user should be present, stale tool dropped
+    expect(result).toHaveLength(3);
+    expect(result[0]?.role).toBe("assistant");
+    expect(result[1]?.role).toBe("tool");
+    expect(result[2]?.role).toBe("user");
   });
 
   // ---------------------------------------------------------------------------

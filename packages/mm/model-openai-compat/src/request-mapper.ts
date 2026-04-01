@@ -255,7 +255,11 @@ function fixTranscriptOrdering(
   messages: readonly ChatCompletionMessage[],
   compat: ResolvedCompat,
 ): readonly ChatCompletionMessage[] {
-  const declaredCallIds = new Set<string>();
+  // Track PENDING call IDs from the most recent assistant tool_calls turn.
+  // Tool results must match the current pending set, not any historical call.
+  // When a non-tool message arrives, pending IDs are cleared — any unresolved
+  // tool results after that point are stale and would be dropped.
+  let pendingCallIds = new Set<string>();
   const result: ChatCompletionMessage[] = [];
 
   for (let i = 0; i < messages.length; i++) {
@@ -263,16 +267,18 @@ function fixTranscriptOrdering(
     const prevRole = result.length > 0 ? result[result.length - 1]?.role : undefined;
 
     if (msg.role === "assistant" && msg.tool_calls !== undefined) {
-      for (const tc of msg.tool_calls) {
-        declaredCallIds.add(tc.id);
-      }
+      // New assistant tool_calls turn — replace pending set
+      pendingCallIds = new Set(msg.tool_calls.map((tc) => tc.id));
       result.push(msg);
     } else if (msg.role === "tool") {
-      if (msg.tool_call_id !== undefined && declaredCallIds.has(msg.tool_call_id)) {
+      if (msg.tool_call_id !== undefined && pendingCallIds.has(msg.tool_call_id)) {
+        pendingCallIds.delete(msg.tool_call_id); // Consumed
         result.push(msg);
       }
-      // Orphaned tool messages dropped — privileged data, not relabeled
+      // Orphaned/stale tool messages dropped
     } else {
+      // Non-tool message clears pending — any unresolved tool results are stale
+      pendingCallIds.clear();
       // Insert bridge assistant message if provider requires it
       if (compat.requiresAssistantAfterToolResult && prevRole === "tool" && msg.role === "user") {
         result.push({ role: "assistant", content: "I have processed the tool results." });

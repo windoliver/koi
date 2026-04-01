@@ -148,10 +148,11 @@ export interface OpenAICompatAdapterConfig {
   /**
    * Trust message metadata for transcript replay (role, toolCalls, callId).
    *
-   * Default: false (fail-closed). When false, metadata.role, toolCalls, and
-   * callId are ignored — only senderId heuristics determine message roles.
-   * Set to true ONLY when the adapter is called from a trusted L1 engine
-   * that constructs InboundMessage internally, not from external callers.
+   * Default: true — this adapter is designed for L1 engine use where
+   * InboundMessage is constructed internally. When true, metadata.role,
+   * toolCalls, and callId are honored for session-repair/tool-replay.
+   * Set to false when exposing the adapter to untrusted external callers
+   * that could inject fake assistant/tool turns via metadata.
    */
   readonly trustTranscriptMetadata?: boolean | undefined;
 }
@@ -200,7 +201,7 @@ export function resolveConfig(config: OpenAICompatAdapterConfig): ResolvedConfig
     compat: resolveCompat(baseUrl, config.compat),
     headers: config.headers ?? {},
     provider: config.provider ?? "openai-compat",
-    trustTranscriptMetadata: config.trustTranscriptMetadata ?? false,
+    trustTranscriptMetadata: config.trustTranscriptMetadata ?? true,
   };
 }
 
