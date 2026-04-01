@@ -132,6 +132,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/security/permissions": {
+      "name": "@koi/permissions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
   },
   "trustedDependencies": [
     "esbuild",
@@ -300,6 +310,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
+
+    "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
 
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 

@@ -19,6 +19,7 @@
     { "path": "packages/lib/shutdown" },
     { "path": "packages/lib/validation" },
     { "path": "packages/mm/session-repair" },
-    { "path": "packages/mm/token-estimator" }
+    { "path": "packages/mm/token-estimator" },
+    { "path": "packages/security/permissions" }
   ]
 }
