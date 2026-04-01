@@ -1,0 +1,303 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/mcp API surface . type declarations are stable 1`] = `
+"import { Result, KoiError, JsonObject } from '@koi/core';
+import { z } from 'zod';
+
+/**
+ * MCP authentication provider interface.
+ *
+ * Pluggable auth for MCP transports. The transport calls token() before
+ * each request and onUnauthorized() when it receives a 401/403.
+ *
+ * Simple bearer token providers implement token() only.
+ * OAuth 2.1 providers implement the full interface (future package).
+ */
+interface UnauthorizedContext {
+    readonly status: number;
+    readonly headers: Readonly<Record<string, string>>;
+    readonly serverName: string;
+}
+/**
+ * Pluggable authentication provider for MCP transports.
+ *
+ * - \`token()\`: returns the current auth token (bearer, API key, etc.)
+ *   Return \`undefined\` to skip authentication for this request.
+ * - \`onUnauthorized()\`: called when the transport receives a 401 or 403.
+ *   The provider should refresh/rotate credentials. If it returns without
+ *   error, the transport retries the request once.
+ */
+interface McpAuthProvider {
+    readonly token: () => string | undefined | Promise<string | undefined>;
+    readonly onUnauthorized?: (context: UnauthorizedContext) => void | Promise<void>;
+}
+/**
+ * Creates a simple auth provider that returns a static bearer token.
+ * Useful for API-key-based MCP servers.
+ */
+declare function createBearerAuthProvider(bearerToken: string): McpAuthProvider;
+
+/**
+ * MCP server configuration types and Zod validation.
+ *
+ * Uses z.discriminatedUnion on the transport field so that Zod validates
+ * transport-specific required fields (command for stdio, url for http/sse)
+ * in a single pass. No secondary extraction step needed.
+ */
+
+interface StdioTransportConfig {
+    readonly transport: "stdio";
+    readonly command: string;
+    readonly args?: readonly string[] | undefined;
+    readonly env?: Readonly<Record<string, string>> | undefined;
+}
+interface HttpTransportConfig {
+    readonly transport: "http";
+    readonly url: string;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+}
+interface SseTransportConfig {
+    readonly transport: "sse";
+    readonly url: string;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+}
+type McpTransportConfig = StdioTransportConfig | HttpTransportConfig | SseTransportConfig;
+interface McpServerConfig {
+    readonly name: string;
+    readonly transport: McpTransportConfig;
+    readonly timeoutMs?: number | undefined;
+    readonly connectTimeoutMs?: number | undefined;
+    readonly maxReconnectAttempts?: number | undefined;
+}
+interface ResolvedMcpServerConfig {
+    readonly name: string;
+    readonly transport: McpTransportConfig;
+    readonly timeoutMs: number;
+    readonly connectTimeoutMs: number;
+    readonly maxReconnectAttempts: number;
+}
+declare const DEFAULT_TIMEOUT_MS = 30000;
+declare const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
+declare const DEFAULT_MAX_RECONNECT_ATTEMPTS = 3;
+declare const stdioTransportSchema: z.ZodObject<{
+    transport: z.ZodLiteral<"stdio">;
+    command: z.ZodString;
+    args: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+}>;
+declare const httpTransportSchema: z.ZodObject<{
+    transport: z.ZodLiteral<"http">;
+    url: z.ZodString;
+    headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+}>;
+declare const sseTransportSchema: z.ZodObject<{
+    transport: z.ZodLiteral<"sse">;
+    url: z.ZodString;
+    headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+}>;
+declare const mcpTransportConfigSchema: z.ZodDiscriminatedUnion<[
+    typeof stdioTransportSchema,
+    typeof httpTransportSchema,
+    typeof sseTransportSchema
+]>;
+declare const mcpServerConfigSchema: z.ZodObject<{
+    name: z.ZodString;
+    transport: typeof mcpTransportConfigSchema;
+    timeoutMs: z.ZodOptional<z.ZodNumber>;
+    connectTimeoutMs: z.ZodOptional<z.ZodNumber>;
+    maxReconnectAttempts: z.ZodOptional<z.ZodNumber>;
+}>;
+declare const mcpServerArraySchema: z.ZodArray<typeof mcpServerConfigSchema>;
+/** Validates a single server config entry. Returns typed Result. */
+declare function validateServerConfig(raw: unknown): Result<McpServerConfig, KoiError>;
+/** Validates an array of server configs. */
+declare function validateServerConfigs(raw: unknown): Result<readonly McpServerConfig[], KoiError>;
+/** Resolves a server config by applying defaults. No re-validation needed. */
+declare function resolveServerConfig(config: McpServerConfig): ResolvedMcpServerConfig;
+
+/**
+ * Transport connection state machine.
+ *
+ * Models the full lifecycle of an MCP transport connection as a
+ * discriminated union with explicit valid transitions. Invalid
+ * transitions throw at runtime and are caught at test time.
+ */
+
+interface AuthChallenge {
+    readonly type: "bearer" | "oauth";
+    readonly realm?: string | undefined;
+    readonly scope?: string | undefined;
+}
+type TransportState = {
+    readonly kind: "idle";
+} | {
+    readonly kind: "connecting";
+    readonly attempt: number;
+} | {
+    readonly kind: "connected";
+    readonly sessionId?: string | undefined;
+} | {
+    readonly kind: "reconnecting";
+    readonly attempt: number;
+    readonly lastError: KoiError;
+} | {
+    readonly kind: "auth-needed";
+    readonly challenge?: AuthChallenge | undefined;
+} | {
+    readonly kind: "error";
+    readonly error: KoiError;
+    readonly retryable: boolean;
+} | {
+    readonly kind: "closed";
+};
+type TransportStateListener = (state: TransportState) => void;
+interface TransportStateMachine {
+    /** Current state (readonly snapshot). */
+    readonly current: TransportState;
+    /** Transition to a new state. Throws if the transition is invalid. */
+    readonly transition: (next: TransportState) => void;
+    /** Subscribe to state changes. Returns unsubscribe function. */
+    readonly onChange: (listener: TransportStateListener) => () => void;
+    /** Check if a transition to the target kind is valid from the current state. */
+    readonly canTransitionTo: (kind: TransportState["kind"]) => boolean;
+}
+declare function createTransportStateMachine(): TransportStateMachine;
+
+/**
+ * Transport factory — creates MCP SDK transport instances from config.
+ *
+ * Returns a KoiMcpTransport wrapper that exposes lifecycle callbacks
+ * (onclose, onerror) and session state without leaking SDK types
+ * into the Koi API surface.
+ */
+
+/** Lifecycle event fired when the underlying transport changes state. */
+type TransportEvent = {
+    readonly kind: "closed";
+} | {
+    readonly kind: "error";
+    readonly error: Error;
+};
+type TransportEventListener = (event: TransportEvent) => void;
+/**
+ * Koi's wrapper around MCP SDK transports.
+ * Exposes lifecycle events and session state without leaking SDK internals.
+ */
+interface KoiMcpTransport {
+    /** Start the transport (called by Client.connect). */
+    readonly start: () => Promise<void>;
+    /** Close the transport and release resources. */
+    readonly close: () => Promise<void>;
+    /** The underlying SDK transport for passing to Client.connect(). */
+    readonly sdkTransport: unknown;
+    /** Session ID from Streamable HTTP (undefined for stdio/SSE). */
+    readonly sessionId: string | undefined;
+    /** Subscribe to transport lifecycle events. Returns unsubscribe function. */
+    readonly onEvent: (listener: TransportEventListener) => () => void;
+}
+interface CreateTransportOptions {
+    readonly config: McpTransportConfig;
+    readonly authProvider?: McpAuthProvider | undefined;
+}
+/**
+ * Creates a KoiMcpTransport from a transport config.
+ * The returned transport has not been started — pass .sdkTransport
+ * to Client.connect() to start it.
+ */
+declare function createTransport(options: CreateTransportOptions): KoiMcpTransport;
+type CreateTransportFn = (options: CreateTransportOptions) => KoiMcpTransport;
+
+/**
+ * McpConnection — per-server connection lifecycle manager.
+ *
+ * Composes the transport wrapper, state machine, auth provider, and
+ * reconnection logic into a single connection handle. Owns an
+ * AbortController for clean shutdown of in-flight operations.
+ */
+
+interface McpToolInfo {
+    readonly name: string;
+    readonly description: string;
+    readonly inputSchema: JsonObject;
+}
+interface SdkClientLike {
+    connect(transport: unknown): Promise<void>;
+    close(): Promise<void>;
+    listTools(): Promise<{
+        tools: Array<{
+            name: string;
+            description?: string | undefined;
+            inputSchema?: unknown;
+        }>;
+    }>;
+    callTool(params: {
+        name: string;
+        arguments: Record<string, unknown>;
+    }): Promise<{
+        content?: unknown;
+        isError?: boolean | undefined;
+    }>;
+    setNotificationHandler?(method: string, handler: (params: unknown) => void): void;
+    getServerCapabilities?(): {
+        tools?: {
+            listChanged?: boolean;
+        };
+    } | undefined;
+}
+interface McpConnection {
+    /** Connect to the MCP server. */
+    readonly connect: () => Promise<Result<void, KoiError>>;
+    /** List available tools on the server. */
+    readonly listTools: () => Promise<Result<readonly McpToolInfo[], KoiError>>;
+    /** Call a tool by name with arguments. */
+    readonly callTool: (name: string, args: JsonObject) => Promise<Result<unknown, KoiError>>;
+    /** Close the connection and abort in-flight operations. */
+    readonly close: () => Promise<void>;
+    /** Current connection state. */
+    readonly state: TransportState;
+    /** Server name from config. */
+    readonly serverName: string;
+    /** Subscribe to state changes. Returns unsubscribe function. */
+    readonly onStateChange: (listener: TransportStateListener) => () => void;
+    /** Subscribe to tool list changes. Returns unsubscribe function. */
+    readonly onToolsChanged: (listener: () => void) => () => void;
+}
+interface ConnectionDeps {
+    readonly createClient: (info: {
+        readonly name: string;
+        readonly version: string;
+    }) => SdkClientLike;
+    readonly createTransport: CreateTransportFn;
+    readonly random: () => number;
+}
+declare function createMcpConnection(config: ResolvedMcpServerConfig, authProvider?: McpAuthProvider, deps?: Partial<ConnectionDeps>): McpConnection;
+
+/**
+ * Structured error mapping from MCP SDK / HTTP errors to KoiError.
+ *
+ * Strategy: check structured signals first (HTTP status code, JSON-RPC error
+ * code), then fall back to message pattern matching for unstructured errors.
+ * This is more reliable than regex-only matching because HTTP status codes
+ * and JSON-RPC codes are part of the protocol contract.
+ */
+
+interface McpErrorContext {
+    readonly serverName: string;
+    readonly httpStatus?: number | undefined;
+    readonly jsonRpcCode?: number | undefined;
+}
+/**
+ * Maps an MCP error to a KoiError using structured signals first,
+ * then message pattern fallback.
+ *
+ * Priority: HTTP status code > JSON-RPC code > message pattern > EXTERNAL fallback
+ */
+declare function mapMcpError(error: unknown, context: McpErrorContext): KoiError;
+declare function connectionTimeoutError(serverName: string, timeoutMs: number): KoiError;
+declare function notConnectedError(serverName: string): KoiError;
+declare function reconnectExhaustedError(serverName: string, attempts: number): KoiError;
+declare function sessionExpiredError(serverName: string): KoiError;
+
+export { type AuthChallenge, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type HttpTransportConfig, type KoiMcpTransport, type McpAuthProvider, type McpConnection, type McpErrorContext, type McpServerConfig, type McpToolInfo, type McpTransportConfig, type ResolvedMcpServerConfig, type SseTransportConfig, type StdioTransportConfig, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, type UnauthorizedContext, connectionTimeoutError, createBearerAuthProvider, createMcpConnection, createTransport, createTransportStateMachine, mapMcpError, mcpServerArraySchema, mcpServerConfigSchema, mcpTransportConfigSchema, notConnectedError, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateServerConfig, validateServerConfigs };
+"
+`;
