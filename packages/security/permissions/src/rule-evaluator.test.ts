@@ -136,6 +136,18 @@ describe("normalizeResource", () => {
   test("nested traversal is fully resolved", () => {
     expect(normalizeResource("src/deep/../../secrets.env")).toBe("secrets.env");
   });
+
+  test("rejects relative paths with leading ..", () => {
+    expect(normalizeResource("../secrets.env")).toBeNull();
+  });
+
+  test("rejects relative paths that escape via nested ..", () => {
+    expect(normalizeResource("src/../../secrets.env")).toBeNull();
+  });
+
+  test("absolute paths clamp .. at root", () => {
+    expect(normalizeResource("/../../etc/passwd")).toBe("/etc/passwd");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -206,6 +218,18 @@ describe("evaluateRules", () => {
     // After normalization, src/../secrets.env → secrets.env which doesn't match src/**
     const decision = evaluateRules(traversalQuery, rules);
     expect(decision.effect).toBe("ask");
+  });
+
+  test("denies relative paths with leading .. traversal", () => {
+    const rules = [makeRule("**", "*", "allow")];
+    const traversalQuery: PermissionQuery = {
+      principal: "agent-1",
+      action: "write",
+      resource: "../secrets.env",
+    };
+    const decision = evaluateRules(traversalQuery, rules);
+    expect(decision.effect).toBe("deny");
+    expect("reason" in decision && decision.reason).toContain("unresolvable traversal");
   });
 
   test("path traversal does not bypass deny rules", () => {

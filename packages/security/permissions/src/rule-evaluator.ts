@@ -75,11 +75,13 @@ function matchPrincipal(compiledPrincipal: RegExp | undefined, principal: string
  * - Collapses `//` to `/`
  * - Resolves `.` and `..` segments
  * - Preserves leading `/` for absolute paths
+ * - For absolute paths, `..` at the root is clamped (cannot escape `/`)
+ * - For relative paths, `..` that escapes above the starting point returns `null`
+ *   (unresolvable without a known cwd — must be denied)
  *
- * Resources containing `..` that escape the root are collapsed to the root.
  * Non-path resources (e.g., `agent:foo`) pass through unchanged.
  */
-export function normalizeResource(resource: string): string {
+export function normalizeResource(resource: string): string | null {
   // Non-path resources (no / at all) pass through as-is
   if (!resource.includes("/")) {
     return resource;
@@ -94,6 +96,14 @@ export function normalizeResource(resource: string): string {
       continue;
     }
     if (seg === "..") {
+      if (resolved.length === 0) {
+        // For relative paths, escaping above start is unresolvable
+        if (!isAbsolute) {
+          return null;
+        }
+        // For absolute paths, clamp at root (can't go above /)
+        continue;
+      }
       resolved.pop();
     } else {
       resolved.push(seg);
@@ -115,6 +125,15 @@ export function evaluateRules(
   rules: readonly CompiledRule[],
 ): PermissionDecision {
   const resource = normalizeResource(query.resource);
+
+  // Unresolvable relative paths (leading ..) are denied — we cannot safely
+  // determine the target without a known cwd.
+  if (resource === null) {
+    return {
+      effect: "deny",
+      reason: "Resource path contains unresolvable traversal segments",
+    };
+  }
 
   for (const rule of rules) {
     if (
