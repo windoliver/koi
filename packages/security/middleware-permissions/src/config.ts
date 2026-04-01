@@ -32,7 +32,9 @@ export interface ApprovalCacheConfig {
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_CACHE_CONFIG: Required<PermissionCacheConfig> = {
-  allowTtlMs: 300_000,
+  // Short allow TTL (30s) limits the stale-authorization window when
+  // policies are revoked mid-session. Increase for immutable backends.
+  allowTtlMs: 30_000,
   denyTtlMs: 10_000,
   maxEntries: 1024,
 } as const;

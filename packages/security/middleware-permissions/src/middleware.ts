@@ -31,7 +31,7 @@ import {
   KoiRuntimeError,
   swallowError,
 } from "@koi/errors";
-import { fnv1a } from "@koi/hash";
+// fnv1a no longer used for cache keys (collision-unsafe for security decisions)
 import { isDefaultDeny } from "./classifier.js";
 import type {
   ApprovalCacheConfig,
@@ -67,14 +67,15 @@ function createDecisionCache(
   config: PermissionCacheConfig,
   clock: () => number,
 ): {
-  readonly get: (key: number) => PermissionDecision | undefined;
-  readonly set: (key: number, decision: PermissionDecision) => void;
+  readonly get: (key: string) => PermissionDecision | undefined;
+  readonly set: (key: string, decision: PermissionDecision) => void;
   readonly clear: () => void;
 } {
   const maxEntries = config.maxEntries ?? DEFAULT_CACHE_CONFIG.maxEntries;
   const allowTtl = config.allowTtlMs ?? DEFAULT_CACHE_CONFIG.allowTtlMs;
   const denyTtl = config.denyTtlMs ?? DEFAULT_CACHE_CONFIG.denyTtlMs;
-  const entries = new Map<number, DecisionCacheEntry>();
+  // String keys: collision-safe for security-sensitive authorization decisions
+  const entries = new Map<string, DecisionCacheEntry>();
 
   return {
     get(key) {
@@ -117,13 +118,14 @@ function createApprovalCache(
   config: ApprovalCacheConfig,
   clock: () => number,
 ): {
-  readonly has: (key: number) => boolean;
-  readonly set: (key: number) => void;
+  readonly has: (key: string) => boolean;
+  readonly set: (key: string) => void;
   readonly clear: () => void;
 } {
   const maxEntries = config.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES;
   const ttlMs = config.ttlMs ?? DEFAULT_APPROVAL_CACHE_TTL_MS;
-  const entries = new Map<number, ApprovalCacheEntry>();
+  // String keys: collision-safe for security-sensitive approval decisions
+  const entries = new Map<string, ApprovalCacheEntry>();
 
   return {
     has(key) {
@@ -157,24 +159,24 @@ function createApprovalCache(
 // Cache key helpers
 // ---------------------------------------------------------------------------
 
-function decisionCacheKey(query: PermissionQuery): number {
+/** Full serialized key — collision-safe for security-sensitive cache lookups. */
+function decisionCacheKey(query: PermissionQuery): string {
   const ctx = query.context !== undefined ? JSON.stringify(query.context) : "";
-  return fnv1a(`${query.principal}:${query.action}:${query.resource}:${ctx}`);
+  return `${query.principal}\0${query.action}\0${query.resource}\0${ctx}`;
 }
 
+/** Full serialized key — collision-safe for approval cache lookups. */
 function computeApprovalCacheKey(
-  backendFingerprint: number,
+  backendFingerprint: string,
   sessionId: string,
   userId: string,
   agentId: string,
   toolId: string,
   input: unknown,
   context: string,
-): number {
+): string {
   const sorted = sortTopLevelKeys(input);
-  return fnv1a(
-    `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}`,
-  );
+  return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}`;
 }
 
 /** Serialize turn-scoped context for inclusion in approval cache keys. */
@@ -237,8 +239,8 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         )
       : undefined;
 
-  // Backend fingerprint for approval cache key isolation
-  const backendFingerprint = fnv1a(String(Math.random()));
+  // Backend fingerprint for approval cache key isolation (random string per instance)
+  const backendFingerprint = String(Math.random());
 
   // Denial trackers scoped per session (keyed by sessionId)
   const trackersBySession = new Map<string, DenialTracker>();
@@ -487,6 +489,13 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
           forgedToolsByTurn.delete(key);
         }
       }
+    },
+
+    async onAfterTurn(ctx: TurnContext): Promise<void> {
+      // Eagerly clean forged-tool state after each turn to prevent
+      // unbounded memory growth in long-lived sessions
+      const turnKey = `${ctx.session.sessionId as string}:${ctx.turnId as string}`;
+      forgedToolsByTurn.delete(turnKey);
     },
 
     async wrapModelCall(

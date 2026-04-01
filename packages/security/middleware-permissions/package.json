@@ -19,7 +19,6 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*",
-    "@koi/hash": "workspace:*"
+    "@koi/errors": "workspace:*"
   }
 }
