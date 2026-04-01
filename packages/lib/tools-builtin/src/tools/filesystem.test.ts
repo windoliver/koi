@@ -482,6 +482,23 @@ describe("createFsWriteTool", () => {
     expect(result.bytesWritten).toBe(0);
   });
 
+  test("returns cancelled when signal aborts during backend write", async () => {
+    const controller = new AbortController();
+    const backend = {
+      ...createMockBackend(),
+      write: async (path: string, content: string) => {
+        controller.abort();
+        return { ok: true as const, value: { path, bytesWritten: content.length } };
+      },
+    };
+    const tool = createFsWriteTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
+    const result = (await tool.execute(
+      { path: "/test", content: "x" },
+      { signal: controller.signal },
+    )) as { readonly code: string };
+    expect(result.code).toBe("CANCELLED");
+  });
+
   test("returns cancelled when signal is already aborted", async () => {
     const tool = createFsWriteTool(createMockBackend(), "fs", DEFAULT_UNSANDBOXED_POLICY);
     const result = (await tool.execute(
