@@ -80,6 +80,11 @@ function failureResult(hookName: string, error: string): HookExecutionResult {
   return { ok: false, hookName, error, durationMs: 1 };
 }
 
+/** Type-narrowing assertion — fails the test if value is undefined. */
+function assertDefined<T>(value: T | undefined): asserts value is T {
+  expect(value).toBeDefined();
+}
+
 // ---------------------------------------------------------------------------
 // aggregateDecisions unit tests
 // ---------------------------------------------------------------------------
@@ -245,6 +250,7 @@ describe("wrapToolCall", () => {
 
     const request: ToolRequest = { toolId: "bash", input: { cmd: "ls" } };
     const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
 
     expect(nextFn).toHaveBeenCalledTimes(1);
     expect(result.output).toBe("tool result");
@@ -264,6 +270,7 @@ describe("wrapToolCall", () => {
 
     const request: ToolRequest = { toolId: "bash", input: { cmd: "rm -rf /" } };
     const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
 
     // next() must NOT have been called
     expect(nextFn).not.toHaveBeenCalled();
@@ -289,6 +296,7 @@ describe("wrapToolCall", () => {
 
     expect(nextFn).toHaveBeenCalledTimes(1);
     const passedRequest = nextFn.mock.calls[0]?.[0];
+    assertDefined(passedRequest);
     expect(passedRequest.input).toEqual({ cmd: "ls -la" });
   });
 
@@ -307,6 +315,7 @@ describe("wrapToolCall", () => {
 
     const request: ToolRequest = { toolId: "bash", input: {} };
     const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
 
     expect(nextFn).not.toHaveBeenCalled();
     expect(result.output).toEqual({ error: "Blocked by hook: denied" });
@@ -324,6 +333,7 @@ describe("wrapToolCall", () => {
 
     const request: ToolRequest = { toolId: "bash", input: {} };
     const result = await mw.wrapToolCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
 
     expect(nextFn).toHaveBeenCalledTimes(1);
     expect(result.output).toBe("success despite hook failure");
@@ -386,6 +396,7 @@ describe("wrapModelCall", () => {
 
     const request: ModelRequest = { messages: [] };
     const result = await mw.wrapModelCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
 
     expect(nextFn).toHaveBeenCalledTimes(1);
     expect(result.content).toBe("hello");
@@ -406,6 +417,7 @@ describe("wrapModelCall", () => {
 
     const request: ModelRequest = { messages: [], model: "test-model" };
     const result = await mw.wrapModelCall?.(makeTurnCtx(), request, nextFn);
+    assertDefined(result);
 
     expect(nextFn).not.toHaveBeenCalled();
     expect(result.content).toContain("context too large");
