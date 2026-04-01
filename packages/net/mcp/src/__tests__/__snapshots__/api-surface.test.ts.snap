@@ -1,0 +1,344 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/mcp API surface . type declarations are stable 1`] = `
+"import { Result, KoiError, JsonObject } from '@koi/core';
+import { z } from 'zod';
+
+/**
+ * MCP authentication provider interface.
+ *
+ * Pluggable auth for MCP transports. The transport calls token() before
+ * each request to get the current bearer token.
+ *
+ * This is intentionally sync-only. Async token refresh (OAuth 2.1, token
+ * rotation) and 401/403 retry are not yet implemented — they will be added
+ * in a future PR with a separate AsyncMcpAuthProvider interface. Keeping
+ * the contract narrow prevents callers from depending on unimplemented behavior.
+ */
+/**
+ * Synchronous authentication provider for MCP transports.
+ *
+ * - \`token()\`: returns the current auth token (bearer, API key, etc.)
+ *   Return \`undefined\` to skip authentication for this request.
+ *
+ * For async token refresh or OAuth 2.1 flows, a future AsyncMcpAuthProvider
+ * will extend this interface.
+ */
+interface McpAuthProvider {
+    readonly token: () => string | undefined;
+}
+/**
+ * Creates a simple auth provider that returns a static bearer token.
+ * Useful for API-key-based MCP servers.
+ */
+declare function createBearerAuthProvider(bearerToken: string): McpAuthProvider;
+
+/**
+ * MCP server configuration — three-layer schema pipeline.
+ *
+ * Layer 1 (External): CC-compatible \`.mcp.json\` format — \`type\` discriminator,
+ *   record-keyed, accepts all CC transport types + headersHelper/oauth fields.
+ * Layer 2 (Internal): Koi convention — \`kind\` discriminator, named objects,
+ *   only supported transports (stdio, http, sse), env vars resolved.
+ * Layer 3 (Resolved): Defaults applied, ready for createMcpConnection().
+ */
+
+/** CC-compatible server config (all CC transport types). */
+interface ExternalServerConfig {
+    readonly type?: "stdio" | "sse" | "http" | "ws" | "sdk" | "sse-ide" | "ws-ide" | "claudeai-proxy";
+    readonly command?: string;
+    readonly args?: readonly string[];
+    readonly env?: Readonly<Record<string, string>>;
+    readonly url?: string;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly headersHelper?: string;
+    readonly oauth?: {
+        readonly clientId?: string;
+        readonly callbackPort?: number;
+        readonly authServerMetadataUrl?: string;
+        readonly xaa?: boolean;
+    };
+    readonly name?: string;
+    readonly id?: string;
+    readonly ideName?: string;
+    readonly authToken?: string;
+    readonly ideRunningInWindows?: boolean;
+}
+/** CC-compatible \`.mcp.json\` top-level structure. */
+interface McpJsonConfig {
+    readonly mcpServers: Readonly<Record<string, ExternalServerConfig>>;
+}
+/** CC-compatible server config Zod schema. */
+declare const externalServerConfigSchema: z.ZodType<ExternalServerConfig>;
+/** CC-compatible \`.mcp.json\` Zod schema. */
+declare const mcpJsonSchema: z.ZodType<McpJsonConfig>;
+/** Supported transport kinds in Koi (subset of CC's transport types). */
+type McpTransportKind = "stdio" | "http" | "sse";
+interface StdioServerConfig {
+    readonly kind: "stdio";
+    readonly name: string;
+    readonly command: string;
+    readonly args?: readonly string[] | undefined;
+    readonly env?: Readonly<Record<string, string>> | undefined;
+}
+interface HttpServerConfig {
+    readonly kind: "http";
+    readonly name: string;
+    readonly url: string;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+}
+interface SseServerConfig {
+    readonly kind: "sse";
+    readonly name: string;
+    readonly url: string;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+}
+type McpServerConfig = StdioServerConfig | HttpServerConfig | SseServerConfig;
+interface ResolvedMcpServerConfig {
+    readonly name: string;
+    readonly server: McpServerConfig;
+    readonly timeoutMs: number;
+    readonly connectTimeoutMs: number;
+    readonly maxReconnectAttempts: number;
+}
+declare const DEFAULT_TIMEOUT_MS = 30000;
+declare const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
+declare const DEFAULT_MAX_RECONNECT_ATTEMPTS = 3;
+interface NormalizeResult {
+    readonly servers: readonly McpServerConfig[];
+    /** Servers with unsupported transport types (ws, sdk, etc.). */
+    readonly unsupported: readonly string[];
+    /** Servers that use unimplemented auth features (headersHelper, oauth). */
+    readonly rejected: readonly string[];
+}
+/**
+ * Normalizes a CC-compatible mcpServers record into Koi's internal format.
+ * Filters unsupported transport types and expands env vars.
+ */
+declare function normalizeMcpServers(mcpServers: Readonly<Record<string, ExternalServerConfig>>): NormalizeResult;
+/** Validates a CC-compatible \`.mcp.json\` config object. */
+declare function validateMcpJson(raw: unknown): Result<McpJsonConfig, KoiError>;
+interface ResolveOptions {
+    readonly timeoutMs?: number | undefined;
+    readonly connectTimeoutMs?: number | undefined;
+    readonly maxReconnectAttempts?: number | undefined;
+}
+declare function resolveServerConfig(server: McpServerConfig, options?: ResolveOptions): ResolvedMcpServerConfig;
+
+/**
+ * Transport connection state machine.
+ *
+ * Models the full lifecycle of an MCP transport connection as a
+ * discriminated union with explicit valid transitions. Invalid
+ * transitions throw at runtime and are caught at test time.
+ */
+
+interface AuthChallenge {
+    readonly type: "bearer" | "oauth";
+    readonly realm?: string | undefined;
+    readonly scope?: string | undefined;
+}
+type TransportState = {
+    readonly kind: "idle";
+} | {
+    readonly kind: "connecting";
+    readonly attempt: number;
+} | {
+    readonly kind: "connected";
+    readonly sessionId?: string | undefined;
+} | {
+    readonly kind: "reconnecting";
+    readonly attempt: number;
+    readonly lastError: KoiError;
+} | {
+    readonly kind: "auth-needed";
+    readonly challenge?: AuthChallenge | undefined;
+} | {
+    readonly kind: "error";
+    readonly error: KoiError;
+    readonly retryable: boolean;
+} | {
+    readonly kind: "closed";
+};
+type TransportStateListener = (state: TransportState) => void;
+interface TransportStateMachine {
+    /** Current state (readonly snapshot). */
+    readonly current: TransportState;
+    /** Transition to a new state. Throws if the transition is invalid. */
+    readonly transition: (next: TransportState) => void;
+    /** Subscribe to state changes. Returns unsubscribe function. */
+    readonly onChange: (listener: TransportStateListener) => () => void;
+    /** Check if a transition to the target kind is valid from the current state. */
+    readonly canTransitionTo: (kind: TransportState["kind"]) => boolean;
+}
+declare function createTransportStateMachine(): TransportStateMachine;
+
+/**
+ * Transport factory — creates MCP SDK transport instances from config.
+ *
+ * Returns a KoiMcpTransport wrapper that exposes lifecycle callbacks
+ * (onclose, onerror) and session state without leaking SDK types
+ * into the Koi API surface.
+ */
+
+type TransportEvent = {
+    readonly kind: "closed";
+} | {
+    readonly kind: "error";
+    readonly error: Error;
+};
+type TransportEventListener = (event: TransportEvent) => void;
+interface KoiMcpTransport {
+    readonly start: () => Promise<void>;
+    readonly close: () => Promise<void>;
+    readonly sdkTransport: unknown;
+    readonly sessionId: string | undefined;
+    readonly onEvent: (listener: TransportEventListener) => () => void;
+}
+interface CreateTransportOptions {
+    readonly config: McpServerConfig;
+    readonly authProvider?: McpAuthProvider | undefined;
+}
+declare function createTransport(options: CreateTransportOptions): KoiMcpTransport;
+type CreateTransportFn = (options: CreateTransportOptions) => KoiMcpTransport;
+
+/**
+ * McpConnection — per-server connection lifecycle manager.
+ *
+ * Composes the transport wrapper, state machine, auth provider, and
+ * reconnection logic into a single connection handle. Owns an
+ * AbortController for clean shutdown of in-flight operations.
+ */
+
+interface McpToolInfo {
+    readonly name: string;
+    readonly description: string;
+    readonly inputSchema: JsonObject;
+}
+interface SdkClientLike {
+    connect(transport: unknown): Promise<void>;
+    close(): Promise<void>;
+    listTools(): Promise<{
+        tools: Array<{
+            name: string;
+            description?: string | undefined;
+            inputSchema?: unknown;
+        }>;
+    }>;
+    callTool(params: {
+        name: string;
+        arguments: Record<string, unknown>;
+    }): Promise<{
+        content?: unknown;
+        isError?: boolean | undefined;
+    }>;
+    setNotificationHandler?(method: string, handler: (params: unknown) => void): void;
+    getServerCapabilities?(): {
+        tools?: {
+            listChanged?: boolean;
+        };
+    } | undefined;
+}
+interface McpConnection {
+    /** Connect to the MCP server. */
+    readonly connect: () => Promise<Result<void, KoiError>>;
+    /** List available tools on the server. */
+    readonly listTools: () => Promise<Result<readonly McpToolInfo[], KoiError>>;
+    /** Call a tool by name with arguments. */
+    readonly callTool: (name: string, args: JsonObject) => Promise<Result<unknown, KoiError>>;
+    /** Close the connection and abort in-flight operations. */
+    readonly close: () => Promise<void>;
+    /** Current connection state. */
+    readonly state: TransportState;
+    /** Server name from config. */
+    readonly serverName: string;
+    /** Subscribe to state changes. Returns unsubscribe function. */
+    readonly onStateChange: (listener: TransportStateListener) => () => void;
+    /** Subscribe to tool list changes. Returns unsubscribe function. */
+    readonly onToolsChanged: (listener: () => void) => () => void;
+}
+interface ConnectionDeps {
+    readonly createClient: (info: {
+        readonly name: string;
+        readonly version: string;
+    }) => SdkClientLike;
+    readonly createTransport: CreateTransportFn;
+    readonly random: () => number;
+}
+declare function createMcpConnection(config: ResolvedMcpServerConfig, authProvider?: McpAuthProvider, deps?: Partial<ConnectionDeps>): McpConnection;
+
+/**
+ * Environment variable expansion with \${VAR} and \${VAR:-default} syntax.
+ *
+ * Compatible with Claude Code's env var expansion format.
+ * Cannot import from @koi/hooks (L2 peer import rule).
+ */
+/**
+ * Expands environment variables in a string.
+ *
+ * Supports:
+ * - \`\${VAR}\` — expands to process.env.VAR
+ * - \`\${VAR:-default}\` — expands to process.env.VAR, or "default" if not set
+ *
+ * Returns the expanded string and a list of unresolved variables (missing + no default).
+ */
+declare function expandEnvVars(value: string): {
+    readonly expanded: string;
+    readonly missing: readonly string[];
+};
+/**
+ * Expands env vars in all string values of a record (shallow).
+ * Returns the expanded record and all missing variables.
+ */
+declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>): {
+    readonly expanded: Record<string, string>;
+    readonly missing: readonly string[];
+};
+
+/**
+ * Structured error mapping from MCP SDK / HTTP errors to KoiError.
+ *
+ * Strategy: check structured signals first (HTTP status code, JSON-RPC error
+ * code), then fall back to message pattern matching for unstructured errors.
+ * This is more reliable than regex-only matching because HTTP status codes
+ * and JSON-RPC codes are part of the protocol contract.
+ */
+
+interface McpErrorContext {
+    readonly serverName: string;
+    readonly httpStatus?: number | undefined;
+    readonly jsonRpcCode?: number | undefined;
+}
+declare function mapMcpError(error: unknown, context: McpErrorContext): KoiError;
+declare function connectionTimeoutError(serverName: string, timeoutMs: number): KoiError;
+declare function notConnectedError(serverName: string): KoiError;
+declare function reconnectExhaustedError(serverName: string, attempts: number): KoiError;
+declare function sessionExpiredError(serverName: string): KoiError;
+
+/**
+ * .mcp.json file loader — reads CC-compatible MCP server configuration.
+ *
+ * Pipeline: file read → JSON parse → external schema validation →
+ * normalization (CC type → Koi kind, env expansion) → internal configs.
+ */
+
+/**
+ * Loads and parses a \`.mcp.json\` file from the given path.
+ *
+ * Returns normalized Koi server configs. Unsupported transport types
+ * (ws, sdk, etc.) are silently filtered — available in the \`unsupported\`
+ * list for logging.
+ */
+declare function loadMcpJsonFile(filePath: string): Promise<Result<{
+    readonly servers: readonly McpServerConfig[];
+    readonly unsupported: readonly string[];
+}, KoiError>>;
+/**
+ * Parses a JSON string as \`.mcp.json\` config.
+ * Useful for manifest embedding or testing.
+ */
+declare function loadMcpJsonString(json: string): Result<NormalizeResult, KoiError>;
+
+export { type AuthChallenge, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpServerConfig, type McpToolInfo, type McpTransportKind, type NormalizeResult, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, connectionTimeoutError, createBearerAuthProvider, createMcpConnection, createTransport, createTransportStateMachine, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mcpJsonSchema, normalizeMcpServers, notConnectedError, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson };
+"
+`;

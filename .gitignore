@@ -3,6 +3,7 @@ dist/
 .turbo/
 coverage/
 *.tsbuildinfo
+tsup.config.bundled_*.mjs
 .env
 .env.*
 !.env.example
@@ -19,6 +20,7 @@ koi.yaml
 concierge/
 my-agent/
 my-agent2/
+my-agent3/
 my-demo/
 my-demo2/
 my-test/

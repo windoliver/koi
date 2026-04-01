@@ -1,0 +1,235 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/config API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core';
+import { ConfigStore, KoiConfig, ConfigUnsubscribe, LogLevel, LimitsConfig, LoopDetectionConfigSection, SpawnConfig, ForgeConfigSection } from '@koi/core/config';
+import { z } from 'zod';
+
+/**
+ * $include directive processing with cycle detection.
+ *
+ * Supports diamond-shaped include graphs (same file included via two paths).
+ * Detects and rejects circular includes.
+ */
+
+/** Options for \`processIncludes()\`. */
+interface ProcessIncludesOptions {
+    /** Environment variables for interpolation in included files. */
+    readonly env?: Readonly<Record<string, string | undefined>> | undefined;
+    /** Maximum include depth. Defaults to 5. */
+    readonly maxDepth?: number | undefined;
+}
+/**
+ * Recursively resolves \`$include\` directives in a parsed config object.
+ *
+ * - \`$include\` must be an array of relative file paths.
+ * - Included files are merged left-to-right, then the parent overrides.
+ * - Diamond includes (same file reached via multiple paths) are allowed.
+ * - Circular includes are detected and return an error.
+ *
+ * @param parsed - The parsed config object (may contain \`$include\`).
+ * @param parentDir - Directory of the file that contained \`parsed\`.
+ * @param options - Env vars and max depth.
+ */
+declare function processIncludes(parsed: Readonly<Record<string, unknown>>, parentDir: string, options?: ProcessIncludesOptions): Promise<Result<Record<string, unknown>, KoiError>>;
+
+/**
+ * Config file loading with env interpolation.
+ */
+
+/** Options for \`loadConfig()\` and \`loadConfigFromString()\`. */
+interface LoadConfigOptions {
+    /** Environment variables for interpolation. Defaults to \`process.env\`. */
+    readonly env?: Readonly<Record<string, string | undefined>> | undefined;
+    /** Maximum \`$include\` depth. Defaults to 5. */
+    readonly maxIncludeDepth?: number | undefined;
+}
+/**
+ * Replaces \`\${VAR}\` and \`\${VAR:-default}\` patterns with environment values.
+ *
+ * - \`\${VAR}\` resolves to \`env[VAR]\` or empty string if unset.
+ * - \`\${VAR:-fallback}\` resolves to \`env[VAR]\` or \`"fallback"\` if unset.
+ */
+declare function interpolateEnv(raw: string, env?: Readonly<Record<string, string | undefined>>): string;
+/**
+ * Synchronously parses a config string with env interpolation.
+ *
+ * Does NOT process \`$include\` directives — use \`loadConfig()\` for that.
+ * Useful for testing or when the content is already in memory.
+ */
+declare function loadConfigFromString(content: string, filePath: string, options?: LoadConfigOptions): Result<Record<string, unknown>, KoiError>;
+/**
+ * Reads a config file from disk, interpolates env vars, processes \`$include\`
+ * directives, and returns the merged raw config object.
+ */
+declare function loadConfig(filePath: string, options?: LoadConfigOptions): Promise<Result<Record<string, unknown>, KoiError>>;
+
+/**
+ * Sensitive field masking for safe config logging.
+ */
+/** Default pattern matching sensitive field names. */
+declare const SENSITIVE_PATTERN: RegExp;
+/**
+ * Recursively redacts fields whose keys match \`pattern\`.
+ *
+ * Returns a new object — the input is never mutated.
+ */
+declare function maskConfig(obj: Readonly<Record<string, unknown>>, pattern?: RegExp): Record<string, unknown>;
+
+/**
+ * Immutable deep merge with prototype pollution prevention.
+ */
+/**
+ * Recursively merges \`override\` into \`base\`, returning a new object.
+ *
+ * - Objects are merged recursively; override wins on conflict.
+ * - Arrays are replaced wholesale (not concatenated).
+ * - Primitive values in override replace base values.
+ * - Dangerous keys (__proto__, constructor, prototype) are filtered out.
+ */
+declare function deepMerge<T extends Record<string, unknown>>(base: T, override: Readonly<Record<string, unknown>>): T;
+
+/**
+ * Reactive config store — frozen snapshots with synchronous subscriber notification.
+ */
+
+/**
+ * A ConfigStore with a \`set()\` method for updating the value.
+ */
+interface WritableConfigStore<T> extends ConfigStore<T> {
+    /** Replaces the current config snapshot, freezes it, and notifies all subscribers synchronously. */
+    readonly set: (next: T) => void;
+}
+/**
+ * Creates a reactive config store.
+ *
+ * - Every value stored is \`Object.freeze()\`d (shallow).
+ * - \`get()\` is O(1), returning the cached frozen reference.
+ * - \`subscribe()\` fires synchronously on each \`set()\`.
+ */
+declare function createConfigStore<T extends object>(initial: T): WritableConfigStore<T>;
+
+/**
+ * ConfigManager — wires store + loader + validation + watcher.
+ */
+
+/** Sane defaults for all 8 KoiConfig sections. */
+declare const DEFAULT_KOI_CONFIG: KoiConfig;
+/** Options for \`createConfigManager()\`. */
+interface CreateConfigManagerOptions {
+    /** Path to the config file. */
+    readonly filePath: string;
+    /** Options passed through to the loader (env, maxIncludeDepth). */
+    readonly loaderOptions?: LoadConfigOptions | undefined;
+    /** Debounce interval for file watching in ms. Defaults to 300. */
+    readonly watchDebounceMs?: number | undefined;
+}
+/** High-level config manager: store + reload + watch. */
+interface ConfigManager {
+    /** The reactive config store. */
+    readonly store: WritableConfigStore<KoiConfig>;
+    /** Re-reads the config file, validates, and updates the store. */
+    readonly reload: () => Promise<Result<KoiConfig, KoiError>>;
+    /** Starts watching the config file for changes. Returns unsubscribe. */
+    readonly watch: () => ConfigUnsubscribe;
+    /** Stops watching and cleans up. */
+    readonly dispose: () => void;
+}
+/**
+ * Creates a ConfigManager that wires together loading, validation,
+ * the reactive store, and file watching.
+ *
+ * Starts with \`DEFAULT_KOI_CONFIG\` — call \`reload()\` to load from disk.
+ */
+declare function createConfigManager(options: CreateConfigManagerOptions): ConfigManager;
+
+/**
+ * Generic config resolution: validate raw input, merge with defaults.
+ */
+
+/**
+ * Validates \`raw\` against \`schema\`, then merges the result with \`defaults\`.
+ *
+ * Defaults fill gaps but validated values always win.
+ * Returns \`Result<T, KoiError>\` — never throws for validation errors.
+ */
+declare function resolveConfig<T extends Record<string, unknown>>(schema: z.ZodType<T>, defaults: T, raw: unknown, prefix?: string): Result<T, KoiError>;
+
+/**
+ * Bridge from KoiConfig to engine-compatible runtime options.
+ */
+
+/** Engine-compatible runtime options derived from KoiConfig. */
+interface ResolvedKoiOptions {
+    readonly logLevel: LogLevel;
+    readonly limits: LimitsConfig;
+    readonly loopDetection: LoopDetectionConfigSection;
+    readonly spawn: SpawnConfig;
+    readonly forge: ForgeConfigSection;
+    readonly telemetryEnabled: boolean;
+    readonly telemetryEndpoint: string | undefined;
+    readonly telemetrySampleRate: number | undefined;
+    readonly modelRouterStrategy: string;
+    readonly modelRouterTargets: KoiConfig["modelRouter"]["targets"];
+    readonly features: Readonly<Record<string, boolean | undefined>>;
+}
+/**
+ * Maps a validated \`KoiConfig\` into flat, engine-compatible options.
+ *
+ * This is a pure function — no side effects, no I/O.
+ */
+declare function resolveKoiOptions(config: KoiConfig): ResolvedKoiOptions;
+
+/**
+ * Zod schemas for all 8 KoiConfig sections + validation + JSON Schema export.
+ */
+
+/**
+ * Validates raw input against the full KoiConfig schema.
+ *
+ * Returns \`Result<KoiConfig, KoiError>\` — never throws for validation errors.
+ */
+declare function validateKoiConfig(raw: unknown): Result<KoiConfig, KoiError>;
+/**
+ * Returns a JSON Schema representation of the KoiConfig schema.
+ *
+ * Useful for IDE autocompletion in YAML/JSON config files.
+ */
+declare function getKoiConfigJsonSchema(): Record<string, unknown>;
+
+/**
+ * Slice subscription with ref-equality skip for config stores.
+ */
+
+/**
+ * Subscribes to a config store but only fires \`listener\` when the selected
+ * slice changes by reference (===).
+ *
+ * Returns an unsubscribe function.
+ */
+declare function selectConfig<T, S>(store: ConfigStore<T>, selector: (config: T) => S, listener: (next: S, prev: S) => void): ConfigUnsubscribe;
+
+/**
+ * Debounced file watcher for config hot-reload.
+ */
+
+/** Options for \`watchConfigFile()\`. */
+interface WatchConfigOptions {
+    /** Absolute path to the config file. */
+    readonly filePath: string;
+    /** Callback invoked (debounced) when the file changes. */
+    readonly onChange: () => void | Promise<void>;
+    /** Debounce interval in milliseconds. Defaults to 300. */
+    readonly debounceMs?: number | undefined;
+}
+/**
+ * Watches a config file for changes using \`fs.watch()\`.
+ *
+ * Returns an unsubscribe function that stops watching.
+ * Multiple rapid writes are coalesced by the debounce interval.
+ */
+declare function watchConfigFile(options: WatchConfigOptions): ConfigUnsubscribe;
+
+export { type ConfigManager, type CreateConfigManagerOptions, DEFAULT_KOI_CONFIG, type LoadConfigOptions, type ProcessIncludesOptions, type ResolvedKoiOptions, SENSITIVE_PATTERN, type WatchConfigOptions, type WritableConfigStore, createConfigManager, createConfigStore, deepMerge, getKoiConfigJsonSchema, interpolateEnv, loadConfig, loadConfigFromString, maskConfig, processIncludes, resolveConfig, resolveKoiOptions, selectConfig, validateKoiConfig, watchConfigFile };
+"
+`;
