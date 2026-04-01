@@ -360,6 +360,58 @@ describe("createChannelAdapter", () => {
 
       await disconnectPromise;
     });
+
+    test("async normalize resolving after disconnect does not dispatch", async () => {
+      const received: InboundMessage[] = [];
+      // let requires justification: captured by onPlatformEvent callback
+      let eventHandler: ((event: string) => void) | undefined;
+      // let requires justification: controls when normalize resolves
+      let resolveNormalize: ((msg: InboundMessage) => void) | undefined;
+
+      const adapter = createChannelAdapter<string>({
+        name: "test",
+        capabilities: TEXT_ONLY,
+        platformConnect: async () => {},
+        platformDisconnect: async () => {},
+        platformSend: async () => {},
+        onPlatformEvent: (handler) => {
+          eventHandler = handler;
+          return () => {
+            eventHandler = undefined;
+          };
+        },
+        normalize: () =>
+          new Promise<InboundMessage>((resolve) => {
+            resolveNormalize = resolve;
+          }),
+      });
+
+      adapter.onMessage(async (msg) => {
+        received.push(msg);
+      });
+
+      await adapter.connect();
+
+      // Inject event — normalize starts but doesn't resolve yet
+      eventHandler?.("slow-event");
+      await Bun.sleep(5);
+      expect(received).toHaveLength(0);
+
+      // Disconnect while normalize is still pending
+      const disconnectPromise = adapter.disconnect();
+      await Bun.sleep(5);
+
+      // Now resolve normalize — should NOT dispatch because connected=false
+      resolveNormalize?.({
+        content: [{ kind: "text", text: "stale" }],
+        senderId: "test",
+        timestamp: Date.now(),
+      });
+      await Bun.sleep(10);
+
+      expect(received).toHaveLength(0);
+      await disconnectPromise;
+    });
   });
 
   describe("disconnect drains in-flight sends", () => {
@@ -389,6 +441,30 @@ describe("createChannelAdapter", () => {
 
       // send must finish BEFORE platformDisconnect runs
       expect(events).toEqual(["send-start", "send-end", "disconnect"]);
+    });
+
+    test("concurrent sends are serialized and don't interleave", async () => {
+      const events: string[] = [];
+      const { adapter } = createTestAdapter({
+        platformSend: async (msg: OutboundMessage) => {
+          const text = msg.content[0]?.kind === "text" ? msg.content[0].text : "?";
+          events.push(`start:${text}`);
+          await Bun.sleep(20);
+          events.push(`end:${text}`);
+        },
+      });
+
+      await adapter.connect();
+
+      // Fire two sends concurrently
+      const p1 = adapter.send({ content: [{ kind: "text", text: "A" }] });
+      const p2 = adapter.send({ content: [{ kind: "text", text: "B" }] });
+      await Promise.all([p1, p2]);
+
+      // A must fully complete before B starts
+      expect(events).toEqual(["start:A", "end:A", "start:B", "end:B"]);
+
+      await adapter.disconnect();
     });
   });
 

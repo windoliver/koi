@@ -59,8 +59,8 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
   // let requires justification: monotonic counter for unique subscription IDs
   let nextHandlerId = 0;
   let unsubPlatform: (() => void) | undefined;
-  // let requires justification: tracks in-flight send() calls so disconnect() can drain them
-  let inflightSends: ReadonlySet<Promise<void>> = new Set();
+  // let requires justification: serializes send() calls so concurrent messages don't interleave
+  let sendChain: Promise<void> = Promise.resolve();
 
   async function dispatch(message: InboundMessage): Promise<void> {
     const results = await Promise.allSettled(handlers.map((h) => h.fn(message)));
@@ -108,7 +108,9 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
             if (normalized instanceof Promise) {
               normalized
                 .then((msg) => {
-                  if (msg !== null) return dispatch(msg);
+                  // Re-check connected after async normalize — disconnect may
+                  // have started while the promise was pending.
+                  if (msg !== null && connected) return dispatch(msg);
                 })
                 .catch((err: unknown) => {
                   config.onNormalizationError?.(err, event);
@@ -136,34 +138,26 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
         //    events are dispatched during the drain window
         unsubPlatform?.();
         unsubPlatform = undefined;
-        // 3. Wait for in-flight sends to settle before tearing down
+        // 3. Wait for the send chain to settle before tearing down
         //    the transport, preventing writes into a closing channel
-        if (inflightSends.size > 0) {
-          await Promise.allSettled([...inflightSends]);
-        }
+        await sendChain.catch(() => {});
         // 4. Tear down the platform transport
         await config.platformDisconnect();
       }),
 
-    send: async (message: OutboundMessage): Promise<void> => {
+    send: (message: OutboundMessage): Promise<void> => {
       if (!connected) {
-        throw new Error(`Channel "${config.name}" is not connected`);
+        return Promise.reject(new Error(`Channel "${config.name}" is not connected`));
       }
       const rendered: OutboundMessage = {
         ...message,
         content: renderBlocks(message.content, config.capabilities),
       };
-      const sendOp = config.platformSend(rendered);
-      const tracked = sendOp.then(
-        () => {
-          inflightSends = new Set([...inflightSends].filter((p) => p !== tracked));
-        },
-        () => {
-          inflightSends = new Set([...inflightSends].filter((p) => p !== tracked));
-        },
-      );
-      inflightSends = new Set([...inflightSends, tracked]);
-      await sendOp;
+      // Serialize sends through a promise chain so concurrent calls
+      // don't interleave on the underlying transport.
+      const op = sendChain.catch(() => {}).then(() => config.platformSend(rendered));
+      sendChain = op.catch(() => {});
+      return op;
     },
 
     onMessage: (handler: MessageHandler): (() => void) => {
