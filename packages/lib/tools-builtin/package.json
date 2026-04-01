@@ -1,0 +1,25 @@
+{
+  "name": "@koi/tools-builtin",
+  "description": "Built-in filesystem tools (read, edit, write) for Koi agents",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "koi": {
+    "optional": true
+  }
+}
