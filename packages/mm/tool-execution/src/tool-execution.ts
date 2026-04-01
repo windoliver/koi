@@ -223,7 +223,10 @@ function rethrowClassified(
   toolId: string,
   composed: ComposedSignal | undefined,
 ): never {
-  // Only classify as TIMEOUT when our timer caused the abort
+  // Only classify when our timer caused the abort.
+  // Uses EXTERNAL (not TIMEOUT) because the engine maps TIMEOUT → max_turns
+  // (budget exhaustion) which is wrong for tool-level timeouts. EXTERNAL
+  // maps to stopReason "error" which correctly surfaces as a tool failure.
   if (
     error instanceof DOMException &&
     composed?.signal.aborted === true &&
@@ -231,7 +234,7 @@ function rethrowClassified(
   ) {
     const reason = composed.signal.reason as TimeoutAbortReason;
     throw KoiRuntimeError.from(
-      "TIMEOUT",
+      "EXTERNAL",
       `Tool "${toolId}" timed out after ${reason.timeoutMs}ms`,
       {
         retryable: false,

@@ -176,7 +176,7 @@ describe("createToolExecution", () => {
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
         expect(handler).not.toHaveBeenCalled();
-        // Abort reason preserved — NOT collapsed into KoiRuntimeError("TIMEOUT")
+        // Abort reason preserved — NOT collapsed into KoiRuntimeError("EXTERNAL")
         expect(e).toBeInstanceOf(DOMException);
         expect((e as DOMException).name).toBe("AbortError");
         expect((e as DOMException).message).toContain("user_cancel");
@@ -216,9 +216,9 @@ describe("createToolExecution", () => {
         await invokeWrapToolCall(mw, ctx, request, handler);
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
-        // ONLY our timeout → KoiRuntimeError("TIMEOUT")
+        // ONLY our timeout → KoiRuntimeError("EXTERNAL")
         expect(e).toBeInstanceOf(KoiRuntimeError);
-        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).code).toBe("EXTERNAL");
         expect((e as KoiRuntimeError).message).toContain("timed out");
         expect((e as KoiRuntimeError).retryable).toBe(false);
       }
@@ -240,7 +240,7 @@ describe("createToolExecution", () => {
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
         expect(handler).not.toHaveBeenCalled();
-        // Pre-aborted parent → DOMException, NOT KoiRuntimeError("TIMEOUT")
+        // Pre-aborted parent → DOMException, NOT KoiRuntimeError("EXTERNAL")
         expect(e).toBeInstanceOf(DOMException);
         expect((e as DOMException).message).toContain("user_cancel");
       }
@@ -486,7 +486,7 @@ describe("createToolExecution", () => {
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
         expect(e).toBeInstanceOf(KoiRuntimeError);
-        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).code).toBe("EXTERNAL");
         expect((e as KoiRuntimeError).message).toContain("timed out");
       }
     });
@@ -506,7 +506,7 @@ describe("createToolExecution", () => {
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
         expect(e).toBeInstanceOf(KoiRuntimeError);
-        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).code).toBe("EXTERNAL");
       }
     });
 
@@ -732,7 +732,7 @@ describe("createToolExecution", () => {
         expect.unreachable("should have thrown");
       } catch (e: unknown) {
         expect(e).toBeInstanceOf(KoiRuntimeError);
-        expect((e as KoiRuntimeError).code).toBe("TIMEOUT");
+        expect((e as KoiRuntimeError).code).toBe("EXTERNAL");
       }
     });
   });
