@@ -109,6 +109,15 @@
         "@koi/hash": "workspace:*",
       },
     },
+    "packages/lib/event-trace": {
+      "name": "@koi/event-trace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/lib/execution-context": {
       "name": "@koi/execution-context",
       "version": "0.0.0",
@@ -360,6 +369,8 @@
     "@koi/errors": ["@koi/errors@workspace:packages/lib/errors"],
 
     "@koi/event-delivery": ["@koi/event-delivery@workspace:packages/lib/event-delivery"],
+
+    "@koi/event-trace": ["@koi/event-trace@workspace:packages/lib/event-trace"],
 
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/lib/execution-context"],
 
